@@ -7,14 +7,23 @@ order modules. Never writes to the DB.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections import Counter
+from typing import Iterable
 
 from app.schemas.invest_benchmark_gap import (
+    BenchmarkGapMatrixResponse,
     BenchmarkGapMatrixSummary,
+    BenchmarkGapPriority,
     BenchmarkGapRow,
     CoverageProductStatus,
+    NextSourcingCandidate,
 )
-from app.schemas.invest_coverage import CoverageState
+from app.schemas.invest_coverage import (
+    CoverageMarket,
+    CoverageState,
+    InvestCoverageResponse,
+)
 
 _COVERAGE_TO_PRODUCT: dict[CoverageState, CoverageProductStatus] = {
     "fresh": "covered",
@@ -278,4 +287,112 @@ def build_benchmark_gap_summary(
         byStatus=dict(Counter(row.coverageStatus for row in rows)),
         byPriority=dict(Counter(row.priority for row in rows)),
         byProvider=dict(Counter(row.benchmarkProvider for row in rows)),
+    )
+
+
+_PRIORITY_ORDER: list[BenchmarkGapPriority] = ["P0", "P1", "P2", "P3"]
+
+_SOURCE_POLICY: list[str] = [
+    "KIS live = holdings/cash/open orders/sellable quantity broker authority",
+    "auto_trader DB/read-models = /invest product authority",
+    "Toss = benchmark/reference only — never sourceOfTruth",
+    "Naver = candidate/reference unless promoted to owned read-model",
+    "community/discussion = aggregate signal only — raw text cloning prohibited",
+]
+
+
+def _surface_state_index(
+    coverage: InvestCoverageResponse | None,
+) -> dict[str, str]:
+    if coverage is None:
+        return {}
+    return {surface.surface: surface.state for surface in coverage.surfaces}
+
+
+def _row_keys_for_coverage_lookup(row: BenchmarkGapRow) -> list[str]:
+    """Which coverage surface names should overlay this row's status."""
+    candidates: list[str] = []
+    if row.autoTraderReadModel:
+        candidates.append(row.autoTraderReadModel)
+    if row.autoTraderTable:
+        candidates.append(row.autoTraderTable)
+    return candidates
+
+
+def _overlay_status_from_coverage(
+    row: BenchmarkGapRow, state_index: dict[str, str]
+) -> BenchmarkGapRow:
+    for key in _row_keys_for_coverage_lookup(row):
+        legacy = state_index.get(key)
+        if legacy is None:
+            continue
+        try:
+            row = row.model_copy(
+                update={"coverageStatus": coverage_state_to_product_status(legacy)}
+            )
+        except ValueError:
+            continue
+        break
+    return row
+
+
+def _build_next_candidates(
+    rows: Iterable[BenchmarkGapRow],
+) -> list[NextSourcingCandidate]:
+    candidates: list[NextSourcingCandidate] = []
+    for row in rows:
+        if row.coverageStatus == "covered":
+            continue
+        if row.coverageStatus in {"intentionally_excluded", "unsupported"}:
+            continue
+        candidates.append(
+            NextSourcingCandidate(
+                rowId=row.id,
+                priority=row.priority,
+                featureArea=row.featureArea,
+                benchmarkProvider=row.benchmarkProvider,
+                gap=row.gapReason or row.whyNeeded,
+                currentAutoTrader=row.autoTraderApi
+                or row.autoTraderReadModel
+                or row.autoTraderTable,
+                whyItMatters=row.whyNeeded,
+                currentStatus=row.coverageStatus,
+                nextAction=row.nextAction,
+                relatedLinearIssue=row.relatedLinearIssue,
+                newIssueCandidate=row.newIssueCandidate,
+            )
+        )
+    candidates.sort(key=lambda c: _PRIORITY_ORDER.index(c.priority))
+    return candidates
+
+
+def build_benchmark_gap_matrix_from_coverage(
+    coverage: InvestCoverageResponse | None,
+    *,
+    market: CoverageMarket = "kr",
+    as_of: dt.datetime | None = None,
+) -> BenchmarkGapMatrixResponse:
+    """Pure function used by both the router and tests.
+
+    The router passes a freshly-built ``InvestCoverageResponse``; tests can pass
+    a hand-built one. ``None`` keeps every row at its declared default.
+    """
+    when = as_of or dt.datetime.now(dt.UTC)
+    state_index = _surface_state_index(coverage)
+    rows = [
+        _overlay_status_from_coverage(row, state_index)
+        for row in build_mvp_benchmark_rows()
+    ]
+    return BenchmarkGapMatrixResponse(
+        market=market,
+        asOf=when,
+        rows=rows,
+        nextCandidates=_build_next_candidates(rows),
+        summary=build_benchmark_gap_summary(rows),
+        sourcePolicy=_SOURCE_POLICY,
+        notes=[
+            "first-screen view: 토스·네이버 대비 auto_trader 데이터 수급 현황",
+            "Toss/Naver는 reference/candidate only — never sourceOfTruth",
+            "downstream collector 구현은 본 이슈의 non-goal",
+        ],
     )

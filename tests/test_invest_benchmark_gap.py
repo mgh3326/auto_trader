@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from app.schemas.invest_benchmark_gap import (
@@ -8,7 +10,13 @@ from app.schemas.invest_benchmark_gap import (
     BenchmarkGapRow,
     NextSourcingCandidate,
 )
+from app.schemas.invest_coverage import (
+    InvestCoverageCounts,
+    InvestCoverageResponse,
+    InvestCoverageSurface,
+)
 from app.services.invest_benchmark_gap_service import (
+    build_benchmark_gap_matrix_from_coverage,
     build_benchmark_gap_summary,
     build_mvp_benchmark_rows,
     coverage_state_to_product_status,
@@ -136,3 +144,51 @@ def test_build_benchmark_gap_summary_counts_correctly():
     assert sum(summary.byProvider.values()) == len(rows)
     assert sum(summary.byPriority.values()) == len(rows)
     assert sum(summary.byStatus.values()) == len(rows)
+
+
+def _surface(name: str, state: str) -> InvestCoverageSurface:
+    return InvestCoverageSurface(
+        surface=name,
+        label=name,
+        state=state,  # type: ignore[arg-type]
+        sourceOfTruth=name,
+        counts=InvestCoverageCounts(),
+    )
+
+
+def test_build_matrix_overlays_screener_state_from_coverage():
+    coverage = InvestCoverageResponse(
+        market="kr",
+        asOf=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
+        tradingDate=dt.date(2026, 5, 19),
+        states=["fresh", "stale", "missing"],
+        surfaces=[
+            _surface("invest_screener_snapshots", "stale"),
+        ],
+    )
+    matrix = build_benchmark_gap_matrix_from_coverage(coverage, market="kr")
+    by_id = {row.id: row for row in matrix.rows}
+    assert by_id["toss.screener"].coverageStatus == "stale"
+    # untouched row keeps declared default
+    assert by_id["toss.stock_detail.chart"].coverageStatus == "candidate_unwired"
+    # summary reflects updated row
+    assert matrix.summary.totalRows == len(matrix.rows)
+    assert matrix.summary.byStatus.get("stale", 0) >= 1
+
+
+def test_build_matrix_emits_next_candidates_in_priority_order():
+    coverage = InvestCoverageResponse(
+        market="kr",
+        asOf=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
+        tradingDate=dt.date(2026, 5, 19),
+        states=["fresh"],
+        surfaces=[],
+    )
+    matrix = build_benchmark_gap_matrix_from_coverage(coverage, market="kr")
+    priorities = [c.priority for c in matrix.nextCandidates]
+    # candidates are sorted P0 < P1 < P2 < P3
+    assert priorities == sorted(priorities, key=lambda p: ["P0", "P1", "P2", "P3"].index(p))
+    # covered rows do not appear as next candidates
+    assert all(c.currentStatus != "covered" for c in matrix.nextCandidates)
+    # source policy is non-empty
+    assert matrix.sourcePolicy
