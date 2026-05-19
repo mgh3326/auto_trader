@@ -32,14 +32,14 @@ def _run_payload() -> SnapshotRunCreate:
     )
 
 
-def _snapshot_payload(run_uuid: uuid.UUID, *, price: float = 195000.0) -> SnapshotCreate:
-    payload = {"symbol": "035420", "price": price}
+def _snapshot_payload(run_uuid: uuid.UUID, *, symbol: str = "035420", price: float = 195000.0) -> SnapshotCreate:
+    payload = {"symbol": symbol, "price": price}
     return SnapshotCreate(
         run_uuid=run_uuid,
         snapshot_kind="symbol",
         market="kr",
         account_scope="kis_live",
-        symbol="035420",
+        symbol=symbol,
         source_kind="kis_mcp",
         payload_json=payload,
         as_of=_now(),
@@ -50,7 +50,9 @@ def _snapshot_payload(run_uuid: uuid.UUID, *, price: float = 195000.0) -> Snapsh
 @pytest.mark.asyncio
 async def test_insert_run_returns_persisted_row(db_session):
     repo = InvestmentSnapshotsRepository(db_session)
-    run = await repo.insert_run(_run_payload())
+    payload = _run_payload()
+    payload.run_metadata = {"test": "test_insert_run_returns_persisted_row"}
+    run = await repo.insert_run(payload)
     await db_session.commit()
     assert run.id > 0
     assert run.purpose == "report_generation"
@@ -61,12 +63,13 @@ async def test_insert_run_returns_persisted_row(db_session):
 async def test_insert_snapshot_computes_canonical_hash_and_idempotency_key(db_session):
     repo = InvestmentSnapshotsRepository(db_session)
     run = await repo.insert_run(_run_payload())
-    snap = await repo.insert_snapshot(_snapshot_payload(run.run_uuid))
+    symbol = f"S{uuid.uuid4().hex[:6]}"
+    snap = await repo.insert_snapshot(_snapshot_payload(run.run_uuid, symbol=symbol))
     await db_session.commit()
 
-    expected_hash = canonical_payload_hash({"symbol": "035420", "price": 195000.0})
+    expected_hash = canonical_payload_hash({"symbol": symbol, "price": 195000.0})
     assert snap.canonical_payload_hash == expected_hash
-    assert snap.idempotency_key.startswith(f"{run.run_uuid}:symbol:035420:")
+    assert snap.idempotency_key.startswith(f"{run.run_uuid}:symbol:{symbol}:")
     assert snap.idempotency_key.endswith(expected_hash[:12])
 
 
@@ -75,8 +78,9 @@ async def test_insert_snapshot_dedupes_identical_payload(db_session):
     """Same canonical payload → same row reused, second call returns existing."""
     repo = InvestmentSnapshotsRepository(db_session)
     run = await repo.insert_run(_run_payload())
-    a = await repo.insert_snapshot(_snapshot_payload(run.run_uuid))
-    b = await repo.insert_snapshot(_snapshot_payload(run.run_uuid))
+    symbol = f"D{uuid.uuid4().hex[:6]}"
+    a = await repo.insert_snapshot(_snapshot_payload(run.run_uuid, symbol=symbol))
+    b = await repo.insert_snapshot(_snapshot_payload(run.run_uuid, symbol=symbol))
     await db_session.commit()
     assert a.id == b.id
 
@@ -85,17 +89,19 @@ async def test_insert_snapshot_dedupes_identical_payload(db_session):
 async def test_insert_bundle_and_link_items(db_session):
     repo = InvestmentSnapshotsRepository(db_session)
     run = await repo.insert_run(_run_payload())
-    snap = await repo.insert_snapshot(_snapshot_payload(run.run_uuid))
+    symbol = f"B{uuid.uuid4().hex[:6]}"
+    snap = await repo.insert_snapshot(_snapshot_payload(run.run_uuid, symbol=symbol))
+    purpose = f"bundle_{uuid.uuid4().hex[:6]}"
     bundle = await repo.insert_bundle(
         BundleCreate(
-            purpose="kr_action_report",
+            purpose=purpose,
             market="kr",
             account_scope="kis_live",
             policy_version="intraday_action_report_v1",
             as_of=_now(),
             status="complete",
-            coverage_summary={"required": {"symbol": "fresh"}},
-            freshness_summary={"symbol": {"as_of": _now().isoformat(), "status": "fresh"}},
+            coverage_summary={"required": {symbol: "fresh"}},
+            freshness_summary={symbol: {"as_of": _now().isoformat(), "status": "fresh"}},
         )
     )
     item = await repo.link_bundle_item(
