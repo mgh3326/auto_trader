@@ -440,6 +440,11 @@ class Settings(BaseSettings):
     # (not flag-gated) — this flag only controls the pre-DB rejection layer.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-3-report-generator.md §5.
     ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED: bool = False
+    # ROB-269 Phase 4 — gates the /invest SnapshotBundleFreshnessChip render
+    # and any future bundle-aware UI surfaces. Default off so the chip
+    # is physically absent from caller-facing pages until flipped post-merge.
+    # See docs/superpowers/plans/2026-05-19-rob-269-phase-4-ui-and-scheduler.md §4.
+    ACTION_REPORT_BUNDLE_UI_ENABLED: bool = False
     # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
     execution_ledger_reconcile_scheduler_enabled: bool = False
     execution_ledger_reconcile_scheduler_cron: str = "*/30 * * * *"
