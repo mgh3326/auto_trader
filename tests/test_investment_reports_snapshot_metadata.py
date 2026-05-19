@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -198,6 +199,16 @@ async def test_db_check_allows_draft_with_hard_stale_freshness(
 # (not FALSE) when ``snapshot_freshness_summary`` was set but ``overall`` was
 # missing / JSON-null, and PostgreSQL CHECK accepts UNKNOWN. The corrected
 # predicate uses an explicit ``IS NOT NULL`` guard so those cases now reject.
+def test_p3a_migration_drops_stale_check_idempotently() -> None:
+    """Production may be missing the old CHECK; p3a must tolerate that drift."""
+    migration = Path(
+        "alembic/versions/20260519_rob269_p3a_fix_check_overall_null.py"
+    ).read_text()
+
+    assert "DROP CONSTRAINT IF EXISTS" in migration
+    assert "op.drop_constraint" not in migration
+
+
 @pytest.mark.asyncio
 async def test_db_check_rejects_published_with_missing_overall_key(
     session: AsyncSession,
