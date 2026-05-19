@@ -169,7 +169,7 @@ def test_build_matrix_overlays_screener_state_from_coverage():
         tradingDate=dt.date(2026, 5, 19),
         states=["fresh", "stale", "missing"],
         surfaces=[
-            _surface("invest_screener_snapshots", "stale"),
+            _surface("screener_snapshots", "stale"),
         ],
     )
     matrix = build_benchmark_gap_matrix_from_coverage(coverage, market="kr")
