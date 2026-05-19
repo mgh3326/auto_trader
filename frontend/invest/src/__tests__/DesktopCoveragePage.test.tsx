@@ -2,10 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 
+import * as benchmarkGapApi from "../api/benchmarkGap";
 import * as coverageApi from "../api/coverage";
 import { CoverageRoute } from "../pages/desktop/DesktopCoveragePage";
 import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import { mockRightRail } from "../test/mockRightRail";
+import type { BenchmarkGapMatrixResponse } from "../types/benchmarkGap";
 import type { InvestCoverageResponse } from "../types/coverage";
 
 const BASE_ACTIONABILITY = {
@@ -109,6 +111,16 @@ const COVERAGE_PAYLOAD: InvestCoverageResponse = {
   notes: ["read-only coverage dashboard"],
 };
 
+const BENCHMARK_GAP_PAYLOAD: BenchmarkGapMatrixResponse = {
+  market: "kr",
+  asOf: "2026-05-19T00:00:00Z",
+  rows: [],
+  nextCandidates: [],
+  summary: { totalRows: 0, byStatus: {}, byPriority: {}, byProvider: {} },
+  sourcePolicy: ["KIS live = broker authority"],
+  notes: [],
+};
+
 function wrap(ui: React.ReactElement) {
   return (
     <AccountPanelProvider>
@@ -120,6 +132,7 @@ function wrap(ui: React.ReactElement) {
 beforeEach(() => {
   localStorage.clear();
   mockRightRail();
+  vi.spyOn(benchmarkGapApi, "fetchBenchmarkGapMatrix").mockResolvedValue(BENCHMARK_GAP_PAYLOAD);
   vi.spyOn(coverageApi, "fetchInvestCoverage").mockResolvedValue(COVERAGE_PAYLOAD);
 });
 

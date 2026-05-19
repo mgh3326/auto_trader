@@ -1,5 +1,60 @@
 # ROB-203 /invest coverage actionability
 
+> **ROB-271 update:** `/invest/coverage` is now a Toss/Naver benchmark data-sourcing gap matrix first. The KR action-readiness card and the raw coverage surface table remain available as collapsed/secondary sections. The new product-facing endpoint is read-only and does not replace the existing `/invest/api/coverage` or `/invest/api/kr/action-readiness` contracts.
+
+## ROB-271 — Benchmark gap matrix (data-sourcing-gap-first)
+
+Endpoint: `GET /invest/api/coverage/benchmark-gap`
+
+Query parameters:
+- `market`: `kr`, `us`, `crypto`, `all` (default `kr`)
+- `asOf`: optional trading date override
+
+Purpose: answer "토스·네이버 대비 auto_trader 가 어떤 데이터를 다음에 수급해야 하는가?" without estimating, without scraping, and without proposing buy/sell logic.
+
+Source authority (explicit, unchanged):
+- **KIS live** = holdings / cash / orderable cash / open orders / sellable quantity broker authority.
+- **auto_trader DB/read-models** = product authority for `/invest` surfaces (market, screener, news, calendar, valuation, flow, ledger, action-report snapshots).
+- **Toss** = benchmark / reference only. Never `sourceOfTruth`.
+- **Naver** = candidate / reference unless explicitly promoted to an owned read-model.
+- **community / discussion** = aggregate-signal-only candidates. Raw text cloning is prohibited.
+
+Product-facing status vocabulary (additive — legacy `CoverageState`/`ActionReadinessState` are preserved):
+
+| Status | Meaning |
+| --- | --- |
+| `covered` | already available and mapped in auto_trader |
+| `partial` | partially available; needs more fields/better mapping |
+| `stale` | data exists but too old |
+| `missing` | no owned read-model/source yet |
+| `candidate_unwired` | source candidate exists but ingest/read-model/UI not wired |
+| `benchmark_only` | visible in Toss/Naver, used only for comparison |
+| `intentionally_excluded` | intentionally not collected (e.g., community text cloning) |
+| `unsupported` | outside current scope |
+| `blocked_by_auth_or_policy` | blocked by login/private API/robots/rate limit/licensing |
+
+Legacy developer states (`blocked`, `missing`, `unknown`, `확인 불가`) remain in the action-readiness API and in the raw coverage surface table, both of which are now rendered under collapsed secondary sections.
+
+UI information architecture (data-sourcing-gap-first):
+1. Benchmark gap summary
+2. 다음 수급 후보 list (priority-ordered)
+3. Toss benchmark coverage
+4. Naver benchmark coverage
+5. auto_trader 내부 / KIS coverage
+6. (collapsed) KR 액션 리포트 준비도 — secondary
+7. (collapsed) 개발자 · 디버그 raw 커버리지 — original surfaces table + symbol diagnostics
+
+Non-goals of this issue:
+- No broker/order/watch/order-intent mutation.
+- No buy/sell recommendation logic.
+- No production DB writes, backfills, or scheduler activation.
+- No live Toss/Naver scraping in request paths.
+- No promotion of Toss/Naver to `sourceOfTruth`.
+- No cloning of public community text.
+- Implementing every downstream data collector is **out of scope**. This issue identifies and prioritizes gaps; collection work belongs to follow-up Linear issues.
+
+New rows discovered during work that do not yet have a Linear issue should be marked with `newIssueCandidate=true` in the row payload. **Do not auto-create Linear issues from the dashboard.** Promotion to a real Linear issue is a separate human-approved handoff step.
+
 This page documents the read-only coverage dashboard/API for `/invest`.
 
 Endpoint: `GET /invest/api/coverage`
