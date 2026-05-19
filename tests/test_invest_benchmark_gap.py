@@ -8,6 +8,9 @@ from app.schemas.invest_benchmark_gap import (
     BenchmarkGapRow,
     NextSourcingCandidate,
 )
+from app.services.invest_benchmark_gap_service import (
+    coverage_state_to_product_status,
+)
 
 
 def test_benchmark_gap_row_minimum_required_fields():
@@ -75,3 +78,24 @@ def test_benchmark_gap_matrix_response_minimum_shape():
     )
     assert resp.summary.totalRows == 1
     assert resp.nextCandidates[0].rowId == "toss.screener"
+
+
+@pytest.mark.parametrize(
+    "legacy,expected",
+    [
+        ("fresh", "covered"),
+        ("stale", "stale"),
+        ("partial", "partial"),
+        ("missing", "missing"),
+        ("unsupported", "unsupported"),
+        ("error", "blocked_by_auth_or_policy"),
+        ("provider_unwired", "candidate_unwired"),
+    ],
+)
+def test_coverage_state_to_product_status_mapping(legacy, expected):
+    assert coverage_state_to_product_status(legacy) == expected
+
+
+def test_coverage_state_to_product_status_unknown_raises():
+    with pytest.raises(ValueError):
+        coverage_state_to_product_status("invalid_state")  # type: ignore[arg-type]
