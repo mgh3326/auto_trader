@@ -183,6 +183,136 @@ class AccountClient:
             "raw": output,
         }
 
+    async def fetch_domestic_balance_snapshot(
+        self,
+        *,
+        is_mock: bool = False,
+    ) -> dict[str, Any]:
+        """Fetch domestic balance as a single snapshot of holdings + cash.
+
+        Issues one or more requests to KIS ``/uapi/domestic-stock/v1/trading/inquire-balance``
+        (TR ``VTTC8434R`` mock / ``TTTC8434R`` live) and consolidates:
+
+        * ``output1`` across all pages (filtered: hldg_qty > 0) → ``holdings``
+        * ``output2[0]`` from page 1 → ``cash``
+
+        Pagination is gated by the **response** ``tr_cont`` header rather than
+        the body cursor: KIS signals continuation with ``F``/``M`` and
+        end-of-stream with ``D``/``E``/empty. The helper stops on end-of-stream
+        even if the body still carries a non-empty cursor (this is the ROB-268
+        phantom-page case that was causing duplicate VTS calls).
+
+        Returns:
+            ``{"holdings": list[dict], "cash": dict, "page_count": int}``.
+        """
+        await self._parent._ensure_token()
+
+        cano, acnt_prdt_cd = self._resolve_account_parts()
+        tr_id = (
+            constants.DOMESTIC_BALANCE_TR_MOCK
+            if is_mock
+            else constants.DOMESTIC_BALANCE_TR
+        )
+
+        all_stocks: list[dict[str, Any]] = []
+        cash: dict[str, Any] = {}
+        ctx_area_fk = ""
+        ctx_area_nk = ""
+        tr_cont_req = ""
+        page = 1
+        max_pages = 10
+        stop_reason = "max_pages"
+
+        logging.info(
+            "국내 balance snapshot 조회 시작 (is_mock=%s)",
+            is_mock,
+        )
+
+        while page <= max_pages:
+            params = {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "AFHR_FLPR_YN": "N",
+                "OFL_YN": "",
+                "INQR_DVSN": "00",
+                "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "01",
+                "CTX_AREA_FK100": ctx_area_fk,
+                "CTX_AREA_NK100": ctx_area_nk,
+            }
+            hdr = self._parent._hdr_base | {
+                "authorization": f"Bearer {self._settings.kis_access_token}",
+                "tr_id": tr_id,
+                "tr_cont": tr_cont_req,
+            }
+
+            js, resp_headers = await self._parent._request_with_rate_limit_with_headers(
+                "GET",
+                self._parent._kis_url(constants.DOMESTIC_BALANCE_URL),
+                headers=hdr,
+                params=params,
+                timeout=5,
+                api_name="fetch_domestic_balance_snapshot",
+                tr_id=tr_id,
+            )
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                    await self._parent._token_manager.clear_token()
+                    await self._parent._ensure_token()
+                    continue
+                error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                logging.error("국내 balance snapshot 조회 실패: %s", error_msg)
+                raise RuntimeError(error_msg)
+
+            stocks = js.get("output1") or []
+            all_stocks.extend(stocks)
+
+            if page == 1:
+                output2 = js.get("output2") or []
+                if isinstance(output2, list) and output2:
+                    first = output2[0]
+                    if isinstance(first, dict):
+                        cash = first
+
+            next_tr_cont = (resp_headers.get("tr_cont") or "").strip().upper()
+            new_ctx_area_fk = js.get("CTX_AREA_FK100", "") or ""
+            new_ctx_area_nk = js.get("CTX_AREA_NK100", "") or ""
+
+            if next_tr_cont not in ("F", "M"):
+                stop_reason = "tr_cont_end"
+                break
+            if not new_ctx_area_nk:
+                stop_reason = "empty_cursor"
+                break
+            if new_ctx_area_nk == ctx_area_nk:
+                stop_reason = "repeated_cursor"
+                break
+
+            ctx_area_fk = new_ctx_area_fk
+            ctx_area_nk = new_ctx_area_nk
+            tr_cont_req = "N"
+            page += 1
+            await asyncio.sleep(0.1)
+
+        holdings = self._filter_nonzero_holdings(all_stocks, is_overseas=False)
+
+        logging.info(
+            "국내 balance snapshot 조회 완료: %d건 (보유수량 > 0), %d페이지 (stop=%s)",
+            len(holdings),
+            page,
+            stop_reason,
+        )
+
+        return {
+            "holdings": holdings,
+            "cash": cash,
+            "page_count": page,
+            "stop_reason": stop_reason,
+        }
+
     async def fetch_my_stocks(
         self,
         is_mock: bool = False,

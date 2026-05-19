@@ -403,6 +403,42 @@ class BaseKISClient:
             RateLimitExceededError: When rate limit retries exhausted
             httpx.HTTPStatusError: On HTTP errors after retries exhausted
         """
+        data, _headers = await self._request_with_rate_limit_with_headers(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json_body=json_body,
+            timeout=timeout,
+            api_name=api_name,
+            tr_id=tr_id,
+        )
+        return data
+
+    async def _request_with_rate_limit_with_headers(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+        api_name: str = "unknown",
+        tr_id: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Like :meth:`_request_with_rate_limit` but also returns response headers.
+
+        Returns:
+            ``(parsed_data, response_headers)`` — headers are a plain ``dict[str, str]``
+            (httpx Headers flattened, case-preserved per item).
+
+        Notes:
+            Some KIS endpoints (notably ``/uapi/domestic-stock/v1/trading/inquire-balance``)
+            signal continuation through the ``tr_cont`` response header rather than the
+            response body. Callers that need that signal use this method; everyone else
+            should keep using :meth:`_request_with_rate_limit`.
+        """
         parsed_url = urlparse(url)
         api_path = parsed_url.path or "/unknown"
         api_key = f"{tr_id or 'unknown'}|{api_path}"
@@ -475,7 +511,7 @@ class BaseKISClient:
                     await asyncio.sleep(wait_time)
                     continue
 
-                return data
+                return data, dict(response.headers)
 
             except httpx.HTTPStatusError as e:
                 last_error = e

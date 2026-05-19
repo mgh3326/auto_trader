@@ -58,6 +58,21 @@ class KISClientProtocol(Protocol):
         """Make HTTP request with rate limiting and retry logic."""
         ...
 
+    async def _request_with_rate_limit_with_headers(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+        api_name: str = "unknown",
+        tr_id: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Make HTTP request with rate limiting and return parsed data plus headers."""
+        ...
+
     def _get_rate_limit_for_api(self, api_key: str) -> tuple[int, float]:
         """Get rate limit for a specific API key."""
         ...
