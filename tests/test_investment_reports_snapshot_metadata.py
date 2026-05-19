@@ -200,13 +200,16 @@ async def test_db_check_allows_draft_with_hard_stale_freshness(
 # missing / JSON-null, and PostgreSQL CHECK accepts UNKNOWN. The corrected
 # predicate uses an explicit ``IS NOT NULL`` guard so those cases now reject.
 def test_p3a_migration_drops_stale_check_idempotently() -> None:
-    """Production may be missing the old CHECK; p3a must tolerate that drift."""
+    """Production may have absent or naming-convention-expanded stale checks."""
     migration = Path(
         "alembic/versions/20260519_rob269_p3a_fix_check_overall_null.py"
     ).read_text()
 
     assert "DROP CONSTRAINT IF EXISTS" in migration
     assert "op.drop_constraint" not in migration
+    assert "ck_investment_reports_no_published_on_hard_stale" in migration
+    assert "ck_investment_reports_ck_investment_reports_no_publishe_b266" in migration
+    assert "op.f(_CHECK_NAME)" in migration
 
 
 @pytest.mark.asyncio
