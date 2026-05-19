@@ -1,7 +1,7 @@
 """Shared test scaffolding for ROB-265 investment_reports tests.
 
 Centralises the per-test async session fixture, the truncated-table
-list, and a couple of small helpers so the ORM, schema, repository,
+list, the xdist guard lock, and a couple of small helpers so the ORM, schema, repository,
 ingestion, decisions, watch-activation, and query-service test files
 don't each re-declare the same boilerplate (Sonar duplicated-line fix).
 
@@ -40,6 +40,7 @@ INVESTMENT_REPORTS_TABLES = [
     InvestmentWatchAlert.__table__,
     InvestmentWatchEvent.__table__,
 ]
+INVESTMENT_REPORTS_TEST_LOCK_ID = 265_202_605
 
 
 @pytest_asyncio.fixture
@@ -49,29 +50,46 @@ async def session() -> AsyncSession:
     Tables are created idempotently (no-op if the alembic migration
     already owns them). Between tests rows are truncated CASCADE so
     other tests start clean without dropping the schema.
+
+    CI runs pytest-xdist with ``--dist=loadfile``. These tests share the
+    same PostgreSQL schema, and concurrent per-test ``TRUNCATE ... CASCADE``
+    can deadlock with another worker's inserts. A session-level advisory lock
+    serializes only this investment-report fixture while leaving the rest of
+    the suite parallel.
     """
     engine = create_async_engine(settings.DATABASE_URL, future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(
-            Base.metadata.create_all,
-            tables=INVESTMENT_REPORTS_TABLES,
-            checkfirst=True,
-        )
-    factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
-        async with factory() as sess:
+        async with engine.connect() as guard:
+            await guard.execute(
+                sa.text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+                {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+            )
             try:
-                yield sess
-            finally:
-                await sess.rollback()
-        async with factory() as cleanup:
-            for table in reversed(INVESTMENT_REPORTS_TABLES):
-                await cleanup.execute(
-                    sa.text(
-                        f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
+                async with engine.begin() as conn:
+                    await conn.run_sync(
+                        Base.metadata.create_all,
+                        tables=INVESTMENT_REPORTS_TABLES,
+                        checkfirst=True,
                     )
+                factory = async_sessionmaker(engine, expire_on_commit=False)
+                async with factory() as sess:
+                    try:
+                        yield sess
+                    finally:
+                        await sess.rollback()
+                async with factory() as cleanup:
+                    for table in reversed(INVESTMENT_REPORTS_TABLES):
+                        await cleanup.execute(
+                            sa.text(
+                                f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
+                            )
+                        )
+                    await cleanup.commit()
+            finally:
+                await guard.execute(
+                    sa.text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                    {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
                 )
-            await cleanup.commit()
     finally:
         await engine.dispose()
 

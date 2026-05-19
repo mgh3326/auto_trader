@@ -19,12 +19,15 @@ class _FakeScanner:
 async def test_run_watch_scan_task_uses_scanner_and_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.tasks.watch_scan_tasks import run_watch_scan_task
+    from app.tasks.watch_scan_tasks import run_investment_watch_scan_task
 
-    scanner = _FakeScanner(result={"crypto": {"alerts_sent": 1}})
-    monkeypatch.setattr("app.tasks.watch_scan_tasks.WatchScanner", lambda: scanner)
+    scanner = _FakeScanner(result={"reports": {"alerts_sent": 1}})
+    monkeypatch.setattr(
+        "app.tasks.watch_scan_tasks.InvestmentWatchScanner",
+        lambda: scanner,
+    )
 
-    result = await run_watch_scan_task()
+    result = await run_investment_watch_scan_task()
 
-    assert result == {"crypto": {"alerts_sent": 1}}
+    assert result == {"reports": {"alerts_sent": 1}}
     assert scanner.closed is True

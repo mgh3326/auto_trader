@@ -84,6 +84,6 @@ def test_screener_job_no_longer_imports_kis_facade() -> None:
     assert "app.services" in modules
 
 
-def test_watch_scanner_job_no_direct_integration_imports() -> None:
-    watch_scanner_path = ROOT / "app" / "jobs" / "watch_scanner.py"
-    assert _find_integration_imports(watch_scanner_path) == []
+def test_investment_watch_scanner_job_no_direct_integration_imports() -> None:
+    scanner_path = ROOT / "app" / "jobs" / "investment_watch_scanner.py"
+    assert _find_integration_imports(scanner_path) == []
