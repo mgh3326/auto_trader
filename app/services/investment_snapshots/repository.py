@@ -62,12 +62,29 @@ class InvestmentSnapshotsRepository:
     # Snapshots
     # ------------------------------------------------------------------
     async def insert_snapshot(self, payload: SnapshotCreate) -> InvestmentSnapshot:
+        """Insert (or reuse) an immutable snapshot artifact.
+
+        Dedup semantics ("first writer wins"):
+        The UNIQUE constraint ``(canonical_payload_hash, snapshot_kind, market,
+        account_scope)`` deliberately omits ``run_id`` so that an identical
+        payload collected in a later run reuses the existing row instead of
+        creating a duplicate. As a consequence, the row returned by the dedup
+        branch carries the **first** writer's ``run_id`` / ``idempotency_key``
+        — not the current call's. Run-membership for the current call must be
+        recorded via ``link_bundle_item`` (the bundle linkage is the
+        authoritative "this run consumed that snapshot" record). Callers
+        wanting to assert "this snapshot is from my run" should check
+        ``snapshot.run_id == my_run.id`` and treat ``!=`` as a normal reuse,
+        not an error.
+        """
         # 1. Resolve run.
         run = await self.get_run_by_uuid(payload.run_uuid)
         if run is None:
             raise ValueError(f"run not found: {payload.run_uuid}")
 
-        # 2. Compute canonical hash + idempotency key.
+        # 2. Compute canonical hash + idempotency key for the *new-row* path.
+        #    Note: if dedup short-circuits below, the returned row's
+        #    idempotency_key reflects the first writer, not this composition.
         canonical_hash = canonical_payload_hash(payload.payload_json)
         symbol_component = payload.symbol or "_"
         idempotency_key = (
@@ -75,7 +92,8 @@ class InvestmentSnapshotsRepository:
             f"{symbol_component}:{canonical_hash[:12]}"
         )
 
-        # 3. Dedup short-circuit — same canonical payload reuses the existing row.
+        # 3. Dedup short-circuit — same canonical payload reuses the existing
+        #    row across runs (intentional, see docstring above).
         existing = await self._session.scalar(
             sa.select(InvestmentSnapshot).where(
                 InvestmentSnapshot.canonical_payload_hash == canonical_hash,

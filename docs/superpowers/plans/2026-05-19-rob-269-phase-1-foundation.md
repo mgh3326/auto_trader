@@ -2122,3 +2122,15 @@ After all tasks pass, leave a final commit-free summary as a comment block at th
 - Known risk: any spot where the smoke CLI's import (`async_session_factory`) didn't match the codebase and a workaround was used.
 
 After handoff, **stop**. Do not start Phase 2. Reviewer (Claude) will look at the diff and either approve or request changes.
+
+---
+
+## Post-merge notes (reviewer pass, 2026-05-19)
+
+Two follow-up commits applied after the implementer pass (`5016e257`, plus a docs commit):
+
+1. **`chore(rob-269): ruff cleanup on phase 1 surface`** — 14 cosmetic violations the implementer pass missed (W293/I001/F401/F541/F841). No behaviour change, 25 tests still pass.
+
+2. **Dedup semantic clarification** — see pre-plan §3b-1. The UNIQUE `(canonical_payload_hash, snapshot_kind, market, account_scope)` does *not* include `run_id`, so cross-run dedup returns the **first writer's** row (including its `idempotency_key` and `run_id`). Run-membership for the current caller lives in `investment_snapshot_bundle_items`, not on the snapshot row. The repository docstring on `insert_snapshot` now documents this; the implementer test pass had to randomize fixture symbols to work around a persistent-DB collision, which surfaced the semantic. Phase 2 callers must not assert `snapshot.run_id == my_run.id` as an invariant.
+
+No other follow-ups required. Phase 1 is ready for PR.
