@@ -303,7 +303,7 @@ _SOURCE_POLICY: list[str] = [
 
 def _surface_state_index(
     coverage: InvestCoverageResponse | None,
-) -> dict[str, str]:
+) -> dict[str, CoverageState]:
     if coverage is None:
         return {}
     return {surface.surface: surface.state for surface in coverage.surfaces}
@@ -320,7 +320,7 @@ def _row_keys_for_coverage_lookup(row: BenchmarkGapRow) -> list[str]:
 
 
 def _overlay_status_from_coverage(
-    row: BenchmarkGapRow, state_index: dict[str, str]
+    row: BenchmarkGapRow, state_index: dict[str, CoverageState]
 ) -> BenchmarkGapRow:
     for key in _row_keys_for_coverage_lookup(row):
         legacy = state_index.get(key)
