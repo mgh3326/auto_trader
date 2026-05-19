@@ -57,7 +57,11 @@ class EnsureBundleRequest(BaseModel):
 class EnsureBundleResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    bundle_uuid: uuid.UUID
+    bundle_uuid: uuid.UUID | None = None
+    """``None`` only when ``mode='reuse_only'`` and no fresh bundle existed —
+    in every other outcome (incl. ensure_fresh failures) we still create a
+    bundle row for audit and return its UUID here."""
+
     status: BundleStatus | Literal["reused"]
     """``reused`` means a fresh bundle already existed — no new run was made.
     Other values mirror ``investment_snapshot_bundles.status``."""
