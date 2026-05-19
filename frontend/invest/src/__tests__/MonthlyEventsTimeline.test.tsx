@@ -91,20 +91,52 @@ describe("MonthlyEventsTimeline", () => {
     Element.prototype.scrollIntoView = spy;
     try {
       const { rerender } = render(<MonthlyEventsTimeline {...baseProps} selectedDate="2026-05-11" />);
+      // First-mount scroll already fired; reset before the user-driven navigation.
       spy.mockClear();
       rerender(<MonthlyEventsTimeline {...baseProps} selectedDate="2026-05-20" />);
       expect(spy).toHaveBeenCalledTimes(1);
+      // User-initiated navigation should animate.
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ behavior: "smooth" }));
     } finally {
       Element.prototype.scrollIntoView = original;
     }
   });
 
-  test("does not scroll on first mount (initial render is not a navigation)", () => {
+  test("scrolls to selectedDate on first effective render (ROB-272)", () => {
     const spy = vi.fn();
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = spy;
     try {
-      render(<MonthlyEventsTimeline {...baseProps} selectedDate="2026-05-15" />);
+      render(<MonthlyEventsTimeline {...baseProps} selectedDate="2026-05-19" />);
+      expect(spy).toHaveBeenCalledTimes(1);
+      // First-mount scroll should be instant so the page-load doesn't visibly drift.
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ behavior: "auto", block: "start" }));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  test("does not scroll while loading; fires once when loading flips to false", () => {
+    const spy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = spy;
+    try {
+      const { rerender } = render(<MonthlyEventsTimeline {...baseProps} loading />);
+      expect(spy).not.toHaveBeenCalled();
+      rerender(<MonthlyEventsTimeline {...baseProps} />);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ behavior: "auto" }));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  test("does not scroll when an error is shown", () => {
+    const spy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = spy;
+    try {
+      render(<MonthlyEventsTimeline {...baseProps} error="boom" />);
       expect(spy).not.toHaveBeenCalled();
     } finally {
       Element.prototype.scrollIntoView = original;

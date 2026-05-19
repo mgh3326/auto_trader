@@ -29,14 +29,12 @@ export function MonthlyEventsTimeline({
   const days = useMemo(() => monthDaysIso(monthCursor), [monthCursor]);
   const refs = useRef<Map<string, HTMLElement | null>>(new Map());
 
-  // Track whether this is the first render — first mount must not steal the scroll.
-  const isFirstRender = useRef(true);
+  // First effective render = first time we render real day sections (not loading/error).
+  // Until then we should not scroll: refs aren't populated and the page is still hydrating.
+  const hasScrolledOnceRef = useRef(false);
 
   useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      return;
-    }
+    if (loading || error) return;
     const node = refs.current.get(selectedDate);
     if (!node) return;
     // Some test environments (older jsdom) leave scrollIntoView undefined;
@@ -46,11 +44,15 @@ export function MonthlyEventsTimeline({
       typeof window !== "undefined" &&
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // First-mount scroll is instant so the page doesn't visibly drift on load.
+    // Subsequent selectedDate changes are treated as user-initiated navigation and animate.
+    const isFirstEffectiveScroll = !hasScrolledOnceRef.current;
+    hasScrolledOnceRef.current = true;
     node.scrollIntoView({
-      behavior: reduceMotion ? "auto" : "smooth",
+      behavior: isFirstEffectiveScroll || reduceMotion ? "auto" : "smooth",
       block: "start",
     });
-  }, [selectedDate]);
+  }, [selectedDate, loading, error]);
 
   if (loading) {
     return (
