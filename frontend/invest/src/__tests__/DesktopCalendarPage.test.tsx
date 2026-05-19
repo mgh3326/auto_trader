@@ -311,6 +311,34 @@ test("ROB-272 Phase 2: clicking a date outside the initial window lazy-loads exa
   );
 });
 
+test("ROB-272 Phase 2: clicking an out-of-month grid cell moves monthCursor to that month and sets selectedDate", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  // Patch scrollIntoView so the auto-scroll on selectedDate change doesn't blow up jsdom.
+  const scrollSpy = vi.fn();
+  const originalScroll = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = scrollSpy;
+  try {
+    render(wrap(<DesktopCalendarPage />));
+    await waitFor(() => expect(calApi.fetchCalendar).toHaveBeenCalledTimes(1));
+    // The Sunday-aligned 6-week May 2026 grid includes 2026-06-03 in its
+    // bottom row as an out-of-month cell. Clicking it should jump to June.
+    await user.click(screen.getByTestId("month-grid-cell-2026-06-03"));
+    // Month header now reads June.
+    await screen.findByText("2026년 6월");
+    // selectedDate followed the click, and the new month's anchor ±3 fetch
+    // fires for 2026-06-03 ± 3 = 2026-05-31..2026-06-06.
+    await waitFor(() =>
+      expect(calApi.fetchCalendar).toHaveBeenLastCalledWith({
+        fromDate: "2026-05-31",
+        toDate: "2026-06-06",
+        tab: "all",
+      }),
+    );
+  } finally {
+    Element.prototype.scrollIntoView = originalScroll;
+  }
+});
+
 test("type and region filters hide non-matching items from each day section, grid count stays accurate", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(wrap(<DesktopCalendarPage />));

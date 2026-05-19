@@ -206,11 +206,21 @@ export function DesktopCalendarPage() {
                 today={today}
                 cellByDate={cellByDate}
                 onSelect={(iso) => {
+                  // Out-of-month grid cells (the gray prev/next-month days at
+                  // the top and bottom of the 6-week grid) must NOT be silent-
+                  // clamped — the user clicked a real date, so jump to that
+                  // month. monthCursor change kicks off the hook's anchor ±3
+                  // fetch for the new selectedDate; we still ensureRange for
+                  // the clicked day so even mid-month clicks within the same
+                  // month load instantly via the single-day lazy fetch.
+                  const isoDate = new Date(`${iso}T00:00:00`);
+                  if (
+                    isoDate.getFullYear() !== monthCursor.getFullYear() ||
+                    isoDate.getMonth() !== monthCursor.getMonth()
+                  ) {
+                    setMonthCursor(startOfMonth(isoDate));
+                  }
                   setSelectedDate(iso);
-                  // Lazy-load just the clicked day. Surrounding context comes
-                  // from the timeline viewport observer once it scrolls into
-                  // place, which keeps clicks cheap (no ±3 re-fetch on every
-                  // grid tap).
                   ensureRange(iso, iso);
                 }}
               />
