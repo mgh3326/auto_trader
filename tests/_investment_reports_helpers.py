@@ -109,6 +109,74 @@ async def session() -> AsyncSession:
                         "AND (snapshot_freshness_summary->>'overall') IN "
                         "('fresh','soft_stale','partial')"
                         "))",
+                        # ROB-274 — proposal-state columns + operation-aware
+                        # CHECKs on investment_report_items. Idempotent and
+                        # mirrors migration 20260520_rob274_p1 exactly.
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS operation TEXT",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS target_ref JSONB",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS current_state JSONB",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS proposed_state JSONB",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS diff JSONB",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS apply_policy TEXT",
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_investment_report_items_operation_kind "
+                        "ON review.investment_report_items "
+                        "(operation, item_kind, status)",
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_operation",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT ck_investment_report_items_operation "
+                        "CHECK ("
+                        "operation IS NULL OR operation IN ("
+                        "'create','modify','cancel','keep','replace','review'"
+                        "))",
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_apply_policy",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT ck_investment_report_items_apply_policy "
+                        "CHECK ("
+                        "apply_policy IS NULL "
+                        "OR apply_policy = 'requires_user_approval'"
+                        ")",
+                        # Watch invariants — drop both canonical + hashed
+                        # names (see 20260520_rob274_p1 docstring) before
+                        # recreating with the operation-aware predicate.
+                        'ALTER TABLE review.investment_report_items '
+                        'DROP CONSTRAINT IF EXISTS '
+                        '"ck_investment_report_items_ck_investment_report_items_w_421e"',
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_watch_has_condition",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT "
+                        "ck_investment_report_items_watch_has_condition "
+                        "CHECK ("
+                        "item_kind <> 'watch' "
+                        "OR operation IN ('cancel','keep','review') "
+                        "OR watch_condition IS NOT NULL"
+                        ")",
+                        'ALTER TABLE review.investment_report_items '
+                        'DROP CONSTRAINT IF EXISTS '
+                        '"ck_investment_report_items_ck_investment_report_items_w_fdaa"',
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_watch_has_expiry",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT "
+                        "ck_investment_report_items_watch_has_expiry "
+                        "CHECK ("
+                        "item_kind <> 'watch' "
+                        "OR operation IN ('cancel','keep','review') "
+                        "OR valid_until IS NOT NULL"
+                        ")",
                     ):
                         await conn.execute(sa.text(stmt))
                 factory = async_sessionmaker(engine, expire_on_commit=False)

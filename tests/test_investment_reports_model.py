@@ -221,7 +221,10 @@ async def test_watch_item_requires_condition(session: AsyncSession) -> None:
     """Missing watch_condition for item_kind='watch' → violation.
 
     ``valid_until`` is supplied so the failure is unambiguously the
-    watch_has_condition CHECK, not the watch_has_expiry CHECK.
+    watch_has_condition CHECK, not the watch_has_expiry CHECK. ROB-274
+    relaxed the CHECK for ``operation IN ('cancel','keep','review')``,
+    so ``operation='create'`` is set explicitly to exercise the strict
+    branch.
     """
     report = await _make_report(session)
     await assert_integrity_error(
@@ -231,6 +234,7 @@ async def test_watch_item_requires_condition(session: AsyncSession) -> None:
                 report.id,
                 item_kind="watch",
                 side=None,
+                operation="create",
                 valid_until=future_datetime(),
             )
         ),
@@ -239,7 +243,11 @@ async def test_watch_item_requires_condition(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_watch_item_requires_valid_until(session: AsyncSession) -> None:
-    """Watch items are time-bounded; missing valid_until → violation."""
+    """Watch items are time-bounded; missing valid_until → violation.
+
+    ``operation='create'`` is set explicitly because ROB-274 relaxed the
+    valid_until CHECK for ``operation IN ('cancel','keep','review')``.
+    """
     report = await _make_report(session)
     await assert_integrity_error(
         session,
@@ -248,6 +256,7 @@ async def test_watch_item_requires_valid_until(session: AsyncSession) -> None:
                 report.id,
                 item_kind="watch",
                 side=None,
+                operation="create",
                 intent="trend_recovery_review",
                 watch_condition={
                     "metric": "rsi",
