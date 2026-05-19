@@ -10,7 +10,7 @@ from app.schemas.us_action_report import (
     USHolding,
     USOpenOrder,
 )
-from app.services.us_action_report.new_buy_candidates import (
+from app.services.action_report.us.new_buy_candidates import (
     build_us_new_buy_candidate_cards,
 )
 

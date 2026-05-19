@@ -35,6 +35,21 @@ _SCOPED_FILES: list[str] = [
     "app/services/investment_snapshots/refresh_request_service.py",
     "app/services/action_report/common/snapshot_bundle.py",
     "app/services/action_report/common/canonicalize.py",
+    # ROB-269 Phase 3 — stale gate + lifted us_action_report. The lifted
+    # files contain ``_FORBIDDEN_LIVE_ORDER_METHODS = ("submit_order", ...)``
+    # as a string-literal allowlist (used elsewhere to *reject* dangerous
+    # client method calls). The boundary regex requires a literal ``(``
+    # after the verb to fire, so those tuple entries don't trip it.
+    "app/services/action_report/common/stale_gate.py",
+    "app/services/action_report/common/generator_constraints.py",
+    "app/services/action_report/common/critical_kinds.py",
+    "app/services/action_report/common/bundle_aware_publishing.py",
+    "app/services/action_report/us/__init__.py",
+    "app/services/action_report/us/account_snapshot.py",
+    "app/services/action_report/us/action_classifier.py",
+    "app/services/action_report/us/new_buy_candidates.py",
+    "app/services/action_report/us/discord_formatter.py",
+    "app/services/action_report/us/order_preview.py",
     "app/schemas/investment_snapshots.py",
     "app/schemas/investment_snapshots_mcp.py",
     "app/mcp_server/tooling/investment_snapshots_tools.py",
