@@ -248,16 +248,14 @@ class AccountClient:
                 "tr_cont": tr_cont_req,
             }
 
-            js, resp_headers = (
-                await self._parent._request_with_rate_limit_with_headers(
-                    "GET",
-                    self._parent._kis_url(constants.DOMESTIC_BALANCE_URL),
-                    headers=hdr,
-                    params=params,
-                    timeout=5,
-                    api_name="fetch_domestic_balance_snapshot",
-                    tr_id=tr_id,
-                )
+            js, resp_headers = await self._parent._request_with_rate_limit_with_headers(
+                "GET",
+                self._parent._kis_url(constants.DOMESTIC_BALANCE_URL),
+                headers=hdr,
+                params=params,
+                timeout=5,
+                api_name="fetch_domestic_balance_snapshot",
+                tr_id=tr_id,
             )
 
             if js.get("rt_cd") != "0":
