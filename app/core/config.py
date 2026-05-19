@@ -453,6 +453,16 @@ class Settings(BaseSettings):
     # A/B) — wiring an endpoint + frontend hook is a follow-up.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-4-ui-and-scheduler.md §4.
     ACTION_REPORT_BUNDLE_UI_ENABLED: bool = False
+    # ROB-273 — gates the snapshot-backed advisory report generator surface
+    # (MCP tool + HTTP POST endpoint). The generator can still be constructed
+    # and called directly from tests / scripts; this flag only controls the
+    # user-facing entrypoints. Decoupled from
+    # ``ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED`` because that flag
+    # gates pre-DB rejection of *any* report carrying snapshot metadata —
+    # turning on the generator surface independently lets us validate the
+    # automated path against draft reports before activating the
+    # stale-gate enforcement for the legacy create path.
+    SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED: bool = False
     # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
     execution_ledger_reconcile_scheduler_enabled: bool = False
     execution_ledger_reconcile_scheduler_cron: str = "*/30 * * * *"

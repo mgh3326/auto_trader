@@ -182,3 +182,61 @@ async def get_investment_report(
     if bundle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
     return _serialise_bundle(bundle)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot-backed advisory report generator (ROB-273)
+#
+# Opt-in entrypoint that automates the manual snapshot-bundle + report
+# flow validated in production. The generator + collectors are read-only
+# (no broker mutation, no watch activation, no scheduler registration).
+# Default behaviour: 503 unless ``SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
+# is set. Existing GET list/detail endpoints are unchanged.
+# ---------------------------------------------------------------------------
+from app.core.config import settings  # noqa: E402  — keep router-local
+from app.services.action_report.snapshot_backed.generator import (  # noqa: E402
+    PublishBlockedByStaleGateError,
+    SnapshotBackedReportGenerator,
+    SnapshotBackedReportGeneratorError,
+)
+from app.services.action_report.snapshot_backed.request import (  # noqa: E402
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+)
+
+
+@router.post(
+    "/trading/api/investment-reports/snapshot-backed",
+    response_model=ReportGenerationResponse,
+    summary="Generate a snapshot-backed advisory report (ROB-273, opt-in)",
+)
+async def generate_snapshot_backed_report(
+    payload: ReportGenerationRequest,
+    _user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ReportGenerationResponse:
+    if not settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="snapshot_backed_report_generator_disabled",
+        )
+    generator = SnapshotBackedReportGenerator(db)
+    try:
+        response = await generator.generate(payload)
+    except PublishBlockedByStaleGateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "publish_blocked_by_stale_gate",
+                "reason": str(exc),
+                "bundle_status": exc.bundle_status,
+                "freshness_summary": exc.freshness_summary,
+            },
+        ) from exc
+    except SnapshotBackedReportGeneratorError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    await db.commit()
+    return response
