@@ -337,3 +337,71 @@ async def test_db_check_allows_published_with_overall_soft_stale(
     report = await svc.ingest(request)
     await session.commit()
     assert report.status == "published"
+
+
+# ---------------------------------------------------------------------------
+# InvestmentReportResponse exposure (review-pass fix for PR #876 item 3)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_response_schema_exposes_snapshot_metadata_fields(
+    session: AsyncSession,
+) -> None:
+    """Phase 3 decision: expose the 6 snapshot metadata fields on
+    ``InvestmentReportResponse`` so Phase 4 UI can consume them directly.
+    All 6 fields are optional; legacy reports serialise with explicit nulls."""
+    from app.schemas.investment_reports import InvestmentReportResponse
+
+    bundle_uuid = uuid.uuid4()
+    coverage = {"required": {"portfolio": "fresh"}}
+    freshness = {"overall": "partial", "portfolio": {"status": "fresh"}}
+    conflicts = {"naver_vs_kis": "minor"}
+    unavailable = {"toss": "soft_stale"}
+    request = _base_request(
+        snapshot_bundle_uuid=bundle_uuid,
+        snapshot_policy_version="intraday_action_report_v1",
+        snapshot_coverage_summary=coverage,
+        snapshot_freshness_summary=freshness,
+        source_conflicts=conflicts,
+        unavailable_sources=unavailable,
+    )
+
+    svc = InvestmentReportIngestionService(session)
+    report = await svc.ingest(request)
+    await session.commit()
+
+    response = InvestmentReportResponse.model_validate(report)
+    assert response.snapshot_bundle_uuid == bundle_uuid
+    assert response.snapshot_policy_version == "intraday_action_report_v1"
+    assert response.snapshot_coverage_summary == coverage
+    assert response.snapshot_freshness_summary == freshness
+    assert response.source_conflicts == conflicts
+    assert response.unavailable_sources == unavailable
+
+
+@pytest.mark.asyncio
+async def test_response_schema_legacy_report_renders_explicit_nulls(
+    session: AsyncSession,
+) -> None:
+    """Legacy reports (no snapshot fields) serialise the 6 new fields as null
+    rather than omitting them — gives the UI a stable shape to render
+    "확인 불가" fallback chips."""
+    from app.schemas.investment_reports import InvestmentReportResponse
+
+    request = _base_request()
+    svc = InvestmentReportIngestionService(session)
+    report = await svc.ingest(request)
+    await session.commit()
+
+    response = InvestmentReportResponse.model_validate(report)
+    payload = response.model_dump(mode="json")
+    # All 6 fields present in serialised payload, each value JSON null.
+    for field in (
+        "snapshot_bundle_uuid",
+        "snapshot_policy_version",
+        "snapshot_coverage_summary",
+        "snapshot_freshness_summary",
+        "source_conflicts",
+        "unavailable_sources",
+    ):
+        assert field in payload, f"{field!r} missing from serialised response"
+        assert payload[field] is None, f"{field!r} should serialise as null"

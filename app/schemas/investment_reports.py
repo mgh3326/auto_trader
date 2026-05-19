@@ -243,6 +243,16 @@ class InvestmentReportResponse(BaseModel):
     published_at: datetime | None
     valid_until: datetime | None
 
+    # ROB-269 Phase 3 — snapshot bundle linkage + 3-layer stale gate inputs.
+    # All optional so legacy reports (no snapshot metadata) serialise cleanly
+    # with explicit ``null`` JSON values. Phase 4 UI renders these directly.
+    snapshot_bundle_uuid: UUID | None = None
+    snapshot_policy_version: str | None = None
+    snapshot_coverage_summary: dict[str, Any] | None = None
+    snapshot_freshness_summary: dict[str, Any] | None = None
+    source_conflicts: dict[str, Any] | None = None
+    unavailable_sources: dict[str, Any] | None = None
+
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
