@@ -72,9 +72,6 @@ from app.mcp_server.tooling.trade_profile_registration import (
 from app.mcp_server.tooling.user_settings_registration import (
     register_user_settings_tools,
 )
-from app.mcp_server.tooling.weekend_crypto_paper_cycle import (
-    register_weekend_crypto_paper_cycle_tools,
-)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -102,7 +99,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_alpaca_paper_preview_tools(mcp)
     register_alpaca_paper_orders_tools(mcp)
     register_alpaca_paper_ledger_read_tools(mcp)
-    register_weekend_crypto_paper_cycle_tools(mcp)
 
     # Always: read-only with account_mode (mock-safe via ROB-28)
     register_portfolio_tools(mcp)
