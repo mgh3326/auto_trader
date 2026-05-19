@@ -55,6 +55,10 @@ _SCOPED_FILES: list[str] = [
     "app/mcp_server/tooling/investment_snapshots_tools.py",
     "app/mcp_server/tooling/investment_snapshots_registration.py",
     "app/routers/investment_snapshots.py",
+    # ROB-269 Phase 4 — Prefect snapshot-refresh flow scaffold (importable
+    # only, no deployment registered). The flow wraps Phase 2's ensure
+    # service; safety guarantees flow through automatically.
+    "app/flows/investment_snapshots_refresh_flow.py",
 ]
 
 # Lines containing this marker are exempted from boundary checks.
