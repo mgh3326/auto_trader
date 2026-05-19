@@ -101,8 +101,16 @@ turns advisory into raise-before-insert).
   anyway is a safety violation.
 * No flipping feature flags (``INVESTMENT_SNAPSHOTS_MCP_ENABLED``,
   ``ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED``,
-  ``ACTION_REPORT_BUNDLE_UI_ENABLED``).
-* No deploys / Prefect deployment registrations.
+  ``ACTION_REPORT_BUNDLE_UI_ENABLED``). Note:
+  ``ACTION_REPORT_BUNDLE_UI_ENABLED`` is scaffold-only in Phase 4 — no
+  HTTP endpoint surfaces it to the SPA and the frontend chip does not
+  read it. The chip's default-off behaviour comes from data-presence
+  gating (legacy report → null freshness summary → no chip).
+* No deploys / Prefect deployment registrations. The Phase 4 scheduler
+  flow at ``app/flows/investment_snapshots_refresh_flow.py`` is
+  importable only **when Prefect is installed** — Prefect is not
+  currently a project dependency in ``pyproject.toml``. Adding it and
+  registering a deployment are both deferred ops changes.
 
 ## Cross-references
 

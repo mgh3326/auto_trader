@@ -1,10 +1,22 @@
 """Prefect wrapper for ROB-269 snapshot bundle refresh.
 
 Mirrors the ``invest_screener_snapshots_us_flow.py`` pattern: the flow is
-**importable only — no deployment is registered in this PR**. A Prefect
-worker / scheduler picking this up is an explicit ops step gated by
-unpausing the future deployment registration. Until then, the function is
-exercised in tests + manual runs only.
+**importable only when Prefect is installed**, and **no deployment is
+registered in this PR**. A Prefect worker / scheduler picking this up
+is an explicit ops step gated by unpausing the future deployment
+registration. Until then, the function is exercised in static file
+checks + manual runs only.
+
+Dependency caveat — Prefect is NOT currently a project dependency in
+``pyproject.toml``. Importing this module in the current dev/CI
+environment raises ``ModuleNotFoundError: No module named 'prefect'``.
+That is intentional: the file is validated statically (file-text checks
+for ``@flow`` / ``@task`` / required defaults) by
+``tests/test_investment_snapshots_refresh_flow.py``, mirroring the
+ROB-204 ``invest_screener_snapshots_us_flow.py`` pattern. The runtime
+import test is ``skipif(True, reason="prefect not yet a project
+dependency; import verified when added")`` and flips on once Prefect
+lands as a dep through a separate ops change.
 
 Phase 2 design constraint: the production collector registry is empty
 in this codebase. Running ``ensure_snapshot_bundle`` with ``mode='ensure_fresh'``

@@ -1,9 +1,17 @@
 // ROB-269 Phase 4 — Snapshot bundle freshness provenance chip.
 //
 // Renders bundle-level + per-source freshness state on an investment report
-// header. Returns ``null`` when the report has no snapshot metadata (legacy
-// reports pre-Phase-3, or Phase 3 reports created with
-// ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED still off).
+// header. Returns ``null`` when ``freshnessSummary`` is null/undefined.
+//
+// Default-off behaviour is achieved by data-presence gating, NOT by a
+// runtime UI flag: this component does NOT read
+// ``ACTION_REPORT_BUNDLE_UI_ENABLED`` (which is Phase 4 scaffolding only,
+// not wired). Until callers supply ``snapshot_freshness_summary`` on the
+// IngestReportRequest the field stays JSON ``null`` on the response and
+// this component renders nothing. The Phase 3 generation flag
+// ``ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED`` is also default off,
+// so reports stay snapshot-less in practice until both Phase 3 generators
+// and Phase 4 UI rollout are intentionally enabled.
 //
 // Korean copy is intentionally constant — labels are owned by this file so
 // translation/style changes are localised.

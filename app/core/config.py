@@ -440,9 +440,17 @@ class Settings(BaseSettings):
     # (not flag-gated) — this flag only controls the pre-DB rejection layer.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-3-report-generator.md §5.
     ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED: bool = False
-    # ROB-269 Phase 4 — gates the /invest SnapshotBundleFreshnessChip render
-    # and any future bundle-aware UI surfaces. Default off so the chip
-    # is physically absent from caller-facing pages until flipped post-merge.
+    # ROB-269 Phase 4 — scaffold only. NOT wired in Phase 4: there is no
+    # HTTP endpoint exposing this flag to the SPA and the frontend chip
+    # does NOT read it. The /invest SnapshotBundleFreshnessChip renders
+    # on data-presence (``snapshotFreshnessSummary != null`` on the
+    # InvestmentReport response) instead. The default-off semantic is
+    # achieved upstream: Phase 3's
+    # ``ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED`` is also default
+    # off, so reports do not carry snapshot metadata, which keeps the
+    # chip absent. This flag is reserved for future bundle-aware UI
+    # surfaces that legitimately need a runtime per-user toggle (e.g. an
+    # A/B) — wiring an endpoint + frontend hook is a follow-up.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-4-ui-and-scheduler.md §4.
     ACTION_REPORT_BUNDLE_UI_ENABLED: bool = False
     # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
