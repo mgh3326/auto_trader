@@ -52,6 +52,7 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_decide_item",
     "investment_report_activate_watch",
     "investment_report_context_get",
+    "investment_report_generate_from_bundle",
 }
 
 
@@ -317,6 +318,103 @@ async def investment_report_context_get_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_report_generate_from_bundle (ROB-273)
+# ---------------------------------------------------------------------------
+async def investment_report_generate_from_bundle_impl(
+    market: str,
+    account_scope: str,
+    title: str,
+    summary: str,
+    kst_date: str,
+    created_by_profile: str,
+    items: list[dict[str, Any]] | None = None,
+    risk_summary: str | None = None,
+    thesis_text: str | None = None,
+    no_action_note: str | None = None,
+    status: str = "published",
+    metadata: dict[str, Any] | None = None,
+    valid_until: str | None = None,
+    published_at: str | None = None,
+    previous_report_uuid: str | None = None,
+    policy_version: str = "intraday_action_report_v1",
+    generator_version: str = "v2-snapshot-backed",
+    report_type: str = "snapshot_backed_advisory_v1",
+    symbols: list[str] | None = None,
+    candidate_limit: int | None = None,
+    requested_by: str = "claude_code",
+) -> dict:
+    """Generate a snapshot-backed advisory report.
+
+    Opt-in entrypoint for ROB-273. Default-off: the harness returns
+    ``success=False`` unless ``SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
+    is set on the deployment. The generator never mutates broker /
+    order / watch state — see docs for the read-only guarantees.
+    """
+    from app.core.config import settings
+    from app.services.action_report.snapshot_backed.generator import (
+        PublishBlockedByStaleGateError,
+        SnapshotBackedReportGenerator,
+        SnapshotBackedReportGeneratorError,
+    )
+    from app.services.action_report.snapshot_backed.request import (
+        ReportGenerationRequest,
+    )
+
+    if not settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED:
+        return {
+            "success": False,
+            "error": "snapshot_backed_report_generator_disabled",
+            "hint": (
+                "Set SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true on the "
+                "MCP host to enable this tool."
+            ),
+        }
+
+    payload: dict[str, Any] = {
+        "market": market,
+        "account_scope": account_scope,
+        "policy_version": policy_version,
+        "status": status,
+        "requested_by": requested_by,
+        "report_type": report_type,
+        "generator_version": generator_version,
+        "created_by_profile": created_by_profile,
+        "title": title,
+        "summary": summary,
+        "kst_date": kst_date,
+        "risk_summary": risk_summary,
+        "thesis_text": thesis_text,
+        "no_action_note": no_action_note,
+        "items": [IngestReportItem.model_validate(it) for it in (items or [])],
+        "previous_report_uuid": previous_report_uuid,
+        "valid_until": valid_until,
+        "published_at": published_at,
+        "metadata": metadata or {},
+        "symbols": symbols,
+        "candidate_limit": candidate_limit,
+    }
+    request = ReportGenerationRequest.model_validate(payload)
+
+    async with AsyncSessionLocal() as db:
+        generator = SnapshotBackedReportGenerator(db)
+        try:
+            response = await generator.generate(request)
+        except PublishBlockedByStaleGateError as exc:
+            return {
+                "success": False,
+                "error": "publish_blocked_by_stale_gate",
+                "reason": str(exc),
+                "bundle_status": exc.bundle_status,
+                "freshness_summary": exc.freshness_summary,
+            }
+        except SnapshotBackedReportGeneratorError as exc:
+            return {"success": False, "error": str(exc)}
+        await db.commit()
+
+    return {"success": True, **response.model_dump(mode="json")}
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 def register_investment_report_tools(mcp: FastMCP) -> None:
@@ -367,6 +465,18 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
             "triggered_events, recent_decisions. n_prior clamped to 1..10."
         ),
     )(investment_report_context_get_impl)
+    mcp.tool(
+        name="investment_report_generate_from_bundle",
+        description=(
+            "ROB-273 — generate a snapshot-backed advisory investment_report "
+            "end-to-end. Ensures (or reuses) a snapshot bundle, runs the "
+            "read-only collector registry, normalises payloads, and persists "
+            "the report with snapshot metadata. Opt-in: returns "
+            "{success:false, error:'snapshot_backed_report_generator_disabled'} "
+            "unless SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED is true. "
+            "No broker / order / watch mutation."
+        ),
+    )(investment_report_generate_from_bundle_impl)
 
 
 __all__ = [
@@ -375,6 +485,7 @@ __all__ = [
     "investment_report_context_get_impl",
     "investment_report_create_impl",
     "investment_report_decide_item_impl",
+    "investment_report_generate_from_bundle_impl",
     "investment_report_get_impl",
     "investment_report_list_impl",
     "register_investment_report_tools",
