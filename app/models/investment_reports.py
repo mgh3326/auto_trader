@@ -105,10 +105,16 @@ class InvestmentReport(Base):
             "snapshot_bundle_uuid",
         ),
         CheckConstraint(
+            # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a): the explicit
+            # ``IS NOT NULL`` guard collapses ``overall`` missing-key / JSON-null
+            # to FALSE so PostgreSQL CHECK does not accept the row on UNKNOWN.
             "status <> 'published' "
             "OR snapshot_freshness_summary IS NULL "
-            "OR (snapshot_freshness_summary->>'overall') IN "
-            "('fresh','soft_stale','partial')",
+            "OR ("
+            "(snapshot_freshness_summary->>'overall') IS NOT NULL "
+            "AND (snapshot_freshness_summary->>'overall') IN "
+            "('fresh','soft_stale','partial')"
+            ")",
             name="ck_investment_reports_no_published_on_hard_stale",
         ),
         {"schema": "review"},

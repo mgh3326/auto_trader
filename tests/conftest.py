@@ -473,6 +473,9 @@ async def db_session():
         )
         # Postgres has no native ADD CONSTRAINT IF NOT EXISTS; drop+recreate is
         # idempotent and avoids a catalog-table probe.
+        # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a): the explicit
+        # ``IS NOT NULL`` guard prevents CHECK from accepting UNKNOWN when
+        # the ``overall`` key is missing or JSON-null.
         await conn.execute(
             text(
                 "ALTER TABLE review.investment_reports "
@@ -487,8 +490,11 @@ async def db_session():
                 "CHECK ("
                 "status <> 'published' "
                 "OR snapshot_freshness_summary IS NULL "
-                "OR (snapshot_freshness_summary->>'overall') IN "
-                "('fresh','soft_stale','partial'))"
+                "OR ("
+                "(snapshot_freshness_summary->>'overall') IS NOT NULL "
+                "AND (snapshot_freshness_summary->>'overall') IN "
+                "('fresh','soft_stale','partial')"
+                "))"
             )
         )
 

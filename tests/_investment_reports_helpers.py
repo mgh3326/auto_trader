@@ -91,6 +91,10 @@ async def session() -> AsyncSession:
                         "CREATE INDEX IF NOT EXISTS "
                         "ix_investment_reports_snapshot_bundle_uuid "
                         "ON review.investment_reports (snapshot_bundle_uuid)",
+                        # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a):
+                        # explicit ``IS NOT NULL`` guard prevents CHECK from
+                        # accepting UNKNOWN when ``overall`` is missing or
+                        # JSON-null.
                         "ALTER TABLE review.investment_reports "
                         "DROP CONSTRAINT IF EXISTS "
                         "ck_investment_reports_no_published_on_hard_stale",
@@ -100,8 +104,11 @@ async def session() -> AsyncSession:
                         "CHECK ("
                         "status <> 'published' "
                         "OR snapshot_freshness_summary IS NULL "
-                        "OR (snapshot_freshness_summary->>'overall') IN "
-                        "('fresh','soft_stale','partial'))",
+                        "OR ("
+                        "(snapshot_freshness_summary->>'overall') IS NOT NULL "
+                        "AND (snapshot_freshness_summary->>'overall') IN "
+                        "('fresh','soft_stale','partial')"
+                        "))",
                     ):
                         await conn.execute(sa.text(stmt))
                 factory = async_sessionmaker(engine, expire_on_commit=False)

@@ -188,3 +188,152 @@ async def test_db_check_allows_draft_with_hard_stale_freshness(
     report = await svc.ingest(request)
     await session.commit()
     assert report.status == "draft"
+
+
+# ---------------------------------------------------------------------------
+# NULL-semantics regression tests for the corrected CHECK (20260519_rob269_p3a)
+# ---------------------------------------------------------------------------
+#
+# Before the p3a follow-up migration the CHECK predicate evaluated to UNKNOWN
+# (not FALSE) when ``snapshot_freshness_summary`` was set but ``overall`` was
+# missing / JSON-null, and PostgreSQL CHECK accepts UNKNOWN. The corrected
+# predicate uses an explicit ``IS NOT NULL`` guard so those cases now reject.
+@pytest.mark.asyncio
+async def test_db_check_rejects_published_with_missing_overall_key(
+    session: AsyncSession,
+) -> None:
+    """``snapshot_freshness_summary`` exists but has no ``overall`` key → reject."""
+    row = InvestmentReport(
+        idempotency_key=f"phase3-check-missing-overall-{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="test",
+        title="should fail",
+        summary="missing overall key",
+        market_snapshot={},
+        portfolio_snapshot={},
+        status="published",
+        # ``overall`` deliberately absent — must be rejected.
+        snapshot_freshness_summary={"portfolio": {"status": "fresh"}},
+        published_at=datetime.now(UTC),
+    )
+    session.add(row)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_db_check_rejects_published_with_empty_freshness_summary_object(
+    session: AsyncSession,
+) -> None:
+    """Empty ``snapshot_freshness_summary = {}`` is also missing ``overall``."""
+    row = InvestmentReport(
+        idempotency_key=f"phase3-check-empty-summary-{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="test",
+        title="should fail",
+        summary="empty freshness object",
+        market_snapshot={},
+        portfolio_snapshot={},
+        status="published",
+        snapshot_freshness_summary={},
+        published_at=datetime.now(UTC),
+    )
+    session.add(row)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_db_check_rejects_published_with_overall_explicit_null(
+    session: AsyncSession,
+) -> None:
+    """``overall: null`` (JSON null) must be treated as missing — reject."""
+    row = InvestmentReport(
+        idempotency_key=f"phase3-check-null-overall-{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="test",
+        title="should fail",
+        summary="overall=null",
+        market_snapshot={},
+        portfolio_snapshot={},
+        status="published",
+        snapshot_freshness_summary={"overall": None},
+        published_at=datetime.now(UTC),
+    )
+    session.add(row)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_db_check_rejects_published_with_unavailable_overall(
+    session: AsyncSession,
+) -> None:
+    """Belt-and-suspenders: ``unavailable`` is also out of the allow-set."""
+    row = InvestmentReport(
+        idempotency_key=f"phase3-check-unavailable-{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="test",
+        title="should fail",
+        summary="overall=unavailable",
+        market_snapshot={},
+        portfolio_snapshot={},
+        status="published",
+        snapshot_freshness_summary={"overall": "unavailable"},
+        published_at=datetime.now(UTC),
+    )
+    session.add(row)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_db_check_allows_published_with_overall_fresh(
+    session: AsyncSession,
+) -> None:
+    """Positive case — ``fresh`` overall is in the allow-set."""
+    request = _base_request(
+        status="published",
+        published_at=datetime.now(UTC),
+        snapshot_freshness_summary={"overall": "fresh"},
+    )
+    svc = InvestmentReportIngestionService(session)
+    report = await svc.ingest(request)
+    await session.commit()
+    assert report.status == "published"
+
+
+@pytest.mark.asyncio
+async def test_db_check_allows_published_with_overall_soft_stale(
+    session: AsyncSession,
+) -> None:
+    """Positive case — ``soft_stale`` overall is in the allow-set."""
+    request = _base_request(
+        status="published",
+        published_at=datetime.now(UTC),
+        snapshot_freshness_summary={"overall": "soft_stale"},
+    )
+    svc = InvestmentReportIngestionService(session)
+    report = await svc.ingest(request)
+    await session.commit()
+    assert report.status == "published"
