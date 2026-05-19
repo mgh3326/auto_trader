@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
+    CandidateUniverseSnapshotCollector,
+)
+from app.services.action_report.snapshot_backed.collectors.invest_page import (
+    InvestPageSnapshotCollector,
+)
 from app.services.action_report.snapshot_backed.collectors.journal import (
     JournalSnapshotCollector,
 )
@@ -22,14 +28,14 @@ from app.services.action_report.snapshot_backed.collectors.news import (
 )
 from app.services.action_report.snapshot_backed.collectors.optional_stubs import (
     BrowserProbeStubCollector,
-    CandidateUniverseStubCollector,
-    InvestPageStubCollector,
     NaverRemoteDebugStubCollector,
-    SymbolStubCollector,
     TossRemoteDebugStubCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.portfolio import (
     PortfolioSnapshotCollector,
+)
+from app.services.action_report.snapshot_backed.collectors.symbol import (
+    SymbolSnapshotCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.watch_context import (
     WatchContextSnapshotCollector,
@@ -53,11 +59,13 @@ def production_collector_registry(session: AsyncSession) -> SnapshotCollectorReg
     registry.register(WatchContextSnapshotCollector(session))
     registry.register(MarketEventsSnapshotCollector(session))
 
-    # Optional kinds — DB-backed where possible, stubs otherwise.
+    # Optional kinds — DB-backed where possible.
     registry.register(NewsSnapshotCollector(session))
-    registry.register(SymbolStubCollector())
-    registry.register(CandidateUniverseStubCollector())
-    registry.register(InvestPageStubCollector())
+    registry.register(SymbolSnapshotCollector(session))
+    registry.register(CandidateUniverseSnapshotCollector(session))
+    registry.register(InvestPageSnapshotCollector(session))
+    # Remote-debug probes remain fail-open stubs — they are operator-driven
+    # only, and automated wiring is intentionally out of scope.
     registry.register(NaverRemoteDebugStubCollector())
     registry.register(TossRemoteDebugStubCollector())
     registry.register(BrowserProbeStubCollector())

@@ -12,6 +12,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
+    CandidateUniverseSnapshotCollector,
+)
+from app.services.action_report.snapshot_backed.collectors.invest_page import (
+    InvestPageSnapshotCollector,
+)
 from app.services.action_report.snapshot_backed.collectors.journal import (
     JournalSnapshotCollector,
 )
@@ -23,10 +29,7 @@ from app.services.action_report.snapshot_backed.collectors.news import (
 )
 from app.services.action_report.snapshot_backed.collectors.optional_stubs import (
     BrowserProbeStubCollector,
-    CandidateUniverseStubCollector,
-    InvestPageStubCollector,
     NaverRemoteDebugStubCollector,
-    SymbolStubCollector,
     TossRemoteDebugStubCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.portfolio import (
@@ -34,6 +37,9 @@ from app.services.action_report.snapshot_backed.collectors.portfolio import (
 )
 from app.services.action_report.snapshot_backed.collectors.registry import (
     production_collector_registry,
+)
+from app.services.action_report.snapshot_backed.collectors.symbol import (
+    SymbolSnapshotCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.watch_context import (
     WatchContextSnapshotCollector,
@@ -268,20 +274,202 @@ async def test_news_collector_failure_is_fail_open():
 @pytest.mark.parametrize(
     "collector_cls",
     [
-        SymbolStubCollector,
-        CandidateUniverseStubCollector,
-        InvestPageStubCollector,
         NaverRemoteDebugStubCollector,
         TossRemoteDebugStubCollector,
         BrowserProbeStubCollector,
     ],
 )
-async def test_stubs_return_unavailable(collector_cls: type) -> None:
+async def test_remote_debug_stubs_return_unavailable(collector_cls: type) -> None:
     collector = collector_cls()
     results = await collector.collect(_request())
     assert len(results) == 1
     assert results[0].freshness_status == "unavailable"
     assert results[0].snapshot_kind == collector.snapshot_kind
+
+
+# ---------------------------------------------------------------------------
+# Symbol collector
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_symbol_collector_returns_unavailable_when_no_symbols():
+    session = MagicMock()
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(_request())  # symbols=None
+    assert results[0].snapshot_kind == "symbol"
+    assert results[0].freshness_status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_returns_results_for_each_symbol():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    class _Row:
+        def __init__(self, symbol: str, name: str) -> None:
+            self.symbol = symbol
+            self.name = name
+            self.instrument_type = "equity_kr"
+            self.exchange = "KRX"
+            self.sector = "Tech"
+            self.market_cap = 1_000_000.0
+            self.is_active = True
+
+    session = MagicMock()
+    scalars = MagicMock(all=MagicMock(return_value=[_Row("005930", "삼성전자")]))
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
+    )
+
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930", "000660"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+    # Two entries: one for resolved 005930, one partial for missing 000660.
+    assert len(results) == 2
+    assert any(r.symbol == "005930" for r in results)
+    assert any(r.freshness_status == "partial" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_query_failure_is_fail_open():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=RuntimeError("transient"))
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+    assert results[0].freshness_status == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Candidate-universe collector
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_candidate_universe_kr_returns_coverage_counts():
+    from app.services.invest_screener_snapshots.repository import CoverageCounts
+
+    session = MagicMock()
+    repo = MagicMock()
+    repo.coverage = AsyncMock(
+        return_value=CoverageCounts(
+            market="kr",
+            today_trading_date=dt.date(2026, 5, 19),
+            fresh_count=12,
+            stale_count=3,
+            last_computed_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
+        )
+    )
+    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
+    assert results[0].payload_json["fresh_count"] == 12
+    assert results[0].payload_json["stale_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_candidate_universe_kr_returns_partial_when_no_rows():
+    from app.services.invest_screener_snapshots.repository import CoverageCounts
+
+    session = MagicMock()
+    repo = MagicMock()
+    repo.coverage = AsyncMock(
+        return_value=CoverageCounts(
+            market="kr",
+            today_trading_date=dt.date(2026, 5, 19),
+            fresh_count=0,
+            stale_count=0,
+            last_computed_at=None,
+        )
+    )
+    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
+    assert results[0].freshness_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_candidate_universe_crypto_queries_crypto_partition():
+    session = MagicMock()
+    latest_result = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=dt.date(2026, 5, 19))
+    )
+    count_result = MagicMock(scalar_one=MagicMock(return_value=42))
+    session.execute = AsyncMock(side_effect=[latest_result, count_result])
+
+    collector = CandidateUniverseSnapshotCollector(session)
+    results = await collector.collect(
+        _request(market="crypto", account_scope="upbit_live")
+    )
+    assert results[0].payload_json["fresh_count"] == 42
+    assert results[0].payload_json["latest_partition"] == "2026-05-19"
+
+
+@pytest.mark.asyncio
+async def test_candidate_universe_failure_is_fail_open():
+    session = MagicMock()
+    repo = MagicMock()
+    repo.coverage = AsyncMock(side_effect=RuntimeError("boom"))
+    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
+    assert results[0].freshness_status == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Invest-page collector
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_invest_page_returns_recent_published_reports():
+    session = MagicMock()
+    query = MagicMock()
+
+    class _Report:
+        report_uuid = "55555555-1111-1111-1111-111111111111"
+        report_type = "snapshot_backed_advisory_v1"
+        status = "published"
+        title = "t"
+        published_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
+        snapshot_bundle_uuid = "66666666-1111-1111-1111-111111111111"
+        snapshot_freshness_summary = {"overall": "fresh"}
+
+    query.list_reports = AsyncMock(return_value=[_Report()])
+    collector = InvestPageSnapshotCollector(session, query_service=query)
+    results = await collector.collect(_request())
+    assert results[0].payload_json["count"] == 1
+    assert (
+        results[0].payload_json["recent_published_reports"][0][
+            "snapshot_freshness_overall"
+        ]
+        == "fresh"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invest_page_returns_partial_when_no_recent_reports():
+    session = MagicMock()
+    query = MagicMock()
+    query.list_reports = AsyncMock(return_value=[])
+    collector = InvestPageSnapshotCollector(session, query_service=query)
+    results = await collector.collect(_request())
+    assert results[0].freshness_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_invest_page_failure_is_fail_open():
+    session = MagicMock()
+    query = MagicMock()
+    query.list_reports = AsyncMock(side_effect=RuntimeError("transient"))
+    collector = InvestPageSnapshotCollector(session, query_service=query)
+    results = await collector.collect(_request())
+    assert results[0].freshness_status == "unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +508,9 @@ def test_collector_modules_do_not_import_broker_or_activation_paths():
         "app.services.action_report.snapshot_backed.collectors.watch_context",
         "app.services.action_report.snapshot_backed.collectors.market",
         "app.services.action_report.snapshot_backed.collectors.news",
+        "app.services.action_report.snapshot_backed.collectors.symbol",
+        "app.services.action_report.snapshot_backed.collectors.candidate_universe",
+        "app.services.action_report.snapshot_backed.collectors.invest_page",
         "app.services.action_report.snapshot_backed.collectors.optional_stubs",
         "app.services.action_report.snapshot_backed.collectors.registry",
         "app.services.action_report.snapshot_backed.generator",

@@ -50,26 +50,6 @@ class _FailOpenStubBase:
         ]
 
 
-class SymbolStubCollector(_FailOpenStubBase):
-    snapshot_kind = "symbol"
-    origin = "auto_trader_db"
-    unavailable_reason = "symbol collector not wired yet (ROB-273 follow-up)"
-
-
-class CandidateUniverseStubCollector(_FailOpenStubBase):
-    snapshot_kind = "candidate_universe"
-    origin = "auto_trader_db"
-    unavailable_reason = (
-        "candidate_universe collector not wired yet (ROB-273 follow-up)"
-    )
-
-
-class InvestPageStubCollector(_FailOpenStubBase):
-    snapshot_kind = "invest_page"
-    origin = "invest_http"
-    unavailable_reason = "invest_page collector not wired yet (ROB-273 follow-up)"
-
-
 class NaverRemoteDebugStubCollector(_FailOpenStubBase):
     snapshot_kind = "naver_remote_debug"
     origin = "naver_remote_debug"
