@@ -16,8 +16,12 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.investment_reports import InvestmentReport
 from app.schemas.investment_reports import IngestReportItem, IngestReportRequest
+from app.services.action_report.common.bundle_aware_publishing import (
+    enforce_stale_gate_for_ingest,
+)
 from app.services.investment_reports.idempotency import item_key, report_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
 
@@ -48,6 +52,20 @@ class InvestmentReportIngestionService:
         if existing is not None:
             return existing
 
+        # ROB-269 Phase 3 layer (ii) + (iii) — evaluate gate before insert.
+        # When ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED is True and the
+        # gate rejects, the helper raises StaleGateRejection and the row is
+        # NOT written. When the flag is False the gate is purely advisory
+        # — the result is attached to report_metadata under "stale_gate"
+        # for audit. Legacy/informational reports bypass both layers (the
+        # helper returns a non-rejecting result).
+        gate_result = enforce_stale_gate_for_ingest(
+            request,
+            flag_enabled=settings.ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED,
+        )
+        report_metadata = dict(request.metadata)
+        report_metadata.setdefault("stale_gate", gate_result.to_metadata_summary())
+
         report = await self._repo.insert_report(
             idempotency_key=idempotency_key,
             report_type=request.report_type,
@@ -65,9 +83,18 @@ class InvestmentReportIngestionService:
             portfolio_snapshot=request.portfolio_snapshot,
             previous_report_uuid=request.previous_report_uuid,
             status=request.status,
-            report_metadata=request.metadata,
+            report_metadata=report_metadata,
             valid_until=request.valid_until,
             published_at=request.published_at,
+            # ROB-269 Phase 3 — bundle metadata round-trip. None values are
+            # legal (legacy reports). DB CHECK only rejects published rows
+            # whose snapshot_freshness_summary['overall'] is stale.
+            snapshot_bundle_uuid=request.snapshot_bundle_uuid,
+            snapshot_policy_version=request.snapshot_policy_version,
+            snapshot_coverage_summary=request.snapshot_coverage_summary,
+            snapshot_freshness_summary=request.snapshot_freshness_summary,
+            source_conflicts=request.source_conflicts,
+            unavailable_sources=request.unavailable_sources,
         )
 
         for item_req in request.items:

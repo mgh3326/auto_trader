@@ -71,6 +71,46 @@ async def session() -> AsyncSession:
                         tables=INVESTMENT_REPORTS_TABLES,
                         checkfirst=True,
                     )
+                    # ROB-269 Phase 3 — additive snapshot metadata + CHECK.
+                    # create_all with checkfirst=True skips existing tables,
+                    # so persistent test DBs miss the new columns. These are
+                    # idempotent and mirror the alembic migration exactly.
+                    for stmt in (
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_bundle_uuid UUID",
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_policy_version TEXT",
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_coverage_summary JSONB",
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_freshness_summary JSONB",
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS source_conflicts JSONB",
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS unavailable_sources JSONB",
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_investment_reports_snapshot_bundle_uuid "
+                        "ON review.investment_reports (snapshot_bundle_uuid)",
+                        # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a):
+                        # explicit ``IS NOT NULL`` guard prevents CHECK from
+                        # accepting UNKNOWN when ``overall`` is missing or
+                        # JSON-null.
+                        "ALTER TABLE review.investment_reports "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_reports_no_published_on_hard_stale",
+                        "ALTER TABLE review.investment_reports "
+                        "ADD CONSTRAINT "
+                        "ck_investment_reports_no_published_on_hard_stale "
+                        "CHECK ("
+                        "status <> 'published' "
+                        "OR snapshot_freshness_summary IS NULL "
+                        "OR ("
+                        "(snapshot_freshness_summary->>'overall') IS NOT NULL "
+                        "AND (snapshot_freshness_summary->>'overall') IN "
+                        "('fresh','soft_stale','partial')"
+                        "))",
+                    ):
+                        await conn.execute(sa.text(stmt))
                 factory = async_sessionmaker(engine, expire_on_commit=False)
                 async with factory() as sess:
                     try:

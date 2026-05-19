@@ -16,6 +16,7 @@ from app.core.db import get_db
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.invest_account_panel import AccountPanelResponse
 from app.schemas.invest_action_readiness import KrActionReadinessResponse
+from app.schemas.invest_benchmark_gap import BenchmarkGapMatrixResponse
 from app.schemas.invest_calendar import (
     CalendarResponse,
     CalendarTab,
@@ -62,6 +63,9 @@ from app.schemas.invest_stock_detail_research_consensus import (
     StockDetailResearchConsensusResponse,
 )
 from app.schemas.investor_flow import InvestorFlowResponse
+from app.services.invest_benchmark_gap_service import (
+    build_benchmark_gap_matrix_from_coverage,
+)
 from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_crypto_naver_adapter import build_naver_crypto_reference
 from app.services.invest_home_service import InvestHomeService
@@ -298,6 +302,26 @@ async def get_invest_coverage(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/coverage/benchmark-gap")
+async def get_invest_coverage_benchmark_gap(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: CoverageMarket = Query("kr"),
+    as_of: Annotated[date | None, Query(alias="asOf")] = None,
+) -> BenchmarkGapMatrixResponse:
+    """ROB-271 — read-only Toss/Naver benchmark data-sourcing gap matrix.
+
+    Layered adapter over /invest/api/coverage. No broker/order/watch/scheduler
+    side effects. Does not mutate or backfill anything.
+    """
+    _ = user
+    try:
+        coverage = await build_invest_coverage(db, market=market, as_of=as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return build_benchmark_gap_matrix_from_coverage(coverage, market=market)
 
 
 @router.get("/kr/action-readiness")

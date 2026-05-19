@@ -425,6 +425,78 @@ async def db_session():
                 "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
             )
         )
+        # ROB-269 Phase 3 — snapshot metadata + 3-layer stale gate layer (i).
+        # create_all is no-op for already-existing tables, so we patch the
+        # six new columns + index + CHECK constraint here so the persistent
+        # test DB picks them up without a full alembic upgrade cycle.
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "ADD COLUMN IF NOT EXISTS snapshot_bundle_uuid UUID"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "ADD COLUMN IF NOT EXISTS snapshot_policy_version TEXT"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "ADD COLUMN IF NOT EXISTS snapshot_coverage_summary JSONB"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "ADD COLUMN IF NOT EXISTS snapshot_freshness_summary JSONB"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "ADD COLUMN IF NOT EXISTS source_conflicts JSONB"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "ADD COLUMN IF NOT EXISTS unavailable_sources JSONB"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_investment_reports_snapshot_bundle_uuid "
+                "ON review.investment_reports (snapshot_bundle_uuid)"
+            )
+        )
+        # Postgres has no native ADD CONSTRAINT IF NOT EXISTS; drop+recreate is
+        # idempotent and avoids a catalog-table probe.
+        # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a): the explicit
+        # ``IS NOT NULL`` guard prevents CHECK from accepting UNKNOWN when
+        # the ``overall`` key is missing or JSON-null.
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "DROP CONSTRAINT IF EXISTS "
+                "ck_investment_reports_no_published_on_hard_stale"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE review.investment_reports "
+                "ADD CONSTRAINT ck_investment_reports_no_published_on_hard_stale "
+                "CHECK ("
+                "status <> 'published' "
+                "OR snapshot_freshness_summary IS NULL "
+                "OR ("
+                "(snapshot_freshness_summary->>'overall') IS NOT NULL "
+                "AND (snapshot_freshness_summary->>'overall') IN "
+                "('fresh','soft_stale','partial')"
+                "))"
+            )
+        )
 
     async with AsyncSessionLocal() as session:
         yield session
