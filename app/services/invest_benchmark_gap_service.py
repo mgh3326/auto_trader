@@ -212,6 +212,10 @@ def build_mvp_benchmark_rows() -> list[BenchmarkGapRow]:
             relatedLinearIssue="ROB-201",
         ),
         # ── Internal/KIS (broker authority + product authority) ───────
+        # `coverageStatus="covered"` indicates that auto_trader has the
+        # source wired and the contract exists. Runtime availability of the
+        # live KIS broker session is surfaced separately in the KR action
+        # readiness 보조 섹션, not in this matrix.
         BenchmarkGapRow(
             id="internal.kis_live_holdings",
             featureArea="account",
@@ -222,9 +226,12 @@ def build_mvp_benchmark_rows() -> list[BenchmarkGapRow]:
             coverageStatus="covered",
             priority="P0",
             whyNeeded="액션 리포트의 broker authority",
-            nextAction="유지",
+            nextAction="유지: KIS live 권위 보존; runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인",
             autoTraderApi="/invest/api/account-panel",
             dataKind="broker_authority",
+            notes=[
+                "KIS live는 broker authority. runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인합니다.",
+            ],
         ),
         BenchmarkGapRow(
             id="internal.kis_live_cash_orderable",
@@ -236,8 +243,11 @@ def build_mvp_benchmark_rows() -> list[BenchmarkGapRow]:
             coverageStatus="covered",
             priority="P0",
             whyNeeded="매수 가능 여부 판정",
-            nextAction="유지",
+            nextAction="유지: runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인",
             dataKind="broker_authority",
+            notes=[
+                "KIS live는 broker authority. runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인합니다.",
+            ],
         ),
         BenchmarkGapRow(
             id="internal.kis_live_open_orders",
@@ -249,8 +259,11 @@ def build_mvp_benchmark_rows() -> list[BenchmarkGapRow]:
             coverageStatus="covered",
             priority="P0",
             whyNeeded="중복 주문 방지 / 정합성",
-            nextAction="유지",
+            nextAction="유지: runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인",
             dataKind="broker_authority",
+            notes=[
+                "KIS live는 broker authority. runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인합니다.",
+            ],
         ),
         BenchmarkGapRow(
             id="internal.kis_live_sellable_quantity",
@@ -262,8 +275,11 @@ def build_mvp_benchmark_rows() -> list[BenchmarkGapRow]:
             coverageStatus="covered",
             priority="P0",
             whyNeeded="매도 가능 여부 판정",
-            nextAction="유지",
+            nextAction="유지: runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인",
             dataKind="broker_authority",
+            notes=[
+                "KIS live는 broker authority. runtime 가용성은 KR 액션 리포트 준비도 보조 섹션에서 확인합니다.",
+            ],
         ),
         BenchmarkGapRow(
             id="internal.kr_action_readiness_summary",
