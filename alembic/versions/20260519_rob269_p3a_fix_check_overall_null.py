@@ -53,15 +53,25 @@ _NEW_PREDICATE = (
 )
 
 
+def _drop_check_if_exists() -> None:
+    # Production schemas may have the Phase 3 metadata columns but be missing
+    # the original check constraint (for example after fixture/manual drift).
+    # Keep this migration tolerant so it can still converge by creating the
+    # corrected constraint below.
+    op.execute(
+        f"ALTER TABLE review.investment_reports DROP CONSTRAINT IF EXISTS {_CHECK_NAME}"
+    )
+
+
 def upgrade() -> None:
-    op.drop_constraint(_CHECK_NAME, "investment_reports", schema="review")
+    _drop_check_if_exists()
     op.create_check_constraint(
         _CHECK_NAME, "investment_reports", _NEW_PREDICATE, schema="review"
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(_CHECK_NAME, "investment_reports", schema="review")
+    _drop_check_if_exists()
     op.create_check_constraint(
         _CHECK_NAME, "investment_reports", _OLD_PREDICATE, schema="review"
     )

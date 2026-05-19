@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -27,6 +28,16 @@ from app.services.investment_reports.ingestion import (
 
 # ``session`` fixture is auto-discovered via the pytest_plugins entry in
 # tests/conftest.py registering ``tests._investment_reports_helpers``.
+
+
+def test_p3a_migration_tolerates_missing_existing_check_constraint() -> None:
+    """Production drift can leave the p3 check absent; p3a must still converge."""
+    migration = Path(
+        "alembic/versions/20260519_rob269_p3a_fix_check_overall_null.py"
+    ).read_text(encoding="utf-8")
+
+    assert "DROP CONSTRAINT IF EXISTS" in migration
+    assert "op.drop_constraint" not in migration
 
 
 def _base_request(**overrides) -> IngestReportRequest:
