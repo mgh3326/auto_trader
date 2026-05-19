@@ -14,7 +14,9 @@ import type {
   InvestmentReportItemDecision,
   InvestmentWatchAlert,
   InvestmentWatchEvent,
+  SnapshotFreshnessSummary,
 } from "../../types/investmentReports";
+import { SnapshotBundleFreshnessChip } from "./SnapshotBundleFreshnessChip";
 
 const ITEM_KIND_LABELS: Record<string, string> = {
   action: "액션",
@@ -82,6 +84,7 @@ function ReportHeader({
   thesisText,
   noActionNote,
   createdAt,
+  freshnessSummary,
 }: {
   title: string;
   market: string;
@@ -94,6 +97,7 @@ function ReportHeader({
   thesisText?: string | null;
   noActionNote?: string | null;
   createdAt: string;
+  freshnessSummary?: SnapshotFreshnessSummary | null;
 }) {
   return (
     <Card>
@@ -143,6 +147,10 @@ function ReportHeader({
           <span>·</span>
           <span>{new Date(createdAt).toLocaleString("ko-KR")}</span>
         </div>
+        {/* ROB-269 Phase 4 — bundle provenance chip. Returns null when the
+            report has no snapshot metadata (legacy reports / Phase 3 flag
+            off). Renders Korean-facing summary + degraded per-source chips. */}
+        <SnapshotBundleFreshnessChip freshnessSummary={freshnessSummary ?? null} />
         <p style={{ margin: 0, fontSize: 14, lineHeight: 1.65 }}>{summary}</p>
         {thesisText ? (
           <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.6 }}>
@@ -448,6 +456,7 @@ export function InvestmentReportBundleContent({
         thesisText={bundle.report.thesisText}
         noActionNote={bundle.report.noActionNote}
         createdAt={bundle.report.createdAt}
+        freshnessSummary={bundle.report.snapshotFreshnessSummary}
       />
 
       {(
