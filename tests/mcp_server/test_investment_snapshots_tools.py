@@ -151,9 +151,7 @@ def test_registry_skips_registration_when_flag_disabled(monkeypatch):
 
     registered_names = {t.name for t in mcp.registered}
     overlap = registered_names & INVESTMENT_SNAPSHOTS_TOOL_NAMES
-    assert overlap == set(), (
-        f"Snapshots tools registered with flag off: {overlap}"
-    )
+    assert overlap == set(), f"Snapshots tools registered with flag off: {overlap}"
 
 
 def test_registry_registers_when_flag_enabled(monkeypatch):

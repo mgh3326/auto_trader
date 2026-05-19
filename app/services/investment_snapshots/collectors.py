@@ -56,7 +56,7 @@ class SnapshotCollectResult(BaseModel):
     freshness_status: FreshnessStatus = "fresh"
 
     @model_validator(mode="after")
-    def _source_ref_triple_consistent(self) -> "SnapshotCollectResult":
+    def _source_ref_triple_consistent(self) -> SnapshotCollectResult:
         nulls = sum(
             1 for v in (self.source_table, self.source_id, self.source_uri) if v is None
         )
@@ -68,11 +68,9 @@ class SnapshotCollectResult(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _domain_ref_requires_triple(self) -> "SnapshotCollectResult":
+    def _domain_ref_requires_triple(self) -> SnapshotCollectResult:
         if self.source_kind == "domain_ref" and self.source_table is None:
-            raise ValueError(
-                "source_kind='domain_ref' requires the source_ref triple"
-            )
+            raise ValueError("source_kind='domain_ref' requires the source_ref triple")
         return self
 
 
@@ -104,9 +102,7 @@ class SnapshotCollectorProtocol(Protocol):
         """The ``snapshot_kind`` this collector produces. One collector per kind."""
         ...
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         """Fetch and return zero or more snapshot artifacts.
 
         Returning an empty list is legal — the ensure service interprets that as
@@ -131,9 +127,7 @@ class SnapshotCollectorRegistry:
     def register(self, collector: SnapshotCollectorProtocol) -> None:
         kind = collector.snapshot_kind
         if kind in self._collectors:
-            raise ValueError(
-                f"collector for snapshot_kind={kind!r} already registered"
-            )
+            raise ValueError(f"collector for snapshot_kind={kind!r} already registered")
         self._collectors[kind] = collector
 
     def get(self, snapshot_kind: str) -> SnapshotCollectorProtocol | None:

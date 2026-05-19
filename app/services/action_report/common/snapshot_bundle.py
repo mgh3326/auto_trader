@@ -36,8 +36,8 @@ from app.schemas.investment_snapshots_mcp import (
 )
 from app.services.investment_snapshots.collectors import (
     CollectorRequest,
-    SnapshotCollectResult,
     SnapshotCollectorRegistry,
+    SnapshotCollectResult,
     default_collector_registry,
 )
 from app.services.investment_snapshots.freshness import (
@@ -322,7 +322,9 @@ def _derive_bundle_status(
 
     if not required_statuses:
         # No required kinds in policy — should not happen in v1, but fall through safely.
-        return "complete" if not all_statuses or all_statuses == {"fresh"} else "partial"
+        return (
+            "complete" if not all_statuses or all_statuses == {"fresh"} else "partial"
+        )
 
     if "unavailable" in required_statuses:
         return "failed"

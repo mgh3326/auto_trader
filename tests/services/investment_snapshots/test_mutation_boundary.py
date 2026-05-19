@@ -86,9 +86,7 @@ def _read(file: str) -> list[str]:
 
 
 def _lines_without_bypass(lines: list[str]) -> list[tuple[int, str]]:
-    return [
-        (i + 1, line) for i, line in enumerate(lines) if _BYPASS_MARKER not in line
-    ]
+    return [(i + 1, line) for i, line in enumerate(lines) if _BYPASS_MARKER not in line]
 
 
 @pytest.mark.parametrize("rel_path", _SCOPED_FILES)
@@ -101,7 +99,7 @@ def test_no_http_client_imports(rel_path: str) -> None:
                 violations.append(f"{rel_path}:{lineno}: {line.strip()}")
                 break
     assert violations == [], (
-        f"Phase 2 must have no HTTP client imports. Violations:\n"
+        "Phase 2 must have no HTTP client imports. Violations:\n"
         + "\n".join(violations)
     )
 
@@ -120,7 +118,7 @@ def test_no_forbidden_service_imports(rel_path: str) -> None:
                 break
     assert violations == [], (
         "Phase 2 must not reference broker/order/watch mutation service classes. "
-        f"Violations:\n" + "\n".join(violations)
+        "Violations:\n" + "\n".join(violations)
     )
 
 

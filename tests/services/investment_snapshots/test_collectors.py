@@ -8,9 +8,9 @@ import pytest
 
 from app.services.investment_snapshots.collectors import (
     CollectorRequest,
-    SnapshotCollectResult,
     SnapshotCollectorProtocol,
     SnapshotCollectorRegistry,
+    SnapshotCollectResult,
     default_collector_registry,
 )
 
@@ -18,9 +18,7 @@ from app.services.investment_snapshots.collectors import (
 class _FakeMarketCollector:
     snapshot_kind = "market"
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         return [
             SnapshotCollectResult(
                 snapshot_kind="market",
@@ -35,9 +33,7 @@ class _FakeMarketCollector:
 class _FakePortfolioCollector:
     snapshot_kind = "portfolio"
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         return [
             SnapshotCollectResult(
                 snapshot_kind="portfolio",

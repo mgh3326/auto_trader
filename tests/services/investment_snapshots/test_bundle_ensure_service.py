@@ -17,10 +17,9 @@ from app.services.action_report.common.snapshot_bundle import (
 )
 from app.services.investment_snapshots.collectors import (
     CollectorRequest,
-    SnapshotCollectResult,
     SnapshotCollectorRegistry,
+    SnapshotCollectResult,
 )
-
 
 _FIXED_NOW = dt.datetime(2026, 5, 19, 11, 11, 0, tzinfo=dt.UTC)
 
@@ -253,7 +252,9 @@ async def test_ensure_fresh_writes_run_with_frozen_policy_snapshot(db_session):
     snap = run.policy_snapshot_json
     assert snap["policy_version"] == "intraday_action_report_v1"
     assert snap["bundle_ttl_seconds"] == {"soft": 180, "hard": 300}
-    portfolio_entry = next(k for k in snap["kinds"] if k["snapshot_kind"] == "portfolio")
+    portfolio_entry = next(
+        k for k in snap["kinds"] if k["snapshot_kind"] == "portfolio"
+    )
     assert portfolio_entry["required"] is True
 
 

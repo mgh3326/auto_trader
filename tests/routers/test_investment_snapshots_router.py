@@ -7,8 +7,9 @@ endpoint behaviour without spinning the full app and SSO loop.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 from fastapi import FastAPI
@@ -44,9 +45,6 @@ def _build_app(db_session) -> FastAPI:
     app.dependency_overrides[get_db] = _db_override
     app.dependency_overrides[get_authenticated_user] = _user_override
     return app
-
-
-import datetime as dt
 
 
 def _now() -> dt.datetime:

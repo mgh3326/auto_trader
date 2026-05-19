@@ -31,7 +31,7 @@ INVESTMENT_SNAPSHOTS_TOOL_NAMES: set[str] = {
 }
 
 
-def register_investment_snapshots_tools(mcp: "FastMCP") -> None:
+def register_investment_snapshots_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="investment_snapshot_bundle_ensure",
         description=(

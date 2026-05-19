@@ -16,7 +16,9 @@ def _snapshots_routes(app) -> set[str]:
     }
 
 
-def test_main_create_app_does_not_mount_snapshots_router_when_flag_disabled(monkeypatch):
+def test_main_create_app_does_not_mount_snapshots_router_when_flag_disabled(
+    monkeypatch,
+):
     from app.core.config import settings
     from app.main import create_app
 

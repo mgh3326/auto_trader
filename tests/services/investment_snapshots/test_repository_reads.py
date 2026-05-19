@@ -241,7 +241,5 @@ async def test_list_snapshots_filters(db_session):
     )
     assert len(by_kind_filter) == len(by_symbol)
 
-    none_by_kind = await repo.list_snapshots(
-        symbol=unique_symbol, snapshot_kind="news"
-    )
+    none_by_kind = await repo.list_snapshots(symbol=unique_symbol, snapshot_kind="news")
     assert none_by_kind == []

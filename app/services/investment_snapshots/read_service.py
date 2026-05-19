@@ -93,9 +93,7 @@ class SnapshotBundleReadService:
     # ------------------------------------------------------------------
     # Listing bundles (HTTP /bundles)
     # ------------------------------------------------------------------
-    async def list_bundles(
-        self, request: ListBundlesRequest
-    ) -> ListBundlesResponse:
+    async def list_bundles(self, request: ListBundlesRequest) -> ListBundlesResponse:
         rows = await self._repo.list_bundles(
             purpose=request.purpose,
             market=request.market,
