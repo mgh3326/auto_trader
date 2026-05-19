@@ -42,6 +42,8 @@ _SCOPED_FILES: list[str] = [
     # after the verb to fire, so those tuple entries don't trip it.
     "app/services/action_report/common/stale_gate.py",
     "app/services/action_report/common/generator_constraints.py",
+    "app/services/action_report/common/critical_kinds.py",
+    "app/services/action_report/common/bundle_aware_publishing.py",
     "app/services/action_report/us/__init__.py",
     "app/services/action_report/us/account_snapshot.py",
     "app/services/action_report/us/action_classifier.py",
