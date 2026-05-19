@@ -121,15 +121,21 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("fetches the full month grid range (Sun-aligned 6 weeks) on mount", async () => {
+test("ROB-272 Phase 2: initial fetch is selectedDate ±3 (7 days), not the 6-week grid", async () => {
   render(wrap(<DesktopCalendarPage />));
   await waitFor(() => {
+    // Today is 2026-05-11, selectedDate defaults to today → ±3 = 5/8..5/14.
     expect(calApi.fetchCalendar).toHaveBeenCalledWith({
-      fromDate: "2026-04-26",
-      toDate: "2026-06-06",
+      fromDate: "2026-05-08",
+      toDate: "2026-05-14",
       tab: "all",
     });
   });
+  // We must NOT have fired the legacy 42-day grid fetch.
+  expect(calApi.fetchCalendar).not.toHaveBeenCalledWith(
+    expect.objectContaining({ fromDate: "2026-04-26", toDate: "2026-06-06" }),
+  );
+  // Grid still renders all 42 cells (per Sunday-aligned grid).
   expect(screen.getAllByTestId(/^month-grid-cell-/)).toHaveLength(42);
 });
 
@@ -192,28 +198,29 @@ test("days with no matching events render the Toss-friendly empty placeholder, n
   expect(screen.queryByTestId("calendar-freshness-banner")).not.toBeInTheDocument();
 });
 
-test("prev/next month navigation refetches with the new month range", async () => {
+test("prev/next month navigation refetches the new selectedDate ±3 window (ROB-272 Phase 2)", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(wrap(<DesktopCalendarPage />));
   await waitFor(() => expect(calApi.fetchCalendar).toHaveBeenCalledTimes(1));
 
+  // June 2026: today not in month → selectedDate becomes June 1 → ±3 = 5/29..6/4.
   await user.click(screen.getByTestId("calendar-next-month"));
   await waitFor(() =>
     expect(calApi.fetchCalendar).toHaveBeenLastCalledWith({
-      // June 2026 grid: starts Sun 2026-05-31, ends Sat 2026-07-11
-      fromDate: "2026-05-31",
-      toDate: "2026-07-11",
+      fromDate: "2026-05-29",
+      toDate: "2026-06-04",
       tab: "all",
     }),
   );
 
+  // Back to May → today (2026-05-11) is in month → ±3 = 5/8..5/14.
   await user.click(screen.getByTestId("calendar-prev-month"));
+  // April → first day → ±3 = 3/29..4/4.
   await user.click(screen.getByTestId("calendar-prev-month"));
   await waitFor(() =>
     expect(calApi.fetchCalendar).toHaveBeenLastCalledWith({
-      // April 2026 grid: starts Sun 2026-03-29, ends Sat 2026-05-09
       fromDate: "2026-03-29",
-      toDate: "2026-05-09",
+      toDate: "2026-04-04",
       tab: "all",
     }),
   );
@@ -275,6 +282,33 @@ test("default surface renders the source button and never the legacy freshness b
   await screen.findByTestId("calendar-timeline");
   expect(screen.getByTestId("calendar-source-button")).toBeInTheDocument();
   expect(screen.queryByTestId("calendar-freshness-banner")).not.toBeInTheDocument();
+});
+
+test("ROB-272 Phase 2: clicking a date inside the initial window does NOT trigger a duplicate fetch", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(wrap(<DesktopCalendarPage />));
+  await waitFor(() => expect(calApi.fetchCalendar).toHaveBeenCalledTimes(1));
+  // 2026-05-13 is in the initial ±3 window (5/8..5/14) and just got loaded.
+  await user.click(screen.getByTestId("month-grid-cell-2026-05-13"));
+  // No additional fetch — dedupe must hold.
+  expect(calApi.fetchCalendar).toHaveBeenCalledTimes(1);
+});
+
+test("ROB-272 Phase 2: clicking a date outside the initial window lazy-loads exactly that day", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(wrap(<DesktopCalendarPage />));
+  await waitFor(() => expect(calApi.fetchCalendar).toHaveBeenCalledTimes(1));
+  // 2026-05-22 is outside the initial 5/8..5/14 window. Clicks ensure only
+  // the clicked day; surrounding context comes from the viewport observer
+  // once the timeline scrolls into place.
+  await user.click(screen.getByTestId("month-grid-cell-2026-05-22"));
+  await waitFor(() =>
+    expect(calApi.fetchCalendar).toHaveBeenLastCalledWith({
+      fromDate: "2026-05-22",
+      toDate: "2026-05-22",
+      tab: "all",
+    }),
+  );
 });
 
 test("type and region filters hide non-matching items from each day section, grid count stays accurate", async () => {

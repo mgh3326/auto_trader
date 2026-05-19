@@ -143,12 +143,22 @@ export function useCalendarDayCache(
     }
   }, [monthKey]);
 
-  // Initial / selectedDate-driven fetch: ±radius around selectedDate.
+  // Anchor fetch: ±radius around selectedDate. Fires on mount and whenever
+  // monthKey changes (page typically updates selectedDate alongside monthCursor
+  // — we read the latest selectedDate at the time the effect runs, but do NOT
+  // re-fetch on bare selectedDate changes. Clicks within the same month are
+  // single-day ensures driven by the page; viewport scrolling is the observer's
+  // job. This matches the measurement (warm fixed_overhead ≈ 801ms) — every
+  // selectedDate-driven ±3 ensure would be a 2-second hit, which is why the
+  // page wires click → ensureRange(iso, iso) instead.
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
   useEffect(() => {
-    const from = shiftIso(selectedDate, -initialChunkRadius);
-    const to = shiftIso(selectedDate, initialChunkRadius);
+    const anchor = selectedDateRef.current;
+    const from = shiftIso(anchor, -initialChunkRadius);
+    const to = shiftIso(anchor, initialChunkRadius);
     runFetch(from, to);
-  }, [selectedDate, initialChunkRadius, runFetch, monthKey]);
+  }, [monthKey, initialChunkRadius, runFetch]);
 
   const ensureRange = useCallback(
     (from: string, to: string) => {

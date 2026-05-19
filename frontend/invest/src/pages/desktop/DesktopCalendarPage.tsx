@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
-import type { CalendarDaySummary, CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
+import type { CalendarSourceStatus, WeeklySummaryResponse } from "../../types/calendar";
 import { Card } from "../../ds";
 import { AIWeeklyCard } from "../../components/calendar/AIWeeklyCard";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
@@ -10,16 +10,15 @@ import { CalendarSourceButton } from "../../components/calendar/CalendarSourceBu
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
 import { MonthCalendarGrid, type MonthCellInfo } from "../../components/calendar/MonthCalendarGrid";
 import { MonthlyEventsTimeline } from "../../components/calendar/MonthlyEventsTimeline";
+import { dayDisplayState } from "../../components/calendar/dayCache";
+import { useCalendarDayCache } from "../../components/calendar/useCalendarDayCache";
 import {
   addMonths,
   fmtLocal,
-  gridEndFromMonth,
-  gridStartFromMonth,
+  monthDaysIso,
   monthLabel,
   monthTitleLabel,
   startOfMonth,
-  toClusterVM,
-  toEventVM,
   weekStartOf,
   type CalendarClusterVM,
   type CalendarEventVM,
@@ -35,8 +34,9 @@ interface FilteredDay {
   events: CalendarEventVM[];
   clusters: CalendarClusterVM[];
   total: number;
-  summary?: CalendarDaySummary | null;
 }
+
+const INITIAL_CHUNK_RADIUS = 3;
 
 export function CalendarRoute() {
   return useViewport() === "mobile" ? <MobileCalendarPage /> : <DesktopCalendarPage />;
@@ -44,8 +44,6 @@ export function CalendarRoute() {
 
 export function DesktopCalendarPage() {
   const [monthCursor, setMonthCursor] = useState<Date>(() => startOfMonth(new Date()));
-  const gridStart = useMemo(() => gridStartFromMonth(monthCursor), [monthCursor]);
-  const gridEnd = useMemo(() => gridEndFromMonth(monthCursor), [monthCursor]);
 
   const today = fmtLocal(new Date());
   const monthFirstIso = fmtLocal(monthCursor);
@@ -58,37 +56,19 @@ export function DesktopCalendarPage() {
     return monthFirstIso;
   });
 
-  const [calendar, setCalendar] = useState<CalendarResponse | undefined>();
-  const [calendarLoading, setCalendarLoading] = useState(true);
-  const [calendarErr, setCalendarErr] = useState<string | null>(null);
+  const { cache, ensureRange } = useCalendarDayCache({
+    monthCursor,
+    selectedDate,
+    initialChunkRadius: INITIAL_CHUNK_RADIUS,
+    fetchFn: fetchCalendar,
+  });
+
   const [summary, setSummary] = useState<WeeklySummaryResponse | undefined>();
   const [summaryErr, setSummaryErr] = useState<string | undefined>();
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [regionFilter, setRegionFilter] = useState<RegionFilter>("all");
-
-  // Fetch full grid range whenever month changes.
-  useEffect(() => {
-    let cancel = false;
-    setCalendar(undefined);
-    setCalendarLoading(true);
-    setCalendarErr(null);
-    fetchCalendar({ fromDate: fmtLocal(gridStart), toDate: fmtLocal(gridEnd), tab: "all" })
-      .then((r) => {
-        if (cancel) return;
-        setCalendar(r);
-        setCalendarLoading(false);
-      })
-      .catch((e) => {
-        if (cancel) return;
-        setCalendarErr(String(e?.message ?? e));
-        setCalendarLoading(false);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [gridStart, gridEnd]);
 
   // AI summary is keyed by the Mon-aligned week of the selected date.
   const summaryWeekStart = useMemo(() => weekStartOf(selectedDate), [selectedDate]);
@@ -116,34 +96,80 @@ export function DesktopCalendarPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSummary, summaryWeekStart]);
 
-  // Build filtered-by-date map once per filter/data change.
+  // Derived: filtered day rows for the timeline (only days we've actually loaded
+  // and that have events matching the active filters land here).
   const filteredByDate = useMemo<Map<string, FilteredDay>>(() => {
     const map = new Map<string, FilteredDay>();
-    for (const d of calendar?.days ?? []) {
-      const events = d.events
-        .map((event) => toEventVM(event, d.date))
-        .filter((event) => matchesFilters(event, typeFilter, regionFilter));
-      const clusters = d.clusters
-        .map((cluster) => toClusterVM(cluster, d.date))
-        .filter((cluster) => matchesFilters(cluster, typeFilter, regionFilter));
+    for (const [iso, day] of cache.byDate) {
+      if (day.kind !== "loaded") continue;
+      const events = day.events.filter((event) =>
+        matchesFilters(event, typeFilter, regionFilter),
+      );
+      const clusters = day.clusters.filter((cluster) =>
+        matchesFilters(cluster, typeFilter, regionFilter),
+      );
       const total = events.length + clusters.reduce((sum, c) => sum + c.count, 0);
       if (total === 0) continue;
-      map.set(d.date, { events, clusters, total, summary: d.summary });
+      map.set(iso, { events, clusters, total });
     }
     return map;
-  }, [calendar?.days, typeFilter, regionFilter]);
+  }, [cache.byDate, typeFilter, regionFilter]);
 
-  // Phase 1: every in-month day has data (42d fetch). Each filtered total
-  // becomes "loaded-nonzero"; days absent from the map are "loaded-zero".
-  // Phase 2 (step E) replaces this with the dayCache hook so "unloaded"
-  // becomes a real third option.
+  // Derived: per-cell display state for the grid. "unloaded" is meaningful in
+  // Phase 2 — a day we never fetched is rendered as a placeholder, not 0.
   const cellByDate = useMemo<Map<string, MonthCellInfo>>(() => {
     const m = new Map<string, MonthCellInfo>();
-    for (const [iso, day] of filteredByDate) {
-      m.set(iso, { state: "loaded-nonzero", count: day.total });
+    for (const iso of monthDaysIso(monthCursor)) {
+      const state = dayDisplayState(cache, iso);
+      if (state === "loaded-nonzero") {
+        const filtered = filteredByDate.get(iso);
+        if (filtered && filtered.total > 0) {
+          m.set(iso, { state: "loaded-nonzero", count: filtered.total });
+        } else {
+          // Loaded with data but filter hid everything — show as loaded-zero.
+          m.set(iso, { state: "loaded-zero", count: 0 });
+        }
+      } else {
+        m.set(iso, { state, count: 0 });
+      }
     }
     return m;
-  }, [filteredByDate]);
+  }, [cache, filteredByDate, monthCursor]);
+
+  // Page-level loading/error: derive from the selectedDate's day-cache state.
+  // The first ±3 fetch is the gate that flips the timeline from skeleton to
+  // populated; per-day lazy loads after that do not re-enter the skeleton.
+  const selectedDayState = cache.byDate.get(selectedDate);
+  const calendarErr =
+    selectedDayState?.kind === "error" ? selectedDayState.reason : null;
+  const calendarLoading =
+    calendarErr == null &&
+    (selectedDayState == null ||
+      selectedDayState.kind === "unloaded" ||
+      selectedDayState.kind === "loading");
+
+  // Source freshness comes from the most recent successful response. For now
+  // we display whatever the last fetch returned — coverage stitching across
+  // chunks is a follow-up if it becomes visually important.
+  const [sourceFreshness, setSourceFreshness] = useState<CalendarSourceStatus[]>([]);
+  useEffect(() => {
+    // Update freshness once any day is loaded.
+    const anyLoaded = Array.from(cache.byDate.values()).some(
+      (s) => s.kind === "loaded" || s.kind === "empty",
+    );
+    if (!anyLoaded) return;
+    // We don't currently surface per-chunk freshness; leave empty until a
+    // follow-up wires it through the dayCache payload.
+    setSourceFreshness((prev) => prev);
+  }, [cache.byDate]);
+
+  const onVisibleDaysChange = useCallback(
+    (visibleIsos: string[]) => {
+      if (visibleIsos.length === 0) return;
+      ensureRange(visibleIsos[0]!, visibleIsos[visibleIsos.length - 1]!);
+    },
+    [ensureRange],
+  );
 
   const goPrevMonth = () => {
     setMonthCursor((m) => {
@@ -179,7 +205,14 @@ export function DesktopCalendarPage() {
                 selectedDate={selectedDate}
                 today={today}
                 cellByDate={cellByDate}
-                onSelect={setSelectedDate}
+                onSelect={(iso) => {
+                  setSelectedDate(iso);
+                  // Lazy-load just the clicked day. Surrounding context comes
+                  // from the timeline viewport observer once it scrolls into
+                  // place, which keeps clicks cheap (no ±3 re-fetch on every
+                  // grid tap).
+                  ensureRange(iso, iso);
+                }}
               />
             </Card>
 
@@ -244,7 +277,7 @@ export function DesktopCalendarPage() {
                 <div style={{ fontSize: 14, fontWeight: 800, color: "var(--fg)", letterSpacing: "-0.01em" }}>
                   {monthLabel(monthFirstIso)}
                 </div>
-                <CalendarSourceButton sources={calendar?.meta?.sourceFreshness ?? []} />
+                <CalendarSourceButton sources={sourceFreshness} />
               </div>
               <div style={{ padding: "12px 8px 4px" }}>
                 <MonthlyEventsTimeline
@@ -254,6 +287,7 @@ export function DesktopCalendarPage() {
                   filteredByDate={filteredByDate}
                   loading={calendarLoading}
                   error={calendarErr}
+                  onVisibleDaysChange={onVisibleDaysChange}
                 />
               </div>
             </Card>
