@@ -117,9 +117,33 @@ describe("dayCacheReducer", () => {
       epoch: 0,
       payloadByDate: new Map([["2026-05-19", payload(2)]]),
     });
-    // Stale response must not promote loading → loaded.
-    expect(stale.byDate.get("2026-05-19")?.kind).toBe("loading");
+    // Stale response must not promote anything to loaded.
+    // (month-changed already demoted the loading entry — see below — so the
+    // day is now back to unloaded, and the stale fetch is a no-op.)
+    expect(stale.byDate.get("2026-05-19")).toBeUndefined();
     expect(stale).toBe(bumped);
+  });
+
+  test("month-changed demotes orphaned 'loading' entries to unloaded", () => {
+    let s = dayCacheReducer(emptyDayCache(), {
+      type: "fetch-started",
+      epoch: 0,
+      days: ["2026-05-18", "2026-05-19"],
+    });
+    s = dayCacheReducer(s, {
+      type: "fetch-succeeded",
+      epoch: 0,
+      payloadByDate: new Map([["2026-05-18", payload(2)]]),
+    });
+    // 2026-05-18 is now loaded; 2026-05-19 is still loading (no response yet).
+    expect(s.byDate.get("2026-05-18")?.kind).toBe("loaded");
+    expect(s.byDate.get("2026-05-19")?.kind).toBe("loading");
+
+    const bumped = dayCacheReducer(s, { type: "month-changed" });
+    // Loaded data survives across month changes (cross-month cache).
+    expect(bumped.byDate.get("2026-05-18")?.kind).toBe("loaded");
+    // Orphaned loading is cleared so the day is eligible for re-fetch.
+    expect(bumped.byDate.get("2026-05-19")).toBeUndefined();
   });
 
   test("fetch-failed marks given days as error (current epoch only)", () => {

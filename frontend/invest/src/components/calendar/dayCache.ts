@@ -64,8 +64,24 @@ export function dayCacheReducer(
   action: DayCacheAction,
 ): DayCacheState {
   switch (action.type) {
-    case "month-changed":
-      return { ...state, epoch: state.epoch + 1 };
+    case "month-changed": {
+      // Bump epoch (invalidates in-flight) and demote orphaned "loading"
+      // entries back to unloaded. The fetches that put them into loading are
+      // bound to the previous epoch and will be dropped on arrival, so without
+      // this demotion they would stay "loading" forever.
+      let next = state.byDate;
+      let mutated = false;
+      for (const [iso, cur] of state.byDate) {
+        if (cur.kind === "loading") {
+          if (!mutated) {
+            next = new Map(state.byDate);
+            mutated = true;
+          }
+          (next as Map<string, DayState>).delete(iso);
+        }
+      }
+      return { epoch: state.epoch + 1, byDate: next };
+    }
 
     case "fetch-started": {
       if (action.epoch !== state.epoch) return state;
