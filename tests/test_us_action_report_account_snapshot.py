@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas.us_action_report import KISUSAccountSnapshot
-from app.services.us_action_report.account_snapshot import build_kis_us_account_snapshot
+from app.services.action_report.us.account_snapshot import build_kis_us_account_snapshot
 
 
 class _FakeAccount:
