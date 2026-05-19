@@ -15,8 +15,10 @@ The corrected form requires either ``snapshot_freshness_summary IS NULL``
 the allow-set. The ``IS NOT NULL`` guard collapses missing-key and
 JSON-null cases to FALSE (reject), no UNKNOWN.
 
-Drop + recreate is idempotent (PostgreSQL has no ``ALTER CONSTRAINT`` for
-CHECK predicates without IF EXISTS gymnastics).
+Drop + recreate is idempotent. Production may already have applied the
+Phase 3 revision while missing this check constraint because earlier deploy
+attempts or test fixtures managed the table shape independently; the follow-up
+must therefore tolerate the old constraint being absent.
 """
 
 from __future__ import annotations
@@ -53,15 +55,30 @@ _NEW_PREDICATE = (
 )
 
 
+def _drop_check_if_exists() -> None:
+    """Drop the stale-gate CHECK if present.
+
+    Alembic's generic ``drop_constraint`` emits ``ALTER TABLE ... DROP
+    CONSTRAINT`` without ``IF EXISTS`` on the installed stack, which makes this
+    follow-up migration fail on production databases whose schema drift already
+    lacks the old check. Use explicit PostgreSQL DDL so the migration remains
+    safe for both states.
+    """
+
+    op.execute(
+        f"ALTER TABLE review.investment_reports DROP CONSTRAINT IF EXISTS {_CHECK_NAME}"
+    )
+
+
 def upgrade() -> None:
-    op.drop_constraint(_CHECK_NAME, "investment_reports", schema="review")
+    _drop_check_if_exists()
     op.create_check_constraint(
         _CHECK_NAME, "investment_reports", _NEW_PREDICATE, schema="review"
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(_CHECK_NAME, "investment_reports", schema="review")
+    _drop_check_if_exists()
     op.create_check_constraint(
         _CHECK_NAME, "investment_reports", _OLD_PREDICATE, schema="review"
     )
