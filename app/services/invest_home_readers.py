@@ -757,7 +757,7 @@ class KISMockHomeReader:
                     _fetch_snapshot(), timeout=mock_total_timeout_sec
                 )
                 timed_out = False
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timed_out = True
                 # Surface the bound on Sentry, then degrade via the outer
                 # exception handler.
@@ -765,9 +765,7 @@ class KISMockHomeReader:
                 if span is not None:
                     span.set_tag("kis_mock.timed_out", True)
                     span.set_data("kis_mock.timeout_sec", mock_timeout_sec)
-                    span.set_data(
-                        "kis_mock.total_timeout_sec", mock_total_timeout_sec
-                    )
+                    span.set_data("kis_mock.total_timeout_sec", mock_total_timeout_sec)
                     span.set_data("kis_mock.max_pages", mock_max_pages)
                     span.set_tag(
                         "kis_mock.retry_request_errors",
@@ -877,13 +875,9 @@ class KISMockHomeReader:
                 span.set_data("kis_mock.balance_call_count", page_count)
                 # ROB-270 observability
                 span.set_data("kis_mock.timeout_sec", mock_timeout_sec)
-                span.set_data(
-                    "kis_mock.total_timeout_sec", mock_total_timeout_sec
-                )
+                span.set_data("kis_mock.total_timeout_sec", mock_total_timeout_sec)
                 span.set_data("kis_mock.max_pages", mock_max_pages)
-                span.set_tag(
-                    "kis_mock.retry_request_errors", mock_retry_request_errors
-                )
+                span.set_tag("kis_mock.retry_request_errors", mock_retry_request_errors)
                 span.set_tag("kis_mock.timed_out", timed_out)
                 span.set_data("kis_mock.attempt_count", 1)
 
