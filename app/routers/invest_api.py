@@ -16,6 +16,7 @@ from app.core.db import get_db
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.invest_account_panel import AccountPanelResponse
 from app.schemas.invest_action_readiness import KrActionReadinessResponse
+from app.schemas.invest_benchmark_gap import BenchmarkGapMatrixResponse
 from app.schemas.invest_calendar import (
     CalendarResponse,
     CalendarTab,
@@ -24,7 +25,6 @@ from app.schemas.invest_calendar import (
 from app.schemas.invest_common_preferred_disparity import (
     CommonPreferredDisparityResponse,
 )
-from app.schemas.invest_benchmark_gap import BenchmarkGapMatrixResponse
 from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
 from app.schemas.invest_crypto import (
     CryptoDashboardResponse,

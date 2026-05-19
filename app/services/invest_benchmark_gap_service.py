@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import Counter
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.schemas.invest_benchmark_gap import (
     BenchmarkGapMatrixResponse,
