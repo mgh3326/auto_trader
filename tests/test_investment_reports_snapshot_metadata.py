@@ -24,9 +24,9 @@ from app.schemas.investment_reports import IngestReportRequest
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
-from tests._investment_reports_helpers import (  # noqa: F401 — re-exports session
-    session,
-)
+
+# ``session`` fixture is auto-discovered via the pytest_plugins entry in
+# tests/conftest.py registering ``tests._investment_reports_helpers``.
 
 
 def _base_request(**overrides) -> IngestReportRequest:

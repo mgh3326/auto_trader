@@ -26,7 +26,10 @@ def test_lint_blocks_buy_verb_on_hard_stale():
     result = lint_action_language(
         report_text="삼성전자 매수",
         bundle_status="stale_fallback",
-        freshness_summary={"overall": "hard_stale", "portfolio": {"status": "hard_stale"}},
+        freshness_summary={
+            "overall": "hard_stale",
+            "portfolio": {"status": "hard_stale"},
+        },
         account_scope="kis_live",
     )
     assert result.ok is False
@@ -53,7 +56,10 @@ def test_lint_allows_soft_language_on_stale():
     result = lint_action_language(
         report_text="관망 권고. 확인 불가 상태입니다.",
         bundle_status="stale_fallback",
-        freshness_summary={"overall": "hard_stale", "portfolio": {"status": "hard_stale"}},
+        freshness_summary={
+            "overall": "hard_stale",
+            "portfolio": {"status": "hard_stale"},
+        },
         account_scope="kis_live",
     )
     assert result.ok is True
@@ -106,7 +112,10 @@ def test_lint_allows_when_no_account_scope():
     result = lint_action_language(
         report_text="매수 추천",
         bundle_status="partial",
-        freshness_summary={"overall": "partial", "portfolio": {"status": "unavailable"}},
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "unavailable"},
+        },
         account_scope=None,
     )
     assert result.ok is True
@@ -115,12 +124,14 @@ def test_lint_allows_when_no_account_scope():
 
 def test_lint_result_dataclass_shape():
     """StaleLintResult/Violation are simple frozen dataclasses used by callers."""
+    import dataclasses
+
     v = StaleLintViolation(
         snapshot_kind="portfolio", matched_verb="매수", excerpt="...매수..."
     )
     r = StaleLintResult(ok=False, violations=[v])
     assert r.ok is False
     assert len(r.violations) == 1
-    # frozen — assignment raises.
-    with pytest.raises(Exception):
+    # frozen — assignment raises FrozenInstanceError.
+    with pytest.raises(dataclasses.FrozenInstanceError):
         r.ok = True  # type: ignore[misc]
