@@ -70,7 +70,7 @@ def _watch_item_dict(client_item_key: str = "watch-1") -> dict:
     }
 
 
-def test_tool_names_are_exactly_six() -> None:
+def test_tool_names_match_registered_set() -> None:
     assert INVESTMENT_REPORT_TOOL_NAMES == {
         "investment_report_create",
         "investment_report_list",
@@ -78,6 +78,8 @@ def test_tool_names_are_exactly_six() -> None:
         "investment_report_decide_item",
         "investment_report_activate_watch",
         "investment_report_context_get",
+        # ROB-273 — opt-in snapshot-backed advisory generator.
+        "investment_report_generate_from_bundle",
     }
 
 
