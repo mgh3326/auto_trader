@@ -8,7 +8,7 @@ import { AIWeeklyCard } from "../../components/calendar/AIWeeklyCard";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
 import { CalendarSourceButton } from "../../components/calendar/CalendarSourceButton";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
-import { MonthCalendarGrid } from "../../components/calendar/MonthCalendarGrid";
+import { MonthCalendarGrid, type MonthCellInfo } from "../../components/calendar/MonthCalendarGrid";
 import { MonthlyEventsTimeline } from "../../components/calendar/MonthlyEventsTimeline";
 import {
   addMonths,
@@ -133,9 +133,15 @@ export function DesktopCalendarPage() {
     return map;
   }, [calendar?.days, typeFilter, regionFilter]);
 
-  const countByDate = useMemo<Map<string, number>>(() => {
-    const m = new Map<string, number>();
-    for (const [iso, day] of filteredByDate) m.set(iso, day.total);
+  // Phase 1: every in-month day has data (42d fetch). Each filtered total
+  // becomes "loaded-nonzero"; days absent from the map are "loaded-zero".
+  // Phase 2 (step E) replaces this with the dayCache hook so "unloaded"
+  // becomes a real third option.
+  const cellByDate = useMemo<Map<string, MonthCellInfo>>(() => {
+    const m = new Map<string, MonthCellInfo>();
+    for (const [iso, day] of filteredByDate) {
+      m.set(iso, { state: "loaded-nonzero", count: day.total });
+    }
     return m;
   }, [filteredByDate]);
 
@@ -172,7 +178,7 @@ export function DesktopCalendarPage() {
                 monthCursor={monthCursor}
                 selectedDate={selectedDate}
                 today={today}
-                countByDate={countByDate}
+                cellByDate={cellByDate}
                 onSelect={setSelectedDate}
               />
             </Card>
