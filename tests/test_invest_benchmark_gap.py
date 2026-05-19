@@ -192,3 +192,42 @@ def test_build_matrix_emits_next_candidates_in_priority_order():
     assert all(c.currentStatus != "covered" for c in matrix.nextCandidates)
     # source policy is non-empty
     assert matrix.sourcePolicy
+
+
+from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from app.core.db import get_db
+from app.routers.dependencies import get_authenticated_user
+from app.routers.invest_api import router as invest_api_router
+
+
+@pytest.fixture
+def app(db_session) -> FastAPI:
+    app = FastAPI()
+    app.include_router(invest_api_router)
+    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=1)
+
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    return app
+
+
+@pytest.mark.asyncio
+async def test_benchmark_gap_endpoint_returns_shape(app: FastAPI):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/invest/api/coverage/benchmark-gap?market=kr")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["market"] == "kr"
+    assert "rows" in payload and len(payload["rows"]) >= 15
+    assert "nextCandidates" in payload
+    assert "summary" in payload
+    assert payload["summary"]["totalRows"] == len(payload["rows"])
+    assert payload["sourcePolicy"]
