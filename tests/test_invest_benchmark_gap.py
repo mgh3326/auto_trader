@@ -193,7 +193,9 @@ def test_build_matrix_emits_next_candidates_in_priority_order():
     matrix = build_benchmark_gap_matrix_from_coverage(coverage, market="kr")
     priorities = [c.priority for c in matrix.nextCandidates]
     # candidates are sorted P0 < P1 < P2 < P3
-    assert priorities == sorted(priorities, key=lambda p: ["P0", "P1", "P2", "P3"].index(p))
+    assert priorities == sorted(
+        priorities, key=lambda p: ["P0", "P1", "P2", "P3"].index(p)
+    )
     # covered rows do not appear as next candidates
     assert all(c.currentStatus != "covered" for c in matrix.nextCandidates)
     # source policy is non-empty
