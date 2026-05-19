@@ -1,7 +1,75 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { MonthlyEventsTimeline } from "../components/calendar/MonthlyEventsTimeline";
 import type { CalendarClusterVM, CalendarEventVM } from "../components/calendar/vm";
+
+// --- IntersectionObserver shim ------------------------------------------
+//
+// jsdom does not implement IntersectionObserver. Tests that need viewport
+// callbacks install this shim, which records each observed element and lets
+// the test fire synthetic entries via `triggerIntersection`. The shim is
+// reset between tests so cross-test bleed is impossible.
+
+interface FakeObserver {
+  callback: IntersectionObserverCallback;
+  observed: Set<Element>;
+  options: IntersectionObserverInit | undefined;
+}
+
+const fakeObservers: FakeObserver[] = [];
+
+function installIntersectionObserverShim() {
+  class MockIntersectionObserver implements IntersectionObserver {
+    readonly root: Element | Document | null = null;
+    readonly rootMargin: string = "";
+    readonly thresholds: ReadonlyArray<number> = [];
+    private readonly _observer: FakeObserver;
+    constructor(
+      callback: IntersectionObserverCallback,
+      options?: IntersectionObserverInit,
+    ) {
+      this._observer = { callback, observed: new Set(), options };
+      fakeObservers.push(this._observer);
+    }
+    observe(target: Element): void {
+      this._observer.observed.add(target);
+    }
+    unobserve(target: Element): void {
+      this._observer.observed.delete(target);
+    }
+    disconnect(): void {
+      this._observer.observed.clear();
+    }
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  }
+  (globalThis as unknown as { IntersectionObserver: typeof IntersectionObserver }).IntersectionObserver =
+    MockIntersectionObserver as unknown as typeof IntersectionObserver;
+}
+
+function triggerIntersection(visibleIsos: string[]): void {
+  for (const obs of fakeObservers) {
+    const entries: IntersectionObserverEntry[] = [];
+    for (const target of obs.observed) {
+      const iso = (target as HTMLElement).getAttribute("data-day-anchor");
+      const isIntersecting = iso != null && visibleIsos.includes(iso);
+      entries.push({
+        target,
+        isIntersecting,
+        intersectionRatio: isIntersecting ? 1 : 0,
+        boundingClientRect: target.getBoundingClientRect(),
+        intersectionRect:
+          isIntersecting
+            ? target.getBoundingClientRect()
+            : ({} as DOMRectReadOnly),
+        rootBounds: null,
+        time: 0,
+      });
+    }
+    obs.callback(entries, {} as IntersectionObserver);
+  }
+}
 
 function evt(id: string, dateIso: string, title: string): CalendarEventVM {
   const day = Number.parseInt(dateIso.slice(8, 10), 10);
@@ -141,5 +209,70 @@ describe("MonthlyEventsTimeline", () => {
     } finally {
       Element.prototype.scrollIntoView = original;
     }
+  });
+});
+
+// --- ROB-272 Phase 2 step D: viewport observer --------------------------
+
+describe("MonthlyEventsTimeline viewport observer (ROB-272 Phase 2)", () => {
+  let originalIO: typeof IntersectionObserver | undefined;
+  beforeEach(() => {
+    originalIO = (globalThis as unknown as { IntersectionObserver?: typeof IntersectionObserver })
+      .IntersectionObserver;
+    fakeObservers.length = 0;
+    installIntersectionObserverShim();
+  });
+  afterEach(() => {
+    fakeObservers.length = 0;
+    if (originalIO) {
+      (globalThis as unknown as { IntersectionObserver: typeof IntersectionObserver }).IntersectionObserver =
+        originalIO;
+    } else {
+      delete (globalThis as unknown as { IntersectionObserver?: typeof IntersectionObserver })
+        .IntersectionObserver;
+    }
+  });
+
+  test("observes every day section when loading=false and error=null", () => {
+    render(
+      <MonthlyEventsTimeline
+        {...baseProps}
+        onVisibleDaysChange={() => {}}
+      />,
+    );
+    // One observer, 31 May 2026 day sections observed.
+    expect(fakeObservers).toHaveLength(1);
+    expect(fakeObservers[0]!.observed.size).toBe(31);
+  });
+
+  test("does NOT observe while loading", () => {
+    render(<MonthlyEventsTimeline {...baseProps} loading onVisibleDaysChange={() => {}} />);
+    // Either no observer constructed at all, or no targets observed.
+    expect(fakeObservers.every((o) => o.observed.size === 0)).toBe(true);
+  });
+
+  test("does NOT observe while error is shown", () => {
+    render(
+      <MonthlyEventsTimeline {...baseProps} error="boom" onVisibleDaysChange={() => {}} />,
+    );
+    expect(fakeObservers.every((o) => o.observed.size === 0)).toBe(true);
+  });
+
+  test("fires onVisibleDaysChange with the set of currently-visible day isos (sorted)", () => {
+    const onVisible = vi.fn<(isos: string[]) => void>();
+    render(<MonthlyEventsTimeline {...baseProps} onVisibleDaysChange={onVisible} />);
+    triggerIntersection(["2026-05-12", "2026-05-10", "2026-05-11"]);
+    expect(onVisible).toHaveBeenCalled();
+    const last = onVisible.mock.calls.at(-1)![0];
+    expect(last).toEqual(["2026-05-10", "2026-05-11", "2026-05-12"]);
+  });
+
+  test("does not call onVisibleDaysChange if no sections are visible", () => {
+    const onVisible = vi.fn<(isos: string[]) => void>();
+    render(<MonthlyEventsTimeline {...baseProps} onVisibleDaysChange={onVisible} />);
+    triggerIntersection([]);
+    // An "all-empty" notification is treated as a no-op: no point waking the
+    // parent up to dispatch an empty ensureRange.
+    expect(onVisible).not.toHaveBeenCalled();
   });
 });

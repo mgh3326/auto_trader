@@ -16,6 +16,12 @@ export interface MonthlyEventsTimelineProps {
   filteredByDate: Map<string, MonthlyDay>;
   loading?: boolean;
   error?: string | null;
+  /**
+   * Viewport observer callback. Fires whenever the set of currently-visible
+   * day sections changes; receives the ISO dates sorted ascending. Used by
+   * pages to drive per-day lazy loading via the day cache (ROB-272 Phase 2).
+   */
+  onVisibleDaysChange?: (visibleIsos: string[]) => void;
 }
 
 export function MonthlyEventsTimeline({
@@ -25,6 +31,7 @@ export function MonthlyEventsTimeline({
   filteredByDate,
   loading = false,
   error = null,
+  onVisibleDaysChange,
 }: MonthlyEventsTimelineProps) {
   const days = useMemo(() => monthDaysIso(monthCursor), [monthCursor]);
   const refs = useRef<Map<string, HTMLElement | null>>(new Map());
@@ -32,6 +39,41 @@ export function MonthlyEventsTimeline({
   // First effective render = first time we render real day sections (not loading/error).
   // Until then we should not scroll: refs aren't populated and the page is still hydrating.
   const hasScrolledOnceRef = useRef(false);
+
+  // Viewport observer (ROB-272 Phase 2): tell the parent which day sections
+  // are currently visible so it can lazy-load just those days. We re-create
+  // the observer whenever the rendered day list changes (i.e. on month nav).
+  useEffect(() => {
+    if (loading || error) return;
+    if (!onVisibleDaysChange) return;
+    if (typeof IntersectionObserver === "undefined") return;
+    const visible = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        let changed = false;
+        for (const entry of entries) {
+          const iso = (entry.target as HTMLElement).getAttribute("data-day-anchor");
+          if (!iso) continue;
+          if (entry.isIntersecting) {
+            if (!visible.has(iso)) {
+              visible.add(iso);
+              changed = true;
+            }
+          } else if (visible.delete(iso)) {
+            changed = true;
+          }
+        }
+        if (changed && visible.size > 0) {
+          onVisibleDaysChange(Array.from(visible).sort());
+        }
+      },
+      { rootMargin: "0px 0px 0px 0px", threshold: 0 },
+    );
+    for (const node of refs.current.values()) {
+      if (node) observer.observe(node);
+    }
+    return () => observer.disconnect();
+  }, [days, loading, error, onVisibleDaysChange]);
 
   useEffect(() => {
     if (loading || error) return;
