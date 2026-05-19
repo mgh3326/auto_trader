@@ -16,6 +16,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from app.services.action_report.common.critical_kinds import (
+    CRITICAL_KIND_DEGRADING_STATUSES,
+    CRITICAL_SNAPSHOT_KINDS,
+)
+
 ForcedActionMode = Literal["no_action", "informational_only", "default"]
 
 
@@ -34,17 +39,6 @@ class GeneratorConstraints:
     allow_action_language: bool
     forced_action_mode: ForcedActionMode
     reason_ko: str
-
-
-# Critical kinds — these are the ones whose absence/staleness forces the
-# generator into ``informational_only`` mode even when the bundle as a whole
-# is only "partial". Matches the Phase 2 policy's "required" set.
-_CRITICAL_KINDS: tuple[str, ...] = ("portfolio", "journal", "watch_context", "market")
-
-# Per-kind statuses that force a degraded mode.
-_KIND_DEGRADING_STATUSES: frozenset[str] = frozenset(
-    {"hard_stale", "unavailable", "failed"}
-)
 
 
 def derive_generator_constraints(
@@ -87,12 +81,12 @@ def derive_generator_constraints(
     # Per-kind checks. Even ``complete`` / ``partial`` bundles must degrade
     # if a critical kind is missing.
     if freshness_summary:
-        for kind in _CRITICAL_KINDS:
+        for kind in CRITICAL_SNAPSHOT_KINDS:
             info = freshness_summary.get(kind)
             if not isinstance(info, Mapping):
                 continue
             kind_status = info.get("status")
-            if kind_status in _KIND_DEGRADING_STATUSES:
+            if kind_status in CRITICAL_KIND_DEGRADING_STATUSES:
                 reason_ko = _critical_kind_reason(kind, kind_status)
                 return GeneratorConstraints(
                     allow_action_language=False,

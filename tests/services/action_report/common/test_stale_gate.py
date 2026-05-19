@@ -122,6 +122,92 @@ def test_lint_allows_when_no_account_scope():
     assert result.violations == []
 
 
+# ---------------------------------------------------------------------------
+# Layer (ii) ↔ (iii) alignment regression — review-pass fix for PR #876 item 2.
+# ---------------------------------------------------------------------------
+#
+# Pre-fix behaviour: stale_gate._is_blocking_state blocked on ANY kind being
+# hard_stale / unavailable, including optional kinds (news, naver, toss,
+# browser_probe, invest_page, candidate_universe, symbol). That diverged from
+# generator_constraints which only degrades on the critical kinds. The aligned
+# behaviour: optional kinds unavailable does NOT block as long as the four
+# critical kinds (portfolio / journal / watch_context / market) are fresh.
+
+
+def test_lint_allows_action_language_when_only_optional_news_unavailable():
+    """Critical kinds fresh + optional news unavailable → action language OK."""
+    result = lint_action_language(
+        report_text="매수 검토",
+        bundle_status="partial",
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "unavailable"},
+        },
+        account_scope="kis_live",
+    )
+    assert result.ok is True
+    assert result.violations == []
+
+
+def test_lint_allows_action_language_when_only_optional_naver_toss_unavailable():
+    """Critical kinds fresh + naver/toss unavailable → action language OK."""
+    result = lint_action_language(
+        report_text="삼성전자 매수 추천",
+        bundle_status="partial",
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "naver_remote_debug": {"status": "unavailable"},
+            "toss_remote_debug": {"status": "unavailable"},
+        },
+        account_scope="kis_live",
+    )
+    assert result.ok is True
+
+
+def test_lint_still_blocks_when_critical_kind_hard_stale_even_with_optional_fresh():
+    """Critical kind degraded → still blocks even if optional kinds are fresh."""
+    result = lint_action_language(
+        report_text="매수",
+        bundle_status="partial",
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "hard_stale"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+        },
+        account_scope="kis_live",
+    )
+    assert result.ok is False
+    assert any(v.matched_verb == "매수" for v in result.violations)
+
+
+def test_lint_critical_kind_failed_blocks_even_with_overall_partial():
+    """``failed`` status on a critical kind blocks regardless of overall=partial."""
+    result = lint_action_language(
+        report_text="매도 권고",
+        bundle_status="partial",
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "failed"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+        },
+        account_scope="kis_live",
+    )
+    assert result.ok is False
+
+
 def test_lint_result_dataclass_shape():
     """StaleLintResult/Violation are simple frozen dataclasses used by callers."""
     import dataclasses

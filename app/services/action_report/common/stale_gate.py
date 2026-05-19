@@ -22,6 +22,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.action_report.common.critical_kinds import (
+    CRITICAL_KIND_DEGRADING_STATUSES,
+    CRITICAL_SNAPSHOT_KINDS,
+)
+
 # Korean forbidden verbs — substring-matched because Korean particles attach
 # without word boundaries.
 _KR_FORBIDDEN: tuple[str, ...] = (
@@ -43,10 +48,6 @@ _EN_PATTERN = re.compile(
     r"\b(buy|sell|long|short|add|trim|stop)(s|ed|ing)?\b",
     re.IGNORECASE,
 )
-
-# Statuses on a single kind that make the bundle effectively unusable for
-# executable action language, regardless of bundle_status as a whole.
-_KIND_STATUS_BLOCKS: frozenset[str] = frozenset({"hard_stale", "unavailable", "failed"})
 
 # Bundle statuses that always block executable action language.
 _BUNDLE_STATUS_BLOCKS: frozenset[str] = frozenset({"stale_fallback", "failed"})
@@ -121,14 +122,19 @@ def _is_blocking_state(
     # Bundle-level stale states always block.
     if bundle_status in _BUNDLE_STATUS_BLOCKS:
         return True
-    # Otherwise, per-kind stale states (especially portfolio) still block.
+    # Per-kind: only the CRITICAL kinds (portfolio / journal / watch_context
+    # / market — see ``critical_kinds.py``) block executable action language.
+    # Optional kinds (news / naver / toss / browser / invest_page /
+    # candidate_universe / symbol) being unavailable degrades the bundle to
+    # ``partial`` but must NOT block — this aligns the post-gen linter with
+    # ``generator_constraints.derive_generator_constraints`` so the two
+    # stale-gate layers agree on the contract.
     if freshness_summary:
-        for kind, info in freshness_summary.items():
-            if kind == "overall":
-                continue
+        for kind in CRITICAL_SNAPSHOT_KINDS:
+            info = freshness_summary.get(kind)
             if isinstance(info, Mapping):
                 kind_status = info.get("status")
-                if kind_status in _KIND_STATUS_BLOCKS:
+                if kind_status in CRITICAL_KIND_DEGRADING_STATUSES:
                     return True
     return False
 
