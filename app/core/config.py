@@ -434,6 +434,12 @@ class Settings(BaseSettings):
     # importable but unreachable from caller surfaces until flipped post-merge.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-2-mcp-api.md §2.
     INVESTMENT_SNAPSHOTS_MCP_ENABLED: bool = False
+    # ROB-269 Phase 3 — gates service-side stale-gate enforcement on report
+    # ingestion when account_scope='kis_live' + snapshot_bundle_uuid present.
+    # DB CHECK ck_investment_reports_no_published_on_hard_stale is always live
+    # (not flag-gated) — this flag only controls the pre-DB rejection layer.
+    # See docs/superpowers/plans/2026-05-19-rob-269-phase-3-report-generator.md §5.
+    ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED: bool = False
     # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
     execution_ledger_reconcile_scheduler_enabled: bool = False
     execution_ledger_reconcile_scheduler_cron: str = "*/30 * * * *"

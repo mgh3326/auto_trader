@@ -68,6 +68,15 @@ class InvestmentReportIngestionService:
             report_metadata=request.metadata,
             valid_until=request.valid_until,
             published_at=request.published_at,
+            # ROB-269 Phase 3 — bundle metadata round-trip. None values are
+            # legal (legacy reports). DB CHECK only rejects published rows
+            # whose snapshot_freshness_summary['overall'] is stale.
+            snapshot_bundle_uuid=request.snapshot_bundle_uuid,
+            snapshot_policy_version=request.snapshot_policy_version,
+            snapshot_coverage_summary=request.snapshot_coverage_summary,
+            snapshot_freshness_summary=request.snapshot_freshness_summary,
+            source_conflicts=request.source_conflicts,
+            unavailable_sources=request.unavailable_sources,
         )
 
         for item_req in request.items:

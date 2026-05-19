@@ -99,6 +99,18 @@ class InvestmentReport(Base):
         ),
         Index("ix_investment_reports_status_created", "status", "created_at"),
         Index("ix_investment_reports_report_type_created", "report_type", "created_at"),
+        # ROB-269 Phase 3 — snapshot bundle linkage + 3-layer stale gate layer (i).
+        Index(
+            "ix_investment_reports_snapshot_bundle_uuid",
+            "snapshot_bundle_uuid",
+        ),
+        CheckConstraint(
+            "status <> 'published' "
+            "OR snapshot_freshness_summary IS NULL "
+            "OR (snapshot_freshness_summary->>'overall') IN "
+            "('fresh','soft_stale','partial')",
+            name="ck_investment_reports_no_published_on_hard_stale",
+        ),
         {"schema": "review"},
     )
 
@@ -156,6 +168,19 @@ class InvestmentReport(Base):
     )
     published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    # ROB-269 Phase 3 — bundle linkage + freshness/coverage metadata. All
+    # nullable so legacy reports stay readable. ``snapshot_freshness_summary``
+    # is consulted by the DB CHECK above; the structure must always carry an
+    # ``overall`` key when set (see schemas / stale_gate).
+    snapshot_bundle_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True)
+    )
+    snapshot_policy_version: Mapped[str | None] = mapped_column(Text)
+    snapshot_coverage_summary: Mapped[dict | None] = mapped_column(JSONB)
+    snapshot_freshness_summary: Mapped[dict | None] = mapped_column(JSONB)
+    source_conflicts: Mapped[dict | None] = mapped_column(JSONB)
+    unavailable_sources: Mapped[dict | None] = mapped_column(JSONB)
 
 
 # ---------------------------------------------------------------------------

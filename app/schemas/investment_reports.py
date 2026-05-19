@@ -143,6 +143,20 @@ class IngestReportRequest(BaseModel):
     generator_version: str = "v1"
     kst_date: str
 
+    # ROB-269 Phase 3 — bundle linkage + stale-gate inputs. All optional;
+    # legacy callers omit them and the DB CHECK's legacy clause
+    # (snapshot_freshness_summary IS NULL) lets the row through.
+    snapshot_bundle_uuid: UUID | None = None
+    snapshot_policy_version: str | None = None
+    snapshot_coverage_summary: dict[str, Any] | None = None
+    snapshot_freshness_summary: dict[str, Any] | None = None
+    """When set, MUST carry an ``overall`` key whose value is one of
+    ``fresh|soft_stale|partial|hard_stale|failed|unavailable`` — the DB
+    CHECK rejects ``published`` rows whose ``overall`` is not in
+    {fresh, soft_stale, partial}."""
+    source_conflicts: dict[str, Any] | None = None
+    unavailable_sources: dict[str, Any] | None = None
+
     @model_validator(mode="after")
     def _validate_advisory_only(self) -> IngestReportRequest:
         # Defense in depth — DB CHECK already enforces this.
