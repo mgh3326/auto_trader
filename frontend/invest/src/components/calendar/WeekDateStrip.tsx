@@ -1,5 +1,9 @@
-import type { CalendarDay } from "../../types/calendar";
-import { calendarDayEventCount, dayOfWeekLabel } from "./vm";
+import { dayOfWeekLabel } from "./vm";
+
+export interface WeekDateStripDay {
+  date: string;
+  eventCount: number;
+}
 
 export function WeekDateStrip({
   days,
@@ -7,7 +11,7 @@ export function WeekDateStrip({
   onSelect,
   today,
 }: {
-  days: CalendarDay[];
+  days: WeekDateStripDay[];
   selectedDate: string;
   onSelect: (date: string) => void;
   today?: string;
@@ -27,7 +31,6 @@ export function WeekDateStrip({
         const dow = dayOfWeekLabel(d.date);
         const isSelected = d.date === selectedDate;
         const isToday = today != null && d.date === today;
-        const eventCount = calendarDayEventCount(d);
         return (
           <button
             key={d.date}
@@ -64,8 +67,8 @@ export function WeekDateStrip({
             >
               {day}
             </span>
-            {eventCount > 0 && (
-              <span style={{ fontSize: 10, color: "var(--fg-3)", fontWeight: 600 }}>{eventCount}</span>
+            {d.eventCount > 0 && (
+              <span style={{ fontSize: 10, color: "var(--fg-3)", fontWeight: 600 }}>{d.eventCount}</span>
             )}
           </button>
         );

@@ -16,6 +16,12 @@ export interface MonthlyEventsTimelineProps {
   filteredByDate: Map<string, MonthlyDay>;
   loading?: boolean;
   error?: string | null;
+  /**
+   * Viewport observer callback. Fires whenever the set of currently-visible
+   * day sections changes; receives the ISO dates sorted ascending. Used by
+   * pages to drive per-day lazy loading via the day cache (ROB-272 Phase 2).
+   */
+  onVisibleDaysChange?: (visibleIsos: string[]) => void;
 }
 
 export function MonthlyEventsTimeline({
@@ -25,18 +31,52 @@ export function MonthlyEventsTimeline({
   filteredByDate,
   loading = false,
   error = null,
+  onVisibleDaysChange,
 }: MonthlyEventsTimelineProps) {
   const days = useMemo(() => monthDaysIso(monthCursor), [monthCursor]);
   const refs = useRef<Map<string, HTMLElement | null>>(new Map());
 
-  // Track whether this is the first render — first mount must not steal the scroll.
-  const isFirstRender = useRef(true);
+  // First effective render = first time we render real day sections (not loading/error).
+  // Until then we should not scroll: refs aren't populated and the page is still hydrating.
+  const hasScrolledOnceRef = useRef(false);
+
+  // Viewport observer (ROB-272 Phase 2): tell the parent which day sections
+  // are currently visible so it can lazy-load just those days. We re-create
+  // the observer whenever the rendered day list changes (i.e. on month nav).
+  useEffect(() => {
+    if (loading || error) return;
+    if (!onVisibleDaysChange) return;
+    if (typeof IntersectionObserver === "undefined") return;
+    const visible = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        let changed = false;
+        for (const entry of entries) {
+          const iso = (entry.target as HTMLElement).getAttribute("data-day-anchor");
+          if (!iso) continue;
+          if (entry.isIntersecting) {
+            if (!visible.has(iso)) {
+              visible.add(iso);
+              changed = true;
+            }
+          } else if (visible.delete(iso)) {
+            changed = true;
+          }
+        }
+        if (changed && visible.size > 0) {
+          onVisibleDaysChange(Array.from(visible).sort());
+        }
+      },
+      { rootMargin: "0px 0px 0px 0px", threshold: 0 },
+    );
+    for (const node of refs.current.values()) {
+      if (node) observer.observe(node);
+    }
+    return () => observer.disconnect();
+  }, [days, loading, error, onVisibleDaysChange]);
 
   useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      return;
-    }
+    if (loading || error) return;
     const node = refs.current.get(selectedDate);
     if (!node) return;
     // Some test environments (older jsdom) leave scrollIntoView undefined;
@@ -46,11 +86,15 @@ export function MonthlyEventsTimeline({
       typeof window !== "undefined" &&
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // First-mount scroll is instant so the page doesn't visibly drift on load.
+    // Subsequent selectedDate changes are treated as user-initiated navigation and animate.
+    const isFirstEffectiveScroll = !hasScrolledOnceRef.current;
+    hasScrolledOnceRef.current = true;
     node.scrollIntoView({
-      behavior: reduceMotion ? "auto" : "smooth",
+      behavior: isFirstEffectiveScroll || reduceMotion ? "auto" : "smooth",
       block: "start",
     });
-  }, [selectedDate]);
+  }, [selectedDate, loading, error]);
 
   if (loading) {
     return (

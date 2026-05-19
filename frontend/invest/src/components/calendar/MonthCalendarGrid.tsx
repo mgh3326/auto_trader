@@ -1,14 +1,26 @@
+import type { DayDisplayState } from "./dayCache";
 import { fmtLocal, gridStartFromMonth, startOfMonth } from "./vm";
 
 const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"] as const;
 
 export type MonthGridDensity = "comfortable" | "compact";
 
+export interface MonthCellInfo {
+  state: DayDisplayState;
+  /** Only meaningful when state === "loaded-nonzero". */
+  count: number;
+}
+
 export interface MonthCalendarGridProps {
   monthCursor: Date;
   selectedDate: string;
   today: string;
-  countByDate: Map<string, number>;
+  /**
+   * Per-day display info. Days not present in the map are rendered as
+   * "unloaded" — a distinct UX state from a loaded-empty day so a
+   * not-yet-fetched day is never shown as "0 events" (ROB-272 Phase 2).
+   */
+  cellByDate: ReadonlyMap<string, MonthCellInfo>;
   onSelect: (date: string) => void;
   density?: MonthGridDensity;
   loading?: boolean;
@@ -19,21 +31,26 @@ function clampCount(n: number): string {
   return String(n);
 }
 
-function ariaLabel(iso: string, count: number, isToday: boolean): string {
+function ariaLabel(iso: string, info: MonthCellInfo, isToday: boolean): string {
   const [y, m, d] = iso.split("-");
   const y2 = Number.parseInt(y ?? "0", 10);
   const m2 = Number.parseInt(m ?? "0", 10);
   const d2 = Number.parseInt(d ?? "0", 10);
   const todayPart = isToday ? " (오늘)" : "";
-  const countPart = count > 0 ? `, 일정 ${count}건` : "";
+  const countPart =
+    info.state === "loaded-nonzero" && info.count > 0
+      ? `, 일정 ${info.count}건`
+      : "";
   return `${y2}년 ${m2}월 ${d2}일${todayPart}${countPart}`;
 }
+
+const UNLOADED_INFO: MonthCellInfo = { state: "unloaded", count: 0 };
 
 export function MonthCalendarGrid({
   monthCursor,
   selectedDate,
   today,
-  countByDate,
+  cellByDate,
   onSelect,
   density = "comfortable",
   loading = false,
@@ -76,7 +93,7 @@ export function MonthCalendarGrid({
           }
           const isToday = c.iso === today;
           const isSelected = c.iso === selectedDate;
-          const count = countByDate.get(c.iso) ?? 0;
+          const info = cellByDate.get(c.iso) ?? UNLOADED_INFO;
           return (
             <button
               key={c.iso}
@@ -87,15 +104,41 @@ export function MonthCalendarGrid({
               data-today={isToday ? "true" : "false"}
               data-selected={isSelected ? "true" : "false"}
               data-out-of-month={c.outOfMonth ? "true" : "false"}
+              data-state={info.state}
               aria-current={isToday ? "date" : undefined}
               aria-pressed={isSelected ? "true" : "false"}
-              aria-label={ariaLabel(c.iso, count, isToday)}
+              aria-label={ariaLabel(c.iso, info, isToday)}
               onClick={() => onSelect(c.iso)}
             >
               <span className="calendar-grid-cell__day">{c.day}</span>
-              {count > 0 && (
+              {info.state === "loaded-nonzero" && info.count > 0 && (
                 <span className="calendar-grid-cell__count" aria-hidden="true">
-                  {clampCount(count)}
+                  {clampCount(info.count)}
+                </span>
+              )}
+              {info.state === "unloaded" && (
+                <span
+                  className="calendar-grid-cell__unloaded"
+                  data-testid="calendar-grid-cell-unloaded"
+                  aria-hidden="true"
+                >
+                  ·
+                </span>
+              )}
+              {info.state === "loading" && (
+                <span
+                  className="calendar-grid-cell__loading"
+                  data-testid="calendar-grid-cell-loading"
+                  aria-hidden="true"
+                />
+              )}
+              {info.state === "error" && (
+                <span
+                  className="calendar-grid-cell__error"
+                  data-testid="calendar-grid-cell-error"
+                  aria-hidden="true"
+                >
+                  !
                 </span>
               )}
             </button>

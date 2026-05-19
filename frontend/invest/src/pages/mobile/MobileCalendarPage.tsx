@@ -1,31 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MobileShell } from "../../mobile/MobileShell";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
-import type { CalendarDaySummary, CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
+import type { WeeklySummaryResponse } from "../../types/calendar";
 import { Icon } from "../../ds";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
 import { CalendarSourceButton } from "../../components/calendar/CalendarSourceButton";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
 import { MonthlyEventsTimeline } from "../../components/calendar/MonthlyEventsTimeline";
 import { SparkleIcon } from "../../components/calendar/SparkleIcon";
-import { WeekDateStrip } from "../../components/calendar/WeekDateStrip";
+import { WeekDateStrip, type WeekDateStripDay } from "../../components/calendar/WeekDateStrip";
+import { useCalendarDayCache } from "../../components/calendar/useCalendarDayCache";
 import {
   addMonths,
-  clampSelectedDateToMonth,
   fmtLocal,
-  gridEndFromMonth,
-  gridStartFromMonth,
   monthTitleLabel,
   startOfMonth,
-  toClusterVM,
-  toEventVM,
   weekStartOf,
   type CalendarClusterVM,
   type CalendarEventVM,
   type DisplayEventType,
   type DisplayRegion,
 } from "../../components/calendar/vm";
-import type { CalendarDay } from "../../types/calendar";
 
 type TypeFilter = "all" | DisplayEventType;
 type RegionFilter = "all" | DisplayRegion;
@@ -36,24 +31,14 @@ interface FilteredDay {
   total: number;
 }
 
+const INITIAL_CHUNK_RADIUS = 3;
+
 function weekStartDateOf(dateIso: string): Date {
   const d = new Date(`${dateIso}T00:00:00`);
   const offset = (d.getDay() + 6) % 7; // Mon=0
   d.setDate(d.getDate() - offset);
   d.setHours(0, 0, 0, 0);
   return d;
-}
-
-function buildWeekDays(weekStart: Date, calendarDays: CalendarDay[]): CalendarDay[] {
-  const byDate = new Map(calendarDays.map((d) => [d.date, d]));
-  const out: CalendarDay[] = [];
-  for (let i = 0; i < 7; i += 1) {
-    const d = new Date(weekStart);
-    d.setDate(d.getDate() + i);
-    const iso = fmtLocal(d);
-    out.push(byDate.get(iso) ?? { date: iso, events: [], clusters: [], dataState: "missing" as const });
-  }
-  return out;
 }
 
 function matches(
@@ -68,8 +53,6 @@ function matches(
 
 export function MobileCalendarPage() {
   const [monthCursor, setMonthCursor] = useState<Date>(() => startOfMonth(new Date()));
-  const gridStart = useMemo(() => gridStartFromMonth(monthCursor), [monthCursor]);
-  const gridEnd = useMemo(() => gridEndFromMonth(monthCursor), [monthCursor]);
   const today = fmtLocal(new Date());
 
   const [selectedDate, setSelectedDate] = useState<string>(() => {
@@ -80,36 +63,19 @@ export function MobileCalendarPage() {
     return fmtLocal(monthCursor);
   });
 
-  const [calendar, setCalendar] = useState<CalendarResponse | undefined>();
-  const [calendarLoading, setCalendarLoading] = useState(true);
-  const [calendarErr, setCalendarErr] = useState<string | null>(null);
+  const { cache, ensureRange } = useCalendarDayCache({
+    monthCursor,
+    selectedDate,
+    initialChunkRadius: INITIAL_CHUNK_RADIUS,
+    fetchFn: fetchCalendar,
+  });
+
   const [summary, setSummary] = useState<WeeklySummaryResponse | undefined>();
   const [summaryErr, setSummaryErr] = useState<string | undefined>();
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [regionFilter, setRegionFilter] = useState<RegionFilter>("all");
-
-  useEffect(() => {
-    let cancel = false;
-    setCalendar(undefined);
-    setCalendarLoading(true);
-    setCalendarErr(null);
-    fetchCalendar({ fromDate: fmtLocal(gridStart), toDate: fmtLocal(gridEnd), tab: "all" })
-      .then((r) => {
-        if (cancel) return;
-        setCalendar(r);
-        setCalendarLoading(false);
-      })
-      .catch((e) => {
-        if (cancel) return;
-        setCalendarErr(String(e?.message ?? e));
-        setCalendarLoading(false);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [gridStart, gridEnd]);
 
   const summaryWeekStart = useMemo(() => weekStartOf(selectedDate), [selectedDate]);
   useEffect(() => {
@@ -136,38 +102,66 @@ export function MobileCalendarPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSummary, summaryWeekStart]);
 
-  const weekDays = useMemo(
-    () => buildWeekDays(weekStartDateOf(selectedDate), calendar?.days ?? []),
-    [calendar?.days, selectedDate],
-  );
-
   const filteredByDate = useMemo<Map<string, FilteredDay>>(() => {
     const map = new Map<string, FilteredDay>();
-    for (const d of calendar?.days ?? []) {
-      const events = d.events
-        .map((event) => toEventVM(event, d.date))
-        .filter((event) => matches(event, typeFilter, regionFilter));
-      const clusters = d.clusters
-        .map((cluster) => toClusterVM(cluster, d.date))
-        .filter((cluster) => matches(cluster, typeFilter, regionFilter));
+    for (const [iso, day] of cache.byDate) {
+      if (day.kind !== "loaded") continue;
+      const events = day.events.filter((event) =>
+        matches(event, typeFilter, regionFilter),
+      );
+      const clusters = day.clusters.filter((cluster) =>
+        matches(cluster, typeFilter, regionFilter),
+      );
       const total = events.length + clusters.reduce((s, c) => s + c.count, 0);
       if (total === 0) continue;
-      map.set(d.date, { events, clusters, total });
+      map.set(iso, { events, clusters, total });
     }
     return map;
-  }, [calendar?.days, typeFilter, regionFilter]);
+  }, [cache.byDate, typeFilter, regionFilter]);
+
+  const weekDays: WeekDateStripDay[] = useMemo(() => {
+    const start = weekStartDateOf(selectedDate);
+    const out: WeekDateStripDay[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      const iso = fmtLocal(d);
+      // Pull the *filtered* total so the strip count tracks the active
+      // type/region filter (matches the timeline's "이 날은 ..." rendering).
+      const total = filteredByDate.get(iso)?.total ?? 0;
+      out.push({ date: iso, eventCount: total });
+    }
+    return out;
+  }, [filteredByDate, selectedDate]);
+
+  const selectedDayState = cache.byDate.get(selectedDate);
+  const calendarErr =
+    selectedDayState?.kind === "error" ? selectedDayState.reason : null;
+  const calendarLoading =
+    calendarErr == null &&
+    (selectedDayState == null ||
+      selectedDayState.kind === "unloaded" ||
+      selectedDayState.kind === "loading");
+
+  const onVisibleDaysChange = useCallback(
+    (visibleIsos: string[]) => {
+      if (visibleIsos.length === 0) return;
+      ensureRange(visibleIsos[0]!, visibleIsos[visibleIsos.length - 1]!);
+    },
+    [ensureRange],
+  );
 
   const goPrevMonth = () => {
     setMonthCursor((m) => {
       const next = addMonths(m, -1);
-      setSelectedDate((sel) => clampSelectedDateToMonth(sel, next));
+      setSelectedDate(defaultSelectedDateForMonth(next, today));
       return next;
     });
   };
   const goNextMonth = () => {
     setMonthCursor((m) => {
       const next = addMonths(m, 1);
-      setSelectedDate((sel) => clampSelectedDateToMonth(sel, next));
+      setSelectedDate(defaultSelectedDateForMonth(next, today));
       return next;
     });
   };
@@ -185,7 +179,10 @@ export function MobileCalendarPage() {
           <WeekDateStrip
             days={weekDays}
             selectedDate={selectedDate}
-            onSelect={setSelectedDate}
+            onSelect={(iso) => {
+              setSelectedDate(iso);
+              ensureRange(iso, iso);
+            }}
             today={today}
           />
 
@@ -225,7 +222,7 @@ export function MobileCalendarPage() {
           </div>
 
           <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 8px" }}>
-            <CalendarSourceButton sources={calendar?.meta?.sourceFreshness ?? []} />
+            <CalendarSourceButton sources={[]} />
           </div>
           <MonthlyEventsTimeline
             monthCursor={monthCursor}
@@ -234,6 +231,7 @@ export function MobileCalendarPage() {
             filteredByDate={filteredByDate}
             loading={calendarLoading}
             error={calendarErr}
+            onVisibleDaysChange={onVisibleDaysChange}
           />
         </div>
       </MobileShell>
@@ -247,4 +245,16 @@ export function MobileCalendarPage() {
       )}
     </>
   );
+}
+
+function defaultSelectedDateForMonth(monthCursor: Date, todayIso: string): string {
+  const monthFirst = startOfMonth(monthCursor);
+  const todayDate = new Date(`${todayIso}T00:00:00`);
+  if (
+    todayDate.getFullYear() === monthFirst.getFullYear() &&
+    todayDate.getMonth() === monthFirst.getMonth()
+  ) {
+    return todayIso;
+  }
+  return fmtLocal(monthFirst);
 }
