@@ -480,32 +480,28 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
 
 
 class _FakeKISMockAccount:
-    async def fetch_my_stocks(
-        self, *, is_mock: bool, is_overseas: bool
-    ) -> list[dict[str, Any]]:
-        assert is_mock is True
-        assert is_overseas is False
-        return [
-            {
-                "pdno": "005935",
-                "prdt_name": "삼성전자우",
-                "hldg_qty": "5",
-                "pchs_avg_pric": "60000",
-                "pchs_amt": "300000",
-                "evlu_amt": "310000",
-                "evlu_pfls_amt": "10000",
-                "evlu_pfls_rt": "3.3333",
-            }
-        ]
-
-    async def inquire_domestic_cash_balance(
-        self, is_mock: bool = False
+    async def fetch_domestic_balance_snapshot(
+        self, *, is_mock: bool = False
     ) -> dict[str, Any]:
         assert is_mock is True
         return {
-            "dnca_tot_amt": 200_000.0,
-            "stck_cash_ord_psbl_amt": 180_000.0,
-            "raw": {},
+            "holdings": [
+                {
+                    "pdno": "005935",
+                    "prdt_name": "삼성전자우",
+                    "hldg_qty": "5",
+                    "pchs_avg_pric": "60000",
+                    "pchs_amt": "300000",
+                    "evlu_amt": "310000",
+                    "evlu_pfls_amt": "10000",
+                    "evlu_pfls_rt": "3.3333",
+                }
+            ],
+            "cash": {
+                "dnca_tot_amt": 200_000.0,
+                "stck_cash_ord_psbl_amt": 180_000.0,
+            },
+            "page_count": 1,
         }
 
 
@@ -555,29 +551,26 @@ async def test_kis_mock_reader_reports_zero_cost_basis_gain(
     """Zero recorded cost basis should not hide an otherwise valued mock position."""
 
     class _ZeroCostAccount:
-        async def fetch_my_stocks(
-            self, *, is_mock: bool, is_overseas: bool
-        ) -> list[dict[str, Any]]:
-            assert is_mock is True
-            assert is_overseas is False
-            return [
-                {
-                    "pdno": "000000",
-                    "prdt_name": "무상입고",
-                    "hldg_qty": "1",
-                    "pchs_avg_pric": "0",
-                    "pchs_amt": "0",
-                    "evlu_amt": "12345",
-                    "evlu_pfls_amt": "12345",
-                    "evlu_pfls_rt": "0",
-                }
-            ]
-
-        async def inquire_domestic_cash_balance(
-            self, is_mock: bool = False
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
         ) -> dict[str, Any]:
             assert is_mock is True
-            return {"dnca_tot_amt": 0, "stck_cash_ord_psbl_amt": 0, "raw": {}}
+            return {
+                "holdings": [
+                    {
+                        "pdno": "000000",
+                        "prdt_name": "무상입고",
+                        "hldg_qty": "1",
+                        "pchs_avg_pric": "0",
+                        "pchs_amt": "0",
+                        "evlu_amt": "12345",
+                        "evlu_pfls_amt": "12345",
+                        "evlu_pfls_rt": "0",
+                    }
+                ],
+                "cash": {"dnca_tot_amt": 0, "stck_cash_ord_psbl_amt": 0},
+                "page_count": 1,
+            }
 
     class _ZeroCostClient:
         def __init__(self) -> None:
@@ -603,21 +596,17 @@ async def test_kis_mock_reader_ignores_unparseable_cash_amounts(
     """Bad mock cash strings should not poison holdings or account valuation."""
 
     class _BadCashAccount:
-        async def fetch_my_stocks(
-            self, *, is_mock: bool, is_overseas: bool
-        ) -> list[dict[str, Any]]:
-            assert is_mock is True
-            assert is_overseas is False
-            return []
-
-        async def inquire_domestic_cash_balance(
-            self, is_mock: bool = False
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
         ) -> dict[str, Any]:
             assert is_mock is True
             return {
-                "dnca_tot_amt": "not-a-number",
-                "stck_cash_ord_psbl_amt": "also-bad",
-                "raw": {},
+                "holdings": [],
+                "cash": {
+                    "dnca_tot_amt": "not-a-number",
+                    "stck_cash_ord_psbl_amt": "also-bad",
+                },
+                "page_count": 1,
             }
 
     class _BadCashClient:
@@ -681,81 +670,177 @@ async def test_kis_mock_reader_partial_failure_returns_warning(
     assert result.warning.source == "kis_mock"
 
 
+# ---------------------------------------------------------------------------
+# ROB-268: KISMockHomeReader uses balance snapshot (no duplicate VTS calls)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_kis_mock_reader_cash_balance_called_with_is_mock_true(
+async def test_kis_mock_reader_uses_balance_snapshot_and_skips_inquire_cash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """inquire_domestic_cash_balance must be called with is_mock=True."""
-    cash_balance_calls: list[bool] = []
+    """ROB-268: KISMockHomeReader pulls cash from the holdings snapshot.
 
-    class _TrackingAccount:
-        async def fetch_my_stocks(
-            self, *, is_mock: bool, is_overseas: bool
-        ) -> list[dict[str, Any]]:
-            return []
+    The reader must not issue a second /inquire-balance via
+    ``inquire_domestic_cash_balance`` when the snapshot already carries cash.
+    """
+    snapshot_calls: list[bool] = []
+    legacy_calls: list[str] = []
+
+    class _SnapshotAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
+        ) -> dict[str, Any]:
+            snapshot_calls.append(is_mock)
+            return {
+                "holdings": [
+                    {
+                        "pdno": "005930",
+                        "prdt_name": "삼성전자",
+                        "hldg_qty": "1",
+                        "pchs_avg_pric": "70000",
+                        "pchs_amt": "70000",
+                        "evlu_amt": "72000",
+                        "evlu_pfls_amt": "2000",
+                        "evlu_pfls_rt": "2.857",
+                    }
+                ],
+                "cash": {
+                    "dnca_tot_amt": "200000",
+                    "stck_cash_ord_psbl_amt": "180000",
+                },
+                "page_count": 1,
+            }
 
         async def inquire_domestic_cash_balance(
             self, is_mock: bool = False
         ) -> dict[str, Any]:
-            cash_balance_calls.append(is_mock)
-            return {
-                "dnca_tot_amt": 50_000.0,
-                "stck_cash_ord_psbl_amt": 40_000.0,
-                "raw": {},
-            }
+            legacy_calls.append("inquire_domestic_cash_balance")
+            return {}
 
-    class _TrackingClient:
+        async def fetch_my_stocks(self, **kwargs: Any) -> list[dict[str, Any]]:
+            legacy_calls.append("fetch_my_stocks")
+            return []
+
+    class _SnapshotClient:
         def __init__(self) -> None:
-            self.account = _TrackingAccount()
+            self.account = _SnapshotAccount()
 
-    monkeypatch.setattr(readers, "SafeKISMockClient", _TrackingClient)
+    monkeypatch.setattr(readers, "SafeKISMockClient", _SnapshotClient)
     monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
 
     result = await readers.KISMockHomeReader().fetch(user_id=1)
 
-    assert cash_balance_calls == [True], (
-        "inquire_domestic_cash_balance was not called with is_mock=True"
+    assert snapshot_calls == [True], (
+        "Expected one fetch_domestic_balance_snapshot(is_mock=True) call; "
+        f"got {snapshot_calls}"
     )
+    assert legacy_calls == [], (
+        "Reader must not call legacy duplicate paths when snapshot is "
+        f"available; got {legacy_calls}"
+    )
+
     account = result.accounts[0]
-    assert account.cashBalances.krw == pytest.approx(50_000.0)
-    assert account.buyingPower.krw == pytest.approx(40_000.0)
+    assert account.source == "kis_mock"
+    assert account.valueKrw == 72_000
+    assert account.cashBalances.krw == pytest.approx(200_000.0)
+    assert account.buyingPower.krw == pytest.approx(180_000.0)
+
+    holding = result.holdings[0]
+    assert holding.symbol == "005930"
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_kis_mock_reader_cash_failure_is_non_fatal(
+async def test_kis_mock_reader_snapshot_unparseable_cash_no_extra_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Cash balance fetch failure must not block holdings/account — produces a warning."""
+    """ROB-268: snapshot cash that is unparseable must degrade gracefully.
 
-    class _CashFailAccount:
-        async def fetch_my_stocks(
-            self, *, is_mock: bool, is_overseas: bool
-        ) -> list[dict[str, Any]]:
-            return [
-                {
-                    "pdno": "005930",
-                    "prdt_name": "삼성전자",
-                    "hldg_qty": "1",
-                    "pchs_avg_pric": "70000",
-                    "pchs_amt": "70000",
-                    "evlu_amt": "72000",
-                    "evlu_pfls_amt": "2000",
-                    "evlu_pfls_rt": "2.857",
-                }
-            ]
+    The reader must surface cash=None without falling back to a duplicate
+    /inquire-balance — the fallback path is exactly what we are eliminating.
+    """
+    extra_calls: list[str] = []
+
+    class _BadCashSnapshotAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
+        ) -> dict[str, Any]:
+            return {
+                "holdings": [],
+                "cash": {
+                    "dnca_tot_amt": "not-a-number",
+                    "stck_cash_ord_psbl_amt": "also-bad",
+                },
+                "page_count": 1,
+            }
 
         async def inquire_domestic_cash_balance(
             self, is_mock: bool = False
         ) -> dict[str, Any]:
-            raise RuntimeError("cash API unavailable")
+            extra_calls.append("inquire_domestic_cash_balance")
+            return {}
 
-    class _CashFailClient:
+        async def fetch_my_stocks(self, **kwargs: Any) -> list[dict[str, Any]]:
+            extra_calls.append("fetch_my_stocks")
+            return []
+
+    class _BadCashSnapshotClient:
         def __init__(self) -> None:
-            self.account = _CashFailAccount()
+            self.account = _BadCashSnapshotAccount()
 
-    monkeypatch.setattr(readers, "SafeKISMockClient", _CashFailClient)
+    monkeypatch.setattr(readers, "SafeKISMockClient", _BadCashSnapshotClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert extra_calls == [], (
+        f"Bad cash parsing must not trigger duplicate VTS calls; got {extra_calls}"
+    )
+    account = result.accounts[0]
+    assert account.cashBalances.krw is None
+    assert account.buyingPower.krw is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_snapshot_missing_cash_keys_does_not_break(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-268: snapshot with no output2 (empty ``cash`` dict) must not fail the reader.
+
+    Distinct from the unparseable-cash case: this models KIS returning output1
+    only, with no output2 array — e.g. KIS-side schema drift.
+    """
+
+    class _MissingCashAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
+        ) -> dict[str, Any]:
+            return {
+                "holdings": [
+                    {
+                        "pdno": "005930",
+                        "prdt_name": "삼성전자",
+                        "hldg_qty": "1",
+                        "pchs_avg_pric": "70000",
+                        "pchs_amt": "70000",
+                        "evlu_amt": "72000",
+                        "evlu_pfls_amt": "2000",
+                        "evlu_pfls_rt": "2.857",
+                    }
+                ],
+                "cash": {},
+                "page_count": 1,
+                "stop_reason": "tr_cont_end",
+            }
+
+    class _MissingCashClient:
+        def __init__(self) -> None:
+            self.account = _MissingCashAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _MissingCashClient)
     monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
 
     result = await readers.KISMockHomeReader().fetch(user_id=1)
@@ -765,7 +850,159 @@ async def test_kis_mock_reader_cash_failure_is_non_fatal(
     account = result.accounts[0]
     assert account.cashBalances.krw is None
     assert account.buyingPower.krw is None
-    # Warning emitted but result is not empty
+
+
+class _RecordingSpan:
+    """Captures Sentry set_tag / set_data calls for assertion."""
+
+    def __init__(self) -> None:
+        self.tags: dict[str, Any] = {}
+        self.data: dict[str, Any] = {}
+
+    def set_tag(self, key: str, value: Any) -> None:
+        self.tags[key] = value
+
+    def set_data(self, key: str, value: Any) -> None:
+        self.data[key] = value
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_emits_sentry_observability_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-268: tag the current Sentry span with snapshot observability fields.
+
+    Deploy-time verification of the duplicate-call fix depends on these tags;
+    they are part of the acceptance criteria (see Linear ROB-268).
+    """
+
+    class _SnapshotAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
+        ) -> dict[str, Any]:
+            return {
+                "holdings": [],
+                "cash": {
+                    "dnca_tot_amt": "100000",
+                    "stck_cash_ord_psbl_amt": "90000",
+                },
+                "page_count": 1,
+                "stop_reason": "tr_cont_end",
+            }
+
+    class _SnapshotClient:
+        def __init__(self) -> None:
+            self.account = _SnapshotAccount()
+
+    span = _RecordingSpan()
+    monkeypatch.setattr(readers, "SafeKISMockClient", _SnapshotClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+    monkeypatch.setattr(readers.sentry_sdk, "get_current_span", lambda: span)
+
+    await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert span.tags.get("kis_mock.used_cash_from_snapshot") is True
+    assert span.tags.get("kis_mock.cash_fallback") is False
+    assert span.tags.get("kis_mock.pagination_stop_reason") == "tr_cont_end"
+    assert span.data.get("kis_mock.balance_page_count") == 1
+    assert span.data.get("kis_mock.balance_call_count") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_cash_fallback_tag_when_unparseable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-268: ``kis_mock.cash_fallback`` must be True when cash cannot be parsed."""
+
+    class _BadCashSnapshotAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
+        ) -> dict[str, Any]:
+            return {
+                "holdings": [],
+                "cash": {
+                    "dnca_tot_amt": "not-a-number",
+                    "stck_cash_ord_psbl_amt": "also-bad",
+                },
+                "page_count": 1,
+                "stop_reason": "tr_cont_end",
+            }
+
+    class _BadCashClient:
+        def __init__(self) -> None:
+            self.account = _BadCashSnapshotAccount()
+
+    span = _RecordingSpan()
+    monkeypatch.setattr(readers, "SafeKISMockClient", _BadCashClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+    monkeypatch.setattr(readers.sentry_sdk, "get_current_span", lambda: span)
+
+    await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert span.tags.get("kis_mock.cash_fallback") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_no_op_when_no_active_sentry_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-268: reader must not break when Sentry has no active span (disabled / tests)."""
+
+    class _SnapshotAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
+        ) -> dict[str, Any]:
+            return {
+                "holdings": [],
+                "cash": {
+                    "dnca_tot_amt": "100000",
+                    "stck_cash_ord_psbl_amt": "90000",
+                },
+                "page_count": 1,
+                "stop_reason": "tr_cont_end",
+            }
+
+    class _SnapshotClient:
+        def __init__(self) -> None:
+            self.account = _SnapshotAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _SnapshotClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+    monkeypatch.setattr(readers.sentry_sdk, "get_current_span", lambda: None)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.accounts and result.accounts[0].source == "kis_mock"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_snapshot_failure_returns_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-268: snapshot exception (e.g. VTS timeout) must yield warning,
+    not propagate up and break live/manual/Upbit sources."""
+
+    class _ExplodingAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, *, is_mock: bool = False
+        ) -> dict[str, Any]:
+            raise RuntimeError("VTS timeout")
+
+    class _ExplodingClient:
+        def __init__(self) -> None:
+            self.account = _ExplodingAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _ExplodingClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
     assert result.warning is not None
     assert result.warning.source == "kis_mock"
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+import sentry_sdk
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import MarketType
@@ -730,9 +731,15 @@ class KISMockHomeReader:
 
         try:
             client = SafeKISMockClient()
-            stocks_kr = await client.account.fetch_my_stocks(
-                is_mock=True, is_overseas=False
+            # ROB-268: single inquire-balance snapshot supplies both holdings
+            # (output1) and cash (output2). Previously this reader issued
+            # fetch_my_stocks + inquire_domestic_cash_balance — two duplicate
+            # round trips to the same KIS VTS endpoint.
+            snapshot = await client.account.fetch_domestic_balance_snapshot(
+                is_mock=True
             )
+            stocks_kr = snapshot.get("holdings") or []
+            cash_payload = snapshot.get("cash") or {}
 
             holdings: list[Holding] = []
             for s in stocks_kr:
@@ -791,28 +798,34 @@ class KISMockHomeReader:
             cash_krw: float | None = None
             buying_power_krw: float | None = None
             cash_warning: InvestHomeWarning | None = None
-            try:
-                cash_data = await client.account.inquire_domestic_cash_balance(
-                    is_mock=True
-                )
-                raw_balance = cash_data.get("dnca_tot_amt")
-                raw_orderable = cash_data.get("stck_cash_ord_psbl_amt")
-                if raw_balance is not None:
-                    try:
-                        cash_krw = float(raw_balance)
-                    except (TypeError, ValueError):
-                        cash_krw = None
-                if raw_orderable is not None:
-                    try:
-                        buying_power_krw = float(raw_orderable)
-                    except (TypeError, ValueError):
-                        buying_power_krw = None
-            except Exception as exc:
-                logger.warning("KIS mock cash balance fetch failed: %s", exc)
-                cash_warning = InvestHomeWarning(
-                    source="kis_mock",
-                    message="KIS 모의투자 예수금/주문가능 조회 실패",
-                )
+            raw_balance = cash_payload.get("dnca_tot_amt")
+            raw_orderable = cash_payload.get("stck_cash_ord_psbl_amt")
+            if raw_balance is not None:
+                try:
+                    cash_krw = float(raw_balance)
+                except (TypeError, ValueError):
+                    cash_krw = None
+            if raw_orderable is not None:
+                try:
+                    buying_power_krw = float(raw_orderable)
+                except (TypeError, ValueError):
+                    buying_power_krw = None
+
+            # ROB-268: surface snapshot observability on the enclosing
+            # `invest.home.kis_mock` span so deploy-time Sentry verification can
+            # confirm the duplicate-call regression has been eliminated.
+            # Best-effort: no-op when Sentry has no active span.
+            span = sentry_sdk.get_current_span()
+            if span is not None:
+                page_count = int(snapshot.get("page_count") or 1)
+                cash_fallback = cash_krw is None or buying_power_krw is None
+                span.set_tag("kis_mock.used_cash_from_snapshot", True)
+                span.set_tag("kis_mock.cash_fallback", cash_fallback)
+                stop_reason = snapshot.get("stop_reason")
+                if stop_reason:
+                    span.set_tag("kis_mock.pagination_stop_reason", stop_reason)
+                span.set_data("kis_mock.balance_page_count", page_count)
+                span.set_data("kis_mock.balance_call_count", page_count)
 
             account = Account(
                 accountId="kis_mock_account",
