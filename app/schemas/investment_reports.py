@@ -1,0 +1,403 @@
+"""ROB-265 — Pydantic v2 request schemas for the investment_* service layer.
+
+These mirror the locked product decisions:
+
+* Advisory-only invariants: ``kis_live`` account + ``nxt`` session both
+  force ``execution_mode='advisory_only'``.
+* Watch items: ``watch_condition`` and ``valid_until`` are both required
+  when ``item_kind='watch'``.
+* Schema validators run BEFORE we hit the DB, so callers get a clean
+  Pydantic ValidationError instead of an IntegrityError.
+
+Defense in depth — the DB CHECK constraints from Plan 1 are the
+authoritative enforcement; these are early rejection for cleaner errors.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# Enum-equivalent Literals — match the DB CHECK constraints from
+# alembic/versions/20260518_rob265_add_investment_reports.py exactly.
+MarketLiteral = Literal["kr", "us", "crypto"]
+MarketSessionLiteral = Literal["regular", "nxt", "pre", "post", "24x7"]
+AccountScopeLiteral = Literal["kis_live", "kis_mock", "alpaca_paper", "upbit_live"]
+ExecutionModeLiteral = Literal["advisory_only", "mock_preview"]
+ReportStatusLiteral = Literal["draft", "published", "decided", "expired", "superseded"]
+
+ItemKindLiteral = Literal["action", "watch", "risk"]
+ItemSideLiteral = Literal["buy", "sell"]
+ItemIntentLiteral = Literal[
+    "buy_review",
+    "sell_review",
+    "risk_review",
+    "trend_recovery_review",
+    "rebalance_review",
+]
+TargetKindLiteral = Literal["asset", "index", "fx"]
+ItemStatusLiteral = Literal[
+    "proposed", "approved", "denied", "deferred", "activated", "expired"
+]
+
+WatchMetricLiteral = Literal["price", "rsi", "trade_value"]
+WatchOperatorLiteral = Literal["above", "below"]
+WatchActionModeLiteral = Literal["notify_only", "preview_only", "approval_required"]
+
+DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_approve"]
+
+
+class WatchConditionPayload(BaseModel):
+    """Embedded condition for a watch item. Persisted as JSONB."""
+
+    metric: WatchMetricLiteral
+    operator: WatchOperatorLiteral
+    threshold: Decimal
+    threshold_key: str | None = None
+    target_kind: TargetKindLiteral = "asset"
+    action_mode: WatchActionModeLiteral = "notify_only"
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _default_threshold_key(self) -> WatchConditionPayload:
+        # Canonical form: str(Decimal). Caller can override if they need
+        # a different dedup key (e.g. rounded value).
+        if self.threshold_key is None:
+            self.threshold_key = str(self.threshold)
+        return self
+
+
+class IngestReportItem(BaseModel):
+    """One proposal item attached to an ingested report.
+
+    ``client_item_key`` is a caller-supplied disambiguator used by the
+    item idempotency-key composer. It must be unique within a single
+    report bundle. Use it to disambiguate items that share natural
+    fields — multiple risk items, scoped buys on the same symbol, etc.
+    """
+
+    client_item_key: str = Field(min_length=1)
+    item_kind: ItemKindLiteral
+    symbol: str | None = None
+    side: ItemSideLiteral | None = None
+    intent: ItemIntentLiteral
+    target_kind: TargetKindLiteral = "asset"
+    priority: int = 0
+    confidence: Decimal | None = None
+    rationale: str
+    evidence_snapshot: dict[str, Any] = Field(default_factory=dict)
+    watch_condition: WatchConditionPayload | None = None
+    trigger_checklist: list[Any] = Field(default_factory=list)
+    max_action: dict[str, Any] = Field(default_factory=dict)
+    valid_until: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_watch_invariants(self) -> IngestReportItem:
+        if self.item_kind == "watch":
+            if self.watch_condition is None:
+                raise ValueError(
+                    "watch items must carry watch_condition (item_kind='watch')"
+                )
+            if self.valid_until is None:
+                raise ValueError(
+                    "watch items must carry valid_until (item_kind='watch')"
+                )
+        return self
+
+
+class IngestReportRequest(BaseModel):
+    """Idempotent report-bundle ingestion request.
+
+    The repository / ingestion service composes deterministic idempotency
+    keys from ``report_type`` + ``market`` + ``market_session`` +
+    ``kst_date`` + ``generator_version``.
+    """
+
+    report_type: str
+    market: MarketLiteral
+    market_session: MarketSessionLiteral | None = None
+    account_scope: AccountScopeLiteral | None = None
+    execution_mode: ExecutionModeLiteral = "advisory_only"
+    created_by_profile: str
+    title: str
+    summary: str
+    risk_summary: str | None = None
+    thesis_text: str | None = None
+    no_action_note: str | None = None
+    market_snapshot: dict[str, Any] = Field(default_factory=dict)
+    portfolio_snapshot: dict[str, Any] = Field(default_factory=dict)
+    previous_report_uuid: UUID | None = None
+    status: Literal["draft", "published"] = "draft"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    valid_until: datetime | None = None
+    published_at: datetime | None = None
+    items: list[IngestReportItem] = Field(default_factory=list)
+
+    # Deterministic idempotency components.
+    generator_version: str = "v1"
+    kst_date: str
+
+    @model_validator(mode="after")
+    def _validate_advisory_only(self) -> IngestReportRequest:
+        # Defense in depth — DB CHECK already enforces this.
+        if self.account_scope == "kis_live" and self.execution_mode != "advisory_only":
+            raise ValueError(
+                "account_scope='kis_live' requires execution_mode='advisory_only'"
+            )
+        if self.market_session == "nxt" and self.execution_mode != "advisory_only":
+            raise ValueError(
+                "market_session='nxt' requires execution_mode='advisory_only'"
+            )
+        return self
+
+
+class RecordDecisionRequest(BaseModel):
+    """Operator decision on a single item.
+
+    ``partial_approve`` requires a non-empty ``approved_payload_snapshot``
+    — the snapshot is the canonical record of what was scoped down (e.g.
+    ``{"max_notional_krw": 100_000}``). A partial approve without scope
+    is indistinguishable from a full approve and should not transition
+    the item.
+    """
+
+    item_uuid: UUID
+    decision: DecisionVerbLiteral
+    actor: str
+    decision_note: str | None = None
+    approved_payload_snapshot: dict[str, Any] | None = None
+    idempotency_key: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_partial_approve_has_payload(self) -> RecordDecisionRequest:
+        if self.decision == "partial_approve" and not self.approved_payload_snapshot:
+            raise ValueError(
+                "partial_approve requires non-empty approved_payload_snapshot"
+            )
+        return self
+
+
+class ActivateWatchRequest(BaseModel):
+    """Activate an approved watch item into ``investment_watch_alerts``."""
+
+    item_uuid: UUID
+    actor: str
+    idempotency_key: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Response models (Plan 3 — HTTP / MCP read surface)
+# ---------------------------------------------------------------------------
+#
+# All response models use ``from_attributes=True`` so they can be built
+# directly from an ORM instance via ``Model.model_validate(row)``.
+# ``populate_by_name=True`` is set on response models that need to surface
+# a ``metadata`` JSON field — the ORM attribute is ``report_metadata``
+# but the API contract exposes the plain ``metadata`` key.
+
+
+class InvestmentReportResponse(BaseModel):
+    """Single ``investment_reports`` row, serialised for HTTP / MCP."""
+
+    report_uuid: UUID
+    report_type: str
+    market: MarketLiteral
+    market_session: MarketSessionLiteral | None
+    account_scope: AccountScopeLiteral | None
+    execution_mode: ExecutionModeLiteral
+    created_by_profile: str
+    title: str
+    summary: str
+    risk_summary: str | None
+    thesis_text: str | None
+    no_action_note: str | None
+    market_snapshot: dict[str, Any]
+    portfolio_snapshot: dict[str, Any]
+    previous_report_uuid: UUID | None
+    status: ReportStatusLiteral
+    metadata: dict[str, Any] = Field(
+        validation_alias="report_metadata", serialization_alias="metadata"
+    )
+    created_at: datetime
+    updated_at: datetime
+    published_at: datetime | None
+    valid_until: datetime | None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class InvestmentReportItemResponse(BaseModel):
+    """Single ``investment_report_items`` row."""
+
+    item_uuid: UUID
+    item_kind: ItemKindLiteral
+    symbol: str | None
+    side: ItemSideLiteral | None
+    intent: ItemIntentLiteral
+    target_kind: TargetKindLiteral
+    priority: int
+    confidence: Decimal | None
+    rationale: str
+    evidence_snapshot: dict[str, Any]
+    watch_condition: dict[str, Any] | None
+    trigger_checklist: list[Any]
+    max_action: dict[str, Any]
+    valid_until: datetime | None
+    status: ItemStatusLiteral
+    metadata: dict[str, Any] = Field(
+        validation_alias="item_metadata", serialization_alias="metadata"
+    )
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class InvestmentReportItemDecisionResponse(BaseModel):
+    """Single ``investment_report_item_decisions`` row."""
+
+    decision_uuid: UUID
+    decision: DecisionVerbLiteral
+    actor: str
+    decision_note: str | None
+    approved_payload_snapshot: dict[str, Any] | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InvestmentWatchAlertResponse(BaseModel):
+    """Single ``investment_watch_alerts`` row."""
+
+    alert_uuid: UUID
+    source_report_uuid: UUID
+    source_item_uuid: UUID
+    market: MarketLiteral
+    target_kind: TargetKindLiteral
+    symbol: str
+    metric: WatchMetricLiteral
+    operator: WatchOperatorLiteral
+    threshold: Decimal
+    threshold_key: str
+    intent: ItemIntentLiteral
+    action_mode: WatchActionModeLiteral
+    rationale: str
+    trigger_checklist: list[Any]
+    max_action: dict[str, Any]
+    valid_until: datetime
+    status: Literal["active", "triggered", "expired", "canceled"]
+    metadata: dict[str, Any] = Field(
+        validation_alias="alert_metadata", serialization_alias="metadata"
+    )
+    created_at: datetime
+    activated_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class InvestmentWatchEventResponse(BaseModel):
+    """Single ``investment_watch_events`` row.
+
+    Plan 4 hardening — Hermes delivery tracking columns
+    (``delivery_status`` / ``delivery_reason`` / ``delivered_at`` /
+    ``delivery_attempts``) are surfaced so operators / frontend can
+    see whether the notification actually reached Hermes. The alert
+    is only consumed (status='triggered') once delivery_status reaches
+    ``delivered``; a ``skipped`` or ``failed`` row means the watch is
+    still active and the next scan loop will re-attempt.
+    """
+
+    event_uuid: UUID
+    alert_id: int | None
+    source_report_uuid: UUID
+    source_item_uuid: UUID
+    market: MarketLiteral
+    target_kind: TargetKindLiteral
+    symbol: str
+    metric: WatchMetricLiteral
+    operator: WatchOperatorLiteral
+    threshold: Decimal
+    threshold_key: str
+    intent: ItemIntentLiteral
+    action_mode: WatchActionModeLiteral
+    current_value: Decimal | None
+    scanner_snapshot: dict[str, Any]
+    outcome: Literal[
+        "notified",
+        "review_required",
+        "preview_attached",
+        "expired",
+        "ignored",
+        "failed",
+    ]
+    follow_up_report_item_id: int | None
+    correlation_id: str
+    kst_date: str
+    delivery_status: Literal["pending", "delivered", "skipped", "failed"]
+    delivery_reason: str | None
+    delivered_at: datetime | None
+    delivery_attempts: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InvestmentReportBundle(BaseModel):
+    """``investment_report_get`` / ``GET /.../investment-reports/{uuid}``.
+
+    ``decisions_by_item_uuid`` is keyed by string UUID for external
+    consumers (the service-layer dict is keyed by the integer item.id).
+    """
+
+    report: InvestmentReportResponse
+    items: list[InvestmentReportItemResponse]
+    decisions_by_item_uuid: dict[str, list[InvestmentReportItemDecisionResponse]]
+    alerts: list[InvestmentWatchAlertResponse]
+    events: list[InvestmentWatchEventResponse]
+
+
+class InvestmentReportListResponse(BaseModel):
+    """``investment_report_list`` / ``GET /.../investment-reports``."""
+
+    reports: list[InvestmentReportResponse]
+
+
+class PreviousReportContextResponse(BaseModel):
+    """``investment_report_context_get`` / ``GET /.../investment-reports/context``."""
+
+    prior_reports: list[InvestmentReportResponse]
+    unresolved_deferred_items: list[InvestmentReportItemResponse]
+    active_watches: list[InvestmentWatchAlertResponse]
+    triggered_events: list[InvestmentWatchEventResponse]
+    recent_decisions: list[InvestmentReportItemDecisionResponse]
+
+
+class InvestmentReportCreateResponse(BaseModel):
+    """``investment_report_create`` MCP return shape."""
+
+    success: bool = True
+    idempotent: bool
+    report: InvestmentReportResponse
+
+
+class InvestmentReportDecideItemResponse(BaseModel):
+    """``investment_report_decide_item`` MCP return shape."""
+
+    success: bool = True
+    decision: InvestmentReportItemDecisionResponse
+    item: InvestmentReportItemResponse
+
+
+class InvestmentReportActivateWatchResponse(BaseModel):
+    """``investment_report_activate_watch`` MCP return shape."""
+
+    success: bool = True
+    alert: InvestmentWatchAlertResponse
+    item: InvestmentReportItemResponse

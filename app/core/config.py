@@ -367,6 +367,14 @@ class Settings(BaseSettings):
     OPENCLAW_SCREENER_CALLBACK_URL: str = "http://localhost:8000/api/screener/callback"
     OPENCLAW_ENABLED: bool = False
 
+    # Hermes review-trigger notification (ROB-265 Plan 4). Replaces the
+    # OpenClaw-flavoured watch-alert delivery for ``investment_watch_events``.
+    # When ``HERMES_ENABLED`` is False the client skips the HTTP call and
+    # returns ``status='skipped'`` — useful for tests and disabled-env runs.
+    HERMES_WEBHOOK_URL: str = "http://localhost:18790/hooks/review-trigger"
+    HERMES_TOKEN: str = ""
+    HERMES_ENABLED: bool = False
+
     # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
     N8N_FILL_WEBHOOK_URL: str = ""
     # Watch Alert router (Phase 0 of ROB-122 — transport-neutral seam).

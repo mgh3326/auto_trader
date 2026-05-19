@@ -111,7 +111,6 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Discord button flows: `cancel_order(order_id="...", market="...")` — symbol auto-lookup enabled
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
-- `manage_watch_alerts(action, market=None, target_kind=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
@@ -530,76 +529,19 @@ Behavior:
 - When Yahoo analyst counts or target statistics are unavailable, the corresponding US `consensus` fields are returned as `null` instead of fabricated zeroes.
 - When Yahoo provides neither usable aggregate counts nor usable analyst target data, the US response includes a top-level `warning`.
 
-### `manage_watch_alerts` spec
-Parameters:
-- `action`: Required action - `"add"`, `"remove"`, `"list"`
-- `market`: Market - `"crypto"`, `"kr"`, `"us"` (required for `add`/`remove`, optional for `list`)
-- `target_kind`: Watched target type - `"asset"` (default), `"index"`, or `"fx"`
-- `symbol`: Asset ticker, index symbol, or FX symbol (required for `add`/`remove`)
-- `metric`: Condition metric - `"price"`, `"rsi"`, or `"trade_value"` (required for `add`/`remove`)
-- `operator`: Condition operator - `"above"` or `"below"` (required for `add`/`remove`)
-- `threshold`: Numeric threshold value (required for `add`/`remove`)
+### `manage_watch_alerts` — removed (ROB-265)
 
-Behavior:
-- `action="add"`: Creates a watch condition in Redis; repeated same condition is idempotent.
-- `action="remove"`: Removes one matching watch condition.
-- `action="list"`: Returns all watches, optionally filtered by market.
-- Triggered watches are removed only after successful outbound alert delivery by the scheduler path.
-- Legacy asset watches stored before `target_kind` are listed as `target_kind="asset"` and can still be removed with the same tool arguments.
-
-Supported target/metric combinations:
-- `target_kind="asset"`: `price` and `rsi` for `crypto`, `kr`, `us`; `trade_value` for `kr` only.
-- `target_kind="index"`: `price` for `market="kr"` and `symbol="KOSPI"` or `"KOSDAQ"`.
-- `target_kind="fx"`: `price` for `market="kr"` and `symbol="USDKRW"`.
-
-Example calls:
-```text
-manage_watch_alerts(action="add", market="kr", target_kind="index", symbol="KOSPI", metric="price", operator="below", threshold=6176.75)
-manage_watch_alerts(action="add", market="kr", target_kind="index", symbol="KOSDAQ", metric="price", operator="below", threshold=1161.00)
-manage_watch_alerts(action="add", market="kr", target_kind="fx", symbol="USDKRW", metric="price", operator="above", threshold=1478)
-manage_watch_alerts(action="add", market="kr", symbol="005930", metric="trade_value", operator="above", threshold=1000000000)
-```
-
-Response examples:
-```json
-{
-  "success": true,
-  "action": "add",
-  "market": "crypto",
-  "target_kind": "asset",
-  "symbol": "BTC",
-  "condition_type": "price_below",
-  "threshold": 90000000.0,
-  "created": true,
-  "already_exists": false
-}
-```
-
-```json
-{
-  "success": true,
-  "action": "list",
-  "watches": {
-    "crypto": [
-      {
-        "target_kind": "asset",
-        "symbol": "BTC",
-        "condition_type": "price_below",
-        "threshold": 90000000.0,
-        "created_at": "2026-02-17T13:40:00+09:00"
-      }
-    ]
-  }
-}
-```
-
-Error examples:
-```json
-{
-  "success": false,
-  "error": "Unknown action: foo"
-}
-```
+The legacy Redis-backed `manage_watch_alerts` MCP tool was removed by
+ROB-265 along with the `watch_alerts` / `watch_order_intent_ledger` /
+`watch_scanner` Redis surface. Report-scoped watches now flow through
+`investment_report_activate_watch` (which copies an approved watch
+item into `investment_watch_alerts` as an immutable activation
+snapshot) and the `investment_watch_scanner` job (which evaluates
+those alerts, writes `investment_watch_events` with the full trigger
+identity snapshot, and emits Hermes review-trigger notifications).
+Watches are review triggers, not automatic order instructions —
+delivery state is auditable per event row (`delivery_status` /
+`delivery_reason` / `delivered_at` / `delivery_attempts`).
 
 ### `screen_stocks` spec
 Parameters:

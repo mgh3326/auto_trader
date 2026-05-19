@@ -9,6 +9,13 @@ from .invest_momentum_event_snapshot import (
     InvestThemeEventSnapshot,
     InvestThemeEventSnapshotStock,
 )
+from .investment_reports import (
+    InvestmentReport,
+    InvestmentReportItem,
+    InvestmentReportItemDecision,
+    InvestmentWatchAlert,
+    InvestmentWatchEvent,
+)
 from .investor_flow_snapshot import InvestorFlowSnapshot
 from .kr_symbol_universe import KRSymbolUniverse
 from .manual_holdings import (
@@ -112,6 +119,11 @@ __all__ = [
     "TradeJournal",
     "StockInfo",
     "StockAnalysisResult",
+    "InvestmentReport",
+    "InvestmentReportItem",
+    "InvestmentReportItemDecision",
+    "InvestmentWatchAlert",
+    "InvestmentWatchEvent",
     "InvestorFlowSnapshot",
     "InvestCryptoScreenerSnapshot",
     "InvestMomentumEventSnapshot",

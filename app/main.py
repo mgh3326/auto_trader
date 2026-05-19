@@ -25,7 +25,6 @@ from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
     ai_markdown,
     alpaca_paper_ledger,
-    analysis_reports,
     candidate_discovery,
     deprecated_pages,
     health,
@@ -33,6 +32,7 @@ from app.routers import (
     invest_app_spa,
     invest_fills,
     invest_web_spa,
+    investment_reports,
     kospi200,
     market_events,
     n8n,
@@ -60,7 +60,6 @@ from app.routers import (
     trading_decisions,
     trading_decisions_spa,
     user_defaults,
-    watch_order_intent_ledger,
     websocket,
 )
 from app.services.error_serialization import (
@@ -178,7 +177,7 @@ def create_app() -> FastAPI:
     app.include_router(user_defaults.router)
     app.include_router(order_estimation.router)
     app.include_router(order_previews.router)
-    app.include_router(analysis_reports.router)
+    app.include_router(investment_reports.router)
     app.include_router(symbol_settings.router)
     app.include_router(portfolio.router)
     app.include_router(ai_markdown.router)
@@ -202,7 +201,6 @@ def create_app() -> FastAPI:
     app.include_router(alpaca_paper_ledger.router)
     app.include_router(market_events.router)
     app.include_router(research_reports.router)
-    app.include_router(watch_order_intent_ledger.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
     app.include_router(websocket.router)

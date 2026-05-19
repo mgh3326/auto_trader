@@ -19,7 +19,8 @@
 // /invest/coverage          — Data coverage dashboard.
 // /invest/insights          — Read-only market insight cards.
 // /invest/screener          — Stock screener (골라보기).
-// /invest/action-center     — Analyst report / approval candidate action center.
+// /invest/reports                 — Investment report list (ROB-265).
+// /invest/reports/:reportUuid     — Single investment report bundle.
 // /invest/stocks/:m/:sym    — Stock detail page.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
@@ -35,7 +36,10 @@ import { DesktopMarketPage } from "./pages/desktop/DesktopMarketPage";
 import { DesktopInsightsPage } from "./pages/desktop/DesktopInsightsPage";
 import { FxMacroRoute } from "./pages/desktop/FxMacroPage";
 import { DesktopCryptoPage } from "./pages/desktop/DesktopCryptoPage";
-import { ActionCenterRoute } from "./pages/desktop/DesktopActionCenterPage";
+import {
+  InvestmentReportBundleRoute,
+  InvestmentReportsRoute,
+} from "./pages/desktop/DesktopInvestmentReportsPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
@@ -83,7 +87,8 @@ export const router = createBrowserRouter(
     { path: "/crypto", element: <DesktopCryptoPage /> },
     { path: "/crypto/:pair", element: <CryptoPairRedirect /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
-    { path: "/action-center", element: <ActionCenterRoute /> },
+    { path: "/reports", element: <InvestmentReportsRoute /> },
+    { path: "/reports/:reportUuid", element: <InvestmentReportBundleRoute /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 
     // Legacy /invest/app/* URLs redirect to their canonical /invest/*

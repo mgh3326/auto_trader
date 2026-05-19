@@ -1,0 +1,113 @@
+"""ROB-265 — Watch activation service.
+
+Copies an approved watch :class:`InvestmentReportItem` into the
+immutable activation snapshot held in :class:`InvestmentWatchAlert`.
+Items are the source of truth; once activated, the alert's snapshot
+fields are not mutated again (the scanner re-wire in Plan 4 only
+flips ``status`` between active / triggered / expired / canceled).
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.investment_reports import InvestmentWatchAlert
+from app.schemas.investment_reports import ActivateWatchRequest
+from app.services.investment_reports.idempotency import watch_activation_key
+from app.services.investment_reports.repository import InvestmentReportsRepository
+
+
+class WatchActivationService:
+    """Activate an approved watch item into ``investment_watch_alerts``."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        repository: InvestmentReportsRepository | None = None,
+    ) -> None:
+        self._session = session
+        self._repo = repository or InvestmentReportsRepository(session)
+
+    async def activate(self, request: ActivateWatchRequest) -> InvestmentWatchAlert:
+        item = await self._repo.get_item_by_uuid(request.item_uuid)
+        if item is None:
+            raise ValueError(f"item not found: {request.item_uuid}")
+
+        idempotency_key = request.idempotency_key or watch_activation_key(
+            source_item_uuid=str(item.item_uuid)
+        )
+
+        # Idempotent re-activate: a subsequent call after the item has
+        # already transitioned to ``activated`` returns the existing alert
+        # without re-validating.
+        existing = await self._repo.get_alert_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing.source_item_uuid != item.item_uuid:
+                # Caller-supplied idempotency_key collided with an alert
+                # already sourced from a different item — reject loudly
+                # rather than silently aliasing.
+                raise ValueError(
+                    f"idempotency_key {idempotency_key!r} already used for a "
+                    f"different watch item (existing source_item_uuid="
+                    f"{existing.source_item_uuid}, requested source_item_uuid="
+                    f"{item.item_uuid})"
+                )
+            return existing
+
+        if item.item_kind != "watch":
+            raise ValueError(
+                f"only watch items can be activated; item_kind={item.item_kind}"
+            )
+        if item.status != "approved":
+            raise ValueError(
+                f"only approved items can be activated; status={item.status}"
+            )
+        if item.watch_condition is None:
+            raise ValueError("watch_condition missing on item (corrupt state)")
+        if item.valid_until is None:
+            raise ValueError("valid_until missing on watch item (corrupt state)")
+        if item.symbol is None:
+            raise ValueError("symbol missing on watch item")
+
+        report = await self._repo.get_report_by_id(item.report_id)
+        if report is None:
+            raise ValueError(f"report not found for item: {item.report_id}")
+
+        condition: dict[str, Any] = item.watch_condition
+        threshold = _to_decimal(condition.get("threshold"))
+        threshold_key = condition.get("threshold_key") or str(threshold)
+
+        alert = await self._repo.insert_alert(
+            alert_uuid=None,  # default from PG
+            idempotency_key=idempotency_key,
+            source_report_uuid=report.report_uuid,
+            source_item_uuid=item.item_uuid,
+            market=report.market,
+            target_kind=item.target_kind,
+            symbol=item.symbol,
+            metric=condition["metric"],
+            operator=condition["operator"],
+            threshold=threshold,
+            threshold_key=threshold_key,
+            intent=item.intent,
+            action_mode=condition.get("action_mode", "notify_only"),
+            rationale=item.rationale,
+            trigger_checklist=list(item.trigger_checklist),
+            max_action=dict(item.max_action),
+            valid_until=item.valid_until,
+        )
+
+        await self._repo.update_item_status(item.id, "activated")
+        await self._session.flush()
+        return alert
+
+
+def _to_decimal(value: Any) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    if value is None:
+        raise ValueError("threshold is required in watch_condition")
+    return Decimal(str(value))
