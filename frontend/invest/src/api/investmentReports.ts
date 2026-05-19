@@ -18,6 +18,7 @@ import type {
   MarketSession,
   AccountScope,
   ReportStatus,
+  SnapshotFreshnessSummary,
 } from "../types/investmentReports";
 
 const LIST_ENDPOINT = "/invest/api/investment-reports";
@@ -87,7 +88,26 @@ function normalizeReport(raw: ApiReport): InvestmentReport {
     updatedAt: asString(raw.updated_at),
     publishedAt: asOptionalString(raw.published_at),
     validUntil: asOptionalString(raw.valid_until),
+    // ROB-269 Phase 3 — snapshot metadata. Backend serialises explicit
+    // ``null`` for legacy reports; we round-trip that as ``null`` here so
+    // the UI can distinguish "report has no bundle" (legacy) from "bundle
+    // has incomplete data" (per-kind freshness on the summary).
+    snapshotBundleUuid: asOptionalString(raw.snapshot_bundle_uuid),
+    snapshotPolicyVersion: asOptionalString(raw.snapshot_policy_version),
+    snapshotCoverageSummary: asOptionalRecord(raw.snapshot_coverage_summary),
+    snapshotFreshnessSummary: raw.snapshot_freshness_summary == null
+      ? null
+      : (asRecord(raw.snapshot_freshness_summary) as SnapshotFreshnessSummary),
+    sourceConflicts: asOptionalRecord(raw.source_conflicts),
+    unavailableSources: asOptionalRecord(raw.unavailable_sources),
   };
+}
+
+function asOptionalRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null;
+  return asRecord(value);
 }
 
 function normalizeItem(raw: ApiItem): InvestmentReportItem {
