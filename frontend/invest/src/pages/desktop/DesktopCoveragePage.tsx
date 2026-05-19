@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchKrActionReadiness } from "../../api/actionReadiness";
+import { fetchBenchmarkGapMatrix } from "../../api/benchmarkGap";
 import { fetchInvestCoverage } from "../../api/coverage";
+import { BenchmarkGapSection } from "../../components/coverage/BenchmarkGapSection";
 import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
@@ -8,6 +10,7 @@ import type {
   ActionReadinessState,
   KrActionReadinessResponse,
 } from "../../types/actionReadiness";
+import type { BenchmarkGapMatrixResponse } from "../../types/benchmarkGap";
 import type {
   CoverageActionability,
   CoverageCandidateReadiness,
@@ -346,6 +349,9 @@ export function CoverageRoute() {
   const [readiness, setReadiness] = useState<KrActionReadinessResponse | undefined>();
   const [readinessLoading, setReadinessLoading] = useState(true);
   const [readinessErr, setReadinessErr] = useState<string | null>(null);
+  const [benchmarkGap, setBenchmarkGap] = useState<BenchmarkGapMatrixResponse | undefined>();
+  const [benchmarkLoading, setBenchmarkLoading] = useState(true);
+  const [benchmarkErr, setBenchmarkErr] = useState<string | null>(null);
   const readinessSymbol = market === "kr" ? firstKrSymbol(symbols) : undefined;
 
   useEffect(() => {
@@ -388,6 +394,23 @@ export function CoverageRoute() {
     return () => controller.abort();
   }, [market, readinessSymbol]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    setBenchmarkLoading(true);
+    setBenchmarkErr(null);
+    fetchBenchmarkGapMatrix({ market, signal: controller.signal })
+      .then((response) => {
+        setBenchmarkGap(response);
+        setBenchmarkLoading(false);
+      })
+      .catch((e) => {
+        if (controller.signal.aborted) return;
+        setBenchmarkErr(String(e?.message ?? e));
+        setBenchmarkLoading(false);
+      });
+    return () => controller.abort();
+  }, [market]);
+
   const summary = useMemo(() => {
     const surfaces = data?.surfaces ?? [];
     return data?.states.map((state) => ({
@@ -414,7 +437,7 @@ export function CoverageRoute() {
         <div>
           <h1 style={{ margin: 0, fontSize: 26, letterSpacing: "-0.04em" }}>데이터 커버리지</h1>
           <p style={{ margin: "6px 0 0", color: "var(--fg-2)", fontSize: 14 }}>
-            /invest 소유 read-model의 freshness와 Toss/Naver 기준·후보 신호를 구분해 확인합니다.
+            토스·네이버 대비 auto_trader 데이터 수급 현황. "다음에 어떤 데이터를 수급해야 하는가?" 에 답하는 read-only 갭 매트릭스입니다.
           </p>
         </div>
 
@@ -437,62 +460,89 @@ export function CoverageRoute() {
           </div>
         </Card>
 
-        {loading && <Card>커버리지 로딩 중…</Card>}
-        {err && <Card><span style={{ color: STATE_COLOR.error }}>커버리지 API 오류: {err}</span></Card>}
-        {market === "kr" && readinessLoading && <Card>KR 액션 리포트 준비도 로딩 중…</Card>}
-        {market === "kr" && readinessErr && <Card><span style={{ color: STATE_COLOR.error }}>액션 준비도 API 오류: {readinessErr}</span></Card>}
-        {market === "kr" && readiness && !readinessLoading && <ActionReadinessCard data={readiness} />}
+        {benchmarkLoading && <Card>벤치마크 갭 매트릭스 로딩 중…</Card>}
+        {benchmarkErr && (
+          <Card>
+            <span style={{ color: STATE_COLOR.error }}>벤치마크 갭 API 오류: {benchmarkErr}</span>
+          </Card>
+        )}
+        {benchmarkGap && !benchmarkLoading && <BenchmarkGapSection data={benchmarkGap} />}
 
-        {data && !loading && (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12 }}>
-              {summary.map(({ state, count }) => (
-                <Card key={state}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                    <StatePill state={state} />
-                    <strong style={{ fontSize: 22 }}>{count}</strong>
-                  </div>
-                </Card>
-              ))}
-            </div>
-
-            <Card>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1160 }}>
-                  <thead>
-                    <tr style={{ textAlign: "left", color: "var(--fg-3)", fontSize: 12 }}>
-                      <th style={{ padding: "0 10px 8px" }}>Surface</th>
-                      <th style={{ padding: "0 10px 8px" }}>State</th>
-                      <th style={{ padding: "0 10px 8px" }}>Market</th>
-                      <th style={{ padding: "0 10px 8px" }}>Source of truth</th>
-                      <th style={{ padding: "0 10px 8px" }}>Latest</th>
-                      <th style={{ padding: "0 10px 8px" }}>Counts</th>
-                      <th style={{ padding: "0 10px 8px" }}>Actionability</th>
-                      <th style={{ padding: "0 10px 8px" }}>Gap / note</th>
-                    </tr>
-                  </thead>
-                  <tbody>{data.surfaces.map((surface, idx) => <SurfaceRow key={`${surface.surface}-${surface.market}-${idx}`} surface={surface} />)}</tbody>
-                </table>
-              </div>
-            </Card>
-
-            {data.symbols.length > 0 && (
+        <details>
+          <summary style={{ cursor: "pointer", fontWeight: 700, padding: "8px 0" }}>
+            KR 액션 리포트 준비도 (보조)
+          </summary>
+          <div style={{ marginTop: 8 }}>
+            {market === "kr" && readinessLoading && <Card>KR 액션 리포트 준비도 로딩 중…</Card>}
+            {market === "kr" && readinessErr && (
               <Card>
-                <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Symbol coverage</h2>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {data.symbols.map((symbol) => (
-                    <div key={symbol.symbol} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <strong style={{ width: 84 }}>{symbol.symbol}</strong>
-                      <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{symbol.market}</span>
-                      {Object.entries(symbol.surfaces).map(([name, state]) => <span key={name} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}><span style={{ color: "var(--fg-3)", fontSize: 12 }}>{name}</span><StatePill state={state} /></span>)}
-                      <ActionabilityBadge actionability={symbol.actionability} />
-                    </div>
-                  ))}
-                </div>
+                <span style={{ color: STATE_COLOR.error }}>액션 준비도 API 오류: {readinessErr}</span>
               </Card>
             )}
-          </>
-        )}
+            {market === "kr" && readiness && !readinessLoading && <ActionReadinessCard data={readiness} />}
+            {market !== "kr" && <Card>KR 마켓일 때만 노출됩니다.</Card>}
+          </div>
+        </details>
+
+        <details>
+          <summary style={{ cursor: "pointer", fontWeight: 700, padding: "8px 0" }}>
+            개발자 · 디버그 raw 커버리지
+          </summary>
+          <div style={{ marginTop: 8, display: "grid", gap: 12 }}>
+            {loading && <Card>커버리지 로딩 중…</Card>}
+            {err && <Card><span style={{ color: STATE_COLOR.error }}>커버리지 API 오류: {err}</span></Card>}
+            {data && !loading && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12 }}>
+                  {summary.map(({ state, count }) => (
+                    <Card key={state}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                        <StatePill state={state} />
+                        <strong style={{ fontSize: 22 }}>{count}</strong>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+
+                <Card>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1160 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "var(--fg-3)", fontSize: 12 }}>
+                          <th style={{ padding: "0 10px 8px" }}>Surface</th>
+                          <th style={{ padding: "0 10px 8px" }}>State</th>
+                          <th style={{ padding: "0 10px 8px" }}>Market</th>
+                          <th style={{ padding: "0 10px 8px" }}>Source of truth</th>
+                          <th style={{ padding: "0 10px 8px" }}>Latest</th>
+                          <th style={{ padding: "0 10px 8px" }}>Counts</th>
+                          <th style={{ padding: "0 10px 8px" }}>Actionability</th>
+                          <th style={{ padding: "0 10px 8px" }}>Gap / note</th>
+                        </tr>
+                      </thead>
+                      <tbody>{data.surfaces.map((surface, idx) => <SurfaceRow key={`${surface.surface}-${surface.market}-${idx}`} surface={surface} />)}</tbody>
+                    </table>
+                  </div>
+                </Card>
+
+                {data.symbols.length > 0 && (
+                  <Card>
+                    <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Symbol coverage</h2>
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {data.symbols.map((symbol) => (
+                        <div key={symbol.symbol} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                          <strong style={{ width: 84 }}>{symbol.symbol}</strong>
+                          <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{symbol.market}</span>
+                          {Object.entries(symbol.surfaces).map(([name, state]) => <span key={name} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}><span style={{ color: "var(--fg-3)", fontSize: 12 }}>{name}</span><StatePill state={state} /></span>)}
+                          <ActionabilityBadge actionability={symbol.actionability} />
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+              </>
+            )}
+          </div>
+        </details>
         </div>
       }
     />
