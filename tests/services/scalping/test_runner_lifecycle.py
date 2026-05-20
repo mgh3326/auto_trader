@@ -25,6 +25,17 @@ from app.services.scalping.runner import ScalperRunner
 
 @pytest_asyncio.fixture
 async def instrument(db_session) -> CryptoInstrument:
+    from sqlalchemy import select
+
+    existing = await db_session.scalar(
+        select(CryptoInstrument).where(
+            CryptoInstrument.venue == "binance",
+            CryptoInstrument.product == "spot",
+            CryptoInstrument.venue_symbol == "BTCUSDT",
+        )
+    )
+    if existing is not None:
+        return existing
     inst = CryptoInstrument(
         venue="binance",
         product="spot",

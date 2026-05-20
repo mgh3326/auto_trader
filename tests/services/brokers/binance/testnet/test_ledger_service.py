@@ -22,7 +22,23 @@ from app.services.brokers.binance.testnet.ledger.service import (
 
 @pytest_asyncio.fixture
 async def instrument(db_session) -> CryptoInstrument:
-    """Create a Binance spot BTCUSDT instrument for the ledger to reference."""
+    """Find-or-create a Binance spot BTCUSDT instrument for the ledger to reference.
+
+    The shared ``db_session`` fixture does not roll back between tests, so the
+    unique ``(venue, product, venue_symbol)`` row may already exist from a
+    prior test. Use find-or-create semantics to stay idempotent.
+    """
+    from sqlalchemy import select
+
+    existing = await db_session.scalar(
+        select(CryptoInstrument).where(
+            CryptoInstrument.venue == "binance",
+            CryptoInstrument.product == "spot",
+            CryptoInstrument.venue_symbol == "BTCUSDT",
+        )
+    )
+    if existing is not None:
+        return existing
     inst = CryptoInstrument(
         venue="binance",
         product="spot",

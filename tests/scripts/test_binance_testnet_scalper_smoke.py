@@ -79,6 +79,10 @@ async def test_smoke_dryrun_creates_no_submitted_rows(
     httpx_mock is registered with a single GET stub for open_orders
     (the reconcile pass calls this; the smoke CLI doesn't gate on it).
     Any *other* HTTP call would error out.
+
+    State hygiene: we record the inserted instrument's id and tear it
+    (plus any ledger rows the smoke CLI wrote) down at the end so the
+    shared test DB doesn't accumulate state.
     """
     import re
 
@@ -96,45 +100,67 @@ async def test_smoke_dryrun_creates_no_submitted_rows(
         is_reusable=True,
     )
 
-    existing = await db_session.execute(
+    existing_result = await db_session.execute(
         select(CryptoInstrument).where(
             CryptoInstrument.venue == "binance",
             CryptoInstrument.product == "spot",
             CryptoInstrument.venue_symbol == "BTCUSDT",
         )
     )
-    if existing.scalar_one_or_none() is None:
-        db_session.add(
-            CryptoInstrument(
-                venue="binance",
-                product="spot",
-                venue_symbol="BTCUSDT",
-                base_asset="BTC",
-                quote_asset="USDT",
-                status="active",
-            )
+    existing = existing_result.scalar_one_or_none()
+    seeded_here = False
+    if existing is None:
+        new_row = CryptoInstrument(
+            venue="binance",
+            product="spot",
+            venue_symbol="BTCUSDT",
+            base_asset="BTC",
+            quote_asset="USDT",
+            status="active",
         )
+        db_session.add(new_row)
         await db_session.commit()
+        await db_session.refresh(new_row)
+        instrument_id = new_row.id
+        seeded_here = True
+    else:
+        instrument_id = existing.id
 
     monkeypatch.setenv("BINANCE_TESTNET_ENABLED", "true")
     monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "DUMMY_KEY")
     monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "DUMMY_SECRET")
-    with caplog.at_level(logging.INFO):
-        # --duration 0 = single tick. Run synchronously inside the same
-        # event loop the test owns (main()'s asyncio.run would fight us;
-        # invoke _run_smoke directly instead).
-        from scripts.binance_testnet_scalper_smoke import _run_smoke
+    try:
+        with caplog.at_level(logging.INFO):
+            # --duration 0 = single tick. Run synchronously inside the same
+            # event loop the test owns (main()'s asyncio.run would fight us;
+            # invoke _run_smoke directly instead).
+            from scripts.binance_testnet_scalper_smoke import _run_smoke
 
-        exit_code = await _run_smoke(dry_run=True, confirm=False, duration_s=0)
-    assert exit_code == 0
+            exit_code = await _run_smoke(dry_run=True, confirm=False, duration_s=0)
+        assert exit_code == 0
 
-    result = await db_session.execute(
-        select(BinanceTestnetOrderLedger).where(
-            BinanceTestnetOrderLedger.lifecycle_state == "submitted"
+        result = await db_session.execute(
+            select(BinanceTestnetOrderLedger).where(
+                BinanceTestnetOrderLedger.lifecycle_state == "submitted"
+            )
         )
-    )
-    submitted_count = len(list(result.scalars().all()))
-    assert submitted_count == 0, (
-        f"smoke CLI dry-run produced {submitted_count} 'submitted' ledger rows; "
-        "expected 0. Hard invariant #8 (operator gate) compromised."
-    )
+        submitted_count = len(list(result.scalars().all()))
+        assert submitted_count == 0, (
+            f"smoke CLI dry-run produced {submitted_count} 'submitted' ledger rows; "
+            "expected 0. Hard invariant #8 (operator gate) compromised."
+        )
+    finally:
+        # Cleanup: smoke CLI's own session committed ledger rows for
+        # the seeded instrument. Roll them back at the table level.
+        from sqlalchemy import delete
+
+        await db_session.execute(
+            delete(BinanceTestnetOrderLedger).where(
+                BinanceTestnetOrderLedger.instrument_id == instrument_id
+            )
+        )
+        if seeded_here:
+            await db_session.execute(
+                delete(CryptoInstrument).where(CryptoInstrument.id == instrument_id)
+            )
+        await db_session.commit()
