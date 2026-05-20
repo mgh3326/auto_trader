@@ -1406,9 +1406,12 @@ async def test_load_consecutive_gainers_uses_latest_snapshot_partition_only() ->
 
     result = await _load_consecutive_gainers_from_snapshots(session, market="kr")
 
-    assert result == [], "must return empty list, not historical qualifiers"
     assert result is not None, (
-        "None would mean 'could not check'; [] means 'checked and empty'"
+        "None would mean 'could not check'; a _SnapshotLoadResult means 'checked and empty'"
+    )
+    assert result.rows == [], "must return empty rows, not historical qualifiers"
+    assert result.partition_date == date(2026, 5, 13), (
+        "partition_date must be set even when rows is empty"
     )
 
 
@@ -1447,8 +1450,8 @@ async def test_load_consecutive_gainers_filters_kr_non_common_stock_names() -> N
     )
 
     assert result is not None
-    assert [row["symbol"] for row in result] == ["005930", "000660"]
-    assert [row["name"] for row in result] == ["삼성전자", "SK하이닉스"]
+    assert [row["symbol"] for row in result.rows] == ["005930", "000660"]
+    assert [row["name"] for row in result.rows] == ["삼성전자", "SK하이닉스"]
 
 
 @pytest.mark.unit
@@ -1576,14 +1579,14 @@ async def test_investor_flow_rows_carry_snapshot_date_collected_at_and_classifie
         ]
     )
 
-    rows = await _load_investor_flow_discovery_from_snapshots(
+    load_result = await _load_investor_flow_discovery_from_snapshots(
         session, market="kr", limit=20
     )
 
-    assert rows is not None, "expected rows list, got None"
-    assert len(rows) == 1
+    assert load_result is not None, "expected _SnapshotLoadResult, got None"
+    assert len(load_result.rows) == 1
 
-    row = rows[0]
+    row = load_result.rows[0]
 
     # snapshot_date passes through
     assert row["snapshot_date"] == stale_snapshot_date, (
@@ -1649,6 +1652,7 @@ def test_build_freshness_snapshot_first_uses_partition_date_not_now() -> None:
     # legacy alias holds (D1.c)
     assert f.dataState == f.overallState
     assert f.overallState == "stale"
+    assert f.fetchedAt == f.servedAt  # ROB-277 D1: fetchedAt is a servedAt alias
 
 
 @pytest.mark.unit
@@ -1815,6 +1819,7 @@ def test_build_freshness_no_change_to_existing_callsite_with_defaults() -> None:
     assert f.asOfLabel.startswith("2026.05.")
     assert f.source in {"live", "cached", "previous_session"}
     assert f.cacheHit is False
+    assert f.fetchedAt == f.servedAt  # ROB-277 D1: fetchedAt is a servedAt alias
 # ROB-276: double_buy preset wiring (Task 3)
 # ---------------------------------------------------------------------------
 

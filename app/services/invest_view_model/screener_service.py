@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field as _dc_field
 from datetime import UTC, datetime
 from datetime import time as _time
 from typing import Any, Literal, Protocol
@@ -103,6 +104,17 @@ _KR_PREFERRED_SUFFIXES = ("우", "우B", "우C")
 _INVESTOR_FLOW_MIN_STREAK = 3
 _INVESTOR_FLOW_STALE_SUFFIX = " · 1일 지연"
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _SnapshotLoadResult:
+    """ROB-277 follow-up: snapshot loaders must surface latest-partition metadata
+    even when no rows qualified, so freshness.primary can still report the
+    correct snapshot date."""
+
+    rows: list[dict[str, Any]]
+    partition_date: dt.date | None
+    partition_computed_at: datetime | None = None
 
 
 def _investor_flow_chip_for_item(
@@ -232,12 +244,19 @@ async def _hydrate_investor_flow_chips(
         chip = _investor_flow_chip_for_item(item)
         if chip is not None:
             chips[symbol] = chip
-            # ROB-277: stash dependency snapshot_date back on the row so
-            # build_screener_results can build freshness.dependencies later.
+            # ROB-277 follow-up: stash full dependency metadata on the row so
+            # build_screener_results can classify the investor-flow dependency
+            # via classify_investor_flow_partition.
             for r in rows:
                 if str(r.get("symbol") or "").upper() == symbol:
                     r["_investor_flow_snapshot_date"] = getattr(
                         item, "snapshotDate", None
+                    )
+                    r["_investor_flow_collected_at"] = getattr(
+                        item, "collectedAt", None
+                    )
+                    r["_investor_flow_data_state"] = getattr(
+                        item, "dataState", None
                     )
                     break
     return chips
@@ -371,14 +390,17 @@ def _double_buy_dependency_warnings(
 
 async def _load_consecutive_gainers_from_snapshots(
     session: AsyncSession | None, *, market: str, limit: int = _SNAPSHOT_FIRST_LIMIT
-) -> list[dict[str, Any]] | None:
+) -> _SnapshotLoadResult | None:
     """Return qualifying rows from the latest snapshot partition only.
 
     Returns None when the check could not be performed (no session, wrong market,
-    DB error, or no snapshots exist in the table at all). Returns an empty list
-    when the latest partition was found but contains no qualifying rows — callers
-    must NOT fall back to external screening in that case, because historical
-    qualifying rows from older partitions must not be surfaced as current results.
+    DB error, or no snapshots exist in the table at all). Returns a
+    _SnapshotLoadResult with an empty rows list when the latest partition was found
+    but contains no qualifying rows — callers must NOT fall back to external
+    screening in that case, because historical qualifying rows from older partitions
+    must not be surfaced as current results. The partition_date is always populated
+    when a non-None result is returned so freshness.primary has the correct date
+    even when 0 rows qualify.
     """
     if session is None or market not in {"kr", "us"}:
         return None
@@ -507,17 +529,33 @@ async def _load_consecutive_gainers_from_snapshots(
         if len(rows) >= limit:
             break
     # Rows are already ordered by the SQL ORDER BY; no Python re-sort needed.
-    return rows
+    # ROB-277 follow-up: always return partition metadata even when rows is empty,
+    # so freshness.primary surfaces the correct snapshot date.
+    partition_computed_at: datetime | None = None
+    if rows:
+        partition_computed_at = rows[0].get("computed_at")
+    elif candidate_snaps:
+        # No qualifying rows after filtering, but we can grab computed_at from
+        # any snap in the partition (they share the same snapshot_date).
+        partition_computed_at = getattr(candidate_snaps[0], "computed_at", None)
+    return _SnapshotLoadResult(
+        rows=rows,
+        partition_date=latest_snapshot_date,
+        partition_computed_at=partition_computed_at,
+    )
 
 
 async def _load_investor_flow_discovery_from_snapshots(
     session: AsyncSession | None, *, market: str, limit: int = 20
-) -> list[dict[str, Any]] | None:
+) -> _SnapshotLoadResult | None:
     """Return MVP 수급 discovery rows from persisted investor_flow_snapshots.
 
     This preset is intentionally snapshot-only/read-only: if durable snapshots are
     unavailable, callers may fall back to the generic screener service, but no
     request-time Naver scraping is introduced here.
+
+    Returns a _SnapshotLoadResult with partition_date populated even when no rows
+    qualify, so freshness.primary can surface the correct snapshot date.
     """
     if session is None or market != "kr":
         return None
@@ -627,7 +665,18 @@ async def _load_investor_flow_discovery_from_snapshots(
         )
         if len(rows) >= limit:
             break
-    return rows
+    # ROB-277 follow-up: surface partition metadata even when rows is empty so
+    # freshness.primary has the correct snapshot date.
+    partition_collected_at: datetime | None = None
+    if rows:
+        partition_collected_at = rows[0].get("collected_at")
+    elif candidate_snaps:
+        partition_collected_at = getattr(candidate_snaps[0], "collected_at", None)
+    return _SnapshotLoadResult(
+        rows=rows,
+        partition_date=latest_snapshot_date,
+        partition_computed_at=partition_collected_at,  # investor_flow has no computed_at; use collected_at
+    )
 
 
 async def _load_crypto_rows_from_snapshots(
@@ -1342,7 +1391,7 @@ def _build_freshness(
     )
 
     return ScreenerFreshness(
-        fetchedAt=fetched.astimezone(UTC).isoformat(),
+        fetchedAt=served_at_utc.isoformat(),  # ROB-277 D1: fetchedAt is a servedAt alias
         asOfLabel=primary.asOfLabel
         if primary is not None
         else fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
@@ -1387,6 +1436,10 @@ async def build_screener_results(
         )
 
     filters = screening_filters_for(preset_id, requested_market)
+    # ROB-277 follow-up: loaders for consecutive_gainers and investor_flow_momentum
+    # now return _SnapshotLoadResult so partition metadata threads through even when
+    # 0 rows qualify. double_buy and crypto still return list|None directly.
+    _snapshot_load_result: _SnapshotLoadResult | None = None
     _snapshot_check_result: list[dict[str, Any]] | None = None
     _snapshot_state_override: str | None = None
     _snapshot_empty_warning = (
@@ -1394,17 +1447,21 @@ async def build_screener_results(
     )
     if session is not None and _should_use_snapshot_first(screening_service):
         if preset_id == "consecutive_gainers":
-            _snapshot_check_result = await _load_consecutive_gainers_from_snapshots(
+            _snapshot_load_result = await _load_consecutive_gainers_from_snapshots(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
             )
+            if _snapshot_load_result is not None:
+                _snapshot_check_result = _snapshot_load_result.rows
         elif preset_id == "investor_flow_momentum":
-            _snapshot_check_result = await _load_investor_flow_discovery_from_snapshots(
+            _snapshot_load_result = await _load_investor_flow_discovery_from_snapshots(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
             )
+            if _snapshot_load_result is not None:
+                _snapshot_check_result = _snapshot_load_result.rows
             _snapshot_empty_warning = (
                 "최신 수급 스냅샷에서 조건에 맞는 결과가 없습니다."
             )
@@ -1544,7 +1601,13 @@ async def build_screener_results(
             primary_source = "invest_crypto_screener_snapshots"
         else:
             primary_source = "invest_screener_snapshots"
-        if rows:
+        # ROB-277 follow-up: prefer partition metadata from the loader dataclass
+        # so freshness.primary has the correct date even when 0 rows qualify.
+        if _snapshot_load_result is not None:
+            primary_snapshot_date = _snapshot_load_result.partition_date
+            primary_computed_at = _snapshot_load_result.partition_computed_at
+        elif rows:
+            # Fallback for double_buy / crypto paths that don't use _SnapshotLoadResult
             primary_snapshot_date = rows[0].get("snapshot_date")
             primary_computed_at = rows[0].get("computed_at")
     else:
@@ -1576,29 +1639,38 @@ async def build_screener_results(
     )
 
     # ROB-277: build dependency specs from hydrated investor-flow chips (KR only).
-    # Must run after _hydrate_investor_flow_chips so _investor_flow_snapshot_date
-    # has been stashed back on rows.
+    # Must run after _hydrate_investor_flow_chips so _investor_flow_snapshot_date,
+    # _investor_flow_collected_at, and _investor_flow_data_state have been stashed
+    # back on rows.
     dependency_specs: list[dict[str, Any]] = []
     if requested_market == "kr" and investor_flow_chips:
         from app.services.invest_screener_snapshots.freshness import (
+            classify_investor_flow_partition,
             today_trading_date,
         )
 
-        inv_snapshot_dates: list[dt.date] = []
+        # ROB-277 follow-up: dependency = investor_flow_snapshots, distinct from primary.
+        # ONLY use the dependency-specific stash keys, never the primary's snapshot_date.
+        inv_meta: list[tuple[dt.date, datetime | None]] = []
         for r in rows:
-            sd = r.get("snapshot_date") or r.get("_investor_flow_snapshot_date")
+            sd = r.get("_investor_flow_snapshot_date")
             if sd is not None:
-                inv_snapshot_dates.append(sd)
+                inv_meta.append((sd, r.get("_investor_flow_collected_at")))
 
-        if inv_snapshot_dates:
-            worst = min(inv_snapshot_dates)
+        if inv_meta:
+            worst_sd, worst_collected = min(inv_meta, key=lambda t: t[0])
             today_kr = today_trading_date("kr")
-            dep_state = "stale" if worst != today_kr else "fresh"
+            dep_state = classify_investor_flow_partition(
+                snapshot_date=worst_sd,
+                collected_at=worst_collected,
+                today_trading_date_value=today_kr,
+                now=now(),
+            )
             dependency_specs.append(
                 {
                     "kind": "investor_flow",
-                    "snapshot_date": worst,
-                    "collected_at": None,
+                    "snapshot_date": worst_sd,
+                    "collected_at": worst_collected,
                     "data_state": dep_state,
                     "source": "investor_flow_snapshots",
                 }
