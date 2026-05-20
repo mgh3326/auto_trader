@@ -1,11 +1,13 @@
 """ROB-278 Phase 2 — deterministic evidence-driven report-item proposer.
 
 Reads the persisted snapshot bundle and proposes ``IngestReportItem``
-drafts for the report generator. Distinct from ROB-279's LLM-staged
-``FinalComposer`` (``auto_compose=True``): this proposer is
-**deterministic** and uses Phase 2 collector enrichments (portfolio v2,
-symbol quote/orderbook, candidate_universe usefulness, news symbol
-citations) to gate candidate emission.
+drafts for the report generator. This proposer is **deterministic**
+and uses Phase 2 collector enrichments (portfolio v2, symbol
+quote/orderbook, candidate_universe usefulness, news symbol citations)
+to gate candidate emission. Per ROB-287 it is the only in-process
+report-item writer; LLM reasoning/composition lives in Hermes and
+ingests through the dedicated Hermes-result path. The two paths are
+not co-mingled against the same bundle.
 
 Lockdown invariants:
 
