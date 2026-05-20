@@ -328,9 +328,14 @@ def _double_buy_dependency_warnings(
 ) -> tuple[list[str], str | None]:
     """Return (warnings, state_override) for double_buy by dependency.
 
-    snapshot_rows expected to contain `_screener_snapshot_state` (set by the
-    loader to "fresh" when price_snapshot_date == flow_snapshot_date, else
-    "stale") and `snapshot_date` (the price snapshot date used in the join).
+    snapshot_rows produced by load_double_buy_from_snapshots carry:
+      - `_screener_snapshot_state`: "fresh" iff price_snapshot_date == flow_snapshot_date,
+        else "stale" (price/flow partition divergence)
+      - `snapshot_date`: the PRICE snapshot date used in the join
+      - `flow_snapshot_date`: the investor-flow snapshot date used in the join
+
+    The two warnings target distinct dependencies so the UI can tell whether
+    price or flow is behind today's market date.
     """
     if not snapshot_rows:
         return [], None
@@ -340,9 +345,9 @@ def _double_buy_dependency_warnings(
         warnings.append(
             "시세 스냅샷이 직전 영업일 기준이라 일부 데이터가 1일 지연되었습니다."
         )
-    snapshot_dates = {row.get("snapshot_date") for row in snapshot_rows}
-    if snapshot_dates and all(
-        isinstance(d, dt.date) and d < now_market_date for d in snapshot_dates
+    flow_dates = {row.get("flow_snapshot_date") for row in snapshot_rows}
+    if flow_dates and all(
+        isinstance(d, dt.date) and d < now_market_date for d in flow_dates
     ):
         warnings.append(
             "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."

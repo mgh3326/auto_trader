@@ -160,6 +160,7 @@ async def load_double_buy_from_snapshots(
                     "institution_consecutive_buy_days"
                 ],
                 "snapshot_date": r["price_snapshot_date"],
+                "flow_snapshot_date": r["flow_snapshot_date"],
                 "_screener_snapshot_state": state,
             }
         )
