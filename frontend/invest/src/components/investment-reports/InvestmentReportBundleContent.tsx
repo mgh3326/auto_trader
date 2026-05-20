@@ -16,6 +16,7 @@ import type {
   InvestmentWatchEvent,
   SnapshotFreshnessSummary,
 } from "../../types/investmentReports";
+import { ReportSnapshotEvidencePanel } from "./ReportSnapshotEvidencePanel";
 import { SnapshotBundleFreshnessChip } from "./SnapshotBundleFreshnessChip";
 
 const ITEM_KIND_LABELS: Record<string, string> = {
@@ -458,6 +459,8 @@ export function InvestmentReportBundleContent({
         createdAt={bundle.report.createdAt}
         freshnessSummary={bundle.report.snapshotFreshnessSummary}
       />
+
+      <ReportSnapshotEvidencePanel reportUuid={bundle.report.reportUuid} />
 
       {(
         ["action", "watch", "risk"] as const
