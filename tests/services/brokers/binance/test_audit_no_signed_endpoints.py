@@ -23,14 +23,19 @@ import re
 import subprocess
 
 # Allowed package directories for new Binance-related code in this PR.
-# - app/services/brokers/binance: the public adapter (REST + WS).
+# - app/services/brokers/binance: the public adapter (REST + WS) + the
+#   testnet signed sub-package (ROB-286).
 # - app/services/instrument_health: write surface for crypto_instrument_health
 #   (mentions Binance in docstrings as the first consumer; the service is
 #   generic and could later be consumed by other crypto adapters).
+# - app/services/scalping: ROB-286 deterministic scalper. Mentions Binance
+#   in docstrings (testnet is the first consumer); the runner imports
+#   BinanceTestnetExecutionClient from the testnet sub-package.
 ALLOWED_PACKAGE_PATHS: frozenset[str] = frozenset(
     {
         "app/services/brokers/binance",
         "app/services/instrument_health",
+        "app/services/scalping",
     }
 )
 
@@ -62,6 +67,12 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # the docstring or sentry tag mentions "Binance" as the first
         # consumer / source of these flows.
         "app/models/crypto_instrument_health.py",
+        # ROB-286 — the testnet order ledger ORM model lives under
+        # app/models/. The model is registered in app/models/__init__.py
+        # (one-line import); both files are tracked here so the audit
+        # doesn't flag them as "unexpected Binance locations".
+        "app/models/binance_testnet_order_ledger.py",
+        "app/models/__init__.py",
     }
 )
 
