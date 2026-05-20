@@ -537,10 +537,7 @@ async def db_session():
                     "ADD COLUMN IF NOT EXISTS apply_policy TEXT",
                 ):
                     await conn.execute(
-                        text(
-                            f"ALTER TABLE review.investment_report_items "
-                            f"{column_sql}"
-                        )
+                        text(f"ALTER TABLE review.investment_report_items {column_sql}")
                     )
                 await conn.execute(
                     text(
