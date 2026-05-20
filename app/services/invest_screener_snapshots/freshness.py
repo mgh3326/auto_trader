@@ -8,7 +8,14 @@ from app.services.market_events.freshness_service import STALE_AFTER_HOURS
 
 DataState = Literal["fresh", "partial", "stale", "missing", "fallback"]
 
-_TZ_BY_MARKET = {"kr": ZoneInfo("Asia/Seoul"), "us": ZoneInfo("America/New_York")}
+# ROB-281: KR schedule slot taxonomy.
+# pre_market_repair fires at 07:40 KST and targets the prior day's NXT-final
+# (it does not produce same-day data). krx_preliminary fires at 16:20 KST after
+# KRX regular session, nxt_final at 20:20 KST after NXT after-market.
+KRSessionSlot = Literal["pre_market_repair", "krx_preliminary", "nxt_final"]
+
+_KST = ZoneInfo("Asia/Seoul")
+_TZ_BY_MARKET = {"kr": _KST, "us": ZoneInfo("America/New_York")}
 _PARTIAL_MAX_LEN = (
     5  # closes_window length < 5 → partial (week_change_rate not computable)
 )
@@ -27,6 +34,108 @@ def today_trading_date(market: str, *, now: dt.datetime | None = None) -> dt.dat
     while candidate.weekday() >= 5:
         candidate -= dt.timedelta(days=1)
     return candidate
+
+
+def _prior_weekday(d: dt.date) -> dt.date:
+    prior = d - dt.timedelta(days=1)
+    while prior.weekday() >= 5:
+        prior -= dt.timedelta(days=1)
+    return prior
+
+
+def classify_kr_session_slot(now: dt.datetime) -> KRSessionSlot:
+    """Return the KR schedule slot most recently fired at-or-before ``now``.
+
+    Slot boundaries (KST, both endpoints inclusive on the start):
+
+    ====================  ==========================================
+    KST window            slot
+    ====================  ==========================================
+    00:00 – 07:39         ``nxt_final`` (prior day's slot still authoritative)
+    07:40 – 16:19         ``pre_market_repair``
+    16:20 – 20:19         ``krx_preliminary``
+    20:20 – 23:59         ``nxt_final``
+    ====================  ==========================================
+
+    Weekends and KR holidays are out of scope here; callers should gate
+    actionable use on ``exchange_calendars.get_calendar("XKRX").is_session``.
+    Naive ``now`` is treated as UTC and converted to KST.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.UTC)
+    kst = now.astimezone(_KST)
+    hm = (kst.hour, kst.minute)
+    if hm >= (20, 20):
+        return "nxt_final"
+    if hm >= (16, 20):
+        return "krx_preliminary"
+    if hm >= (7, 40):
+        return "pre_market_repair"
+    return "nxt_final"
+
+
+def expected_kr_baseline_date(now: dt.datetime) -> dt.date:
+    """The KR trading date for which a snapshot is EXPECTED to exist at ``now``.
+
+    Critically, in the 07:40 – 16:19 KST window (pre-market repair, before
+    today's 16:20 KRX preliminary has fired), the expected baseline is the
+    PRIOR trading day — not today. Using raw :func:`today_trading_date` here
+    would mark a fresh prior-day partition as stale just because the clock
+    rolled past midnight, surfacing a misleading "1일 지연" label even when
+    the previous NXT-final ran successfully.
+
+    Resolution:
+
+    * Before 16:20 KST → prior trading weekday.
+    * 16:20 KST or later → today (rolled back to weekday).
+
+    Holidays are not consulted here for the same reasons as
+    :func:`today_trading_date`; daily candles upstream already collapse KR
+    public holidays into the prior trading day close.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.UTC)
+    kst = now.astimezone(_KST)
+    today_kst = kst.date()
+    while today_kst.weekday() >= 5:
+        today_kst -= dt.timedelta(days=1)
+    if (kst.hour, kst.minute) >= (16, 20):
+        return today_kst
+    return _prior_weekday(today_kst)
+
+
+def kr_session_label_for_partition(
+    partition_computed_at: dt.datetime | None,
+) -> str | None:
+    """User-facing KR session label for a snapshot's ``computed_at``.
+
+    Maps the KST time-of-day at which the partition was computed to a token:
+
+    * ``16:20 – 20:19 KST`` → ``"KRX preliminary"``
+    * ``20:20 – 23:59 KST`` → ``"NXT final"``
+    * ``00:00 – 06:59 KST`` → ``"NXT final"`` (overnight tail of prior day's run)
+    * ``07:40 – 16:19 KST`` → ``"NXT final"`` (repair window targets prior NXT-final)
+
+    Returns ``None`` for the rare 07:00 – 07:39 KST gap (between overnight
+    rollover and the pre-market repair slot) or when ``partition_computed_at``
+    is ``None``. Callers in that case fall back to the existing
+    :func:`format_kst_as_of_label` without appending a session token.
+    """
+    if partition_computed_at is None:
+        return None
+    if partition_computed_at.tzinfo is None:
+        partition_computed_at = partition_computed_at.replace(tzinfo=dt.UTC)
+    kst = partition_computed_at.astimezone(_KST)
+    hm = (kst.hour, kst.minute)
+    if (16, 20) <= hm < (20, 20):
+        return "KRX preliminary"
+    if hm >= (20, 20):
+        return "NXT final"
+    if hm < (7, 0):
+        return "NXT final"
+    if (7, 40) <= hm < (16, 20):
+        return "NXT final"
+    return None
 
 
 def classify_state(
