@@ -1,12 +1,13 @@
 """ROB-279 — Read-only API surface for staged snapshot-backed reports.
 
-Two endpoints:
+Two endpoint families (served under both legacy ``/trading/api`` and
+current ``/invest/api`` prefixes):
 
-* ``GET /trading/api/investment-stage-runs/{run_uuid}`` — run-scoped
+* ``GET /{prefix}/investment-stage-runs/{run_uuid}`` — run-scoped
   diagnostic; returns the stage run row + all artifacts. Useful for
   forensics when the stale gate blocks final report creation.
 
-* ``GET /trading/api/investment-reports/{report_uuid}/stage-artifacts`` —
+* ``GET /{prefix}/investment-reports/{report_uuid}/stage-artifacts`` —
   report-scoped; returns the union of all artifacts from stage runs
   linked to the report.  Resolution path:
 
@@ -117,6 +118,11 @@ def _build_reports_repository(
     response_model=StageRunWithArtifactsResponse,
     summary="Get stage run + artifacts by run UUID (ROB-279)",
 )
+@router.get(
+    "/invest/api/investment-stage-runs/{run_uuid}",
+    response_model=StageRunWithArtifactsResponse,
+    summary="Get stage run + artifacts by run UUID for /invest (ROB-279)",
+)
 async def get_stage_run(
     run_uuid: UUID,
     _user: Annotated[User, Depends(get_authenticated_user)],
@@ -140,6 +146,11 @@ async def get_stage_run(
     "/trading/api/investment-reports/{report_uuid}/stage-artifacts",
     response_model=ReportStageArtifactsResponse,
     summary="Get stage artifacts linked to an investment report (ROB-279)",
+)
+@router.get(
+    "/invest/api/investment-reports/{report_uuid}/stage-artifacts",
+    response_model=ReportStageArtifactsResponse,
+    summary="Get stage artifacts linked to an investment report for /invest (ROB-279)",
 )
 async def get_report_stage_artifacts(
     report_uuid: UUID,
