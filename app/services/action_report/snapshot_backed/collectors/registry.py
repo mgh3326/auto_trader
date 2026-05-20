@@ -50,6 +50,7 @@ from app.services.brokers.upbit.orders import (
     fetch_open_orders as _upbit_fetch_open_orders,
 )
 from app.services.investment_snapshots.collectors import SnapshotCollectorRegistry
+from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 
 class _UpbitOpenOrdersAdapter:
@@ -64,6 +65,66 @@ class _UpbitOpenOrdersAdapter:
     @staticmethod
     async def fetch_open_orders(market: str | None = None) -> list[dict[str, Any]]:
         return await _upbit_fetch_open_orders(market=market)
+
+
+class _KISDomesticQuoteOrderbookAdapter:
+    """ROB-278 Phase 2 — read-only adapter wrapping the existing KIS quote
+    + orderbook calls. Exposes a single ``fetch_quote_orderbook(symbol)``
+    method so the symbol collector cannot reach order placement, cancel,
+    or modify paths via the bound client.
+
+    The adapter pulls last price from ``inquire_price`` and top-of-book
+    from ``inquire_orderbook``; both are existing read-only methods on
+    the KIS domestic market data client. No new HTTP surface is added.
+    """
+
+    def __init__(self, kis_client: KISClient | None) -> None:
+        self._client = kis_client
+
+    async def fetch_quote_orderbook(self, symbol: str) -> dict[str, Any]:
+        if self._client is None:
+            raise RuntimeError("kis client unavailable")
+        # Two read-only calls — both already exist on the KIS client. No
+        # new HTTP surface, no order placement/cancellation paths reached.
+        price_df = await self._client.inquire_price(symbol)
+        orderbook = await self._client.inquire_orderbook(symbol)
+
+        last_price = float(price_df["close"].iloc[0]) if len(price_df) else 0.0
+
+        # Top-of-book from the 10-step orderbook. KIS field naming uses
+        # ``askp1`` / ``bidp1`` for level-1 ask/bid price; ``askp_rsqn1`` /
+        # ``bidp_rsqn1`` for residual quantities. Use ``.get`` with defaults
+        # so the empty-book branch in the collector takes over cleanly.
+        def _num(name: str) -> float:
+            value = orderbook.get(name)
+            try:
+                return float(value) if value is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+
+        best_ask = _num("askp1")
+        best_bid = _num("bidp1")
+        ask_depth = _num("askp_rsqn1")
+        bid_depth = _num("bidp_rsqn1")
+
+        # Best-effort NXT routability flag — symbol-universe lookup is
+        # read-only and cheap; failures stay non-fatal.
+        try:
+            nxt_eligible = await is_nxt_eligible(symbol)
+        except Exception:  # noqa: BLE001
+            nxt_eligible = False
+
+        return {
+            "last_price": last_price,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "bid_depth": bid_depth,
+            "ask_depth": ask_depth,
+            "venue": "krx",
+            "as_of": None,  # KIS orderbook payload has no clean as_of; UI uses snapshot.as_of
+            "session": "regular" if best_bid > 0 and best_ask > 0 else "closed",
+            "nxt_eligible": bool(nxt_eligible),
+        }
 
 
 def _build_kis_client_safely() -> KISClient | None:
@@ -98,7 +159,18 @@ def production_collector_registry(session: AsyncSession) -> SnapshotCollectorReg
 
     # Optional kinds — DB-backed where possible.
     registry.register(NewsSnapshotCollector(session))
-    registry.register(SymbolSnapshotCollector(session))
+    # ROB-278 Phase 2 — wire the KIS quote/orderbook adapter so KR + kis_live
+    # requests get per-symbol quote evidence. Construction is wrapped (the
+    # KIS client can be None when credentials are absent) so the collector
+    # cleanly emits per-symbol unavailable rather than crashing.
+    registry.register(
+        SymbolSnapshotCollector(
+            session,
+            kis_quote_client=_KISDomesticQuoteOrderbookAdapter(
+                _build_kis_client_safely()
+            ),
+        )
+    )
     registry.register(CandidateUniverseSnapshotCollector(session))
     registry.register(InvestPageSnapshotCollector(session))
     # Remote-debug probes remain fail-open stubs — they are operator-driven

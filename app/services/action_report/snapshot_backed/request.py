@@ -58,6 +58,18 @@ class ReportGenerationRequest(BaseModel):
     # via the staged snapshot-backed pipeline instead of using provided ones.
     auto_compose: bool = False
 
+    # ROB-278 — operator user_id for live-account read paths (e.g. KIS
+    # holdings/cash). ``None`` keeps broker-backed collectors fail-closed.
+    user_id: int | None = None
+
+    # ROB-278 Phase 2 — when True, populate ``items`` from a deterministic
+    # evidence-driven auto-emitter (portfolio + symbol quote + candidate +
+    # news + journal/watch). Items emit with operation="review" +
+    # apply_policy="requires_user_approval"; mutation paths remain
+    # unreachable. Distinct from ``auto_compose`` (ROB-279) which uses
+    # LLM-staged composition.
+    auto_emit_from_evidence: bool = False
+
 
 class ReportGenerationResponse(BaseModel):
     """Result envelope for the generator. JSON-safe."""

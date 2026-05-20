@@ -236,3 +236,135 @@ async def test_get_report_snapshot_detail_returns_none_for_non_member_snapshot(
     svc = InvestmentReportQueryService(db_session)
     detail = await svc.get_report_snapshot_detail(report_uuid, other_snap.snapshot_uuid)
     assert detail is None
+
+
+# ---------------------------------------------------------------------------
+# ROB-278 — viewer compatibility: v2 portfolio payload still flows through
+# the evidence endpoints unchanged. v1 keys (holdings/count/market) MUST
+# remain in the payload; the new v2 additive keys MUST pass through.
+# ---------------------------------------------------------------------------
+async def _seed_report_with_portfolio_v2_payload(db_session):
+    snap_repo = InvestmentSnapshotsRepository(db_session)
+    run = await snap_repo.insert_run(
+        SnapshotRunCreate(
+            purpose="report_generation",
+            market="kr",
+            account_scope="kis_live",
+            requested_by="user",
+            policy_version="intraday_action_report_v1",
+        )
+    )
+    portfolio_payload_v2 = {
+        # v1 keys (must remain).
+        "holdings": [{"ticker": "005930", "quantity": 10, "source": "kis"}],
+        "count": 1,
+        "market": "kr",
+        # v2 additive keys.
+        "primary_source": "kis",
+        "reference_holdings": [{"ticker": "005930", "source": "manual"}],
+        "cash": {"krw": 1_200_000.0, "usd": None},
+        "buying_power": {"krw": 1_000_000.0, "usd": None},
+        "sellable_summary": {"sellable_count": 1, "pending_sell_count": 0},
+        "provenance": {
+            "kis_fetch_status": "ok",
+            "account_scope": "kis_live",
+            "fetched_at": "2026-05-20T11:00:00+00:00",
+            "warnings": [],
+            "errors": [],
+        },
+    }
+    snap = await snap_repo.insert_snapshot(
+        SnapshotCreate(
+            run_uuid=run.run_uuid,
+            snapshot_kind="portfolio",
+            market="kr",
+            account_scope="kis_live",
+            source_kind="auto_trader_mcp",
+            payload_json=portfolio_payload_v2,
+            as_of=_NOW,
+            freshness_status="fresh",
+        )
+    )
+    bundle = await snap_repo.insert_bundle(
+        BundleCreate(
+            purpose=f"rob278_v2_{_uuid.uuid4().hex[:8]}",
+            market="kr",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            as_of=_NOW,
+            status="complete",
+        )
+    )
+    await snap_repo.link_bundle_item(
+        bundle_uuid=bundle.bundle_uuid,
+        item=BundleItemCreate(snapshot_uuid=snap.snapshot_uuid, role="required"),
+    )
+
+    report_repo = InvestmentReportsRepository(db_session)
+    report = await report_repo.insert_report(
+        report_uuid=_uuid.uuid4(),
+        idempotency_key=f"k-{_uuid.uuid4().hex[:8]}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="rob278-test",
+        title="t",
+        summary="s",
+        snapshot_bundle_uuid=bundle.bundle_uuid,
+        snapshot_policy_version="intraday_action_report_v1",
+    )
+    # Intentionally do NOT commit. The repo writes already flushed are
+    # visible to the same session's reads, and keeping the transaction
+    # open blocks the concurrent ``review.investment_reports`` TRUNCATE
+    # from ``_investment_reports_helpers.session`` running on another
+    # xdist worker. Committing here would race that TRUNCATE under
+    # ``--dist=loadfile`` and intermittently lose this fixture's rows.
+    await db_session.flush()
+    return report.report_uuid, snap.snapshot_uuid, portfolio_payload_v2
+
+
+@pytest.mark.asyncio
+async def test_rob278_v2_portfolio_payload_passes_through_evidence_detail(db_session):
+    """ROB-278 — v2 portfolio payload survives round-trip through the
+    ROB-275 evidence viewer endpoint. v1 keys and v2 additive keys must
+    both reach the client unchanged.
+    """
+    report_uuid, snap_uuid, payload = await _seed_report_with_portfolio_v2_payload(
+        db_session
+    )
+    svc = InvestmentReportQueryService(db_session)
+    detail = await svc.get_report_snapshot_detail(report_uuid, snap_uuid)
+    assert detail is not None
+    # v1 keys preserved.
+    assert detail.payload_json["holdings"] == payload["holdings"]
+    assert detail.payload_json["count"] == 1
+    assert detail.payload_json["market"] == "kr"
+    # v2 additive keys present.
+    assert detail.payload_json["primary_source"] == "kis"
+    assert detail.payload_json["reference_holdings"] == payload["reference_holdings"]
+    assert detail.payload_json["cash"] == payload["cash"]
+    assert detail.payload_json["buying_power"] == payload["buying_power"]
+    assert detail.payload_json["sellable_summary"] == payload["sellable_summary"]
+    assert detail.payload_json["provenance"]["kis_fetch_status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_rob278_v2_portfolio_bundle_listing_remains_compatible(db_session):
+    """ROB-278 — bundle listing endpoint stays 200 and lists the v2 item."""
+    report_uuid, snap_uuid, _payload = await _seed_report_with_portfolio_v2_payload(
+        db_session
+    )
+    svc = InvestmentReportQueryService(db_session)
+    response = await svc.get_report_snapshot_bundle(report_uuid)
+    assert response is not None
+    assert response.legacy_no_snapshot is False
+    assert response.bundle is not None
+    assert response.bundle.status == "complete"
+    items = response.items
+    assert len(items) == 1
+    assert items[0].snapshot_uuid == snap_uuid
+    assert items[0].snapshot_kind == "portfolio"
+    # payload_size grows with the v2 additive fields but stays positive.
+    assert items[0].payload_size_bytes is not None and items[0].payload_size_bytes > 0
