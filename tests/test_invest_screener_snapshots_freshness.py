@@ -113,14 +113,14 @@ def test_classify_investor_flow_partition_stale_when_partition_is_two_trading_da
     assert state == "stale"
 
 
-def test_classify_investor_flow_partition_friday_to_monday_morning_is_fresh() -> None:
-    """Saturday/Sunday collapse to Friday's trading date; Monday morning before
-    Monday's partition appears stays fresh relative to Friday's snapshot."""
+def test_classify_investor_flow_partition_friday_snapshot_on_saturday_noon_is_fresh() -> None:
+    """Weekend rollback: on Saturday, today_trading_date rolls back to Friday, so
+    a Friday partition with collected_at within STALE_AFTER_HOURS is fresh."""
     state = classify_investor_flow_partition(
         snapshot_date=dt.date(2026, 5, 15),  # Friday
         collected_at=dt.datetime(2026, 5, 15, 7, 30, tzinfo=dt.UTC),
-        today_trading_date_value=dt.date(2026, 5, 15),
-        now=dt.datetime(2026, 5, 18, 0, 5, tzinfo=dt.UTC),  # Monday 09:05 KST
+        today_trading_date_value=dt.date(2026, 5, 15),  # what today_trading_date("kr") returns on Sat
+        now=dt.datetime(2026, 5, 16, 3, 0, tzinfo=dt.UTC),  # Sat 12:00 KST
     )
     assert state == "fresh"
 

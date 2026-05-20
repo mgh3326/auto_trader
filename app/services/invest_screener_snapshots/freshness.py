@@ -78,15 +78,18 @@ def classify_investor_flow_partition(
     """Classify an investor_flow_snapshots partition's freshness.
 
     Mirrors classify_state() but without closes_window_len (investor_flow rows have
-    no candle window). Staleness is determined solely by trading-date comparison:
-    if snapshot_date matches today_trading_date_value (which already rolls weekends
-    back to Friday), the partition is fresh. Age-hours check is intentionally omitted
-    because a Friday snapshot is legitimately ~40 h old on Monday morning yet still
-    the most current available data. Stays in this module so KST/trading-date logic
-    lives in one place per ROB-277 §D4.
+    no candle window). Primary staleness check: snapshot_date must match
+    today_trading_date_value (which already rolls weekends back to Friday).
+    Secondary age guard: mirrors classify_state() to catch orphaned partitions
+    stamped with today's trading date but written long ago. Stays in this module
+    so KST/trading-date logic lives in one place per ROB-277 §D4.
     """
     if snapshot_date != today_trading_date_value:
         return "stale"
+    if collected_at is not None:
+        age_hours = (now - collected_at).total_seconds() / 3600.0
+        if age_hours >= STALE_AFTER_HOURS:
+            return "stale"
     return "fresh"
 
 
