@@ -87,6 +87,11 @@ class CollectorRequest(BaseModel):
     """For ``candidate_universe`` collectors. ``None`` = collector default."""
     policy_snapshot: dict[str, Any]
     """The frozen policy as stored on the run row (read-only)."""
+    user_id: int | None = None
+    """ROB-278 — explicit operator user_id for collectors that need to call
+    live-account read endpoints (e.g. KIS holdings/cash). ``None`` means the
+    caller did not supply one; broker-backed collectors must then fail
+    closed (``unavailable``) rather than invent a default."""
 
 
 @runtime_checkable

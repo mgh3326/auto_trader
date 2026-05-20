@@ -39,6 +39,12 @@ class ClassifierContext:
     # failed open). Empty list means the snapshot was fresh and reported
     # no open orders. The classifier MUST distinguish these.
     pending_orders: list[dict[str, Any]] | None = field(default_factory=list)
+    # ROB-278 Phase 2 — per-symbol quote evidence keyed by symbol. The
+    # value mirrors the ``quote`` sub-dict produced by the symbol
+    # collector ({status: 'ok'|'unavailable'|'skipped', ...}). Absent key
+    # means the symbol had no snapshot in the bundle (treated like
+    # ``status='unavailable'`` for buy actions).
+    symbol_quotes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def classify_items(
@@ -141,6 +147,30 @@ def _classify_watch(
 def _classify_action(
     item: IngestReportItem, context: ClassifierContext
 ) -> IngestReportItem:
+    # ROB-278 Phase 2 — buy intent without backing quote evidence is
+    # downgraded to review with an explicit no-data rationale. This
+    # implements the fail-closed contract: don't fabricate candidates
+    # when the bundle has market evidence for some symbols but not this
+    # one. The gate only applies when the evidence layer actually
+    # collected per-symbol quote data; an empty ``symbol_quotes`` map
+    # means the layer wasn't run (e.g., legacy crypto path) and the
+    # legacy classifier paths below stay in effect.
+    if context.symbol_quotes and item.side == "buy" and item.symbol is not None:
+        quote = context.symbol_quotes.get(item.symbol)
+        if quote is None or quote.get("status") != "ok":
+            reason = (
+                quote.get("unavailable_reason")
+                if isinstance(quote, dict)
+                else "no symbol quote snapshot"
+            )
+            return item.model_copy(
+                update={
+                    "operation": "review",
+                    "rationale": item.rationale
+                    + f" (quote evidence 확인 불가: {reason or 'no_quote'})",
+                    "apply_policy": "requires_user_approval",
+                }
+            )
     if context.pending_orders is None:
         return item.model_copy(
             update={

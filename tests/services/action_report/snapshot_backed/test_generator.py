@@ -538,3 +538,464 @@ async def test_generator_surfaces_unavailable_pending_orders_to_classifier():
     sent_item = ingest.calls[0].items[0]
     assert sent_item.operation == "review"
     assert "확인 불가" in sent_item.rationale
+
+
+# ---------------------------------------------------------------------------
+# ROB-278 — user_id propagation and reused-freshness reproducer.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_user_id_is_forwarded_from_report_request_to_bundle_ensure() -> None:
+    """ROB-278 — ReportGenerationRequest.user_id flows into EnsureBundleRequest.user_id.
+
+    Policy: callers must pass user_id explicitly to enable kis_live broker
+    reads; the generator does not invent a default.
+    """
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request(user_id=42))
+    assert len(ensure.calls) == 1
+    assert ensure.calls[0].user_id == 42
+
+
+@pytest.mark.asyncio
+async def test_user_id_default_is_none_and_propagates_as_none() -> None:
+    """ROB-278 — omitting user_id propagates None (fail-closed downstream)."""
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request())
+    assert ensure.calls[0].user_id is None
+
+
+class _FakeSymbolDerivationService:
+    """Records the derive() call and returns a fixed derivation."""
+
+    def __init__(
+        self,
+        *,
+        symbols: list[str] | None = None,
+        provenance: dict[str, Any] | None = None,
+    ) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._symbols = symbols if symbols is not None else []
+        self._provenance = provenance or {
+            "sources": {
+                "seed": [],
+                "portfolio": [],
+                "journal": [],
+                "watch": [],
+                "candidate": [],
+            },
+            "dropped_by_cap": [],
+            "cap": 50,
+            "total_unique": 0,
+        }
+
+    async def derive(
+        self,
+        *,
+        market: str,
+        account_scope: str | None,
+        user_id: int | None,
+        seed_symbols: list[str] | None,
+    ):
+        self.calls.append(
+            {
+                "market": market,
+                "account_scope": account_scope,
+                "user_id": user_id,
+                "seed_symbols": list(seed_symbols or []),
+            }
+        )
+        from app.services.action_report.snapshot_backed.symbol_derivation import (
+            SymbolDerivation,
+        )
+
+        return SymbolDerivation(
+            symbols=list(self._symbols), provenance=self._provenance
+        )
+
+
+@pytest.mark.asyncio
+async def test_generator_calls_symbol_derivation_and_forwards_symbols() -> None:
+    """ROB-278 — derived symbols flow into EnsureBundleRequest.symbols.
+
+    The generator unions request.symbols with derived symbols (the derivation
+    service preserves seed). Provenance is stashed on the ingest metadata.
+    """
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    derivation = _FakeSymbolDerivationService(
+        symbols=["005930", "000660"],
+        provenance={
+            "sources": {
+                "seed": [],
+                "portfolio": ["005930"],
+                "journal": ["000660"],
+                "watch": [],
+                "candidate": [],
+            },
+            "dropped_by_cap": [],
+            "cap": 50,
+            "total_unique": 2,
+        },
+    )
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+        symbol_derivation_service=derivation,
+    )
+    await gen.generate(_make_request(user_id=42))
+
+    # Derivation was called with the report's context.
+    assert len(derivation.calls) == 1
+    call = derivation.calls[0]
+    assert call["market"] == "kr"
+    assert call["account_scope"] == "kis_live"
+    assert call["user_id"] == 42
+
+    # Derived symbols reached EnsureBundleRequest.symbols.
+    assert set(ensure.calls[0].symbols or []) == {"005930", "000660"}
+
+    # Provenance is recorded on the ingest metadata for audit.
+    sent = ingest.calls[0]
+    assert "symbol_derivation" in sent.metadata
+    assert sent.metadata["symbol_derivation"]["sources"]["portfolio"] == ["005930"]
+
+
+@pytest.mark.asyncio
+async def test_generator_preserves_seed_symbols_through_derivation() -> None:
+    """ROB-278 — request.symbols is passed as seed_symbols and must survive."""
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    # Derivation returns seed + extra.
+    derivation = _FakeSymbolDerivationService(symbols=["X", "Y"])
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+        symbol_derivation_service=derivation,
+    )
+    await gen.generate(_make_request(symbols=["X"], user_id=42))
+    assert derivation.calls[0]["seed_symbols"] == ["X"]
+
+
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_does_not_downgrade_to_unavailable() -> None:
+    """ROB-278 Phase 2 — bundle.status='reused' with a stored summary that
+    only has per-kind statuses (no explicit ``overall``) must derive
+    ``overall`` from those per-kind statuses, not from a
+    ``_BUNDLE_STATUS_TO_OVERALL.get(status, 'unavailable')`` fallback.
+    """
+    reused_summary = {
+        # Note: no 'overall' key — derivation must compute it.
+        "portfolio": {"status": "fresh"},
+        "journal": {"status": "fresh"},
+        "watch_context": {"status": "fresh"},
+        "market": {"status": "partial"},
+    }
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused",
+            freshness_summary=reused_summary,
+            created=False,
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="draft"))
+    # Worst per-kind status is 'partial' (market), so overall must be 'partial'.
+    assert response.snapshot_freshness_summary["overall"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_all_fresh_derives_fresh() -> None:
+    """ROB-278 Phase 2 — all per-kind 'fresh' derives overall='fresh'."""
+    reused_summary = {
+        "portfolio": {"status": "fresh"},
+        "journal": {"status": "fresh"},
+        "watch_context": {"status": "fresh"},
+        "market": {"status": "fresh"},
+    }
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused", freshness_summary=reused_summary, created=False
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.snapshot_freshness_summary["overall"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_unavailable_kind_yields_unavailable() -> None:
+    """ROB-278 Phase 2 — if any kind is 'unavailable', overall='unavailable'."""
+    reused_summary = {
+        "portfolio": {"status": "unavailable"},
+        "journal": {"status": "fresh"},
+    }
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused", freshness_summary=reused_summary, created=False
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    # 'unavailable' on a kind → published would be blocked; draft is allowed.
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.snapshot_freshness_summary["overall"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_no_kind_statuses_falls_back() -> None:
+    """ROB-278 Phase 2 — when the stored summary has no per-kind statuses to
+    derive from, fall back to the bundle-status mapping. For an unknown
+    status (e.g. 'reused'), the safe default remains 'unavailable'.
+    """
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused",
+            # Non-empty (so the helper default doesn't substitute) but
+            # contains no per-kind status entries to derive from.
+            freshness_summary={"_meta": "no kind statuses present"},
+            created=False,
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.snapshot_freshness_summary["overall"] == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# ROB-278 Phase 2 — evidence-aware classifier downgrades.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_action_item_downgraded_to_review_when_no_quote_evidence() -> None:
+    """ROB-278 Phase 2 — buy action item targeting a symbol whose symbol
+    snapshot reports quote.status != 'ok' is downgraded to review with an
+    explicit no-quote rationale. The generator wires symbol snapshots from
+    the bundle into the classifier context."""
+    from types import SimpleNamespace
+
+    from app.schemas.investment_reports import IngestReportItem
+
+    draft_items = [
+        IngestReportItem(
+            client_item_key="a-1",
+            item_kind="action",
+            symbol="005930",
+            side="buy",
+            intent="buy_review",
+            rationale="buy thesis",
+        )
+    ]
+    fake_bundle = SimpleNamespace(id=9999)
+    fake_symbol_snapshot_item = SimpleNamespace(id=1, snapshot_id=20)
+    fake_symbol_snapshot = SimpleNamespace(
+        snapshot_kind="symbol",
+        symbol="005930",
+        payload_json={
+            "symbol": "005930",
+            "quote": {
+                "status": "unavailable",
+                "unavailable_reason": "session_closed",
+            },
+        },
+    )
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[(fake_symbol_snapshot_item, fake_symbol_snapshot)],
+    )
+
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+    await gen.generate(_make_request(status="draft", items=draft_items))
+    sent = ingest.calls[0]
+    sent_item = sent.items[0]
+    assert sent_item.operation == "review"
+    assert "quote" in sent_item.rationale.lower()
+
+
+@pytest.mark.asyncio
+async def test_auto_emit_from_evidence_appends_review_items_from_bundle() -> None:
+    """ROB-278 Phase 2 — auto_emit_from_evidence=True triggers the
+    deterministic proposer; the resulting items are surfaced through
+    ingest with operation='review' + apply_policy='requires_user_approval'.
+    """
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    fake_bundle = SimpleNamespace(id=7777)
+    portfolio_snapshot = SimpleNamespace(
+        snapshot_kind="portfolio",
+        symbol=None,
+        snapshot_uuid=uuid4(),
+        payload_json={
+            "primary_source": "kis",
+            "holdings": [
+                {
+                    "ticker": "005930",
+                    "quantity": 10,
+                    "sellable_quantity": 8,
+                    "source": "kis",
+                    "market": "KR",
+                }
+            ],
+            "reference_holdings": [],
+            "count": 1,
+            "market": "kr",
+        },
+    )
+    symbol_snapshot = SimpleNamespace(
+        snapshot_kind="symbol",
+        symbol="005930",
+        snapshot_uuid=uuid4(),
+        payload_json={
+            "symbol": "005930",
+            "quote": {
+                "status": "ok",
+                "last_price": 70_000.0,
+                "best_bid": 69_900.0,
+                "best_ask": 70_100.0,
+                "spread": 200.0,
+                "spread_bps": 28.57,
+                "bid_depth": 500.0,
+                "ask_depth": 600.0,
+                "venue": "krx",
+            },
+        },
+    )
+
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[
+            (SimpleNamespace(id=1, snapshot_id=1), portfolio_snapshot),
+            (SimpleNamespace(id=2, snapshot_id=2), symbol_snapshot),
+        ],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+    await gen.generate(
+        _make_request(status="draft", auto_emit_from_evidence=True, user_id=42)
+    )
+    sent = ingest.calls[0]
+    auto_items = [
+        i for i in sent.items if (i.client_item_key or "").startswith("auto-")
+    ]
+    assert auto_items, "expected at least one auto-emitted item"
+    for item in auto_items:
+        assert item.operation == "review"
+        assert item.apply_policy == "requires_user_approval"
+
+
+@pytest.mark.asyncio
+async def test_action_item_unchanged_when_quote_evidence_ok() -> None:
+    """ROB-278 Phase 2 — when symbol snapshot reports quote.status='ok',
+    the classifier does not downgrade the action item on quote grounds.
+    (Other classifier paths — pending_orders, etc. — still apply.)"""
+    from types import SimpleNamespace
+
+    from app.schemas.investment_reports import IngestReportItem
+
+    draft_items = [
+        IngestReportItem(
+            client_item_key="a-1",
+            item_kind="action",
+            symbol="005930",
+            side="buy",
+            intent="buy_review",
+            rationale="buy thesis",
+        )
+    ]
+    fake_bundle = SimpleNamespace(id=9999)
+    fake_symbol_snapshot_item = SimpleNamespace(id=1, snapshot_id=20)
+    fake_symbol_snapshot = SimpleNamespace(
+        snapshot_kind="symbol",
+        symbol="005930",
+        payload_json={
+            "symbol": "005930",
+            "quote": {
+                "status": "ok",
+                "last_price": 70_000.0,
+                "best_bid": 69_900.0,
+                "best_ask": 70_100.0,
+            },
+        },
+    )
+    fake_pending_orders_item = SimpleNamespace(id=2, snapshot_id=30)
+    fake_pending_orders_snapshot = SimpleNamespace(
+        snapshot_kind="pending_orders",
+        symbol=None,
+        payload_json={"pending_orders": []},
+    )
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[
+            (fake_symbol_snapshot_item, fake_symbol_snapshot),
+            (fake_pending_orders_item, fake_pending_orders_snapshot),
+        ],
+    )
+
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+    await gen.generate(_make_request(status="draft", items=draft_items))
+    sent = ingest.calls[0]
+    sent_item = sent.items[0]
+    # No pending order matches, quote evidence is ok → caller's draft stands
+    # untouched (no operation set by classifier).
+    assert sent_item.operation is None
+    assert "quote" not in (sent_item.rationale or "").lower()

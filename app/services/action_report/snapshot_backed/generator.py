@@ -56,6 +56,10 @@ from app.services.action_report.snapshot_backed.request import (
     ReportGenerationRequest,
     ReportGenerationResponse,
 )
+from app.services.action_report.snapshot_backed.symbol_derivation import (
+    SymbolDerivation,
+    SymbolDerivationService,
+)
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
@@ -81,6 +85,40 @@ _BUNDLE_STATUS_TO_OVERALL: dict[str, str] = {
 _BLOCKING_BUNDLE_STATUSES_FOR_PUBLISHED: frozenset[str] = frozenset(
     {"stale_fallback", "failed"}
 )
+
+# ROB-278 Phase 2 — worst-case rank used to derive ``overall`` from per-kind
+# statuses when the stored summary is missing an explicit ``overall`` key
+# (most common cause: bundle.status='reused' carrying an older summary that
+# only stored per-kind entries). Higher rank = worse.
+_KIND_STATUS_RANK: dict[str, int] = {
+    "fresh": 0,
+    "soft_stale": 1,
+    "partial": 2,
+    "hard_stale": 3,
+    "failed": 4,
+    "unavailable": 5,
+}
+_RANK_TO_KIND_STATUS: dict[int, str] = {v: k for k, v in _KIND_STATUS_RANK.items()}
+
+
+def _derive_overall_from_kind_statuses(summary: Mapping[str, Any]) -> str | None:
+    """Return the worst per-kind status in ``summary``, or ``None`` if the
+    summary carries no recognisable per-kind status entries."""
+    worst_rank = -1
+    for kind, info in summary.items():
+        if kind == "overall" or not isinstance(info, Mapping):
+            continue
+        status = info.get("status")
+        if not isinstance(status, str):
+            continue
+        rank = _KIND_STATUS_RANK.get(status)
+        if rank is None:
+            continue
+        if rank > worst_rank:
+            worst_rank = rank
+    if worst_rank < 0:
+        return None
+    return _RANK_TO_KIND_STATUS[worst_rank]
 
 
 class SnapshotBackedReportGeneratorError(RuntimeError):
@@ -119,6 +157,7 @@ class SnapshotBackedReportGenerator:
         ingestion_service: InvestmentReportIngestionService | None = None,
         collector_registry: SnapshotCollectorRegistry | None = None,
         snapshots_repository: InvestmentSnapshotsRepository | None = None,
+        symbol_derivation_service: SymbolDerivationService | None = None,
     ) -> None:
         self._session = session
         registry = collector_registry or production_collector_registry(session)
@@ -131,11 +170,23 @@ class SnapshotBackedReportGenerator:
         self._snapshots_repo = snapshots_repository or InvestmentSnapshotsRepository(
             session
         )
+        self._symbol_derivation = symbol_derivation_service or SymbolDerivationService(
+            session
+        )
 
     async def generate(
         self, request: ReportGenerationRequest
     ) -> ReportGenerationResponse:
         self._validate_pair(request)
+
+        # ROB-278 — derive symbol scope (seed + portfolio/journal/watch/candidate)
+        # before ensuring the bundle so the symbol collector sees the union.
+        derivation = await self._symbol_derivation.derive(
+            market=request.market,
+            account_scope=request.account_scope,
+            user_id=request.user_id,
+            seed_symbols=request.symbols,
+        )
 
         ensure_response = await self._ensure_service.ensure(
             EnsureBundleRequest(
@@ -144,9 +195,10 @@ class SnapshotBackedReportGenerator:
                 account_scope=request.account_scope,
                 policy_version=request.policy_version,
                 mode="ensure_fresh",
-                symbols=request.symbols,
+                symbols=derivation.symbols or None,
                 candidate_limit=request.candidate_limit,
                 requested_by=request.requested_by,
+                user_id=request.user_id,
             )
         )
 
@@ -212,7 +264,8 @@ class SnapshotBackedReportGenerator:
                 artifacts=stage_run.artifacts,
             )
 
-            # Re-classify composed items against operational state
+            # Re-classify composed items against operational state (ROB-274)
+            # — also picks up ROB-278 Phase 2 symbol-quote evidence wiring.
             classifier_context = await self._build_classifier_context(
                 bundle_uuid=ensure_response.bundle_uuid,
                 missing_sources=list(ensure_response.missing_sources),
@@ -245,10 +298,24 @@ class SnapshotBackedReportGenerator:
                             "policy_version": request.policy_version,
                             "generator_version": "v2_staged",
                         },
+                        "symbol_derivation": to_jsonable(derivation.provenance),
                     },
                 }
             )
         else:
+            # ROB-278 Phase 2 — deterministic evidence-driven auto-emit can
+            # populate items from the snapshot bundle BEFORE the classifier
+            # runs. The classifier then enforces operation/apply_policy +
+            # quote-evidence gates on whatever the proposer produced.
+            if request.auto_emit_from_evidence:
+                proposed = await self._auto_emit_items_from_bundle(
+                    bundle_uuid=ensure_response.bundle_uuid,
+                    request=request,
+                )
+                request = request.model_copy(
+                    update={"items": [*request.items, *proposed]}
+                )
+
             # ROB-274 — classify draft items against persisted bundle state.
             # We read payloads back from the DB (via list_bundle_items_with_snapshots)
             # so the classifier sees the same data that was just persisted, and
@@ -286,6 +353,7 @@ class SnapshotBackedReportGenerator:
                 freshness_summary=freshness_summary,
                 unavailable_sources=unavailable_sources,
                 source_conflicts=source_conflicts,
+                symbol_derivation=derivation,
             )
 
         # Authoritative gate runs inside ingest(); this pre-flight is a
@@ -328,6 +396,40 @@ class SnapshotBackedReportGenerator:
                 f"{request.market!r}/{request.account_scope!r}"
             )
 
+    async def _auto_emit_items_from_bundle(
+        self,
+        *,
+        bundle_uuid: UUID,
+        request: ReportGenerationRequest,
+    ) -> list[Any]:
+        """ROB-278 Phase 2 — deterministic, evidence-driven proposer.
+
+        Reads the persisted snapshot bundle (portfolio / symbol+quote /
+        candidate_universe / news / watch_context / journal) and emits
+        ``IngestReportItem``s with ``operation="review"`` +
+        ``apply_policy="requires_user_approval"``. The proposer is
+        fail-closed: no candidates are emitted unless the evidence
+        explicitly supports them (quote.status=='ok' with spread/depth for
+        buy; portfolio.primary_source=='kis' + sellable_quantity > 0 for
+        sell). Mutation paths are unreachable from this code path.
+        """
+        from app.services.action_report.snapshot_backed.auto_emit import (
+            EvidenceAutoEmitter,
+        )
+
+        bundle = await self._snapshots_repo.get_bundle_by_uuid(bundle_uuid)
+        if bundle is None:
+            return []
+        item_snapshot_pairs = (
+            await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
+        )
+        emitter = EvidenceAutoEmitter()
+        return emitter.propose(
+            snapshots=[s for _i, s in item_snapshot_pairs],
+            request_market=request.market,
+            account_scope=request.account_scope,
+        )
+
     async def _build_classifier_context(
         self,
         *,
@@ -361,6 +463,7 @@ class SnapshotBackedReportGenerator:
         active_watches: list[dict[str, Any]] = []
         pending_orders: list[dict[str, Any]] = []
         pending_orders_seen = False
+        symbol_quotes: dict[str, dict[str, Any]] = {}
 
         for _item, snapshot in item_snapshot_pairs:
             payload = snapshot.payload_json or {}
@@ -375,6 +478,15 @@ class SnapshotBackedReportGenerator:
                 orders = payload.get("pending_orders") or []
                 if isinstance(orders, list):
                     pending_orders.extend(orders)
+            elif snapshot.snapshot_kind == "symbol":
+                # ROB-278 Phase 2 — per-symbol quote evidence (when the
+                # symbol collector enriched the snapshot via KIS read-only
+                # quote/orderbook). symbol may be set on the snapshot row
+                # itself (per-symbol kind), and is also echoed in payload.
+                symbol = getattr(snapshot, "symbol", None) or payload.get("symbol")
+                quote = payload.get("quote")
+                if isinstance(symbol, str) and isinstance(quote, dict):
+                    symbol_quotes[symbol] = quote
 
         # Honest "unavailable" signal: pending_orders kind was attempted but
         # didn't produce a usable result (or missing entirely from the bundle).
@@ -382,6 +494,7 @@ class SnapshotBackedReportGenerator:
         return ClassifierContext(
             active_watches=active_watches,
             pending_orders=None if unavailable else pending_orders,
+            symbol_quotes=symbol_quotes,
         )
 
     def _enrich_freshness_summary(self, ensure_response: Any) -> dict[str, Any]:
@@ -390,9 +503,17 @@ class SnapshotBackedReportGenerator:
             summary = {"raw": summary}
         overall = summary.get("overall")
         if not isinstance(overall, str):
-            overall = _BUNDLE_STATUS_TO_OVERALL.get(
-                ensure_response.status, "unavailable"
-            )
+            # ROB-278 Phase 2 — prefer per-kind statuses over the
+            # bundle-status fallback. A reused bundle whose stored summary
+            # only carries per-kind entries must not silently downgrade to
+            # 'unavailable'; compute the worst per-kind status instead.
+            derived = _derive_overall_from_kind_statuses(summary)
+            if derived is not None:
+                overall = derived
+            else:
+                overall = _BUNDLE_STATUS_TO_OVERALL.get(
+                    ensure_response.status, "unavailable"
+                )
             summary["overall"] = overall
         return summary
 
@@ -452,6 +573,7 @@ class SnapshotBackedReportGenerator:
         freshness_summary: dict[str, Any],
         unavailable_sources: dict[str, Any],
         source_conflicts: dict[str, Any],
+        symbol_derivation: SymbolDerivation | None = None,
     ) -> IngestReportRequest:
         # Normalise items — each evidence_snapshot / trigger_checklist /
         # max_action / metadata is a free-form dict the caller filled in,
@@ -485,6 +607,11 @@ class SnapshotBackedReportGenerator:
                 "generator_version": request.generator_version,
             },
         )
+        if symbol_derivation is not None:
+            metadata.setdefault(
+                "symbol_derivation",
+                to_jsonable(symbol_derivation.provenance),
+            )
 
         return IngestReportRequest(
             report_type=request.report_type,
