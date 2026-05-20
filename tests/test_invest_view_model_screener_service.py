@@ -1923,7 +1923,9 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
         )
 
         fake_screening.list_screening.assert_not_called()
-        flow_warning = "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."
+        flow_warning = (
+            "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."
+        )
         assert flow_warning in resp.warnings, (
             f"expected flow-side stale warning in {resp.warnings}"
         )

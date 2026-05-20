@@ -209,9 +209,7 @@ async def test_excludes_non_common_stock_by_name_heuristic(db_session):
 @pytest.mark.asyncio
 async def test_returns_none_when_market_is_not_kr(db_session):
     # No DB hit expected — short-circuits at the market guard
-    rows = await load_double_buy_from_snapshots(
-        db_session, market="us", limit=20
-    )
+    rows = await load_double_buy_from_snapshots(db_session, market="us", limit=20)
     assert rows is None
 
 
@@ -226,7 +224,9 @@ async def test_state_is_stale_when_price_snapshot_date_differs_from_flow_snapsho
     symbol = "912000"
 
     db_session.add(
-        KRSymbolUniverse(symbol=symbol, name="테스트종목", is_active=True, exchange="KOSPI")
+        KRSymbolUniverse(
+            symbol=symbol, name="테스트종목", is_active=True, exchange="KOSPI"
+        )
     )
     db_session.add(
         InvestorFlowSnapshot(
@@ -255,12 +255,12 @@ async def test_state_is_stale_when_price_snapshot_date_differs_from_flow_snapsho
     )
     await db_session.commit()
 
-    rows = await load_double_buy_from_snapshots(
-        db_session, market="kr", limit=20
-    )
+    rows = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
 
     assert rows is not None
     # find our test symbol (shared DB may have other rows)
     target = next((r for r in rows if r["symbol"] == symbol), None)
-    assert target is not None, f"expected {symbol} in results, got {[r['symbol'] for r in rows]}"
+    assert target is not None, (
+        f"expected {symbol} in results, got {[r['symbol'] for r in rows]}"
+    )
     assert target["_screener_snapshot_state"] == "stale"

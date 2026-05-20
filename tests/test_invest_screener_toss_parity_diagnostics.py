@@ -307,9 +307,7 @@ def test_double_buy_supported_and_emits_ab_comparison_blocks(
     # picks up the fake.
     monkeypatch.setattr("app.core.db.AsyncSessionLocal", lambda: fake_ctx)
     # Avoid sentry/logging side-effects in the test.
-    monkeypatch.setattr(
-        "app.core.cli.setup_logging_and_sentry", lambda *a, **kw: None
-    )
+    monkeypatch.setattr("app.core.cli.setup_logging_and_sentry", lambda *a, **kw: None)
 
     from scripts import diagnose_invest_screener_toss_parity as mod
 
@@ -352,7 +350,9 @@ def test_double_buy_interpretation_a_skips_b_loader(
 ) -> None:
     """--interpretation a must NOT invoke the B loader (and vice versa)."""
     toss_path = tmp_path / "toss_ref.json"
-    toss_path.write_text(json.dumps([{"symbol": "011000", "rank": 1}]), encoding="utf-8")
+    toss_path.write_text(
+        json.dumps([{"symbol": "011000", "rank": 1}]), encoding="utf-8"
+    )
 
     a_calls: list[str] = []
     b_calls: list[str] = []
@@ -387,9 +387,7 @@ def test_double_buy_interpretation_a_skips_b_loader(
         _fake_b,
     )
     monkeypatch.setattr("app.core.db.AsyncSessionLocal", lambda: fake_ctx)
-    monkeypatch.setattr(
-        "app.core.cli.setup_logging_and_sentry", lambda *a, **kw: None
-    )
+    monkeypatch.setattr("app.core.cli.setup_logging_and_sentry", lambda *a, **kw: None)
 
     from scripts import diagnose_invest_screener_toss_parity as mod
 

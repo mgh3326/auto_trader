@@ -12,6 +12,7 @@ Example:
       --toss-symbols-file /path/to/toss_symbols.csv \
       --limit 80
 """
+
 from __future__ import annotations
 
 import argparse
@@ -67,7 +68,9 @@ def _reject_if_sensitive(label: str, value: Any) -> None:
         )
 
 
-def _normalize_toss_row(raw: dict[str, Any], fallback_rank: int) -> dict[str, Any] | None:
+def _normalize_toss_row(
+    raw: dict[str, Any], fallback_rank: int
+) -> dict[str, Any] | None:
     for key, value in raw.items():
         _reject_if_sensitive(key, value)
 
@@ -128,11 +131,18 @@ def load_toss_symbols(path: Path) -> list[dict[str, Any]]:
     if path.suffix.lower() == ".json":
         parsed = json.loads(raw_text)
         if isinstance(parsed, dict):
-            rows = parsed.get("results") or parsed.get("rows") or parsed.get("symbols") or []
+            rows = (
+                parsed.get("results")
+                or parsed.get("rows")
+                or parsed.get("symbols")
+                or []
+            )
         else:
             rows = parsed
         if not isinstance(rows, list):
-            raise ValueError("JSON Toss export must be a list or contain rows/results/symbols")
+            raise ValueError(
+                "JSON Toss export must be a list or contain rows/results/symbols"
+            )
         raw_rows = [r if isinstance(r, dict) else {"symbol": r} for r in rows]
     else:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
@@ -166,7 +176,10 @@ def build_parity_report(
     auto_rows: list[dict[str, Any]], toss_rows: list[dict[str, Any]], *, limit: int
 ) -> dict[str, Any]:
     auto_rank = {row["symbol"]: idx for idx, row in enumerate(auto_rows, start=1)}
-    toss_rank = {row["symbol"]: int(row.get("rank") or idx) for idx, row in enumerate(toss_rows, start=1)}
+    toss_rank = {
+        row["symbol"]: int(row.get("rank") or idx)
+        for idx, row in enumerate(toss_rows, start=1)
+    }
     auto_symbols = set(auto_rank)
     toss_symbols = set(toss_rank)
 
@@ -332,16 +345,14 @@ async def load_double_buy_rows_interpretation_b(
     if market != "kr":
         return []
 
-    latest_flow_stmt = sa.select(
-        sa.func.max(InvestorFlowSnapshot.snapshot_date)
-    ).where(InvestorFlowSnapshot.market == "kr")
+    latest_flow_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+        InvestorFlowSnapshot.market == "kr"
+    )
     flow_date = (await session.execute(latest_flow_stmt)).scalar_one_or_none()
     if flow_date is None:
         return []
 
-    prev_flow_stmt = sa.select(
-        sa.func.max(InvestorFlowSnapshot.snapshot_date)
-    ).where(
+    prev_flow_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
         InvestorFlowSnapshot.market == "kr",
         InvestorFlowSnapshot.snapshot_date < flow_date,
     )
@@ -363,9 +374,9 @@ async def load_double_buy_rows_interpretation_b(
             (InvestorFlowSnapshot.foreign_net - Prev.foreign_net).label(
                 "foreign_delta"
             ),
-            (
-                InvestorFlowSnapshot.institution_net - Prev.institution_net
-            ).label("institution_delta"),
+            (InvestorFlowSnapshot.institution_net - Prev.institution_net).label(
+                "institution_delta"
+            ),
             InvestScreenerSnapshot.change_rate,
             InvestScreenerSnapshot.snapshot_date.label("price_snapshot_date"),
             InvestorFlowSnapshot.snapshot_date.label("flow_snapshot_date"),
@@ -520,7 +531,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Read-only Toss parity diagnostic for /invest screener."
     )
     parser.add_argument("--market", choices=["kr"], default="kr")
-    parser.add_argument("--preset", choices=sorted(_SUPPORTED_PRESETS), default="consecutive_gainers")
+    parser.add_argument(
+        "--preset", choices=sorted(_SUPPORTED_PRESETS), default="consecutive_gainers"
+    )
     parser.add_argument("--toss-symbols-file", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=80)
     parser.add_argument(
@@ -561,16 +574,18 @@ async def main(argv: list[str] | None = None) -> int:
                 # Resolve current/previous flow snapshot dates for report context.
                 current_date_value = (
                     await session.execute(
-                        sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
-                            InvestorFlowSnapshot.market == args.market
-                        )
+                        sa.select(
+                            sa.func.max(InvestorFlowSnapshot.snapshot_date)
+                        ).where(InvestorFlowSnapshot.market == args.market)
                     )
                 ).scalar_one_or_none()
                 prev_date_value = None
                 if current_date_value is not None:
                     prev_date_value = (
                         await session.execute(
-                            sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+                            sa.select(
+                                sa.func.max(InvestorFlowSnapshot.snapshot_date)
+                            ).where(
                                 InvestorFlowSnapshot.market == args.market,
                                 InvestorFlowSnapshot.snapshot_date < current_date_value,
                             )

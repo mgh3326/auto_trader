@@ -27,8 +27,8 @@ def test_double_buy_preset_present_and_kr_only():
     assert "double_buy" in _KR_ONLY_PRESET_IDS
     chip_labels = {c.label for c in db.filterChips}
     assert "국내" in chip_labels
-    assert "외국인" in chip_labels   # independent
-    assert "기관" in chip_labels     # independent
+    assert "외국인" in chip_labels  # independent
+    assert "기관" in chip_labels  # independent
 
 
 def test_investor_flow_momentum_copy_no_double_buy_wording():
@@ -51,6 +51,7 @@ def test_double_buy_screening_filters_lookup_is_kr_only_snapshot():
 
 def test_every_preset_id_is_in_metric_field_map():
     from app.services.invest_view_model.screener_service import _METRIC_FIELD
+
     preset_ids = {p.id for p in SCREENER_PRESETS}
     metric_ids = set(_METRIC_FIELD.keys())
     missing = preset_ids - metric_ids
