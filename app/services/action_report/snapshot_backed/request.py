@@ -6,7 +6,7 @@ import datetime as dt
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.investment_reports import IngestReportItem
 from app.schemas.investment_snapshots import SnapshotRequestedBy
@@ -54,8 +54,12 @@ class ReportGenerationRequest(BaseModel):
     symbols: list[str] | None = None
     candidate_limit: int | None = None
 
-    # ROB-279 — when True, the generator synthesizes report fields and items
-    # via the staged snapshot-backed pipeline instead of using provided ones.
+    # ROB-287 — fail-closed legacy field. The ROB-279 in-process LLM
+    # composition path (Gemini-backed FinalComposer + LLM reducer stages)
+    # was removed; LLM reasoning/composition now belongs to Hermes via the
+    # `investment_report_get_hermes_context` / Hermes-result-ingest contract.
+    # ``True`` is rejected at validation time so callers cannot accidentally
+    # re-enable an in-process LLM path.
     auto_compose: bool = False
 
     # ROB-278 — operator user_id for live-account read paths (e.g. KIS
@@ -66,9 +70,21 @@ class ReportGenerationRequest(BaseModel):
     # evidence-driven auto-emitter (portfolio + symbol quote + candidate +
     # news + journal/watch). Items emit with operation="review" +
     # apply_policy="requires_user_approval"; mutation paths remain
-    # unreachable. Distinct from ``auto_compose`` (ROB-279) which uses
-    # LLM-staged composition.
+    # unreachable. Per ROB-287, this proposer remains a deterministic,
+    # explicit-flag-only path and never co-runs with Hermes composition
+    # against the same bundle.
     auto_emit_from_evidence: bool = False
+
+    @field_validator("auto_compose")
+    @classmethod
+    def _reject_auto_compose(cls, value: bool) -> bool:
+        if value:
+            raise ValueError(
+                "auto_compose=True is no longer supported (ROB-287). "
+                "LLM composition is owned by Hermes; use the Hermes context "
+                "export + ingest contract instead."
+            )
+        return value
 
 
 class ReportGenerationResponse(BaseModel):
