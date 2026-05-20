@@ -166,6 +166,9 @@ class SnapshotBackedReportGenerator:
             from app.services.ai_providers.gemini_provider import GeminiProvider
             from app.services.investment_stages.budget import StageLLMBudget
             from app.services.investment_stages.composer import FinalComposer
+            from app.services.investment_stages.rate_limited_provider import (
+                RateLimitedGeminiProvider,
+            )
             from app.services.investment_stages.stage_runner import StageRunner
             from app.services.investment_stages.stages.registry import (
                 get_default_v1_stages,
@@ -182,7 +185,9 @@ class SnapshotBackedReportGenerator:
                     return SimpleNamespace(bundle=bundle, items=[i[1] for i in items])
 
             budget = StageLLMBudget(max_calls=4)
-            provider = GeminiProvider(api_key=settings.gemini_advisor_api_key or "")
+            provider = RateLimitedGeminiProvider(
+                GeminiProvider(api_key=settings.gemini_advisor_api_key or "")
+            )
             stage_runner = StageRunner(
                 session=self._session,
                 bundle_read_service=_LocalBundleRead(self._snapshots_repo),

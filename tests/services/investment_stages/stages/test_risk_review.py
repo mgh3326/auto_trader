@@ -11,6 +11,56 @@ from app.services.investment_stages.stages.risk_review import RiskReviewStage
 
 
 @pytest.mark.asyncio
+async def test_risk_review_degrades_when_budget_exhausted():
+    """C3 (ROB-279): BudgetExceeded must produce a deterministic BEAR fallback,
+    not propagate the exception, and not call the LLM provider."""
+    provider = AsyncMock()
+    budget = StageLLMBudget(max_calls=0)
+    stage = RiskReviewStage(provider, budget)
+
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={},
+        bundle_metadata={},
+        prior_artifacts={
+            "bull_reducer": StageArtifactPayload(
+                stage_type="bull_reducer",
+                verdict=StageVerdict.BULL,
+                confidence=60,
+                risk_evidence=["leverage risk", "concentration risk"],
+            )
+        },
+    )
+
+    payload = await stage.run(ctx)
+
+    provider.ask.assert_not_called()
+    assert payload.verdict == StageVerdict.BEAR
+    assert payload.confidence <= 40
+    assert payload.model_name is None
+    assert "leverage risk" in (payload.summary or "")
+
+
+@pytest.mark.asyncio
+async def test_risk_review_degrades_to_neutral_when_budget_exhausted_and_no_evidence():
+    provider = AsyncMock()
+    budget = StageLLMBudget(max_calls=0)
+    stage = RiskReviewStage(provider, budget)
+
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={},
+        bundle_metadata={},
+        prior_artifacts={},
+    )
+
+    payload = await stage.run(ctx)
+    provider.ask.assert_not_called()
+    assert payload.verdict == StageVerdict.NEUTRAL
+    assert payload.confidence <= 20
+
+
+@pytest.mark.asyncio
 async def test_risk_review_synthesizes_prior_artifacts():
     provider = AsyncMock()
     provider.ask.return_value = AiProviderResult(

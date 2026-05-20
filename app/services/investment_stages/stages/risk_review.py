@@ -10,8 +10,7 @@ from app.schemas.investment_stages import (
     StageCitation,
     StageVerdict,
 )
-from app.services.ai_providers.gemini_provider import GeminiProvider
-from app.services.investment_stages.budget import StageLLMBudget
+from app.services.investment_stages.budget import BudgetExceeded, StageLLMBudget
 from app.services.investment_stages.stages.base import StageContext
 
 _logger = logging.getLogger(__name__)
@@ -20,15 +19,14 @@ _logger = logging.getLogger(__name__)
 class RiskReviewStage:
     stage_type = "risk_review"
 
-    def __init__(self, provider: GeminiProvider, budget: StageLLMBudget) -> None:
+    def __init__(self, provider: object, budget: StageLLMBudget) -> None:
         self._provider = provider
         self._budget = budget
 
     async def run(self, context: StageContext) -> StageArtifactPayload:
-        self._budget.consume(self.stage_type)
-
-        # Collect prior evidence
+        # Collect prior evidence first (before consuming budget)
         prior_details = []
+        risk_lines: list[str] = []
         citations: list[StageCitation] = []
         for stype, art in context.prior_artifacts.items():
             prior_details.append(
@@ -36,8 +34,24 @@ class RiskReviewStage:
                 f"Summary: {art.summary}\n"
                 f"Risk Evidence: {art.risk_evidence}\n"
             )
+            risk_lines.extend(art.risk_evidence or [])
             for cite in art.cited_snapshots:
                 citations.append(cite)
+
+        try:
+            self._budget.consume(self.stage_type)
+        except BudgetExceeded:
+            _logger.info("risk_review: budget exhausted, deterministic fallback")
+            return StageArtifactPayload(
+                stage_type=self.stage_type,
+                verdict=StageVerdict.BEAR if risk_lines else StageVerdict.NEUTRAL,
+                confidence=40 if risk_lines else 20,
+                summary="; ".join(risk_lines[:10]) or "no risk evidence",
+                risk_evidence=risk_lines,
+                cited_snapshots=citations,
+                model_name=None,
+                prompt_version=None,
+            )
 
         prompt = (
             "You are a professional risk manager. Your task is to provide a FINAL RISK REVIEW "

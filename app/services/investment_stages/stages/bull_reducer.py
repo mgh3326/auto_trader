@@ -10,8 +10,7 @@ from app.schemas.investment_stages import (
     StageCitation,
     StageVerdict,
 )
-from app.services.ai_providers.gemini_provider import GeminiProvider
-from app.services.investment_stages.budget import StageLLMBudget
+from app.services.investment_stages.budget import BudgetExceeded, StageLLMBudget
 from app.services.investment_stages.stages.base import StageContext
 
 _logger = logging.getLogger(__name__)
@@ -20,15 +19,14 @@ _logger = logging.getLogger(__name__)
 class BullReducerStage:
     stage_type = "bull_reducer"
 
-    def __init__(self, provider: GeminiProvider, budget: StageLLMBudget) -> None:
+    def __init__(self, provider: object, budget: StageLLMBudget) -> None:
         self._provider = provider
         self._budget = budget
 
     async def run(self, context: StageContext) -> StageArtifactPayload:
-        self._budget.consume(self.stage_type)
-
-        # Collect prior evidence
+        # Collect prior evidence first (before consuming budget)
         prior_details = []
+        buy_lines: list[str] = []
         citations: list[StageCitation] = []
         for stype, art in context.prior_artifacts.items():
             prior_details.append(
@@ -37,8 +35,24 @@ class BullReducerStage:
                 f"Key Points: {art.key_points}\n"
                 f"Buy Evidence: {art.buy_evidence}\n"
             )
+            buy_lines.extend(art.buy_evidence or [])
             for cite in art.cited_snapshots:
                 citations.append(cite)
+
+        try:
+            self._budget.consume(self.stage_type)
+        except BudgetExceeded:
+            _logger.info("bull_reducer: budget exhausted, deterministic fallback")
+            return StageArtifactPayload(
+                stage_type=self.stage_type,
+                verdict=StageVerdict.BULL if buy_lines else StageVerdict.NEUTRAL,
+                confidence=40 if buy_lines else 20,
+                summary="; ".join(buy_lines[:10]) or "no buy evidence",
+                buy_evidence=buy_lines,
+                cited_snapshots=citations,
+                model_name=None,
+                prompt_version=None,
+            )
 
         prompt = (
             "You are a professional financial analyst. Your task is to synthesize the BULL CASE "

@@ -10,8 +10,7 @@ from app.schemas.investment_stages import (
     StageCitation,
     StageVerdict,
 )
-from app.services.ai_providers.gemini_provider import GeminiProvider
-from app.services.investment_stages.budget import StageLLMBudget
+from app.services.investment_stages.budget import BudgetExceeded, StageLLMBudget
 from app.services.investment_stages.stages.base import StageContext
 
 _logger = logging.getLogger(__name__)
@@ -20,15 +19,15 @@ _logger = logging.getLogger(__name__)
 class BearReducerStage:
     stage_type = "bear_reducer"
 
-    def __init__(self, provider: GeminiProvider, budget: StageLLMBudget) -> None:
+    def __init__(self, provider: object, budget: StageLLMBudget) -> None:
         self._provider = provider
         self._budget = budget
 
     async def run(self, context: StageContext) -> StageArtifactPayload:
-        self._budget.consume(self.stage_type)
-
-        # Collect prior evidence
+        # Collect prior evidence first (before consuming budget)
         prior_details = []
+        sell_lines: list[str] = []
+        risk_lines: list[str] = []
         citations: list[StageCitation] = []
         for stype, art in context.prior_artifacts.items():
             prior_details.append(
@@ -38,8 +37,27 @@ class BearReducerStage:
                 f"Risk Evidence: {art.risk_evidence}\n"
                 f"Sell Evidence: {art.sell_evidence}\n"
             )
+            sell_lines.extend(art.sell_evidence or [])
+            risk_lines.extend(art.risk_evidence or [])
             for cite in art.cited_snapshots:
                 citations.append(cite)
+
+        try:
+            self._budget.consume(self.stage_type)
+        except BudgetExceeded:
+            _logger.info("bear_reducer: budget exhausted, deterministic fallback")
+            bear_lines = sell_lines or risk_lines
+            return StageArtifactPayload(
+                stage_type=self.stage_type,
+                verdict=StageVerdict.BEAR if bear_lines else StageVerdict.NEUTRAL,
+                confidence=40 if bear_lines else 20,
+                summary="; ".join(bear_lines[:10]) or "no bear evidence",
+                sell_evidence=sell_lines,
+                risk_evidence=risk_lines,
+                cited_snapshots=citations,
+                model_name=None,
+                prompt_version=None,
+            )
 
         prompt = (
             "You are a professional financial analyst. Your task is to synthesize the BEAR/RISK CASE "

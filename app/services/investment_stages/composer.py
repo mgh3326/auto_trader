@@ -8,14 +8,13 @@ import uuid
 from typing import Any
 
 from app.schemas.investment_reports import IngestReportItem, IngestReportRequest
-from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.investment_stages.budget import StageLLMBudget
 
 _logger = logging.getLogger(__name__)
 
 
 class FinalComposer:
-    def __init__(self, provider: GeminiProvider, budget: StageLLMBudget) -> None:
+    def __init__(self, provider: Any, budget: StageLLMBudget) -> None:
         self._provider = provider
         self._budget = budget
 
@@ -92,23 +91,25 @@ class FinalComposer:
         data = json.loads(text)
 
         # Build IngestReportItem objects and enforce citations
+        # Hard enforcement: items without valid citations are dropped (C2, ROB-279).
         composed_items: list[IngestReportItem] = []
-        fallback_uuid = (
-            artifact_map.get("risk_review").artifact_uuid
-            if "risk_review" in artifact_map
-            else uuid.uuid4()
-        )
 
         for raw_item in data.get("items", []):
+            client_item_key = raw_item.get("client_item_key", "<unknown>")
             cited_types = raw_item.pop("cited_stage_types", [])
             cited_uuids = []
             for t in cited_types:
                 if t in artifact_map:
                     cited_uuids.append(str(artifact_map[t].artifact_uuid))
 
-            # Citation enforcement invariant
+            # Hard citation gate: drop items with no resolvable stage citations.
             if not cited_uuids:
-                cited_uuids.append(str(fallback_uuid))
+                _logger.info(
+                    "composer: dropping uncited item client_item_key=%s (cited_stage_types=%r)",
+                    client_item_key,
+                    cited_types,
+                )
+                continue
 
             metadata = raw_item.get("metadata", {})
             metadata["cited_stage_uuids"] = cited_uuids
@@ -119,6 +120,23 @@ class FinalComposer:
                 raw_item.pop("valid_until", None)
 
             composed_items.append(IngestReportItem.model_validate(raw_item))
+
+        # If ALL items were dropped, emit a single safety fallback item.
+        if not composed_items and data.get("items"):
+            _logger.info("composer: all candidate items lacked citations; emitting no_action_note fallback")
+            composed_items.append(
+                IngestReportItem(
+                    client_item_key="auto-no-action",
+                    item_kind="risk",
+                    intent="risk_review",
+                    operation="review",
+                    rationale="all candidate items lacked stage citations; review required",
+                    apply_policy="requires_user_approval",
+                    proposed_state={
+                        "summary": "all candidate items lacked stage citations; review required"
+                    },
+                )
+            )
 
         # Compose overall request
         return IngestReportRequest(
