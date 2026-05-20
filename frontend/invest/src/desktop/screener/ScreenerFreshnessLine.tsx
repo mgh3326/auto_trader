@@ -53,7 +53,15 @@ export function ScreenerFreshnessLine({
   } else if (overall === "missing") {
     dataLineText = "데이터 없음";
   } else {
-    dataLineText = `데이터 기준 ${primary?.asOfLabel ?? freshness.asOfLabel}`;
+    // ROB-277 §D3 follow-up: surface the worst dependency's lag info inline so
+    // a stale chip's date doesn't appear next to a "fresh"-looking data line.
+    const worstDep = (freshness.dependencies ?? []).find(
+      (d) => d.dataState === "stale" || d.dataState === "partial",
+    );
+    const lagSuffix = worstDep
+      ? ` · ${worstDep.lagLabel ?? (worstDep.dataState === "stale" ? "업데이트 필요" : "일부 지연")}`
+      : "";
+    dataLineText = `데이터 기준 ${primary?.asOfLabel ?? freshness.asOfLabel}${lagSuffix}`;
   }
 
   const servedLabel = freshness.servedRelativeLabel ?? "방금";

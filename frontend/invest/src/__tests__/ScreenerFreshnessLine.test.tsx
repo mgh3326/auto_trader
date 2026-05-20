@@ -129,6 +129,88 @@ describe("ROB-277 dual-line rendering", () => {
   });
 });
 
+describe("ROB-277 follow-up: dependency lag inline on data line", () => {
+  test("appends dependency lagLabel to 데이터 기준 line when dependency is stale", () => {
+    render(
+      <ScreenerFreshnessLine
+        freshness={{
+          fetchedAt: "2026-05-20T00:10:00+00:00",
+          asOfLabel: "2026.05.20 09:10 기준",
+          relativeLabel: "방금 갱신",
+          cacheHit: true,
+          source: "cached",
+          dataState: "stale",
+          servedAt: "2026-05-20T00:10:00+00:00",
+          servedRelativeLabel: "방금",
+          primary: {
+            kind: "screener_snapshot",
+            snapshotDate: "2026-05-20",
+            computedAt: "2026-05-20T00:05:00+00:00",
+            asOfLabel: "2026.05.20 09:05 기준",
+            dataState: "fresh",
+            source: "invest_screener_snapshots",
+          },
+          dependencies: [
+            {
+              kind: "investor_flow",
+              snapshotDate: "2026-05-18",
+              collectedAt: "2026-05-18T07:30:00+00:00",
+              lagLabel: "2거래일 지연",
+              dataState: "stale",
+              source: "investor_flow_snapshots",
+            },
+          ],
+          overallState: "stale",
+        }}
+      />,
+    );
+    const dataLine = screen.getByTestId("screener-freshness-data");
+    expect(dataLine).toHaveTextContent("데이터 기준 2026.05.20 09:05 기준");
+    expect(dataLine).toHaveTextContent("2거래일 지연");
+    // served line stays clean (no lag info)
+    const servedLine = screen.getByTestId("screener-freshness-served");
+    expect(servedLine).not.toHaveTextContent("지연");
+  });
+
+  test("falls back to '업데이트 필요' when dependency is stale without lagLabel", () => {
+    render(
+      <ScreenerFreshnessLine
+        freshness={{
+          fetchedAt: "2026-05-20T00:10:00+00:00",
+          asOfLabel: "2026.05.20 09:10 기준",
+          relativeLabel: "방금 갱신",
+          cacheHit: true,
+          source: "cached",
+          dataState: "stale",
+          servedAt: "2026-05-20T00:10:00+00:00",
+          servedRelativeLabel: "방금",
+          primary: {
+            kind: "screener_snapshot",
+            snapshotDate: "2026-05-20",
+            computedAt: null,
+            asOfLabel: "2026.05.20 장마감 기준",
+            dataState: "fresh",
+            source: "invest_screener_snapshots",
+          },
+          dependencies: [
+            {
+              kind: "investor_flow",
+              snapshotDate: null,
+              collectedAt: null,
+              lagLabel: null,
+              dataState: "stale",
+              source: "investor_flow_snapshots",
+            },
+          ],
+          overallState: "stale",
+        }}
+      />,
+    );
+    const dataLine = screen.getByTestId("screener-freshness-data");
+    expect(dataLine).toHaveTextContent("업데이트 필요");
+  });
+});
+
 describe("ScreenerFreshness type shape", () => {
   test("accepts the ROB-277 additive fields", () => {
     const primary: ScreenerFreshnessPrimary = {
