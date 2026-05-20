@@ -21,6 +21,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from app.schemas.investment_snapshots import (
     BundleItemRole,
     BundleStatus,
