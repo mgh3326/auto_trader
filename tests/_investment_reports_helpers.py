@@ -149,8 +149,8 @@ async def session() -> AsyncSession:
                         # Watch invariants — drop both canonical + hashed
                         # names (see 20260520_rob274_p1 docstring) before
                         # recreating with the operation-aware predicate.
-                        'ALTER TABLE review.investment_report_items '
-                        'DROP CONSTRAINT IF EXISTS '
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
                         '"ck_investment_report_items_ck_investment_report_items_w_421e"',
                         "ALTER TABLE review.investment_report_items "
                         "DROP CONSTRAINT IF EXISTS "
@@ -163,8 +163,8 @@ async def session() -> AsyncSession:
                         "OR operation IN ('cancel','keep','review') "
                         "OR watch_condition IS NOT NULL"
                         ")",
-                        'ALTER TABLE review.investment_report_items '
-                        'DROP CONSTRAINT IF EXISTS '
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
                         '"ck_investment_report_items_ck_investment_report_items_w_fdaa"',
                         "ALTER TABLE review.investment_report_items "
                         "DROP CONSTRAINT IF EXISTS "

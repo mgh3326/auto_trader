@@ -150,9 +150,7 @@ class _FakeSnapshotsRepository:
         self.get_bundle_calls.append(bundle_uuid)
         return MagicMock(id=1)
 
-    async def list_bundle_items_with_snapshots(
-        self, bundle_id: int
-    ) -> list[Any]:
+    async def list_bundle_items_with_snapshots(self, bundle_id: int) -> list[Any]:
         self.list_items_calls.append(bundle_id)
         return []
 
@@ -166,9 +164,7 @@ def _build_generator() -> tuple[
     fake_ensure.ensure = AsyncMock(return_value=_minimal_ensure_response())
 
     fake_ingest = AsyncMock()
-    fake_ingest.ingest = AsyncMock(
-        return_value=MagicMock(report_uuid=uuid.uuid4())
-    )
+    fake_ingest.ingest = AsyncMock(return_value=MagicMock(report_uuid=uuid.uuid4()))
 
     generator = SnapshotBackedReportGenerator(
         session=MagicMock(),
@@ -194,9 +190,7 @@ def _install_spies(
         def _make_spy(method_name: str):
             def _spy(*_args: Any, **_kwargs: Any) -> Any:
                 spy_calls.append(method_name)
-                raise AssertionError(
-                    f"generator must not call {label}.{method_name}"
-                )
+                raise AssertionError(f"generator must not call {label}.{method_name}")
 
             return _spy
 

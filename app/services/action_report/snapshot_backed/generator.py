@@ -128,8 +128,8 @@ class SnapshotBackedReportGenerator:
         self._ingestion_service = ingestion_service or InvestmentReportIngestionService(
             session
         )
-        self._snapshots_repo = (
-            snapshots_repository or InvestmentSnapshotsRepository(session)
+        self._snapshots_repo = snapshots_repository or InvestmentSnapshotsRepository(
+            session
         )
 
     async def generate(
@@ -287,9 +287,7 @@ class SnapshotBackedReportGenerator:
 
         # Honest "unavailable" signal: pending_orders kind was attempted but
         # didn't produce a usable result (or missing entirely from the bundle).
-        unavailable = (
-            "pending_orders" in missing_sources
-        ) or (not pending_orders_seen)
+        unavailable = ("pending_orders" in missing_sources) or (not pending_orders_seen)
         return ClassifierContext(
             active_watches=active_watches,
             pending_orders=None if unavailable else pending_orders,

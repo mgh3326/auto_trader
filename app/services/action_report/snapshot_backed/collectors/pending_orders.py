@@ -253,9 +253,7 @@ def _normalize_kis_order(row: dict[str, Any], *, market: str) -> dict[str, Any]:
         row,
         ("ord_unpr", "ft_ord_unpr3", "ord_unpr3", "price"),
     )
-    quantity = _first_str(
-        row, ("ord_qty", "ft_ord_qty", "quantity", "qty")
-    )
+    quantity = _first_str(row, ("ord_qty", "ft_ord_qty", "quantity", "qty"))
     remaining_raw = _first_str(
         row,
         ("nccs_qty", "rmn_qty", "remaining_qty", "remaining_quantity"),
@@ -315,9 +313,7 @@ def _kis_placed_at(row: Mapping[str, Any]) -> dt.datetime | None:
             # KIS returns these wall-clock fields in KST (UTC+9) for both
             # domestic and overseas endpoints — stamping as KST keeps the
             # timestamp factually correct.
-            return dt.datetime.strptime(combined, "%Y%m%d%H%M%S").replace(
-                tzinfo=_KST
-            )
+            return dt.datetime.strptime(combined, "%Y%m%d%H%M%S").replace(tzinfo=_KST)
         except ValueError:
             return None
     return None

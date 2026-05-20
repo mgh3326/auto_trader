@@ -169,9 +169,7 @@ def test_pending_orders_unavailable_marks_dependent_items_review():
     )
     classified = classify_items(
         items=[draft],
-        context=ClassifierContext(
-            active_watches=[], pending_orders=None
-        ),
+        context=ClassifierContext(active_watches=[], pending_orders=None),
     )
     # When pending_orders snapshot is missing, item must be downgraded
     # to action/review with explicit unknown note.

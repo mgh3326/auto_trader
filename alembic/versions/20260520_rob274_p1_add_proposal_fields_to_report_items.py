@@ -48,9 +48,7 @@ _WATCH_EXPIRY_CHECK = "ck_investment_report_items_watch_has_expiry"
 # ``ck_%(table_name)s_%(constraint_name)s`` (which expands to
 # ``ck_investment_report_items_ck_investment_report_items_watch_has_condition``,
 # >63 chars → PG truncates and appends a 4-char hash suffix).
-_WATCH_CONDITION_HASHED = (
-    "ck_investment_report_items_ck_investment_report_items_w_421e"
-)
+_WATCH_CONDITION_HASHED = "ck_investment_report_items_ck_investment_report_items_w_421e"
 _WATCH_EXPIRY_HASHED = "ck_investment_report_items_ck_investment_report_items_w_fdaa"
 
 
@@ -69,7 +67,7 @@ def _drop_watch_check_if_exists(name: str, hashed_name: str) -> None:
     # itself uses on the create-side; drop it too so downgrade is symmetric
     # and re-applying upgrade after downgrade does not collide.
     op.execute(
-        f'ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS '
+        f"ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS "
         f'"ck_investment_report_items_{name}"'
     )
 

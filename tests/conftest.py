@@ -567,13 +567,13 @@ async def db_session():
         ):
             await conn.execute(
                 text(
-                    f'ALTER TABLE review.investment_report_items '
+                    f"ALTER TABLE review.investment_report_items "
                     f'DROP CONSTRAINT IF EXISTS "{hashed}"'
                 )
             )
             await conn.execute(
                 text(
-                    f'ALTER TABLE review.investment_report_items '
+                    f"ALTER TABLE review.investment_report_items "
                     f'DROP CONSTRAINT IF EXISTS "{canonical}"'
                 )
             )

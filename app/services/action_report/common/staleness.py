@@ -22,6 +22,4 @@ def is_crypto_pending_order_stale(
     reference = now or datetime.now(tz=UTC)
     if placed_at.tzinfo is None:
         placed_at = placed_at.replace(tzinfo=UTC)
-    return reference - placed_at > timedelta(
-        hours=PENDING_ORDER_STALENESS_HOURS_CRYPTO
-    )
+    return reference - placed_at > timedelta(hours=PENDING_ORDER_STALENESS_HOURS_CRYPTO)

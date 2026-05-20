@@ -95,7 +95,9 @@ def test_watch_review_accepts_ambiguous_target_list():
         operation="review",
         intent="risk_review",
         rationale="r",
-        target_ref=TargetRefPayload(type="ambiguous", id=None, candidates=[{"id": "a"}, {"id": "b"}]),
+        target_ref=TargetRefPayload(
+            type="ambiguous", id=None, candidates=[{"id": "a"}, {"id": "b"}]
+        ),
         current_state={},
     )
     assert item.target_ref.type == "ambiguous"

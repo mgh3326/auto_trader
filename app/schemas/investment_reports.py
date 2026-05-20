@@ -54,13 +54,9 @@ DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_appro
 # shape and is treated as 'create' by the DB CHECK constraints (see
 # alembic/versions/20260520_rob274_p1_*.py). ``apply_policy`` is locked to
 # a single value in this PR; broader policy modes land in a follow-up.
-OperationLiteral = Literal[
-    "create", "modify", "cancel", "keep", "replace", "review"
-]
+OperationLiteral = Literal["create", "modify", "cancel", "keep", "replace", "review"]
 ApplyPolicyLiteral = Literal["requires_user_approval"]
-TargetRefTypeLiteral = Literal[
-    "investment_watch_alert", "broker_order", "ambiguous"
-]
+TargetRefTypeLiteral = Literal["investment_watch_alert", "broker_order", "ambiguous"]
 
 
 class WatchConditionPayload(BaseModel):
@@ -180,9 +176,7 @@ class IngestReportItem(BaseModel):
             if self.diff is None:
                 missing.append("diff")
             if missing:
-                raise ValueError(
-                    f"operation='modify' requires {missing}"
-                )
+                raise ValueError(f"operation='modify' requires {missing}")
         if self.operation in ("cancel", "keep"):
             missing = []
             if self.target_ref is None:
@@ -190,9 +184,7 @@ class IngestReportItem(BaseModel):
             if self.current_state is None:
                 missing.append("current_state")
             if missing:
-                raise ValueError(
-                    f"operation={self.operation!r} requires {missing}"
-                )
+                raise ValueError(f"operation={self.operation!r} requires {missing}")
         # operation='review' is intentionally permissive: review can mean
         # (a) ambiguous target with candidates, (b) stale operational state,
         # or (c) unknown state when the upstream snapshot was unavailable.
