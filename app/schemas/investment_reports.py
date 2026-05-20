@@ -498,6 +498,11 @@ class PreviousReportContextResponse(BaseModel):
     active_watches: list[InvestmentWatchAlertResponse]
     triggered_events: list[InvestmentWatchEventResponse]
     recent_decisions: list[InvestmentReportItemDecisionResponse]
+    # ROB-274 — pending broker order snapshot for the same market/account.
+    # ``None`` means the snapshot was not available at context fetch time
+    # (collector unavailable / stale / unsupported scope); an empty list
+    # means the broker reported no pending orders.
+    pending_orders: list[dict[str, Any]] | None = None
 
 
 class InvestmentReportCreateResponse(BaseModel):
