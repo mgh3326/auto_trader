@@ -155,7 +155,7 @@ describe("ROB-277 follow-up: dependency lag inline on data line", () => {
               kind: "investor_flow",
               snapshotDate: "2026-05-18",
               collectedAt: "2026-05-18T07:30:00+00:00",
-              lagLabel: "2거래일 지연",
+              lagLabel: "2일 지연",
               dataState: "stale",
               source: "investor_flow_snapshots",
             },
@@ -166,7 +166,7 @@ describe("ROB-277 follow-up: dependency lag inline on data line", () => {
     );
     const dataLine = screen.getByTestId("screener-freshness-data");
     expect(dataLine).toHaveTextContent("데이터 기준 2026.05.20 09:05 기준");
-    expect(dataLine).toHaveTextContent("2거래일 지연");
+    expect(dataLine).toHaveTextContent("2일 지연");
     // served line stays clean (no lag info)
     const servedLine = screen.getByTestId("screener-freshness-served");
     expect(servedLine).not.toHaveTextContent("지연");
@@ -225,7 +225,7 @@ describe("ScreenerFreshness type shape", () => {
       kind: "investor_flow",
       snapshotDate: "2026-05-18",
       collectedAt: "2026-05-18T07:30:00+00:00",
-      lagLabel: "2거래일 지연",
+      lagLabel: "2일 지연",
       dataState: "stale",
       source: "investor_flow_snapshots",
     };

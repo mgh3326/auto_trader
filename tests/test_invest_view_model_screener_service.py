@@ -1680,7 +1680,7 @@ def test_build_freshness_live_path_uses_raw_timestamp() -> None:
 
 @pytest.mark.unit
 def test_build_freshness_dependency_specs_render_with_lag_label() -> None:
-    """Dependency with older snapshot_date than primary gets a '{N}거래일 지연' lagLabel."""
+    """Dependency with older snapshot_date than primary gets a '{N}일 지연' lagLabel."""
     import datetime as dt
 
     from app.services.invest_view_model.screener_service import _build_freshness
@@ -1712,7 +1712,7 @@ def test_build_freshness_dependency_specs_render_with_lag_label() -> None:
     dep = f.dependencies[0]
     assert dep.kind == "investor_flow"
     assert dep.snapshotDate == "2026-05-18"
-    assert dep.lagLabel == "2거래일 지연"
+    assert dep.lagLabel == "2일 지연"
     assert dep.dataState == "stale"
     # primary fresh + dep stale → overall stale (D1.c rule 2)
     assert f.overallState == "stale"
@@ -2370,7 +2370,7 @@ async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_depend
     assert dep.snapshotDate == inv_partition.isoformat()
     assert dep.dataState == "stale"
     # lagLabel reflects the 2-day gap (calendar diff between today and inv_partition)
-    assert dep.lagLabel is not None and "거래일 지연" in dep.lagLabel
+    assert dep.lagLabel is not None and "일 지연" in dep.lagLabel
     # D1.c rule 2: primary fresh + dep stale → overall stale
     assert f.overallState == "stale"
     assert f.dataState == "stale"

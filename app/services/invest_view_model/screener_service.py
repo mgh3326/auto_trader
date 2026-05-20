@@ -1295,32 +1295,36 @@ def _build_freshness(
     served_at_utc = now_utc
     served_relative = "방금"
 
-    # Determine fetched (legacy field). For snapshot kind, fetched mirrors the
-    # partition's computed_at (or end-of-snapshot-date 15:30 KST when computed_at
-    # is missing) so legacy consumers see the data-as-of timestamp.
+    # data_basis_at is the INTERNAL data-as-of timestamp used only for delta /
+    # relativeLabel / previous_session detection and for the live-path asOfLabel
+    # fallback. It is NOT exported as freshness.fetchedAt — per ROB-277 §D1 the
+    # exported fetchedAt is a servedAt alias. For snapshot kind we still compute
+    # data_basis_at from partition computed_at (or EOD 15:30 KST) so the staleness
+    # logic / previous_session detection have something meaningful to compare;
+    # the user-visible asOfLabel and primary.computedAt carry the real data 기준.
     if primary_kind == "screener_snapshot" and primary_snapshot_date is not None:
         if primary_computed_at is not None:
-            fetched = primary_computed_at
-            if fetched.tzinfo is None:
-                fetched = fetched.replace(tzinfo=UTC)
+            data_basis_at = primary_computed_at
+            if data_basis_at.tzinfo is None:
+                data_basis_at = data_basis_at.replace(tzinfo=UTC)
         else:
             # Treat as end-of-trading-day in KST.
-            fetched_kst_eod = datetime.combine(
+            basis_kst_eod = datetime.combine(
                 primary_snapshot_date, _time(15, 30), tzinfo=_KST
             )
-            fetched = fetched_kst_eod.astimezone(UTC)
+            data_basis_at = basis_kst_eod.astimezone(UTC)
     elif raw_timestamp:
         try:
-            fetched = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+            data_basis_at = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
         except ValueError:
-            fetched = now_utc
-        if fetched.tzinfo is None:
-            fetched = fetched.replace(tzinfo=UTC)
+            data_basis_at = now_utc
+        if data_basis_at.tzinfo is None:
+            data_basis_at = data_basis_at.replace(tzinfo=UTC)
     else:
-        fetched = now_utc
+        data_basis_at = now_utc
 
-    fetched_kst = fetched.astimezone(_KST)
-    delta = max(0, int((now_utc - fetched).total_seconds()))
+    data_basis_kst = data_basis_at.astimezone(_KST)
+    delta = max(0, int((now_utc - data_basis_at).total_seconds()))
     now_kst = now_utc.astimezone(_KST)
     market_open = market == "kr" and _is_kr_market_open(now_kst)
 
@@ -1355,7 +1359,7 @@ def _build_freshness(
             kind=primary_kind,
             snapshotDate=None,
             computedAt=None,
-            asOfLabel=fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
+            asOfLabel=data_basis_kst.strftime("%Y.%m.%d %H:%M 기준"),
             dataState=dataState,  # type: ignore[arg-type]
             source=primary_source,
         )
@@ -1367,9 +1371,14 @@ def _build_freshness(
         dep_collected = spec.get("collected_at")
         lag_label: str | None = None
         if dep_snap is not None and primary_snapshot_date is not None:
+            # NOTE: calendar-day diff between two snapshot dates. Both
+            # partitions are emitted on trading days, so on consecutive trading
+            # days this matches the trading-day count; weekend/holiday gaps will
+            # inflate it (e.g. Fri vs Mon = 3 instead of 1). We use "일" (not
+            # "거래일") on the label until a trading-day-aware diff is added.
             lag_days = (primary_snapshot_date - dep_snap).days
             if lag_days >= 1:
-                lag_label = f"{lag_days}거래일 지연"
+                lag_label = f"{lag_days}일 지연"
         dependencies.append(
             ScreenerFreshnessDependency(
                 kind=spec.get("kind", "investor_flow"),
@@ -1392,7 +1401,7 @@ def _build_freshness(
         fetchedAt=served_at_utc.isoformat(),  # ROB-277 D1: fetchedAt is a servedAt alias
         asOfLabel=primary.asOfLabel
         if primary is not None
-        else fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
+        else data_basis_kst.strftime("%Y.%m.%d %H:%M 기준"),
         relativeLabel=relative,
         cacheHit=bool(cache_hit),
         source=source,
