@@ -125,22 +125,34 @@ class _DefaultCandidateRepo:
     async def list_fresh_candidate_symbols(
         self, *, market: str, limit: int
     ) -> list[str]:
-        # Order by snapshot_date desc to get the freshest rows. We don't
-        # require a strict "today" check here — the candidate_universe
-        # snapshot collector owns the freshness semantics for the report;
-        # derivation just wants a bounded sample of recent candidates.
+        # Order by snapshot_date desc to get the freshest rows, then
+        # dedupe symbols in Python. PostgreSQL forbids ``DISTINCT`` over
+        # SELECT columns combined with ``ORDER BY`` on columns that are
+        # NOT in the select list, so we fetch ``symbol`` + ``snapshot_date``
+        # and collapse client-side. Overfetch slightly to absorb dupes.
+        overfetch = max(limit * 4, limit)
         stmt = (
-            sa.select(InvestScreenerSnapshot.symbol)
+            sa.select(
+                InvestScreenerSnapshot.symbol, InvestScreenerSnapshot.snapshot_date
+            )
             .where(InvestScreenerSnapshot.market == market)
             .order_by(
                 InvestScreenerSnapshot.snapshot_date.desc(),
                 InvestScreenerSnapshot.symbol.asc(),
             )
-            .distinct()
-            .limit(limit)
+            .limit(overfetch)
         )
         result = await self._session.execute(stmt)
-        return [s for (s,) in result.all()]
+        out: list[str] = []
+        seen: set[str] = set()
+        for symbol, _snapshot_date in result.all():
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            out.append(symbol)
+            if len(out) >= limit:
+                break
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +197,27 @@ class SymbolDerivationService:
         seed = [s for s in (seed_symbols or []) if s]
         source_errors: dict[str, str] = {}
 
+        # Each per-source DB query runs inside a SAVEPOINT (when the
+        # outer session supports one) so a query failure — e.g., a SQL
+        # bug or a missing column — doesn't leave the outer transaction
+        # in an aborted state. The outer caller's subsequent writes,
+        # and the stage-runner / generator pipeline that follows, must
+        # remain usable even if one optional derivation source raises.
+        outer_session = getattr(self._manual, "_session", None) or getattr(
+            self._candidate, "_session", None
+        )
+        can_savepoint = hasattr(outer_session, "begin_nested")
+
         async def _safe(name: str, coro):
+            if not can_savepoint:
+                try:
+                    return await coro
+                except Exception as exc:  # noqa: BLE001 — derivation is best-effort
+                    source_errors[name] = f"{type(exc).__name__}: {exc}"
+                    return []
             try:
-                return await coro
+                async with outer_session.begin_nested():
+                    return await coro
             except Exception as exc:  # noqa: BLE001 — derivation is best-effort
                 source_errors[name] = f"{type(exc).__name__}: {exc}"
                 return []
