@@ -34,6 +34,7 @@ from app.routers import (
     invest_web_spa,
     investment_reports,
     investment_snapshots,
+    investment_stage_runs,
     kospi200,
     market_events,
     n8n,
@@ -179,6 +180,7 @@ def create_app() -> FastAPI:
     app.include_router(order_estimation.router)
     app.include_router(order_previews.router)
     app.include_router(investment_reports.router)
+    app.include_router(investment_stage_runs.router)
     # ROB-269 Phase 2 — flag-gated. Default off keeps the router fully absent
     # so unauthenticated probes return 404 at FastAPI's routing layer.
     if settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED:

@@ -28,6 +28,7 @@ class ReportGenerationRequest(BaseModel):
 
     market: GeneratorMarketLiteral
     account_scope: GeneratorAccountScopeLiteral
+    market_session: str | None = None
     policy_version: str = "intraday_action_report_v1"
     execution_mode: Literal["advisory_only"] = "advisory_only"
     status: GeneratorStatusLiteral = "published"
@@ -52,6 +53,10 @@ class ReportGenerationRequest(BaseModel):
     # Snapshot-bundle inputs forwarded to SnapshotBundleEnsureService.
     symbols: list[str] | None = None
     candidate_limit: int | None = None
+
+    # ROB-279 — when True, the generator synthesizes report fields and items
+    # via the staged snapshot-backed pipeline instead of using provided ones.
+    auto_compose: bool = False
 
 
 class ReportGenerationResponse(BaseModel):

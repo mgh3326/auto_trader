@@ -158,44 +158,135 @@ class SnapshotBackedReportGenerator:
                 f"status={ensure_response.status!r}"
             )
 
-        # ROB-274 — classify draft items against persisted bundle state.
-        # We read payloads back from the DB (via list_bundle_items_with_snapshots)
-        # so the classifier sees the same data that was just persisted, and
-        # downstream audits remain reproducible.
-        classifier_context = await self._build_classifier_context(
-            bundle_uuid=ensure_response.bundle_uuid,
-            missing_sources=list(ensure_response.missing_sources),
-        )
-        request = request.model_copy(
-            update={
-                "items": classify_items(
-                    items=list(request.items),
-                    context=classifier_context,
-                )
-            }
-        )
+        if request.auto_compose:
+            # ROB-279 — synthesize report via staged snapshot-backed pipeline.
+            from types import SimpleNamespace
 
-        coverage_summary = to_jsonable(ensure_response.coverage_summary)
-        freshness_summary = self._enrich_freshness_summary(ensure_response)
-        unavailable_sources = self._build_unavailable_sources(
-            ensure_response.missing_sources, freshness_summary
-        )
-        source_conflicts: dict[str, Any] = {}
-
-        if request.status == "published":
-            self._guard_published(
-                bundle_status=ensure_response.status,
-                freshness_summary=freshness_summary,
+            from app.core.config import settings
+            from app.services.ai_providers.gemini_provider import GeminiProvider
+            from app.services.investment_stages.budget import StageLLMBudget
+            from app.services.investment_stages.composer import FinalComposer
+            from app.services.investment_stages.rate_limited_provider import (
+                RateLimitedGeminiProvider,
+            )
+            from app.services.investment_stages.stage_runner import StageRunner
+            from app.services.investment_stages.stages.registry import (
+                get_default_v1_stages,
             )
 
-        ingest_request = self._build_ingest_request(
-            request=request,
-            bundle_uuid=ensure_response.bundle_uuid,
-            coverage_summary=coverage_summary,
-            freshness_summary=freshness_summary,
-            unavailable_sources=unavailable_sources,
-            source_conflicts=source_conflicts,
-        )
+            class _LocalBundleRead:
+                def __init__(self, repo):
+                    self._repo = repo
+
+                async def get_bundle(self, *, bundle_uuid: UUID):
+                    bundle = await self._repo.get_bundle_by_uuid(bundle_uuid)
+                    if not bundle:
+                        return None
+                    items = await self._repo.list_bundle_items_with_snapshots(bundle.id)
+                    return SimpleNamespace(bundle=bundle, items=[i[1] for i in items])
+
+            budget = StageLLMBudget(max_calls=4)
+            provider = RateLimitedGeminiProvider(
+                GeminiProvider(api_key=settings.gemini_advisor_api_key or "")
+            )
+            stage_runner = StageRunner(
+                session=self._session,
+                bundle_read_service=_LocalBundleRead(self._snapshots_repo),
+                stages=get_default_v1_stages(provider, budget),
+            )
+            stage_run = await stage_runner.run(
+                snapshot_bundle_uuid=ensure_response.bundle_uuid,
+                market=request.market,
+                market_session=request.market_session,
+                account_scope=request.account_scope,
+            )
+
+            composer = FinalComposer(provider, budget)
+            composed_req = await composer.compose(
+                run_uuid=stage_run.run_uuid,
+                snapshot_bundle_uuid=ensure_response.bundle_uuid,
+                market=request.market,
+                market_session=request.market_session,
+                account_scope=request.account_scope,
+                kst_date=request.kst_date,
+                artifacts=stage_run.artifacts,
+            )
+
+            # Re-classify composed items against operational state
+            classifier_context = await self._build_classifier_context(
+                bundle_uuid=ensure_response.bundle_uuid,
+                missing_sources=list(ensure_response.missing_sources),
+            )
+            composed_items = classify_items(
+                items=composed_req.items,
+                context=classifier_context,
+            )
+
+            coverage_summary = to_jsonable(ensure_response.coverage_summary)
+            freshness_summary = self._enrich_freshness_summary(ensure_response)
+            unavailable_sources = self._build_unavailable_sources(
+                ensure_response.missing_sources, freshness_summary
+            )
+            source_conflicts: dict[str, Any] = {}
+
+            ingest_request = composed_req.model_copy(
+                update={
+                    "items": composed_items,
+                    "snapshot_coverage_summary": coverage_summary,
+                    "snapshot_freshness_summary": freshness_summary,
+                    "unavailable_sources": unavailable_sources,
+                    "source_conflicts": {},
+                    "metadata": {
+                        **composed_req.metadata,
+                        "investment_stage_run_uuid": str(stage_run.run_uuid),
+                        "snapshot_backed_generator": True,
+                        "generator_signature": {
+                            "report_type": composed_req.report_type,
+                            "policy_version": request.policy_version,
+                            "generator_version": "v2_staged",
+                        },
+                    },
+                }
+            )
+        else:
+            # ROB-274 — classify draft items against persisted bundle state.
+            # We read payloads back from the DB (via list_bundle_items_with_snapshots)
+            # so the classifier sees the same data that was just persisted, and
+            # downstream audits remain reproducible.
+            classifier_context = await self._build_classifier_context(
+                bundle_uuid=ensure_response.bundle_uuid,
+                missing_sources=list(ensure_response.missing_sources),
+            )
+            request = request.model_copy(
+                update={
+                    "items": classify_items(
+                        items=list(request.items),
+                        context=classifier_context,
+                    )
+                }
+            )
+
+            coverage_summary = to_jsonable(ensure_response.coverage_summary)
+            freshness_summary = self._enrich_freshness_summary(ensure_response)
+            unavailable_sources = self._build_unavailable_sources(
+                ensure_response.missing_sources, freshness_summary
+            )
+            source_conflicts: dict[str, Any] = {}
+
+            if request.status == "published":
+                self._guard_published(
+                    bundle_status=ensure_response.status,
+                    freshness_summary=freshness_summary,
+                )
+
+            ingest_request = self._build_ingest_request(
+                request=request,
+                bundle_uuid=ensure_response.bundle_uuid,
+                coverage_summary=coverage_summary,
+                freshness_summary=freshness_summary,
+                unavailable_sources=unavailable_sources,
+                source_conflicts=source_conflicts,
+            )
 
         # Authoritative gate runs inside ingest(); this pre-flight is a
         # belt-and-braces check so a clearly-blocked published request
@@ -219,7 +310,7 @@ class SnapshotBackedReportGenerator:
             snapshot_freshness_summary=freshness_summary,
             source_conflicts=source_conflicts,
             unavailable_sources=unavailable_sources,
-            items_count=len(request.items),
+            items_count=len(ingest_request.items),
             warnings=list(ensure_response.warnings),
             bundle_status=ensure_response.status,
             bundle_reused=not ensure_response.created,

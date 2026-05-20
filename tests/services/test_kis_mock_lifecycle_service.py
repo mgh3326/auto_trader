@@ -22,9 +22,10 @@ SERVICE_PATH = Path(__file__).parents[2] / "app/services/kis_mock_lifecycle_serv
 
 @pytest_asyncio.fixture
 async def seeded_ledger_id(db_session: AsyncSession) -> int:
+    symbol = f"TEST-{uuid4().hex}"
     row = KISMockOrderLedger(
         trade_date=datetime(2026, 5, 4, 9, 0, tzinfo=UTC),
-        symbol="005930",
+        symbol=symbol,
         instrument_type="equity_kr",
         side="buy",
         order_type="limit",
@@ -137,10 +138,12 @@ async def test_record_holdings_baseline(
 async def test_list_open_orders_returns_only_inflight_and_fill(
     db_session: AsyncSession, seeded_ledger_id: int
 ):
+    row = await db_session.get(KISMockOrderLedger, seeded_ledger_id)
+    assert row is not None
     # add a terminal row that should be excluded
     terminal = KISMockOrderLedger(
         trade_date=datetime(2026, 5, 3, tzinfo=UTC),
-        symbol="000660",
+        symbol=row.symbol,
         instrument_type="equity_kr",
         side="buy",
         order_type="limit",
@@ -158,7 +161,7 @@ async def test_list_open_orders_returns_only_inflight_and_fill(
     await db_session.commit()
 
     svc = KISMockLifecycleService(db_session)
-    rows = await svc.list_open_orders(limit=50)
+    rows = await svc.list_open_orders(limit=50, symbol=row.symbol)
     ids = {r.id for r in rows}
     assert seeded_ledger_id in ids
     assert terminal.id not in ids

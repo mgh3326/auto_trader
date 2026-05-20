@@ -293,6 +293,6 @@ app/graphify-out/
 frontend/**/node_modules/
 frontend/**/dist/
 frontend/**/.vite/
-
+.antigravitycli/
 # ROB-178 smoke scratch — runtime payload/evidence; never commit.
 .smoke-out/
