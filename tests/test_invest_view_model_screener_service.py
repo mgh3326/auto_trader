@@ -1505,3 +1505,322 @@ async def test_build_screener_results_warns_and_does_not_fallback_when_latest_pa
     assert resp.results == []
     assert any("스크리너 스냅샷 업데이트" in w for w in resp.warnings)
     assert resp.freshness.dataState == "stale"
+
+
+# ---------------------------------------------------------------------------
+# ROB-276: double_buy preset wiring (Task 3)
+# ---------------------------------------------------------------------------
+
+
+_DOUBLE_BUY_TEST_SYMBOLS = ["921100", "921200", "921300", "922100"]
+
+
+@pytest.mark.unit
+def test_double_buy_in_metric_field_map() -> None:
+    """Task 1 placeholder must remain present so the snapshot row renders a metric."""
+    from app.services.invest_view_model.screener_service import _METRIC_FIELD
+
+    assert _METRIC_FIELD["double_buy"] == "change_rate"
+
+
+@pytest.mark.asyncio
+async def test_double_buy_preset_missing_snapshot_reports_missing_state() -> None:
+    """When neither snapshot partition exists, dataState must report missing.
+
+    The loader returns None when MAX(snapshot_date) is NULL, and the safety net
+    in build_screener_results pins dataState to "missing" with a warning. A
+    MagicMock session whose .execute returns scalar_one_or_none()==None covers
+    this without touching the shared DB.
+    """
+    null_scalar = MagicMock()
+    null_scalar.scalar_one_or_none.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=null_scalar)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    resp = await build_screener_results(
+        preset_id="double_buy",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert resp.freshness.dataState == "missing"
+    assert any("스냅샷" in w for w in resp.warnings)
+
+
+@pytest.mark.asyncio
+async def test_double_buy_preset_returns_snapshot_filtered_rows(db_session) -> None:
+    """Seed flow+price snapshots; build_screener_results must surface qualifiers.
+
+    Uses the same persistent-DB pattern as
+    tests/test_invest_view_model_double_buy_screener.py with a synthetic
+    92xxxx symbol range so other suites are not affected.
+    """
+    import datetime as _dt
+    import decimal as _dec
+
+    import sqlalchemy as _sa
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
+    # Far-future date wins the latest-partition lookup against shared test data.
+    today = _dt.date(2099, 12, 30)
+
+    async def _purge() -> None:
+        await db_session.execute(
+            _sa.delete(InvestorFlowSnapshot).where(
+                InvestorFlowSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(InvestScreenerSnapshot).where(
+                InvestScreenerSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.commit()
+
+    await _purge()
+    try:
+        db_session.add_all(
+            [
+                KRSymbolUniverse(
+                    symbol="921100",
+                    name="더블바이주A",
+                    exchange="KOSPI",
+                    is_active=True,
+                ),
+                KRSymbolUniverse(
+                    symbol="921200",
+                    name="더블바이주B",
+                    exchange="KOSPI",
+                    is_active=True,
+                ),
+                KRSymbolUniverse(
+                    symbol="921300",
+                    name="더블셀주",
+                    exchange="KOSPI",
+                    is_active=True,
+                ),
+            ]
+        )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol="921100",
+                    snapshot_date=today,
+                    foreign_net=1_000_000,
+                    institution_net=2_000_000,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol="921200",
+                    snapshot_date=today,
+                    foreign_net=500_000,
+                    institution_net=600_000,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol="921300",
+                    snapshot_date=today,
+                    foreign_net=-1,
+                    institution_net=-1,
+                    double_buy=False,
+                    double_sell=True,
+                    source="naver_finance",
+                ),
+            ]
+        )
+        db_session.add_all(
+            [
+                InvestScreenerSnapshot(
+                    market="kr",
+                    symbol="921100",
+                    snapshot_date=today,
+                    latest_close=_dec.Decimal("12000"),
+                    prev_close=_dec.Decimal("10000"),
+                    change_rate=_dec.Decimal("20.0"),
+                    daily_volume=100_000,
+                    closes_window=[10000, 12000],
+                    source="kis",
+                ),
+                InvestScreenerSnapshot(
+                    market="kr",
+                    symbol="921200",
+                    snapshot_date=today,
+                    latest_close=_dec.Decimal("11000"),
+                    prev_close=_dec.Decimal("10000"),
+                    change_rate=_dec.Decimal("10.0"),
+                    daily_volume=80_000,
+                    closes_window=[10000, 11000],
+                    source="kis",
+                ),
+                InvestScreenerSnapshot(
+                    market="kr",
+                    symbol="921300",
+                    snapshot_date=today,
+                    latest_close=_dec.Decimal("900"),
+                    prev_close=_dec.Decimal("1000"),
+                    change_rate=_dec.Decimal("-10.0"),
+                    daily_volume=50_000,
+                    closes_window=[1000, 900],
+                    source="kis",
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        fake_screening = type(
+            "ScreenerService",
+            (_FakeProductionScreening,),
+            {"__module__": "app.services.screener_service"},
+        )()
+
+        resp = await build_screener_results(
+            preset_id="double_buy",
+            screening_service=fake_screening,
+            resolver=_FakeResolver(watched=set()),
+            session=db_session,
+            now=lambda: datetime(2099, 12, 30, 6, 0, tzinfo=UTC),
+        )
+
+        fake_screening.list_screening.assert_not_called()
+        symbols = [row.symbol for row in resp.results]
+        # Both double_buy positives must appear; double_sell must not.
+        assert "921100" in symbols
+        assert "921200" in symbols
+        assert "921300" not in symbols
+        # SQL ORDER BY change_rate DESC — 921100 (20%) must outrank 921200 (10%).
+        assert symbols.index("921100") < symbols.index("921200")
+        # change_rate metric should render with a + sign for positive rows.
+        target = next(r for r in resp.results if r.symbol == "921100")
+        assert target.metricValueLabel == "+20.00%"
+    finally:
+        await _purge()
+
+
+@pytest.mark.asyncio
+async def test_double_buy_preset_stale_when_price_snapshot_older_than_flow(
+    db_session,
+) -> None:
+    """When price snapshot lags the flow snapshot, dataState must downshift to stale.
+
+    The loader tags the row's _screener_snapshot_state="stale" when
+    price_snapshot_date != flow_snapshot_date; the view-model split-freshness
+    helper turns that into a user-visible "1일 지연" warning and a stale state.
+    """
+    import datetime as _dt
+    import decimal as _dec
+
+    import sqlalchemy as _sa
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
+    flow_date = _dt.date(2099, 12, 29)
+    price_date = _dt.date(2099, 12, 30)  # latest partition is the price side
+    symbol = "922100"
+
+    async def _purge() -> None:
+        await db_session.execute(
+            _sa.delete(InvestorFlowSnapshot).where(
+                InvestorFlowSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(InvestScreenerSnapshot).where(
+                InvestScreenerSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.commit()
+
+    await _purge()
+    try:
+        db_session.add(
+            KRSymbolUniverse(
+                symbol=symbol,
+                name="지연테스트주",
+                exchange="KOSPI",
+                is_active=True,
+            )
+        )
+        db_session.add(
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=flow_date,
+                foreign_net=1,
+                institution_net=1,
+                double_buy=True,
+                double_sell=False,
+                source="naver_finance",
+            )
+        )
+        db_session.add(
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=price_date,
+                latest_close=_dec.Decimal("10500"),
+                prev_close=_dec.Decimal("10000"),
+                change_rate=_dec.Decimal("5.0"),
+                daily_volume=1,
+                closes_window=[9000, 9500, 9800, 9900, 10500],
+                source="kis",
+            )
+        )
+        await db_session.commit()
+
+        fake_screening = type(
+            "ScreenerService",
+            (_FakeProductionScreening,),
+            {"__module__": "app.services.screener_service"},
+        )()
+
+        resp = await build_screener_results(
+            preset_id="double_buy",
+            screening_service=fake_screening,
+            resolver=_FakeResolver(watched=set()),
+            session=db_session,
+            # `now` set to the price date so today_trading_date returns 12-30 KST.
+            now=lambda: datetime(2099, 12, 30, 6, 0, tzinfo=UTC),
+        )
+
+        fake_screening.list_screening.assert_not_called()
+        assert any(r.symbol == symbol for r in resp.results), (
+            "the symbol must still appear; staleness lives on freshness/warning"
+        )
+        assert resp.freshness.dataState in {"stale", "fallback"}
+        # Split warning: price snapshot stale message
+        assert any("시세 스냅샷" in w and "1일 지연" in w for w in resp.warnings), (
+            f"expected price-side stale warning in {resp.warnings}"
+        )
+    finally:
+        await _purge()
