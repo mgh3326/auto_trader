@@ -44,6 +44,7 @@ from app.services.investment_stages.repository import InvestmentStagesRepository
 # App factory (mirrors test_investment_snapshots_router.py)
 # ---------------------------------------------------------------------------
 
+
 def _build_app(db_session) -> FastAPI:
     """Minimal FastAPI app for testing — uses the shared db_session fixture."""
     app = FastAPI()
@@ -67,6 +68,7 @@ def _now() -> dt.datetime:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _seed_run_with_artifact(db_session):
     """Create a stage run with one artifact; return (run_uuid, artifact_uuid)."""
@@ -259,9 +261,7 @@ async def test_get_stage_run_returns_404_for_unknown_uuid(db_session):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
     ) as client:
-        resp = await client.get(
-            f"/trading/api/investment-stage-runs/{uuid.uuid4()}"
-        )
+        resp = await client.get(f"/trading/api/investment-stage-runs/{uuid.uuid4()}")
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "stage_run_not_found"

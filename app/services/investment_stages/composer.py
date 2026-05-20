@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, cast
 
-from app.schemas.investment_reports import IngestReportItem, IngestReportRequest
+from app.schemas.investment_reports import (
+    AccountScopeLiteral,
+    IngestReportItem,
+    IngestReportRequest,
+    MarketLiteral,
+    MarketSessionLiteral,
+)
 from app.services.investment_stages.budget import StageLLMBudget
 
 _logger = logging.getLogger(__name__)
@@ -116,14 +122,20 @@ class FinalComposer:
             raw_item["metadata"] = metadata
 
             # Strip valid_until if watch is cancel/keep/review (to satisfy ROB-265 validators)
-            if raw_item.get("item_kind") == "watch" and raw_item.get("operation") in ("cancel", "keep", "review"):
+            if raw_item.get("item_kind") == "watch" and raw_item.get("operation") in (
+                "cancel",
+                "keep",
+                "review",
+            ):
                 raw_item.pop("valid_until", None)
 
             composed_items.append(IngestReportItem.model_validate(raw_item))
 
         # If ALL items were dropped, emit a single safety fallback item.
         if not composed_items and data.get("items"):
-            _logger.info("composer: all candidate items lacked citations; emitting no_action_note fallback")
+            _logger.info(
+                "composer: all candidate items lacked citations; emitting no_action_note fallback"
+            )
             composed_items.append(
                 IngestReportItem(
                     client_item_key="auto-no-action",
@@ -141,9 +153,9 @@ class FinalComposer:
         # Compose overall request
         return IngestReportRequest(
             report_type="Advisory",
-            market=market,  # type: ignore
-            market_session=market_session,  # type: ignore
-            account_scope=account_scope,  # type: ignore
+            market=cast(MarketLiteral, market),
+            market_session=cast(MarketSessionLiteral | None, market_session),
+            account_scope=cast(AccountScopeLiteral | None, account_scope),
             created_by_profile="AI_ADVISOR",
             title=data.get("title", "Advisory Report"),
             summary=data.get("summary", "Advisory report summary"),

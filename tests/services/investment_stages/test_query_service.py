@@ -14,7 +14,9 @@ async def test_query_service_returns_artifacts_by_run(db_session):
     run = await repo.create_run(snapshot_bundle_uuid=bundle_uuid, market="kr")
     await repo.persist_artifact(
         run.run_uuid,
-        StageArtifactPayload(stage_type="market", verdict=StageVerdict.NEUTRAL, confidence=10),
+        StageArtifactPayload(
+            stage_type="market", verdict=StageVerdict.NEUTRAL, confidence=10
+        ),
     )
     await db_session.flush()
 

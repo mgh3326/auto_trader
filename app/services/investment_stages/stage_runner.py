@@ -54,7 +54,9 @@ class StageRunner:
             generator_version=generator_version,
         )
 
-        bundle_response = await self._bundle_read.get_bundle(bundle_uuid=snapshot_bundle_uuid)
+        bundle_response = await self._bundle_read.get_bundle(
+            bundle_uuid=snapshot_bundle_uuid
+        )
         snapshots_by_kind: dict[str, list] = defaultdict(list)
         for item in getattr(bundle_response, "items", []):
             snapshot = getattr(item, "snapshot", None) or item

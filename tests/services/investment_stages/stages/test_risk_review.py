@@ -83,7 +83,7 @@ async def test_risk_review_synthesizes_prior_artifacts():
             ),
             "bear_reducer": StageArtifactPayload(
                 stage_type="bear_reducer", verdict=StageVerdict.BEAR, confidence=60
-            )
+            ),
         },
     )
 

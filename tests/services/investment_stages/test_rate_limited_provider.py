@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.ai_providers.base import AiProviderError, AiProviderResult
-from app.services.investment_stages.rate_limited_provider import RateLimitedGeminiProvider
+from app.services.investment_stages.rate_limited_provider import (
+    RateLimitedGeminiProvider,
+)
 
 
 def _make_provider(model: str = "gemini-2.5-flash") -> MagicMock:

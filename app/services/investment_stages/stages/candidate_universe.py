@@ -46,7 +46,9 @@ class CandidateUniverseStage:
                 f"{c.get('symbol', '?')} (score={c.get('score', 0):.1f}): {c.get('reason', '')}"
                 for c in top
             ],
-            buy_evidence=[c.get("symbol", "?") for c in top] if verdict == StageVerdict.BULL else [],
+            buy_evidence=[c.get("symbol", "?") for c in top]
+            if verdict == StageVerdict.BULL
+            else [],
             cited_snapshots=[
                 StageCitation(
                     snapshot_uuid=snap.snapshot_uuid,

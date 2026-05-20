@@ -92,9 +92,7 @@ async def test_stage_run_queryable_without_report_row(db_session):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
     ) as client:
-        resp = await client.get(
-            f"/trading/api/investment-stage-runs/{run.run_uuid}"
-        )
+        resp = await client.get(f"/trading/api/investment-stage-runs/{run.run_uuid}")
 
     assert resp.status_code == 200
     body = resp.json()
@@ -163,9 +161,7 @@ async def test_blocked_run_artifacts_still_queryable(db_session):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
     ) as client:
-        resp = await client.get(
-            f"/trading/api/investment-stage-runs/{run.run_uuid}"
-        )
+        resp = await client.get(f"/trading/api/investment-stage-runs/{run.run_uuid}")
 
     assert resp.status_code == 200
     body = resp.json()

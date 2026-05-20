@@ -177,6 +177,7 @@ class SnapshotBackedReportGenerator:
             class _LocalBundleRead:
                 def __init__(self, repo):
                     self._repo = repo
+
                 async def get_bundle(self, *, bundle_uuid: UUID):
                     bundle = await self._repo.get_bundle_by_uuid(bundle_uuid)
                     if not bundle:

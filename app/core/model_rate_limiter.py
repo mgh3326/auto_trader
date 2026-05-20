@@ -29,7 +29,9 @@ class ModelRateLimiter:
     logs a warning so the LLM call path is not blocked by infra issues.
     """
 
-    def __init__(self, redis_client=None, limit_ttl: int = _DEFAULT_LIMIT_TTL_SECONDS) -> None:
+    def __init__(
+        self, redis_client=None, limit_ttl: int = _DEFAULT_LIMIT_TTL_SECONDS
+    ) -> None:
         """
         Args:
             redis_client: An async Redis client (e.g. from ``aioredis``).
@@ -51,7 +53,10 @@ class ModelRateLimiter:
         try:
             return bool(await self._redis.exists(key))
         except Exception as exc:
-            _logger.warning("model_rate_limiter: Redis error checking limit (%s); allowing call", exc)
+            _logger.warning(
+                "model_rate_limiter: Redis error checking limit (%s); allowing call",
+                exc,
+            )
             return False
 
     async def mark_limited(

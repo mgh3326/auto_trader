@@ -23,7 +23,9 @@ def _snap(payload):
 async def test_watch_context_unavailable():
     with pytest.raises(UnavailableStageError):
         await WatchContextStage().run(
-            StageContext(bundle_uuid=uuid.uuid4(), snapshots_by_kind={}, bundle_metadata={})
+            StageContext(
+                bundle_uuid=uuid.uuid4(), snapshots_by_kind={}, bundle_metadata={}
+            )
         )
 
 

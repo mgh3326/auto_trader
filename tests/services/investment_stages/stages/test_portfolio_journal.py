@@ -8,16 +8,22 @@ from app.services.investment_stages.stages.base import (
     StageContext,
     UnavailableStageError,
 )
-from app.services.investment_stages.stages.portfolio_journal import PortfolioJournalStage
+from app.services.investment_stages.stages.portfolio_journal import (
+    PortfolioJournalStage,
+)
 
 
 def _snap(kind, payload):
-    return SimpleNamespace(snapshot_uuid=uuid.uuid4(), snapshot_kind=kind, payload_json=payload)
+    return SimpleNamespace(
+        snapshot_uuid=uuid.uuid4(), snapshot_kind=kind, payload_json=payload
+    )
 
 
 @pytest.mark.asyncio
 async def test_portfolio_journal_unavailable_without_portfolio():
-    ctx = StageContext(bundle_uuid=uuid.uuid4(), snapshots_by_kind={}, bundle_metadata={})
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(), snapshots_by_kind={}, bundle_metadata={}
+    )
     with pytest.raises(UnavailableStageError):
         await PortfolioJournalStage().run(ctx)
 
@@ -27,8 +33,12 @@ async def test_portfolio_journal_emits_neutral_with_buying_power():
     ctx = StageContext(
         bundle_uuid=uuid.uuid4(),
         snapshots_by_kind={
-            "portfolio": [_snap("portfolio", {"buying_power_krw": 200000, "nav_krw": 1000000})],
-            "journal": [_snap("journal", {"entries": [{"symbol": "035420", "thesis": "tech"}]})],
+            "portfolio": [
+                _snap("portfolio", {"buying_power_krw": 200000, "nav_krw": 1000000})
+            ],
+            "journal": [
+                _snap("journal", {"entries": [{"symbol": "035420", "thesis": "tech"}]})
+            ],
         },
         bundle_metadata={},
     )

@@ -42,7 +42,9 @@ async def test_stage_artifact_fk_cascade(db_session):
     await db_session.flush()
 
     fetched = await db_session.scalar(
-        select(InvestmentStageArtifact).where(InvestmentStageArtifact.run_uuid == run.run_uuid)
+        select(InvestmentStageArtifact).where(
+            InvestmentStageArtifact.run_uuid == run.run_uuid
+        )
     )
     assert fetched is not None
     assert fetched.stage_type == "market"

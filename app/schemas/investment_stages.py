@@ -20,7 +20,7 @@ StageTypeLiteral = (
 )
 
 
-class StageVerdict(str, enum.Enum):
+class StageVerdict(enum.StrEnum):
     BULL = "bull"
     BEAR = "bear"
     NEUTRAL = "neutral"

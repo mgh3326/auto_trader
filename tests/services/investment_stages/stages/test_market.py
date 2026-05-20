@@ -49,6 +49,8 @@ async def test_market_stage_emits_bear_when_index_down():
 
 @pytest.mark.asyncio
 async def test_market_stage_raises_unavailable_when_no_snapshot():
-    ctx = StageContext(bundle_uuid=uuid.uuid4(), snapshots_by_kind={}, bundle_metadata={})
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(), snapshots_by_kind={}, bundle_metadata={}
+    )
     with pytest.raises(UnavailableStageError):
         await MarketStage().run(ctx)

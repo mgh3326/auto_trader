@@ -70,6 +70,11 @@ class RateLimitedGeminiProvider:
         except AiProviderError as exc:
             # Detect 429 / quota-exceeded and record to rate limiter
             msg = (exc.detail or str(exc)).lower()
-            if "429" in msg or "quota" in msg or "rate" in msg or "resource_exhausted" in msg:
+            if (
+                "429" in msg
+                or "quota" in msg
+                or "rate" in msg
+                or "resource_exhausted" in msg
+            ):
                 await self._rate_limiter.mark_limited(model_name, api_key_hint)
             raise

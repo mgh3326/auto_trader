@@ -5,7 +5,6 @@ import pytest
 from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
 from app.services.investment_stages.stage_runner import StageRunner
 from app.services.investment_stages.stages.base import (
-    Stage,
     StageContext,
     UnavailableStageError,
 )
@@ -33,6 +32,7 @@ class _StubBundleReadService:
 
     async def get_bundle(self, *, bundle_uuid):
         from types import SimpleNamespace
+
         return SimpleNamespace(
             bundle=SimpleNamespace(bundle_uuid=bundle_uuid, status="complete"),
             items=[],

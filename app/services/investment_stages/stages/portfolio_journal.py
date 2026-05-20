@@ -24,7 +24,9 @@ class PortfolioJournalStage:
         journal_snaps = context.snapshots_for("journal")
 
         nav = float((portfolio.payload_json or {}).get("nav_krw", 0.0))
-        buying_power = float((portfolio.payload_json or {}).get("buying_power_krw", 0.0))
+        buying_power = float(
+            (portfolio.payload_json or {}).get("buying_power_krw", 0.0)
+        )
         bp_ratio = (buying_power / nav) if nav > 0 else 0.0
 
         entries = []

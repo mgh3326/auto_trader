@@ -129,9 +129,7 @@ async def get_stage_run(
         )
     return StageRunWithArtifactsResponse(
         run=StageRunResponse.model_validate(result.run),
-        artifacts=[
-            StageArtifactResponse.model_validate(a) for a in result.artifacts
-        ],
+        artifacts=[StageArtifactResponse.model_validate(a) for a in result.artifacts],
     )
 
 
@@ -185,9 +183,7 @@ async def get_report_stage_artifacts(
                 status_code=404,
                 detail="stage_run_uuid in report_metadata points to a non-existent stage run",
             )
-        artifacts = [
-            StageArtifactResponse.model_validate(a) for a in result.artifacts
-        ]
+        artifacts = [StageArtifactResponse.model_validate(a) for a in result.artifacts]
     elif report.snapshot_bundle_uuid is not None:
         # Legacy fallback: union artifacts from all runs for this bundle.
         runs = await stage_svc.list_runs_for_bundle(report.snapshot_bundle_uuid)

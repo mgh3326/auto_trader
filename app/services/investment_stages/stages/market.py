@@ -44,8 +44,12 @@ class MarketStage:
             confidence=max(confidence, 30 if verdict != StageVerdict.NEUTRAL else 20),
             summary=f"KOSPI change_percent={change:+.2f}%",
             key_points=[f"KOSPI {change:+.2f}%"],
-            buy_evidence=[f"KOSPI 상승 {change:+.2f}%"] if verdict == StageVerdict.BULL else [],
-            sell_evidence=[f"KOSPI 하락 {change:+.2f}%"] if verdict == StageVerdict.BEAR else [],
+            buy_evidence=[f"KOSPI 상승 {change:+.2f}%"]
+            if verdict == StageVerdict.BULL
+            else [],
+            sell_evidence=[f"KOSPI 하락 {change:+.2f}%"]
+            if verdict == StageVerdict.BEAR
+            else [],
             cited_snapshots=[
                 StageCitation(
                     snapshot_uuid=snapshot.snapshot_uuid,

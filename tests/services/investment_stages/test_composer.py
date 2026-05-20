@@ -79,7 +79,16 @@ async def test_composer_assembles_report_and_enforces_citations():
 
     market_uuid = uuid.uuid4()
     artifacts = [
-        SimpleNamespace(stage_type="market", artifact_uuid=market_uuid, verdict="bull", summary="s", key_points=[], buy_evidence=[], sell_evidence=[], risk_evidence=[])
+        SimpleNamespace(
+            stage_type="market",
+            artifact_uuid=market_uuid,
+            verdict="bull",
+            summary="s",
+            key_points=[],
+            buy_evidence=[],
+            sell_evidence=[],
+            risk_evidence=[],
+        )
     ]
 
     req = await composer.compose(

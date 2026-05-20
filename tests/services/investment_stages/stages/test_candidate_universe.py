@@ -5,7 +5,9 @@ import pytest
 
 from app.schemas.investment_stages import StageVerdict
 from app.services.investment_stages.stages.base import StageContext
-from app.services.investment_stages.stages.candidate_universe import CandidateUniverseStage
+from app.services.investment_stages.stages.candidate_universe import (
+    CandidateUniverseStage,
+)
 
 
 def _snap(candidates):

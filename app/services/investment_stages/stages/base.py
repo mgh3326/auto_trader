@@ -20,7 +20,9 @@ class StageContext:
     bundle_uuid: uuid.UUID
     snapshots_by_kind: dict[str, list[InvestmentSnapshot]]
     bundle_metadata: dict[str, Any]
-    prior_artifacts: dict[str, StageArtifactPayload] = dataclasses.field(default_factory=dict)
+    prior_artifacts: dict[str, StageArtifactPayload] = dataclasses.field(
+        default_factory=dict
+    )
 
     def snapshots_for(self, kind: str) -> list[InvestmentSnapshot]:
         return self.snapshots_by_kind.get(kind, [])

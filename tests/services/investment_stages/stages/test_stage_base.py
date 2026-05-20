@@ -3,7 +3,6 @@ import uuid
 import pytest
 
 from app.services.investment_stages.stages.base import (
-    Stage,
     StageContext,
     UnavailableStageError,
 )

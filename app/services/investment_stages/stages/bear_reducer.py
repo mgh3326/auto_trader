@@ -109,7 +109,9 @@ class BearReducerStage:
                 prompt_version="v1",
             )
         except Exception as exc:
-            _logger.exception("Failed to run bear_reducer via LLM, falling back to deterministic neutral")
+            _logger.exception(
+                "Failed to run bear_reducer via LLM, falling back to deterministic neutral"
+            )
             return StageArtifactPayload(
                 stage_type=self.stage_type,
                 verdict=StageVerdict.NEUTRAL,
