@@ -124,9 +124,9 @@ async def test_get_report_snapshot_bundle_returns_legacy_for_no_bundle(db_sessio
     svc = InvestmentReportQueryService(db_session)
     response = await svc.get_report_snapshot_bundle(report_uuid)
     assert response is not None
-    assert response["legacy_no_snapshot"] is True
-    assert response["bundle"] is None
-    assert response["items"] == []
+    assert response.legacy_no_snapshot is True
+    assert response.bundle is None
+    assert response.items == []
 
 
 @pytest.mark.asyncio
@@ -135,14 +135,14 @@ async def test_get_report_snapshot_bundle_returns_bundle_and_items(db_session):
     svc = InvestmentReportQueryService(db_session)
     response = await svc.get_report_snapshot_bundle(report_uuid)
     assert response is not None
-    assert response["legacy_no_snapshot"] is False
-    bundle = response["bundle"]
+    assert response.legacy_no_snapshot is False
+    bundle = response.bundle
     assert bundle is not None
     assert bundle.bundle_uuid == bundle_uuid
     assert bundle.status == "partial"
     assert bundle.market == "kr"
     assert bundle.account_scope == "kis_live"
-    items = response["items"]
+    items = response.items
     assert len(items) == 1
     item = items[0]
     assert item.snapshot_uuid == snap_uuid
@@ -152,8 +152,8 @@ async def test_get_report_snapshot_bundle_returns_bundle_and_items(db_session):
     assert item.payload_size_bytes > 0
     # unavailable_sources / source_conflicts come from the *report row*,
     # not from the bundle — the viewer surfaces them separately.
-    assert response["unavailable_sources"] == {"naver_remote_debug": "blocked"}
-    assert response["source_conflicts"] == {"market": {"kis_mcp": 1.0, "manual": 1.1}}
+    assert response.unavailable_sources == {"naver_remote_debug": "blocked"}
+    assert response.source_conflicts == {"market": {"kis_mcp": 1.0, "manual": 1.1}}
 
 
 @pytest.mark.asyncio

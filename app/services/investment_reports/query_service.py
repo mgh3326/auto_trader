@@ -25,6 +25,7 @@ from app.models.investment_reports import (
 )
 from app.schemas.investment_reports import (
     ReportSnapshotBundleItemView,
+    ReportSnapshotBundleResponse,
     ReportSnapshotBundleSummaryView,
     ReportSnapshotDetailResponse,
 )
@@ -117,14 +118,15 @@ class InvestmentReportQueryService:
     # ------------------------------------------------------------------
     async def get_report_snapshot_bundle(
         self, report_uuid: UUID
-    ) -> dict[str, Any] | None:
+    ) -> ReportSnapshotBundleResponse | None:
         """Return the bundle + linked items for a report, or a legacy shape.
 
         Returns:
           * ``None`` if the report doesn't exist (router → 404).
-          * ``{"legacy_no_snapshot": True, "bundle": None, "items": [], ...}``
+          * ``ReportSnapshotBundleResponse(legacy_no_snapshot=True, ...)``
             if the report exists but has no ``snapshot_bundle_uuid`` (router → 200).
-          * Full shape otherwise.
+          * ``ReportSnapshotBundleResponse(legacy_no_snapshot=False, bundle=...,
+            items=[...], ...)`` with full bundle and item views otherwise.
 
         Note: ``unavailable_sources`` and ``source_conflicts`` come from
         the report row, never from the bundle — they describe what the
@@ -135,26 +137,22 @@ class InvestmentReportQueryService:
         if report is None:
             return None
         if report.snapshot_bundle_uuid is None:
-            return {
-                "legacy_no_snapshot": True,
-                "bundle": None,
-                "items": [],
-                "unavailable_sources": report.unavailable_sources,
-                "source_conflicts": report.source_conflicts,
-            }
+            return ReportSnapshotBundleResponse(
+                legacy_no_snapshot=True,
+                unavailable_sources=report.unavailable_sources,
+                source_conflicts=report.source_conflicts,
+            )
 
         bundle = await self._snap_repo.get_bundle_by_uuid(report.snapshot_bundle_uuid)
         if bundle is None:
             # Defensive: report.snapshot_bundle_uuid is a logical link
             # (no FK), so a deleted bundle is possible in theory. Treat
             # as legacy/no-snapshot rather than failing the page.
-            return {
-                "legacy_no_snapshot": True,
-                "bundle": None,
-                "items": [],
-                "unavailable_sources": report.unavailable_sources,
-                "source_conflicts": report.source_conflicts,
-            }
+            return ReportSnapshotBundleResponse(
+                legacy_no_snapshot=True,
+                unavailable_sources=report.unavailable_sources,
+                source_conflicts=report.source_conflicts,
+            )
 
         pairs = await self._snap_repo.list_bundle_items_with_snapshots(bundle.id)
         item_views = [
@@ -188,13 +186,13 @@ class InvestmentReportQueryService:
             freshness_summary=bundle.freshness_summary,
             created_at=bundle.created_at,
         )
-        return {
-            "legacy_no_snapshot": False,
-            "bundle": bundle_view,
-            "items": item_views,
-            "unavailable_sources": report.unavailable_sources,
-            "source_conflicts": report.source_conflicts,
-        }
+        return ReportSnapshotBundleResponse(
+            legacy_no_snapshot=False,
+            bundle=bundle_view,
+            items=item_views,
+            unavailable_sources=report.unavailable_sources,
+            source_conflicts=report.source_conflicts,
+        )
 
     async def get_report_snapshot_detail(
         self, report_uuid: UUID, snapshot_uuid: UUID

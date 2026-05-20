@@ -216,13 +216,7 @@ async def get_investment_report_snapshot_bundle(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="report_not_found"
         )
-    return ReportSnapshotBundleResponse(
-        bundle=result["bundle"],
-        items=result["items"],
-        unavailable_sources=result["unavailable_sources"],
-        source_conflicts=result["source_conflicts"],
-        legacy_no_snapshot=result["legacy_no_snapshot"],
-    )
+    return result
 
 
 @router.get(
