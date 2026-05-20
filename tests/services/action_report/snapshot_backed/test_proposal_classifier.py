@@ -61,6 +61,9 @@ def test_watch_no_match_becomes_create():
     )
     assert classified[0].operation == "create"
     assert classified[0].target_ref is None
+    # Roundtrip safety: classified output must survive re-validation.
+    for item in classified:
+        IngestReportItem.model_validate(item.model_dump())
 
 
 def test_watch_matching_existing_active_with_same_condition_becomes_keep():
@@ -73,6 +76,9 @@ def test_watch_matching_existing_active_with_same_condition_becomes_keep():
     assert classified[0].operation == "keep"
     assert classified[0].target_ref is not None
     assert classified[0].target_ref.type == "investment_watch_alert"
+    # Roundtrip safety: classified output must survive re-validation.
+    for item in classified:
+        IngestReportItem.model_validate(item.model_dump())
 
 
 def test_watch_matching_existing_with_changed_threshold_becomes_modify():
@@ -85,6 +91,9 @@ def test_watch_matching_existing_with_changed_threshold_becomes_modify():
     assert classified[0].operation == "modify"
     assert classified[0].diff is not None
     assert any(d["field"] == "threshold" for d in classified[0].diff)
+    # Roundtrip safety: classified output must survive re-validation.
+    for item in classified:
+        IngestReportItem.model_validate(item.model_dump())
 
 
 def test_multiple_ambiguous_watches_become_review():
@@ -99,6 +108,9 @@ def test_multiple_ambiguous_watches_become_review():
     )
     assert classified[0].operation == "review"
     assert classified[0].target_ref.type == "ambiguous"
+    # Roundtrip safety: classified output must survive re-validation.
+    for item in classified:
+        IngestReportItem.model_validate(item.model_dump())
 
 
 def test_buy_action_with_matching_open_order_keep():
@@ -119,6 +131,9 @@ def test_buy_action_with_matching_open_order_keep():
     )
     assert classified[0].operation == "keep"
     assert classified[0].target_ref.type == "broker_order"
+    # Roundtrip safety: classified output must survive re-validation.
+    for item in classified:
+        IngestReportItem.model_validate(item.model_dump())
 
 
 def test_buy_action_with_stale_open_order_becomes_review_with_confirmation_note():
@@ -138,6 +153,9 @@ def test_buy_action_with_stale_open_order_becomes_review_with_confirmation_note(
         ),
     )
     assert classified[0].operation == "review"
+    # Roundtrip safety: classified output must survive re-validation.
+    for item in classified:
+        IngestReportItem.model_validate(item.model_dump())
 
 
 def test_pending_orders_unavailable_marks_dependent_items_review():
@@ -159,3 +177,6 @@ def test_pending_orders_unavailable_marks_dependent_items_review():
     # to action/review with explicit unknown note.
     assert classified[0].operation == "review"
     assert "확인 불가" in classified[0].rationale
+    # Roundtrip safety: classified output must survive re-validation.
+    for item in classified:
+        IngestReportItem.model_validate(item.model_dump())

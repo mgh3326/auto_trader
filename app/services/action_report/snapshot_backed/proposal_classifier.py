@@ -89,6 +89,11 @@ def _classify_watch(
                         for c in candidates
                     ],
                 ),
+                "current_state": {
+                    "metric": item.watch_condition.metric,
+                    "active_alert_count": len(candidates),
+                    "note": "multiple active alerts on same symbol/metric",
+                },
                 "rationale": item.rationale
                 + " (다중 활성 와치 감지 — 수동 검토 필요)",
                 "apply_policy": "requires_user_approval",

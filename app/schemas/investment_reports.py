@@ -183,7 +183,7 @@ class IngestReportItem(BaseModel):
                 raise ValueError(
                     f"operation='modify' requires {missing}"
                 )
-        if self.operation in ("cancel", "keep", "review"):
+        if self.operation in ("cancel", "keep"):
             missing = []
             if self.target_ref is None:
                 missing.append("target_ref")
@@ -193,6 +193,10 @@ class IngestReportItem(BaseModel):
                 raise ValueError(
                     f"operation={self.operation!r} requires {missing}"
                 )
+        # operation='review' is intentionally permissive: review can mean
+        # (a) ambiguous target with candidates, (b) stale operational state,
+        # or (c) unknown state when the upstream snapshot was unavailable.
+        # Only the universal `rationale` requirement applies.
         return self
 
 
