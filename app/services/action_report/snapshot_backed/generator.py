@@ -48,6 +48,10 @@ from app.services.action_report.common.snapshot_bundle import (
 from app.services.action_report.snapshot_backed.collectors.registry import (
     production_collector_registry,
 )
+from app.services.action_report.snapshot_backed.proposal_classifier import (
+    ClassifierContext,
+    classify_items,
+)
 from app.services.action_report.snapshot_backed.request import (
     ReportGenerationRequest,
     ReportGenerationResponse,
@@ -56,6 +60,9 @@ from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
 from app.services.investment_snapshots.collectors import SnapshotCollectorRegistry
+from app.services.investment_snapshots.repository import (
+    InvestmentSnapshotsRepository,
+)
 
 _MARKET_ACCOUNT_PAIRS: dict[str, str] = {
     "kr": "kis_live",
@@ -111,6 +118,7 @@ class SnapshotBackedReportGenerator:
         ensure_service: SnapshotBundleEnsureService | None = None,
         ingestion_service: InvestmentReportIngestionService | None = None,
         collector_registry: SnapshotCollectorRegistry | None = None,
+        snapshots_repository: InvestmentSnapshotsRepository | None = None,
     ) -> None:
         self._session = session
         registry = collector_registry or production_collector_registry(session)
@@ -119,6 +127,9 @@ class SnapshotBackedReportGenerator:
         )
         self._ingestion_service = ingestion_service or InvestmentReportIngestionService(
             session
+        )
+        self._snapshots_repo = (
+            snapshots_repository or InvestmentSnapshotsRepository(session)
         )
 
     async def generate(
@@ -146,6 +157,23 @@ class SnapshotBackedReportGenerator:
                 "bundle ensure returned no bundle_uuid; "
                 f"status={ensure_response.status!r}"
             )
+
+        # ROB-274 — classify draft items against persisted bundle state.
+        # We read payloads back from the DB (via list_bundle_items_with_snapshots)
+        # so the classifier sees the same data that was just persisted, and
+        # downstream audits remain reproducible.
+        classifier_context = await self._build_classifier_context(
+            bundle_uuid=ensure_response.bundle_uuid,
+            missing_sources=list(ensure_response.missing_sources),
+        )
+        request = request.model_copy(
+            update={
+                "items": classify_items(
+                    items=list(request.items),
+                    context=classifier_context,
+                )
+            }
+        )
 
         coverage_summary = to_jsonable(ensure_response.coverage_summary)
         freshness_summary = self._enrich_freshness_summary(ensure_response)
@@ -208,6 +236,64 @@ class SnapshotBackedReportGenerator:
                 f"unsupported market/account_scope pair: "
                 f"{request.market!r}/{request.account_scope!r}"
             )
+
+    async def _build_classifier_context(
+        self,
+        *,
+        bundle_uuid: UUID,
+        missing_sources: list[str],
+    ) -> ClassifierContext:
+        """Read back watch_context + pending_orders payloads from the bundle.
+
+        ``pending_orders`` is OPTIONAL in the policy — if it's listed in
+        ``missing_sources`` we surface ``None`` to the classifier so it
+        downgrades dependent action items to ``operation='review'`` with
+        a "확인 불가" rationale (per ROB-274 locked decision §3).
+
+        ``pending_orders_seen`` distinguishes "snapshot kind appeared in
+        bundle but was empty" (treated as ``[]``) vs "snapshot kind didn't
+        appear at all" (treated as ``None``). Empty-but-present means the
+        broker successfully reported no open orders. Absent means ensure()
+        couldn't collect.
+        """
+
+        bundle = await self._snapshots_repo.get_bundle_by_uuid(bundle_uuid)
+        if bundle is None:
+            return ClassifierContext(
+                active_watches=[],
+                pending_orders=None if "pending_orders" in missing_sources else [],
+            )
+
+        item_snapshot_pairs = (
+            await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
+        )
+        active_watches: list[dict[str, Any]] = []
+        pending_orders: list[dict[str, Any]] = []
+        pending_orders_seen = False
+
+        for _item, snapshot in item_snapshot_pairs:
+            payload = snapshot.payload_json or {}
+            if snapshot.snapshot_kind == "watch_context":
+                # watch_context payload schema: {"active_alerts": [...], ...}
+                alerts = payload.get("active_alerts") or []
+                if isinstance(alerts, list):
+                    active_watches.extend(alerts)
+            elif snapshot.snapshot_kind == "pending_orders":
+                pending_orders_seen = True
+                # pending_orders payload schema: {"pending_orders": [...], ...}
+                orders = payload.get("pending_orders") or []
+                if isinstance(orders, list):
+                    pending_orders.extend(orders)
+
+        # Honest "unavailable" signal: pending_orders kind was attempted but
+        # didn't produce a usable result (or missing entirely from the bundle).
+        unavailable = (
+            "pending_orders" in missing_sources
+        ) or (not pending_orders_seen)
+        return ClassifierContext(
+            active_watches=active_watches,
+            pending_orders=None if unavailable else pending_orders,
+        )
 
     def _enrich_freshness_summary(self, ensure_response: Any) -> dict[str, Any]:
         summary = to_jsonable(ensure_response.freshness_summary) or {}
@@ -289,8 +375,12 @@ class SnapshotBackedReportGenerator:
                 "trigger_checklist",
                 "max_action",
                 "metadata",
+                "target_ref",
+                "current_state",
+                "proposed_state",
+                "diff",
             ):
-                if key in item_dict:
+                if key in item_dict and item_dict[key] is not None:
                     item_dict[key] = to_jsonable(item_dict[key])
             normalized_items.append(item_dict)
 
