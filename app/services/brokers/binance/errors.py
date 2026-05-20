@@ -19,9 +19,7 @@ class BinanceRateLimited(BinanceAdapterError):
     """Raised when REST 429/418 is received; carries Retry-After seconds."""
 
     def __init__(self, retry_after_seconds: float, message: str = "") -> None:
-        super().__init__(
-            message or f"Rate-limited; retry after {retry_after_seconds}s"
-        )
+        super().__init__(message or f"Rate-limited; retry after {retry_after_seconds}s")
         self.retry_after_seconds = retry_after_seconds
 
 

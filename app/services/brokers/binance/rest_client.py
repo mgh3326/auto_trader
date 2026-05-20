@@ -93,7 +93,7 @@ class BinancePublicRestClient:
         self._declared_weight_limit = declared_weight_limit
         self._last_used_weight: int | None = None
 
-    async def __aenter__(self) -> "BinancePublicRestClient":
+    async def __aenter__(self) -> BinancePublicRestClient:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:

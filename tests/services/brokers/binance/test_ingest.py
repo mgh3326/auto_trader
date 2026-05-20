@@ -81,9 +81,7 @@ async def test_ingest_skips_kline_for_unknown_symbol(
     with caplog.at_level(logging.WARNING, logger="app.services.brokers.binance.ingest"):
         persisted = await ingester.ingest(_mk_event(symbol="NEWCOIN"))
     assert persisted is False
-    assert any(
-        "no crypto_instruments row" in r.message for r in caplog.records
-    )
+    assert any("no crypto_instruments row" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -106,10 +104,7 @@ async def test_ingest_idempotent_upsert(db_session: AsyncSession) -> None:
     assert await ingester.ingest(event) is True
     count = (
         await db_session.execute(
-            text(
-                "SELECT COUNT(*) FROM crypto_candles_1m "
-                "WHERE instrument_id = :iid"
-            ),
+            text("SELECT COUNT(*) FROM crypto_candles_1m WHERE instrument_id = :iid"),
             {"iid": inst.id},
         )
     ).scalar()

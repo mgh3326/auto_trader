@@ -38,9 +38,7 @@ class CryptoInstrumentHealth(Base):
         ),
         primary_key=True,
     )
-    state: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="healthy"
-    )
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="healthy")
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_state_change_at: Mapped[dt.datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
@@ -48,9 +46,7 @@ class CryptoInstrumentHealth(Base):
     last_closed_candle_time: Mapped[dt.datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
-    attempts: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0"
-    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     retry_after_at: Mapped[dt.datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )

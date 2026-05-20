@@ -32,14 +32,16 @@ from app.services.instrument_health.repository import (
 logger = logging.getLogger("app.services.instrument_health")
 
 
-class InstrumentHealthState(str, enum.Enum):
+class InstrumentHealthState(enum.StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     RATE_LIMITED = "rate_limited"
     MANUAL_BACKFILL_REQUIRED = "manual_backfill_required"
 
 
-def _emit_sentry_event(state: InstrumentHealthState, *, instrument_id: int, reason: str) -> None:
+def _emit_sentry_event(
+    state: InstrumentHealthState, *, instrument_id: int, reason: str
+) -> None:
     """Sentry event for the only state that needs operator attention.
 
     Per Open items lean #5 (Task 8): only ``manual_backfill_required``
@@ -81,8 +83,7 @@ class CryptoInstrumentHealthService:
             reason=reason,
         )
         logger.warning(
-            "crypto_instrument_health state=degraded "
-            "instrument_id=%s reason=%r",
+            "crypto_instrument_health state=degraded instrument_id=%s reason=%r",
             instrument_id,
             reason,
         )

@@ -38,9 +38,7 @@ def test_emit_logs_structured_info(caplog) -> None:
     with caplog.at_level(logging.INFO, logger="app.services.brokers.binance"):
         emit_rate_limit_snapshot(snap, declared_weight_limit=1200)
     records = [
-        r
-        for r in caplog.records
-        if r.name.startswith("app.services.brokers.binance")
+        r for r in caplog.records if r.name.startswith("app.services.brokers.binance")
     ]
     assert any("binance.rate_limit" in r.message for r in records)
 

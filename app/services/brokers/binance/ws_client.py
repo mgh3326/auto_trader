@@ -82,7 +82,7 @@ class BinancePublicWSClient:
         self._url = url
         self._ws: Any = None
 
-    async def __aenter__(self) -> "BinancePublicWSClient":
+    async def __aenter__(self) -> BinancePublicWSClient:
         self._ws = await websockets.connect(self._url, ping_interval=20)
         return self
 
@@ -90,9 +90,7 @@ class BinancePublicWSClient:
         if self._ws is not None:
             await self._ws.close()
 
-    async def events(
-        self, *, stop_after: int | None = None
-    ) -> AsyncIterator[WsEvent]:
+    async def events(self, *, stop_after: int | None = None) -> AsyncIterator[WsEvent]:
         emitted = 0
         assert self._ws is not None, "BinancePublicWSClient not connected"
         async for raw in self._ws:
@@ -111,12 +109,8 @@ class BinancePublicWSClient:
                 ev = KlineEvent(
                     symbol=k["s"],
                     interval=k["i"],
-                    open_time=dt.datetime.fromtimestamp(
-                        k["t"] / 1000.0, tz=dt.UTC
-                    ),
-                    close_time=dt.datetime.fromtimestamp(
-                        k["T"] / 1000.0, tz=dt.UTC
-                    ),
+                    open_time=dt.datetime.fromtimestamp(k["t"] / 1000.0, tz=dt.UTC),
+                    close_time=dt.datetime.fromtimestamp(k["T"] / 1000.0, tz=dt.UTC),
                     open=Decimal(k["o"]),
                     high=Decimal(k["h"]),
                     low=Decimal(k["l"]),

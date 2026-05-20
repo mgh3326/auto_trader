@@ -31,17 +31,11 @@ class BackfillCaps:
     page_size: int
 
     @classmethod
-    def from_env(cls) -> "BackfillCaps":
+    def from_env(cls) -> BackfillCaps:
         return cls(
-            max_candles=int(
-                os.getenv("BINANCE_KLINE_BACKFILL_MAX_CANDLES", "5000")
-            ),
-            max_requests=int(
-                os.getenv("BINANCE_KLINE_BACKFILL_MAX_REQUESTS", "10")
-            ),
-            page_size=int(
-                os.getenv("BINANCE_KLINE_BACKFILL_PAGE_SIZE", "1000")
-            ),
+            max_candles=int(os.getenv("BINANCE_KLINE_BACKFILL_MAX_CANDLES", "5000")),
+            max_requests=int(os.getenv("BINANCE_KLINE_BACKFILL_MAX_REQUESTS", "10")),
+            page_size=int(os.getenv("BINANCE_KLINE_BACKFILL_PAGE_SIZE", "1000")),
         )
 
 

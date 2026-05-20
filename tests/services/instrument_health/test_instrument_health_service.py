@@ -95,8 +95,7 @@ async def test_record_manual_backfill_required_does_not_auto_clear(
     svc = CryptoInstrumentHealthService(session=db_session)
     await svc.record_manual_backfill_required(inst.id, reason="gap 8000 candles")
     assert (
-        await svc.get_state(inst.id)
-        == InstrumentHealthState.MANUAL_BACKFILL_REQUIRED
+        await svc.get_state(inst.id) == InstrumentHealthState.MANUAL_BACKFILL_REQUIRED
     )
     # record_recovered must be explicit; the service does not auto-clear.
     with pytest.raises(ValueError):

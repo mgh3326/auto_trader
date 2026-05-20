@@ -87,9 +87,7 @@ async def test_gap_within_cap_triggers_rest_backfill_returns_klines() -> None:
             limit: int,
         ) -> list[BinanceKlineRow]:
             self.calls += 1
-            return [
-                _mk(start_time + dt.timedelta(minutes=i)) for i in range(100)
-            ]
+            return [_mk(start_time + dt.timedelta(minutes=i)) for i in range(100)]
 
     now = dt.datetime(2026, 5, 20, 12, 0, 0, tzinfo=dt.UTC)
     last_closed = now - dt.timedelta(minutes=100)
@@ -102,9 +100,7 @@ async def test_gap_within_cap_triggers_rest_backfill_returns_klines() -> None:
         caps=BackfillCaps(max_candles=5000, max_requests=10, page_size=1000),
     )
     assert decision.since is not None
-    result = await bf.backfill(
-        symbol="BTCUSDT", interval="1m", since=decision.since
-    )
+    result = await bf.backfill(symbol="BTCUSDT", interval="1m", since=decision.since)
     # 100 klines returned in one page (page_size=1000 > 100).
     assert len(result.klines) == 100
 
@@ -145,9 +141,7 @@ async def test_gap_beyond_cap_raises_backfill_cap_exceeded() -> None:
             end_time: dt.datetime | None = None,
             limit: int,
         ) -> list[BinanceKlineRow]:
-            return [
-                _mk(start_time + dt.timedelta(minutes=i)) for i in range(limit)
-            ]
+            return [_mk(start_time + dt.timedelta(minutes=i)) for i in range(limit)]
 
     rest = _FakeRest()
     bf = RestBackfiller(

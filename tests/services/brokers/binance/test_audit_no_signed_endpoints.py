@@ -22,10 +22,15 @@ import pathlib
 import re
 import subprocess
 
-# The single allowed package directory for new Binance code.
+# Allowed package directories for new Binance-related code in this PR.
+# - app/services/brokers/binance: the public adapter (REST + WS).
+# - app/services/instrument_health: write surface for crypto_instrument_health
+#   (mentions Binance in docstrings as the first consumer; the service is
+#   generic and could later be consumed by other crypto adapters).
 ALLOWED_PACKAGE_PATHS: frozenset[str] = frozenset(
     {
         "app/services/brokers/binance",
+        "app/services/instrument_health",
     }
 )
 
@@ -53,6 +58,10 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/services/news_radar_classifier.py",
         "app/services/research_backtest_parser.py",
         "app/utils/symbol_mapping.py",
+        # ROB-285 additions outside the broker package — referenced because
+        # the docstring or sentry tag mentions "Binance" as the first
+        # consumer / source of these flows.
+        "app/models/crypto_instrument_health.py",
     }
 )
 
@@ -86,7 +95,10 @@ def test_only_one_binance_package_path_exists() -> None:
     for path in paths:
         # Path is allowed if it starts with one of the allowed package paths,
         # or if it's an explicitly-tracked legacy file.
-        if any(path.startswith(allowed + "/") or path == allowed for allowed in ALLOWED_PACKAGE_PATHS):
+        if any(
+            path.startswith(allowed + "/") or path == allowed
+            for allowed in ALLOWED_PACKAGE_PATHS
+        ):
             continue
         if path in ALLOWED_LEGACY_FILES:
             continue

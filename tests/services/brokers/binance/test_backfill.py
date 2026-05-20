@@ -100,9 +100,7 @@ async def test_backfill_cap_exceeded_raises() -> None:
         await bf.backfill(symbol="BTCUSDT", interval="1m", since=start)
     # Exception carries a message identifying the cap that tripped.
     assert exc_info.value.args
-    assert "max_candles" in str(exc_info.value) or "max_requests" in str(
-        exc_info.value
-    )
+    assert "max_candles" in str(exc_info.value) or "max_requests" in str(exc_info.value)
 
 
 def test_caps_from_env_default_values(monkeypatch) -> None:
