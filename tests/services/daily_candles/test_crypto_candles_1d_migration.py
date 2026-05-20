@@ -73,17 +73,13 @@ async def test_step2_backfill_populates_instrument_id_and_volumes(
     rows_with_iid = (
         await db_session.execute(
             text(
-                "SELECT count(*) FROM crypto_candles_1d "
-                "WHERE instrument_id IS NOT NULL"
+                "SELECT count(*) FROM crypto_candles_1d WHERE instrument_id IS NOT NULL"
             )
         )
     ).scalar_one()
     rows_with_base_vol = (
         await db_session.execute(
-            text(
-                "SELECT count(*) FROM crypto_candles_1d "
-                "WHERE base_volume IS NOT NULL"
-            )
+            text("SELECT count(*) FROM crypto_candles_1d WHERE base_volume IS NOT NULL")
         )
     ).scalar_one()
     rows_closed = (

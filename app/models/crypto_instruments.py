@@ -45,17 +45,13 @@ class CryptoInstrument(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=True
-    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     venue: Mapped[str] = mapped_column(Text, nullable=False)
     product: Mapped[str] = mapped_column(Text, nullable=False)
     venue_symbol: Mapped[str] = mapped_column(Text, nullable=False)
     base_asset: Mapped[str] = mapped_column(Text, nullable=False)
     quote_asset: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="active"
-    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
     precision_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
     precision_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tick_size: Mapped[float | None] = mapped_column(Numeric, nullable=True)

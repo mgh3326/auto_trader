@@ -117,9 +117,7 @@ class DailyCandlesRepository:
         )
         return max(int(result.rowcount or 0), 0)
 
-    async def _resolve_instrument_id(
-        self, *, symbol: str, partition: str
-    ) -> int:
+    async def _resolve_instrument_id(self, *, symbol: str, partition: str) -> int:
         """Translate legacy (symbol, partition) -> instrument_id.
 
         Today only Upbit KRW is producing crypto rows; (partition='upbit_krw',
@@ -317,9 +315,7 @@ class DailyCandlesRepository:
                         volume=float(row["volume"])
                         if row["volume"] is not None
                         else 0.0,
-                        value=float(row["value"])
-                        if row["value"] is not None
-                        else 0.0,
+                        value=float(row["value"]) if row["value"] is not None else 0.0,
                         source=row["source"],
                     )
                 )

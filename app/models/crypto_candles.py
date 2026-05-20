@@ -47,18 +47,14 @@ class CryptoCandle1m(Base):
         ),
         CheckConstraint("vwap IS NULL OR vwap >= 0", name="vwap_nn"),
         CheckConstraint("high >= low", name="high_ge_low"),
-        CheckConstraint(
-            "high >= open AND high >= close", name="high_ge_oc"
-        ),
+        CheckConstraint("high >= open AND high >= close", name="high_ge_oc"),
         CheckConstraint("low <= open AND low <= close", name="low_le_oc"),
     )
 
     instrument_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("crypto_instruments.id"), nullable=False
     )
-    time: Mapped[dt.datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False
-    )
+    time: Mapped[dt.datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     open: Mapped[float] = mapped_column(Numeric, nullable=False)
     high: Mapped[float] = mapped_column(Numeric, nullable=False)
     low: Mapped[float] = mapped_column(Numeric, nullable=False)
@@ -67,12 +63,8 @@ class CryptoCandle1m(Base):
     quote_volume: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vwap: Mapped[float | None] = mapped_column(Numeric, nullable=True)
-    taker_buy_base_volume: Mapped[float | None] = mapped_column(
-        Numeric, nullable=True
-    )
-    taker_buy_quote_volume: Mapped[float | None] = mapped_column(
-        Numeric, nullable=True
-    )
+    taker_buy_base_volume: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    taker_buy_quote_volume: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     is_closed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("TRUE")
     )
@@ -107,18 +99,14 @@ class CryptoCandle1d(Base):
             name="quote_volume_nn",
         ),
         CheckConstraint("high >= low", name="high_ge_low"),
-        CheckConstraint(
-            "high >= open AND high >= close", name="high_ge_oc"
-        ),
+        CheckConstraint("high >= open AND high >= close", name="high_ge_oc"),
         CheckConstraint("low <= open AND low <= close", name="low_le_oc"),
     )
 
     instrument_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("crypto_instruments.id"), nullable=False
     )
-    time: Mapped[dt.datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False
-    )
+    time: Mapped[dt.datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     open: Mapped[float] = mapped_column(Numeric, nullable=False)
     high: Mapped[float] = mapped_column(Numeric, nullable=False)
     low: Mapped[float] = mapped_column(Numeric, nullable=False)
