@@ -122,6 +122,30 @@ export interface SnapshotFreshnessSummary {
     | undefined;
 }
 
+// ROB-274 — proposal-state vocabulary.
+export type ProposalOperation =
+  | "create"
+  | "modify"
+  | "cancel"
+  | "keep"
+  | "replace"
+  | "review";
+
+export interface ProposalTargetRef {
+  type: "investment_watch_alert" | "broker_order" | "ambiguous";
+  id?: string | null;
+  status?: string | null;
+  broker?: string | null;
+  raw?: Record<string, unknown> | null;
+  candidates?: Array<Record<string, unknown>> | null;
+}
+
+export interface ProposalDiffEntry {
+  field: string;
+  from: unknown;
+  to: unknown;
+}
+
 export interface InvestmentReportItem {
   itemUuid: string;
   itemKind: ItemKind;
@@ -141,6 +165,14 @@ export interface InvestmentReportItem {
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  // ROB-274 — proposal-state fields. Optional/nullable so legacy items
+  // (pre-ROB-274) remain valid against this interface.
+  operation?: ProposalOperation | null;
+  targetRef?: ProposalTargetRef | null;
+  currentState?: Record<string, unknown> | null;
+  proposedState?: Record<string, unknown> | null;
+  diff?: ProposalDiffEntry[] | null;
+  applyPolicy?: "requires_user_approval" | null;
 }
 
 export interface InvestmentReportItemDecision {
@@ -214,4 +246,105 @@ export interface InvestmentReportBundle {
 
 export interface InvestmentReportListResponse {
   reports: InvestmentReport[];
+}
+
+// ROB-275 — Snapshot evidence viewer types. Mirrors
+// ``app/schemas/investment_reports.py::ReportSnapshotBundle*`` and
+// ``ReportSnapshotDetailResponse``. Snapshot literals duplicate the
+// backend enums on purpose; if backend enums grow, update here too.
+
+export type BundleStatus =
+  | "complete"
+  | "partial"
+  | "stale_fallback"
+  | "failed";
+
+export type BundleItemRole =
+  | "required"
+  | "optional"
+  | "fallback"
+  | "conflict_evidence";
+
+export type SnapshotKind =
+  | "portfolio"
+  | "market"
+  | "news"
+  | "symbol"
+  | "candidate_universe"
+  | "browser_probe"
+  | "invest_page"
+  | "journal"
+  | "watch_context"
+  | "naver_remote_debug"
+  | "toss_remote_debug"
+  | "llm_input_frozen";
+
+// Mirrors backend SourceKind (app/schemas/investment_snapshots.py).
+export type SnapshotSourceKind =
+  | "kis_mcp"
+  | "auto_trader_mcp"
+  | "invest_api"
+  | "naver_remote_debug"
+  | "toss_remote_debug"
+  | "combined"
+  | "news_ingestor"
+  | "manual"
+  | "domain_ref";
+
+export interface ReportSnapshotBundleSummary {
+  bundleUuid: string;
+  purpose: string;
+  market: Market;
+  accountScope: AccountScope | null;
+  policyVersion: string;
+  status: BundleStatus;
+  asOf: string;
+  coverageSummary: Record<string, unknown>;
+  freshnessSummary: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ReportSnapshotBundleItem {
+  snapshotUuid: string;
+  role: BundleItemRole;
+  snapshotKind: SnapshotKind;
+  sourceKind: SnapshotSourceKind;
+  market: Market;
+  symbol: string | null;
+  accountScope: AccountScope | null;
+  freshnessStatus: SnapshotFreshnessStatus;
+  asOf: string;
+  validUntil: string | null;
+  sourceTable: string | null;
+  sourceId: number | null;
+  sourceUri: string | null;
+  payloadSizeBytes: number | null;
+}
+
+export interface ReportSnapshotBundle {
+  bundle: ReportSnapshotBundleSummary | null;
+  items: ReportSnapshotBundleItem[];
+  unavailableSources: Record<string, unknown> | null;
+  sourceConflicts: Record<string, unknown> | null;
+  legacyNoSnapshot: boolean;
+}
+
+export interface ReportSnapshotDetail {
+  snapshotUuid: string;
+  role: BundleItemRole;
+  snapshotKind: SnapshotKind;
+  sourceKind: SnapshotSourceKind;
+  market: Market;
+  symbol: string | null;
+  accountScope: AccountScope | null;
+  sourceTable: string | null;
+  sourceId: number | null;
+  sourceUri: string | null;
+  freshnessStatus: SnapshotFreshnessStatus;
+  asOf: string;
+  validUntil: string | null;
+  sourceTimestampsJson: Record<string, unknown>;
+  coverageJson: Record<string, unknown>;
+  errorsJson: Record<string, unknown>;
+  payloadJson: Record<string, unknown>;
 }

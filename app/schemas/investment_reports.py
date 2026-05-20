@@ -22,6 +22,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.investment_snapshots import (
+    BundleItemRole,
+    BundleStatus,
+    FreshnessStatus,
+    SnapshotAccountScope,
+    SnapshotKind,
+    SnapshotMarket,
+    SourceKind,
+)
+
 # Enum-equivalent Literals — match the DB CHECK constraints from
 # alembic/versions/20260518_rob265_add_investment_reports.py exactly.
 MarketLiteral = Literal["kr", "us", "crypto"]
@@ -50,6 +60,14 @@ WatchActionModeLiteral = Literal["notify_only", "preview_only", "approval_requir
 
 DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_approve"]
 
+# ROB-274 — proposal lifecycle literals. ``operation=None`` is the legacy
+# shape and is treated as 'create' by the DB CHECK constraints (see
+# alembic/versions/20260520_rob274_p1_*.py). ``apply_policy`` is locked to
+# a single value in this PR; broader policy modes land in a follow-up.
+OperationLiteral = Literal["create", "modify", "cancel", "keep", "replace", "review"]
+ApplyPolicyLiteral = Literal["requires_user_approval"]
+TargetRefTypeLiteral = Literal["investment_watch_alert", "broker_order", "ambiguous"]
+
 
 class WatchConditionPayload(BaseModel):
     """Embedded condition for a watch item. Persisted as JSONB."""
@@ -72,6 +90,39 @@ class WatchConditionPayload(BaseModel):
         return self
 
 
+class TargetRefPayload(BaseModel):
+    """Reference to the existing operational state an item proposes to act on.
+
+    ROB-274 — used by modify/cancel/keep/review/replace proposals to point
+    at the source-of-truth record (an ``investment_watch_alert`` row, a
+    broker order id, or an ambiguous candidate list when the producer
+    couldn't resolve a single target).
+    """
+
+    type: TargetRefTypeLiteral
+    id: str | None = None
+    status: str | None = None
+    broker: str | None = None
+    raw: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _ambiguous_needs_candidates(self) -> TargetRefPayload:
+        if self.type == "ambiguous":
+            if not self.candidates:
+                raise ValueError(
+                    "target_ref.type='ambiguous' requires non-empty candidates"
+                )
+        else:
+            if self.id is None:
+                raise ValueError(
+                    "target_ref.id is required for non-ambiguous target_ref"
+                )
+        return self
+
+
 class IngestReportItem(BaseModel):
     """One proposal item attached to an ingested report.
 
@@ -83,6 +134,7 @@ class IngestReportItem(BaseModel):
 
     client_item_key: str = Field(min_length=1)
     item_kind: ItemKindLiteral
+    operation: OperationLiteral | None = None
     symbol: str | None = None
     side: ItemSideLiteral | None = None
     intent: ItemIntentLiteral
@@ -97,17 +149,56 @@ class IngestReportItem(BaseModel):
     valid_until: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # ROB-274 proposal-state fields. All optional so legacy callers
+    # (operation=None) continue to validate unchanged.
+    target_ref: TargetRefPayload | None = None
+    current_state: dict[str, Any] | None = None
+    proposed_state: dict[str, Any] | None = None
+    diff: list[dict[str, Any]] | None = None
+    apply_policy: ApplyPolicyLiteral | None = None
+
     @model_validator(mode="after")
     def _validate_watch_invariants(self) -> IngestReportItem:
-        if self.item_kind == "watch":
+        # Legacy callers (operation=None) keep the old invariant.
+        if self.item_kind == "watch" and self.operation in (None, "create", "modify"):
             if self.watch_condition is None:
                 raise ValueError(
-                    "watch items must carry watch_condition (item_kind='watch')"
+                    "watch items require watch_condition when "
+                    "operation is null/'create'/'modify'"
                 )
             if self.valid_until is None:
                 raise ValueError(
-                    "watch items must carry valid_until (item_kind='watch')"
+                    "watch items require valid_until when "
+                    "operation is null/'create'/'modify'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_proposal_invariants(self) -> IngestReportItem:
+        if self.operation in ("modify",):
+            missing: list[str] = []
+            if self.target_ref is None:
+                missing.append("target_ref")
+            if self.current_state is None:
+                missing.append("current_state")
+            if self.proposed_state is None:
+                missing.append("proposed_state")
+            if self.diff is None:
+                missing.append("diff")
+            if missing:
+                raise ValueError(f"operation='modify' requires {missing}")
+        if self.operation in ("cancel", "keep"):
+            missing = []
+            if self.target_ref is None:
+                missing.append("target_ref")
+            if self.current_state is None:
+                missing.append("current_state")
+            if missing:
+                raise ValueError(f"operation={self.operation!r} requires {missing}")
+        # operation='review' is intentionally permissive: review can mean
+        # (a) ambiguous target with candidates, (b) stale operational state,
+        # or (c) unknown state when the upstream snapshot was unavailable.
+        # Only the universal `rationale` requirement applies.
         return self
 
 
@@ -280,6 +371,14 @@ class InvestmentReportItemResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # ROB-274 — proposal-state fields. Legacy rows have these as NULL.
+    operation: OperationLiteral | None = None
+    target_ref: dict[str, Any] | None = None
+    current_state: dict[str, Any] | None = None
+    proposed_state: dict[str, Any] | None = None
+    diff: list[dict[str, Any]] | None = None
+    apply_policy: ApplyPolicyLiteral | None = None
+
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
@@ -401,6 +500,11 @@ class PreviousReportContextResponse(BaseModel):
     active_watches: list[InvestmentWatchAlertResponse]
     triggered_events: list[InvestmentWatchEventResponse]
     recent_decisions: list[InvestmentReportItemDecisionResponse]
+    # ROB-274 — pending broker order snapshot for the same market/account.
+    # ``None`` means the snapshot was not available at context fetch time
+    # (collector unavailable / stale / unsupported scope); an empty list
+    # means the broker reported no pending orders.
+    pending_orders: list[dict[str, Any]] | None = None
 
 
 class InvestmentReportCreateResponse(BaseModel):
@@ -425,3 +529,99 @@ class InvestmentReportActivateWatchResponse(BaseModel):
     success: bool = True
     alert: InvestmentWatchAlertResponse
     item: InvestmentReportItemResponse
+
+
+# ---------------------------------------------------------------------------
+# ROB-275 — Report-centric snapshot evidence viewer response shapes.
+#
+# These wrap the existing investment_snapshots read shapes for use under
+# the /invest/api/investment-reports/{report_uuid}/snapshot-bundle and
+# .../snapshots/{snapshot_uuid} endpoints. The /trading/api/investment-snapshots
+# MCP-flag-gated routes are NOT touched.
+# ---------------------------------------------------------------------------
+
+
+class ReportSnapshotBundleSummaryView(BaseModel):
+    """Bundle header surfaced via the report-centric evidence endpoint."""
+
+    bundle_uuid: UUID
+    purpose: str
+    market: SnapshotMarket
+    account_scope: SnapshotAccountScope | None
+    policy_version: str
+    status: BundleStatus
+    as_of: datetime
+    coverage_summary: dict[str, Any]
+    freshness_summary: dict[str, Any]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReportSnapshotBundleItemView(BaseModel):
+    """One row in the report's snapshot evidence list — metadata only.
+
+    ``payload_size_bytes`` is computed from the snapshot's stored JSON in
+    the service layer; clients use it to hint at how heavy a payload
+    fetch will be without actually downloading it.
+    """
+
+    snapshot_uuid: UUID
+    role: BundleItemRole
+    snapshot_kind: SnapshotKind
+    source_kind: SourceKind
+    market: SnapshotMarket
+    symbol: str | None
+    account_scope: SnapshotAccountScope | None
+    freshness_status: FreshnessStatus
+    as_of: datetime
+    valid_until: datetime | None
+    source_table: str | None
+    source_id: int | None
+    source_uri: str | None
+    payload_size_bytes: int | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReportSnapshotBundleResponse(BaseModel):
+    """``GET /invest/api/investment-reports/{report_uuid}/snapshot-bundle``.
+
+    ``legacy_no_snapshot=True`` means the report exists but has no
+    ``snapshot_bundle_uuid`` — caller renders a legacy message.
+    """
+
+    bundle: ReportSnapshotBundleSummaryView | None = None
+    items: list[ReportSnapshotBundleItemView] = Field(default_factory=list)
+    unavailable_sources: dict[str, Any] | None = None
+    source_conflicts: dict[str, Any] | None = None
+    legacy_no_snapshot: bool = False
+
+
+class ReportSnapshotDetailResponse(BaseModel):
+    """``GET /invest/api/investment-reports/{report_uuid}/snapshots/{snapshot_uuid}``.
+
+    Returned only after a successful membership check
+    (snapshot_uuid ∈ this report's bundle_items). Carries the snapshot's
+    full DB payload + metadata, plus the bundle item's role/context.
+    """
+
+    snapshot_uuid: UUID
+    role: BundleItemRole
+    snapshot_kind: SnapshotKind
+    source_kind: SourceKind
+    market: SnapshotMarket
+    symbol: str | None
+    account_scope: SnapshotAccountScope | None
+    source_table: str | None
+    source_id: int | None
+    source_uri: str | None
+    freshness_status: FreshnessStatus
+    as_of: datetime
+    valid_until: datetime | None
+    source_timestamps_json: dict[str, Any]
+    coverage_json: dict[str, Any]
+    errors_json: dict[str, Any]
+    payload_json: dict[str, Any]
+
+    model_config = ConfigDict(from_attributes=True)

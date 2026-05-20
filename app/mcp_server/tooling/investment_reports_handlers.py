@@ -80,7 +80,11 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
     )
 
 
-def _serialise_context(ctx: dict) -> PreviousReportContextResponse:
+def _serialise_context(
+    ctx: dict,
+    *,
+    pending_orders: list[dict[str, Any]] | None = None,
+) -> PreviousReportContextResponse:
     return PreviousReportContextResponse(
         prior_reports=[
             InvestmentReportResponse.model_validate(r) for r in ctx["prior_reports"]
@@ -101,7 +105,70 @@ def _serialise_context(ctx: dict) -> PreviousReportContextResponse:
             InvestmentReportItemDecisionResponse.model_validate(d)
             for d in ctx["recent_decisions"]
         ],
+        pending_orders=pending_orders,
     )
+
+
+# ROB-274 — default account_scope per market when the caller didn't supply
+# one. The pending_orders collector requires a concrete scope (kis_live /
+# upbit_live) to know which broker to query. Keep this mirroring the
+# collector's own supported pairs in pending_orders.py.
+_DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE: dict[str, str] = {
+    "kr": "kis_live",
+    "us": "kis_live",
+    "crypto": "upbit_live",
+}
+
+
+async def _collect_pending_orders_snapshot(
+    db: Any,
+    *,
+    market: str,
+    account_scope: str | None,
+) -> list[dict[str, Any]] | None:
+    """ROB-274 — fetch the pending_orders snapshot for the context response.
+
+    Returns ``None`` when the collector is missing, reports unavailable/
+    stale, or the (market, account_scope) pair isn't supported. Returns
+    a (possibly empty) list when the broker reported successfully.
+    """
+    from app.services.action_report.snapshot_backed.collectors.registry import (
+        production_collector_registry,
+    )
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    effective_scope = account_scope or _DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE.get(market)
+    if effective_scope is None:
+        return None
+
+    try:
+        registry = production_collector_registry(db)
+    except Exception:  # noqa: BLE001 — registry must never raise to caller
+        return None
+    collector = registry.get("pending_orders")
+    if collector is None:
+        return None
+
+    try:
+        results = await collector.collect(
+            CollectorRequest(
+                market=market,  # type: ignore[arg-type]
+                account_scope=effective_scope,  # type: ignore[arg-type]
+                policy_snapshot={},
+            )
+        )
+    except Exception:  # noqa: BLE001 — collector contract is fail-open
+        return None
+    if not results:
+        return None
+    result = results[0]
+    if result.freshness_status in ("unavailable", "hard_stale"):
+        return None
+    payload = result.payload_json or {}
+    orders = payload.get("pending_orders")
+    if orders is None:
+        return []
+    return list(orders)
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +380,13 @@ async def investment_report_context_get_impl(
             exclude_report_uuid=exclude_uuid,
             n_prior=capped,
         )
-        serialised = _serialise_context(ctx)
+        # ROB-274 — enrich the response with the pending_orders snapshot so
+        # next-report drafters see what's already open at the broker. The
+        # helper fails open: any collector trouble surfaces as ``None``.
+        pending_orders = await _collect_pending_orders_snapshot(
+            db, market=market, account_scope=account_scope
+        )
+        serialised = _serialise_context(ctx, pending_orders=pending_orders)
     return {"success": True, **serialised.model_dump(mode="json", by_alias=True)}
 
 

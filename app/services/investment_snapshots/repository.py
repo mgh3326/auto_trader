@@ -266,6 +266,40 @@ class InvestmentSnapshotsRepository:
         result = await self._session.scalars(stmt)
         return list(result.all())
 
+    async def get_bundle_item_with_snapshot(
+        self,
+        *,
+        bundle_uuid: uuid.UUID,
+        snapshot_uuid: uuid.UUID,
+    ) -> tuple[InvestmentSnapshotBundleItem, InvestmentSnapshot] | None:
+        """ROB-275 — return ``(bundle_item, snapshot)`` for a specific pair, or None.
+
+        Used by the report-centric evidence viewer to enforce
+        bundle↔snapshot membership before returning a payload: a snapshot
+        that belongs to a different bundle returns None and the caller
+        maps it to HTTP 404.
+        """
+        stmt = (
+            sa.select(InvestmentSnapshotBundleItem, InvestmentSnapshot)
+            .join(
+                InvestmentSnapshotBundle,
+                InvestmentSnapshotBundle.id == InvestmentSnapshotBundleItem.bundle_id,
+            )
+            .join(
+                InvestmentSnapshot,
+                InvestmentSnapshot.id == InvestmentSnapshotBundleItem.snapshot_id,
+            )
+            .where(
+                InvestmentSnapshotBundle.bundle_uuid == bundle_uuid,
+                InvestmentSnapshot.snapshot_uuid == snapshot_uuid,
+            )
+        )
+        row = (await self._session.execute(stmt)).first()
+        if row is None:
+            return None
+        item, snap = row
+        return item, snap
+
     async def list_snapshots(
         self,
         *,

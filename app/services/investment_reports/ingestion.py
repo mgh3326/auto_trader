@@ -111,6 +111,17 @@ class InvestmentReportIngestionService:
             if item_req.watch_condition is not None
             else None
         )
+        # ROB-274 — ``target_ref`` is a Pydantic model on the schema side but
+        # stored as JSONB. Mirror the watch_condition serialisation pattern
+        # (``mode="json"``) so Decimal / datetime / UUID land as JSON-safe
+        # primitives. ``current_state`` / ``proposed_state`` / ``diff`` are
+        # already plain JSON-safe collections by schema design (the
+        # generator normalises Decimals upstream via ``to_jsonable``).
+        target_ref_payload = (
+            item_req.target_ref.model_dump(mode="json")
+            if item_req.target_ref is not None
+            else None
+        )
         idempotency_key = item_key(
             report_uuid=str(report.report_uuid),
             client_item_key=item_req.client_item_key,
@@ -137,4 +148,13 @@ class InvestmentReportIngestionService:
             max_action=item_req.max_action,
             valid_until=item_req.valid_until,
             item_metadata=item_req.metadata,
+            # ROB-274 proposal-state fields. All optional — legacy callers
+            # (operation=None) persist NULL into every new column and the
+            # operation-aware CHECKs on the items table let them through.
+            operation=item_req.operation,
+            target_ref=target_ref_payload,
+            current_state=item_req.current_state,
+            proposed_state=item_req.proposed_state,
+            diff=item_req.diff,
+            apply_policy=item_req.apply_policy,
         )

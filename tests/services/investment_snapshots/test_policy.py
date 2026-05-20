@@ -26,6 +26,9 @@ def test_intraday_action_report_v1_optional_kinds_match_phase1_whitelist():
     optional = set(INTRADAY_ACTION_REPORT_V1.optional_kinds())
     # symbol/candidate_universe/news are domain-ref candidates;
     # naver/toss/browser/invest_page are whitelisted-generic (pre-plan Decision 1).
+    # pending_orders is ROB-274 — broker pending orders feed the proposal
+    # classifier; optional because broker-side fetch failures degrade to
+    # action/review rather than blocking the whole bundle.
     assert optional == {
         "symbol",
         "candidate_universe",
@@ -34,6 +37,7 @@ def test_intraday_action_report_v1_optional_kinds_match_phase1_whitelist():
         "toss_remote_debug",
         "browser_probe",
         "invest_page",
+        "pending_orders",
     }
 
 
