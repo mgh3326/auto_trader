@@ -326,27 +326,39 @@ chore/<설명>                 # 유지보수
 
 ### Worktree 운영 규칙 (필수)
 
-**루트 `/home/mgh3326/auto_trader` 는 항상 `main` 체크아웃 고정. 배포 머지 시에만 `production` 으로 일시 전환.** 루트에서 feature/fix 브랜치를 체크아웃하거나 작업하지 않습니다.
+**canonical repo `/Users/mgh3326/work/auto_trader` 는 항상 `main` 체크아웃 고정. 배포 머지 시에만 `production` 으로 일시 전환.** canonical repo에서 feature/fix 브랜치를 체크아웃하거나 작업하지 않습니다.
 
-모든 코드 변경은 worktree 에서 수행합니다:
+코드 변경은 worktree에서 수행합니다. 다만 **새 Linear 이슈/병렬 작업**과 **같은 Linear 이슈의 follow-up**을 구분합니다:
+
+- 새 Linear 이슈, 병렬 작업, 기존 worktree가 dirty인 경우, 또는 이전 diff/reference를 보존해야 하는 경우: 새 worktree를 만듭니다.
+- 같은 Linear 이슈의 follow-up이고 기존 issue worktree가 clean하며 재사용 가능하면: 기존 worktree를 재사용해도 됩니다. 물리 worktree를 매번 새로 만드는 것이 필수는 아닙니다.
+- PR이 merge된 브랜치 위에서 계속 커밋하지 않습니다. follow-up 작업은 항상 최신 `origin/main` 기준 새 branch로 시작합니다.
+- worktree 재사용 전에는 `git status --short`, 필요한 diff/reference 백업, `git fetch --prune`을 먼저 확인합니다.
 
 ```bash
-# 새 작업 시작
-cd ~/auto_trader && git switch main && git pull
-git worktree add ~/auto_trader/.worktrees/<ISSUE-ID> -b feature/<ISSUE-ID>-<desc> main
+# canonical repo 업데이트
+cd /Users/mgh3326/work/auto_trader
+git fetch --prune origin
+git switch main
+git pull --ff-only
 
-# 작업
-cd ~/auto_trader/.worktrees/<ISSUE-ID>
-# ... 커밋, 푸시, PR ...
+# 새 Linear 이슈/병렬 작업: 새 worktree 생성
+git worktree add ../auto_trader.<issue-id> -b <branch-name> origin/main
 
-# PR 머지 후 (24h 내)
-cd ~/auto_trader
-git worktree remove .worktrees/<ISSUE-ID>
-git branch -D feature/<ISSUE-ID>-<desc>
+# 같은 Linear 이슈 follow-up: 기존 worktree가 clean하면 재사용
+cd /Users/mgh3326/work/auto_trader.<issue-id>
+git status --short
+git fetch --prune origin
+git switch -c <new-followup-branch> origin/main
+
+# PR 머지 후 정리 (필요 diff/reference가 없고 clean한 상태에서)
+cd /Users/mgh3326/work/auto_trader
+git worktree remove ../auto_trader.<issue-id>
+git branch -D <branch-name>
 ```
 
-- **표준 worktree 경로**: `~/auto_trader/.worktrees/<ISSUE-ID>` (대문자 ISSUE-ID 권장)
-- 이전 경로 `.claude/worktrees/`, `~/.claude/worktrees/` 는 deprecated — 남아 있다면 표준 경로로 이관하거나 prune
+- **표준 worktree 경로**: `/Users/mgh3326/work/auto_trader.<issue-id>` (예: `/Users/mgh3326/work/auto_trader.rob-287`)
+- 이전 경로 `.claude/worktrees/`, `~/.claude/worktrees/`, `~/auto_trader/.worktrees/` 는 deprecated — 남아 있다면 표준 경로로 이관하거나 prune
 - 이관: `git worktree move <old-path> <new-path>` (dirty 없는 상태에서)
 - 삭제된 원격 브랜치(`upstream gone`) 는 주기적으로 `git fetch --prune && git branch -vv | grep ': gone\]'` 로 확인하고 정리
 
