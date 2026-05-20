@@ -5,6 +5,19 @@ counts via ``InvestScreenerSnapshotsRepository.coverage``. For
 ``market=crypto`` it falls back to a count + latest-partition probe over
 :class:`InvestCryptoScreenerSnapshot`. Either branch is read-only and
 degrades to ``unavailable`` on exception.
+
+ROB-278 Phase 2 — payload separates freshness from usefulness:
+
+* ``actionable_count`` is the count the report generator should consult
+  before fabricating buy candidates. ``fresh_count`` from the repository
+  is the same number, surfaced under an explicit name so the contract
+  is unambiguous to downstream code.
+* ``usefulness`` is one of ``"useful" | "stale_only" | "empty"``.
+  ``stale_only`` means rows exist but none are fresh (the previous
+  failure mode was a ``freshness_status="fresh"`` snapshot with
+  ``fresh_count=0`` that still encouraged the generator to act).
+* ``no_data_reason`` carries a human-readable explanation when
+  ``usefulness != "useful"``.
 """
 
 from __future__ import annotations
@@ -28,6 +41,18 @@ from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
 )
+
+
+def _classify_usefulness(*, actionable: int, stale: int) -> tuple[str, str | None]:
+    """Return ``(usefulness, no_data_reason)`` from counts."""
+    if actionable > 0:
+        return "useful", None
+    if stale > 0:
+        return (
+            "stale_only",
+            f"no fresh candidates today; {stale} stale row(s) only",
+        )
+    return "empty", "candidate_universe has no rows for this market"
 
 
 class CandidateUniverseSnapshotCollector:
@@ -84,12 +109,23 @@ class CandidateUniverseSnapshotCollector:
         coverage = await self._equity_repo.coverage(
             market=request.market, today_trading_date=today
         )
+        usefulness, no_data_reason = _classify_usefulness(
+            actionable=coverage.fresh_count, stale=coverage.stale_count
+        )
         payload: dict[str, Any] = {
             "market": coverage.market,
             "today_trading_date": coverage.today_trading_date.isoformat(),
             "fresh_count": coverage.fresh_count,
+            "actionable_count": coverage.fresh_count,
             "stale_count": coverage.stale_count,
             "last_computed_at": coverage.last_computed_at,
+            "usefulness": usefulness,
+            "no_data_reason": no_data_reason,
+        }
+        coverage_meta = {
+            "actionable_count": coverage.fresh_count,
+            "stale_count": coverage.stale_count,
+            "usefulness": usefulness,
         }
         if coverage.fresh_count == 0 and coverage.stale_count == 0:
             return [
@@ -101,7 +137,7 @@ class CandidateUniverseSnapshotCollector:
                     origin="auto_trader_db",
                     as_of=now,
                     freshness_status="partial",
-                    coverage={"fresh_count": 0, "stale_count": 0},
+                    coverage=coverage_meta,
                 )
             ]
         return [
@@ -112,10 +148,7 @@ class CandidateUniverseSnapshotCollector:
                 payload=payload,
                 origin="auto_trader_db",
                 as_of=now,
-                coverage={
-                    "fresh_count": coverage.fresh_count,
-                    "stale_count": coverage.stale_count,
-                },
+                coverage=coverage_meta,
             )
         ]
 
@@ -127,16 +160,24 @@ class CandidateUniverseSnapshotCollector:
         )
         latest_date = latest_date_row.scalar_one_or_none()
         if latest_date is None:
+            usefulness, no_data_reason = _classify_usefulness(actionable=0, stale=0)
             return [
                 build_result(
                     snapshot_kind=self.snapshot_kind,
                     market=request.market,
                     account_scope=request.account_scope,
-                    payload={"market": "crypto", "fresh_count": 0},
+                    payload={
+                        "market": "crypto",
+                        "fresh_count": 0,
+                        "actionable_count": 0,
+                        "stale_count": 0,
+                        "usefulness": usefulness,
+                        "no_data_reason": no_data_reason,
+                    },
                     origin="auto_trader_db",
                     as_of=now,
                     freshness_status="partial",
-                    coverage={"fresh_count": 0},
+                    coverage={"actionable_count": 0, "usefulness": usefulness},
                 )
             ]
         count_row = await self._session.execute(
@@ -145,10 +186,15 @@ class CandidateUniverseSnapshotCollector:
             )
         )
         count = int(count_row.scalar_one() or 0)
+        usefulness, no_data_reason = _classify_usefulness(actionable=count, stale=0)
         payload: dict[str, Any] = {
             "market": "crypto",
             "latest_partition": latest_date.isoformat(),
             "fresh_count": count,
+            "actionable_count": count,
+            "stale_count": 0,
+            "usefulness": usefulness,
+            "no_data_reason": no_data_reason,
         }
         return [
             build_result(
@@ -158,6 +204,6 @@ class CandidateUniverseSnapshotCollector:
                 payload=payload,
                 origin="auto_trader_db",
                 as_of=now,
-                coverage={"fresh_count": count},
+                coverage={"actionable_count": count, "usefulness": usefulness},
             )
         ]

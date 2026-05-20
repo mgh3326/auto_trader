@@ -694,23 +694,15 @@ async def test_generator_preserves_seed_symbols_through_derivation() -> None:
     assert derivation.calls[0]["seed_symbols"] == ["X"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="ROB-278 Phase 2: reused bundle without 'overall' currently downgrades to 'unavailable'",
-)
 @pytest.mark.asyncio
 async def test_reused_bundle_freshness_does_not_downgrade_to_unavailable() -> None:
-    """ROB-278 Phase 2 reproducer.
-
-    Bundle.status='reused' with a stored summary that has per-kind statuses
-    (all fresh/partial) but is missing an explicit ``overall`` key. The
-    current implementation defaults ``overall`` to ``unavailable`` via
-    ``_BUNDLE_STATUS_TO_OVERALL.get(status, 'unavailable')``, which then
-    cascades into stale-gate behaviour. Phase 2 should compute ``overall``
-    from the stored per-kind statuses instead.
+    """ROB-278 Phase 2 — bundle.status='reused' with a stored summary that
+    only has per-kind statuses (no explicit ``overall``) must derive
+    ``overall`` from those per-kind statuses, not from a
+    ``_BUNDLE_STATUS_TO_OVERALL.get(status, 'unavailable')`` fallback.
     """
     reused_summary = {
-        # Note: no 'overall' key — this is the bug surface.
+        # Note: no 'overall' key — derivation must compute it.
         "portfolio": {"status": "fresh"},
         "journal": {"status": "fresh"},
         "watch_context": {"status": "fresh"},
@@ -731,6 +723,201 @@ async def test_reused_bundle_freshness_does_not_downgrade_to_unavailable() -> No
         snapshots_repository=_FakeSnapshotsRepository(),
     )
     response = await gen.generate(_make_request(status="draft"))
-    # Phase 2 invariant: never downgrade to 'unavailable' when all critical
-    # kinds reported a non-unavailable status.
-    assert response.snapshot_freshness_summary["overall"] != "unavailable"
+    # Worst per-kind status is 'partial' (market), so overall must be 'partial'.
+    assert response.snapshot_freshness_summary["overall"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_all_fresh_derives_fresh() -> None:
+    """ROB-278 Phase 2 — all per-kind 'fresh' derives overall='fresh'."""
+    reused_summary = {
+        "portfolio": {"status": "fresh"},
+        "journal": {"status": "fresh"},
+        "watch_context": {"status": "fresh"},
+        "market": {"status": "fresh"},
+    }
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused", freshness_summary=reused_summary, created=False
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.snapshot_freshness_summary["overall"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_unavailable_kind_yields_unavailable() -> None:
+    """ROB-278 Phase 2 — if any kind is 'unavailable', overall='unavailable'."""
+    reused_summary = {
+        "portfolio": {"status": "unavailable"},
+        "journal": {"status": "fresh"},
+    }
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused", freshness_summary=reused_summary, created=False
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    # 'unavailable' on a kind → published would be blocked; draft is allowed.
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.snapshot_freshness_summary["overall"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_no_kind_statuses_falls_back() -> None:
+    """ROB-278 Phase 2 — when the stored summary has no per-kind statuses to
+    derive from, fall back to the bundle-status mapping. For an unknown
+    status (e.g. 'reused'), the safe default remains 'unavailable'.
+    """
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused",
+            # Non-empty (so the helper default doesn't substitute) but
+            # contains no per-kind status entries to derive from.
+            freshness_summary={"_meta": "no kind statuses present"},
+            created=False,
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.snapshot_freshness_summary["overall"] == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# ROB-278 Phase 2 — evidence-aware classifier downgrades.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_action_item_downgraded_to_review_when_no_quote_evidence() -> None:
+    """ROB-278 Phase 2 — buy action item targeting a symbol whose symbol
+    snapshot reports quote.status != 'ok' is downgraded to review with an
+    explicit no-quote rationale. The generator wires symbol snapshots from
+    the bundle into the classifier context."""
+    from types import SimpleNamespace
+
+    from app.schemas.investment_reports import IngestReportItem
+
+    draft_items = [
+        IngestReportItem(
+            client_item_key="a-1",
+            item_kind="action",
+            symbol="005930",
+            side="buy",
+            intent="buy_review",
+            rationale="buy thesis",
+        )
+    ]
+    fake_bundle = SimpleNamespace(id=9999)
+    fake_symbol_snapshot_item = SimpleNamespace(id=1, snapshot_id=20)
+    fake_symbol_snapshot = SimpleNamespace(
+        snapshot_kind="symbol",
+        symbol="005930",
+        payload_json={
+            "symbol": "005930",
+            "quote": {
+                "status": "unavailable",
+                "unavailable_reason": "session_closed",
+            },
+        },
+    )
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[(fake_symbol_snapshot_item, fake_symbol_snapshot)],
+    )
+
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+    await gen.generate(_make_request(status="draft", items=draft_items))
+    sent = ingest.calls[0]
+    sent_item = sent.items[0]
+    assert sent_item.operation == "review"
+    assert "quote" in sent_item.rationale.lower()
+
+
+@pytest.mark.asyncio
+async def test_action_item_unchanged_when_quote_evidence_ok() -> None:
+    """ROB-278 Phase 2 — when symbol snapshot reports quote.status='ok',
+    the classifier does not downgrade the action item on quote grounds.
+    (Other classifier paths — pending_orders, etc. — still apply.)"""
+    from types import SimpleNamespace
+
+    from app.schemas.investment_reports import IngestReportItem
+
+    draft_items = [
+        IngestReportItem(
+            client_item_key="a-1",
+            item_kind="action",
+            symbol="005930",
+            side="buy",
+            intent="buy_review",
+            rationale="buy thesis",
+        )
+    ]
+    fake_bundle = SimpleNamespace(id=9999)
+    fake_symbol_snapshot_item = SimpleNamespace(id=1, snapshot_id=20)
+    fake_symbol_snapshot = SimpleNamespace(
+        snapshot_kind="symbol",
+        symbol="005930",
+        payload_json={
+            "symbol": "005930",
+            "quote": {
+                "status": "ok",
+                "last_price": 70_000.0,
+                "best_bid": 69_900.0,
+                "best_ask": 70_100.0,
+            },
+        },
+    )
+    fake_pending_orders_item = SimpleNamespace(id=2, snapshot_id=30)
+    fake_pending_orders_snapshot = SimpleNamespace(
+        snapshot_kind="pending_orders",
+        symbol=None,
+        payload_json={"pending_orders": []},
+    )
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[
+            (fake_symbol_snapshot_item, fake_symbol_snapshot),
+            (fake_pending_orders_item, fake_pending_orders_snapshot),
+        ],
+    )
+
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+    await gen.generate(_make_request(status="draft", items=draft_items))
+    sent = ingest.calls[0]
+    sent_item = sent.items[0]
+    # No pending order matches, quote evidence is ok → caller's draft stands
+    # untouched (no operation set by classifier).
+    assert sent_item.operation is None
+    assert "quote" not in (sent_item.rationale or "").lower()

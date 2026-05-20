@@ -527,6 +527,145 @@ async def test_news_collector_failure_is_fail_open():
     assert results[0].freshness_status == "unavailable"
 
 
+def _make_citation(*, report_uuid: str, symbols: list[str]):
+    from app.schemas.research_reports import (
+        ResearchReportCitation,
+        ResearchReportSymbolCandidate,
+    )
+
+    return ResearchReportCitation(
+        report_uuid=report_uuid,
+        title=f"t-{report_uuid[:4]}",
+        source="kr_news",
+        symbol_candidates=[
+            ResearchReportSymbolCandidate(symbol=s, market="kr") for s in symbols
+        ],
+        published_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
+        summary_text="s",
+    )
+
+
+@pytest.mark.asyncio
+async def test_news_collector_filters_to_focus_symbols_when_supplied():
+    """ROB-278 Phase 2 — request.symbols → return only citations that touch
+    one of the focus symbols; record the symbol-match mapping."""
+    from app.schemas.research_reports import ResearchReportCitationListResponse
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = MagicMock()
+    query = MagicMock()
+    citations = [
+        _make_citation(
+            report_uuid="11111111-1111-1111-1111-111111111111",
+            symbols=["005930"],
+        ),
+        _make_citation(
+            report_uuid="22222222-2222-2222-2222-222222222222",
+            symbols=["999999"],  # not in focus
+        ),
+    ]
+    query.find_relevant = AsyncMock(
+        return_value=ResearchReportCitationListResponse(
+            count=len(citations), citations=citations
+        )
+    )
+    collector = NewsSnapshotCollector(session, query_service=query)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930", "000660"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    # Only the 005930 citation reached the output.
+    assert payload["count"] == 1
+    symbols_in_first = {
+        cand["symbol"] for cand in payload["citations"][0]["symbol_candidates"]
+    }
+    assert symbols_in_first == {"005930"}
+    # Per-symbol match map preserved.
+    assert payload["symbol_matches"]["005930"] == 1
+    assert payload["symbol_matches"]["000660"] == 0
+    assert payload.get("no_data_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_news_collector_no_focus_matches_surfaces_no_data_reason():
+    """ROB-278 Phase 2 — focus symbols supplied, but no citation touches them →
+    payload carries an explicit no_data_reason and a partial freshness."""
+    from app.schemas.research_reports import ResearchReportCitationListResponse
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = MagicMock()
+    query = MagicMock()
+    citations = [
+        _make_citation(
+            report_uuid="11111111-1111-1111-1111-111111111111",
+            symbols=["XYZ"],
+        ),
+    ]
+    query.find_relevant = AsyncMock(
+        return_value=ResearchReportCitationListResponse(
+            count=len(citations), citations=citations
+        )
+    )
+    collector = NewsSnapshotCollector(session, query_service=query)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["count"] == 0
+    assert payload["citations"] == []
+    assert payload["no_data_reason"]
+    assert results[0].freshness_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_news_collector_no_focus_symbols_returns_general_feed():
+    """ROB-278 Phase 2 — when no focus symbols, return general citations
+    (legacy behaviour) but still emit the symbol_matches/no_data_reason fields."""
+    from app.schemas.research_reports import ResearchReportCitationListResponse
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = MagicMock()
+    query = MagicMock()
+    citations = [
+        _make_citation(
+            report_uuid="11111111-1111-1111-1111-111111111111",
+            symbols=["005930"],
+        ),
+    ]
+    query.find_relevant = AsyncMock(
+        return_value=ResearchReportCitationListResponse(
+            count=len(citations), citations=citations
+        )
+    )
+    collector = NewsSnapshotCollector(session, query_service=query)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=None,
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=None,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    # Legacy path: all citations included.
+    assert payload["count"] == 1
+    assert payload["symbol_matches"] == {}
+    assert payload.get("no_data_reason") is None
+
+
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------
@@ -613,6 +752,277 @@ async def test_symbol_collector_query_failure_is_fail_open():
 
 
 # ---------------------------------------------------------------------------
+# Symbol collector quote/orderbook enrichment — ROB-278 Phase 2.
+#
+# For (market=kr, account_scope=kis_live, user_id present), the collector
+# enriches each resolved symbol with read-only KIS quote/orderbook evidence
+# (last price, best bid/ask, spread bps, depth). Adapter is injected so
+# tests use a fake. Per-symbol fetch failures fail-open with explicit
+# unavailable reasons and never crash other symbols.
+# ---------------------------------------------------------------------------
+def _stock_info_row(symbol: str = "005930", name: str = "삼성전자"):
+    class _Row:
+        def __init__(self) -> None:
+            self.symbol = symbol
+            self.name = name
+            self.instrument_type = "equity_kr"
+            self.exchange = "KRX"
+            self.sector = "Tech"
+            self.market_cap = 1_000_000.0
+            self.is_active = True
+
+    return _Row()
+
+
+def _stock_info_session(rows: list[Any]) -> MagicMock:
+    session = MagicMock()
+    scalars = MagicMock(all=MagicMock(return_value=rows))
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
+    )
+    return session
+
+
+def _fake_quote_client_ok() -> MagicMock:
+    """Fake KIS quote/orderbook client returning a full top-of-book."""
+
+    async def fetch_quote(symbol: str) -> dict[str, Any]:
+        return {
+            "last_price": 70_000.0,
+            "best_bid": 69_900.0,
+            "best_ask": 70_100.0,
+            "bid_depth": 1234.0,
+            "ask_depth": 1500.0,
+            "venue": "krx",
+            "as_of": "2026-05-20T10:30:00+09:00",
+            "session": "regular",
+            "nxt_eligible": True,
+        }
+
+    client = MagicMock()
+    client.fetch_quote_orderbook = AsyncMock(side_effect=fetch_quote)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_enriches_with_kis_quote_when_kis_live():
+    """ROB-278 Phase 2 — KR + kis_live + user_id → per-symbol quote attached."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+    quote_client = _fake_quote_client_ok()
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+    results = await collector.collect(req)
+    # One result per symbol (no missing).
+    assert len(results) == 1
+    payload = results[0].payload_json
+    # v1 keys preserved.
+    assert payload["symbol"] == "005930"
+    assert payload["name"] == "삼성전자"
+    # Quote/orderbook attached.
+    assert payload["quote"]["last_price"] == 70_000.0
+    assert payload["quote"]["best_bid"] == 69_900.0
+    assert payload["quote"]["best_ask"] == 70_100.0
+    # Derived spread.
+    assert payload["quote"]["spread"] == 200.0
+    assert payload["quote"]["spread_bps"] == pytest.approx(28.57, rel=0.01)
+    assert payload["quote"]["bid_depth"] == 1234.0
+    assert payload["quote"]["ask_depth"] == 1500.0
+    # Venue provenance.
+    assert payload["quote"]["venue"] == "krx"
+    assert payload["quote"]["nxt_eligible"] is True
+    assert payload["quote"]["session"] == "regular"
+    assert payload["quote"]["status"] == "ok"
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with("005930")
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_skips_quote_when_no_kis_live():
+    """ROB-278 Phase 2 — non-kis_live request must not call quote client."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(
+        side_effect=AssertionError("quote client must not be called")
+    )
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="kr",
+        account_scope=None,
+        symbols=["005930"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert "quote" not in payload or payload.get("quote") is None
+    quote_client.fetch_quote_orderbook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_skips_quote_when_no_user_id():
+    """ROB-278 Phase 2 — quote enrichment requires explicit user_id (fail-closed)."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(
+        side_effect=AssertionError("must not be called without user_id")
+    )
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=None,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload.get("quote", {}).get("status") == "unavailable"
+    assert "user_id" in payload["quote"]["unavailable_reason"]
+    quote_client.fetch_quote_orderbook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_quote_exception_marks_unavailable():
+    """ROB-278 Phase 2 — KIS error on one symbol marks that symbol unavailable
+    without crashing other symbols."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    rows = [
+        _stock_info_row("005930", "삼성전자"),
+        _stock_info_row("000660", "SK하이닉스"),
+    ]
+    session = _stock_info_session(rows)
+
+    async def fetch(symbol: str):
+        if symbol == "005930":
+            raise RuntimeError("session closed")
+        return {
+            "last_price": 100_000.0,
+            "best_bid": 99_900.0,
+            "best_ask": 100_100.0,
+            "bid_depth": 500.0,
+            "ask_depth": 500.0,
+            "venue": "krx",
+            "as_of": "2026-05-20T10:30:00+09:00",
+            "session": "regular",
+            "nxt_eligible": False,
+        }
+
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(side_effect=fetch)
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930", "000660"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+    results = await collector.collect(req)
+    by_symbol = {r.symbol: r for r in results if r.symbol}
+    assert by_symbol["005930"].payload_json["quote"]["status"] == "unavailable"
+    assert (
+        "session closed"
+        in by_symbol["005930"].payload_json["quote"]["unavailable_reason"]
+    )
+    assert by_symbol["000660"].payload_json["quote"]["status"] == "ok"
+    assert by_symbol["000660"].payload_json["quote"]["last_price"] == 100_000.0
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_quote_empty_book_marks_no_data_reason():
+    """ROB-278 Phase 2 — empty book (zero bid/ask) → unavailable with reason."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+
+    async def fetch(symbol: str):
+        return {
+            "last_price": 0.0,
+            "best_bid": 0.0,
+            "best_ask": 0.0,
+            "bid_depth": 0.0,
+            "ask_depth": 0.0,
+            "venue": "krx",
+            "as_of": None,
+            "session": "closed",
+            "nxt_eligible": False,
+        }
+
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(side_effect=fetch)
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+    results = await collector.collect(req)
+    quote = results[0].payload_json["quote"]
+    assert quote["status"] == "unavailable"
+    assert (
+        "empty_book" in quote["unavailable_reason"]
+        or "session" in quote["unavailable_reason"]
+    )
+    assert quote["session"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_quote_respects_enrichment_cap():
+    """ROB-278 Phase 2 — quote enrichment is bounded; extras get a 'capped' status."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    rows = [_stock_info_row(f"00500{i}", f"sym_{i}") for i in range(5)]
+    session = _stock_info_session(rows)
+    quote_client = _fake_quote_client_ok()
+    collector = SymbolSnapshotCollector(
+        session, kis_quote_client=quote_client, quote_enrichment_limit=3
+    )
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=[f"00500{i}" for i in range(5)],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+    results = await collector.collect(req)
+    enriched = [
+        r
+        for r in results
+        if r.symbol and r.payload_json.get("quote", {}).get("status") == "ok"
+    ]
+    capped = [
+        r
+        for r in results
+        if r.symbol and r.payload_json.get("quote", {}).get("status") == "skipped"
+    ]
+    assert len(enriched) == 3
+    assert len(capped) == 2
+    assert all(
+        "cap" in r.payload_json["quote"]["unavailable_reason"].lower() for r in capped
+    )
+
+
+# ---------------------------------------------------------------------------
 # Candidate-universe collector
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
@@ -671,6 +1081,109 @@ async def test_candidate_universe_crypto_queries_crypto_partition():
     )
     assert results[0].payload_json["fresh_count"] == 42
     assert results[0].payload_json["latest_partition"] == "2026-05-19"
+
+
+@pytest.mark.asyncio
+async def test_candidate_universe_kr_usefulness_useful_when_fresh_present():
+    """ROB-278 Phase 2 — fresh_count > 0 → usefulness='useful', no no_data_reason."""
+    from app.services.invest_screener_snapshots.repository import CoverageCounts
+
+    session = MagicMock()
+    repo = MagicMock()
+    repo.coverage = AsyncMock(
+        return_value=CoverageCounts(
+            market="kr",
+            today_trading_date=dt.date(2026, 5, 19),
+            fresh_count=5,
+            stale_count=10,
+            last_computed_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
+        )
+    )
+    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
+    payload = results[0].payload_json
+    # Freshness stays 'fresh' because the bundle has fresh data.
+    assert results[0].freshness_status == "fresh"
+    # Usefulness reflects actionability.
+    assert payload["usefulness"] == "useful"
+    assert payload["actionable_count"] == 5
+    assert payload["stale_count"] == 10
+    assert payload.get("no_data_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_universe_kr_usefulness_stale_only_when_no_fresh():
+    """ROB-278 Phase 2 — stale_count > 0 + fresh_count = 0 →
+    usefulness='stale_only', explicit no_data_reason. Freshness can stay
+    'fresh' because the snapshot row itself is current; usefulness is the
+    semantic the report generator should consult."""
+    from app.services.invest_screener_snapshots.repository import CoverageCounts
+
+    session = MagicMock()
+    repo = MagicMock()
+    repo.coverage = AsyncMock(
+        return_value=CoverageCounts(
+            market="kr",
+            today_trading_date=dt.date(2026, 5, 19),
+            fresh_count=0,
+            stale_count=42,
+            last_computed_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
+        )
+    )
+    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
+    payload = results[0].payload_json
+    assert payload["usefulness"] == "stale_only"
+    assert payload["actionable_count"] == 0
+    assert payload["stale_count"] == 42
+    assert "stale" in payload["no_data_reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_candidate_universe_kr_usefulness_empty_when_no_rows():
+    """ROB-278 Phase 2 — both counts 0 → usefulness='empty' + no_data_reason."""
+    from app.services.invest_screener_snapshots.repository import CoverageCounts
+
+    session = MagicMock()
+    repo = MagicMock()
+    repo.coverage = AsyncMock(
+        return_value=CoverageCounts(
+            market="kr",
+            today_trading_date=dt.date(2026, 5, 19),
+            fresh_count=0,
+            stale_count=0,
+            last_computed_at=None,
+        )
+    )
+    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
+    payload = results[0].payload_json
+    assert payload["usefulness"] == "empty"
+    assert payload["actionable_count"] == 0
+    assert payload["stale_count"] == 0
+    assert payload["no_data_reason"]
+    # The legacy freshness signal (partial) is still preserved for callers
+    # that only look at freshness_status.
+    assert results[0].freshness_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_candidate_universe_crypto_includes_usefulness_fields():
+    """ROB-278 Phase 2 — crypto branch carries the same usefulness contract."""
+    session = MagicMock()
+    latest_result = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=dt.date(2026, 5, 19))
+    )
+    count_result = MagicMock(scalar_one=MagicMock(return_value=7))
+    session.execute = AsyncMock(side_effect=[latest_result, count_result])
+
+    collector = CandidateUniverseSnapshotCollector(session)
+    results = await collector.collect(
+        _request(market="crypto", account_scope="upbit_live")
+    )
+    payload = results[0].payload_json
+    assert payload["actionable_count"] == 7
+    assert payload["usefulness"] == "useful"
 
 
 @pytest.mark.asyncio

@@ -86,6 +86,40 @@ _BLOCKING_BUNDLE_STATUSES_FOR_PUBLISHED: frozenset[str] = frozenset(
     {"stale_fallback", "failed"}
 )
 
+# ROB-278 Phase 2 — worst-case rank used to derive ``overall`` from per-kind
+# statuses when the stored summary is missing an explicit ``overall`` key
+# (most common cause: bundle.status='reused' carrying an older summary that
+# only stored per-kind entries). Higher rank = worse.
+_KIND_STATUS_RANK: dict[str, int] = {
+    "fresh": 0,
+    "soft_stale": 1,
+    "partial": 2,
+    "hard_stale": 3,
+    "failed": 4,
+    "unavailable": 5,
+}
+_RANK_TO_KIND_STATUS: dict[int, str] = {v: k for k, v in _KIND_STATUS_RANK.items()}
+
+
+def _derive_overall_from_kind_statuses(summary: Mapping[str, Any]) -> str | None:
+    """Return the worst per-kind status in ``summary``, or ``None`` if the
+    summary carries no recognisable per-kind status entries."""
+    worst_rank = -1
+    for kind, info in summary.items():
+        if kind == "overall" or not isinstance(info, Mapping):
+            continue
+        status = info.get("status")
+        if not isinstance(status, str):
+            continue
+        rank = _KIND_STATUS_RANK.get(status)
+        if rank is None:
+            continue
+        if rank > worst_rank:
+            worst_rank = rank
+    if worst_rank < 0:
+        return None
+    return _RANK_TO_KIND_STATUS[worst_rank]
+
 
 class SnapshotBackedReportGeneratorError(RuntimeError):
     """Raised when the request itself cannot proceed (mismatched scope, etc.)."""
@@ -429,6 +463,7 @@ class SnapshotBackedReportGenerator:
         active_watches: list[dict[str, Any]] = []
         pending_orders: list[dict[str, Any]] = []
         pending_orders_seen = False
+        symbol_quotes: dict[str, dict[str, Any]] = {}
 
         for _item, snapshot in item_snapshot_pairs:
             payload = snapshot.payload_json or {}
@@ -443,6 +478,15 @@ class SnapshotBackedReportGenerator:
                 orders = payload.get("pending_orders") or []
                 if isinstance(orders, list):
                     pending_orders.extend(orders)
+            elif snapshot.snapshot_kind == "symbol":
+                # ROB-278 Phase 2 — per-symbol quote evidence (when the
+                # symbol collector enriched the snapshot via KIS read-only
+                # quote/orderbook). symbol may be set on the snapshot row
+                # itself (per-symbol kind), and is also echoed in payload.
+                symbol = getattr(snapshot, "symbol", None) or payload.get("symbol")
+                quote = payload.get("quote")
+                if isinstance(symbol, str) and isinstance(quote, dict):
+                    symbol_quotes[symbol] = quote
 
         # Honest "unavailable" signal: pending_orders kind was attempted but
         # didn't produce a usable result (or missing entirely from the bundle).
@@ -450,6 +494,7 @@ class SnapshotBackedReportGenerator:
         return ClassifierContext(
             active_watches=active_watches,
             pending_orders=None if unavailable else pending_orders,
+            symbol_quotes=symbol_quotes,
         )
 
     def _enrich_freshness_summary(self, ensure_response: Any) -> dict[str, Any]:
@@ -458,9 +503,17 @@ class SnapshotBackedReportGenerator:
             summary = {"raw": summary}
         overall = summary.get("overall")
         if not isinstance(overall, str):
-            overall = _BUNDLE_STATUS_TO_OVERALL.get(
-                ensure_response.status, "unavailable"
-            )
+            # ROB-278 Phase 2 — prefer per-kind statuses over the
+            # bundle-status fallback. A reused bundle whose stored summary
+            # only carries per-kind entries must not silently downgrade to
+            # 'unavailable'; compute the worst per-kind status instead.
+            derived = _derive_overall_from_kind_statuses(summary)
+            if derived is not None:
+                overall = derived
+            else:
+                overall = _BUNDLE_STATUS_TO_OVERALL.get(
+                    ensure_response.status, "unavailable"
+                )
             summary["overall"] = overall
         return summary
 
