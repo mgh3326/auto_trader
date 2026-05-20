@@ -288,14 +288,20 @@ class _RouterFakeSession:
     """Minimal async session that pops pre-loaded results on each execute()."""
 
     def __init__(self, results: list[_RouterFakeExecuteResult]) -> None:
-        self.results = list(results)
+        self._results = list(results)
+        self._initial_count = len(results)
         self.calls = 0
 
     async def execute(self, stmt: Any) -> _RouterFakeExecuteResult:  # noqa: ARG002
         self.calls += 1
-        if not self.results:
-            return _RouterFakeExecuteResult()
-        return self.results.pop(0)
+        if not self._results:
+            raise AssertionError(
+                "RouterFakeSession exhausted: build_screener_results issued more DB "
+                "queries than the test seeded. Expected the snapshot-first path to "
+                f"perform exactly {self._initial_count} queries; update the test if "
+                "you've intentionally added a new query."
+            )
+        return self._results.pop(0)
 
 
 class _RouterFakeSnapshot:
