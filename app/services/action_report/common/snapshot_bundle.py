@@ -173,8 +173,15 @@ class SnapshotBundleEnsureService:
             kind_statuses: list[str] = []
             last_as_of: dt.datetime | None = None
             for result in results:
+                # Collectors run after ``now`` is captured for the reuse gate.
+                # Live collectors can legitimately stamp results a few seconds
+                # after the ensure started, so classify against the post-collect
+                # clock instead of treating long collection time as future data.
+                classification_now = self._clock()
                 computed_status: FreshnessStatus = classify_freshness(
-                    as_of=result.as_of, now=now, policy=kind_policy.freshness
+                    as_of=result.as_of,
+                    now=classification_now,
+                    policy=kind_policy.freshness,
                 )
                 # Caller-supplied status (e.g. 'partial' or 'unavailable') can
                 # downgrade but never upgrade past the policy-classified one.
@@ -195,7 +202,7 @@ class SnapshotBundleEnsureService:
                         coverage_json=result.coverage_json,
                         errors_json=result.errors_json,
                         as_of=result.as_of,
-                        valid_until=now + kind_policy.freshness.hard_ttl,
+                        valid_until=classification_now + kind_policy.freshness.hard_ttl,
                         freshness_status=effective_status,
                     )
                 )

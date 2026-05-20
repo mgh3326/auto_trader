@@ -302,3 +302,66 @@ async def test_ensure_fresh_uses_collector_registry_when_no_manual(db_session):
 
     assert response.status == "complete"
     assert response.coverage_summary["required"]["portfolio"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_classifies_collector_results_against_post_collect_clock(
+    db_session,
+):
+    """Collector results can be stamped after ensure() starts.
+
+    A live collector may spend several seconds reading KIS before returning a
+    SnapshotCollectResult. Freshness classification must compare that result to
+    the post-collection clock, not to the start-of-ensure reuse-gate timestamp.
+    """
+
+    collected_as_of = _FIXED_NOW + dt.timedelta(seconds=6)
+
+    class _DelayedPortfolioCollector:
+        snapshot_kind = "portfolio"
+
+        async def collect(self, request: CollectorRequest):
+            return [
+                SnapshotCollectResult(
+                    snapshot_kind="portfolio",
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    source_kind="manual",
+                    payload_json={"cash_krw": 1_000_000, "u": str(uuid.uuid4())},
+                    as_of=collected_as_of,
+                    freshness_status="fresh",
+                )
+            ]
+
+    calls = 0
+
+    def clock():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _FIXED_NOW
+        return collected_as_of
+
+    registry = SnapshotCollectorRegistry()
+    registry.register(_DelayedPortfolioCollector())
+
+    manual = _all_required_manual_snapshots()
+    del manual["portfolio"]
+
+    svc = SnapshotBundleEnsureService(db_session, collectors=registry, clock=clock)
+    response = await svc.ensure(
+        EnsureBundleRequest(
+            purpose=_unique_purpose("post_collect_clock"),
+            market="kr",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            manual_snapshots=manual,  # type: ignore[arg-type]
+        )
+    )
+    await db_session.commit()
+
+    assert response.status == "complete"
+    assert response.coverage_summary["required"]["portfolio"] == "fresh"
+    assert (
+        response.freshness_summary["portfolio"]["as_of"] == collected_as_of.isoformat()
+    )
