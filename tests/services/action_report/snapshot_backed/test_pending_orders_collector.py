@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -154,6 +155,99 @@ async def test_pending_orders_collector_fails_open_on_broker_error():
     assert len(results) == 1
     assert results[0].freshness_status == "unavailable"
     assert "kis_fetch_failed" in results[0].errors_json["reason"]
+
+
+@pytest.mark.asyncio
+async def test_pending_orders_collector_us_dedupes_same_order_across_exchanges():
+    """US: KIS returns the same order under NASD + NYSE + AMEX; collector dedupes by odno."""
+    nasd_rows = [
+        {
+            "odno": "O1",
+            "pdno": "AAPL",
+            "sll_buy_dvsn_cd": "02",
+            "ft_ord_qty": "10",
+            "ft_ord_unpr3": "150",
+            "nccs_qty": "10",
+            "ord_dt": "20260519",
+            "ord_tmd": "120000",
+        },
+        {
+            "odno": "O2",
+            "pdno": "MSFT",
+            "sll_buy_dvsn_cd": "02",
+            "ft_ord_qty": "5",
+            "ft_ord_unpr3": "400",
+            "nccs_qty": "5",
+            "ord_dt": "20260519",
+            "ord_tmd": "120100",
+        },
+    ]
+    nyse_rows = [
+        {
+            "odno": "O1",
+            "pdno": "AAPL",
+            "sll_buy_dvsn_cd": "02",
+            "ft_ord_qty": "10",
+            "ft_ord_unpr3": "150",
+            "nccs_qty": "10",
+            "ord_dt": "20260519",
+            "ord_tmd": "120000",
+        },
+    ]
+    amex_rows: list[dict[str, Any]] = []
+
+    async def mock_inquire(exchange_code: str, is_mock: bool = False):
+        return {"NASD": nasd_rows, "NYSE": nyse_rows, "AMEX": amex_rows}[exchange_code]
+
+    fake_kis = AsyncMock()
+    fake_kis.inquire_overseas_orders = AsyncMock(side_effect=mock_inquire)
+    collector = PendingOrdersSnapshotCollector(kis_client=fake_kis, upbit_client=None)
+    request = _request(market="us", account_scope="kis_live")
+    results = await collector.collect(request)
+
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert payload["count"] == 2
+    odnos = {r["target_ref"]["id"] for r in payload["pending_orders"]}
+    assert odnos == {"O1", "O2"}
+    # All three exchanges were queried.
+    assert fake_kis.inquire_overseas_orders.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_pending_orders_collector_us_surfaces_partial_exchange_failure():
+    """US: one exchange raises, others return rows — collector returns partial result with exchange_errors."""
+
+    async def mock_inquire(exchange_code: str, is_mock: bool = False):
+        if exchange_code == "NYSE":
+            raise RuntimeError("nyse_outage")
+        return [
+            {
+                "odno": f"O-{exchange_code}",
+                "pdno": "AAPL",
+                "sll_buy_dvsn_cd": "02",
+                "ft_ord_qty": "10",
+                "ft_ord_unpr3": "150",
+                "nccs_qty": "10",
+                "ord_dt": "20260519",
+                "ord_tmd": "120000",
+            },
+        ]
+
+    fake_kis = AsyncMock()
+    fake_kis.inquire_overseas_orders = AsyncMock(side_effect=mock_inquire)
+    collector = PendingOrdersSnapshotCollector(kis_client=fake_kis, upbit_client=None)
+    request = _request(market="us", account_scope="kis_live")
+    results = await collector.collect(request)
+
+    # Two exchanges succeeded; partial result is still usable.
+    assert len(results) == 1
+    assert results[0].freshness_status != "unavailable"
+    assert results[0].payload_json["count"] == 2  # NASD + AMEX, NYSE failed
+    # Coverage surfaces the failure.
+    exchange_errors = results[0].coverage_json.get("exchange_errors") or {}
+    assert "NYSE" in exchange_errors
+    assert "nyse_outage" in str(exchange_errors["NYSE"])
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ Output schema (each ``pending_orders[i]``)::
         "price": str | None,
         "quantity": str | None,
         "remaining_quantity": str | None,
-        "placed_at": str | None,      # ISO 8601 (UTC)
+        "placed_at": str | None,      # ISO 8601 (KIS rows in KST; Upbit in UTC)
         "stale": bool,                # crypto-only; KR/US always False
         "market": "kr" | "us" | "crypto",
     }
@@ -33,6 +33,7 @@ Output schema (each ``pending_orders[i]``)::
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from app.services.action_report.common.staleness import (
@@ -49,6 +50,12 @@ from app.services.investment_snapshots.collectors import (
 )
 
 _KIS_US_EXCHANGES: tuple[str, ...] = ("NASD", "NYSE", "AMEX")
+
+# KIS returns ord_dt/ord_tmd in Korea Standard Time (UTC+9) for both domestic
+# and overseas endpoints. Stamping the parsed datetime as KST keeps the
+# wall-clock semantics correct; downstream comparisons across tz-aware
+# datetimes still work because Python normalizes across zones.
+_KST = dt.timezone(dt.timedelta(hours=9), name="KST")
 
 
 class _KISClientProtocol(Protocol):
@@ -150,7 +157,7 @@ class PendingOrdersSnapshotCollector:
                 as_of=now,
             )
         all_rows: list[dict[str, Any]] = []
-        errors: list[str] = []
+        exchange_errors: dict[str, str] = {}
         # KIS returns the same `odno` under each exchange query when the
         # order's exchange field doesn't filter to one of NASD/NYSE/AMEX
         # explicitly. Dedupe by order id to keep the snapshot tidy.
@@ -160,8 +167,8 @@ class PendingOrdersSnapshotCollector:
                 rows = await self._kis.inquire_overseas_orders(
                     exchange_code=exchange_code, is_mock=False
                 )
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{exchange_code}:{type(exc).__name__}:{exc}")
+            except Exception as exc:  # noqa: BLE001 — collector must fail open
+                exchange_errors[exchange_code] = f"{type(exc).__name__}:{exc}"
                 continue
             for row in rows or []:
                 if not isinstance(row, dict):
@@ -172,13 +179,16 @@ class PendingOrdersSnapshotCollector:
                 if order_id:
                     seen_ids.add(order_id)
                 all_rows.append(row)
-        if not all_rows and errors:
+        if not all_rows and exchange_errors:
+            reason = "kis_fetch_failed:" + ";".join(
+                f"{code}:{msg}" for code, msg in exchange_errors.items()
+            )
             return unavailable_result(
                 snapshot_kind=self.snapshot_kind,
                 market="us",
                 account_scope=request.account_scope,
                 origin="kis_api",
-                reason="kis_fetch_failed:" + ";".join(errors),
+                reason=reason,
                 as_of=now,
             )
         normalized = [_normalize_kis_order(row, market="us") for row in all_rows]
@@ -189,7 +199,7 @@ class PendingOrdersSnapshotCollector:
             payload={"pending_orders": normalized, "count": len(normalized)},
             origin="kis_api",
             as_of=now,
-            coverage={"count": len(normalized), "exchange_errors": errors},
+            coverage={"count": len(normalized), "exchange_errors": exchange_errors},
         )
 
     async def _collect_upbit(
@@ -206,7 +216,7 @@ class PendingOrdersSnapshotCollector:
             )
         try:
             raw = await self._upbit.fetch_open_orders()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — collector must fail open
             return unavailable_result(
                 snapshot_kind=self.snapshot_kind,
                 market="crypto",
@@ -293,7 +303,7 @@ def _normalize_kis_side(row: dict[str, Any]) -> str:
     return "unknown"
 
 
-def _kis_placed_at(row: dt.Mapping[str, Any] | dict[str, Any]) -> dt.datetime | None:
+def _kis_placed_at(row: Mapping[str, Any]) -> dt.datetime | None:
     explicit = _coerce_datetime(row.get("placed_at"))
     if explicit is not None:
         return explicit
@@ -302,8 +312,11 @@ def _kis_placed_at(row: dt.Mapping[str, Any] | dict[str, Any]) -> dt.datetime | 
     if ord_dt and ord_tmd:
         combined = f"{ord_dt}{ord_tmd}"
         try:
+            # KIS returns these wall-clock fields in KST (UTC+9) for both
+            # domestic and overseas endpoints — stamping as KST keeps the
+            # timestamp factually correct.
             return dt.datetime.strptime(combined, "%Y%m%d%H%M%S").replace(
-                tzinfo=dt.UTC
+                tzinfo=_KST
             )
         except ValueError:
             return None
