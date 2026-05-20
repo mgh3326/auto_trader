@@ -317,6 +317,13 @@ class Settings(BaseSettings):
     # ROB-204 — Prefect/manual US screener snapshot writes stay dry-run unless explicitly enabled.
     invest_screener_snapshots_commit_enabled: bool = False
 
+    # ROB-281 — Gates cron registration for KR/US screener snapshot scheduled refreshes.
+    # When False, scheduled tasks remain defined as broker tasks (so operators can still
+    # kick them manually via ``taskiq kick``) but no cron entries are registered. Pairs
+    # with ``invest_screener_snapshots_commit_enabled`` (the DB write gate) so the
+    # production rollout can move schedule → dry-run-on-cron → commit-on-cron in stages.
+    invest_screener_schedule_enabled: bool = False
+
     # ROB-222 — Naver momentum/theme event snapshot writes stay dry-run unless explicitly enabled.
     invest_momentum_events_commit_enabled: bool = False
     invest_momentum_events_scheduler_enabled: bool = False
