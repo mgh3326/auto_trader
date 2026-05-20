@@ -406,10 +406,14 @@ async def _load_consecutive_gainers_from_snapshots(
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
     from app.services.invest_screener_snapshots.freshness import (
         classify_state,
-        today_trading_date,
+        expected_baseline_date,
     )
 
-    today = today_trading_date(market)
+    # ROB-281: session-aware baseline. In the KR 07:40–16:19 KST pre-market
+    # window (or US pre-17:20 ET window), the expected baseline is the prior
+    # trading session, not today — fixes the regression where a fresh
+    # prior-day partition is labeled stale after KST/ET midnight rollover.
+    today = expected_baseline_date(market)
 
     # Step 1: resolve the latest snapshot partition date.
     # This prevents older qualifying partitions from leaking into current results
@@ -1288,6 +1292,7 @@ def _build_freshness(
     from app.services.invest_screener_snapshots.freshness import (
         compute_overall_state,
         format_kst_as_of_label,
+        session_label_for_partition,
     )
 
     now_utc = now()
@@ -1347,16 +1352,28 @@ def _build_freshness(
     # Build primary object
     primary: ScreenerFreshnessPrimary | None = None
     if primary_kind == "screener_snapshot" and primary_snapshot_date is not None:
+        # ROB-281: append session token (KRX preliminary / NXT final / US
+        # post-close) to the data-基準 label so the UI can disambiguate which
+        # KR/US scheduled slot produced this partition. Token is omitted when
+        # session_label_for_partition returns None (unknown market or rare
+        # 07:00–07:39 KST gap) — preserves ROB-277 served vs data-as-of split.
+        base_as_of_label = format_kst_as_of_label(
+            snapshot_date=primary_snapshot_date,
+            computed_at=primary_computed_at,
+        )
+        session_token = session_label_for_partition(market, primary_computed_at)
+        as_of_label = (
+            f"{base_as_of_label} ({session_token})"
+            if session_token
+            else base_as_of_label
+        )
         primary = ScreenerFreshnessPrimary(
             kind="screener_snapshot",
             snapshotDate=primary_snapshot_date.isoformat(),
             computedAt=primary_computed_at.astimezone(UTC).isoformat()
             if primary_computed_at is not None
             else None,
-            asOfLabel=format_kst_as_of_label(
-                snapshot_date=primary_snapshot_date,
-                computed_at=primary_computed_at,
-            ),
+            asOfLabel=as_of_label,
             dataState=dataState,  # type: ignore[arg-type]
             source=primary_source,
         )
