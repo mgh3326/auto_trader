@@ -486,6 +486,12 @@ def test_production_registry_covers_all_policy_kinds():
     assert missing == set(), f"policy kinds missing collectors: {missing}"
 
 
+def test_production_registry_registers_pending_orders():
+    """ROB-274 — pending_orders collector is wired into the production registry."""
+    registry = production_collector_registry(session=MagicMock())
+    assert "pending_orders" in registry.list_kinds()
+
+
 # ---------------------------------------------------------------------------
 # Static-import guard — none of the collector modules pull in known
 # mutation paths. If a future contributor wires the trade execution
@@ -512,6 +518,7 @@ def test_collector_modules_do_not_import_broker_or_activation_paths():
         "app.services.action_report.snapshot_backed.collectors.candidate_universe",
         "app.services.action_report.snapshot_backed.collectors.invest_page",
         "app.services.action_report.snapshot_backed.collectors.optional_stubs",
+        "app.services.action_report.snapshot_backed.collectors.pending_orders",
         "app.services.action_report.snapshot_backed.collectors.registry",
         "app.services.action_report.snapshot_backed.generator",
     ]
