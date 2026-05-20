@@ -675,6 +675,7 @@ _METRIC_FIELD: dict[str, str] = {
     "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
     "investor_flow_momentum": "foreign_net",
+    "double_buy": "change_rate",   # NEW — placeholder; Task 3 wires snapshot-first branch
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
