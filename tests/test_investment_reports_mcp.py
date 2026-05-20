@@ -256,3 +256,129 @@ async def test_context_get_n_prior_clamped_to_ten(session: AsyncSession) -> None
         )
     ctx = await investment_report_context_get_impl(market="kr", n_prior=50)
     assert len(ctx["prior_reports"]) == 10
+
+
+# ---------------------------------------------------------------------------
+# ROB-274 — pending_orders enrichment in context_get
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_context_get_includes_pending_orders_when_collector_succeeds(
+    monkeypatch: pytest.MonkeyPatch, session: AsyncSession
+) -> None:
+    """ROB-274 — context response surfaces pending_orders snapshot when fresh."""
+    import datetime as dt
+    from unittest.mock import AsyncMock
+
+    from app.services.investment_snapshots.collectors import (
+        SnapshotCollectorRegistry,
+        SnapshotCollectResult,
+    )
+
+    fake_orders = [
+        {
+            "target_ref": {
+                "type": "broker_order",
+                "broker": "upbit",
+                "id": "O1",
+                "raw": {},
+            },
+            "symbol": "KRW-BTC",
+            "side": "buy",
+            "price": "100",
+            "quantity": "0.01",
+            "remaining_quantity": "0.01",
+            "placed_at": None,
+            "stale": False,
+            "market": "crypto",
+        }
+    ]
+    fake_result = SnapshotCollectResult(
+        snapshot_kind="pending_orders",
+        market="crypto",
+        account_scope="upbit_live",
+        source_kind="auto_trader_mcp",
+        payload_json={"pending_orders": fake_orders, "count": 1},
+        as_of=dt.datetime.now(tz=dt.UTC),
+        freshness_status="fresh",
+    )
+    fake_collector = AsyncMock()
+    fake_collector.collect = AsyncMock(return_value=[fake_result])
+
+    def _fake_registry(_db: object) -> SnapshotCollectorRegistry:
+        reg = SnapshotCollectorRegistry()
+        reg.register(fake_collector)
+        # The registry asks for ``snapshot_kind`` — give the AsyncMock one.
+        return reg
+
+    # The collector returned by ``registry.get(...)`` is identified by its
+    # ``snapshot_kind`` attribute on register; the AsyncMock needs that set.
+    fake_collector.snapshot_kind = "pending_orders"
+
+    monkeypatch.setattr(
+        "app.services.action_report.snapshot_backed.collectors.registry."
+        "production_collector_registry",
+        _fake_registry,
+    )
+
+    # Need at least one report so the context endpoint has something to
+    # serialise — the assertion below only inspects pending_orders.
+    await investment_report_create_impl(
+        items=[_action_item_dict()],
+        **_create_kwargs(market="crypto", kst_date="2026-05-18"),
+    )
+
+    ctx = await investment_report_context_get_impl(
+        market="crypto", account_scope="upbit_live"
+    )
+    assert ctx["success"] is True
+    assert ctx["pending_orders"] == fake_orders
+
+
+@pytest.mark.asyncio
+async def test_context_get_surfaces_pending_orders_unavailable_as_null(
+    monkeypatch: pytest.MonkeyPatch, session: AsyncSession
+) -> None:
+    """ROB-274 — collector reports unavailable → response carries null pending_orders."""
+    import datetime as dt
+    from unittest.mock import AsyncMock
+
+    from app.services.investment_snapshots.collectors import (
+        SnapshotCollectorRegistry,
+        SnapshotCollectResult,
+    )
+
+    unavailable_result = SnapshotCollectResult(
+        snapshot_kind="pending_orders",
+        market="crypto",
+        account_scope="upbit_live",
+        source_kind="auto_trader_mcp",
+        payload_json={},
+        errors_json={"reason": "upbit_client_unavailable"},
+        as_of=dt.datetime.now(tz=dt.UTC),
+        freshness_status="unavailable",
+    )
+    fake_collector = AsyncMock()
+    fake_collector.snapshot_kind = "pending_orders"
+    fake_collector.collect = AsyncMock(return_value=[unavailable_result])
+
+    def _fake_registry(_db: object) -> SnapshotCollectorRegistry:
+        reg = SnapshotCollectorRegistry()
+        reg.register(fake_collector)
+        return reg
+
+    monkeypatch.setattr(
+        "app.services.action_report.snapshot_backed.collectors.registry."
+        "production_collector_registry",
+        _fake_registry,
+    )
+
+    await investment_report_create_impl(
+        items=[_action_item_dict()],
+        **_create_kwargs(market="crypto", kst_date="2026-05-18"),
+    )
+
+    ctx = await investment_report_context_get_impl(
+        market="crypto", account_scope="upbit_live"
+    )
+    assert ctx["success"] is True
+    assert ctx["pending_orders"] is None

@@ -54,6 +54,36 @@ class _FakeIngestionService:
         return _FakeReport(self.report_uuid)
 
 
+class _FakeSnapshotsRepository:
+    """ROB-274 — stubbed repository the generator calls to read back the
+    persisted bundle for classifier context.
+
+    Default behaviour: ``get_bundle_by_uuid`` returns None, which makes the
+    generator emit an empty ``ClassifierContext`` (no active watches; empty
+    pending_orders unless missing_sources says otherwise). Tests that want
+    to exercise specific classifier paths can pass ``bundle`` and ``items``.
+    """
+
+    def __init__(
+        self,
+        *,
+        bundle: Any = None,
+        items: list[tuple[Any, Any]] | None = None,
+    ) -> None:
+        self._bundle = bundle
+        self._items = items or []
+        self.get_bundle_calls: list[uuid.UUID] = []
+        self.list_items_calls: list[int] = []
+
+    async def get_bundle_by_uuid(self, bundle_uuid: uuid.UUID):
+        self.get_bundle_calls.append(bundle_uuid)
+        return self._bundle
+
+    async def list_bundle_items_with_snapshots(self, bundle_id: int):
+        self.list_items_calls.append(bundle_id)
+        return list(self._items)
+
+
 def _ensure_response(
     *,
     bundle_uuid: uuid.UUID | None = None,
@@ -117,6 +147,7 @@ async def test_happy_path_kr_published(monkeypatch: pytest.MonkeyPatch) -> None:
         session=object(),  # not used by fakes
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     response = await gen.generate(_make_request())
 
@@ -147,6 +178,7 @@ async def test_happy_path_crypto_published() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     response = await gen.generate(
         _make_request(market="crypto", account_scope="upbit_live")
@@ -165,6 +197,7 @@ async def test_unsupported_market_account_pair_rejected() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     req = _make_request(market="crypto", account_scope="kis_live")
     with pytest.raises(SnapshotBackedReportGeneratorError):
@@ -190,6 +223,7 @@ async def test_published_blocked_when_bundle_failed() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     with pytest.raises(PublishBlockedByStaleGateError) as exc_info:
         await gen.generate(_make_request())
@@ -217,6 +251,7 @@ async def test_published_blocked_when_required_kind_hard_stale() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     with pytest.raises(PublishBlockedByStaleGateError):
         await gen.generate(_make_request())
@@ -240,6 +275,7 @@ async def test_draft_status_permitted_even_on_hard_stale() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     response = await gen.generate(_make_request(status="draft"))
     assert response.snapshot_freshness_summary["overall"] == "hard_stale"
@@ -270,6 +306,7 @@ async def test_optional_collector_failure_degrades_but_does_not_block() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     response = await gen.generate(_make_request())
     assert response.bundle_status == "partial"
@@ -301,6 +338,7 @@ async def test_jsonb_normalisation_runs_on_items() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     await gen.generate(_make_request(items=[item]))
 
@@ -326,7 +364,177 @@ async def test_ensure_response_with_no_bundle_raises() -> None:
         session=object(),
         ensure_service=ensure,
         ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
     )
     with pytest.raises(SnapshotBackedReportGeneratorError):
         await gen.generate(_make_request())
     assert ingest.calls == []
+
+
+@pytest.mark.asyncio
+async def test_generator_classifies_items_against_active_watches_and_pending_orders():
+    """ROB-274 — classifier runs between bundle-ensure and ingest.
+
+    Wires a fake bundle whose watch_context snapshot contains an active
+    alert that matches the draft watch item. The classifier should emit
+    operation='keep' with a target_ref pointing at the matched alert.
+
+    The bundle does NOT contain a pending_orders snapshot — the generator
+    must surface that as ``pending_orders=None`` (unavailable) to the
+    classifier so action items would be downgraded to ``review``. (Here
+    we only check the watch path; the pending_orders=None path is
+    indirectly verified by the absence of action items.)
+    """
+
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.schemas.investment_reports import WatchConditionPayload
+
+    matched_alert_uuid = uuid.uuid4()
+
+    draft_items = [
+        IngestReportItem(
+            client_item_key="w-1",
+            item_kind="watch",
+            symbol="KRW-BTC",
+            intent="trend_recovery_review",
+            rationale="watch trend recovery",
+            watch_condition=WatchConditionPayload(
+                metric="price",
+                operator="above",
+                threshold=Decimal("100"),
+            ),
+            valid_until=dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=7),
+        ),
+    ]
+
+    ensure = _FakeEnsureService(_ensure_response())
+
+    # Fake the bundle row + a watch_context snapshot whose payload contains
+    # an active alert matching the draft item's symbol+metric+threshold.
+    fake_bundle = SimpleNamespace(id=4242)
+    fake_watch_item = SimpleNamespace(id=1, snapshot_id=10)
+    fake_watch_snapshot = SimpleNamespace(
+        snapshot_kind="watch_context",
+        payload_json={
+            "active_alerts": [
+                {
+                    "alert_uuid": str(matched_alert_uuid),
+                    "symbol": "KRW-BTC",
+                    "metric": "price",
+                    "operator": "above",
+                    "threshold": "100",
+                    "threshold_key": "100",
+                    "action_mode": "notify_only",
+                    "intent": "trend_recovery_review",
+                    "status": "active",
+                    "valid_until": (
+                        dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=7)
+                    ).isoformat(),
+                    "activated_at": dt.datetime.now(tz=dt.UTC).isoformat(),
+                }
+            ]
+        },
+    )
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[(fake_watch_item, fake_watch_snapshot)],
+    )
+
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+
+    # Use draft to skip the published guard.
+    response = await gen.generate(
+        _make_request(
+            market="crypto",
+            account_scope="upbit_live",
+            status="draft",
+            items=draft_items,
+        )
+    )
+
+    assert response.items_count == 1
+
+    # Verify the generator actually queried the bundle back from the repo.
+    assert fake_repo.get_bundle_calls == [ensure.response.bundle_uuid]
+    assert fake_repo.list_items_calls == [fake_bundle.id]
+
+    # The classifier should have rewritten the watch item to operation='keep'
+    # because the bundle's active_alerts has a matching alert at the same
+    # threshold/metric/operator.
+    assert len(ingest.calls) == 1
+    sent = ingest.calls[0]
+    sent_item = sent.items[0]
+    assert sent_item.operation == "keep"
+    # target_ref must be populated with the matched alert id.
+    assert sent_item.target_ref is not None
+    assert sent_item.target_ref.type == "investment_watch_alert"
+    assert sent_item.target_ref.id == str(matched_alert_uuid)
+    # current_state was captured from the bundle's active_alerts entry.
+    assert sent_item.current_state is not None
+    assert sent_item.current_state["metric"] == "price"
+    assert sent_item.current_state["threshold"] == "100"
+    # apply_policy default for proposals referencing existing state.
+    assert sent_item.apply_policy == "requires_user_approval"
+
+
+@pytest.mark.asyncio
+async def test_generator_surfaces_unavailable_pending_orders_to_classifier():
+    """ROB-274 — when pending_orders is in missing_sources, action items
+    are downgraded to operation='review' with '확인 불가' rationale."""
+
+    action_item = IngestReportItem(
+        client_item_key="a-1",
+        item_kind="action",
+        symbol="KRW-BTC",
+        side="buy",
+        intent="buy_review",
+        rationale="buy on dip",
+    )
+
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="partial",
+            freshness_summary={
+                "overall": "partial",
+                "portfolio": {"status": "fresh"},
+                "journal": {"status": "fresh"},
+                "watch_context": {"status": "fresh"},
+                "market": {"status": "fresh"},
+                "pending_orders": {"status": "unavailable"},
+            },
+            missing_sources=["pending_orders"],
+        )
+    )
+    # Repository returns no bundle items (no pending_orders snapshot
+    # persisted); combined with missing_sources, classifier sees None.
+    fake_repo = _FakeSnapshotsRepository(bundle=None)
+
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+
+    await gen.generate(
+        _make_request(
+            market="crypto",
+            account_scope="upbit_live",
+            status="draft",
+            items=[action_item],
+        )
+    )
+
+    assert len(ingest.calls) == 1
+    sent_item = ingest.calls[0].items[0]
+    assert sent_item.operation == "review"
+    assert "확인 불가" in sent_item.rationale

@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchInvestmentReportBundle,
   fetchInvestmentReports,
+  fetchReportSnapshotBundle,
+  fetchReportSnapshotDetail,
 } from "../api/investmentReports";
 
 const originalFetch = global.fetch;
@@ -208,5 +210,116 @@ describe("fetchInvestmentReportBundle", () => {
       expect.stringContaining("uuid%20with%20space"),
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+});
+
+describe("fetchReportSnapshotBundle", () => {
+  it("normalises the bundle list response", async () => {
+    mockFetchOnce({
+      bundle: {
+        bundle_uuid: "bundle-1",
+        purpose: "rob275_smoke",
+        market: "kr",
+        account_scope: "kis_live",
+        policy_version: "intraday_action_report_v1",
+        status: "partial",
+        as_of: "2026-05-20T11:00:00Z",
+        coverage_summary: { portfolio: { count: 1 } },
+        freshness_summary: { overall: "partial" },
+        created_at: "2026-05-20T11:00:00Z",
+      },
+      items: [
+        {
+          snapshot_uuid: "snap-1",
+          role: "required",
+          snapshot_kind: "portfolio",
+          source_kind: "manual",
+          market: "kr",
+          symbol: null,
+          account_scope: "kis_live",
+          freshness_status: "fresh",
+          as_of: "2026-05-20T11:00:00Z",
+          valid_until: null,
+          source_table: "market_quote_snapshots",
+          source_id: 42,
+          source_uri: "market_quote_snapshots:abc",
+          payload_size_bytes: 256,
+        },
+      ],
+      unavailable_sources: { naver_remote_debug: "blocked" },
+      source_conflicts: null,
+      legacy_no_snapshot: false,
+    });
+
+    const response = await fetchReportSnapshotBundle("uuid-1");
+    expect(response.legacyNoSnapshot).toBe(false);
+    expect(response.bundle?.bundleUuid).toBe("bundle-1");
+    expect(response.bundle?.market).toBe("kr");
+    expect(response.bundle?.accountScope).toBe("kis_live");
+    expect(response.items).toHaveLength(1);
+    expect(response.items[0]!.snapshotUuid).toBe("snap-1");
+    expect(response.items[0]!.payloadSizeBytes).toBe(256);
+    expect(response.items[0]!.freshnessStatus).toBe("fresh");
+    expect(response.items[0]!.sourceId).toBe(42);
+    expect(response.items[0]!.sourceTable).toBe("market_quote_snapshots");
+    expect(response.items[0]!.sourceUri).toBe("market_quote_snapshots:abc");
+    expect(response.unavailableSources).toEqual({
+      naver_remote_debug: "blocked",
+    });
+    expect(response.sourceConflicts).toBeNull();
+  });
+
+  it("normalises a legacy/no-snapshot response", async () => {
+    mockFetchOnce({
+      bundle: null,
+      items: [],
+      unavailable_sources: null,
+      source_conflicts: null,
+      legacy_no_snapshot: true,
+    });
+    const response = await fetchReportSnapshotBundle("uuid-1");
+    expect(response.legacyNoSnapshot).toBe(true);
+    expect(response.bundle).toBeNull();
+    expect(response.items).toEqual([]);
+  });
+});
+
+describe("fetchReportSnapshotDetail", () => {
+  it("normalises the detail payload and URL-encodes both UUIDs", async () => {
+    mockFetchOnce({
+      snapshot_uuid: "snap-1",
+      role: "required",
+      snapshot_kind: "portfolio",
+      source_kind: "manual",
+      market: "kr",
+      symbol: null,
+      account_scope: "kis_live",
+      source_table: null,
+      source_id: null,
+      source_uri: null,
+      freshness_status: "fresh",
+      as_of: "2026-05-20T11:00:00Z",
+      valid_until: null,
+      source_timestamps_json: { collected_at: "2026-05-20T11:00:00Z" },
+      coverage_json: {},
+      errors_json: {},
+      payload_json: { cash_krw: 1_000_000 },
+    });
+
+    const detail = await fetchReportSnapshotDetail("uuid 1", "snap 1");
+    expect(detail.snapshotUuid).toBe("snap-1");
+    expect(detail.role).toBe("required");
+    expect(detail.payloadJson).toEqual({ cash_krw: 1_000_000 });
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("uuid%201/snapshots/snap%201"),
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("throws on non-2xx (e.g. 404 for non-member snapshot)", async () => {
+    mockFetchOnce({}, 404);
+    await expect(
+      fetchReportSnapshotDetail("uuid-1", "snap-x"),
+    ).rejects.toThrow(/404/);
   });
 });

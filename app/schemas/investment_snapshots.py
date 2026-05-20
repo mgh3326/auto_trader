@@ -29,6 +29,7 @@ SnapshotKind = Literal[
     "naver_remote_debug",
     "toss_remote_debug",
     "llm_input_frozen",
+    "pending_orders",
 ]
 SourceKind = Literal[
     "kis_mcp",

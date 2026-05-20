@@ -405,98 +405,245 @@ def pytest_collection_modifyitems(config, items):
 # Database fixtures for integration tests
 @pytest_asyncio.fixture
 async def db_session():
-    """Create a database session for testing with schema setup."""
+    """Create a database session for testing with schema setup.
+
+    CI runs pytest-xdist (``--dist=loadfile``), so multiple workers
+    concurrently instantiate this fixture and the ``session`` fixture in
+    ``tests/_investment_reports_helpers.py``. Both fixtures execute DDL on
+    ``review.*`` tables; concurrent ALTER + CASCADE TRUNCATE collide on
+    ``AccessExclusiveLock`` and deadlock (observed under CI as ROB-274 PR
+    failure). We serialize the DDL phase here under the same advisory
+    lock the helper uses (``INVESTMENT_REPORTS_TEST_LOCK_ID``) so the two
+    fixtures take turns on the schema patch while the rest of the suite
+    stays parallel. The lock is released BEFORE yielding so the per-test
+    body runs unserialized.
+    """
     from sqlalchemy import text
 
     from app.core.db import AsyncSessionLocal, engine
     from app.models.base import Base
+    from tests._investment_reports_helpers import INVESTMENT_REPORTS_TEST_LOCK_ID
 
-    async with engine.begin() as conn:
-        # Create required schemas first (PostgreSQL-specific)
-        for schema in ["paper", "research", "review"]:
-            await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-        await conn.run_sync(Base.metadata.create_all)
-        # Idempotent column additions for schema drift between create_all and migrations
-        await conn.execute(
-            text("ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT")
+    async with engine.connect() as guard:
+        await guard.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
+        try:
+            async with engine.begin() as conn:
+                # Create required schemas first (PostgreSQL-specific)
+                for schema in ["paper", "research", "review"]:
+                    await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+                await conn.run_sync(Base.metadata.create_all)
+                # Idempotent column additions for schema drift between
+                # create_all and migrations.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE market_events "
+                        "ADD COLUMN IF NOT EXISTS currency TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE us_symbol_universe "
+                        "ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
+                    )
+                )
+                # ROB-269 Phase 3 — snapshot metadata + 3-layer stale gate
+                # layer (i). create_all is no-op for already-existing tables,
+                # so we patch the six new columns + index + CHECK constraint
+                # here so the persistent test DB picks them up without a full
+                # alembic upgrade cycle.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_bundle_uuid UUID"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_policy_version TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_coverage_summary JSONB"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_freshness_summary JSONB"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS source_conflicts JSONB"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS unavailable_sources JSONB"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_investment_reports_snapshot_bundle_uuid "
+                        "ON review.investment_reports (snapshot_bundle_uuid)"
+                    )
+                )
+                # Postgres has no native ADD CONSTRAINT IF NOT EXISTS;
+                # drop+recreate is idempotent and avoids a catalog-table probe.
+                # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a): explicit
+                # ``IS NOT NULL`` guard prevents CHECK from accepting UNKNOWN
+                # when ``overall`` is missing or JSON-null.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_reports_no_published_on_hard_stale"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD CONSTRAINT "
+                        "ck_investment_reports_no_published_on_hard_stale "
+                        "CHECK ("
+                        "status <> 'published' "
+                        "OR snapshot_freshness_summary IS NULL "
+                        "OR ("
+                        "(snapshot_freshness_summary->>'overall') IS NOT NULL "
+                        "AND (snapshot_freshness_summary->>'overall') IN "
+                        "('fresh','soft_stale','partial')"
+                        "))"
+                    )
+                )
+                # ROB-274 — proposal-state columns + operation-aware CHECKs on
+                # investment_report_items. Mirrors the persistent-DB patch
+                # pattern above; the canonical schema lives in migration
+                # 20260520_rob274_p1_add_proposal_fields_to_report_items.py.
+                for column_sql in (
+                    "ADD COLUMN IF NOT EXISTS operation TEXT",
+                    "ADD COLUMN IF NOT EXISTS target_ref JSONB",
+                    "ADD COLUMN IF NOT EXISTS current_state JSONB",
+                    "ADD COLUMN IF NOT EXISTS proposed_state JSONB",
+                    "ADD COLUMN IF NOT EXISTS diff JSONB",
+                    "ADD COLUMN IF NOT EXISTS apply_policy TEXT",
+                ):
+                    await conn.execute(
+                        text(f"ALTER TABLE review.investment_report_items {column_sql}")
+                    )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_investment_report_items_operation_kind "
+                        "ON review.investment_report_items "
+                        "(operation, item_kind, status)"
+                    )
+                )
+                # operation + apply_policy CHECKs — drop+recreate is idempotent
+                # and avoids a catalog-table probe.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_operation"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT ck_investment_report_items_operation "
+                        "CHECK ("
+                        "operation IS NULL OR operation IN ("
+                        "'create','modify','cancel','keep','replace','review'"
+                        "))"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_apply_policy"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT ck_investment_report_items_apply_policy "
+                        "CHECK ("
+                        "apply_policy IS NULL "
+                        "OR apply_policy = 'requires_user_approval'"
+                        ")"
+                    )
+                )
+                # Rewrite watch-condition and watch-expiry CHECKs to the
+                # operation-aware predicates. We drop the canonical name + the
+                # hashed name the ROB-265 migration created under the
+                # project's MetaData naming convention (see 20260520_rob274_p1
+                # docstring).
+                for canonical, hashed in (
+                    (
+                        "ck_investment_report_items_watch_has_condition",
+                        "ck_investment_report_items_ck_investment_report_items_w_421e",
+                    ),
+                    (
+                        "ck_investment_report_items_watch_has_expiry",
+                        "ck_investment_report_items_ck_investment_report_items_w_fdaa",
+                    ),
+                ):
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.investment_report_items "
+                            f'DROP CONSTRAINT IF EXISTS "{hashed}"'
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.investment_report_items "
+                            f'DROP CONSTRAINT IF EXISTS "{canonical}"'
+                        )
+                    )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT "
+                        "ck_investment_report_items_watch_has_condition "
+                        "CHECK ("
+                        "item_kind <> 'watch' "
+                        "OR operation IN ('cancel','keep','review') "
+                        "OR watch_condition IS NOT NULL"
+                        ")"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT "
+                        "ck_investment_report_items_watch_has_expiry "
+                        "CHECK ("
+                        "item_kind <> 'watch' "
+                        "OR operation IN ('cancel','keep','review') "
+                        "OR valid_until IS NOT NULL"
+                        ")"
+                    )
+                )
+        finally:
+            # Release the advisory lock BEFORE yielding so the per-test body
+            # runs unserialized. The DDL above is durable + idempotent, so
+            # the next worker that takes the lock is a no-op at the PG layer
+            # but still needs the lock to safely co-exist with concurrent
+            # TRUNCATEs from tests/_investment_reports_helpers.session.
+            await guard.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
             )
-        )
-        # ROB-269 Phase 3 — snapshot metadata + 3-layer stale gate layer (i).
-        # create_all is no-op for already-existing tables, so we patch the
-        # six new columns + index + CHECK constraint here so the persistent
-        # test DB picks them up without a full alembic upgrade cycle.
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "ADD COLUMN IF NOT EXISTS snapshot_bundle_uuid UUID"
-            )
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "ADD COLUMN IF NOT EXISTS snapshot_policy_version TEXT"
-            )
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "ADD COLUMN IF NOT EXISTS snapshot_coverage_summary JSONB"
-            )
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "ADD COLUMN IF NOT EXISTS snapshot_freshness_summary JSONB"
-            )
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "ADD COLUMN IF NOT EXISTS source_conflicts JSONB"
-            )
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "ADD COLUMN IF NOT EXISTS unavailable_sources JSONB"
-            )
-        )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_investment_reports_snapshot_bundle_uuid "
-                "ON review.investment_reports (snapshot_bundle_uuid)"
-            )
-        )
-        # Postgres has no native ADD CONSTRAINT IF NOT EXISTS; drop+recreate is
-        # idempotent and avoids a catalog-table probe.
-        # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a): the explicit
-        # ``IS NOT NULL`` guard prevents CHECK from accepting UNKNOWN when
-        # the ``overall`` key is missing or JSON-null.
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "DROP CONSTRAINT IF EXISTS "
-                "ck_investment_reports_no_published_on_hard_stale"
-            )
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE review.investment_reports "
-                "ADD CONSTRAINT ck_investment_reports_no_published_on_hard_stale "
-                "CHECK ("
-                "status <> 'published' "
-                "OR snapshot_freshness_summary IS NULL "
-                "OR ("
-                "(snapshot_freshness_summary->>'overall') IS NOT NULL "
-                "AND (snapshot_freshness_summary->>'overall') IN "
-                "('fresh','soft_stale','partial')"
-                "))"
-            )
-        )
 
     async with AsyncSessionLocal() as session:
         yield session
