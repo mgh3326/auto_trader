@@ -298,3 +298,30 @@ DROP TABLE crypto_candles_1d_pre_rob283;
 > automatically by the alembic migration. ROB-284's step-3 migration
 > additionally fails closed if any row still has `NULL instrument_id`,
 > `NULL base_volume`, or `NULL is_closed` after step 2 (the backfill).
+
+### Automated rollback via alembic downgrade
+
+If the issue is detected before the backup table is dropped, the cleanest
+rollback is to alembic-downgrade the three ROB-284 revisions:
+
+```bash
+# Step-by-step (verbose, recommended for production):
+uv run alembic downgrade 5fa5a347d85b   # noop if already at this rev
+uv run alembic downgrade 181f946296ff   # rolls back step 3 (finalize)
+uv run alembic downgrade 6acbc5e7fc93   # rolls back step 2 (backfill clear)
+uv run alembic downgrade e5df7fbd9803   # rolls back step 1 (drop columns)
+
+# Or in one shot (less granular control):
+uv run alembic downgrade e5df7fbd9803
+```
+
+This reverses step 3, step 2, and step 1 of the in-place migration.
+`crypto_instruments` is preserved (cheap, useful for re-running). The
+verification that the round-trip preserves row counts is performed by
+operators on a real DB before approving production cutover; the in-
+process test suite cannot exercise alembic against the test DB without
+colliding with `create_all` schema management (see
+`tests/services/daily_candles/test_migration_round_trip.py`).
+
+If alembic downgrade fails partway, fall back to the manual procedure
+above using `crypto_candles_1d_pre_rob283`.
