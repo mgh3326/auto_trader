@@ -1604,3 +1604,129 @@ async def test_investor_flow_rows_carry_snapshot_date_collected_at_and_classifie
     assert state == "stale", (
         f"expected 'stale' for snapshot_date={stale_snapshot_date} vs today 2026-05-20; got {state!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# ROB-277 Task 4: _build_freshness direct unit tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_build_freshness_snapshot_first_uses_partition_date_not_now() -> None:
+    """ROB-277 D1: snapshot-first response surfaces partition date in asOfLabel,
+    not now()."""
+    import datetime as dt
+
+    from app.services.invest_view_model.screener_service import _build_freshness
+
+    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    f = _build_freshness(
+        raw_timestamp="2026-05-20T00:10:00+00:00",
+        cache_hit=True,
+        market="kr",
+        now=fake_now,
+        dataState="stale",
+        primary_kind="screener_snapshot",
+        primary_snapshot_date=dt.date(2026, 5, 13),
+        primary_computed_at=None,
+        primary_source="invest_screener_snapshots",
+        dependency_specs=None,
+    )
+    assert f.primary is not None
+    assert f.primary.kind == "screener_snapshot"
+    assert f.primary.snapshotDate == "2026-05-13"
+    assert "2026.05.13" in f.primary.asOfLabel
+    assert f.primary.dataState == "stale"
+    # data-as-of label is the snapshot date, NOT 2026.05.20
+    assert "2026.05.13" in f.asOfLabel
+    assert "2026.05.20" not in f.asOfLabel
+    # served time is now
+    assert f.servedAt is not None and f.servedAt.startswith("2026-05-20")
+    # source enum unchanged (D2)
+    assert f.source == "cached"
+    # legacy alias holds (D1.c)
+    assert f.dataState == f.overallState
+    assert f.overallState == "stale"
+
+
+@pytest.mark.unit
+def test_build_freshness_live_path_uses_raw_timestamp() -> None:
+    """When primary_kind defaults to 'live', the legacy raw_timestamp drives asOfLabel."""
+    import datetime as dt
+
+    from app.services.invest_view_model.screener_service import _build_freshness
+
+    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    f = _build_freshness(
+        raw_timestamp="2026-05-20T00:08:00+00:00",
+        cache_hit=False,
+        market="kr",
+        now=fake_now,
+        dataState="fresh",
+    )
+    assert f.primary is not None
+    assert f.primary.kind == "live"
+    assert f.source == "live"
+    assert f.dataState == f.overallState == "fresh"
+
+
+@pytest.mark.unit
+def test_build_freshness_dependency_specs_render_with_lag_label() -> None:
+    """Dependency with older snapshot_date than primary gets a '{N}거래일 지연' lagLabel."""
+    import datetime as dt
+
+    from app.services.invest_view_model.screener_service import _build_freshness
+
+    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    f = _build_freshness(
+        raw_timestamp=None,
+        cache_hit=True,
+        market="kr",
+        now=fake_now,
+        dataState="fresh",
+        primary_kind="screener_snapshot",
+        primary_snapshot_date=dt.date(2026, 5, 20),
+        primary_computed_at=dt.datetime(2026, 5, 20, 0, 5, tzinfo=dt.UTC),
+        primary_source="invest_screener_snapshots",
+        dependency_specs=[
+            {
+                "kind": "investor_flow",
+                "snapshot_date": dt.date(2026, 5, 18),
+                "collected_at": None,
+                "data_state": "stale",
+                "source": "investor_flow_snapshots",
+            }
+        ],
+    )
+    assert len(f.dependencies) == 1
+    dep = f.dependencies[0]
+    assert dep.kind == "investor_flow"
+    assert dep.snapshotDate == "2026-05-18"
+    assert dep.lagLabel == "2거래일 지연"
+    assert dep.dataState == "stale"
+    # primary fresh + dep stale → overall stale (D1.c rule 2)
+    assert f.overallState == "stale"
+    assert f.dataState == "stale"
+
+
+@pytest.mark.unit
+def test_build_freshness_no_change_to_existing_callsite_with_defaults() -> None:
+    """Calling _build_freshness with only the pre-ROB-277 kwargs still produces a
+    valid ScreenerFreshness (additive change preserves backward compat)."""
+    import datetime as dt
+
+    from app.services.invest_view_model.screener_service import _build_freshness
+
+    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    f = _build_freshness(
+        raw_timestamp="2026-05-20T00:08:00+00:00",
+        cache_hit=False,
+        market="kr",
+        now=fake_now,
+        dataState="fresh",
+    )
+    # All legacy fields populated
+    assert f.fetchedAt is not None
+    assert f.asOfLabel.startswith("2026.05.")
+    assert f.source in {"live", "cached", "previous_session"}
+    assert f.cacheHit is False

@@ -12,6 +12,7 @@ modules — see tests/test_invest_view_model_safety.py.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -26,6 +27,8 @@ from app.schemas.invest_screener import (
     ChangeDirection,
     ScreenerCandidateContext,
     ScreenerFreshness,
+    ScreenerFreshnessDependency,
+    ScreenerFreshnessPrimary,
     ScreenerInvestorFlowChip,
     ScreenerPresetsResponse,
     ScreenerResultRow,
@@ -1170,22 +1173,62 @@ def _build_freshness(
     market: str,
     now: Callable[[], datetime],
     dataState: str = "missing",
+    # NEW (all keyword-only, defaulted) — ROB-277 Task 4
+    primary_kind: Literal["screener_snapshot", "live", "fallback"] = "live",
+    primary_snapshot_date: dt.date | None = None,
+    primary_computed_at: datetime | None = None,
+    primary_source: str | None = None,
+    dependency_specs: list[dict[str, Any]] | None = None,
 ) -> ScreenerFreshness:
+    """ROB-277: split served time vs data 기준.
+
+    raw_timestamp historically served as both, which is the bug this fixes.  When
+    primary_kind == "screener_snapshot", primary fields derive from the partition
+    date/computed_at and the user-visible asOfLabel reflects that — NOT now().
+
+    dependency_specs items shape:
+      {"kind": "investor_flow", "snapshot_date": date|None, "collected_at": dt|None,
+       "data_state": "fresh|partial|stale|missing|fallback", "source": str|None}
+    """
+    from app.services.invest_screener_snapshots.freshness import (
+        compute_overall_state,
+        format_kst_as_of_label,
+    )
+
     now_utc = now()
-    if not raw_timestamp:
-        fetched = now_utc
-    else:
+    # served = response refresh time, always now() of the request
+    served_at_utc = now_utc
+    served_relative = "방금"
+
+    # Determine fetched (legacy field). For snapshot kind, fetched mirrors the
+    # partition's computed_at (or end-of-snapshot-date 15:30 KST when computed_at
+    # is missing) so legacy consumers see the data-as-of timestamp.
+    if primary_kind == "screener_snapshot" and primary_snapshot_date is not None:
+        if primary_computed_at is not None:
+            fetched = primary_computed_at
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=UTC)
+        else:
+            # Treat as end-of-trading-day in KST.
+            fetched_kst_eod = datetime.combine(
+                primary_snapshot_date, _time(15, 30), tzinfo=_KST
+            )
+            fetched = fetched_kst_eod.astimezone(UTC)
+    elif raw_timestamp:
         try:
             fetched = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
         except ValueError:
             fetched = now_utc
-    if fetched.tzinfo is None:
-        fetched = fetched.replace(tzinfo=UTC)
-    fetched_kst = fetched.astimezone(_KST)
-    now_kst = now_utc.astimezone(_KST)
-    delta = max(0, int((now_utc - fetched).total_seconds()))
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=UTC)
+    else:
+        fetched = now_utc
 
+    fetched_kst = fetched.astimezone(_KST)
+    delta = max(0, int((now_utc - fetched).total_seconds()))
+    now_kst = now_utc.astimezone(_KST)
     market_open = market == "kr" and _is_kr_market_open(now_kst)
+
     if not market_open and delta > _CACHE_HIT_FRESH_SECONDS * 4:
         source: Literal["live", "cached", "previous_session"] = "previous_session"
         relative = "전 거래일 기준"
@@ -1196,13 +1239,72 @@ def _build_freshness(
         source = "live"
         relative = _format_relative_korean(delta)
 
+    # Build primary object
+    primary: ScreenerFreshnessPrimary | None = None
+    if primary_kind == "screener_snapshot" and primary_snapshot_date is not None:
+        primary = ScreenerFreshnessPrimary(
+            kind="screener_snapshot",
+            snapshotDate=primary_snapshot_date.isoformat(),
+            computedAt=primary_computed_at.astimezone(UTC).isoformat()
+            if primary_computed_at is not None
+            else None,
+            asOfLabel=format_kst_as_of_label(
+                snapshot_date=primary_snapshot_date,
+                computed_at=primary_computed_at,
+            ),
+            dataState=dataState,  # type: ignore[arg-type]
+            source=primary_source,
+        )
+    elif primary_kind in {"live", "fallback"}:
+        primary = ScreenerFreshnessPrimary(
+            kind=primary_kind,
+            snapshotDate=None,
+            computedAt=None,
+            asOfLabel=fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
+            dataState=dataState,  # type: ignore[arg-type]
+            source=primary_source,
+        )
+
+    # Build dependencies list
+    dependencies: list[ScreenerFreshnessDependency] = []
+    for spec in dependency_specs or []:
+        dep_snap = spec.get("snapshot_date")
+        dep_collected = spec.get("collected_at")
+        lag_label: str | None = None
+        if dep_snap is not None and primary_snapshot_date is not None:
+            lag_days = (primary_snapshot_date - dep_snap).days
+            if lag_days >= 1:
+                lag_label = f"{lag_days}거래일 지연"
+        dependencies.append(
+            ScreenerFreshnessDependency(
+                kind=spec.get("kind", "investor_flow"),
+                snapshotDate=dep_snap.isoformat() if dep_snap is not None else None,
+                collectedAt=dep_collected.astimezone(UTC).isoformat()
+                if dep_collected is not None
+                else None,
+                lagLabel=lag_label,
+                dataState=spec.get("data_state", "missing"),  # type: ignore[arg-type]
+                source=spec.get("source"),
+            )
+        )
+
+    overall = compute_overall_state(
+        primary_state=primary.dataState if primary is not None else dataState,  # type: ignore[arg-type]
+        dependency_states=[d.dataState for d in dependencies],
+    )
+
     return ScreenerFreshness(
         fetchedAt=fetched.astimezone(UTC).isoformat(),
-        asOfLabel=fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
+        asOfLabel=primary.asOfLabel if primary is not None else fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
         relativeLabel=relative,
         cacheHit=bool(cache_hit),
         source=source,
-        dataState=dataState,  # type: ignore[arg-type]
+        dataState=overall,  # alias of overallState (D1.c)
+        servedAt=served_at_utc.isoformat(),
+        servedRelativeLabel=served_relative,
+        primary=primary,
+        dependencies=dependencies,
+        overallState=overall,
     )
 
 
