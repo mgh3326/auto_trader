@@ -164,3 +164,63 @@ def test_presets_response_holds_selected_id() -> None:
     )
     resp = ScreenerPresetsResponse(presets=[preset], selectedPresetId="cheap_value")
     assert resp.selectedPresetId == "cheap_value"
+
+
+@pytest.mark.unit
+def test_screener_freshness_accepts_new_primary_and_dependencies_fields() -> None:
+    from app.schemas.invest_screener import (
+        ScreenerFreshness,
+        ScreenerFreshnessDependency,
+        ScreenerFreshnessPrimary,
+    )
+
+    payload = ScreenerFreshness(
+        fetchedAt="2026-05-20T00:10:00+00:00",
+        asOfLabel="2026.05.13 장마감 기준",
+        relativeLabel="5거래일 지연",
+        cacheHit=True,
+        source="cached",
+        dataState="stale",
+        servedAt="2026-05-20T00:10:00+00:00",
+        servedRelativeLabel="방금",
+        primary=ScreenerFreshnessPrimary(
+            kind="screener_snapshot",
+            snapshotDate="2026-05-13",
+            computedAt="2026-05-13T06:35:00+00:00",
+            asOfLabel="2026.05.13 장마감 기준",
+            dataState="stale",
+            source="invest_screener_snapshots",
+        ),
+        dependencies=[
+            ScreenerFreshnessDependency(
+                kind="investor_flow",
+                snapshotDate="2026-05-18",
+                collectedAt="2026-05-18T07:30:00+00:00",
+                lagLabel="2거래일 지연",
+                dataState="stale",
+                source="investor_flow_snapshots",
+            )
+        ],
+        overallState="stale",
+    )
+    assert payload.primary is not None
+    assert payload.primary.kind == "screener_snapshot"
+    assert payload.dependencies[0].kind == "investor_flow"
+    assert payload.overallState == payload.dataState
+
+
+@pytest.mark.unit
+def test_screener_freshness_is_backwards_compatible_without_new_fields() -> None:
+    from app.schemas.invest_screener import ScreenerFreshness
+
+    payload = ScreenerFreshness(
+        fetchedAt="2026-05-20T00:10:00+00:00",
+        asOfLabel="2026.05.20 09:10 기준",
+        relativeLabel="방금 갱신",
+        cacheHit=False,
+        source="live",
+        dataState="fresh",
+    )
+    assert payload.primary is None
+    assert payload.dependencies == []
+    assert payload.overallState is None
