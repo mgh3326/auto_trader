@@ -154,3 +154,83 @@ async def test_get_report_snapshot_bundle_returns_bundle_and_items(db_session):
     # not from the bundle — the viewer surfaces them separately.
     assert response["unavailable_sources"] == {"naver_remote_debug": "blocked"}
     assert response["source_conflicts"] == {"market": {"kis_mcp": 1.0, "manual": 1.1}}
+
+
+@pytest.mark.asyncio
+async def test_get_report_snapshot_detail_returns_none_for_unknown_report(db_session):
+    svc = InvestmentReportQueryService(db_session)
+    assert await svc.get_report_snapshot_detail(_uuid.uuid4(), _uuid.uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_get_report_snapshot_detail_returns_none_when_report_has_no_bundle(
+    db_session,
+):
+    report_uuid = await _seed_report_without_bundle(db_session)
+    svc = InvestmentReportQueryService(db_session)
+    assert await svc.get_report_snapshot_detail(report_uuid, _uuid.uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_get_report_snapshot_detail_returns_payload_for_member(db_session):
+    report_uuid, _bundle_uuid, snap_uuid = await _seed_report_with_bundle(db_session)
+    svc = InvestmentReportQueryService(db_session)
+    detail = await svc.get_report_snapshot_detail(report_uuid, snap_uuid)
+    assert detail is not None
+    assert detail.snapshot_uuid == snap_uuid
+    assert detail.role == "required"
+    assert detail.snapshot_kind == "portfolio"
+    assert detail.payload_json["cash_krw"] == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_get_report_snapshot_detail_returns_none_for_non_member_snapshot(
+    db_session,
+):
+    """A snapshot_uuid that exists but is NOT in this report's bundle → None (router → 404)."""
+    report_uuid, _bundle_uuid, _snap_uuid = await _seed_report_with_bundle(db_session)
+
+    # Create a second snapshot under a DIFFERENT bundle.
+    snap_repo = InvestmentSnapshotsRepository(db_session)
+    run = await snap_repo.insert_run(
+        SnapshotRunCreate(
+            purpose="report_generation",
+            market="kr",
+            account_scope="kis_live",
+            requested_by="user",
+            policy_version="intraday_action_report_v1",
+        )
+    )
+    other_snap = await snap_repo.insert_snapshot(
+        SnapshotCreate(
+            run_uuid=run.run_uuid,
+            snapshot_kind="market",
+            market="kr",
+            source_kind="domain_ref",
+            source_table="market_quote_snapshots",
+            source_id=99,
+            source_uri=f"market_quote_snapshots:{_uuid.uuid4().hex[:6]}",
+            payload_json={"kospi": 2700.0, "u": str(_uuid.uuid4())},
+            as_of=_NOW,
+            freshness_status="fresh",
+        )
+    )
+    other_bundle = await snap_repo.insert_bundle(
+        BundleCreate(
+            purpose=f"rob275_other_{_uuid.uuid4().hex[:8]}",
+            market="kr",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            as_of=_NOW,
+            status="complete",
+        )
+    )
+    await snap_repo.link_bundle_item(
+        bundle_uuid=other_bundle.bundle_uuid,
+        item=BundleItemCreate(snapshot_uuid=other_snap.snapshot_uuid, role="required"),
+    )
+    await db_session.commit()
+
+    svc = InvestmentReportQueryService(db_session)
+    detail = await svc.get_report_snapshot_detail(report_uuid, other_snap.snapshot_uuid)
+    assert detail is None

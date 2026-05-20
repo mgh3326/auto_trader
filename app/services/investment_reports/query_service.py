@@ -26,6 +26,7 @@ from app.models.investment_reports import (
 from app.schemas.investment_reports import (
     ReportSnapshotBundleItemView,
     ReportSnapshotBundleSummaryView,
+    ReportSnapshotDetailResponse,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_snapshots.repository import (
@@ -194,6 +195,50 @@ class InvestmentReportQueryService:
             "unavailable_sources": report.unavailable_sources,
             "source_conflicts": report.source_conflicts,
         }
+
+    async def get_report_snapshot_detail(
+        self, report_uuid: UUID, snapshot_uuid: UUID
+    ) -> ReportSnapshotDetailResponse | None:
+        """Return one snapshot's payload + bundle role/context for a report.
+
+        Membership-checked: returns ``None`` (router → 404) when any of:
+          * the report does not exist
+          * the report has no ``snapshot_bundle_uuid``
+          * the snapshot is not a member of this report's bundle
+        Snapshots that exist globally but belong to a different bundle
+        always return None — they are not addressable via this report's
+        URL even though the underlying ``investment_snapshots`` row is
+        globally reusable.
+        """
+        report = await self._repo.get_report_by_uuid(report_uuid)
+        if report is None or report.snapshot_bundle_uuid is None:
+            return None
+        pair = await self._snap_repo.get_bundle_item_with_snapshot(
+            bundle_uuid=report.snapshot_bundle_uuid,
+            snapshot_uuid=snapshot_uuid,
+        )
+        if pair is None:
+            return None
+        item, snap = pair
+        return ReportSnapshotDetailResponse(
+            snapshot_uuid=snap.snapshot_uuid,
+            role=item.role,  # type: ignore[arg-type]
+            snapshot_kind=snap.snapshot_kind,  # type: ignore[arg-type]
+            source_kind=snap.source_kind,  # type: ignore[arg-type]
+            market=snap.market,  # type: ignore[arg-type]
+            symbol=snap.symbol,
+            account_scope=snap.account_scope,  # type: ignore[arg-type]
+            source_table=snap.source_table,
+            source_id=snap.source_id,
+            source_uri=snap.source_uri,
+            freshness_status=snap.freshness_status,  # type: ignore[arg-type]
+            as_of=snap.as_of,
+            valid_until=snap.valid_until,
+            source_timestamps_json=snap.source_timestamps_json,
+            coverage_json=snap.coverage_json,
+            errors_json=snap.errors_json,
+            payload_json=snap.payload_json,
+        )
 
     async def previous_report_context(
         self,
