@@ -6,16 +6,20 @@
 
 import type { JSX } from "react";
 
-import type { ReportSnapshotDetail } from "../../types/investmentReports";
+import type {
+  BundleItemRole,
+  ReportSnapshotDetail,
+  SnapshotFreshnessStatus,
+} from "../../types/investmentReports";
 
-const ROLE_LABELS: Record<string, string> = {
+const ROLE_LABELS: Record<BundleItemRole, string> = {
   required: "필수",
   optional: "선택",
   fallback: "대체",
   conflict_evidence: "충돌 증거",
 };
 
-const FRESHNESS_LABELS: Record<string, string> = {
+const FRESHNESS_LABELS: Record<SnapshotFreshnessStatus, string> = {
   fresh: "신선",
   soft_stale: "일부 지연",
   partial: "부분",
@@ -36,7 +40,9 @@ export function SnapshotPayloadDrawer({
   detail,
   error,
   onClose,
-}: SnapshotPayloadDrawerProps): JSX.Element {
+}: SnapshotPayloadDrawerProps): JSX.Element | null {
+  if (status === "idle") return null;
+
   return (
     <div
       data-testid="snapshot-payload-drawer"
@@ -110,7 +116,7 @@ export function SnapshotPayloadDrawer({
             <dd style={{ margin: 0 }}>
               {FRESHNESS_LABELS[detail.freshnessStatus] ?? detail.freshnessStatus}
             </dd>
-            <dt>as_of</dt>
+            <dt>기준 시점</dt>
             <dd style={{ margin: 0 }}>
               {new Date(detail.asOf).toLocaleString("ko-KR")}
             </dd>
@@ -131,7 +137,7 @@ export function SnapshotPayloadDrawer({
               overflow: "auto",
               fontFamily: "var(--mono, monospace)",
               fontSize: 12,
-              background: "var(--surface-1)",
+              background: "var(--surface)",
               padding: 10,
               borderRadius: 8,
               border: "1px solid var(--border)",

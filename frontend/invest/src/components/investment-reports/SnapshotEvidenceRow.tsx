@@ -43,13 +43,15 @@ export function SnapshotEvidenceRow({
       type="button"
       data-testid={`snapshot-evidence-row-${item.snapshotUuid}`}
       onClick={() => onSelect(item.snapshotUuid)}
-      aria-pressed={selected}
+      aria-expanded={selected}
       style={{
         textAlign: "left",
         display: "grid",
         gap: 4,
-        padding: 10,
-        border: `1px solid ${selected ? "var(--fg-2)" : "var(--border)"}`,
+        padding: selected ? "9px" : "10px",
+        border: selected
+          ? "2px solid var(--fg-2)"
+          : "1px solid var(--border)",
         borderRadius: 10,
         background: selected ? "var(--surface-2)" : "transparent",
         color: "var(--fg-1)",
