@@ -1254,7 +1254,9 @@ async def test_kis_mock_reader_passes_bounded_single_attempt_policy(
     captured: dict[str, Any] = {}
 
     class _CapturingAccount:
-        async def fetch_domestic_balance_snapshot(self, **kwargs: Any) -> dict[str, Any]:
+        async def fetch_domestic_balance_snapshot(
+            self, **kwargs: Any
+        ) -> dict[str, Any]:
             captured.update(kwargs)
             return {
                 "holdings": [],
@@ -1290,7 +1292,9 @@ async def test_kis_mock_reader_degrades_when_wall_time_bound_exceeded(
     import asyncio as _asyncio
 
     class _SlowAccount:
-        async def fetch_domestic_balance_snapshot(self, **kwargs: Any) -> dict[str, Any]:
+        async def fetch_domestic_balance_snapshot(
+            self, **kwargs: Any
+        ) -> dict[str, Any]:
             await _asyncio.sleep(1.0)  # longer than the patched bound
             return {"holdings": [], "cash": {}, "page_count": 1}
 

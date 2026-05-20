@@ -38,9 +38,7 @@ def _patch_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
         limiter.acquire = AsyncMock()
         return limiter
 
-    monkeypatch.setattr(
-        "app.services.brokers.kis.base.get_limiter", _fake_get_limiter
-    )
+    monkeypatch.setattr("app.services.brokers.kis.base.get_limiter", _fake_get_limiter)
 
 
 @pytest.mark.asyncio

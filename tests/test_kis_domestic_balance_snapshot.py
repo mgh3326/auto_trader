@@ -421,9 +421,7 @@ async def test_snapshot_honors_explicit_max_pages_cap() -> None:
     )
     client = AccountClient(parent)
 
-    snapshot = await client.fetch_domestic_balance_snapshot(
-        is_mock=True, max_pages=1
-    )
+    snapshot = await client.fetch_domestic_balance_snapshot(is_mock=True, max_pages=1)
 
     assert snapshot["page_count"] == 1
     assert len(parent.calls) == 1
