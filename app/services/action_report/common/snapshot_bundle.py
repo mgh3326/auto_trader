@@ -273,6 +273,7 @@ class SnapshotBundleEnsureService:
             symbols=request.symbols,
             candidate_limit=request.candidate_limit,
             policy_snapshot=policy_snapshot,
+            user_id=request.user_id,
         )
         try:
             results = await asyncio.wait_for(

@@ -1,0 +1,284 @@
+"""ROB-278 Phase 2 — deterministic evidence-driven report-item proposer.
+
+Reads the persisted snapshot bundle and proposes ``IngestReportItem``
+drafts for the report generator. Distinct from ROB-279's LLM-staged
+``FinalComposer`` (``auto_compose=True``): this proposer is
+**deterministic** and uses Phase 2 collector enrichments (portfolio v2,
+symbol quote/orderbook, candidate_universe usefulness, news symbol
+citations) to gate candidate emission.
+
+Lockdown invariants:
+
+* Every emitted item is ``operation="review"`` +
+  ``apply_policy="requires_user_approval"``. The proposer never
+  pre-classifies anything as auto-executable.
+* Buy candidates are emitted only when the per-symbol quote evidence
+  reports ``status="ok"`` with non-zero best bid + best ask + depth.
+  Missing or unavailable quote evidence → no buy candidate.
+* Sell candidates are emitted only when the portfolio snapshot has
+  ``primary_source="kis"`` and the held row reports a positive
+  ``sellable_quantity``. Manual/reference holdings never produce sell
+  candidates here.
+* Watch candidates are emitted when candidate/news/quote evidence
+  exists but action grounds are insufficient — these surface as review
+  items so the operator can validate the thesis.
+* Each emitted item carries ``evidence_snapshot`` provenance pointing
+  to the source snapshot UUID(s) + kind(s) so an audit can trace the
+  proposed candidate back to the bundle rows that justified it.
+* No broker / order / watch / order-intent mutation paths are reached;
+  the static import guard test continues to assert this.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from uuid import UUID
+
+from app.schemas.investment_reports import IngestReportItem
+
+
+def _snapshot_payload(snapshot: Any) -> dict[str, Any]:
+    payload = getattr(snapshot, "payload_json", None)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _snapshot_uuid(snapshot: Any) -> str | None:
+    value = getattr(snapshot, "snapshot_uuid", None)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _make_evidence(
+    snapshot: Any, *, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "source": "auto_emit",
+        "snapshot_kind": getattr(snapshot, "snapshot_kind", None),
+        "snapshot_uuid": _snapshot_uuid(snapshot),
+        "symbol": getattr(snapshot, "symbol", None),
+    }
+    if extra:
+        evidence.update(extra)
+    return evidence
+
+
+def _quote_is_actionable(quote: dict[str, Any]) -> bool:
+    if not isinstance(quote, dict):
+        return False
+    if quote.get("status") != "ok":
+        return False
+    best_bid = quote.get("best_bid") or 0
+    best_ask = quote.get("best_ask") or 0
+    bid_depth = quote.get("bid_depth") or 0
+    ask_depth = quote.get("ask_depth") or 0
+    return (
+        best_bid > 0 and best_ask > 0 and (bid_depth > 0 or ask_depth > 0)
+    )
+
+
+def _held_kis_symbols(
+    portfolio_payload: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Return KIS-primary held holdings keyed by ticker. Empty dict when
+    primary_source is not 'kis' — manual rows are never promoted here."""
+    if portfolio_payload.get("primary_source") != "kis":
+        return {}
+    holdings = portfolio_payload.get("holdings") or []
+    out: dict[str, dict[str, Any]] = {}
+    if isinstance(holdings, list):
+        for holding in holdings:
+            if not isinstance(holding, dict):
+                continue
+            ticker = holding.get("ticker")
+            if isinstance(ticker, str):
+                out[ticker] = holding
+    return out
+
+
+class EvidenceAutoEmitter:
+    """Deterministic proposer that surfaces review-only candidates from the
+    persisted snapshot bundle."""
+
+    def __init__(self, *, max_buy_candidates: int = 10) -> None:
+        self._max_buy_candidates = max_buy_candidates
+
+    def propose(
+        self,
+        *,
+        snapshots: list[Any],
+        request_market: str,
+        account_scope: str | None,
+    ) -> list[IngestReportItem]:
+        """Emit review-only ``IngestReportItem`` drafts from the bundle's
+        evidence. Returns an empty list when no evidence supports an
+        actionable proposal — never fabricates candidates."""
+        portfolio_payload: dict[str, Any] = {}
+        symbol_quotes: dict[str, tuple[Any, dict[str, Any]]] = {}
+        news_matches: dict[str, int] = {}
+        candidate_usefulness: str | None = None
+        portfolio_snapshot: Any | None = None
+        candidate_snapshot: Any | None = None
+        news_snapshot: Any | None = None
+
+        for snapshot in snapshots:
+            kind = getattr(snapshot, "snapshot_kind", None)
+            payload = _snapshot_payload(snapshot)
+            if kind == "portfolio":
+                portfolio_snapshot = snapshot
+                portfolio_payload = payload
+            elif kind == "symbol":
+                sym = getattr(snapshot, "symbol", None) or payload.get("symbol")
+                quote = payload.get("quote")
+                if isinstance(sym, str) and isinstance(quote, dict):
+                    symbol_quotes[sym] = (snapshot, quote)
+            elif kind == "candidate_universe":
+                candidate_snapshot = snapshot
+                candidate_usefulness = (
+                    payload.get("usefulness") if isinstance(payload, dict) else None
+                )
+            elif kind == "news":
+                news_snapshot = snapshot
+                matches = payload.get("symbol_matches") or {}
+                if isinstance(matches, dict):
+                    for sym, count in matches.items():
+                        if isinstance(sym, str) and isinstance(count, int):
+                            news_matches[sym] = count
+
+        held = _held_kis_symbols(portfolio_payload)
+        candidate_actionable = candidate_usefulness == "useful"
+
+        items: list[IngestReportItem] = []
+
+        # Sell candidates — held + sellable + quote evidence supports liquidity.
+        for ticker, holding in held.items():
+            sellable = holding.get("sellable_quantity") or 0
+            if sellable <= 0:
+                continue
+            symbol_pair = symbol_quotes.get(ticker)
+            if symbol_pair is None:
+                continue
+            symbol_snapshot, quote = symbol_pair
+            if not _quote_is_actionable(quote):
+                continue
+            evidence = _make_evidence(
+                symbol_snapshot,
+                extra={
+                    "portfolio_snapshot_uuid": _snapshot_uuid(portfolio_snapshot),
+                    "sellable_quantity": sellable,
+                    "quote_status": quote.get("status"),
+                    "best_bid": quote.get("best_bid"),
+                    "best_ask": quote.get("best_ask"),
+                    "spread_bps": quote.get("spread_bps"),
+                    "proposer": "auto_emit/sell_from_held",
+                },
+            )
+            items.append(
+                IngestReportItem(
+                    client_item_key=f"auto-sell-{ticker}",
+                    item_kind="action",
+                    symbol=ticker,
+                    side="sell",
+                    intent="sell_review",
+                    rationale=(
+                        f"보유 종목 {ticker} sell 검토 — sellable {sellable}, "
+                        f"best_bid {quote.get('best_bid')}, "
+                        f"spread_bps {quote.get('spread_bps')}"
+                    ),
+                    operation="review",
+                    apply_policy="requires_user_approval",
+                    evidence_snapshot=evidence,
+                )
+            )
+
+        # Buy candidates — symbols with actionable quote + a usefulness
+        # signal from candidate_universe and not currently held.
+        if candidate_actionable:
+            buy_emitted = 0
+            for sym, (symbol_snapshot, quote) in symbol_quotes.items():
+                if buy_emitted >= self._max_buy_candidates:
+                    break
+                if sym in held:
+                    continue
+                if not _quote_is_actionable(quote):
+                    continue
+                evidence = _make_evidence(
+                    symbol_snapshot,
+                    extra={
+                        "candidate_snapshot_uuid": _snapshot_uuid(candidate_snapshot),
+                        "candidate_usefulness": candidate_usefulness,
+                        "news_matches": news_matches.get(sym, 0),
+                        "quote_status": quote.get("status"),
+                        "best_bid": quote.get("best_bid"),
+                        "best_ask": quote.get("best_ask"),
+                        "spread_bps": quote.get("spread_bps"),
+                        "proposer": "auto_emit/buy_from_candidate",
+                    },
+                )
+                items.append(
+                    IngestReportItem(
+                        client_item_key=f"auto-buy-{sym}",
+                        item_kind="action",
+                        symbol=sym,
+                        side="buy",
+                        intent="buy_review",
+                        rationale=(
+                            f"신규 매수 검토 — {sym} (candidate {candidate_usefulness}"
+                            f", quote best_bid {quote.get('best_bid')}, "
+                            f"spread_bps {quote.get('spread_bps')})"
+                        ),
+                        operation="review",
+                        apply_policy="requires_user_approval",
+                        evidence_snapshot=evidence,
+                    )
+                )
+                buy_emitted += 1
+
+        # Watch candidates — news-active symbols whose quote evidence is
+        # missing or whose candidate evidence is stale/empty (action
+        # grounds insufficient). Skip symbols already held + with sell
+        # candidate emitted, and symbols already proposed as buy.
+        already_proposed = {item.symbol for item in items if item.symbol}
+        for sym, count in news_matches.items():
+            if count <= 0:
+                continue
+            if sym in already_proposed:
+                continue
+            quote_pair = symbol_quotes.get(sym)
+            quote_status = (
+                quote_pair[1].get("status") if quote_pair else "no_snapshot"
+            )
+            if quote_pair is not None and _quote_is_actionable(quote_pair[1]):
+                # Quote actionable but candidate usefulness wasn't useful —
+                # caller's evidence is mixed; surface as watch review.
+                if candidate_actionable:
+                    continue
+            evidence = _make_evidence(
+                quote_pair[0] if quote_pair else news_snapshot,
+                extra={
+                    "news_snapshot_uuid": _snapshot_uuid(news_snapshot),
+                    "news_match_count": count,
+                    "quote_status": quote_status,
+                    "candidate_usefulness": candidate_usefulness,
+                    "proposer": "auto_emit/watch_from_news",
+                },
+            )
+            items.append(
+                IngestReportItem(
+                    client_item_key=f"auto-watch-{sym}",
+                    item_kind="watch",
+                    symbol=sym,
+                    intent="news_followup_review",
+                    rationale=(
+                        f"뉴스 관심 종목 watch 검토 — {sym} "
+                        f"(news_matches {count}, quote_status {quote_status})"
+                    ),
+                    operation="review",
+                    apply_policy="requires_user_approval",
+                    evidence_snapshot=evidence,
+                )
+            )
+
+        return items

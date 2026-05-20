@@ -538,3 +538,199 @@ async def test_generator_surfaces_unavailable_pending_orders_to_classifier():
     sent_item = ingest.calls[0].items[0]
     assert sent_item.operation == "review"
     assert "확인 불가" in sent_item.rationale
+
+
+# ---------------------------------------------------------------------------
+# ROB-278 — user_id propagation and reused-freshness reproducer.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_user_id_is_forwarded_from_report_request_to_bundle_ensure() -> None:
+    """ROB-278 — ReportGenerationRequest.user_id flows into EnsureBundleRequest.user_id.
+
+    Policy: callers must pass user_id explicitly to enable kis_live broker
+    reads; the generator does not invent a default.
+    """
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request(user_id=42))
+    assert len(ensure.calls) == 1
+    assert ensure.calls[0].user_id == 42
+
+
+@pytest.mark.asyncio
+async def test_user_id_default_is_none_and_propagates_as_none() -> None:
+    """ROB-278 — omitting user_id propagates None (fail-closed downstream)."""
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request())
+    assert ensure.calls[0].user_id is None
+
+
+class _FakeSymbolDerivationService:
+    """Records the derive() call and returns a fixed derivation."""
+
+    def __init__(
+        self,
+        *,
+        symbols: list[str] | None = None,
+        provenance: dict[str, Any] | None = None,
+    ) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._symbols = symbols if symbols is not None else []
+        self._provenance = provenance or {
+            "sources": {
+                "seed": [],
+                "portfolio": [],
+                "journal": [],
+                "watch": [],
+                "candidate": [],
+            },
+            "dropped_by_cap": [],
+            "cap": 50,
+            "total_unique": 0,
+        }
+
+    async def derive(
+        self,
+        *,
+        market: str,
+        account_scope: str | None,
+        user_id: int | None,
+        seed_symbols: list[str] | None,
+    ):
+        self.calls.append(
+            {
+                "market": market,
+                "account_scope": account_scope,
+                "user_id": user_id,
+                "seed_symbols": list(seed_symbols or []),
+            }
+        )
+        from app.services.action_report.snapshot_backed.symbol_derivation import (
+            SymbolDerivation,
+        )
+
+        return SymbolDerivation(
+            symbols=list(self._symbols), provenance=self._provenance
+        )
+
+
+@pytest.mark.asyncio
+async def test_generator_calls_symbol_derivation_and_forwards_symbols() -> None:
+    """ROB-278 — derived symbols flow into EnsureBundleRequest.symbols.
+
+    The generator unions request.symbols with derived symbols (the derivation
+    service preserves seed). Provenance is stashed on the ingest metadata.
+    """
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    derivation = _FakeSymbolDerivationService(
+        symbols=["005930", "000660"],
+        provenance={
+            "sources": {
+                "seed": [],
+                "portfolio": ["005930"],
+                "journal": ["000660"],
+                "watch": [],
+                "candidate": [],
+            },
+            "dropped_by_cap": [],
+            "cap": 50,
+            "total_unique": 2,
+        },
+    )
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+        symbol_derivation_service=derivation,
+    )
+    await gen.generate(_make_request(user_id=42))
+
+    # Derivation was called with the report's context.
+    assert len(derivation.calls) == 1
+    call = derivation.calls[0]
+    assert call["market"] == "kr"
+    assert call["account_scope"] == "kis_live"
+    assert call["user_id"] == 42
+
+    # Derived symbols reached EnsureBundleRequest.symbols.
+    assert set(ensure.calls[0].symbols or []) == {"005930", "000660"}
+
+    # Provenance is recorded on the ingest metadata for audit.
+    sent = ingest.calls[0]
+    assert "symbol_derivation" in sent.metadata
+    assert sent.metadata["symbol_derivation"]["sources"]["portfolio"] == ["005930"]
+
+
+@pytest.mark.asyncio
+async def test_generator_preserves_seed_symbols_through_derivation() -> None:
+    """ROB-278 — request.symbols is passed as seed_symbols and must survive."""
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    # Derivation returns seed + extra.
+    derivation = _FakeSymbolDerivationService(symbols=["X", "Y"])
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+        symbol_derivation_service=derivation,
+    )
+    await gen.generate(_make_request(symbols=["X"], user_id=42))
+    assert derivation.calls[0]["seed_symbols"] == ["X"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="ROB-278 Phase 2: reused bundle without 'overall' currently downgrades to 'unavailable'",
+)
+@pytest.mark.asyncio
+async def test_reused_bundle_freshness_does_not_downgrade_to_unavailable() -> None:
+    """ROB-278 Phase 2 reproducer.
+
+    Bundle.status='reused' with a stored summary that has per-kind statuses
+    (all fresh/partial) but is missing an explicit ``overall`` key. The
+    current implementation defaults ``overall`` to ``unavailable`` via
+    ``_BUNDLE_STATUS_TO_OVERALL.get(status, 'unavailable')``, which then
+    cascades into stale-gate behaviour. Phase 2 should compute ``overall``
+    from the stored per-kind statuses instead.
+    """
+    reused_summary = {
+        # Note: no 'overall' key — this is the bug surface.
+        "portfolio": {"status": "fresh"},
+        "journal": {"status": "fresh"},
+        "watch_context": {"status": "fresh"},
+        "market": {"status": "partial"},
+    }
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="reused",
+            freshness_summary=reused_summary,
+            created=False,
+        )
+    )
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="draft"))
+    # Phase 2 invariant: never downgrade to 'unavailable' when all critical
+    # kinds reported a non-unavailable status.
+    assert response.snapshot_freshness_summary["overall"] != "unavailable"

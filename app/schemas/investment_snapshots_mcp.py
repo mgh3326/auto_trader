@@ -52,6 +52,10 @@ class EnsureBundleRequest(BaseModel):
     requested_by: Literal["hermes", "user", "scheduler", "claude_code", "reviewer"] = (
         "user"
     )
+    user_id: int | None = None
+    """ROB-278 — explicit operator user_id forwarded to collectors that read
+    live-account state. ``None`` keeps broker-backed collectors in fail-closed
+    (``unavailable``) mode rather than inventing a default user."""
 
 
 class EnsureBundleResponse(BaseModel):

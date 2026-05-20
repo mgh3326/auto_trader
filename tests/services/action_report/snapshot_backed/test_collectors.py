@@ -8,6 +8,7 @@ order / watch / scheduler write paths.
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -62,16 +63,22 @@ def _request(market: str = "kr", account_scope: str = "kis_live") -> CollectorRe
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_portfolio_collector_returns_holdings(monkeypatch: pytest.MonkeyPatch):
+    """v1 manual-primary path remains for non-(kr+kis_live) combos.
+
+    ROB-278 reserved the kr+kis_live combo for the new KIS live path
+    (see test_portfolio_v2_*). Other combos keep the v1 contract and
+    additionally surface the ``primary_source="manual"`` label.
+    """
     from app.models.manual_holdings import MarketType
 
     session = MagicMock()
 
     class _Row:
-        ticker = "005930"
-        market_type = MarketType.KR
+        ticker = "AAPL"
+        market_type = MarketType.US
         quantity = 10
-        avg_price = 70_000
-        display_name = "삼성전자"
+        avg_price = 150.0
+        display_name = "Apple"
         updated_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
 
     scalars = MagicMock()
@@ -81,12 +88,14 @@ async def test_portfolio_collector_returns_holdings(monkeypatch: pytest.MonkeyPa
     session.execute = AsyncMock(return_value=result)
 
     collector = PortfolioSnapshotCollector(session)
-    results = await collector.collect(_request())
+    results = await collector.collect(_request(market="us", account_scope="kis_live"))
     assert len(results) == 1
     assert results[0].snapshot_kind == "portfolio"
     assert results[0].source_kind == "auto_trader_mcp"
     assert results[0].payload_json["count"] == 1
-    assert results[0].payload_json["holdings"][0]["ticker"] == "005930"
+    assert results[0].payload_json["holdings"][0]["ticker"] == "AAPL"
+    # ROB-278 — payload v2 surfaces primary_source even on the v1 path.
+    assert results[0].payload_json["primary_source"] == "manual"
 
 
 @pytest.mark.asyncio
@@ -103,6 +112,257 @@ async def test_portfolio_collector_empty_holdings_returns_partial():
     assert results[0].snapshot_kind == "portfolio"
     assert results[0].freshness_status == "partial"
     assert results[0].payload_json["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Portfolio v2 — ROB-278 KIS live path for KR + kis_live.
+#
+# Lockdown policy:
+# - user_id missing on kis_live → fail-closed (unavailable, no implicit default).
+# - KIS success → primary_source="kis"; manual rows go to reference_holdings.
+# - KIS failure → primary_source="none"; manual NEVER promoted to primary.
+# - Payload v2 is additive: existing v1 keys (holdings, count, market) preserved.
+# - Non-(kr+kis_live) combos preserve v1 manual-primary behaviour.
+# ---------------------------------------------------------------------------
+def _kr_kis_request(user_id: int | None = None) -> CollectorRequest:
+    return CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=None,
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=user_id,
+    )
+
+
+def _empty_manual_session() -> MagicMock:
+    """Session whose execute() returns no manual_holdings rows."""
+    session = MagicMock()
+    scalars = MagicMock(all=MagicMock(return_value=[]))
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
+    )
+    return session
+
+
+def _manual_kr_session(rows: list[Any] | None = None) -> MagicMock:
+    from app.models.manual_holdings import MarketType
+
+    class _ManualRow:
+        def __init__(
+            self,
+            ticker: str = "005930",
+            quantity: float = 5.0,
+            avg_price: float = 70_000,
+        ) -> None:
+            self.ticker = ticker
+            self.market_type = MarketType.KR
+            self.quantity = quantity
+            self.avg_price = avg_price
+            self.display_name = ticker
+            self.updated_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
+
+    rows = rows if rows is not None else [_ManualRow()]
+    session = MagicMock()
+    scalars = MagicMock(all=MagicMock(return_value=rows))
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
+    )
+    return session
+
+
+def _kis_reader_with_holdings() -> MagicMock:
+    """KISHomeReader stub returning one KR holding + KRW cash."""
+    from app.schemas.invest_home import Account, CashAmounts, Holding
+    from app.services.invest_home_service import _SourceFetchResult
+
+    holding_kr = Holding(
+        holdingId="kis:kr:005930",
+        accountId="kis_account",
+        source="kis",
+        accountKind="live",
+        symbol="005930",
+        market="KR",
+        assetType="equity",
+        assetCategory="kr_stock",
+        displayName="삼성전자",
+        quantity=10.0,
+        averageCost=70_000,
+        costBasis=700_000,
+        currency="KRW",
+        valueNative=750_000,
+        valueKrw=750_000,
+        pnlKrw=50_000,
+        pnlRate=0.0714,
+        sellableQuantity=8.0,
+        pendingSellQuantity=2.0,
+        referenceQuantity=0.0,
+    )
+    account = Account(
+        accountId="kis_account",
+        displayName="KIS 실계좌",
+        source="kis",
+        accountKind="live",
+        includedInHome=True,
+        valueKrw=750_000,
+        costBasisKrw=700_000,
+        pnlKrw=50_000,
+        pnlRate=0.0714,
+        cashBalances=CashAmounts(krw=1_200_000.0, usd=None),
+        buyingPower=CashAmounts(krw=1_000_000.0, usd=None),
+    )
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        return_value=_SourceFetchResult(
+            accounts=[account], holdings=[holding_kr], warning=None
+        )
+    )
+    return reader
+
+
+def _kis_reader_failed() -> MagicMock:
+    from app.schemas.invest_home import InvestHomeWarning
+    from app.services.invest_home_service import _SourceFetchResult
+
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        return_value=_SourceFetchResult(
+            accounts=[],
+            holdings=[],
+            warning=InvestHomeWarning(source="kis", message="connection timeout"),
+        )
+    )
+    return reader
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_kr_kis_live_missing_user_id_is_fail_closed():
+    """ROB-278 — no user_id on kis_live request → unavailable, no implicit default."""
+    session = _empty_manual_session()
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        side_effect=AssertionError("KIS must not be called without user_id")
+    )
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_kr_kis_request(user_id=None))
+    assert len(results) == 1
+    assert results[0].snapshot_kind == "portfolio"
+    assert results[0].freshness_status == "unavailable"
+    assert "user_id" in results[0].errors_json["reason"]
+    # primary_source label is present and explicitly "none" (manual NOT promoted).
+    assert results[0].payload_json.get("primary_source") == "none"
+    reader.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_kr_kis_live_success_populates_kis_primary():
+    """ROB-278 — KIS success: primary_source=kis, KIS holdings primary, manual in reference."""
+    session = _manual_kr_session()
+    reader = _kis_reader_with_holdings()
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_kr_kis_request(user_id=42))
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "fresh"
+    # v1 keys preserved (additive shape).
+    assert "holdings" in payload
+    assert "count" in payload
+    assert "market" in payload
+    # v2 fields.
+    assert payload["primary_source"] == "kis"
+    assert payload["count"] == 1
+    assert payload["holdings"][0]["ticker"] == "005930"
+    assert payload["holdings"][0]["source"] == "kis"
+    assert payload["holdings"][0]["sellable_quantity"] == 8.0
+    assert payload["holdings"][0]["pending_sell_quantity"] == 2.0
+    assert payload["cash"]["krw"] == 1_200_000.0
+    assert payload["buying_power"]["krw"] == 1_000_000.0
+    assert payload["sellable_summary"]["sellable_count"] == 1
+    # Manual KR row appears in reference_holdings, NOT in holdings.
+    assert payload["reference_holdings"][0]["ticker"] == "005930"
+    assert payload["reference_holdings"][0]["source"] == "manual"
+    # Provenance.
+    assert payload["provenance"]["kis_fetch_status"] == "ok"
+    assert payload["provenance"]["account_scope"] == "kis_live"
+    reader.fetch.assert_awaited_once_with(user_id=42)
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_kr_kis_live_failure_does_not_promote_manual():
+    """ROB-278 — KIS failure: primary_source=none, manual stays in reference_holdings."""
+    session = _manual_kr_session()
+    reader = _kis_reader_failed()
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_kr_kis_request(user_id=42))
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "unavailable"
+    assert payload["primary_source"] == "none"
+    assert payload["holdings"] == []
+    assert payload["count"] == 0
+    # Manual remains visible as reference, never promoted to primary.
+    assert len(payload["reference_holdings"]) == 1
+    assert payload["reference_holdings"][0]["source"] == "manual"
+    # Provenance carries the failure reason.
+    assert payload["provenance"]["kis_fetch_status"] == "failed"
+    assert "kis" in str(payload["provenance"]["warnings"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_kr_kis_live_exception_is_fail_closed():
+    """ROB-278 — KISHomeReader raising is treated like 'failed', not crash."""
+    session = _manual_kr_session()
+    reader = MagicMock()
+    reader.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_kr_kis_request(user_id=42))
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "unavailable"
+    assert payload["primary_source"] == "none"
+    assert "boom" in payload["provenance"]["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_crypto_upbit_live_preserves_v1_manual_primary():
+    """ROB-278 — non-(kr+kis_live) combos unchanged: manual still primary."""
+    from app.models.manual_holdings import MarketType
+
+    class _CryptoRow:
+        ticker = "KRW-BTC"
+        market_type = MarketType.CRYPTO
+        quantity = 0.1
+        avg_price = 50_000_000
+        display_name = "비트코인"
+        updated_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
+
+    session = MagicMock()
+    scalars = MagicMock(all=MagicMock(return_value=[_CryptoRow()]))
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
+    )
+    # KIS reader MUST NOT be called for upbit_live.
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        side_effect=AssertionError("KIS reader called for non-kis_live request")
+    )
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    req = CollectorRequest(
+        market="crypto",
+        account_scope="upbit_live",
+        symbols=None,
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=None,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "fresh"
+    assert payload["count"] == 1
+    assert payload["holdings"][0]["ticker"] == "KRW-BTC"
+    # New label is "manual" for non-KIS combos so payload always says where data came from.
+    assert payload.get("primary_source") == "manual"
+    reader.fetch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +767,12 @@ def test_collector_modules_do_not_import_broker_or_activation_paths():
         "investment_reports.watch_activation",
         "alpaca_paper_ledger_service",
         "upbit.client",  # upbit broker client
+        # ROB-278 — also forbid explicit broker order-mutation verbs even
+        # when shipped under different paths (defence in depth).
+        "place_order",
+        "submit_order",
+        "cancel_order",
+        "modify_order",
     )
     target_modules = [
         "app.services.action_report.snapshot_backed.collectors.portfolio",
@@ -521,6 +787,7 @@ def test_collector_modules_do_not_import_broker_or_activation_paths():
         "app.services.action_report.snapshot_backed.collectors.pending_orders",
         "app.services.action_report.snapshot_backed.collectors.registry",
         "app.services.action_report.snapshot_backed.generator",
+        "app.services.action_report.snapshot_backed.symbol_derivation",
     ]
 
     for name in target_modules:

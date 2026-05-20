@@ -56,6 +56,10 @@ from app.services.action_report.snapshot_backed.request import (
     ReportGenerationRequest,
     ReportGenerationResponse,
 )
+from app.services.action_report.snapshot_backed.symbol_derivation import (
+    SymbolDerivation,
+    SymbolDerivationService,
+)
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
@@ -119,6 +123,7 @@ class SnapshotBackedReportGenerator:
         ingestion_service: InvestmentReportIngestionService | None = None,
         collector_registry: SnapshotCollectorRegistry | None = None,
         snapshots_repository: InvestmentSnapshotsRepository | None = None,
+        symbol_derivation_service: SymbolDerivationService | None = None,
     ) -> None:
         self._session = session
         registry = collector_registry or production_collector_registry(session)
@@ -131,11 +136,23 @@ class SnapshotBackedReportGenerator:
         self._snapshots_repo = snapshots_repository or InvestmentSnapshotsRepository(
             session
         )
+        self._symbol_derivation = symbol_derivation_service or SymbolDerivationService(
+            session
+        )
 
     async def generate(
         self, request: ReportGenerationRequest
     ) -> ReportGenerationResponse:
         self._validate_pair(request)
+
+        # ROB-278 — derive symbol scope (seed + portfolio/journal/watch/candidate)
+        # before ensuring the bundle so the symbol collector sees the union.
+        derivation = await self._symbol_derivation.derive(
+            market=request.market,
+            account_scope=request.account_scope,
+            user_id=request.user_id,
+            seed_symbols=request.symbols,
+        )
 
         ensure_response = await self._ensure_service.ensure(
             EnsureBundleRequest(
@@ -144,9 +161,10 @@ class SnapshotBackedReportGenerator:
                 account_scope=request.account_scope,
                 policy_version=request.policy_version,
                 mode="ensure_fresh",
-                symbols=request.symbols,
+                symbols=derivation.symbols or None,
                 candidate_limit=request.candidate_limit,
                 requested_by=request.requested_by,
+                user_id=request.user_id,
             )
         )
 
@@ -212,7 +230,8 @@ class SnapshotBackedReportGenerator:
                 artifacts=stage_run.artifacts,
             )
 
-            # Re-classify composed items against operational state
+            # Re-classify composed items against operational state (ROB-274)
+            # — also picks up ROB-278 Phase 2 symbol-quote evidence wiring.
             classifier_context = await self._build_classifier_context(
                 bundle_uuid=ensure_response.bundle_uuid,
                 missing_sources=list(ensure_response.missing_sources),
@@ -245,10 +264,24 @@ class SnapshotBackedReportGenerator:
                             "policy_version": request.policy_version,
                             "generator_version": "v2_staged",
                         },
+                        "symbol_derivation": to_jsonable(derivation.provenance),
                     },
                 }
             )
         else:
+            # ROB-278 Phase 2 — deterministic evidence-driven auto-emit can
+            # populate items from the snapshot bundle BEFORE the classifier
+            # runs. The classifier then enforces operation/apply_policy +
+            # quote-evidence gates on whatever the proposer produced.
+            if request.auto_emit_from_evidence:
+                proposed = await self._auto_emit_items_from_bundle(
+                    bundle_uuid=ensure_response.bundle_uuid,
+                    request=request,
+                )
+                request = request.model_copy(
+                    update={"items": [*request.items, *proposed]}
+                )
+
             # ROB-274 — classify draft items against persisted bundle state.
             # We read payloads back from the DB (via list_bundle_items_with_snapshots)
             # so the classifier sees the same data that was just persisted, and
@@ -286,6 +319,7 @@ class SnapshotBackedReportGenerator:
                 freshness_summary=freshness_summary,
                 unavailable_sources=unavailable_sources,
                 source_conflicts=source_conflicts,
+                symbol_derivation=derivation,
             )
 
         # Authoritative gate runs inside ingest(); this pre-flight is a
@@ -327,6 +361,40 @@ class SnapshotBackedReportGenerator:
                 f"unsupported market/account_scope pair: "
                 f"{request.market!r}/{request.account_scope!r}"
             )
+
+    async def _auto_emit_items_from_bundle(
+        self,
+        *,
+        bundle_uuid: UUID,
+        request: ReportGenerationRequest,
+    ) -> list[Any]:
+        """ROB-278 Phase 2 — deterministic, evidence-driven proposer.
+
+        Reads the persisted snapshot bundle (portfolio / symbol+quote /
+        candidate_universe / news / watch_context / journal) and emits
+        ``IngestReportItem``s with ``operation="review"`` +
+        ``apply_policy="requires_user_approval"``. The proposer is
+        fail-closed: no candidates are emitted unless the evidence
+        explicitly supports them (quote.status=='ok' with spread/depth for
+        buy; portfolio.primary_source=='kis' + sellable_quantity > 0 for
+        sell). Mutation paths are unreachable from this code path.
+        """
+        from app.services.action_report.snapshot_backed.auto_emit import (
+            EvidenceAutoEmitter,
+        )
+
+        bundle = await self._snapshots_repo.get_bundle_by_uuid(bundle_uuid)
+        if bundle is None:
+            return []
+        item_snapshot_pairs = (
+            await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
+        )
+        emitter = EvidenceAutoEmitter()
+        return emitter.propose(
+            snapshots=[s for _i, s in item_snapshot_pairs],
+            request_market=request.market,
+            account_scope=request.account_scope,
+        )
 
     async def _build_classifier_context(
         self,
@@ -452,6 +520,7 @@ class SnapshotBackedReportGenerator:
         freshness_summary: dict[str, Any],
         unavailable_sources: dict[str, Any],
         source_conflicts: dict[str, Any],
+        symbol_derivation: SymbolDerivation | None = None,
     ) -> IngestReportRequest:
         # Normalise items — each evidence_snapshot / trigger_checklist /
         # max_action / metadata is a free-form dict the caller filled in,
@@ -485,6 +554,11 @@ class SnapshotBackedReportGenerator:
                 "generator_version": request.generator_version,
             },
         )
+        if symbol_derivation is not None:
+            metadata.setdefault(
+                "symbol_derivation",
+                to_jsonable(symbol_derivation.provenance),
+            )
 
         return IngestReportRequest(
             report_type=request.report_type,
