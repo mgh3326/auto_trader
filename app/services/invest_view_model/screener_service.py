@@ -672,7 +672,7 @@ _METRIC_FIELD: dict[str, str] = {
     "cheap_value": "per",
     "steady_dividend": "dividend_yield",
     "oversold_recovery": "rsi",
-    "high_volume_momentum": "volume",
+    "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
     "investor_flow_momentum": "foreign_net",
     "crypto_high_volume": "trade_amount_24h",

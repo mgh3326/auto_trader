@@ -1059,7 +1059,7 @@ async def test_build_screener_results_warns_when_only_market_cap_fallback_is_abs
         ("cheap_value", "per", 8.25, "8.2"),
         ("steady_dividend", "dividend_yield", 3.456, "3.46%"),
         ("oversold_recovery", "rsi", 29.94, "29.9"),
-        ("high_volume_momentum", "volume", 1_234_567, "1,234,567"),
+        ("kr_high_volume_surge", "volume", 1_234_567, "1,234,567"),
     ],
 )
 async def test_build_screener_results_formats_preset_metrics(
