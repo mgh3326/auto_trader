@@ -28,6 +28,10 @@ from app.models.base import Base
 
 class CryptoInstrument(Base):
     __tablename__ = "crypto_instruments"
+    # Final on-disk names are produced by Base.metadata.naming_convention.
+    # The alembic migration passes the same fully-qualified names so both
+    # ORM (``create_all``) and migration produce identical constraint
+    # names. See ``app/models/base.py`` for the convention.
     __table_args__ = (
         UniqueConstraint(
             "venue",
@@ -37,7 +41,7 @@ class CryptoInstrument(Base):
         ),
         CheckConstraint(
             "status IN ('active','delisted','halted')",
-            name="ck_crypto_instruments_status",
+            name="status",
         ),
     )
 

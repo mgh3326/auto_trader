@@ -28,32 +28,29 @@ from app.models.base import Base
 
 class CryptoCandle1m(Base):
     __tablename__ = "crypto_candles_1m"
+    # NOTE on naming: ``Base.metadata.naming_convention['ck']`` is
+    # ``"ck_%(table_name)s_%(constraint_name)s"``, so the stem name passed
+    # here is prefixed with ``ck_crypto_candles_1m_`` by SQLAlchemy at
+    # ``create_all`` time. The alembic migration calls
+    # ``create_check_constraint`` with the same final, fully-qualified
+    # name, so both code paths produce identical constraint names on disk.
     __table_args__ = (
         PrimaryKeyConstraint("instrument_id", "time", name="pk_crypto_candles_1m"),
-        CheckConstraint(
-            "base_volume >= 0", name="ck_crypto_candles_1m_base_volume_nn"
-        ),
+        CheckConstraint("base_volume >= 0", name="base_volume_nn"),
         CheckConstraint(
             "quote_volume IS NULL OR quote_volume >= 0",
-            name="ck_crypto_candles_1m_quote_volume_nn",
+            name="quote_volume_nn",
         ),
         CheckConstraint(
             "trade_count IS NULL OR trade_count >= 0",
-            name="ck_crypto_candles_1m_trade_count_nn",
+            name="trade_count_nn",
         ),
+        CheckConstraint("vwap IS NULL OR vwap >= 0", name="vwap_nn"),
+        CheckConstraint("high >= low", name="high_ge_low"),
         CheckConstraint(
-            "vwap IS NULL OR vwap >= 0",
-            name="ck_crypto_candles_1m_vwap_nn",
+            "high >= open AND high >= close", name="high_ge_oc"
         ),
-        CheckConstraint("high >= low", name="ck_crypto_candles_1m_high_ge_low"),
-        CheckConstraint(
-            "high >= open AND high >= close",
-            name="ck_crypto_candles_1m_high_ge_oc",
-        ),
-        CheckConstraint(
-            "low <= open AND low <= close",
-            name="ck_crypto_candles_1m_low_le_oc",
-        ),
+        CheckConstraint("low <= open AND low <= close", name="low_le_oc"),
     )
 
     instrument_id: Mapped[int] = mapped_column(
@@ -100,24 +97,20 @@ class CryptoCandle1d(Base):
     """
 
     __tablename__ = "crypto_candles_1d"
+    # See CryptoCandle1m for naming-convention notes; final on-disk names
+    # are produced by ``ck_%(table_name)s_%(constraint_name)s``.
     __table_args__ = (
         PrimaryKeyConstraint("instrument_id", "time", name="pk_crypto_candles_1d"),
-        CheckConstraint(
-            "base_volume >= 0", name="ck_crypto_candles_1d_base_volume_nn"
-        ),
+        CheckConstraint("base_volume >= 0", name="base_volume_nn"),
         CheckConstraint(
             "quote_volume IS NULL OR quote_volume >= 0",
-            name="ck_crypto_candles_1d_quote_volume_nn",
+            name="quote_volume_nn",
         ),
-        CheckConstraint("high >= low", name="ck_crypto_candles_1d_high_ge_low"),
+        CheckConstraint("high >= low", name="high_ge_low"),
         CheckConstraint(
-            "high >= open AND high >= close",
-            name="ck_crypto_candles_1d_high_ge_oc",
+            "high >= open AND high >= close", name="high_ge_oc"
         ),
-        CheckConstraint(
-            "low <= open AND low <= close",
-            name="ck_crypto_candles_1d_low_le_oc",
-        ),
+        CheckConstraint("low <= open AND low <= close", name="low_le_oc"),
     )
 
     instrument_id: Mapped[int] = mapped_column(
