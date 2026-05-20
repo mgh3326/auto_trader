@@ -9,6 +9,7 @@ prior reports, not a single-link traversal via ``previous_report_uuid``.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -22,7 +23,14 @@ from app.models.investment_reports import (
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
+from app.schemas.investment_reports import (
+    ReportSnapshotBundleItemView,
+    ReportSnapshotBundleSummaryView,
+)
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.investment_snapshots.repository import (
+    InvestmentSnapshotsRepository,
+)
 
 
 class InvestmentReportQueryService:
@@ -32,9 +40,13 @@ class InvestmentReportQueryService:
         self,
         session: AsyncSession,
         repository: InvestmentReportsRepository | None = None,
+        snapshot_repository: InvestmentSnapshotsRepository | None = None,
     ) -> None:
         self._session = session
         self._repo = repository or InvestmentReportsRepository(session)
+        self._snap_repo = snapshot_repository or InvestmentSnapshotsRepository(
+            session
+        )
 
     async def list_reports(
         self,
@@ -99,6 +111,90 @@ class InvestmentReportQueryService:
             "decisions_by_item": decisions_by_item,
             "alerts": alerts,
             "events": events,
+        }
+
+    # ------------------------------------------------------------------
+    # ROB-275 — Report-centric snapshot evidence read paths.
+    # ------------------------------------------------------------------
+    async def get_report_snapshot_bundle(
+        self, report_uuid: UUID
+    ) -> dict[str, Any] | None:
+        """Return the bundle + linked items for a report, or a legacy shape.
+
+        Returns:
+          * ``None`` if the report doesn't exist (router → 404).
+          * ``{"legacy_no_snapshot": True, "bundle": None, "items": [], ...}``
+            if the report exists but has no ``snapshot_bundle_uuid`` (router → 200).
+          * Full shape otherwise.
+
+        Note: ``unavailable_sources`` and ``source_conflicts`` come from
+        the report row, never from the bundle — they describe what the
+        report's generator observed at write time, not what is *linked*
+        to this bundle. UI renders them in separate sections.
+        """
+        report = await self._repo.get_report_by_uuid(report_uuid)
+        if report is None:
+            return None
+        if report.snapshot_bundle_uuid is None:
+            return {
+                "legacy_no_snapshot": True,
+                "bundle": None,
+                "items": [],
+                "unavailable_sources": report.unavailable_sources,
+                "source_conflicts": report.source_conflicts,
+            }
+
+        bundle = await self._snap_repo.get_bundle_by_uuid(report.snapshot_bundle_uuid)
+        if bundle is None:
+            # Defensive: report.snapshot_bundle_uuid is a logical link
+            # (no FK), so a deleted bundle is possible in theory. Treat
+            # as legacy/no-snapshot rather than failing the page.
+            return {
+                "legacy_no_snapshot": True,
+                "bundle": None,
+                "items": [],
+                "unavailable_sources": report.unavailable_sources,
+                "source_conflicts": report.source_conflicts,
+            }
+
+        pairs = await self._snap_repo.list_bundle_items_with_snapshots(bundle.id)
+        item_views = [
+            ReportSnapshotBundleItemView(
+                snapshot_uuid=snap.snapshot_uuid,
+                role=item.role,  # type: ignore[arg-type]
+                snapshot_kind=snap.snapshot_kind,  # type: ignore[arg-type]
+                source_kind=snap.source_kind,  # type: ignore[arg-type]
+                market=snap.market,  # type: ignore[arg-type]
+                symbol=snap.symbol,
+                account_scope=snap.account_scope,  # type: ignore[arg-type]
+                freshness_status=snap.freshness_status,  # type: ignore[arg-type]
+                as_of=snap.as_of,
+                valid_until=snap.valid_until,
+                source_table=snap.source_table,
+                source_id=snap.source_id,
+                source_uri=snap.source_uri,
+                payload_size_bytes=_payload_size_bytes(snap.payload_json),
+            )
+            for item, snap in pairs
+        ]
+        bundle_view = ReportSnapshotBundleSummaryView(
+            bundle_uuid=bundle.bundle_uuid,
+            purpose=bundle.purpose,
+            market=bundle.market,  # type: ignore[arg-type]
+            account_scope=bundle.account_scope,  # type: ignore[arg-type]
+            policy_version=bundle.policy_version,
+            status=bundle.status,  # type: ignore[arg-type]
+            as_of=bundle.as_of,
+            coverage_summary=bundle.coverage_summary,
+            freshness_summary=bundle.freshness_summary,
+            created_at=bundle.created_at,
+        )
+        return {
+            "legacy_no_snapshot": False,
+            "bundle": bundle_view,
+            "items": item_views,
+            "unavailable_sources": report.unavailable_sources,
+            "source_conflicts": report.source_conflicts,
         }
 
     async def previous_report_context(
@@ -175,3 +271,10 @@ class InvestmentReportQueryService:
             "triggered_events": triggered_events,
             "recent_decisions": recent_decisions,
         }
+
+
+def _payload_size_bytes(payload_json: dict[str, Any] | None) -> int | None:
+    """Cheap UTF-8 byte count of a JSON-serialised payload. ``None`` if missing."""
+    if payload_json is None:
+        return None
+    return len(json.dumps(payload_json, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
