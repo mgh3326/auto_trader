@@ -356,8 +356,8 @@ def _build_snapshot_first_app(fake_session: _RouterFakeSession) -> FastAPI:
         "U", (), {"id": 1}
     )()
     app.dependency_overrides[get_invest_home_service] = lambda: _StubHomeService()
-    app.dependency_overrides[get_screener_service_dep] = (
-        lambda: _SnapshotFirstScreenerStub()
+    app.dependency_overrides[get_screener_service_dep] = lambda: (
+        _SnapshotFirstScreenerStub()
     )
 
     async def _override_get_db():
@@ -420,7 +420,9 @@ def test_consecutive_gainers_endpoint_separates_served_from_data_basis() -> None
     assert f["source"] == "cached", f"expected source='cached', got {f['source']!r}"
 
     # D1.a: primary block carries screener_snapshot kind + partition date
-    assert f["primary"] is not None, "freshness.primary must not be None for snapshot path"
+    assert f["primary"] is not None, (
+        "freshness.primary must not be None for snapshot path"
+    )
     assert f["primary"]["kind"] == "screener_snapshot"
     assert f["primary"]["snapshotDate"] == "2026-05-13", (
         f"primary.snapshotDate must be the seeded partition date, got {f['primary']['snapshotDate']!r}"

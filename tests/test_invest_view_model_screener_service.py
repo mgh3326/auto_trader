@@ -1619,7 +1619,9 @@ def test_build_freshness_snapshot_first_uses_partition_date_not_now() -> None:
 
     from app.services.invest_view_model.screener_service import _build_freshness
 
-    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    def fake_now() -> dt.datetime:
+        return dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+
     f = _build_freshness(
         raw_timestamp="2026-05-20T00:10:00+00:00",
         cache_hit=True,
@@ -1656,7 +1658,9 @@ def test_build_freshness_live_path_uses_raw_timestamp() -> None:
 
     from app.services.invest_view_model.screener_service import _build_freshness
 
-    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    def fake_now() -> dt.datetime:
+        return dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+
     f = _build_freshness(
         raw_timestamp="2026-05-20T00:08:00+00:00",
         cache_hit=False,
@@ -1677,7 +1681,9 @@ def test_build_freshness_dependency_specs_render_with_lag_label() -> None:
 
     from app.services.invest_view_model.screener_service import _build_freshness
 
-    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    def fake_now() -> dt.datetime:
+        return dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+
     f = _build_freshness(
         raw_timestamp=None,
         cache_hit=True,
@@ -1794,7 +1800,9 @@ def test_build_freshness_no_change_to_existing_callsite_with_defaults() -> None:
 
     from app.services.invest_view_model.screener_service import _build_freshness
 
-    fake_now = lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+    def fake_now() -> dt.datetime:
+        return dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC)
+
     f = _build_freshness(
         raw_timestamp="2026-05-20T00:08:00+00:00",
         cache_hit=False,

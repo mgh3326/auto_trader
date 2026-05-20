@@ -177,7 +177,20 @@ async def test_investor_flow_momentum_preset_uses_snapshot_discovery(
     db_session, monkeypatch
 ):
     repo = InvestorFlowSnapshotsRepository(db_session)
+    # Keep the far-future partition so this is the MAX date regardless of prior
+    # DB state.  Monkeypatch today_trading_date to return the same date so
+    # classify_investor_flow_partition sees "snapshot_date == today" → "fresh".
+    # (ROB-277 removed the old hardcoded _screener_snapshot_state="fresh", so
+    # the test must ensure classification agrees with the partition date.)
     latest_partition = dt.date(2099, 5, 13)
+
+    def _fake_today(market: str, *, now: object = None) -> dt.date:
+        return latest_partition
+
+    monkeypatch.setattr(
+        "app.services.invest_screener_snapshots.freshness.today_trading_date",
+        _fake_today,
+    )
     await repo.upsert(
         InvestorFlowSnapshotUpsert(
             market="kr",

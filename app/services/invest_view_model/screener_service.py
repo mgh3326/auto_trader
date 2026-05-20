@@ -181,7 +181,9 @@ def _investor_flow_item_from_screener_row(
         return None
 
     snapshot_state = str(row.get("_screener_snapshot_state") or "").strip()
-    data_state = snapshot_state if snapshot_state in {"fresh", "stale", "missing"} else "fresh"
+    data_state = (
+        snapshot_state if snapshot_state in {"fresh", "stale", "missing"} else "fresh"
+    )
     return InvestorFlowItem(
         symbol=symbol,
         market="kr",
@@ -234,7 +236,9 @@ async def _hydrate_investor_flow_chips(
             # build_screener_results can build freshness.dependencies later.
             for r in rows:
                 if str(r.get("symbol") or "").upper() == symbol:
-                    r["_investor_flow_snapshot_date"] = getattr(item, "snapshotDate", None)
+                    r["_investor_flow_snapshot_date"] = getattr(
+                        item, "snapshotDate", None
+                    )
                     break
     return chips
 
@@ -460,8 +464,8 @@ async def _load_consecutive_gainers_from_snapshots(
                 else None,
                 "volume": snap.daily_volume,
                 "daily_closes": list(snap.closes_window or []),
-                "snapshot_date": snap.snapshot_date,    # ROB-277
-                "computed_at": snap.computed_at,        # ROB-277
+                "snapshot_date": snap.snapshot_date,  # ROB-277
+                "computed_at": snap.computed_at,  # ROB-277
                 "_screener_snapshot_state": state,
             }
         )
@@ -1303,7 +1307,9 @@ def _build_freshness(
 
     return ScreenerFreshness(
         fetchedAt=fetched.astimezone(UTC).isoformat(),
-        asOfLabel=primary.asOfLabel if primary is not None else fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
+        asOfLabel=primary.asOfLabel
+        if primary is not None
+        else fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
         relativeLabel=relative,
         cacheHit=bool(cache_hit),
         source=source,

@@ -155,7 +155,9 @@ class ScreenerFreshness(BaseModel):
     servedRelativeLabel: str | None = None
     primary: ScreenerFreshnessPrimary | None = None
     dependencies: list[ScreenerFreshnessDependency] = Field(default_factory=list)
-    overallState: Literal["fresh", "partial", "stale", "missing", "fallback"] | None = None
+    overallState: Literal["fresh", "partial", "stale", "missing", "fallback"] | None = (
+        None
+    )
 
 
 class ScreenerResultsResponse(BaseModel):
