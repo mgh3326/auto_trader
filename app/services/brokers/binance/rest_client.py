@@ -18,6 +18,10 @@ from app.services.brokers.binance.dto import (
     BinanceExchangeSymbolInfo,
     BinanceKlineRow,
 )
+from app.services.brokers.binance.rate_limit_telemetry import (
+    emit_rate_limit_snapshot,
+    parse_rate_limit_headers,
+)
 from app.services.brokers.binance.transport import build_public_client
 
 _BASE_URL: Final[str] = "https://api.binance.com"
@@ -85,6 +89,7 @@ class BinancePublicRestClient:
             params={"symbol": symbol},
         )
         resp.raise_for_status()
+        emit_rate_limit_snapshot(parse_rate_limit_headers(dict(resp.headers)))
         payload = resp.json()
         sym = payload["symbols"][0]
         return BinanceExchangeSymbolInfo(
@@ -114,6 +119,7 @@ class BinancePublicRestClient:
             params["endTime"] = int(end_time.timestamp() * 1000)
         resp = await self._client.get(f"{_BASE_URL}/api/v3/klines", params=params)
         resp.raise_for_status()
+        emit_rate_limit_snapshot(parse_rate_limit_headers(dict(resp.headers)))
         rows = resp.json()
         return [_kline_from_row(symbol, interval, r) for r in rows]
 
@@ -123,6 +129,7 @@ class BinancePublicRestClient:
             params={"symbol": symbol},
         )
         resp.raise_for_status()
+        emit_rate_limit_snapshot(parse_rate_limit_headers(dict(resp.headers)))
         data = resp.json()
         return BinanceBookTicker(
             symbol=data["symbol"],
