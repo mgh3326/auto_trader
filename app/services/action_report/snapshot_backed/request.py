@@ -53,6 +53,10 @@ class ReportGenerationRequest(BaseModel):
     symbols: list[str] | None = None
     candidate_limit: int | None = None
 
+    # ROB-279 — when True, the generator synthesizes report fields and items
+    # via the staged snapshot-backed pipeline instead of using provided ones.
+    auto_compose: bool = False
+
 
 class ReportGenerationResponse(BaseModel):
     """Result envelope for the generator. JSON-safe."""
