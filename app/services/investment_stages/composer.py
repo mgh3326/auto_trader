@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 import uuid
+from typing import Any
 
 from app.schemas.investment_reports import IngestReportItem, IngestReportRequest
 from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.investment_stages.budget import StageLLMBudget
-from app.services.investment_stages.stages.base import StageArtifactPayload
 
 _logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ class FinalComposer:
 
         # Map artifacts by type to resolve UUIDs
         artifact_map = {a.stage_type: a for a in artifacts}
-        
+
         # Prepare content for prompt
         stages_data = []
         for art in artifacts:

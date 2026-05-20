@@ -28,6 +28,7 @@ class ReportGenerationRequest(BaseModel):
 
     market: GeneratorMarketLiteral
     account_scope: GeneratorAccountScopeLiteral
+    market_session: str | None = None
     policy_version: str = "intraday_action_report_v1"
     execution_mode: Literal["advisory_only"] = "advisory_only"
     status: GeneratorStatusLiteral = "published"

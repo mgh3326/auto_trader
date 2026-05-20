@@ -161,19 +161,23 @@ class SnapshotBackedReportGenerator:
         if request.auto_compose:
             # ROB-279 — synthesize report via staged snapshot-backed pipeline.
             from types import SimpleNamespace
+
             from app.core.config import settings
             from app.services.ai_providers.gemini_provider import GeminiProvider
             from app.services.investment_stages.budget import StageLLMBudget
             from app.services.investment_stages.composer import FinalComposer
             from app.services.investment_stages.stage_runner import StageRunner
-            from app.services.investment_stages.stages.registry import get_default_v1_stages
+            from app.services.investment_stages.stages.registry import (
+                get_default_v1_stages,
+            )
 
             class _LocalBundleRead:
                 def __init__(self, repo):
                     self._repo = repo
                 async def get_bundle(self, *, bundle_uuid: UUID):
                     bundle = await self._repo.get_bundle_by_uuid(bundle_uuid)
-                    if not bundle: return None
+                    if not bundle:
+                        return None
                     items = await self._repo.list_bundle_items_with_snapshots(bundle.id)
                     return SimpleNamespace(bundle=bundle, items=[i[1] for i in items])
 
@@ -201,7 +205,7 @@ class SnapshotBackedReportGenerator:
                 kst_date=request.kst_date,
                 artifacts=stage_run.artifacts,
             )
-            
+
             # Re-classify composed items against operational state
             classifier_context = await self._build_classifier_context(
                 bundle_uuid=ensure_response.bundle_uuid,
@@ -217,7 +221,8 @@ class SnapshotBackedReportGenerator:
             unavailable_sources = self._build_unavailable_sources(
                 ensure_response.missing_sources, freshness_summary
             )
-            
+            source_conflicts: dict[str, Any] = {}
+
             ingest_request = composed_req.model_copy(
                 update={
                     "items": composed_items,
@@ -299,7 +304,7 @@ class SnapshotBackedReportGenerator:
             snapshot_freshness_summary=freshness_summary,
             source_conflicts=source_conflicts,
             unavailable_sources=unavailable_sources,
-            items_count=len(request.items),
+            items_count=len(ingest_request.items),
             warnings=list(ensure_response.warnings),
             bundle_status=ensure_response.status,
             bundle_reused=not ensure_response.created,

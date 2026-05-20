@@ -7,7 +7,10 @@ from app.schemas.investment_stages import (
     StageCitation,
     StageVerdict,
 )
-from app.services.investment_stages.stages.base import StageContext, UnavailableStageError
+from app.services.investment_stages.stages.base import (
+    StageContext,
+    UnavailableStageError,
+)
 
 _BULL_THRESHOLD = 0.5
 _BEAR_THRESHOLD = -0.5

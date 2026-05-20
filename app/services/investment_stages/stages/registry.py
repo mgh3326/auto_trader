@@ -6,10 +6,14 @@ from typing import TYPE_CHECKING
 
 from app.services.investment_stages.stages.bear_reducer import BearReducerStage
 from app.services.investment_stages.stages.bull_reducer import BullReducerStage
-from app.services.investment_stages.stages.candidate_universe import CandidateUniverseStage
+from app.services.investment_stages.stages.candidate_universe import (
+    CandidateUniverseStage,
+)
 from app.services.investment_stages.stages.market import MarketStage
 from app.services.investment_stages.stages.news import NewsStage
-from app.services.investment_stages.stages.portfolio_journal import PortfolioJournalStage
+from app.services.investment_stages.stages.portfolio_journal import (
+    PortfolioJournalStage,
+)
 from app.services.investment_stages.stages.risk_review import RiskReviewStage
 from app.services.investment_stages.stages.watch_context import WatchContextStage
 
