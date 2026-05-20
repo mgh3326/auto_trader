@@ -6,19 +6,8 @@
 
 import type { JSX } from "react";
 
-import type {
-  ReportSnapshotBundleItem,
-  SnapshotFreshnessStatus,
-} from "../../types/investmentReports";
-
-const FRESHNESS_LABELS: Record<SnapshotFreshnessStatus, string> = {
-  fresh: "신선",
-  soft_stale: "일부 지연",
-  partial: "부분",
-  hard_stale: "오래됨",
-  unavailable: "확인 불가",
-  failed: "실패",
-};
+import type { ReportSnapshotBundleItem } from "../../types/investmentReports";
+import { FRESHNESS_LABELS } from "./snapshotEvidenceLabels";
 
 export interface SnapshotEvidenceRowProps {
   item: ReportSnapshotBundleItem;

@@ -6,27 +6,8 @@
 
 import type { JSX } from "react";
 
-import type {
-  BundleItemRole,
-  ReportSnapshotDetail,
-  SnapshotFreshnessStatus,
-} from "../../types/investmentReports";
-
-const ROLE_LABELS: Record<BundleItemRole, string> = {
-  required: "필수",
-  optional: "선택",
-  fallback: "대체",
-  conflict_evidence: "충돌 증거",
-};
-
-const FRESHNESS_LABELS: Record<SnapshotFreshnessStatus, string> = {
-  fresh: "신선",
-  soft_stale: "일부 지연",
-  partial: "부분",
-  hard_stale: "오래됨",
-  unavailable: "확인 불가",
-  failed: "실패",
-};
+import type { ReportSnapshotDetail } from "../../types/investmentReports";
+import { FRESHNESS_LABELS, ROLE_LABELS } from "./snapshotEvidenceLabels";
 
 export interface SnapshotPayloadDrawerProps {
   status: "idle" | "loading" | "ready" | "error";

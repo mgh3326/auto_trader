@@ -8,7 +8,7 @@
 // Click a row → drawer fetches that snapshot's payload via
 // useSnapshotPayload. Initial render does NOT trigger payload fetches.
 
-import { useState, type JSX } from "react";
+import { useEffect, useState, type JSX } from "react";
 
 import { Card } from "../../ds";
 import { useReportSnapshotBundle } from "../../hooks/useReportSnapshotBundle";
@@ -19,13 +19,7 @@ import type {
 } from "../../types/investmentReports";
 import { SnapshotEvidenceRow } from "./SnapshotEvidenceRow";
 import { SnapshotPayloadDrawer } from "./SnapshotPayloadDrawer";
-
-const ROLE_LABELS: Record<BundleItemRole, string> = {
-  required: "필수",
-  optional: "선택",
-  fallback: "대체",
-  conflict_evidence: "충돌 증거",
-};
+import { ROLE_LABELS } from "./snapshotEvidenceLabels";
 
 const ROLE_ORDER: readonly BundleItemRole[] = [
   "required",
@@ -57,6 +51,13 @@ export function ReportSnapshotEvidencePanel({
   const { status, bundle, error, reload } = useReportSnapshotBundle(reportUuid);
   const [selectedSnapshotUuid, setSelectedSnapshotUuid] =
     useState<string | null>(null);
+
+  // Reset selection whenever the report changes so a stale snapshot_uuid
+  // from a previous report cannot leak into useSnapshotPayload.
+  useEffect(() => {
+    setSelectedSnapshotUuid(null);
+  }, [reportUuid]);
+
   const payload = useSnapshotPayload(reportUuid, selectedSnapshotUuid);
 
   if (status === "loading") {
@@ -140,7 +141,9 @@ export function ReportSnapshotEvidencePanel({
           <h2 style={{ margin: 0, fontSize: 18 }}>스냅샷 근거</h2>
           {summary ? (
             <span style={{ color: "var(--fg-3)", fontSize: 12 }}>
-              번들 {summary.status} · policy {summary.policyVersion} ·{" "}
+              번들 {summary.status} · {summary.market}
+              {summary.accountScope ? ` · ${summary.accountScope}` : ""} · policy{" "}
+              {summary.policyVersion} ·{" "}
               {new Date(summary.asOf).toLocaleString("ko-KR")}
             </span>
           ) : null}
@@ -154,7 +157,7 @@ export function ReportSnapshotEvidencePanel({
               wordBreak: "break-all",
             }}
           >
-            bundle_uuid: {summary.bundleUuid}
+            번들 ID: {summary.bundleUuid}
           </div>
         ) : null}
 
@@ -169,7 +172,7 @@ export function ReportSnapshotEvidencePanel({
                 {ROLE_LABELS[role]} ({buckets[role].length})
               </h3>
               {buckets[role].map((item) => (
-                <div key={item.snapshotUuid} style={{ display: "grid", gap: 0 }}>
+                <div key={item.snapshotUuid} style={{ display: "grid" }}>
                   <SnapshotEvidenceRow
                     item={item}
                     selected={selectedSnapshotUuid === item.snapshotUuid}
