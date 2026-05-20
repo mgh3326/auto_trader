@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_PRESETS = {"consecutive_gainers"}
+_SUPPORTED_PRESETS = {"consecutive_gainers", "double_buy"}
 _SENSITIVE_HEADER_RE = re.compile(
     r"(cookie|authorization|x[-_]?csrf|token|secret|password|session)", re.I
 )
@@ -296,6 +296,225 @@ async def load_auto_trader_rows(
     return rows
 
 
+async def load_double_buy_rows_interpretation_a(
+    session: AsyncSession, *, market: str, limit: int
+) -> list[dict[str, Any]]:
+    """Toss screenId=18 parity, Interpretation A (absolute net buy > 0).
+
+    Mirrors the production loader at
+    app/services/invest_view_model/double_buy_screener.py so diagnostic output
+    is guaranteed to track the live serving path.
+    """
+    from app.services.invest_view_model.double_buy_screener import (
+        load_double_buy_from_snapshots,
+    )
+
+    rows = await load_double_buy_from_snapshots(session, market=market, limit=limit)
+    return rows or []
+
+
+async def load_double_buy_rows_interpretation_b(
+    session: AsyncSession, *, market: str, limit: int
+) -> list[dict[str, Any]]:
+    """Toss screenId=18 parity, Interpretation B (delta vs previous day > 0).
+
+    Implemented ONLY in the diagnostic for verification purposes. Not wired into
+    the production helper because Decision 1 locked the production rule to
+    Interpretation A under the safer-fallback policy.
+    """
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.services.invest_view_model.screener_service import (
+        _is_kr_toss_common_stock,
+    )
+
+    if market != "kr":
+        return []
+
+    latest_flow_stmt = sa.select(
+        sa.func.max(InvestorFlowSnapshot.snapshot_date)
+    ).where(InvestorFlowSnapshot.market == "kr")
+    flow_date = (await session.execute(latest_flow_stmt)).scalar_one_or_none()
+    if flow_date is None:
+        return []
+
+    prev_flow_stmt = sa.select(
+        sa.func.max(InvestorFlowSnapshot.snapshot_date)
+    ).where(
+        InvestorFlowSnapshot.market == "kr",
+        InvestorFlowSnapshot.snapshot_date < flow_date,
+    )
+    prev_flow_date = (await session.execute(prev_flow_stmt)).scalar_one_or_none()
+    if prev_flow_date is None:
+        return []
+
+    latest_price_stmt = sa.select(
+        sa.func.max(InvestScreenerSnapshot.snapshot_date)
+    ).where(InvestScreenerSnapshot.market == "kr")
+    price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
+    if price_date is None:
+        return []
+
+    Prev = sa.orm.aliased(InvestorFlowSnapshot)
+    candidate_stmt = (
+        sa.select(
+            InvestorFlowSnapshot.symbol,
+            (InvestorFlowSnapshot.foreign_net - Prev.foreign_net).label(
+                "foreign_delta"
+            ),
+            (
+                InvestorFlowSnapshot.institution_net - Prev.institution_net
+            ).label("institution_delta"),
+            InvestScreenerSnapshot.change_rate,
+            InvestScreenerSnapshot.snapshot_date.label("price_snapshot_date"),
+            InvestorFlowSnapshot.snapshot_date.label("flow_snapshot_date"),
+        )
+        .join(
+            Prev,
+            sa.and_(
+                Prev.market == "kr",
+                Prev.symbol == InvestorFlowSnapshot.symbol,
+                Prev.snapshot_date == prev_flow_date,
+            ),
+        )
+        .join(
+            InvestScreenerSnapshot,
+            sa.and_(
+                InvestScreenerSnapshot.market == "kr",
+                InvestScreenerSnapshot.symbol == InvestorFlowSnapshot.symbol,
+                InvestScreenerSnapshot.snapshot_date == price_date,
+            ),
+        )
+        .where(
+            InvestorFlowSnapshot.market == "kr",
+            InvestorFlowSnapshot.snapshot_date == flow_date,
+            (InvestorFlowSnapshot.foreign_net - Prev.foreign_net) > 0,
+            (InvestorFlowSnapshot.institution_net - Prev.institution_net) > 0,
+            sa.func.coalesce(InvestScreenerSnapshot.change_rate, 0) >= 0,
+        )
+        .order_by(
+            InvestScreenerSnapshot.change_rate.desc().nullslast(),
+            InvestorFlowSnapshot.symbol.asc(),
+            InvestorFlowSnapshot.source.asc(),
+        )
+        .limit(max(limit * 4, limit + 40))
+    )
+    result = await session.execute(candidate_stmt)
+    candidate_rows = list(result.mappings().all())
+
+    symbols = [r["symbol"] for r in candidate_rows]
+    name_map: dict[str, str] = {}
+    if symbols:
+        names = await session.execute(
+            sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                KRSymbolUniverse.symbol.in_(symbols),
+                KRSymbolUniverse.is_active.is_(True),
+            )
+        )
+        name_map = {row.symbol: row.name for row in names.all()}
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in candidate_rows:
+        sym = r["symbol"]
+        if sym in seen:
+            continue
+        if not _is_kr_toss_common_stock(sym, name_map.get(sym)):
+            continue
+        seen.add(sym)
+        rows.append(
+            {
+                "symbol": sym,
+                "foreign_delta": int(r["foreign_delta"])
+                if r["foreign_delta"] is not None
+                else None,
+                "institution_delta": int(r["institution_delta"])
+                if r["institution_delta"] is not None
+                else None,
+                "change_rate": float(r["change_rate"])
+                if r["change_rate"] is not None
+                else None,
+                "price_snapshot_date": r["price_snapshot_date"].isoformat()
+                if r["price_snapshot_date"]
+                else None,
+                "flow_snapshot_date": r["flow_snapshot_date"].isoformat()
+                if r["flow_snapshot_date"]
+                else None,
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def build_double_buy_parity_report(
+    *,
+    a_rows: list[dict[str, Any]] | None,
+    b_rows: list[dict[str, Any]] | None,
+    toss_rows: list[dict[str, Any]],
+    limit: int,
+    interpretation: str,
+    current_date: str | None,
+    prev_date: str | None,
+) -> dict[str, Any]:
+    """Compare Interpretation A and B against the Toss reference symbol set.
+
+    Parameters
+    ----------
+    a_rows / b_rows:
+        Loader output for each interpretation. Pass ``None`` for an
+        interpretation that was not requested — the corresponding block in the
+        report will be ``None`` so the JSON shape remains stable.
+    interpretation:
+        One of ``"a"``, ``"b"``, ``"both"``. Controls which blocks are
+        populated regardless of whether non-empty rows were supplied; this
+        keeps consumers' parsing logic predictable.
+    """
+    toss_symbols = {row["symbol"] for row in toss_rows}
+    toss_rank = {
+        row["symbol"]: int(row.get("rank") or idx)
+        for idx, row in enumerate(toss_rows, start=1)
+    }
+
+    def _block(rows: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        if rows is None:
+            return None
+        auto_symbols = {r["symbol"] for r in rows}
+        auto_rank = {r["symbol"]: idx for idx, r in enumerate(rows, start=1)}
+        overlap = sorted(auto_symbols & toss_symbols, key=lambda s: toss_rank[s])
+        missing = sorted(toss_symbols - auto_symbols, key=lambda s: toss_rank[s])
+        extra = sorted(auto_symbols - toss_symbols, key=lambda s: auto_rank[s])
+        return {
+            "count": len(rows),
+            "overlapCount": len(overlap),
+            "missingFromAutoTrader": [
+                {"symbol": s, "tossRank": toss_rank[s]} for s in missing
+            ],
+            "extraInAutoTrader": [
+                {"symbol": s, "autoTraderRank": auto_rank[s]} for s in extra
+            ],
+        }
+
+    return {
+        "preset": "double_buy",
+        "limit": limit,
+        "interpretation": interpretation,
+        "currentSnapshotDate": current_date,
+        "previousSnapshotDate": prev_date,
+        "tossCount": len(toss_rows),
+        "interpretationA": _block(a_rows) if interpretation in {"a", "both"} else None,
+        "interpretationB": _block(b_rows) if interpretation in {"b", "both"} else None,
+        "lockedInterpretation": "A",
+        "note": (
+            "Decision 1 locked to Interpretation A under safer-fallback rule "
+            "(see plan Decision 1). Both interpretations always emitted to "
+            "support live verification; if B materially outperforms A on a "
+            "richer Toss reference set, switch the production helper body."
+        ),
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Read-only Toss parity diagnostic for /invest screener."
@@ -304,6 +523,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--preset", choices=sorted(_SUPPORTED_PRESETS), default="consecutive_gainers")
     parser.add_argument("--toss-symbols-file", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=80)
+    parser.add_argument(
+        "--interpretation",
+        choices=("a", "b", "both"),
+        default="both",
+        help=(
+            "double_buy preset only. Selects which interpretation(s) to evaluate. "
+            "A = absolute net buy > 0 (locked production rule); "
+            "B = delta vs previous trading day > 0 (diagnostic only)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -319,11 +548,58 @@ async def main(argv: list[str] | None = None) -> int:
 
     try:
         toss_rows = load_toss_symbols(args.toss_symbols_file)
-        async with AsyncSessionLocal() as session:
-            auto_rows = await load_auto_trader_rows(
-                session, market=args.market, limit=args.limit
+        if args.preset == "consecutive_gainers":
+            async with AsyncSessionLocal() as session:
+                auto_rows = await load_auto_trader_rows(
+                    session, market=args.market, limit=args.limit
+                )
+            report = build_parity_report(auto_rows, toss_rows, limit=args.limit)
+        elif args.preset == "double_buy":
+            from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+
+            async with AsyncSessionLocal() as session:
+                # Resolve current/previous flow snapshot dates for report context.
+                current_date_value = (
+                    await session.execute(
+                        sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+                            InvestorFlowSnapshot.market == args.market
+                        )
+                    )
+                ).scalar_one_or_none()
+                prev_date_value = None
+                if current_date_value is not None:
+                    prev_date_value = (
+                        await session.execute(
+                            sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+                                InvestorFlowSnapshot.market == args.market,
+                                InvestorFlowSnapshot.snapshot_date < current_date_value,
+                            )
+                        )
+                    ).scalar_one_or_none()
+
+                a_rows: list[dict[str, Any]] | None = None
+                b_rows: list[dict[str, Any]] | None = None
+                if args.interpretation in {"a", "both"}:
+                    a_rows = await load_double_buy_rows_interpretation_a(
+                        session, market=args.market, limit=args.limit
+                    )
+                if args.interpretation in {"b", "both"}:
+                    b_rows = await load_double_buy_rows_interpretation_b(
+                        session, market=args.market, limit=args.limit
+                    )
+            report = build_double_buy_parity_report(
+                a_rows=a_rows,
+                b_rows=b_rows,
+                toss_rows=toss_rows,
+                limit=args.limit,
+                interpretation=args.interpretation,
+                current_date=current_date_value.isoformat()
+                if current_date_value
+                else None,
+                prev_date=prev_date_value.isoformat() if prev_date_value else None,
             )
-        report = build_parity_report(auto_rows, toss_rows, limit=args.limit)
+        else:  # pragma: no cover - argparse choices guard this branch
+            raise ValueError(f"Unsupported preset: {args.preset}")
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except Exception as exc:  # noqa: BLE001
