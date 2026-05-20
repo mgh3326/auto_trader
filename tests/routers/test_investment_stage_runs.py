@@ -231,13 +231,14 @@ async def _seed_report_with_stale_metadata_run_uuid(db_session):
 # Test 1: 200 + artifact list for a valid run UUID
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_get_stage_run_returns_200_with_artifacts(db_session):
+@pytest.mark.parametrize("route_prefix", ["/trading/api", "/invest/api"])
+async def test_get_stage_run_returns_200_with_artifacts(db_session, route_prefix):
     run_uuid, artifact_uuid = await _seed_run_with_artifact(db_session)
     app = _build_app(db_session)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
-        resp = await client.get(f"/trading/api/investment-stage-runs/{run_uuid}")
+        resp = await client.get(f"{route_prefix}/investment-stage-runs/{run_uuid}")
 
     assert resp.status_code == 200
     body = resp.json()
@@ -273,7 +274,10 @@ async def test_get_stage_run_returns_404_for_unknown_uuid(db_session):
 # Test 3: 200 + artifacts via report→run linkage through metadata field
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_get_report_stage_artifacts_via_metadata_linkage(db_session):
+@pytest.mark.parametrize("route_prefix", ["/trading/api", "/invest/api"])
+async def test_get_report_stage_artifacts_via_metadata_linkage(
+    db_session, route_prefix
+):
     report_uuid, stage_run_uuid, artifact_uuid = await _seed_report_with_stage_run(
         db_session
     )
@@ -282,7 +286,7 @@ async def test_get_report_stage_artifacts_via_metadata_linkage(db_session):
         transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(
-            f"/trading/api/investment-reports/{report_uuid}/stage-artifacts"
+            f"{route_prefix}/investment-reports/{report_uuid}/stage-artifacts"
         )
 
     assert resp.status_code == 200
