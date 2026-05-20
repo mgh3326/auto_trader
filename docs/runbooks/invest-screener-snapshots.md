@@ -189,3 +189,74 @@ stability across at least 24 hours and an explicit reviewer approval.
 
 Intended schedule: `30 21 * * 1-5` UTC (≈17:30 ET, ~30 min after the regular US session close).
 The flow body honors `INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED` (default `False` → dry-run).
+
+---
+
+## 9. ROB-276 — 쌍끌이 매수 (Toss screenId=18 parity)
+
+### Overview
+
+- **Preset**: `double_buy` (KR only, snapshot-only, read-only).
+- **User-facing**: 카드 이름 `쌍끌이 매수`, description `기관과 외국인이 동시에 매수하는 종목`.
+- **Replaces UI label**: 이전에 `쌍끌이 매수`로 잘못 라벨링되어 있던 거래량 기반 preset(`high_volume_momentum`)은 ID 자체가 `kr_high_volume_surge` 로 변경되었고 이름은 `거래량 급증` 으로 분리됨. 구 ID `high_volume_momentum` 는 더 이상 존재하지 않으며 해당 ID 로 들어온 요청은 `unknown preset` 응답을 받음.
+
+### Filter logic (locked: Interpretation A)
+
+```text
+market = kr
+investor_flow_snapshots.foreign_net > 0
+investor_flow_snapshots.institution_net > 0
+COALESCE(invest_screener_snapshots.change_rate, 0) >= 0
+ORDER BY change_rate DESC NULLS LAST, symbol ASC, source ASC
+```
+
+- 최신 `investor_flow_snapshots` partition 과 최신 `invest_screener_snapshots` partition 을 symbol 로 join.
+- `_is_kr_toss_common_stock` 가드로 ETF/ETN/우선주/SPAC/펀드성 종목 제외.
+- 다중 `source` (e.g. `naver_finance` + `kis`) 가 존재할 때 `ORDER BY source.asc()` 로 결정론적 dedupe.
+
+### Decision 1 lock 근거 (2026-05-20, Task 0)
+
+- Live DB 검증은 환경 제약으로 수행하지 못함 (docker/colima 미사용, host Postgres 권한 부재).
+- Toss reference 캡처는 ROB-276 본문의 5개 심볼 (`011000, 439960, 083500, 042520, 042420`) 뿐이라 캡처 size 가 < 50% 의미를 갖기에 부족.
+- Plan 의 safer-fallback rule ("둘 다 < 50% 커버 또는 동률 → A lock") 에 따라 A 채택.
+- 구조적 근거: `InvestorFlowSnapshot.double_buy` 가 이미 `foreign_net > 0 AND institution_net > 0` 의 derived 컬럼이라 별도 backfill 없이 재사용 가능.
+- Live A/B 검증은 Task 4 의 diagnostic (`--interpretation both`) 으로 실제 DB + 더 큰 Toss capture 확보 후 수행. B 가 명백히 우세하면 후속 PR 에서 lock 을 전환 (helper 본체만 교체; preset metadata/freshness 로직은 유지).
+
+### Freshness — 의존성 분리
+
+- **price 스냅샷 stale**: row 의 `_screener_snapshot_state == "stale"` (price_snapshot_date ≠ flow_snapshot_date) → warning `"시세 스냅샷이 직전 영업일 기준이라 일부 데이터가 1일 지연되었습니다."`
+- **flow 스냅샷 stale**: 모든 row 의 `flow_snapshot_date < today_trading_date(market)` (KST) → warning `"수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."`
+- **둘 다 missing**: 최신 partition 자체 부재 → `dataState=missing` + warning `"수급 또는 시세 스냅샷이 아직 적재되지 않아 쌍끌이 매수 후보를 표시할 수 없습니다."`
+- KST/trading-date 산정은 `app/services/invest_screener_snapshots/freshness.today_trading_date` 사용; `dt.date.today()` 직접 사용 금지.
+
+### Diagnostic
+
+```bash
+uv run python -m scripts.diagnose_invest_screener_toss_parity \
+  --market kr \
+  --preset double_buy \
+  --interpretation both \
+  --toss-symbols-file /path/to/toss_ref.json \
+  --limit 80
+```
+
+- `--interpretation` ∈ `{a, b, both}` (default `both`).
+- Toss reference 는 **항상 파일 기반** (CSV/JSON/plain-symbol-per-line). HTTP fetch 금지.
+- 출력 JSON 에 `interpretationA`, `interpretationB` 블록이 항상 emit (skip 모드에서는 `null`).
+- 각 블록: `count`, `overlapCount`, `missingFromAutoTrader`, `extraInAutoTrader`.
+- `lockedInterpretation: "A"` 와 Decision 1 note 가 payload 에 항상 포함.
+- B 해석은 diagnostic 전용 (current vs previous trading day self-join). production 에 wire 되지 않음.
+
+### Safety boundary (이번 PR)
+
+- **No DB migrations** (모델/마이그레이션 추가 없음).
+- **No new ingestion job / TaskIQ task / Prefect deployment / scheduler activation.** 기존 `investor_flow_snapshots`, `invest_screener_snapshots` 적재 경로만 사용.
+- **No broker / order / watch / order-intent mutation path.**
+- **No Toss runtime scraping.** Toss 데이터는 항상 수동 캡처 파일.
+- **Snapshot-only routing.** generic provider fallback 없음 — 스냅샷 부재 시 명시적 `dataState=missing` + warning.
+
+### Known gaps
+
+- Decision 1 lock 은 구조적 (safer-fallback) — live overlap 수치로 empirically 검증되지 않음. Section §9 의 diagnostic 으로 후속 검증 후, 필요 시 follow-up PR 에서 B 전환.
+- 다중 `investor_flow` source 가 활성화되면 `source.asc()` tiebreak 가 결정론을 보장하지만, source 별 net 값 분기가 큰 경우 데이터 product 차원 의사결정이 필요.
+- 구 ID `high_volume_momentum` URL/북마크 호환성 없음 — frontend preset list 진입이 주된 경로라 영향 작음.

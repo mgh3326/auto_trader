@@ -27,10 +27,23 @@ const PRESETS = {
     },
     {
       id: "investor_flow_momentum", name: "수급 모멘텀",
-      description: "외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보",
+      description: "외국인 연속 순매수 흐름이 강한 종목 (스냅샷 기반)",
       badges: ["MVP"],
-      filterChips: [{ label: "투자자별 수급", detail: "외국인 3일+ 또는 쌍끌이" }],
+      filterChips: [{ label: "투자자별 수급", detail: "외국인 3일+ 연속 순매수" }],
       metricLabel: "외국인 순매수", market: "kr" as const,
+    },
+    {
+      id: "double_buy", name: "쌍끌이 매수",
+      description: "기관과 외국인이 동시에 매수하는 종목",
+      badges: ["NEW"],
+      filterChips: [
+        { label: "국내", detail: null },
+        { label: "외국인", detail: "순매수" },
+        { label: "기관", detail: "순매수" },
+        { label: "주가등락률", detail: "1일 ≥ 0%" },
+        { label: "데이터", detail: "지연 스냅샷 기반" },
+      ],
+      metricLabel: "주가등락률", market: "kr" as const,
     },
   ],
   selectedPresetId: "consecutive_gainers",
@@ -72,9 +85,9 @@ const RESULTS_VALUE = {
 const RESULTS_INVESTOR_FLOW = {
   ...RESULTS_GAINERS,
   presetId: "investor_flow_momentum", title: "수급 모멘텀",
-  description: "외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보",
+  description: "외국인 연속 순매수 흐름이 강한 종목 (스냅샷 기반)",
   metricLabel: "외국인 순매수",
-  filterChips: [{ label: "투자자별 수급", detail: "외국인 3일+ 또는 쌍끌이" }],
+  filterChips: [{ label: "투자자별 수급", detail: "외국인 3일+ 연속 순매수" }],
   results: [{
     ...ROW,
     symbol: "403550",
@@ -215,7 +228,7 @@ test("renders the investor-flow MVP preset and result chip", async () => {
   await userEvent.click(screen.getByTestId("screener-preset-investor_flow_momentum"));
 
   await waitFor(() => expect(screen.getByText("에스케이엔펄스")).toBeInTheDocument());
-  expect(screen.getByText("외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보")).toBeInTheDocument();
+  expect(screen.getByText("외국인 연속 순매수 흐름이 강한 종목 (스냅샷 기반)")).toBeInTheDocument();
   expect(screen.getByText("외국인 4일 순매수")).toBeInTheDocument();
   expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("investor_flow_momentum", "kr");
 });

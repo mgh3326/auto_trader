@@ -17,6 +17,7 @@ import type {
   SnapshotFreshnessSummary,
 } from "../../types/investmentReports";
 import { ProposalDiffPanel } from "./ProposalDiffPanel";
+import { ReportSnapshotEvidencePanel } from "./ReportSnapshotEvidencePanel";
 import { SnapshotBundleFreshnessChip } from "./SnapshotBundleFreshnessChip";
 
 // ROB-274 — primary category badges switched to English (locked decision §4
@@ -471,6 +472,8 @@ export function InvestmentReportBundleContent({
         createdAt={bundle.report.createdAt}
         freshnessSummary={bundle.report.snapshotFreshnessSummary}
       />
+
+      <ReportSnapshotEvidencePanel reportUuid={bundle.report.reportUuid} />
 
       {(
         ["action", "watch", "risk"] as const

@@ -22,6 +22,15 @@ import type {
   ProposalTargetRef,
   ReportStatus,
   SnapshotFreshnessSummary,
+  ReportSnapshotBundle,
+  ReportSnapshotBundleItem,
+  ReportSnapshotBundleSummary,
+  ReportSnapshotDetail,
+  BundleItemRole,
+  BundleStatus,
+  SnapshotFreshnessStatus,
+  SnapshotKind,
+  SnapshotSourceKind,
 } from "../types/investmentReports";
 
 const LIST_ENDPOINT = "/invest/api/investment-reports";
@@ -54,6 +63,10 @@ function asOptionalString(value: unknown): string | null {
 
 function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asOptionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -282,3 +295,127 @@ export async function fetchInvestmentReportBundle(
 }
 
 export { UNAVAILABLE_LABEL };
+
+// ROB-275 — Snapshot evidence viewer API client.
+
+const SNAPSHOT_BUNDLE_ENDPOINT = (reportUuid: string) =>
+  `/invest/api/investment-reports/${encodeURIComponent(reportUuid)}/snapshot-bundle`;
+const SNAPSHOT_DETAIL_ENDPOINT = (
+  reportUuid: string,
+  snapshotUuid: string,
+) =>
+  `/invest/api/investment-reports/${encodeURIComponent(reportUuid)}/snapshots/${encodeURIComponent(snapshotUuid)}`;
+
+type ApiBundle = Record<string, unknown>;
+type ApiBundleItem = Record<string, unknown>;
+type ApiSnapshotDetail = Record<string, unknown>;
+
+function normalizeBundleSummary(
+  raw: ApiBundle,
+): ReportSnapshotBundleSummary {
+  return {
+    bundleUuid: asString(raw.bundle_uuid),
+    purpose: asString(raw.purpose),
+    market: asString(raw.market, "kr") as ReportSnapshotBundleSummary["market"],
+    accountScope: asOptionalString(
+      raw.account_scope,
+    ) as ReportSnapshotBundleSummary["accountScope"],
+    policyVersion: asString(raw.policy_version),
+    status: asString(raw.status, "partial") as BundleStatus,
+    asOf: asString(raw.as_of),
+    coverageSummary: asRecord(raw.coverage_summary),
+    freshnessSummary: asRecord(raw.freshness_summary),
+    createdAt: asString(raw.created_at),
+  };
+}
+
+function normalizeBundleItem(
+  raw: ApiBundleItem,
+): ReportSnapshotBundleItem {
+  return {
+    snapshotUuid: asString(raw.snapshot_uuid),
+    role: asString(raw.role, "required") as BundleItemRole,
+    snapshotKind: asString(raw.snapshot_kind, "portfolio") as SnapshotKind,
+    sourceKind: asString(raw.source_kind, "manual") as SnapshotSourceKind,
+    market: asString(raw.market, "kr") as ReportSnapshotBundleItem["market"],
+    symbol: asOptionalString(raw.symbol),
+    accountScope: asOptionalString(
+      raw.account_scope,
+    ) as ReportSnapshotBundleItem["accountScope"],
+    freshnessStatus: asString(
+      raw.freshness_status,
+      "fresh",
+    ) as SnapshotFreshnessStatus,
+    asOf: asString(raw.as_of),
+    validUntil: asOptionalString(raw.valid_until),
+    sourceTable: asOptionalString(raw.source_table),
+    sourceId: asOptionalNumber(raw.source_id),
+    sourceUri: asOptionalString(raw.source_uri),
+    payloadSizeBytes: asOptionalNumber(raw.payload_size_bytes),
+  };
+}
+
+function normalizeSnapshotDetail(
+  raw: ApiSnapshotDetail,
+): ReportSnapshotDetail {
+  return {
+    snapshotUuid: asString(raw.snapshot_uuid),
+    role: asString(raw.role, "required") as BundleItemRole,
+    snapshotKind: asString(raw.snapshot_kind, "portfolio") as SnapshotKind,
+    sourceKind: asString(raw.source_kind, "manual") as SnapshotSourceKind,
+    market: asString(raw.market, "kr") as ReportSnapshotDetail["market"],
+    symbol: asOptionalString(raw.symbol),
+    accountScope: asOptionalString(
+      raw.account_scope,
+    ) as ReportSnapshotDetail["accountScope"],
+    sourceTable: asOptionalString(raw.source_table),
+    sourceId: asOptionalNumber(raw.source_id),
+    sourceUri: asOptionalString(raw.source_uri),
+    freshnessStatus: asString(
+      raw.freshness_status,
+      "fresh",
+    ) as SnapshotFreshnessStatus,
+    asOf: asString(raw.as_of),
+    validUntil: asOptionalString(raw.valid_until),
+    sourceTimestampsJson: asRecord(raw.source_timestamps_json),
+    coverageJson: asRecord(raw.coverage_json),
+    errorsJson: asRecord(raw.errors_json),
+    payloadJson: asRecord(raw.payload_json),
+  };
+}
+
+export async function fetchReportSnapshotBundle(
+  reportUuid: string,
+  signal?: AbortSignal,
+): Promise<ReportSnapshotBundle> {
+  const raw = await readJson<{
+    bundle?: ApiBundle | null;
+    items?: ApiBundleItem[];
+    unavailable_sources?: Record<string, unknown> | null;
+    source_conflicts?: Record<string, unknown> | null;
+    legacy_no_snapshot?: boolean;
+  }>(SNAPSHOT_BUNDLE_ENDPOINT(reportUuid), signal);
+
+  return {
+    bundle:
+      raw.bundle == null
+        ? null
+        : normalizeBundleSummary(raw.bundle as ApiBundle),
+    items: asArray<ApiBundleItem>(raw.items).map(normalizeBundleItem),
+    unavailableSources: asOptionalRecord(raw.unavailable_sources),
+    sourceConflicts: asOptionalRecord(raw.source_conflicts),
+    legacyNoSnapshot: Boolean(raw.legacy_no_snapshot),
+  };
+}
+
+export async function fetchReportSnapshotDetail(
+  reportUuid: string,
+  snapshotUuid: string,
+  signal?: AbortSignal,
+): Promise<ReportSnapshotDetail> {
+  const raw = await readJson<ApiSnapshotDetail>(
+    SNAPSHOT_DETAIL_ENDPOINT(reportUuid, snapshotUuid),
+    signal,
+  );
+  return normalizeSnapshotDetail(raw);
+}

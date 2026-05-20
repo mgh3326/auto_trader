@@ -12,7 +12,7 @@ from app.schemas.invest_screener import ScreenerFilterChip, ScreenerPreset
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
 CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
-_KR_ONLY_PRESET_IDS = {"investor_flow_momentum"}
+_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy"}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -67,8 +67,8 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         market="kr",
     ),
     ScreenerPreset(
-        id="high_volume_momentum",
-        name="쌍끌이 매수",
+        id="kr_high_volume_surge",
+        name="거래량 급증",
         description="거래량이 폭발적으로 늘어난 종목",
         badges=[],
         filterChips=[
@@ -81,14 +81,29 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
     ScreenerPreset(
         id="investor_flow_momentum",
         name="수급 모멘텀",
-        description="외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보",
+        description="외국인 연속 순매수 흐름이 강한 종목 (스냅샷 기반)",
         badges=["MVP"],
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
-            ScreenerFilterChip(label="투자자별 수급", detail="외국인 3일+ 또는 쌍끌이"),
+            ScreenerFilterChip(label="투자자별 수급", detail="외국인 3일+ 연속 순매수"),
             ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
         metricLabel="외국인 순매수",
+        market="kr",
+    ),
+    ScreenerPreset(
+        id="double_buy",
+        name="쌍끌이 매수",
+        description="기관과 외국인이 동시에 매수하는 종목",
+        badges=["NEW"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="외국인", detail="순매수"),
+            ScreenerFilterChip(label="기관", detail="순매수"),
+            ScreenerFilterChip(label="주가등락률", detail="1일 ≥ 0%"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="주가등락률",
         market="kr",
     ),
     ScreenerPreset(
@@ -182,12 +197,21 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "max_rsi": 30.0,
         "limit": 20,
     },
-    "high_volume_momentum": {
+    "kr_high_volume_surge": {
         "market": "kr",
         "asset_type": "stock",
         "sort_by": "volume",
         "sort_order": "desc",
         "limit": 20,
+    },
+    "double_buy": {
+        "market": "kr",
+        "asset_type": "stock",
+        "sort_by": "change_rate",
+        "sort_order": "desc",
+        "min_change_rate": 0.0,
+        "include_double_buy": True,
+        "limit": 50,
     },
     "growth_expectation": {
         "market": "kr",

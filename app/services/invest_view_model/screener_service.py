@@ -12,6 +12,7 @@ modules — see tests/test_invest_view_model_safety.py.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -318,6 +319,41 @@ def _should_use_snapshot_first(screening_service: Any) -> bool:
         screening_service.__class__.__name__ == "ScreenerService"
         and screening_service.__class__.__module__ == "app.services.screener_service"
     )
+
+
+def _double_buy_dependency_warnings(
+    *,
+    snapshot_rows: list[dict[str, Any]],
+    now_market_date: dt.date,
+) -> tuple[list[str], str | None]:
+    """Return (warnings, state_override) for double_buy by dependency.
+
+    snapshot_rows produced by load_double_buy_from_snapshots carry:
+      - `_screener_snapshot_state`: "fresh" iff price_snapshot_date == flow_snapshot_date,
+        else "stale" (price/flow partition divergence)
+      - `snapshot_date`: the PRICE snapshot date used in the join
+      - `flow_snapshot_date`: the investor-flow snapshot date used in the join
+
+    The two warnings target distinct dependencies so the UI can tell whether
+    price or flow is behind today's market date.
+    """
+    if not snapshot_rows:
+        return [], None
+    warnings: list[str] = []
+    price_states = {row.get("_screener_snapshot_state") for row in snapshot_rows}
+    if "stale" in price_states:
+        warnings.append(
+            "시세 스냅샷이 직전 영업일 기준이라 일부 데이터가 1일 지연되었습니다."
+        )
+    flow_dates = {row.get("flow_snapshot_date") for row in snapshot_rows}
+    if flow_dates and all(
+        isinstance(d, dt.date) and d < now_market_date for d in flow_dates
+    ):
+        warnings.append(
+            "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."
+        )
+    state_override = "stale" if warnings else None
+    return warnings, state_override
 
 
 async def _load_consecutive_gainers_from_snapshots(
@@ -672,9 +708,10 @@ _METRIC_FIELD: dict[str, str] = {
     "cheap_value": "per",
     "steady_dividend": "dividend_yield",
     "oversold_recovery": "rsi",
-    "high_volume_momentum": "volume",
+    "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
     "investor_flow_momentum": "foreign_net",
+    "double_buy": "change_rate",  # NEW — placeholder; Task 3 wires snapshot-first branch
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
@@ -1239,6 +1276,19 @@ async def build_screener_results(
             _snapshot_empty_warning = (
                 "최신 수급 스냅샷에서 조건에 맞는 결과가 없습니다."
             )
+        elif preset_id == "double_buy":
+            from app.services.invest_view_model.double_buy_screener import (
+                load_double_buy_from_snapshots,
+            )
+
+            _snapshot_check_result = await load_double_buy_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            _snapshot_empty_warning = (
+                "최신 수급/시세 스냅샷에서 쌍끌이 매수 조건에 맞는 종목이 없습니다."
+            )
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
                 session,
@@ -1263,6 +1313,12 @@ async def build_screener_results(
         _snapshot_empty_warning = (
             "수급 스냅샷이 아직 적재되지 않아 수급 모멘텀 후보를 표시할 수 없습니다."
         )
+
+    if preset_id == "double_buy" and _snapshot_check_result is None:
+        # snapshot-only preset; generic provider has no Toss-parity filters
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = "수급 또는 시세 스냅샷이 아직 적재되지 않아 쌍끌이 매수 후보를 표시할 수 없습니다."
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
@@ -1322,6 +1378,23 @@ async def build_screener_results(
             str(r.get("_screener_snapshot_state") or "missing") for r in rows
         ]
         _aggregated_data_state = aggregate_states(_row_states)  # type: ignore[arg-type]
+
+    if preset_id == "double_buy":
+        from app.services.invest_screener_snapshots.freshness import today_trading_date
+
+        _market_date = today_trading_date(requested_market, now=now())
+        _double_buy_warnings, _double_buy_state_override = (
+            _double_buy_dependency_warnings(
+                snapshot_rows=rows,
+                now_market_date=_market_date,
+            )
+        )
+        for w in _double_buy_warnings:
+            if w not in upstream_warnings:
+                upstream_warnings.append(w)
+        if _double_buy_state_override is not None and _aggregated_data_state == "fresh":
+            _aggregated_data_state = _double_buy_state_override
+
     if requested_market == "us" and _aggregated_data_state in {"missing", "stale"}:
         if _US_SCREENER_DATA_NOT_READY_WARNING not in upstream_warnings:
             upstream_warnings.append(_US_SCREENER_DATA_NOT_READY_WARNING)

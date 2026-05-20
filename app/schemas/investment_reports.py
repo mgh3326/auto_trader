@@ -22,6 +22,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.investment_snapshots import (
+    BundleItemRole,
+    BundleStatus,
+    FreshnessStatus,
+    SnapshotAccountScope,
+    SnapshotKind,
+    SnapshotMarket,
+    SourceKind,
+)
+
 # Enum-equivalent Literals — match the DB CHECK constraints from
 # alembic/versions/20260518_rob265_add_investment_reports.py exactly.
 MarketLiteral = Literal["kr", "us", "crypto"]
@@ -519,3 +529,99 @@ class InvestmentReportActivateWatchResponse(BaseModel):
     success: bool = True
     alert: InvestmentWatchAlertResponse
     item: InvestmentReportItemResponse
+
+
+# ---------------------------------------------------------------------------
+# ROB-275 — Report-centric snapshot evidence viewer response shapes.
+#
+# These wrap the existing investment_snapshots read shapes for use under
+# the /invest/api/investment-reports/{report_uuid}/snapshot-bundle and
+# .../snapshots/{snapshot_uuid} endpoints. The /trading/api/investment-snapshots
+# MCP-flag-gated routes are NOT touched.
+# ---------------------------------------------------------------------------
+
+
+class ReportSnapshotBundleSummaryView(BaseModel):
+    """Bundle header surfaced via the report-centric evidence endpoint."""
+
+    bundle_uuid: UUID
+    purpose: str
+    market: SnapshotMarket
+    account_scope: SnapshotAccountScope | None
+    policy_version: str
+    status: BundleStatus
+    as_of: datetime
+    coverage_summary: dict[str, Any]
+    freshness_summary: dict[str, Any]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReportSnapshotBundleItemView(BaseModel):
+    """One row in the report's snapshot evidence list — metadata only.
+
+    ``payload_size_bytes`` is computed from the snapshot's stored JSON in
+    the service layer; clients use it to hint at how heavy a payload
+    fetch will be without actually downloading it.
+    """
+
+    snapshot_uuid: UUID
+    role: BundleItemRole
+    snapshot_kind: SnapshotKind
+    source_kind: SourceKind
+    market: SnapshotMarket
+    symbol: str | None
+    account_scope: SnapshotAccountScope | None
+    freshness_status: FreshnessStatus
+    as_of: datetime
+    valid_until: datetime | None
+    source_table: str | None
+    source_id: int | None
+    source_uri: str | None
+    payload_size_bytes: int | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReportSnapshotBundleResponse(BaseModel):
+    """``GET /invest/api/investment-reports/{report_uuid}/snapshot-bundle``.
+
+    ``legacy_no_snapshot=True`` means the report exists but has no
+    ``snapshot_bundle_uuid`` — caller renders a legacy message.
+    """
+
+    bundle: ReportSnapshotBundleSummaryView | None = None
+    items: list[ReportSnapshotBundleItemView] = Field(default_factory=list)
+    unavailable_sources: dict[str, Any] | None = None
+    source_conflicts: dict[str, Any] | None = None
+    legacy_no_snapshot: bool = False
+
+
+class ReportSnapshotDetailResponse(BaseModel):
+    """``GET /invest/api/investment-reports/{report_uuid}/snapshots/{snapshot_uuid}``.
+
+    Returned only after a successful membership check
+    (snapshot_uuid ∈ this report's bundle_items). Carries the snapshot's
+    full DB payload + metadata, plus the bundle item's role/context.
+    """
+
+    snapshot_uuid: UUID
+    role: BundleItemRole
+    snapshot_kind: SnapshotKind
+    source_kind: SourceKind
+    market: SnapshotMarket
+    symbol: str | None
+    account_scope: SnapshotAccountScope | None
+    source_table: str | None
+    source_id: int | None
+    source_uri: str | None
+    freshness_status: FreshnessStatus
+    as_of: datetime
+    valid_until: datetime | None
+    source_timestamps_json: dict[str, Any]
+    coverage_json: dict[str, Any]
+    errors_json: dict[str, Any]
+    payload_json: dict[str, Any]
+
+    model_config = ConfigDict(from_attributes=True)
