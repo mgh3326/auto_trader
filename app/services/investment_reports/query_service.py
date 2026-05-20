@@ -44,9 +44,7 @@ class InvestmentReportQueryService:
     ) -> None:
         self._session = session
         self._repo = repository or InvestmentReportsRepository(session)
-        self._snap_repo = snapshot_repository or InvestmentSnapshotsRepository(
-            session
-        )
+        self._snap_repo = snapshot_repository or InvestmentSnapshotsRepository(session)
 
     async def list_reports(
         self,
@@ -277,4 +275,8 @@ def _payload_size_bytes(payload_json: dict[str, Any] | None) -> int | None:
     """Cheap UTF-8 byte count of a JSON-serialised payload. ``None`` if missing."""
     if payload_json is None:
         return None
-    return len(json.dumps(payload_json, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    return len(
+        json.dumps(payload_json, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )

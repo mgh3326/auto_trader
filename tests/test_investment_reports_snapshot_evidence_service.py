@@ -30,7 +30,6 @@ from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
 
-
 _NOW = dt.datetime(2026, 5, 20, 11, 0, 0, tzinfo=dt.UTC)
 
 
@@ -95,6 +94,7 @@ async def _seed_report_with_bundle(db_session):
 
 
 async def _seed_report_without_bundle(db_session):
+    """Seed one report with no ``snapshot_bundle_uuid`` (legacy path)."""
     report_repo = InvestmentReportsRepository(db_session)
     report = await report_repo.insert_report(
         report_uuid=_uuid.uuid4(),
@@ -153,6 +153,4 @@ async def test_get_report_snapshot_bundle_returns_bundle_and_items(db_session):
     # unavailable_sources / source_conflicts come from the *report row*,
     # not from the bundle — the viewer surfaces them separately.
     assert response["unavailable_sources"] == {"naver_remote_debug": "blocked"}
-    assert response["source_conflicts"] == {
-        "market": {"kis_mcp": 1.0, "manual": 1.1}
-    }
+    assert response["source_conflicts"] == {"market": {"kis_mcp": 1.0, "manual": 1.1}}
