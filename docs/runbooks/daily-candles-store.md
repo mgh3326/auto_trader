@@ -251,3 +251,50 @@ column will be NULL for all rows.
 The `_fetch_ohlcv_for_volume_profile` helper in the MCP tooling still uses
 the legacy `kis_ohlcv_cache` path for KR market data. It was not migrated to
 the durable store in this PR. Migration is a separate follow-up.
+
+---
+
+## ROB-284 pre-migration backup (one-time, before alembic upgrade)
+
+The `crypto_candles_1d` in-place migration drops legacy `symbol` / `market`
+columns. Before running `alembic upgrade head` on any environment with
+existing crypto candle data, take a backup table:
+
+```sql
+-- Run as DB superuser on the target environment.
+CREATE TABLE crypto_candles_1d_pre_rob283 AS
+SELECT * FROM crypto_candles_1d;
+
+-- Verify row count matches.
+SELECT
+  (SELECT COUNT(*) FROM crypto_candles_1d) AS live,
+  (SELECT COUNT(*) FROM crypto_candles_1d_pre_rob283) AS backup;
+```
+
+If `live != backup`, abort the migration. If they match, proceed:
+
+```bash
+uv run alembic upgrade head
+```
+
+To roll back manually after a failed migration:
+
+```sql
+DROP TABLE crypto_candles_1d;
+ALTER TABLE crypto_candles_1d_pre_rob283 RENAME TO crypto_candles_1d;
+-- Restore Timescale hypertable registration:
+SELECT create_hypertable('crypto_candles_1d', 'time',
+  chunk_time_interval => INTERVAL '90 days', migrate_data => TRUE);
+```
+
+Remove the backup table only after at least one full week of successful
+operation on the new schema:
+
+```sql
+DROP TABLE crypto_candles_1d_pre_rob283;
+```
+
+> The backup is an **operator step** in this runbook — it is NOT performed
+> automatically by the alembic migration. ROB-284's step-3 migration
+> additionally fails closed if any row still has `NULL instrument_id`,
+> `NULL base_volume`, or `NULL is_closed` after step 2 (the backfill).
