@@ -38,6 +38,9 @@ from app.mcp_server.tooling.execution_comment_registration import (
     register_execution_comment_tools,
 )
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
+from app.mcp_server.tooling.investment_hermes_handlers import (
+    register_investment_hermes_tools,
+)
 from app.mcp_server.tooling.investment_reports_handlers import (
     register_investment_report_tools,
 )
@@ -94,6 +97,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_fundamentals_tools(mcp)
     register_analysis_tools(mcp)
     register_investment_report_tools(mcp)
+    # ROB-287 — Hermes-initiated composition contract. The three tools
+    # short-circuit with ``success=False, error='snapshot_backed_report_generator_disabled'``
+    # when ``SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED`` is off, so they're
+    # safe to register unconditionally alongside the report-generation
+    # surface.
+    register_investment_hermes_tools(mcp)
     register_trade_profile_tools(mcp)
     register_market_report_tools(mcp)
     register_user_settings_tools(mcp)
