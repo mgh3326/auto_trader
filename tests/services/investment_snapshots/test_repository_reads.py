@@ -247,19 +247,6 @@ async def test_list_snapshots_filters(db_session):
 
 async def _seed_one_pair(session):
     """ROB-275 helper — insert one bundle with one required snapshot, return (bundle_uuid, snapshot_uuid)."""
-    import datetime as dt
-    import uuid as _uuid
-
-    from app.schemas.investment_snapshots import (
-        BundleCreate,
-        BundleItemCreate,
-        SnapshotCreate,
-        SnapshotRunCreate,
-    )
-    from app.services.investment_snapshots.repository import (
-        InvestmentSnapshotsRepository,
-    )
-
     repo = InvestmentSnapshotsRepository(session)
     now = dt.datetime(2026, 5, 20, 11, 0, 0, tzinfo=dt.UTC)
     run = await repo.insert_run(
@@ -278,14 +265,14 @@ async def _seed_one_pair(session):
             market="kr",
             account_scope="kis_live",
             source_kind="manual",
-            payload_json={"cash_krw": 1, "u": str(_uuid.uuid4())},
+            payload_json={"cash_krw": 1, "u": str(uuid.uuid4())},
             as_of=now,
             freshness_status="fresh",
         )
     )
     bundle = await repo.insert_bundle(
         BundleCreate(
-            purpose=f"rob275_{_uuid.uuid4().hex[:8]}",
+            purpose=f"rob275_{uuid.uuid4().hex[:8]}",
             market="kr",
             account_scope="kis_live",
             policy_version="intraday_action_report_v1",
@@ -306,10 +293,6 @@ async def test_get_bundle_item_with_snapshot_returns_pair_when_membership_holds(
     db_session,
 ):
     """ROB-275 — fetch (item, snapshot) for a (bundle_uuid, snapshot_uuid) pair."""
-    from app.services.investment_snapshots.repository import (
-        InvestmentSnapshotsRepository,
-    )
-
     bundle_uuid, snapshot_uuid = await _seed_one_pair(db_session)
     repo = InvestmentSnapshotsRepository(db_session)
     pair = await repo.get_bundle_item_with_snapshot(
@@ -326,15 +309,9 @@ async def test_get_bundle_item_with_snapshot_returns_none_for_foreign_pair(
     db_session,
 ):
     """A snapshot_uuid that belongs to a *different* bundle returns None."""
-    import uuid as _uuid
-
-    from app.services.investment_snapshots.repository import (
-        InvestmentSnapshotsRepository,
-    )
-
     bundle_uuid, _ = await _seed_one_pair(db_session)
     repo = InvestmentSnapshotsRepository(db_session)
     pair = await repo.get_bundle_item_with_snapshot(
-        bundle_uuid=bundle_uuid, snapshot_uuid=_uuid.uuid4()
+        bundle_uuid=bundle_uuid, snapshot_uuid=uuid.uuid4()
     )
     assert pair is None
