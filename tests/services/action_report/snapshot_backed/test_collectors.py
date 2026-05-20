@@ -1301,6 +1301,7 @@ def test_collector_modules_do_not_import_broker_or_activation_paths():
         "app.services.action_report.snapshot_backed.collectors.registry",
         "app.services.action_report.snapshot_backed.generator",
         "app.services.action_report.snapshot_backed.symbol_derivation",
+        "app.services.action_report.snapshot_backed.auto_emit",
     ]
 
     for name in target_modules:

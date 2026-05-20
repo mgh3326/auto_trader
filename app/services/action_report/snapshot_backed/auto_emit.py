@@ -74,9 +74,7 @@ def _quote_is_actionable(quote: dict[str, Any]) -> bool:
     best_ask = quote.get("best_ask") or 0
     bid_depth = quote.get("bid_depth") or 0
     ask_depth = quote.get("ask_depth") or 0
-    return (
-        best_bid > 0 and best_ask > 0 and (bid_depth > 0 or ask_depth > 0)
-    )
+    return best_bid > 0 and best_ask > 0 and (bid_depth > 0 or ask_depth > 0)
 
 
 def _held_kis_symbols(
@@ -247,9 +245,7 @@ class EvidenceAutoEmitter:
             if sym in already_proposed:
                 continue
             quote_pair = symbol_quotes.get(sym)
-            quote_status = (
-                quote_pair[1].get("status") if quote_pair else "no_snapshot"
-            )
+            quote_status = quote_pair[1].get("status") if quote_pair else "no_snapshot"
             if quote_pair is not None and _quote_is_actionable(quote_pair[1]):
                 # Quote actionable but candidate usefulness wasn't useful —
                 # caller's evidence is mixed; surface as watch review.
@@ -270,7 +266,7 @@ class EvidenceAutoEmitter:
                     client_item_key=f"auto-watch-{sym}",
                     item_kind="watch",
                     symbol=sym,
-                    intent="news_followup_review",
+                    intent="trend_recovery_review",
                     rationale=(
                         f"뉴스 관심 종목 watch 검토 — {sym} "
                         f"(news_matches {count}, quote_status {quote_status})"

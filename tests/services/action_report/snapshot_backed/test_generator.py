@@ -859,6 +859,84 @@ async def test_action_item_downgraded_to_review_when_no_quote_evidence() -> None
 
 
 @pytest.mark.asyncio
+async def test_auto_emit_from_evidence_appends_review_items_from_bundle() -> None:
+    """ROB-278 Phase 2 — auto_emit_from_evidence=True triggers the
+    deterministic proposer; the resulting items are surfaced through
+    ingest with operation='review' + apply_policy='requires_user_approval'.
+    """
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    fake_bundle = SimpleNamespace(id=7777)
+    portfolio_snapshot = SimpleNamespace(
+        snapshot_kind="portfolio",
+        symbol=None,
+        snapshot_uuid=uuid4(),
+        payload_json={
+            "primary_source": "kis",
+            "holdings": [
+                {
+                    "ticker": "005930",
+                    "quantity": 10,
+                    "sellable_quantity": 8,
+                    "source": "kis",
+                    "market": "KR",
+                }
+            ],
+            "reference_holdings": [],
+            "count": 1,
+            "market": "kr",
+        },
+    )
+    symbol_snapshot = SimpleNamespace(
+        snapshot_kind="symbol",
+        symbol="005930",
+        snapshot_uuid=uuid4(),
+        payload_json={
+            "symbol": "005930",
+            "quote": {
+                "status": "ok",
+                "last_price": 70_000.0,
+                "best_bid": 69_900.0,
+                "best_ask": 70_100.0,
+                "spread": 200.0,
+                "spread_bps": 28.57,
+                "bid_depth": 500.0,
+                "ask_depth": 600.0,
+                "venue": "krx",
+            },
+        },
+    )
+
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[
+            (SimpleNamespace(id=1, snapshot_id=1), portfolio_snapshot),
+            (SimpleNamespace(id=2, snapshot_id=2), symbol_snapshot),
+        ],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+    await gen.generate(
+        _make_request(status="draft", auto_emit_from_evidence=True, user_id=42)
+    )
+    sent = ingest.calls[0]
+    auto_items = [
+        i for i in sent.items if (i.client_item_key or "").startswith("auto-")
+    ]
+    assert auto_items, "expected at least one auto-emitted item"
+    for item in auto_items:
+        assert item.operation == "review"
+        assert item.apply_policy == "requires_user_approval"
+
+
+@pytest.mark.asyncio
 async def test_action_item_unchanged_when_quote_evidence_ok() -> None:
     """ROB-278 Phase 2 — when symbol snapshot reports quote.status='ok',
     the classifier does not downgrade the action item on quote grounds.
