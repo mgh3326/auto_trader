@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchInvestmentReportBundle,
   fetchInvestmentReports,
+  fetchReportSnapshotBundle,
+  fetchReportSnapshotDetail,
 } from "../api/investmentReports";
 
 const originalFetch = global.fetch;
@@ -238,9 +240,9 @@ describe("fetchReportSnapshotBundle", () => {
           freshness_status: "fresh",
           as_of: "2026-05-20T11:00:00Z",
           valid_until: null,
-          source_table: null,
-          source_id: null,
-          source_uri: null,
+          source_table: "market_quote_snapshots",
+          source_id: 42,
+          source_uri: "market_quote_snapshots:abc",
           payload_size_bytes: 256,
         },
       ],
@@ -249,9 +251,6 @@ describe("fetchReportSnapshotBundle", () => {
       legacy_no_snapshot: false,
     });
 
-    const { fetchReportSnapshotBundle } = await import(
-      "../api/investmentReports"
-    );
     const response = await fetchReportSnapshotBundle("uuid-1");
     expect(response.legacyNoSnapshot).toBe(false);
     expect(response.bundle?.bundleUuid).toBe("bundle-1");
@@ -260,6 +259,10 @@ describe("fetchReportSnapshotBundle", () => {
     expect(response.items).toHaveLength(1);
     expect(response.items[0]!.snapshotUuid).toBe("snap-1");
     expect(response.items[0]!.payloadSizeBytes).toBe(256);
+    expect(response.items[0]!.freshnessStatus).toBe("fresh");
+    expect(response.items[0]!.sourceId).toBe(42);
+    expect(response.items[0]!.sourceTable).toBe("market_quote_snapshots");
+    expect(response.items[0]!.sourceUri).toBe("market_quote_snapshots:abc");
     expect(response.unavailableSources).toEqual({
       naver_remote_debug: "blocked",
     });
@@ -274,9 +277,6 @@ describe("fetchReportSnapshotBundle", () => {
       source_conflicts: null,
       legacy_no_snapshot: true,
     });
-    const { fetchReportSnapshotBundle } = await import(
-      "../api/investmentReports"
-    );
     const response = await fetchReportSnapshotBundle("uuid-1");
     expect(response.legacyNoSnapshot).toBe(true);
     expect(response.bundle).toBeNull();
@@ -306,9 +306,6 @@ describe("fetchReportSnapshotDetail", () => {
       payload_json: { cash_krw: 1_000_000 },
     });
 
-    const { fetchReportSnapshotDetail } = await import(
-      "../api/investmentReports"
-    );
     const detail = await fetchReportSnapshotDetail("uuid 1", "snap 1");
     expect(detail.snapshotUuid).toBe("snap-1");
     expect(detail.role).toBe("required");
@@ -321,9 +318,6 @@ describe("fetchReportSnapshotDetail", () => {
 
   it("throws on non-2xx (e.g. 404 for non-member snapshot)", async () => {
     mockFetchOnce({}, 404);
-    const { fetchReportSnapshotDetail } = await import(
-      "../api/investmentReports"
-    );
     await expect(
       fetchReportSnapshotDetail("uuid-1", "snap-x"),
     ).rejects.toThrow(/404/);

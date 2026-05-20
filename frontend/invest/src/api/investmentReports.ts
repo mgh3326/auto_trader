@@ -62,6 +62,10 @@ function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asOptionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -276,7 +280,7 @@ export { UNAVAILABLE_LABEL };
 
 // ROB-275 — Snapshot evidence viewer API client.
 
-const BUNDLE_SNAPSHOT_ENDPOINT = (reportUuid: string) =>
+const SNAPSHOT_BUNDLE_ENDPOINT = (reportUuid: string) =>
   `/invest/api/investment-reports/${encodeURIComponent(reportUuid)}/snapshot-bundle`;
 const SNAPSHOT_DETAIL_ENDPOINT = (
   reportUuid: string,
@@ -299,7 +303,7 @@ function normalizeBundleSummary(
       raw.account_scope,
     ) as ReportSnapshotBundleSummary["accountScope"],
     policyVersion: asString(raw.policy_version),
-    status: asString(raw.status, "complete") as BundleStatus,
+    status: asString(raw.status, "partial") as BundleStatus,
     asOf: asString(raw.as_of),
     coverageSummary: asRecord(raw.coverage_summary),
     freshnessSummary: asRecord(raw.freshness_summary),
@@ -327,16 +331,9 @@ function normalizeBundleItem(
     asOf: asString(raw.as_of),
     validUntil: asOptionalString(raw.valid_until),
     sourceTable: asOptionalString(raw.source_table),
-    sourceId:
-      typeof raw.source_id === "number" && Number.isFinite(raw.source_id)
-        ? (raw.source_id as number)
-        : null,
+    sourceId: asOptionalNumber(raw.source_id),
     sourceUri: asOptionalString(raw.source_uri),
-    payloadSizeBytes:
-      typeof raw.payload_size_bytes === "number" &&
-      Number.isFinite(raw.payload_size_bytes)
-        ? (raw.payload_size_bytes as number)
-        : null,
+    payloadSizeBytes: asOptionalNumber(raw.payload_size_bytes),
   };
 }
 
@@ -354,10 +351,7 @@ function normalizeSnapshotDetail(
       raw.account_scope,
     ) as ReportSnapshotDetail["accountScope"],
     sourceTable: asOptionalString(raw.source_table),
-    sourceId:
-      typeof raw.source_id === "number" && Number.isFinite(raw.source_id)
-        ? (raw.source_id as number)
-        : null,
+    sourceId: asOptionalNumber(raw.source_id),
     sourceUri: asOptionalString(raw.source_uri),
     freshnessStatus: asString(
       raw.freshness_status,
@@ -382,7 +376,7 @@ export async function fetchReportSnapshotBundle(
     unavailable_sources?: Record<string, unknown> | null;
     source_conflicts?: Record<string, unknown> | null;
     legacy_no_snapshot?: boolean;
-  }>(BUNDLE_SNAPSHOT_ENDPOINT(reportUuid), signal);
+  }>(SNAPSHOT_BUNDLE_ENDPOINT(reportUuid), signal);
 
   return {
     bundle:
