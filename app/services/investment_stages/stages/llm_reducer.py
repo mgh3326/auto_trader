@@ -69,7 +69,6 @@ class LLMReducerStage:
                 evidence=evidence,
                 fallback_lines=fallback_lines,
                 citations=citations,
-                exhausted=True,
             )
 
         try:
@@ -124,7 +123,6 @@ class LLMReducerStage:
         evidence: dict[str, list[str]],
         fallback_lines: list[str],
         citations: list[StageCitation],
-        exhausted: bool,
     ) -> StageArtifactPayload:
         return StageArtifactPayload(
             stage_type=self.stage_type,
@@ -134,8 +132,8 @@ class LLMReducerStage:
             confidence=40 if fallback_lines else 20,
             summary="; ".join(fallback_lines[:10]) or self._config.no_evidence_summary,
             cited_snapshots=citations,
-            model_name=None if exhausted else None,
-            prompt_version=None if exhausted else None,
+            model_name=None,
+            prompt_version=None,
             buy_evidence=self._stage_evidence_values(evidence, "buy_evidence"),
             sell_evidence=self._stage_evidence_values(evidence, "sell_evidence"),
             risk_evidence=self._stage_evidence_values(evidence, "risk_evidence"),
