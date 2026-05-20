@@ -193,3 +193,43 @@ def test_partial_approve_with_snapshot_allowed() -> None:
 def test_activate_watch_request_minimal() -> None:
     req = ActivateWatchRequest(item_uuid=uuid.uuid4(), actor="operator-test")
     assert req.idempotency_key is None
+
+
+def test_report_snapshot_bundle_response_legacy_no_snapshot_shape() -> None:
+    """ROB-275 — legacy/no-snapshot reports return an empty bundle response."""
+    from app.schemas.investment_reports import ReportSnapshotBundleResponse
+
+    response = ReportSnapshotBundleResponse(legacy_no_snapshot=True)
+    assert response.bundle is None
+    assert response.items == []
+    assert response.unavailable_sources is None
+    assert response.source_conflicts is None
+
+
+def test_report_snapshot_detail_response_includes_full_payload() -> None:
+    """ROB-275 — detail response carries role + payload."""
+    import datetime as dt
+
+    from app.schemas.investment_reports import ReportSnapshotDetailResponse
+
+    response = ReportSnapshotDetailResponse(
+        snapshot_uuid=uuid.uuid4(),
+        role="required",
+        snapshot_kind="portfolio",
+        source_kind="manual",
+        market="kr",
+        symbol=None,
+        account_scope="kis_live",
+        source_table=None,
+        source_id=None,
+        source_uri=None,
+        freshness_status="fresh",
+        as_of=dt.datetime(2026, 5, 20, 11, 0, 0, tzinfo=dt.UTC),
+        valid_until=None,
+        source_timestamps_json={},
+        coverage_json={},
+        errors_json={},
+        payload_json={"cash_krw": 1_000_000},
+    )
+    assert response.role == "required"
+    assert response.payload_json == {"cash_krw": 1_000_000}
