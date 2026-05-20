@@ -6,6 +6,7 @@ We want callers to get a clean ValidationError, not an IntegrityError.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 import pytest
@@ -16,6 +17,8 @@ from app.schemas.investment_reports import (
     IngestReportItem,
     IngestReportRequest,
     RecordDecisionRequest,
+    ReportSnapshotBundleResponse,
+    ReportSnapshotDetailResponse,
     WatchConditionPayload,
 )
 from tests._investment_reports_helpers import future_datetime
@@ -197,8 +200,6 @@ def test_activate_watch_request_minimal() -> None:
 
 def test_report_snapshot_bundle_response_legacy_no_snapshot_shape() -> None:
     """ROB-275 — legacy/no-snapshot reports return an empty bundle response."""
-    from app.schemas.investment_reports import ReportSnapshotBundleResponse
-
     response = ReportSnapshotBundleResponse(legacy_no_snapshot=True)
     assert response.bundle is None
     assert response.items == []
@@ -208,10 +209,6 @@ def test_report_snapshot_bundle_response_legacy_no_snapshot_shape() -> None:
 
 def test_report_snapshot_detail_response_includes_full_payload() -> None:
     """ROB-275 — detail response carries role + payload."""
-    import datetime as dt
-
-    from app.schemas.investment_reports import ReportSnapshotDetailResponse
-
     response = ReportSnapshotDetailResponse(
         snapshot_uuid=uuid.uuid4(),
         role="required",

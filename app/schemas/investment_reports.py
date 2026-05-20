@@ -21,6 +21,15 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.schemas.investment_snapshots import (
+    BundleItemRole,
+    BundleStatus,
+    FreshnessStatus,
+    SnapshotAccountScope,
+    SnapshotKind,
+    SnapshotMarket,
+    SourceKind,
+)
 
 # Enum-equivalent Literals — match the DB CHECK constraints from
 # alembic/versions/20260518_rob265_add_investment_reports.py exactly.
@@ -435,15 +444,6 @@ class InvestmentReportActivateWatchResponse(BaseModel):
 # .../snapshots/{snapshot_uuid} endpoints. The /trading/api/investment-snapshots
 # MCP-flag-gated routes are NOT touched.
 # ---------------------------------------------------------------------------
-from app.schemas.investment_snapshots import (  # noqa: E402
-    BundleItemRole,
-    BundleStatus,
-    FreshnessStatus,
-    SnapshotAccountScope,
-    SnapshotKind,
-    SnapshotMarket,
-    SourceKind,
-)
 
 
 class ReportSnapshotBundleSummaryView(BaseModel):
@@ -451,6 +451,8 @@ class ReportSnapshotBundleSummaryView(BaseModel):
 
     bundle_uuid: UUID
     purpose: str
+    market: SnapshotMarket
+    account_scope: SnapshotAccountScope | None
     policy_version: str
     status: BundleStatus
     as_of: datetime
@@ -526,3 +528,5 @@ class ReportSnapshotDetailResponse(BaseModel):
     coverage_json: dict[str, Any]
     errors_json: dict[str, Any]
     payload_json: dict[str, Any]
+
+    model_config = ConfigDict(from_attributes=True)
