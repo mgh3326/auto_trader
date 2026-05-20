@@ -16,6 +16,7 @@ import type {
   InvestmentWatchEvent,
   SnapshotFreshnessSummary,
 } from "../../types/investmentReports";
+import { IntermediateAnalysisPanel } from "./IntermediateAnalysisPanel";
 import { ProposalDiffPanel } from "./ProposalDiffPanel";
 import { ReportSnapshotEvidencePanel } from "./ReportSnapshotEvidencePanel";
 import { SnapshotBundleFreshnessChip } from "./SnapshotBundleFreshnessChip";
@@ -474,6 +475,8 @@ export function InvestmentReportBundleContent({
       />
 
       <ReportSnapshotEvidencePanel reportUuid={bundle.report.reportUuid} />
+
+      <IntermediateAnalysisPanel reportUuid={bundle.report.reportUuid} />
 
       {(
         ["action", "watch", "risk"] as const

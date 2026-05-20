@@ -348,3 +348,45 @@ export interface ReportSnapshotDetail {
   errorsJson: Record<string, unknown>;
   payloadJson: Record<string, unknown>;
 }
+
+// ROB-279 Phase 5 — Stage artifact types. Mirrors the backend
+// ``app/schemas/investment_stage_runs.py`` response shapes.
+
+export type StageVerdict = "bull" | "bear" | "neutral" | "unavailable";
+
+export type StageType =
+  | "market"
+  | "news"
+  | "portfolio_journal"
+  | "watch_context"
+  | "candidate_universe"
+  | "bull_reducer"
+  | "bear_reducer"
+  | "risk_review";
+
+export interface StageArtifact {
+  artifactUuid: string;
+  runUuid: string;
+  stageType: StageType;
+  verdict: StageVerdict;
+  confidence: number;
+  summary: string | null;
+  keyPoints: unknown[];
+  buyEvidence: unknown[];
+  sellEvidence: unknown[];
+  riskEvidence: unknown[];
+  missingData: unknown[];
+  citedSnapshotUuids: string[];
+  freshnessSummary: Record<string, unknown> | null;
+  modelName: string | null;
+  promptVersion: string | null;
+  payloadHash: string | null;
+  rawPayloadJson: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface ReportStageArtifactsResponse {
+  reportUuid: string;
+  stageRunUuid: string | null;
+  artifacts: StageArtifact[];
+}
