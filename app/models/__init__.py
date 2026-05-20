@@ -3,6 +3,7 @@ from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
 from .crypto_candles import CryptoCandle1d, CryptoCandle1m
 from .crypto_insight_snapshot import CryptoInsightSnapshot
+from .crypto_instrument_health import CryptoInstrumentHealth
 from .crypto_instruments import CryptoInstrument
 from .execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
@@ -107,6 +108,7 @@ __all__ = [
     "CryptoCandle1m",
     "CryptoInsightSnapshot",
     "CryptoInstrument",
+    "CryptoInstrumentHealth",
     "Exchange",
     "Instrument",
     "User",
