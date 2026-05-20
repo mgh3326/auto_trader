@@ -1,9 +1,9 @@
 """ROB-286 — BinanceTestnetLedgerService (the public write surface).
 
 All writes to ``binance_testnet_order_ledger`` go through this service.
-Direct SQL or repository imports from outside this sub-package are
-forbidden. The convention is satisfied by the test
-``test_repository_not_importable_externally``.
+Direct SQL or repository imports from outside this module are forbidden;
+the boundary is enforced by the test
+``test_repository_import_boundary_enforced`` (AST scan over ``app/**.py``).
 
 State lifecycle (locked transition table; raises
 ``BinanceInvalidStateTransition`` on any illegal move):

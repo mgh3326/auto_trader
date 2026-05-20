@@ -1,16 +1,16 @@
 """ROB-286 — Repository for binance_testnet_order_ledger.
 
-Service-internal. Do not import from outside
-``app/services/brokers/binance/testnet/ledger/``. Use
-``BinanceTestnetLedgerService`` as the public write surface.
+Service-internal. ``BinanceTestnetLedgerService`` is the only allowed
+importer; all production code outside ``ledger/service.py`` must use
+the service instead.
 
 The audit test
-``tests/services/brokers/binance/testnet/test_ledger_service::test_repository_not_importable_externally``
-asserts that ``importlib.import_module(
-"app.services.brokers.binance.testnet.ledger.repository._public_export")``
-raises ``ImportError`` — i.e., the repository has no submodule of that
-name. This module-level guard is satisfied by-construction because
-``_public_export`` is a private class, not a submodule.
+``tests/services/brokers/binance/testnet/test_ledger_service::test_repository_import_boundary_enforced``
+walks every ``app/**.py`` file with the AST module and fails if any
+file other than ``app/services/brokers/binance/testnet/ledger/service.py``
+imports this module or the ``BinanceTestnetLedgerRepository`` class.
+Tests are intentionally not scanned — they may exercise the repo
+through mocks/fixtures.
 """
 
 from __future__ import annotations

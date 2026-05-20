@@ -5,7 +5,8 @@ Matrix rows T24-T27.
 
 from __future__ import annotations
 
-import importlib
+import ast
+import pathlib
 from decimal import Decimal
 
 import pytest
@@ -233,14 +234,106 @@ async def test_first_fill_after_submit_emits_sentry(
     assert mock_capture.called
 
 
-def test_repository_not_importable_externally() -> None:
-    """T27 — Repository submodule import guard.
+_REPO_MODULE = "app.services.brokers.binance.testnet.ledger.repository"
+_REPO_CLASS = "BinanceTestnetLedgerRepository"
+_ALLOWED_IMPORTER = pathlib.Path(
+    "app/services/brokers/binance/testnet/ledger/service.py"
+)
 
-    The repository is service-internal; outside callers must use the
-    service. ``_public_export`` is intentionally a non-existent submodule
-    so importing it raises ``ImportError`` / ``ModuleNotFoundError``.
+
+def _repo_root() -> pathlib.Path:
+    # tests/services/brokers/binance/testnet/test_ledger_service.py
+    #   parents[0]=testnet  [1]=binance  [2]=brokers  [3]=services
+    #   [4]=tests  [5]=repo root
+    return pathlib.Path(__file__).resolve().parents[5]
+
+
+def _imports_repository(tree: ast.AST) -> bool:
+    """Return True if the parsed module imports the repository module
+    or class by any of the recognised spellings."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == _REPO_MODULE:
+                return True
+            # ``from app.services.brokers.binance.testnet.ledger import repository``
+            if module == "app.services.brokers.binance.testnet.ledger" and any(
+                alias.name == "repository" for alias in node.names
+            ):
+                return True
+            # ``from app.services.brokers.binance.testnet.ledger import
+            # BinanceTestnetLedgerRepository`` (re-export shape).
+            if module.startswith("app.services.brokers.binance.testnet.ledger") and any(
+                alias.name == _REPO_CLASS for alias in node.names
+            ):
+                return True
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _REPO_MODULE or alias.name.startswith(
+                    _REPO_MODULE + "."
+                ):
+                    return True
+    return False
+
+
+def test_repository_import_boundary_enforced() -> None:
+    """T27 — Repository import-boundary guard.
+
+    The ``BinanceTestnetLedgerRepository`` is the service-internal DB
+    boundary for ``binance_testnet_order_ledger``. Production code
+    outside ``app/services/brokers/binance/testnet/ledger/service.py``
+    must NOT import the repository module or class; the service is the
+    only public write surface.
+
+    Walks every ``app/**.py`` file with the AST module, looks for
+    ``Import``/``ImportFrom`` nodes referencing
+    ``app.services.brokers.binance.testnet.ledger.repository`` or the
+    ``BinanceTestnetLedgerRepository`` symbol, and fails if any file
+    other than ``ledger/service.py`` imports them.
+
+    Tests are intentionally not scanned — they may exercise the repo
+    through mocks or fixtures.
     """
-    with pytest.raises(ImportError):
-        importlib.import_module(
-            "app.services.brokers.binance.testnet.ledger.repository._public_export"
-        )
+    repo_root = _repo_root()
+    app_dir = repo_root / "app"
+    assert app_dir.exists(), f"app/ dir missing under {repo_root}"
+
+    offenders: list[pathlib.Path] = []
+    for py_file in app_dir.rglob("*.py"):
+        rel = py_file.relative_to(repo_root)
+        if rel == _ALLOWED_IMPORTER:
+            continue
+        try:
+            tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        except SyntaxError:
+            continue
+        if _imports_repository(tree):
+            offenders.append(rel)
+
+    assert not offenders, (
+        f"Repository import-boundary violated. ROB-286 acceptance criterion: "
+        f"`{_REPO_MODULE}` and `{_REPO_CLASS}` are service-internal — only "
+        f"`{_ALLOWED_IMPORTER}` may import them. Offending files: "
+        f"{[str(p) for p in sorted(offenders)]}. Use "
+        f"`BinanceTestnetLedgerService` instead, or move the repository "
+        f"shape entirely if a different consumer is legitimate."
+    )
+
+
+def test_repository_allowed_importer_is_actually_using_it() -> None:
+    """Sanity counterpart to ``test_repository_import_boundary_enforced``.
+
+    Verifies the allowed importer (``ledger/service.py``) actually
+    references the repository — guards against the guard test silently
+    passing because the only legitimate user stopped importing it.
+    """
+    repo_root = _repo_root()
+    service_file = repo_root / _ALLOWED_IMPORTER
+    assert service_file.exists(), f"missing allowed importer: {service_file}"
+    tree = ast.parse(service_file.read_text(encoding="utf-8"))
+    assert _imports_repository(tree), (
+        f"{_ALLOWED_IMPORTER} no longer imports the repository — either the "
+        "ledger architecture changed (then update _ALLOWED_IMPORTER / drop this "
+        "test) or someone moved the repo import elsewhere (then the boundary "
+        "test above will pass vacuously)."
+    )
