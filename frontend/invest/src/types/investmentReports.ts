@@ -122,6 +122,30 @@ export interface SnapshotFreshnessSummary {
     | undefined;
 }
 
+// ROB-274 — proposal-state vocabulary.
+export type ProposalOperation =
+  | "create"
+  | "modify"
+  | "cancel"
+  | "keep"
+  | "replace"
+  | "review";
+
+export interface ProposalTargetRef {
+  type: "investment_watch_alert" | "broker_order" | "ambiguous";
+  id?: string | null;
+  status?: string | null;
+  broker?: string | null;
+  raw?: Record<string, unknown> | null;
+  candidates?: Array<Record<string, unknown>> | null;
+}
+
+export interface ProposalDiffEntry {
+  field: string;
+  from: unknown;
+  to: unknown;
+}
+
 export interface InvestmentReportItem {
   itemUuid: string;
   itemKind: ItemKind;
@@ -141,6 +165,14 @@ export interface InvestmentReportItem {
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  // ROB-274 — proposal-state fields. Optional/nullable so legacy items
+  // (pre-ROB-274) remain valid against this interface.
+  operation?: ProposalOperation | null;
+  targetRef?: ProposalTargetRef | null;
+  currentState?: Record<string, unknown> | null;
+  proposedState?: Record<string, unknown> | null;
+  diff?: ProposalDiffEntry[] | null;
+  applyPolicy?: "requires_user_approval" | null;
 }
 
 export interface InvestmentReportItemDecision {

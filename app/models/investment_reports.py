@@ -230,15 +230,34 @@ class InvestmentReportItem(Base):
             "'trend_recovery_review','rebalance_review')",
             name="ck_investment_report_items_intent",
         ),
-        # Watch items must carry a watch_condition payload.
+        # ROB-274 — proposal-lifecycle CHECKs. ``operation`` is nullable so
+        # legacy rows (operation IS NULL) remain valid; the frontend treats
+        # null as 'create' for the purposes of watch-condition rendering.
         CheckConstraint(
-            "item_kind <> 'watch' OR watch_condition IS NOT NULL",
+            "operation IS NULL OR operation IN ("
+            "'create','modify','cancel','keep','replace','review'"
+            ")",
+            name="ck_investment_report_items_operation",
+        ),
+        CheckConstraint(
+            "apply_policy IS NULL OR apply_policy = 'requires_user_approval'",
+            name="ck_investment_report_items_apply_policy",
+        ),
+        # ROB-274 — operation-aware watch invariants. The pre-274 CHECKs
+        # required watch_condition / valid_until for every watch item;
+        # cancel/keep/review now reference an existing watch alert and
+        # therefore don't carry a fresh condition. See migration
+        # 20260520_rob274_p1 for the canonical predicate strings.
+        CheckConstraint(
+            "item_kind <> 'watch' "
+            "OR operation IN ('cancel','keep','review') "
+            "OR watch_condition IS NOT NULL",
             name="ck_investment_report_items_watch_has_condition",
         ),
-        # Watches are time-bounded re-evaluation triggers, not permanent
-        # alerts — every watch item must carry an expiry.
         CheckConstraint(
-            "item_kind <> 'watch' OR valid_until IS NOT NULL",
+            "item_kind <> 'watch' "
+            "OR operation IN ('cancel','keep','review') "
+            "OR valid_until IS NOT NULL",
             name="ck_investment_report_items_watch_has_expiry",
         ),
         Index(
@@ -254,6 +273,12 @@ class InvestmentReportItem(Base):
         Index(
             "ix_investment_report_items_symbol",
             "symbol",
+        ),
+        Index(
+            "ix_investment_report_items_operation_kind",
+            "operation",
+            "item_kind",
+            "status",
         ),
         {"schema": "review"},
     )
@@ -305,6 +330,15 @@ class InvestmentReportItem(Base):
         default=dict,
         server_default=text("'{}'::jsonb"),
     )
+
+    # ROB-274 proposal-state columns. All nullable; legacy rows keep these
+    # NULL and the operation-aware CHECKs above let them through.
+    operation: Mapped[str | None] = mapped_column(Text)
+    target_ref: Mapped[dict | None] = mapped_column(JSONB)
+    current_state: Mapped[dict | None] = mapped_column(JSONB)
+    proposed_state: Mapped[dict | None] = mapped_column(JSONB)
+    diff: Mapped[list | None] = mapped_column(JSONB)
+    apply_policy: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False

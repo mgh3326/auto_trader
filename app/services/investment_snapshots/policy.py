@@ -154,6 +154,12 @@ INTRADAY_ACTION_REPORT_V1 = BundlePolicy(
             required=False,
             collector_timeout=_seconds(8),
         ),
+        SnapshotKindPolicy(
+            snapshot_kind="pending_orders",
+            freshness=FreshnessPolicy(soft_ttl=_seconds(60), hard_ttl=_seconds(300)),
+            required=False,
+            collector_timeout=_seconds(8),
+        ),
     ),
 )
 

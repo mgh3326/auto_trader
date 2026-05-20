@@ -16,13 +16,17 @@ import type {
   InvestmentWatchEvent,
   SnapshotFreshnessSummary,
 } from "../../types/investmentReports";
+import { ProposalDiffPanel } from "./ProposalDiffPanel";
 import { ReportSnapshotEvidencePanel } from "./ReportSnapshotEvidencePanel";
 import { SnapshotBundleFreshnessChip } from "./SnapshotBundleFreshnessChip";
 
+// ROB-274 — primary category badges switched to English (locked decision §4
+// minor #5). Korean explanatory body copy (e.g. "리스크" / "무액션 노트"
+// in this file's report header) is preserved.
 const ITEM_KIND_LABELS: Record<string, string> = {
-  action: "액션",
-  watch: "와치",
-  risk: "리스크",
+  action: "action",
+  watch: "watch",
+  risk: "risk",
 };
 
 const ITEM_STATUS_LABELS: Record<string, string> = {
@@ -235,6 +239,15 @@ function ItemRow({
         >
           watch_condition: {JSON.stringify(item.watchCondition)}
         </div>
+      ) : null}
+      {item.operation && item.operation !== "create" ? (
+        <ProposalDiffPanel
+          operation={item.operation}
+          targetRef={item.targetRef}
+          currentState={item.currentState}
+          proposedState={item.proposedState}
+          diff={item.diff}
+        />
       ) : null}
       {decisions.length > 0 ? (
         <div style={{ display: "grid", gap: 4 }}>
@@ -484,7 +497,7 @@ export function InvestmentReportBundleContent({
       {bundle.alerts.length > 0 ? (
         <section style={{ display: "grid", gap: 10 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>
-            활성 와치 ({bundle.alerts.length})
+            active watches ({bundle.alerts.length})
           </h2>
           {bundle.alerts.map((alert) => (
             <AlertRow key={alert.alertUuid} alert={alert} />

@@ -17,6 +17,9 @@ import type {
   Market,
   MarketSession,
   AccountScope,
+  ProposalDiffEntry,
+  ProposalOperation,
+  ProposalTargetRef,
   ReportStatus,
   SnapshotFreshnessSummary,
   ReportSnapshotBundle,
@@ -123,6 +126,12 @@ function asOptionalRecord(
   return asRecord(value);
 }
 
+// ROB-274 — proposal-state helpers (additive; keep existing helpers untouched).
+function asOptionalList(value: unknown): unknown[] | null {
+  if (value === null || value === undefined) return null;
+  return Array.isArray(value) ? value : null;
+}
+
 function normalizeItem(raw: ApiItem): InvestmentReportItem {
   return {
     itemUuid: asString(raw.item_uuid),
@@ -146,6 +155,15 @@ function normalizeItem(raw: ApiItem): InvestmentReportItem {
     metadata: asRecord(raw.metadata),
     createdAt: asString(raw.created_at),
     updatedAt: asString(raw.updated_at),
+    // ROB-274 — proposal-state fields. Optional on legacy payloads.
+    operation: asOptionalString(raw.operation) as ProposalOperation | null,
+    targetRef: asOptionalRecord(raw.target_ref) as ProposalTargetRef | null,
+    currentState: asOptionalRecord(raw.current_state),
+    proposedState: asOptionalRecord(raw.proposed_state),
+    diff: asOptionalList(raw.diff) as ProposalDiffEntry[] | null,
+    applyPolicy: asOptionalString(raw.apply_policy) as
+      | "requires_user_approval"
+      | null,
   };
 }
 
