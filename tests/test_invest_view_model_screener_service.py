@@ -2250,3 +2250,175 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
         assert resp.freshness.dataState in {"stale", "fallback"}
     finally:
         await _purge()
+
+
+# ---------------------------------------------------------------------------
+# ROB-277 follow-up FU6: integration tests for FU2 (dependency split) and
+# FU3 (0-qualifier primary metadata threading)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_dependency() -> None:
+    """ROB-277 follow-up FU2/FU6: when primary partition is today's and an
+    investor_flow snapshot is 2 trading days older, freshness.dependencies must
+    surface that as a 'stale' investor_flow entry with the correct snapshotDate
+    and lagLabel, and overallState must be 'stale' per D1.c rule 2."""
+    import datetime as dt
+
+    today_kr = dt.date(2026, 5, 20)  # Wednesday
+    inv_partition = dt.date(2026, 5, 18)  # Monday — 2 trading days older
+
+    primary_computed = dt.datetime(2026, 5, 20, 0, 5, tzinfo=dt.UTC)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    from app.schemas.investor_flow import InvestorFlowItem
+
+    inv_item = InvestorFlowItem(
+        symbol="005930",
+        market="kr",
+        dataState="stale",
+        snapshotDate=inv_partition,
+        collectedAt=dt.datetime(2026, 5, 18, 7, 30, tzinfo=dt.UTC),
+        foreignNet=1_000_000_000,
+        institutionNet=500_000_000,
+        individualNet=-1_500_000_000,
+        doubleBuy=False,
+        doubleSell=False,
+        foreignConsecutiveBuyDays=4,
+        foreignConsecutiveSellDays=None,
+        institutionConsecutiveBuyDays=None,
+        institutionConsecutiveSellDays=None,
+        individualConsecutiveBuyDays=None,
+        individualConsecutiveSellDays=None,
+    )
+
+    from unittest.mock import patch
+
+    # Query sequence for consecutive_gainers snapshot-first path with 1 qualifying row:
+    # Q1: MAX(snapshot_date) in _load_consecutive_gainers_from_snapshots
+    # Q2: qualifying snapshot rows
+    # Q3: kr_symbol_universe names for filtering (candidate_snaps non-empty)
+    # Q4: enrichment via _hydrate_from_snapshots → repo.get_fresh
+    # Q5: kr_names bulk-lookup in build_screener_results
+    # _hydrate_investor_flow_chips → patched, no DB query
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[today_kr]),  # Q1: MAX(snapshot_date)
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="005930",
+                        snapshot_date=today_kr,
+                        computed_at=primary_computed,
+                        week_change_rate=Decimal("3.5"),
+                    )
+                ]
+            ),  # Q2: qualifying rows
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # Q3: filter names
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="005930",
+                        snapshot_date=today_kr,
+                        computed_at=primary_computed,
+                        week_change_rate=Decimal("3.5"),
+                    )
+                ]
+            ),  # Q4: enrichment
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # Q5: kr_names
+        ]
+    )
+
+    async def _fake_latest_items(*, db, symbols, market="kr"):
+        return {"005930": inv_item}
+
+    with patch(
+        "app.services.invest_view_model.screener_service._latest_investor_flow_items",
+        side_effect=_fake_latest_items,
+    ):
+        resp = await build_screener_results(
+            preset_id="consecutive_gainers",
+            screening_service=fake_screening,
+            resolver=_FakeResolver(watched=set()),
+            market="kr",
+            session=session,
+            now=lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC),
+        )
+
+    f = resp.freshness
+    # Primary points at today (fresh)
+    assert f.primary is not None
+    assert f.primary.snapshotDate == today_kr.isoformat()
+    assert f.primary.dataState == "fresh"
+    # Dependency surfaces the investor-flow partition (NOT the primary date)
+    assert len(f.dependencies) == 1
+    dep = f.dependencies[0]
+    assert dep.kind == "investor_flow"
+    assert dep.snapshotDate == inv_partition.isoformat()
+    assert dep.dataState == "stale"
+    # lagLabel reflects the 2-day gap (calendar diff between today and inv_partition)
+    assert dep.lagLabel is not None and "거래일 지연" in dep.lagLabel
+    # D1.c rule 2: primary fresh + dep stale → overall stale
+    assert f.overallState == "stale"
+    assert f.dataState == "stale"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_consecutive_gainers_zero_qualifiers_still_threads_partition_metadata() -> None:
+    """ROB-277 follow-up FU3/FU6: when the latest partition has no qualifying
+    rows (consecutive_up_days >= 5 + week_change_rate >= 0 filter excludes all),
+    freshness.primary must still carry the partition's snapshotDate so the UI
+    can render '데이터 기준 {date}' rather than collapsing to live/now()."""
+    import datetime as dt
+
+    partition_date = dt.date(2026, 5, 13)  # stale
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    # Query sequence when latest partition has 0 qualifying rows:
+    # Q1: MAX(snapshot_date) in _load_consecutive_gainers_from_snapshots → partition_date
+    # Q2: qualifying rows (consecutive_up_days>=5, week_change_rate>=0) → empty
+    # No name query (candidate_snaps is empty)
+    # No enrichment (rows is empty)
+    # No kr_names lookup (rows is empty)
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[partition_date]),  # Q1: MAX(snapshot_date)
+            _FakeExecuteResult(scalar_rows=[]),  # Q2: qualifying rows: NONE
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="kr",
+        session=session,
+        now=lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC),
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    # Snapshot was checked, partition metadata threaded through:
+    f = resp.freshness
+    assert f.primary is not None, "primary must not be None even with 0 qualifier rows"
+    assert f.primary.kind == "screener_snapshot"
+    assert f.primary.snapshotDate == partition_date.isoformat()
+    assert f.primary.source == "invest_screener_snapshots"
+    # asOfLabel reflects the partition, not now()
+    assert "2026.05.13" in f.asOfLabel
+    assert "2026.05.20" not in f.asOfLabel
+    # source enum: cached (snapshot was checked)
+    assert f.source == "cached"
