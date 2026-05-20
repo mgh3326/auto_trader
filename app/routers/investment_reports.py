@@ -33,6 +33,8 @@ from app.schemas.investment_reports import (
     MarketLiteral,
     MarketSessionLiteral,
     PreviousReportContextResponse,
+    ReportSnapshotBundleResponse,
+    ReportSnapshotDetailResponse,
     ReportStatusLiteral,
 )
 from app.services.investment_reports.query_service import (
@@ -182,6 +184,70 @@ async def get_investment_report(
     if bundle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
     return _serialise_bundle(bundle)
+
+
+# ---------------------------------------------------------------------------
+# ROB-275 — Snapshot evidence viewer (read-only).
+#
+# These endpoints surface the bundle of snapshots actually linked to a
+# report (membership via investment_snapshot_bundle_items). They are NOT
+# gated by ``INVESTMENT_SNAPSHOTS_MCP_ENABLED``: gating is by data
+# presence — the bundle endpoint returns a legacy/no_snapshot shape when
+# report.snapshot_bundle_uuid is null, and the detail endpoint returns
+# 404 on missing report / missing bundle / non-member snapshot.
+# ---------------------------------------------------------------------------
+@router.get(
+    "/trading/api/investment-reports/{report_uuid}/snapshot-bundle",
+    response_model=ReportSnapshotBundleResponse,
+    summary="Get snapshot bundle linked to an investment report (ROB-275)",
+)
+@router.get(
+    "/invest/api/investment-reports/{report_uuid}/snapshot-bundle",
+    response_model=ReportSnapshotBundleResponse,
+    summary="Get snapshot bundle for /invest report viewer (ROB-275)",
+)
+async def get_investment_report_snapshot_bundle(
+    report_uuid: UUID,
+    _user: Annotated[User, Depends(get_authenticated_user)],
+    service: Annotated[InvestmentReportQueryService, Depends(_build_query_service)],
+) -> ReportSnapshotBundleResponse:
+    result = await service.get_report_snapshot_bundle(report_uuid)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="report_not_found"
+        )
+    return ReportSnapshotBundleResponse(
+        bundle=result["bundle"],
+        items=result["items"],
+        unavailable_sources=result["unavailable_sources"],
+        source_conflicts=result["source_conflicts"],
+        legacy_no_snapshot=result["legacy_no_snapshot"],
+    )
+
+
+@router.get(
+    "/trading/api/investment-reports/{report_uuid}/snapshots/{snapshot_uuid}",
+    response_model=ReportSnapshotDetailResponse,
+    summary="Get one snapshot's payload via its report (ROB-275)",
+)
+@router.get(
+    "/invest/api/investment-reports/{report_uuid}/snapshots/{snapshot_uuid}",
+    response_model=ReportSnapshotDetailResponse,
+    summary="Get one snapshot's payload for /invest report viewer (ROB-275)",
+)
+async def get_investment_report_snapshot_detail(
+    report_uuid: UUID,
+    snapshot_uuid: UUID,
+    _user: Annotated[User, Depends(get_authenticated_user)],
+    service: Annotated[InvestmentReportQueryService, Depends(_build_query_service)],
+) -> ReportSnapshotDetailResponse:
+    detail = await service.get_report_snapshot_detail(report_uuid, snapshot_uuid)
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="snapshot_not_found_or_not_in_report_bundle",
+        )
+    return detail
 
 
 # ---------------------------------------------------------------------------
