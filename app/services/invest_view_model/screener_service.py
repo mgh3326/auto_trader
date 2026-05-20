@@ -230,6 +230,12 @@ async def _hydrate_investor_flow_chips(
         chip = _investor_flow_chip_for_item(item)
         if chip is not None:
             chips[symbol] = chip
+            # ROB-277: stash dependency snapshot_date back on the row so
+            # build_screener_results can build freshness.dependencies later.
+            for r in rows:
+                if str(r.get("symbol") or "").upper() == symbol:
+                    r["_investor_flow_snapshot_date"] = getattr(item, "snapshotDate", None)
+                    break
     return chips
 
 
@@ -454,6 +460,8 @@ async def _load_consecutive_gainers_from_snapshots(
                 else None,
                 "volume": snap.daily_volume,
                 "daily_closes": list(snap.closes_window or []),
+                "snapshot_date": snap.snapshot_date,    # ROB-277
+                "computed_at": snap.computed_at,        # ROB-277
                 "_screener_snapshot_state": state,
             }
         )
@@ -1445,13 +1453,25 @@ async def build_screener_results(
         if _US_SCREENER_DATA_NOT_READY_WARNING not in upstream_warnings:
             upstream_warnings.append(_US_SCREENER_DATA_NOT_READY_WARNING)
 
-    freshness = _build_freshness(
-        raw_timestamp=raw.get("timestamp"),
-        cache_hit=bool(raw.get("cache_hit")),
-        market=requested_market,
-        now=now,
-        dataState=_aggregated_data_state,
-    )
+    # ROB-277: determine primary kind/source for freshness (computed before _build_freshness).
+    primary_kind: Literal["screener_snapshot", "live", "fallback"]
+    primary_snapshot_date: dt.date | None = None
+    primary_computed_at: datetime | None = None
+    primary_source: str | None = None
+    if _snapshot_was_checked:
+        primary_kind = "screener_snapshot"
+        if preset_id == "investor_flow_momentum":
+            primary_source = "investor_flow_snapshots"
+        elif requested_market == "crypto":
+            primary_source = "invest_crypto_screener_snapshots"
+        else:
+            primary_source = "invest_screener_snapshots"
+        if rows:
+            primary_snapshot_date = rows[0].get("snapshot_date")
+            primary_computed_at = rows[0].get("computed_at")
+    else:
+        primary_kind = "live"
+        primary_source = "screening_service"
 
     # Bulk-lookup Korean names for KR rows from kr_symbol_universe
     _kr_names: dict[str, str] = {}
@@ -1475,6 +1495,48 @@ async def build_screener_results(
 
     investor_flow_chips = await _hydrate_investor_flow_chips(
         db=session, market=requested_market, rows=rows
+    )
+
+    # ROB-277: build dependency specs from hydrated investor-flow chips (KR only).
+    # Must run after _hydrate_investor_flow_chips so _investor_flow_snapshot_date
+    # has been stashed back on rows.
+    dependency_specs: list[dict[str, Any]] = []
+    if requested_market == "kr" and investor_flow_chips:
+        from app.services.invest_screener_snapshots.freshness import (
+            today_trading_date,
+        )
+
+        inv_snapshot_dates: list[dt.date] = []
+        for r in rows:
+            sd = r.get("snapshot_date") or r.get("_investor_flow_snapshot_date")
+            if sd is not None:
+                inv_snapshot_dates.append(sd)
+
+        if inv_snapshot_dates:
+            worst = min(inv_snapshot_dates)
+            today_kr = today_trading_date("kr")
+            dep_state = "stale" if worst != today_kr else "fresh"
+            dependency_specs.append(
+                {
+                    "kind": "investor_flow",
+                    "snapshot_date": worst,
+                    "collected_at": None,
+                    "data_state": dep_state,
+                    "source": "investor_flow_snapshots",
+                }
+            )
+
+    freshness = _build_freshness(
+        raw_timestamp=raw.get("timestamp"),
+        cache_hit=bool(raw.get("cache_hit")),
+        market=requested_market,
+        now=now,
+        dataState=_aggregated_data_state,
+        primary_kind=primary_kind,
+        primary_snapshot_date=primary_snapshot_date,
+        primary_computed_at=primary_computed_at,
+        primary_source=primary_source,
+        dependency_specs=dependency_specs,
     )
     response_sources = _screen_response_sources(
         requested_market=requested_market,

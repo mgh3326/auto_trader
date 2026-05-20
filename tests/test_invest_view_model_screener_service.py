@@ -1710,6 +1710,83 @@ def test_build_freshness_dependency_specs_render_with_lag_label() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_consecutive_gainers_response_carries_screener_snapshot_primary() -> None:
+    """ROB-277 Task 5: a snapshot-first consecutive_gainers response surfaces
+    partition date in freshness.primary, top-level source stays 'cached' (D2),
+    and freshness.dataState == overallState (D1.c alias)."""
+    import datetime as dt
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    snap_date = dt.date(2026, 5, 13)
+    computed = dt.datetime(2026, 5, 13, 0, 30, tzinfo=dt.UTC)
+
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snap_date]),  # MAX(snapshot_date)
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="005930",
+                        snapshot_date=snap_date,
+                        computed_at=computed,
+                        week_change_rate=Decimal("3.5"),
+                    )
+                ]
+            ),  # qualifying rows
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # filter names
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="005930",
+                        snapshot_date=snap_date,
+                        computed_at=computed,
+                        week_change_rate=Decimal("3.5"),
+                    )
+                ]
+            ),  # enrichment
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # kr_names
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="kr",
+        session=session,
+        now=lambda: dt.datetime(2026, 5, 20, 0, 10, tzinfo=dt.UTC),
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    f = resp.freshness
+
+    # D1: primary is populated with screener_snapshot kind and partition date
+    assert f.primary is not None, "freshness.primary must not be None for snapshot path"
+    assert f.primary.kind == "screener_snapshot"
+    assert f.primary.source == "invest_screener_snapshots"
+    assert f.primary.snapshotDate == "2026-05-13"
+
+    # D1: asOfLabel reflects the partition date, NOT now() (2026.05.20)
+    assert "2026.05.13" in f.asOfLabel, (
+        f"asOfLabel should reflect partition date 2026.05.13, got: {f.asOfLabel!r}"
+    )
+    assert "2026.05.20" not in f.asOfLabel, (
+        f"asOfLabel must not reflect now(); got: {f.asOfLabel!r}"
+    )
+
+    # D2: source enum is "cached" (unchanged)
+    assert f.source == "cached"
+
+    # D1.c: dataState is alias for overallState
+    assert f.dataState == f.overallState
+
+
+@pytest.mark.unit
 def test_build_freshness_no_change_to_existing_callsite_with_defaults() -> None:
     """Calling _build_freshness with only the pre-ROB-277 kwargs still produces a
     valid ScreenerFreshness (additive change preserves backward compat)."""
