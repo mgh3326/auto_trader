@@ -97,12 +97,8 @@ def assert_dominant_partition(
         raise SuspiciousDistributionError("empty snapshot_date distribution")
     total = sum(distribution.values())
     if total <= 0:
-        raise SuspiciousDistributionError(
-            f"non-positive total row count: {total}"
-        )
-    dominant_date, dominant_count = max(
-        distribution.items(), key=lambda kv: kv[1]
-    )
+        raise SuspiciousDistributionError(f"non-positive total row count: {total}")
+    dominant_date, dominant_count = max(distribution.items(), key=lambda kv: kv[1])
     ratio = dominant_count / total
     if ratio < threshold:
         raise SuspiciousDistributionError(

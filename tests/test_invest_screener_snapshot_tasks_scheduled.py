@@ -51,25 +51,19 @@ def _fake_build_result(market: str, *, committed: bool = False) -> SnapshotBuild
 
 
 def test_kr_schedule_labels_empty_when_schedule_disabled() -> None:
-    with patch.object(
-        task_module.settings, "invest_screener_schedule_enabled", False
-    ):
+    with patch.object(task_module.settings, "invest_screener_schedule_enabled", False):
         assert task_module._scheduled_kr_pre_market_repair_labels() == []
         assert task_module._scheduled_kr_krx_preliminary_labels() == []
         assert task_module._scheduled_kr_nxt_final_labels() == []
 
 
 def test_us_schedule_labels_empty_when_schedule_disabled() -> None:
-    with patch.object(
-        task_module.settings, "invest_screener_schedule_enabled", False
-    ):
+    with patch.object(task_module.settings, "invest_screener_schedule_enabled", False):
         assert task_module._scheduled_us_post_close_labels() == []
 
 
 def test_kr_schedule_labels_carry_kst_offset_when_enabled() -> None:
-    with patch.object(
-        task_module.settings, "invest_screener_schedule_enabled", True
-    ):
+    with patch.object(task_module.settings, "invest_screener_schedule_enabled", True):
         assert task_module._scheduled_kr_pre_market_repair_labels() == [
             {"cron": "40 7 * * 1-5", "cron_offset": "Asia/Seoul"}
         ]
@@ -83,9 +77,7 @@ def test_kr_schedule_labels_carry_kst_offset_when_enabled() -> None:
 
 def test_us_schedule_label_carries_et_offset_when_enabled() -> None:
     """ROB-281 D2: US cron runs in America/New_York to avoid DST drift."""
-    with patch.object(
-        task_module.settings, "invest_screener_schedule_enabled", True
-    ):
+    with patch.object(task_module.settings, "invest_screener_schedule_enabled", True):
         assert task_module._scheduled_us_post_close_labels() == [
             {"cron": "20 17 * * 1-5", "cron_offset": "America/New_York"}
         ]
@@ -159,9 +151,7 @@ async def test_run_scheduled_build_kr_session_day_constructs_request_without_com
             False,
         ),
     ):
-        result = await task_module._run_scheduled_build(
-            market="kr", slot="nxt_final"
-        )
+        result = await task_module._run_scheduled_build(market="kr", slot="nxt_final")
 
     assert mock_run.await_count == 1
     request: SnapshotBuildRequest = mock_run.call_args.args[0]
@@ -209,9 +199,7 @@ async def test_run_scheduled_build_commit_gate_passes_through() -> None:
             True,
         ),
     ):
-        result = await task_module._run_scheduled_build(
-            market="kr", slot="nxt_final"
-        )
+        result = await task_module._run_scheduled_build(market="kr", slot="nxt_final")
 
     request: SnapshotBuildRequest = mock_run.call_args.args[0]
     assert request.commit is True  # commit gate True → request.commit True
@@ -238,9 +226,7 @@ async def test_run_scheduled_build_does_not_alert_on_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_scheduled_build_fires_alert_on_suspicious_distribution() -> (
-    None
-):
+async def test_run_scheduled_build_fires_alert_on_suspicious_distribution() -> None:
     from app.services.invest_screener_snapshots.guards import (
         SuspiciousDistributionError,
     )
@@ -257,9 +243,7 @@ async def test_run_scheduled_build_fires_alert_on_suspicious_distribution() -> (
         patch.object(task_module, "send_screener_refresh_alert", new=mock_alert),
     ):
         with pytest.raises(SuspiciousDistributionError):
-            await task_module._run_scheduled_build(
-                market="kr", slot="krx_preliminary"
-            )
+            await task_module._run_scheduled_build(market="kr", slot="krx_preliminary")
 
     mock_alert.assert_awaited_once()
     alert_kwargs = mock_alert.await_args.kwargs
@@ -329,9 +313,7 @@ async def test_run_scheduled_build_holiday_skip_does_not_alert() -> None:
         patch.object(task_module, "is_market_session_today", return_value=False),
         patch.object(task_module, "send_screener_refresh_alert", new=mock_alert),
     ):
-        result = await task_module._run_scheduled_build(
-            market="kr", slot="nxt_final"
-        )
+        result = await task_module._run_scheduled_build(market="kr", slot="nxt_final")
 
     assert result["skipped"] == "non_session_day"
     mock_alert.assert_not_awaited()

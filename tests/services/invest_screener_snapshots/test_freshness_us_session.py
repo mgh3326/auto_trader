@@ -132,17 +132,11 @@ def test_last_completed_us_session_close_half_day_returns_early_close() -> None:
 
 
 def test_us_session_label_for_partition_returns_post_close_for_any_datetime() -> None:
-    assert (
-        us_session_label_for_partition(_et(2025, 6, 9, 17, 20)) == "US post-close"
-    )
-    assert (
-        us_session_label_for_partition(_et(2025, 11, 28, 13, 5)) == "US post-close"
-    )
+    assert us_session_label_for_partition(_et(2025, 6, 9, 17, 20)) == "US post-close"
+    assert us_session_label_for_partition(_et(2025, 11, 28, 13, 5)) == "US post-close"
     # Even at unusual hours, the label is constant — the partition's existence
     # is what matters, not which time-of-day it was computed.
-    assert (
-        us_session_label_for_partition(_et(2025, 6, 9, 9, 30)) == "US post-close"
-    )
+    assert us_session_label_for_partition(_et(2025, 6, 9, 9, 30)) == "US post-close"
 
 
 def test_us_session_label_for_partition_none_input_returns_none() -> None:

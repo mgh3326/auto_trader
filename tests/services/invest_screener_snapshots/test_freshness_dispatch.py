@@ -86,17 +86,11 @@ def test_session_label_for_partition_kr_krx_preliminary() -> None:
 
 
 def test_session_label_for_partition_kr_nxt_final() -> None:
-    assert (
-        session_label_for_partition("kr", _kst(2026, 5, 20, 20, 30))
-        == "NXT final"
-    )
+    assert session_label_for_partition("kr", _kst(2026, 5, 20, 20, 30)) == "NXT final"
 
 
 def test_session_label_for_partition_us_post_close() -> None:
-    assert (
-        session_label_for_partition("us", _et(2025, 6, 9, 17, 30))
-        == "US post-close"
-    )
+    assert session_label_for_partition("us", _et(2025, 6, 9, 17, 30)) == "US post-close"
 
 
 def test_session_label_for_partition_none_input() -> None:
@@ -194,9 +188,7 @@ def test_build_freshness_live_kind_does_not_get_session_token() -> None:
     assert "post-close" not in freshness.primary.asOfLabel
 
 
-def test_build_freshness_screener_snapshot_with_no_computed_at_omits_token() -> (
-    None
-):
+def test_build_freshness_screener_snapshot_with_no_computed_at_omits_token() -> None:
     """Without computed_at, session classification falls through — no token."""
     served_now = dt.datetime(2026, 5, 20, 11, 30, tzinfo=dt.UTC)
     freshness = _build_freshness(

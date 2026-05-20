@@ -240,9 +240,7 @@ def us_session_label_for_partition(
 # ---------------------------------------------------------------------------
 
 
-def expected_baseline_date(
-    market: str, *, now: dt.datetime | None = None
-) -> dt.date:
+def expected_baseline_date(market: str, *, now: dt.datetime | None = None) -> dt.date:
     """Session-aware variant of :func:`today_trading_date`.
 
     Dispatches to ``expected_kr_baseline_date`` for ``"kr"`` and

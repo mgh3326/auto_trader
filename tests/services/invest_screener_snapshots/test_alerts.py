@@ -7,7 +7,7 @@ distribution preview / truncated message.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -19,7 +19,6 @@ from app.services.invest_screener_snapshots.guards import (
     InsufficientRowsError,
     SuspiciousDistributionError,
 )
-
 
 # --- Noop when webhook unset -------------------------------------------------
 
@@ -161,14 +160,10 @@ async def test_alert_message_truncated_when_exception_text_too_long(
 
     huge_message = "x" * 5000
     exc = RuntimeError(huge_message)
-    await send_screener_refresh_alert(
-        slot="post_close", market="us", exception=exc
-    )
+    await send_screener_refresh_alert(slot="post_close", market="us", exception=exc)
 
     embed = mock_send.await_args.kwargs["embed"]
-    message_field = next(
-        f for f in embed["fields"] if f["name"] == "message"
-    )
+    message_field = next(f for f in embed["fields"] if f["name"] == "message")
     # 1024 char limit; allow some slack for the ```\n…\n``` wrap.
     assert len(message_field["value"]) <= 1024 + 20
     assert message_field["value"].endswith("…\n```")

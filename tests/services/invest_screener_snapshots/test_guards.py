@@ -25,7 +25,6 @@ from app.services.invest_screener_snapshots.guards import (
     assert_min_row_count,
 )
 
-
 # --- assert_dominant_partition ----------------------------------------------
 
 
@@ -153,9 +152,7 @@ async def test_guarded_wrapper_passes_runs_commit_pass_when_request_commit_true(
         committed=True,
     )
     mock = AsyncMock(side_effect=[dry_run, commit_run])
-    with patch(
-        "app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock
-    ):
+    with patch("app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock):
         result = await run_snapshot_build_guarded(
             SnapshotBuildRequest(market="kr", all_symbols=True, commit=True)
         )
@@ -178,9 +175,7 @@ async def test_guarded_wrapper_passes_skips_commit_pass_when_request_commit_fals
         committed=False,
     )
     mock = AsyncMock(return_value=dry_run)
-    with patch(
-        "app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock
-    ):
+    with patch("app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock):
         result = await run_snapshot_build_guarded(
             SnapshotBuildRequest(market="kr", all_symbols=True, commit=False)
         )
@@ -201,9 +196,7 @@ async def test_guarded_wrapper_raises_on_suspicious_distribution_without_commit_
         committed=False,
     )
     mock = AsyncMock(return_value=dry_run)
-    with patch(
-        "app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock
-    ):
+    with patch("app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock):
         with pytest.raises(SuspiciousDistributionError):
             await run_snapshot_build_guarded(
                 SnapshotBuildRequest(market="kr", all_symbols=True, commit=True)
@@ -223,9 +216,7 @@ async def test_guarded_wrapper_raises_on_insufficient_rows_without_commit_pass()
         committed=False,
     )
     mock = AsyncMock(return_value=dry_run)
-    with patch(
-        "app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock
-    ):
+    with patch("app.jobs.invest_screener_snapshots.run_snapshot_build", new=mock):
         with pytest.raises(InsufficientRowsError):
             await run_snapshot_build_guarded(
                 SnapshotBuildRequest(market="kr", all_symbols=True, commit=True)
