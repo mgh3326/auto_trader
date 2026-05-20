@@ -138,6 +138,101 @@ def kr_session_label_for_partition(
     return None
 
 
+# ROB-281: US session-aware helpers using exchange-calendars (XNYS).
+# These are imported lazily inside the functions to avoid pulling exchange_calendars
+# + pandas into every importer of this module; the cost is non-trivial at startup.
+
+_ET = ZoneInfo("America/New_York")
+_US_POST_CLOSE_THRESHOLD = (17, 20)  # hour, minute in America/New_York
+
+
+def expected_us_baseline_date(now: dt.datetime) -> dt.date:
+    """The US trading date for which a snapshot is EXPECTED to exist at ``now``.
+
+    Boundary semantics (all in ``America/New_York``):
+
+    * Today is a US trading session AND ``now >= 17:20 ET`` → today.
+    * Today is a US trading session but ``now < 17:20 ET`` → prior session.
+    * Today is a weekend or NYSE holiday → most recent session before today.
+
+    Half-days (e.g., Black Friday with 13:00 ET close) are still sessions and
+    are treated identically — 17:20 ET is post-close on any session date, so
+    no half-day-specific branch is needed.
+
+    Uses :mod:`exchange_calendars` (XNYS) for holiday and half-day awareness,
+    matching the project convention established in ``us_candles_sync_service``.
+    Naive ``now`` is treated as UTC and converted to ET.
+    """
+    import exchange_calendars as xcals
+    import pandas as pd
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.UTC)
+    now_et = now.astimezone(_ET)
+    today_et = now_et.date()
+    cal = xcals.get_calendar("XNYS")
+    today_ts = pd.Timestamp(today_et)
+    is_today_session = bool(cal.is_session(today_ts))
+    hm = (now_et.hour, now_et.minute)
+    if is_today_session and hm >= _US_POST_CLOSE_THRESHOLD:
+        return today_et
+    # Most recent session strictly before today. A 10-day lookback covers
+    # the worst-case US holiday gap (e.g., Thanksgiving Wed → following Mon).
+    start_ts = pd.Timestamp(today_et - dt.timedelta(days=10))
+    sessions = cal.sessions_in_range(start_ts, today_ts)
+    prior_sessions = [s.date() for s in sessions if s.date() < today_et]
+    if prior_sessions:
+        return prior_sessions[-1]
+    # Pathological fallback (should be unreachable in practice).
+    prior = today_et - dt.timedelta(days=1)
+    while prior.weekday() >= 5:
+        prior -= dt.timedelta(days=1)
+    return prior
+
+
+def last_completed_us_session_close(now: dt.datetime) -> dt.datetime | None:
+    """UTC datetime of the most recent US session close at-or-before ``now``.
+
+    Returns ``None`` only in pathological cases where no session can be found
+    in the 10-day lookback window. Half-day closes (13:00 ET) are surfaced
+    correctly because :mod:`exchange_calendars` returns the actual close time
+    per session.
+    """
+    import exchange_calendars as xcals
+    import pandas as pd
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.UTC)
+    cal = xcals.get_calendar("XNYS")
+    today_et_date = now.astimezone(_ET).date()
+    start_ts = pd.Timestamp(today_et_date - dt.timedelta(days=10))
+    end_ts = pd.Timestamp(today_et_date)
+    sessions = cal.sessions_in_range(start_ts, end_ts)
+    for session in reversed(list(sessions)):
+        close = cal.session_close(session)
+        close_dt = close.to_pydatetime()
+        if close_dt.tzinfo is None:
+            close_dt = close_dt.replace(tzinfo=dt.UTC)
+        if close_dt <= now:
+            return close_dt
+    return None
+
+
+def us_session_label_for_partition(
+    partition_computed_at: dt.datetime | None,
+) -> str | None:
+    """User-facing US session label for a snapshot.
+
+    Always ``"US post-close"`` when ``partition_computed_at`` is present.
+    Unlike KR (which has KRX-preliminary vs NXT-final granularity), the US
+    schedule has a single post-close slot, so the label is constant.
+    Returns ``None`` only when ``partition_computed_at`` is ``None``.
+    """
+    if partition_computed_at is None:
+        return None
+    return "US post-close"
+
+
 def classify_state(
     *,
     snapshot_date: dt.date,
