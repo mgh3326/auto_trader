@@ -1,0 +1,162 @@
+"""Read-only loader for the 쌍끌이 매수 (Toss screenId=18 parity) preset.
+
+Joins the latest investor_flow_snapshots row with the latest
+invest_screener_snapshots row per symbol and applies the Toss-parity filter
+(Interpretation A, locked 2026-05-20 under Task 0 safer-fallback rule — see
+plan Decision 1):
+
+    market = kr
+    foreign_net  > 0   AND institution_net  > 0
+    change_rate >= 0
+    sort by change_rate desc, symbol asc
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+from app.models.kr_symbol_universe import KRSymbolUniverse
+
+logger = logging.getLogger(__name__)
+
+
+async def load_double_buy_from_snapshots(
+    session: AsyncSession | None, *, market: str, limit: int = 50
+) -> list[dict[str, Any]] | None:
+    """Return Toss-parity 쌍끌이 매수 rows or None when no snapshot partition exists.
+
+    None  -> caller should report dataState=missing and warn that snapshots are absent.
+    []    -> latest partition exists but no qualifiers (caller renders empty + stale).
+    Rows  -> ordered by change_rate desc, symbol asc.
+    """
+    if session is None or market != "kr":
+        return None
+
+    latest_flow_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+        InvestorFlowSnapshot.market == "kr"
+    )
+    latest_price_stmt = sa.select(
+        sa.func.max(InvestScreenerSnapshot.snapshot_date)
+    ).where(InvestScreenerSnapshot.market == "kr")
+    try:
+        flow_date = (await session.execute(latest_flow_stmt)).scalar_one_or_none()
+        price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("double_buy: latest dates lookup failed: %s", exc, exc_info=True)
+        return None
+    if flow_date is None or price_date is None:
+        return None
+
+    candidate_stmt = (
+        sa.select(
+            InvestorFlowSnapshot.symbol,
+            InvestorFlowSnapshot.foreign_net,
+            InvestorFlowSnapshot.institution_net,
+            InvestorFlowSnapshot.individual_net,
+            InvestorFlowSnapshot.double_buy,
+            InvestorFlowSnapshot.foreign_consecutive_buy_days,
+            InvestorFlowSnapshot.institution_consecutive_buy_days,
+            InvestScreenerSnapshot.latest_close,
+            InvestScreenerSnapshot.prev_close,
+            InvestScreenerSnapshot.change_rate,
+            InvestScreenerSnapshot.daily_volume,
+            InvestScreenerSnapshot.snapshot_date.label("price_snapshot_date"),
+            InvestorFlowSnapshot.snapshot_date.label("flow_snapshot_date"),
+        )
+        .join(
+            InvestScreenerSnapshot,
+            sa.and_(
+                InvestScreenerSnapshot.market == InvestorFlowSnapshot.market,
+                InvestScreenerSnapshot.symbol == InvestorFlowSnapshot.symbol,
+                InvestScreenerSnapshot.snapshot_date == price_date,
+            ),
+        )
+        .where(
+            InvestorFlowSnapshot.market == "kr",
+            InvestorFlowSnapshot.snapshot_date == flow_date,
+            InvestorFlowSnapshot.foreign_net > 0,
+            InvestorFlowSnapshot.institution_net > 0,
+            sa.func.coalesce(InvestScreenerSnapshot.change_rate, 0) >= 0,
+        )
+        .order_by(
+            InvestScreenerSnapshot.change_rate.desc().nullslast(),
+            InvestorFlowSnapshot.symbol.asc(),
+        )
+        .limit(max(limit * 4, limit + 40))
+    )
+    try:
+        result = await session.execute(candidate_stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("double_buy: candidate query failed: %s", exc, exc_info=True)
+        return None
+    candidate_rows = list(result.mappings().all())
+
+    symbols = [r["symbol"] for r in candidate_rows]
+    name_map: dict[str, str] = {}
+    if symbols:
+        try:
+            names = await session.execute(
+                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                    KRSymbolUniverse.symbol.in_(symbols),
+                    KRSymbolUniverse.is_active.is_(True),
+                )
+            )
+            name_map = {row.symbol: row.name for row in names.all()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("double_buy: name lookup failed: %s", exc, exc_info=True)
+
+    # Imported inside the function to avoid a circular import at module load
+    # (screener_service imports from this module's neighborhood).
+    from app.services.invest_view_model.screener_service import (
+        _is_kr_toss_common_stock,
+    )
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in candidate_rows:
+        sym = r["symbol"]
+        if sym in seen:
+            continue
+        name = name_map.get(sym)
+        if not _is_kr_toss_common_stock(sym, name):
+            continue
+        seen.add(sym)
+        state = (
+            "fresh" if r["price_snapshot_date"] == r["flow_snapshot_date"] else "stale"
+        )
+        rows.append(
+            {
+                "symbol": sym,
+                "market": "kr",
+                "name": name,
+                "latest_close": (
+                    float(r["latest_close"]) if r["latest_close"] is not None else None
+                ),
+                "prev_close": (
+                    float(r["prev_close"]) if r["prev_close"] is not None else None
+                ),
+                "change_rate": (
+                    float(r["change_rate"]) if r["change_rate"] is not None else None
+                ),
+                "volume": r["daily_volume"],
+                "foreign_net": r["foreign_net"],
+                "institution_net": r["institution_net"],
+                "individual_net": r["individual_net"],
+                "double_buy": r["double_buy"],
+                "foreign_consecutive_buy_days": r["foreign_consecutive_buy_days"],
+                "institution_consecutive_buy_days": r[
+                    "institution_consecutive_buy_days"
+                ],
+                "snapshot_date": r["price_snapshot_date"],
+                "_screener_snapshot_state": state,
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
