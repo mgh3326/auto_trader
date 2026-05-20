@@ -152,7 +152,7 @@ async def test_run_scheduled_build_kr_session_day_constructs_request_without_com
     mock_run = AsyncMock(return_value=fake_result)
     with (
         patch.object(task_module, "is_market_session_today", return_value=True),
-        patch.object(task_module, "run_snapshot_build", new=mock_run),
+        patch.object(task_module, "run_snapshot_build_guarded", new=mock_run),
         patch.object(
             task_module.settings,
             "invest_screener_snapshots_commit_enabled",
@@ -181,7 +181,7 @@ async def test_run_scheduled_build_us_session_day_uses_common_stocks_filter() ->
     mock_run = AsyncMock(return_value=fake_result)
     with (
         patch.object(task_module, "is_market_session_today", return_value=True),
-        patch.object(task_module, "run_snapshot_build", new=mock_run),
+        patch.object(task_module, "run_snapshot_build_guarded", new=mock_run),
         patch.object(
             task_module.settings,
             "invest_screener_snapshots_commit_enabled",
@@ -202,7 +202,7 @@ async def test_run_scheduled_build_commit_gate_passes_through() -> None:
     mock_run = AsyncMock(return_value=fake_result)
     with (
         patch.object(task_module, "is_market_session_today", return_value=True),
-        patch.object(task_module, "run_snapshot_build", new=mock_run),
+        patch.object(task_module, "run_snapshot_build_guarded", new=mock_run),
         patch.object(
             task_module.settings,
             "invest_screener_snapshots_commit_enabled",

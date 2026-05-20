@@ -36,6 +36,7 @@ from app.core.taskiq_broker import broker
 from app.jobs.invest_screener_snapshots import (
     SnapshotBuildRequest,
     run_snapshot_build,
+    run_snapshot_build_guarded,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,11 @@ async def _run_scheduled_build(
         slot,
         commit,
     )
-    result = await run_snapshot_build(request)
+    # Stage 5: dry-run → guards (dominant partition, min row count) → commit.
+    # Guard violations raise; Stage 6 catches and emits Discord alerts before
+    # re-raising to TaskIQ. Holiday gate above already filtered non-session
+    # days, so any guard violation here is a real data-quality signal.
+    result = await run_snapshot_build_guarded(request)
 
     logger.info(
         "scheduled invest screener build finished: market=%s slot=%s "

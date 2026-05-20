@@ -10,12 +10,16 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal
 from app.services.invest_screener_snapshots.builder import build_snapshots_for_market
+from app.services.invest_screener_snapshots.guards import (
+    assert_dominant_partition,
+    assert_min_row_count,
+)
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
     SnapshotUpsert,
@@ -276,3 +280,39 @@ async def run_snapshot_build(request: SnapshotBuildRequest) -> SnapshotBuildResu
         samples=tuple(samples),
         warnings=tuple(warnings),
     )
+
+
+async def run_snapshot_build_guarded(
+    request: SnapshotBuildRequest,
+) -> SnapshotBuildResult:
+    """ROB-281 Stage 5: dry-run → guards → commit wrapper.
+
+    Two-pass behavior: always runs :func:`run_snapshot_build` first with
+    ``commit=False`` to obtain ``snapshot_date_distribution`` and
+    ``snapshots_built``, then applies the guards from
+    :mod:`app.services.invest_screener_snapshots.guards`.
+
+    * Guards pass + ``request.commit=True`` → re-runs ``run_snapshot_build``
+      with the original commit flag (performs the actual DB writes).
+    * Guards pass + ``request.commit=False`` → returns the dry-run result.
+    * Guard violation → raises
+      :class:`~app.services.invest_screener_snapshots.guards.SuspiciousDistributionError`
+      or
+      :class:`~app.services.invest_screener_snapshots.guards.InsufficientRowsError`.
+      The dry-run distribution is preserved in the exception message so
+      callers (Stage 6 Discord alerts) can surface it.
+
+    Trade-off note: the 2× external-fetch cost is acceptable here because
+    schedule cadence is at most 4 KR + 1 US runs per weekday. A truly
+    transactional single-pass would require refactoring the per-batch commit
+    boundary in :func:`run_snapshot_build` — out of scope for ROB-281.
+    """
+    dry_run_request = replace(request, commit=False)
+    dry_run_result = await run_snapshot_build(dry_run_request)
+
+    assert_dominant_partition(dry_run_result.snapshot_date_distribution)
+    assert_min_row_count(dry_run_result.snapshots_built, dry_run_result.market)
+
+    if not request.commit:
+        return dry_run_result
+    return await run_snapshot_build(request)
