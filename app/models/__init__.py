@@ -1,6 +1,7 @@
 # app/models/__init__.py
 from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
+from .binance_testnet_order_ledger import BinanceTestnetOrderLedger
 from .crypto_candles import CryptoCandle1d, CryptoCandle1m
 from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .crypto_instrument_health import CryptoInstrumentHealth
@@ -102,6 +103,7 @@ from .user_settings import UserSetting
 
 __all__ = [
     "Base",
+    "BinanceTestnetOrderLedger",
     "ExecutionLedger",
     "ExecutionLedgerReconcileRun",
     "CryptoCandle1d",
