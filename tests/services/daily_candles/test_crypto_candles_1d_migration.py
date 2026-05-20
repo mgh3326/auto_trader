@@ -23,7 +23,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-
 # -----------------------------------------------------------------------------
 # Step 1 + Step 2 intermediate-state assertions — server-only.
 # -----------------------------------------------------------------------------
@@ -198,7 +197,7 @@ async def test_daily_candle_orm_roundtrip(db_session: AsyncSession) -> None:
 
     candle = CryptoCandle1d(
         instrument_id=inst.id,
-        time=dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc),
+        time=dt.datetime(2026, 5, 20, tzinfo=dt.UTC),
         open=3000,
         high=3100,
         low=2950,
@@ -212,7 +211,7 @@ async def test_daily_candle_orm_roundtrip(db_session: AsyncSession) -> None:
     await db_session.flush()
     fetched = await db_session.get(
         CryptoCandle1d,
-        (inst.id, dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc)),
+        (inst.id, dt.datetime(2026, 5, 20, tzinfo=dt.UTC)),
     )
     assert fetched is not None
     assert float(fetched.close) == 3050.0

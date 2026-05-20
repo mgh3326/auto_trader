@@ -107,7 +107,7 @@ async def test_minute_repository_idempotent_upsert(db_session: AsyncSession) -> 
     repo = MinuteCandlesRepository(session=db_session)
     row = MinuteCandleRow(
         instrument_id=inst.id,
-        time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc),
+        time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.UTC),
         open=100,
         high=105,
         low=99,
@@ -162,7 +162,7 @@ async def test_cross_venue_same_bucket_coexistence(db_session: AsyncSession) -> 
         ids.append(inst.id)
 
     repo = MinuteCandlesRepository(session=db_session)
-    t = dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc)
+    t = dt.datetime(2026, 5, 20, tzinfo=dt.UTC)
     rows = [
         MinuteCandleRow(
             instrument_id=i,

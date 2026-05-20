@@ -323,5 +323,30 @@ process test suite cannot exercise alembic against the test DB without
 colliding with `create_all` schema management (see
 `tests/services/daily_candles/test_migration_round_trip.py`).
 
+#### Post-downgrade schema check (operator action)
+
+After running the alembic downgrade, verify the restored schema matches
+the original `f974ac12e573_add_crypto_candles_1d` shape — in particular,
+the legacy `value` column must be `NOT NULL`:
+
+```sql
+SELECT column_name, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'crypto_candles_1d'
+  AND column_name IN ('symbol', 'market', 'volume', 'value')
+ORDER BY column_name;
+-- Expected: all four rows have is_nullable = 'NO'.
+```
+
+`value` is restored via `UPDATE ... SET value = COALESCE(quote_volume, 0)`
+inside the step-3 downgrade. Rows that were inserted under the new
+schema and had `quote_volume IS NULL` will have `value = 0` after the
+downgrade — this is a documented best-effort default because the new
+schema does not require `quote_volume`. Operators who downgrade in
+practice should additionally spot-check whether any rows show
+`value = 0` with `volume > 0` (a likely indicator of the 0-default
+substitution) and decide whether to refresh those rows from the source
+of truth before resuming production traffic.
+
 If alembic downgrade fails partway, fall back to the manual procedure
 above using `crypto_candles_1d_pre_rob283`.

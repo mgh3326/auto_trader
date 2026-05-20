@@ -152,7 +152,12 @@ def downgrade() -> None:
         SET symbol = i.venue_symbol,
             market = CASE WHEN i.venue = 'upbit' THEN 'upbit_krw' ELSE i.venue END,
             volume = c.base_volume,
-            value  = c.quote_volume
+            -- Original f974ac12e573 schema had value NUMERIC NOT NULL. The
+            -- new schema allows quote_volume IS NULL (sources without quote
+            -- volume), so we COALESCE to 0 here so the NOT NULL restore
+            -- below cannot fail on rows inserted after the upgrade. Operator
+            -- runbook documents the 0-default for new-schema-era rows.
+            value  = COALESCE(c.quote_volume, 0)
         FROM crypto_instruments i
         WHERE i.id = c.instrument_id
         """
@@ -160,6 +165,8 @@ def downgrade() -> None:
     op.alter_column("crypto_candles_1d", "symbol", nullable=False)
     op.alter_column("crypto_candles_1d", "market", nullable=False)
     op.alter_column("crypto_candles_1d", "volume", nullable=False)
+    # ROB-284 — restore value NOT NULL to match the f974ac12e573 schema.
+    op.alter_column("crypto_candles_1d", "value", nullable=False)
     op.alter_column("crypto_candles_1d", "instrument_id", nullable=True)
     op.alter_column("crypto_candles_1d", "is_closed", nullable=True)
     op.drop_constraint(

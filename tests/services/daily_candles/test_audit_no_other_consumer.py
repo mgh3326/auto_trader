@@ -11,7 +11,6 @@ from __future__ import annotations
 import pathlib
 import subprocess
 
-
 ALLOWED = {
     # The repository is the sole production code consumer (reader/writer).
     "app/services/daily_candles/repository.py",

@@ -33,7 +33,7 @@ async def test_crypto_upsert_writes_via_instrument_id(
 
     repo = DailyCandlesRepository(session=db_session)
     row = DailyCandleRow(
-        time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc),
+        time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.UTC),
         symbol="KRW-SOL",
         partition="upbit_krw",
         open=100,
@@ -68,7 +68,7 @@ async def test_crypto_upsert_raises_for_unknown_pair(
 ) -> None:
     repo = DailyCandlesRepository(session=db_session)
     row = DailyCandleRow(
-        time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc),
+        time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.UTC),
         symbol="KRW-NEWCOIN",
         partition="upbit_krw",
         open=1,
@@ -102,7 +102,7 @@ async def test_crypto_latest_time_utc_resolves_via_instrument(
     repo = DailyCandlesRepository(session=db_session)
     rows = [
         DailyCandleRow(
-            time_utc=dt.datetime(2026, 5, 18, tzinfo=dt.timezone.utc),
+            time_utc=dt.datetime(2026, 5, 18, tzinfo=dt.UTC),
             symbol="KRW-ETH",
             partition="upbit_krw",
             open=100,
@@ -115,7 +115,7 @@ async def test_crypto_latest_time_utc_resolves_via_instrument(
             source="upbit",
         ),
         DailyCandleRow(
-            time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc),
+            time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.UTC),
             symbol="KRW-ETH",
             partition="upbit_krw",
             open=100,
@@ -155,7 +155,7 @@ async def test_crypto_fetch_recent_returns_rows_in_ascending_order(
     repo = DailyCandlesRepository(session=db_session)
     rows = [
         DailyCandleRow(
-            time_utc=dt.datetime(2026, 5, d, tzinfo=dt.timezone.utc),
+            time_utc=dt.datetime(2026, 5, d, tzinfo=dt.UTC),
             symbol="KRW-XRP",
             partition="upbit_krw",
             open=100,
