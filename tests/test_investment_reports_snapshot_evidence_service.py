@@ -30,6 +30,8 @@ from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
 
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 _NOW = dt.datetime(2026, 5, 20, 11, 0, 0, tzinfo=dt.UTC)
 
 

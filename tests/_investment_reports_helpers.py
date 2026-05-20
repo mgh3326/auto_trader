@@ -71,6 +71,18 @@ async def session() -> AsyncSession:
                         tables=INVESTMENT_REPORTS_TABLES,
                         checkfirst=True,
                     )
+                    # Start clean as well as cleaning up after the test. Global
+                    # db_session-based cross-domain tests can commit rows into
+                    # these tables, and interrupted local/CI runs can leave
+                    # stale rows behind before this fixture's first test starts.
+                    for table in reversed(INVESTMENT_REPORTS_TABLES):
+                        table_name = table.name  # type: ignore[attr-defined]
+                        await conn.execute(
+                            sa.text(
+                                f'TRUNCATE TABLE review."{table_name}" '
+                                "RESTART IDENTITY CASCADE"
+                            )
+                        )
                     # ROB-269 Phase 3 — additive snapshot metadata + CHECK.
                     # create_all with checkfirst=True skips existing tables,
                     # so persistent test DBs miss the new columns. These are
