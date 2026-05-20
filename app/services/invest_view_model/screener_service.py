@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field as _dc_field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from datetime import time as _time
 from typing import Any, Literal, Protocol
@@ -255,9 +255,7 @@ async def _hydrate_investor_flow_chips(
                     r["_investor_flow_collected_at"] = getattr(
                         item, "collectedAt", None
                     )
-                    r["_investor_flow_data_state"] = getattr(
-                        item, "dataState", None
-                    )
+                    r["_investor_flow_data_state"] = getattr(item, "dataState", None)
                     break
     return chips
 

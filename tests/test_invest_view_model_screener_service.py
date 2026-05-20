@@ -1820,6 +1820,8 @@ def test_build_freshness_no_change_to_existing_callsite_with_defaults() -> None:
     assert f.source in {"live", "cached", "previous_session"}
     assert f.cacheHit is False
     assert f.fetchedAt == f.servedAt  # ROB-277 D1: fetchedAt is a servedAt alias
+
+
 # ROB-276: double_buy preset wiring (Task 3)
 # ---------------------------------------------------------------------------
 
@@ -2260,7 +2262,9 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_dependency() -> None:
+async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_dependency() -> (
+    None
+):
     """ROB-277 follow-up FU2/FU6: when primary partition is today's and an
     investor_flow snapshot is 2 trading days older, freshness.dependencies must
     surface that as a 'stale' investor_flow entry with the correct snapshotDate
@@ -2321,7 +2325,9 @@ async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_depend
                     )
                 ]
             ),  # Q2: qualifying rows
-            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # Q3: filter names
+            _FakeExecuteResult(
+                rows=[_name_row("005930", "삼성전자")]
+            ),  # Q3: filter names
             _FakeExecuteResult(
                 scalar_rows=[
                     _FakeSnapshot(
@@ -2372,7 +2378,9 @@ async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_depend
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_consecutive_gainers_zero_qualifiers_still_threads_partition_metadata() -> None:
+async def test_consecutive_gainers_zero_qualifiers_still_threads_partition_metadata() -> (
+    None
+):
     """ROB-277 follow-up FU3/FU6: when the latest partition has no qualifying
     rows (consecutive_up_days >= 5 + week_change_rate >= 0 filter excludes all),
     freshness.primary must still carry the partition's snapshotDate so the UI
