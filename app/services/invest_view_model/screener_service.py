@@ -178,12 +178,13 @@ def _investor_flow_item_from_screener_row(
         return None
 
     snapshot_state = str(row.get("_screener_snapshot_state") or "").strip()
-    data_state = snapshot_state if snapshot_state in {"fresh", "stale"} else "fresh"
+    data_state = snapshot_state if snapshot_state in {"fresh", "stale", "missing"} else "fresh"
     return InvestorFlowItem(
         symbol=symbol,
         market="kr",
         dataState=data_state,
         snapshotDate=row.get("snapshot_date"),
+        collectedAt=row.get("collected_at"),  # ROB-277: passes through when available
         foreignNet=row.get("foreign_net"),
         institutionNet=row.get("institution_net"),
         individualNet=row.get("individual_net"),
@@ -536,6 +537,14 @@ async def _load_investor_flow_discovery_from_snapshots(
                 exc_info=True,
             )
 
+    from app.services.invest_screener_snapshots.freshness import (
+        classify_investor_flow_partition,
+        today_trading_date,
+    )
+
+    today = today_trading_date(market)
+    now_utc = datetime.now(UTC)
+
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for snap in candidate_snaps:
@@ -544,6 +553,12 @@ async def _load_investor_flow_discovery_from_snapshots(
         if not _is_kr_toss_common_stock(snap.symbol, symbol_names.get(snap.symbol)):
             continue
         seen.add(snap.symbol)
+        state = classify_investor_flow_partition(
+            snapshot_date=snap.snapshot_date,
+            collected_at=snap.collected_at,
+            today_trading_date_value=today,
+            now=now_utc,
+        )
         rows.append(
             {
                 "symbol": snap.symbol,
@@ -555,7 +570,9 @@ async def _load_investor_flow_discovery_from_snapshots(
                 "foreign_consecutive_buy_days": snap.foreign_consecutive_buy_days,
                 "institution_consecutive_buy_days": snap.institution_consecutive_buy_days,
                 "double_buy": snap.double_buy,
-                "_screener_snapshot_state": "fresh",
+                "snapshot_date": snap.snapshot_date,
+                "collected_at": snap.collected_at,
+                "_screener_snapshot_state": state,
             }
         )
         if len(rows) >= limit:

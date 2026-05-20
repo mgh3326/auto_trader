@@ -1505,3 +1505,102 @@ async def test_build_screener_results_warns_and_does_not_fallback_when_latest_pa
     assert resp.results == []
     assert any("스크리너 스냅샷 업데이트" in w for w in resp.warnings)
     assert resp.freshness.dataState == "stale"
+
+
+# ---------------------------------------------------------------------------
+# ROB-277: investor-flow rows carry snapshot_date / collected_at / classified state
+# ---------------------------------------------------------------------------
+
+
+class _FakeInvestorFlowSnapshot:
+    """Minimal fake matching InvestorFlowSnapshot ORM attributes used in
+    _load_investor_flow_discovery_from_snapshots."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.market = kwargs.get("market", "kr")
+        self.symbol = kwargs["symbol"]
+        self.snapshot_date = kwargs.get("snapshot_date", date(2026, 5, 15))
+        self.collected_at = kwargs.get(
+            "collected_at", datetime(2026, 5, 15, 6, 30, tzinfo=UTC)
+        )
+        self.foreign_net = kwargs.get("foreign_net", 500_000_000)
+        self.institution_net = kwargs.get("institution_net", -100_000_000)
+        self.individual_net = kwargs.get("individual_net", -400_000_000)
+        self.foreign_consecutive_buy_days = kwargs.get(
+            "foreign_consecutive_buy_days", 3
+        )
+        self.institution_consecutive_buy_days = kwargs.get(
+            "institution_consecutive_buy_days", None
+        )
+        self.double_buy = kwargs.get("double_buy", False)
+        self.foreign_net_buy_rank = kwargs.get("foreign_net_buy_rank", None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_investor_flow_rows_carry_snapshot_date_collected_at_and_classified_state() -> (
+    None
+):
+    """ROB-277: snapshot_date and collected_at must pass through the row dict, and
+    _screener_snapshot_state must be the classified result of
+    classify_investor_flow_partition — NOT the hardcoded literal 'fresh'.
+
+    We use a snapshot dated 2026-05-15 (Thursday), and "now" is set to
+    2026-05-20 (Tuesday) — two trading days later — so the snapshot_date differs
+    from today_trading_date("kr") → the state must be "stale".
+    """
+    from app.services.invest_view_model.screener_service import (
+        _load_investor_flow_discovery_from_snapshots,
+    )
+
+    stale_snapshot_date = date(2026, 5, 15)
+    collected = datetime(2026, 5, 15, 6, 30, tzinfo=UTC)
+
+    session = _FakeSession(
+        [
+            # MAX(snapshot_date)
+            _FakeExecuteResult(scalar_rows=[stale_snapshot_date]),
+            # qualifying rows
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeInvestorFlowSnapshot(
+                        symbol="005930",
+                        snapshot_date=stale_snapshot_date,
+                        collected_at=collected,
+                        foreign_consecutive_buy_days=3,
+                    )
+                ]
+            ),
+            # kr_symbol_universe name rows
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),
+        ]
+    )
+
+    rows = await _load_investor_flow_discovery_from_snapshots(
+        session, market="kr", limit=20
+    )
+
+    assert rows is not None, "expected rows list, got None"
+    assert len(rows) == 1
+
+    row = rows[0]
+
+    # snapshot_date passes through
+    assert row["snapshot_date"] == stale_snapshot_date, (
+        f"expected snapshot_date={stale_snapshot_date!r}, got {row.get('snapshot_date')!r}"
+    )
+
+    # collected_at passes through
+    assert row["collected_at"] == collected, (
+        f"expected collected_at={collected!r}, got {row.get('collected_at')!r}"
+    )
+
+    # state must NOT be the hardcoded literal "fresh"; for a snapshot 5 days old
+    # it should be "stale"
+    state = row["_screener_snapshot_state"]
+    assert state != "fresh", (
+        f"_screener_snapshot_state must be classified, not hardcoded 'fresh'; got {state!r}"
+    )
+    assert state == "stale", (
+        f"expected 'stale' for snapshot_date={stale_snapshot_date} vs today 2026-05-20; got {state!r}"
+    )
