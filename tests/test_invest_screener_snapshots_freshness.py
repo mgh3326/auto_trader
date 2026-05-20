@@ -79,3 +79,107 @@ def test_classify_state_stale_when_old_or_old_computed():
 )
 def test_aggregate_states(states, expected):
     assert aggregate_states(states) == expected
+
+
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from app.services.invest_screener_snapshots.freshness import (  # noqa: E402
+    classify_investor_flow_partition,
+    compute_overall_state,
+    format_kst_as_of_label,
+)
+
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def test_classify_investor_flow_partition_fresh_when_partition_is_today_trading_date() -> (
+    None
+):
+    today = dt.date(2026, 5, 20)  # Wednesday
+    state = classify_investor_flow_partition(
+        snapshot_date=today,
+        collected_at=dt.datetime(2026, 5, 20, 7, 30, tzinfo=dt.UTC),
+        today_trading_date_value=today,
+        now=dt.datetime(2026, 5, 20, 8, 0, tzinfo=dt.UTC),
+    )
+    assert state == "fresh"
+
+
+def test_classify_investor_flow_partition_stale_when_partition_is_two_trading_days_old() -> (
+    None
+):
+    state = classify_investor_flow_partition(
+        snapshot_date=dt.date(2026, 5, 18),  # Monday
+        collected_at=dt.datetime(2026, 5, 18, 7, 30, tzinfo=dt.UTC),
+        today_trading_date_value=dt.date(2026, 5, 20),  # Wednesday
+        now=dt.datetime(2026, 5, 20, 8, 0, tzinfo=dt.UTC),
+    )
+    assert state == "stale"
+
+
+def test_classify_investor_flow_partition_friday_snapshot_on_saturday_noon_is_fresh() -> (
+    None
+):
+    """Weekend rollback: on Saturday, today_trading_date rolls back to Friday, so
+    a Friday partition with collected_at within STALE_AFTER_HOURS is fresh."""
+    state = classify_investor_flow_partition(
+        snapshot_date=dt.date(2026, 5, 15),  # Friday
+        collected_at=dt.datetime(2026, 5, 15, 7, 30, tzinfo=dt.UTC),
+        today_trading_date_value=dt.date(
+            2026, 5, 15
+        ),  # what today_trading_date("kr") returns on Sat
+        now=dt.datetime(2026, 5, 16, 3, 0, tzinfo=dt.UTC),  # Sat 12:00 KST
+    )
+    assert state == "fresh"
+
+
+def test_compute_overall_state_primary_stale_dominates() -> None:
+    assert (
+        compute_overall_state(primary_state="stale", dependency_states=["fresh"])
+        == "stale"
+    )
+
+
+def test_compute_overall_state_primary_missing_dominates() -> None:
+    assert (
+        compute_overall_state(primary_state="missing", dependency_states=["fresh"])
+        == "missing"
+    )
+
+
+def test_compute_overall_state_primary_fresh_dependency_stale_is_stale() -> None:
+    assert (
+        compute_overall_state(primary_state="fresh", dependency_states=["stale"])
+        == "stale"
+    )
+
+
+def test_compute_overall_state_primary_fresh_dependency_missing_is_stale() -> None:
+    assert (
+        compute_overall_state(primary_state="fresh", dependency_states=["missing"])
+        == "stale"
+    )
+
+
+def test_compute_overall_state_primary_fresh_dependency_partial_is_partial() -> None:
+    assert (
+        compute_overall_state(primary_state="fresh", dependency_states=["partial"])
+        == "partial"
+    )
+
+
+def test_compute_overall_state_primary_fresh_no_dependencies_is_fresh() -> None:
+    assert compute_overall_state(primary_state="fresh", dependency_states=[]) == "fresh"
+
+
+def test_format_kst_as_of_label_for_snapshot_date_only_uses_jangmagam() -> None:
+    label = format_kst_as_of_label(snapshot_date=dt.date(2026, 5, 13), computed_at=None)
+    assert label == "2026.05.13 장마감 기준"
+
+
+def test_format_kst_as_of_label_with_computed_at_uses_hhmm() -> None:
+    label = format_kst_as_of_label(
+        snapshot_date=dt.date(2026, 5, 20),
+        computed_at=dt.datetime(2026, 5, 20, 0, 35, tzinfo=dt.UTC),  # 09:35 KST
+    )
+    assert label == "2026.05.20 09:35 기준"

@@ -122,6 +122,26 @@ class ScreenerPresetsResponse(BaseModel):
     selectedPresetId: str | None = None
 
 
+class ScreenerFreshnessPrimary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["screener_snapshot", "live", "fallback"]
+    snapshotDate: str | None = None
+    computedAt: str | None = None
+    asOfLabel: str
+    dataState: Literal["fresh", "partial", "stale", "missing", "fallback"]
+    source: str | None = None
+
+
+class ScreenerFreshnessDependency(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["investor_flow"]
+    snapshotDate: str | None = None
+    collectedAt: str | None = None
+    lagLabel: str | None = None
+    dataState: Literal["fresh", "partial", "stale", "missing", "fallback"]
+    source: str | None = None
+
+
 class ScreenerFreshness(BaseModel):
     model_config = ConfigDict(extra="forbid")
     fetchedAt: str
@@ -130,6 +150,14 @@ class ScreenerFreshness(BaseModel):
     cacheHit: bool
     source: Literal["live", "cached", "previous_session"]
     dataState: Literal["fresh", "partial", "stale", "missing", "fallback"] = "missing"
+    # New (additive, optional) fields — see ROB-277 plan §D1.
+    servedAt: str | None = None
+    servedRelativeLabel: str | None = None
+    primary: ScreenerFreshnessPrimary | None = None
+    dependencies: list[ScreenerFreshnessDependency] = Field(default_factory=list)
+    overallState: Literal["fresh", "partial", "stale", "missing", "fallback"] | None = (
+        None
+    )
 
 
 class ScreenerResultsResponse(BaseModel):
