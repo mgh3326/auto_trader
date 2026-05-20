@@ -16,7 +16,7 @@ from app.services.invest_view_model.double_buy_screener import (
 
 # Test symbols use a 9-prefix range to stay isolated from real KR symbols and
 # from sibling tests that already claim "900xxx" ranges.
-_TEST_SYMBOLS = ["911000", "910001", "919999"]
+_TEST_SYMBOLS = ["911000", "910001", "919999", "912000"]
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -204,3 +204,63 @@ async def test_excludes_non_common_stock_by_name_heuristic(db_session):
     # ETF must not appear; other symbols already in the DB are allowed but
     # 919999 must be excluded by the name heuristic.
     assert all(r["symbol"] != "919999" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_returns_none_when_market_is_not_kr(db_session):
+    # No DB hit expected — short-circuits at the market guard
+    rows = await load_double_buy_from_snapshots(
+        db_session, market="us", limit=20
+    )
+    assert rows is None
+
+
+@pytest.mark.asyncio
+async def test_state_is_stale_when_price_snapshot_date_differs_from_flow_snapshot_date(
+    db_session,
+):
+    # Construct a scenario where flow_snapshot_date < price_snapshot_date so the
+    # latest-partition lookups return different dates → row should be tagged "stale".
+    flow_date = dt.date(2099, 12, 30)  # earlier
+    price_date = dt.date(2099, 12, 31)  # later (latest price partition)
+    symbol = "912000"
+
+    db_session.add(
+        KRSymbolUniverse(symbol=symbol, name="테스트종목", is_active=True, exchange="KOSPI")
+    )
+    db_session.add(
+        InvestorFlowSnapshot(
+            market="kr",
+            symbol=symbol,
+            snapshot_date=flow_date,
+            foreign_net=1,
+            institution_net=1,
+            double_buy=True,
+            double_sell=False,
+            source="naver_finance",
+        )
+    )
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol=symbol,
+            snapshot_date=price_date,
+            latest_close=decimal.Decimal("10000"),
+            prev_close=decimal.Decimal("9000"),
+            change_rate=decimal.Decimal("11.0"),
+            daily_volume=1,
+            closes_window=[9000, 9500, 9800, 9900, 10000],
+            source="kis",
+        )
+    )
+    await db_session.commit()
+
+    rows = await load_double_buy_from_snapshots(
+        db_session, market="kr", limit=20
+    )
+
+    assert rows is not None
+    # find our test symbol (shared DB may have other rows)
+    target = next((r for r in rows if r["symbol"] == symbol), None)
+    assert target is not None, f"expected {symbol} in results, got {[r['symbol'] for r in rows]}"
+    assert target["_screener_snapshot_state"] == "stale"

@@ -87,6 +87,7 @@ async def load_double_buy_from_snapshots(
         .order_by(
             InvestScreenerSnapshot.change_rate.desc().nullslast(),
             InvestorFlowSnapshot.symbol.asc(),
+            InvestorFlowSnapshot.source.asc(),
         )
         .limit(max(limit * 4, limit + 40))
     )
@@ -119,6 +120,11 @@ async def load_double_buy_from_snapshots(
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+    # Multiple investor_flow sources may exist per (symbol, snapshot_date) due to
+    # unique constraint scope. SQL ORDER BY source.asc() above ensures the first
+    # row seen here is the alphabetically-earlier source — currently only
+    # `naver_finance` is live, but this keeps the choice deterministic if `kis` or
+    # other sources are added later.
     for r in candidate_rows:
         sym = r["symbol"]
         if sym in seen:
