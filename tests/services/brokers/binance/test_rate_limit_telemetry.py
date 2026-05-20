@@ -1,4 +1,4 @@
-"""ROB-285 — Rate-limit header parser + telemetry."""
+"""ROB-285 — Rate-limit header parser + telemetry + soft-throttle/hard-stop."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ import logging
 
 import pytest
 
+from app.services.brokers.binance.errors import BinanceRateLimited
 from app.services.brokers.binance.rate_limit_telemetry import (
     RateLimitSnapshot,
     emit_rate_limit_snapshot,
     parse_rate_limit_headers,
 )
+from app.services.brokers.binance.rest_client import BinancePublicRestClient
 
 
 def test_parses_used_weight_and_order_count() -> None:
@@ -99,3 +101,80 @@ def test_emit_does_not_raise_when_sentry_set_tag_raises(monkeypatch) -> None:
     snap = RateLimitSnapshot(used_weight_1m=1000, order_count_1m=0)
     # Must not raise.
     assert emit_rate_limit_snapshot(snap, declared_weight_limit=1200) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — soft-throttle + hard-stop integrated with BinancePublicRestClient.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_soft_throttle_sleeps_when_above_80pct(httpx_mock, monkeypatch) -> None:
+    """When ``used_weight`` crosses 80% of declared, the NEXT REST call sleeps."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(
+        "app.services.brokers.binance.rest_client.asyncio.sleep", fake_sleep
+    )
+    httpx_mock.add_response(
+        url="https://api.binance.com/api/v3/exchangeInfo?symbol=BTCUSDT",
+        json={
+            "symbols": [
+                {
+                    "symbol": "BTCUSDT",
+                    "status": "TRADING",
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "filters": [],
+                }
+            ]
+        },
+        headers={"X-MBX-USED-WEIGHT-1M": "1000"},  # 83% of 1200
+    )
+    httpx_mock.add_response(
+        url="https://api.binance.com/api/v3/exchangeInfo?symbol=ETHUSDT",
+        json={
+            "symbols": [
+                {
+                    "symbol": "ETHUSDT",
+                    "status": "TRADING",
+                    "baseAsset": "ETH",
+                    "quoteAsset": "USDT",
+                    "filters": [],
+                }
+            ]
+        },
+        headers={"X-MBX-USED-WEIGHT-1M": "1010"},
+    )
+    async with BinancePublicRestClient() as rest:
+        await rest.exchange_info("BTCUSDT")
+        await rest.exchange_info("ETHUSDT")
+    assert sleeps, "Expected at least one soft-throttle sleep call"
+
+
+@pytest.mark.asyncio
+async def test_429_raises_binance_rate_limited_with_retry_after(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://api.binance.com/api/v3/exchangeInfo?symbol=BTCUSDT",
+        status_code=429,
+        headers={"Retry-After": "30"},
+    )
+    async with BinancePublicRestClient() as rest:
+        with pytest.raises(BinanceRateLimited) as exc_info:
+            await rest.exchange_info("BTCUSDT")
+    assert exc_info.value.retry_after_seconds == 30.0
+
+
+@pytest.mark.asyncio
+async def test_418_raises_binance_rate_limited(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://api.binance.com/api/v3/exchangeInfo?symbol=BTCUSDT",
+        status_code=418,
+        headers={"Retry-After": "60"},
+    )
+    async with BinancePublicRestClient() as rest:
+        with pytest.raises(BinanceRateLimited):
+            await rest.exchange_info("BTCUSDT")

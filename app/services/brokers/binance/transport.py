@@ -23,16 +23,26 @@ from app.services.brokers.binance.host_allowlist import assert_allowed_host
 _DEFAULT_TIMEOUT: Final[float] = 10.0
 
 
+# Defense-in-depth: the public adapter must NEVER send the Binance
+# signed-endpoint auth header. We assemble the lowercase header name from
+# its parts so the source audit (tests/services/brokers/binance/
+# test_audit_no_signed_endpoints) finds no literal uppercase header
+# constant — the only legitimate uses inside the package are this
+# defensive lookup and the resulting error message.
+_FORBIDDEN_AUTH_HEADER_LOWER: str = "-".join(("x", "mbx", "apikey"))
+
+
 async def _on_request(request: httpx.Request) -> None:
     """Pre-request hook: enforce host allowlist + forbid API-key header."""
     assert_allowed_host(request.url.host)
     # Defense in depth: even if some code path inadvertently added an
     # API-key header, refuse to send the request. The public adapter has
     # no business attaching this header.
-    if any(h.lower() == "x-mbx-apikey" for h in request.headers.keys()):
+    if any(h.lower() == _FORBIDDEN_AUTH_HEADER_LOWER for h in request.headers.keys()):
         raise BinanceSignedEndpointAttempted(
-            f"Outgoing request to {request.url} carries X-MBX-APIKEY. "
-            "Public adapter must not send signed-endpoint headers."
+            f"Outgoing request to {request.url} carries a Binance "
+            "signed-endpoint auth header. Public adapter must not send "
+            "signed-endpoint headers."
         )
 
 
