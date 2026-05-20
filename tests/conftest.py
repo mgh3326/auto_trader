@@ -650,6 +650,64 @@ async def db_session():
 
 
 @pytest_asyncio.fixture
+async def investment_reports_cleanup_lock(db_session):
+    """Hold the investment-report cleanup lock for tests using ``db_session``.
+
+    Most investment-report table tests use ``tests._investment_reports_helpers.session``.
+    That fixture serializes its own body and cleanup because it truncates
+    ``review.investment_reports`` and child tables after each test.
+
+    A few cross-domain tests must use the global ``db_session`` fixture because
+    they span ``review.investment_reports`` plus snapshot/stage tables. During
+    xdist runs those tests can otherwise seed a report, commit it, and then race
+    with the helper fixture cleanup running on another worker. The symptom is a
+    flaky ``report_not_found``/``None`` read immediately after seeding.
+
+    This fixture keeps those specific tests parallel-safe without serializing
+    every global ``db_session`` user. Apply it with ``pytestmark =
+    pytest.mark.usefixtures("investment_reports_cleanup_lock")`` in files that
+    mix global ``db_session`` with investment-report rows.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import engine
+    from tests._investment_reports_helpers import (
+        INVESTMENT_REPORTS_TABLES,
+        INVESTMENT_REPORTS_TEST_LOCK_ID,
+    )
+
+    async def _truncate_investment_report_tables() -> None:
+        # Keep this cleanup aligned with tests._investment_reports_helpers.session:
+        # only the investment-report table family is reset here. Snapshot/stage
+        # tables use UUID-scoped test rows and are intentionally left alone.
+        async with engine.begin() as cleanup:
+            for table in reversed(INVESTMENT_REPORTS_TABLES):
+                table_name = table.name  # type: ignore[attr-defined]
+                await cleanup.execute(
+                    text(
+                        f'TRUNCATE TABLE review."{table_name}" RESTART IDENTITY CASCADE'
+                    )
+                )
+
+    async with engine.connect() as guard:
+        await guard.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+        )
+        try:
+            await db_session.rollback()
+            await _truncate_investment_report_tables()
+            yield db_session
+            await db_session.rollback()
+            await _truncate_investment_report_tables()
+        finally:
+            await guard.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+            )
+
+
+@pytest_asyncio.fixture
 async def user(db_session):
     """Create a test user."""
     from uuid import uuid4

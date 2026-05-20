@@ -40,6 +40,8 @@ from app.services.investment_reports.repository import InvestmentReportsReposito
 from app.services.investment_snapshots.repository import InvestmentSnapshotsRepository
 from app.services.investment_stages.repository import InvestmentStagesRepository
 
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 # ---------------------------------------------------------------------------
 # App factory (mirrors test_investment_snapshots_router.py)
 # ---------------------------------------------------------------------------
