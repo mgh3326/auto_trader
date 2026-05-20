@@ -481,7 +481,7 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
 
 class _FakeKISMockAccount:
     async def fetch_domestic_balance_snapshot(
-        self, *, is_mock: bool = False
+        self, *, is_mock: bool = False, **kwargs: Any
     ) -> dict[str, Any]:
         assert is_mock is True
         return {
@@ -552,8 +552,9 @@ async def test_kis_mock_reader_reports_zero_cost_basis_gain(
 
     class _ZeroCostAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             assert is_mock is True
             return {
                 "holdings": [
@@ -597,8 +598,9 @@ async def test_kis_mock_reader_ignores_unparseable_cash_amounts(
 
     class _BadCashAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             assert is_mock is True
             return {
                 "holdings": [],
@@ -690,8 +692,9 @@ async def test_kis_mock_reader_uses_balance_snapshot_and_skips_inquire_cash(
 
     class _SnapshotAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             snapshot_calls.append(is_mock)
             return {
                 "holdings": [
@@ -765,8 +768,9 @@ async def test_kis_mock_reader_snapshot_unparseable_cash_no_extra_call(
 
     class _BadCashSnapshotAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             return {
                 "holdings": [],
                 "cash": {
@@ -816,8 +820,9 @@ async def test_kis_mock_reader_snapshot_missing_cash_keys_does_not_break(
 
     class _MissingCashAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             return {
                 "holdings": [
                     {
@@ -879,8 +884,9 @@ async def test_kis_mock_reader_emits_sentry_observability_on_success(
 
     class _SnapshotAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             return {
                 "holdings": [],
                 "cash": {
@@ -918,8 +924,9 @@ async def test_kis_mock_reader_cash_fallback_tag_when_unparseable(
 
     class _BadCashSnapshotAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             return {
                 "holdings": [],
                 "cash": {
@@ -953,8 +960,9 @@ async def test_kis_mock_reader_no_op_when_no_active_sentry_span(
 
     class _SnapshotAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             return {
                 "holdings": [],
                 "cash": {
@@ -988,8 +996,9 @@ async def test_kis_mock_reader_snapshot_failure_returns_warning(
 
     class _ExplodingAccount:
         async def fetch_domestic_balance_snapshot(
-            self, *, is_mock: bool = False
+            self, *, is_mock: bool = False, **kwargs: Any
         ) -> dict[str, Any]:
+
             raise RuntimeError("VTS timeout")
 
     class _ExplodingClient:
@@ -1228,3 +1237,86 @@ async def test_alpaca_paper_reader_mutation_methods_not_called(
     assert mutation_called == [], (
         "Mutation methods were called during Invest Home fetch"
     )
+
+
+# ---------------------------------------------------------------------------
+# ROB-270: KIS mock UI read path uses bounded single-attempt timeout policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_passes_bounded_single_attempt_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-270: KISMockHomeReader requests timeout=10, retry_request_errors=False,
+    and a reduced max_pages cap from fetch_domestic_balance_snapshot."""
+    captured: dict[str, Any] = {}
+
+    class _CapturingAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, **kwargs: Any
+        ) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "holdings": [],
+                "cash": {},
+                "page_count": 1,
+                "stop_reason": "tr_cont_end",
+            }
+
+    class _CapturingClient:
+        def __init__(self) -> None:
+            self.account = _CapturingAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _CapturingClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.warning is None or result.warning.source == "kis_mock"
+    assert captured.get("is_mock") is True
+    assert captured.get("timeout") == pytest.approx(10.0)
+    assert captured.get("retry_request_errors") is False
+    assert captured.get("max_pages") == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_degrades_when_wall_time_bound_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-270: When snapshot exceeds the wall-time bound, the reader returns
+    a sanitized warning instead of propagating, so live/manual/Upbit sources
+    can still render."""
+    import asyncio as _asyncio
+
+    class _SlowAccount:
+        async def fetch_domestic_balance_snapshot(
+            self, **kwargs: Any
+        ) -> dict[str, Any]:
+            await _asyncio.sleep(1.0)  # longer than the patched bound
+            return {"holdings": [], "cash": {}, "page_count": 1}
+
+    class _SlowClient:
+        def __init__(self) -> None:
+            self.account = _SlowAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _SlowClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    # Patch the wait_for timeout to a tiny value by patching asyncio.wait_for
+    real_wait_for = _asyncio.wait_for
+
+    async def _short_wait_for(coro, timeout):
+        return await real_wait_for(coro, timeout=0.05)
+
+    monkeypatch.setattr(readers.asyncio, "wait_for", _short_wait_for)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "kis_mock"
+    assert "시간" in result.warning.message or "초과" in result.warning.message

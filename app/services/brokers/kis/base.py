@@ -382,6 +382,7 @@ class BaseKISClient:
         timeout: float = 5.0,
         api_name: str = "unknown",
         tr_id: str | None = None,
+        retry_request_errors: bool = True,
     ) -> dict[str, Any]:
         """Make HTTP request with rate limiting and 429 retry logic.
 
@@ -394,6 +395,7 @@ class BaseKISClient:
             timeout: Request timeout in seconds
             api_name: Human-readable API name for logging
             tr_id: KIS TR_ID for per-API rate limiting
+            retry_request_errors: whether to retry on httpx.RequestError (timeouts, etc)
 
         Returns:
             Parsed JSON response
@@ -412,6 +414,7 @@ class BaseKISClient:
             timeout=timeout,
             api_name=api_name,
             tr_id=tr_id,
+            retry_request_errors=retry_request_errors,
         )
         return data
 
@@ -426,6 +429,7 @@ class BaseKISClient:
         timeout: float = 5.0,
         api_name: str = "unknown",
         tr_id: str | None = None,
+        retry_request_errors: bool = True,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Like :meth:`_request_with_rate_limit` but also returns response headers.
 
@@ -532,7 +536,7 @@ class BaseKISClient:
                 raise
             except httpx.RequestError as e:
                 last_error = e
-                if attempt < max_retries:
+                if retry_request_errors and attempt < max_retries:
                     wait_time = self._calculate_retry_delay(
                         attempt=attempt, retry_after=0
                     )

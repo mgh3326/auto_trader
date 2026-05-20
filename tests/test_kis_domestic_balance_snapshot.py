@@ -62,6 +62,7 @@ class _FakeParent:
             timeout: float = 5.0,
             api_name: str = "unknown",
             tr_id: str | None = None,
+            retry_request_errors: bool = True,
         ) -> tuple[dict[str, Any], dict[str, str]]:
             self.calls.append(
                 {
@@ -71,6 +72,7 @@ class _FakeParent:
                     "params": dict(params or {}),
                     "api_name": api_name,
                     "tr_id": tr_id,
+                    "retry_request_errors": retry_request_errors,
                 }
             )
             if not self._responses:
@@ -346,3 +348,81 @@ async def test_snapshot_uses_real_tr_id_when_is_mock_false() -> None:
     await client.fetch_domestic_balance_snapshot(is_mock=False)
 
     assert parent.calls[0]["tr_id"] == constants.DOMESTIC_BALANCE_TR
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_snapshot_propagates_timeout_and_retry_flag_to_request() -> None:
+    """ROB-270: fetch_domestic_balance_snapshot honors per-call timeout and
+    retry_request_errors when explicitly passed, defaulting to live values
+    otherwise."""
+    parent = _FakeParent(
+        responses=[
+            _page(stocks=[], cash={}, tr_cont="D"),
+        ]
+    )
+    # Wrap stub to capture the actually-passed kwargs
+    original_stub = parent._request_with_rate_limit_with_headers
+    captured: dict[str, Any] = {}
+
+    async def _capturing_stub(*args: Any, **kwargs: Any):
+        captured.update(kwargs)
+        return await original_stub(*args, **kwargs)
+
+    parent._request_with_rate_limit_with_headers = _capturing_stub
+    client = AccountClient(parent)
+
+    await client.fetch_domestic_balance_snapshot(
+        is_mock=True,
+        timeout=10.0,
+        retry_request_errors=False,
+    )
+
+    assert captured.get("timeout") == pytest.approx(10.0)
+    assert captured.get("retry_request_errors") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_snapshot_defaults_preserve_live_request_policy() -> None:
+    """ROB-270: Live default — timeout=5, retry_request_errors=True."""
+    parent = _FakeParent(
+        responses=[
+            _page(stocks=[], cash={}, tr_cont="D"),
+        ]
+    )
+    captured: dict[str, Any] = {}
+    original = parent._request_with_rate_limit_with_headers
+
+    async def _capturing_stub(*args: Any, **kwargs: Any):
+        captured.update(kwargs)
+        return await original(*args, **kwargs)
+
+    parent._request_with_rate_limit_with_headers = _capturing_stub
+    client = AccountClient(parent)
+
+    await client.fetch_domestic_balance_snapshot()  # all defaults
+
+    assert captured.get("timeout") == pytest.approx(5.0)
+    assert captured.get("retry_request_errors", True) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_snapshot_honors_explicit_max_pages_cap() -> None:
+    """ROB-270: max_pages param can shrink the live default cap for mock UI."""
+    # Two continuation pages then end — but with max_pages=1 we stop after 1.
+    parent = _FakeParent(
+        responses=[
+            _page(stocks=[{"pdno": "A", "hldg_qty": "1"}], ctx_nk="X", tr_cont="F"),
+            # If max_pages is honored we never reach this response.
+            _page(stocks=[{"pdno": "B", "hldg_qty": "1"}], tr_cont="D"),
+        ]
+    )
+    client = AccountClient(parent)
+
+    snapshot = await client.fetch_domestic_balance_snapshot(is_mock=True, max_pages=1)
+
+    assert snapshot["page_count"] == 1
+    assert len(parent.calls) == 1
+    assert snapshot["holdings"][0]["pdno"] == "A"
