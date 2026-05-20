@@ -315,7 +315,13 @@ async def _seed_report_with_portfolio_v2_payload(db_session):
         snapshot_bundle_uuid=bundle.bundle_uuid,
         snapshot_policy_version="intraday_action_report_v1",
     )
-    await db_session.commit()
+    # Intentionally do NOT commit. The repo writes already flushed are
+    # visible to the same session's reads, and keeping the transaction
+    # open blocks the concurrent ``review.investment_reports`` TRUNCATE
+    # from ``_investment_reports_helpers.session`` running on another
+    # xdist worker. Committing here would race that TRUNCATE under
+    # ``--dist=loadfile`` and intermittently lose this fixture's rows.
+    await db_session.flush()
     return report.report_uuid, snap.snapshot_uuid, portfolio_payload_v2
 
 
