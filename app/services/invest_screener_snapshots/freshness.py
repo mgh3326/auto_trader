@@ -74,7 +74,7 @@ def classify_kr_session_slot(now: dt.datetime) -> KRSessionSlot:
     return "nxt_final"
 
 
-def expected_kr_baseline_date(now: dt.datetime) -> dt.date:
+def expected_kr_baseline_date(now: dt.datetime | None = None) -> dt.date:
     """The KR trading date for which a snapshot is EXPECTED to exist at ``now``.
 
     Critically, in the 07:40 – 16:19 KST window (pre-market repair, before
@@ -93,9 +93,10 @@ def expected_kr_baseline_date(now: dt.datetime) -> dt.date:
     :func:`today_trading_date`; daily candles upstream already collapse KR
     public holidays into the prior trading day close.
     """
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=dt.UTC)
-    kst = now.astimezone(_KST)
+    moment = now if now is not None else dt.datetime.now(dt.UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.UTC)
+    kst = moment.astimezone(_KST)
     today_kst = kst.date()
     while today_kst.weekday() >= 5:
         today_kst -= dt.timedelta(days=1)
@@ -146,7 +147,7 @@ _ET = ZoneInfo("America/New_York")
 _US_POST_CLOSE_THRESHOLD = (17, 20)  # hour, minute in America/New_York
 
 
-def expected_us_baseline_date(now: dt.datetime) -> dt.date:
+def expected_us_baseline_date(now: dt.datetime | None = None) -> dt.date:
     """The US trading date for which a snapshot is EXPECTED to exist at ``now``.
 
     Boundary semantics (all in ``America/New_York``):
@@ -166,9 +167,10 @@ def expected_us_baseline_date(now: dt.datetime) -> dt.date:
     import exchange_calendars as xcals
     import pandas as pd
 
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=dt.UTC)
-    now_et = now.astimezone(_ET)
+    moment = now if now is not None else dt.datetime.now(dt.UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.UTC)
+    now_et = moment.astimezone(_ET)
     today_et = now_et.date()
     cal = xcals.get_calendar("XNYS")
     today_ts = pd.Timestamp(today_et)
@@ -231,6 +233,51 @@ def us_session_label_for_partition(
     if partition_computed_at is None:
         return None
     return "US post-close"
+
+
+# ---------------------------------------------------------------------------
+# ROB-281 — Market-aware dispatch helpers
+# ---------------------------------------------------------------------------
+
+
+def expected_baseline_date(
+    market: str, *, now: dt.datetime | None = None
+) -> dt.date:
+    """Session-aware variant of :func:`today_trading_date`.
+
+    Dispatches to ``expected_kr_baseline_date`` for ``"kr"`` and
+    ``expected_us_baseline_date`` for ``"us"``. For any other market value
+    falls back to :func:`today_trading_date` so existing non-KR/US callers
+    (e.g., crypto, future markets) are not silently broken.
+
+    Use this in place of :func:`today_trading_date` whenever the caller is
+    classifying an ``invest_screener_snapshots`` partition — it correctly
+    expects the prior trading day during the KR ``07:40–16:19`` pre-market
+    window and the US pre-17:20 ET window, preventing the "fresh prior-day
+    partition labeled stale" regression after KST/ET midnight rollover.
+    """
+    if market == "kr":
+        return expected_kr_baseline_date(now)
+    if market == "us":
+        return expected_us_baseline_date(now)
+    return today_trading_date(market, now=now)
+
+
+def session_label_for_partition(
+    market: str, partition_computed_at: dt.datetime | None
+) -> str | None:
+    """Return the user-facing session label for a partition.
+
+    Dispatches to :func:`kr_session_label_for_partition` /
+    :func:`us_session_label_for_partition` based on ``market``. Returns
+    ``None`` for unknown markets so callers can safely default to the
+    existing ``format_kst_as_of_label`` output.
+    """
+    if market == "kr":
+        return kr_session_label_for_partition(partition_computed_at)
+    if market == "us":
+        return us_session_label_for_partition(partition_computed_at)
+    return None
 
 
 def classify_state(
