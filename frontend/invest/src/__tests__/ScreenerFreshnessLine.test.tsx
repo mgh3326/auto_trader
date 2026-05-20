@@ -68,6 +68,67 @@ describe("ScreenerFreshnessLine", () => {
   });
 });
 
+describe("ROB-277 dual-line rendering", () => {
+  test("renders 데이터 기준 line and 화면 갱신 line in separate spans", () => {
+    render(
+      <ScreenerFreshnessLine
+        freshness={{
+          fetchedAt: "2026-05-13T06:35:00+00:00",
+          asOfLabel: "2026.05.13 장마감 기준",
+          relativeLabel: "5거래일 지연",
+          cacheHit: true,
+          source: "cached",
+          dataState: "stale",
+          servedAt: "2026-05-20T00:10:00+00:00",
+          servedRelativeLabel: "방금",
+          primary: {
+            kind: "screener_snapshot",
+            snapshotDate: "2026-05-13",
+            computedAt: null,
+            asOfLabel: "2026.05.13 장마감 기준",
+            dataState: "stale",
+            source: "invest_screener_snapshots",
+          },
+          dependencies: [],
+          overallState: "stale",
+        }}
+      />,
+    );
+    const dataLine = screen.getByTestId("screener-freshness-data");
+    const servedLine = screen.getByTestId("screener-freshness-served");
+    expect(dataLine).toHaveTextContent("데이터 기준");
+    expect(dataLine).toHaveTextContent("2026.05.13");
+    expect(servedLine).toHaveTextContent("화면 갱신");
+    expect(servedLine).toHaveTextContent("방금");
+    // Crucial non-contradiction checks: stale-aging text never appears on the served line
+    expect(servedLine).not.toHaveTextContent("5거래일 지연");
+    expect(servedLine).not.toHaveTextContent("업데이트 필요");
+    // And served label "방금" never bleeds into the data line
+    expect(dataLine).not.toHaveTextContent("방금");
+  });
+
+  test("falls back to legacy single-line when primary/served fields absent", () => {
+    render(
+      <ScreenerFreshnessLine
+        freshness={{
+          fetchedAt: "2026-05-10T05:30:00+00:00",
+          asOfLabel: "2026.05.10 14:30 기준",
+          relativeLabel: "12분 전 갱신",
+          cacheHit: false,
+          source: "live",
+          dataState: "fresh",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("screener-freshness")).toHaveTextContent(
+      "2026.05.10 14:30 기준 · 12분 전 갱신",
+    );
+    // No new dual-line testids should appear
+    expect(screen.queryByTestId("screener-freshness-data")).toBeNull();
+    expect(screen.queryByTestId("screener-freshness-served")).toBeNull();
+  });
+});
+
 describe("ScreenerFreshness type shape", () => {
   test("accepts the ROB-277 additive fields", () => {
     const primary: ScreenerFreshnessPrimary = {
