@@ -67,6 +67,36 @@ async def test_bull_reducer_degrades_to_neutral_when_budget_exhausted_and_no_evi
 
 
 @pytest.mark.asyncio
+async def test_bull_reducer_falls_back_when_llm_returns_non_object_json():
+    provider = AsyncMock()
+    provider.ask.return_value = AiProviderResult(
+        answer="[]",
+        provider="gemini",
+        model="gemini-2.5-flash",
+        usage=None,
+        elapsed_ms=123,
+    )
+    budget = StageLLMBudget(max_calls=4)
+    stage = BullReducerStage(provider, budget)
+
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={},
+        bundle_metadata={},
+        prior_artifacts={},
+    )
+
+    payload = await stage.run(ctx)
+
+    provider.ask.assert_called_once()
+    assert payload.verdict == StageVerdict.NEUTRAL
+    assert payload.confidence == 20
+    assert payload.missing_data == ["bull_reducer"]
+    assert payload.model_name is None
+    assert payload.prompt_version is None
+
+
+@pytest.mark.asyncio
 async def test_bull_reducer_synthesizes_prior_artifacts():
     provider = AsyncMock()
     provider.ask.return_value = AiProviderResult(

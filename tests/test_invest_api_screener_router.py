@@ -396,6 +396,7 @@ def test_consecutive_gainers_endpoint_separates_served_from_data_basis() -> None
     #  3: _load_consecutive_gainers_from_snapshots → KR symbol names (filter) → .all()
     #  4: _async_enrich → repo.get_fresh → scalars().all()
     #  5: Bulk KR names → .all()
+    #  6: investor-flow chip hydration → latest_by_symbols → scalars().all()
     fake_session = _RouterFakeSession(
         [
             _RouterFakeExecuteResult(rows=[]),  # 0: watch items
@@ -404,6 +405,7 @@ def test_consecutive_gainers_endpoint_separates_served_from_data_basis() -> None
             _RouterFakeExecuteResult(rows=[name_row]),  # 3: KR symbol names (filter)
             _RouterFakeExecuteResult(scalar_rows=[snap]),  # 4: enrichment get_fresh
             _RouterFakeExecuteResult(rows=[name_row]),  # 5: bulk KR names
+            _RouterFakeExecuteResult(scalar_rows=[]),  # 6: no investor-flow chip
         ]
     )
 

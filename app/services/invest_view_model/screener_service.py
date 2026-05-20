@@ -1328,8 +1328,14 @@ def _build_freshness(
     now_kst = now_utc.astimezone(_KST)
     market_open = market == "kr" and _is_kr_market_open(now_kst)
 
-    if not market_open and delta > _CACHE_HIT_FRESH_SECONDS * 4:
-        source: Literal["live", "cached", "previous_session"] = "previous_session"
+    if cache_hit and primary_kind == "screener_snapshot":
+        # Snapshot-first responses are persisted-cache reads.  Keep the legacy
+        # top-level enum stable as "cached" even when the snapshot partition is
+        # stale; staleness is carried by primary/dependency dataState instead.
+        source: Literal["live", "cached", "previous_session"] = "cached"
+        relative = _format_relative_korean(delta)
+    elif not market_open and delta > _CACHE_HIT_FRESH_SECONDS * 4:
+        source = "previous_session"
         relative = "전 거래일 기준"
     elif cache_hit:
         source = "cached"

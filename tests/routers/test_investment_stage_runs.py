@@ -233,7 +233,7 @@ async def test_get_stage_run_returns_200_with_artifacts(db_session):
     run_uuid, artifact_uuid = await _seed_run_with_artifact(db_session)
     app = _build_app(db_session)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(f"/trading/api/investment-stage-runs/{run_uuid}")
 
@@ -259,7 +259,7 @@ async def test_get_stage_run_returns_200_with_artifacts(db_session):
 async def test_get_stage_run_returns_404_for_unknown_uuid(db_session):
     app = _build_app(db_session)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(f"/trading/api/investment-stage-runs/{uuid.uuid4()}")
 
@@ -277,7 +277,7 @@ async def test_get_report_stage_artifacts_via_metadata_linkage(db_session):
     )
     app = _build_app(db_session)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(
             f"/trading/api/investment-reports/{report_uuid}/stage-artifacts"
@@ -300,7 +300,7 @@ async def test_get_report_stage_artifacts_via_metadata_linkage(db_session):
 async def test_get_report_stage_artifacts_returns_404_for_unknown_report(db_session):
     app = _build_app(db_session)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(
             f"/trading/api/investment-reports/{uuid.uuid4()}/stage-artifacts"
@@ -319,7 +319,7 @@ async def test_get_report_stage_artifacts_returns_empty_for_no_stage_run(db_sess
     report_uuid = await _seed_bundle_with_report(db_session)
     app = _build_app(db_session)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(
             f"/trading/api/investment-reports/{report_uuid}/stage-artifacts"
@@ -343,7 +343,7 @@ async def test_get_report_stage_artifacts_404_when_no_bundle_and_no_metadata_run
     report_uuid = await _seed_report_no_bundle_no_metadata(db_session)
     app = _build_app(db_session)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(
             f"/trading/api/investment-reports/{report_uuid}/stage-artifacts"
@@ -364,7 +364,7 @@ async def test_get_report_stage_artifacts_404_when_metadata_run_uuid_stale(
     report_uuid = await _seed_report_with_stale_metadata_run_uuid(db_session)
     app = _build_app(db_session)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
+        transport=ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         resp = await client.get(
             f"/trading/api/investment-reports/{report_uuid}/stage-artifacts"

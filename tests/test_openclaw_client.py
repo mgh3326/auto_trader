@@ -76,9 +76,9 @@ def test_build_n8n_fill_payload_includes_detail_url() -> None:
         market_type="kr",
     )
     payload = _build_n8n_fill_payload(order, correlation_id="corr-123")
-    assert (
-        payload["detail_url"]
-        == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+    expected_base_url = settings.public_base_url.rstrip("/")
+    assert payload["detail_url"] == (
+        f"{expected_base_url}/portfolio/positions/kr/005930"
     )
     assert payload["correlation_id"] == "corr-123"
 

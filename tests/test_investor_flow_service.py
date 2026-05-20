@@ -49,15 +49,16 @@ async def test_build_investor_flow_cards_empty_symbols_returns_empty(db_session)
 
 @pytest.mark.asyncio
 async def test_build_investor_flow_cards_marks_missing_symbol(db_session):
+    missing_symbol = "989898"
     response = await build_investor_flow_cards(
         db=db_session,
-        symbols=["900193"],
+        symbols=[missing_symbol],
         market="kr",
         as_of=dt.date(2026, 5, 11),
     )
 
     assert response.dataState == "missing"
-    assert response.items[0].symbol == "900193"
+    assert response.items[0].symbol == missing_symbol
     assert response.items[0].dataState == "missing"
     assert response.items[0].source is None
 
