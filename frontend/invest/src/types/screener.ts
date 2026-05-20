@@ -103,6 +103,24 @@ export interface ScreenerResultRow {
 export type ScreenerFreshnessSource = "live" | "cached" | "previous_session";
 export type ScreenerDataState = "fresh" | "partial" | "stale" | "missing" | "fallback";
 
+export interface ScreenerFreshnessPrimary {
+  kind: "screener_snapshot" | "live" | "fallback";
+  snapshotDate: string | null;
+  computedAt: string | null;
+  asOfLabel: string;
+  dataState: ScreenerDataState;
+  source: string | null;
+}
+
+export interface ScreenerFreshnessDependency {
+  kind: "investor_flow";
+  snapshotDate: string | null;
+  collectedAt: string | null;
+  lagLabel: string | null;
+  dataState: ScreenerDataState;
+  source: string | null;
+}
+
 export interface ScreenerFreshness {
   fetchedAt: string;
   asOfLabel: string;
@@ -110,6 +128,12 @@ export interface ScreenerFreshness {
   cacheHit: boolean;
   source: ScreenerFreshnessSource;
   dataState: ScreenerDataState;
+  // ROB-277 additive fields (optional during transition).
+  servedAt?: string;
+  servedRelativeLabel?: string;
+  primary?: ScreenerFreshnessPrimary | null;
+  dependencies?: ScreenerFreshnessDependency[];
+  overallState?: ScreenerDataState;
 }
 
 export interface ScreenerResultsResponse {
