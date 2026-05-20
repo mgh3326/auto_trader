@@ -247,6 +247,7 @@ export type SnapshotKind =
   | "toss_remote_debug"
   | "llm_input_frozen";
 
+// Mirrors backend SourceKind (app/schemas/investment_snapshots.py).
 export type SnapshotSourceKind =
   | "kis_mcp"
   | "auto_trader_mcp"
@@ -257,13 +258,6 @@ export type SnapshotSourceKind =
   | "news_ingestor"
   | "manual"
   | "domain_ref";
-
-export type SnapshotFreshness =
-  | "fresh"
-  | "soft_stale"
-  | "hard_stale"
-  | "partial"
-  | "unavailable";
 
 export interface ReportSnapshotBundleSummary {
   bundleUuid: string;
@@ -286,7 +280,7 @@ export interface ReportSnapshotBundleItem {
   market: Market;
   symbol: string | null;
   accountScope: AccountScope | null;
-  freshnessStatus: SnapshotFreshness;
+  freshnessStatus: SnapshotFreshnessStatus;
   asOf: string;
   validUntil: string | null;
   sourceTable: string | null;
@@ -314,7 +308,7 @@ export interface ReportSnapshotDetail {
   sourceTable: string | null;
   sourceId: number | null;
   sourceUri: string | null;
-  freshnessStatus: SnapshotFreshness;
+  freshnessStatus: SnapshotFreshnessStatus;
   asOf: string;
   validUntil: string | null;
   sourceTimestampsJson: Record<string, unknown>;
