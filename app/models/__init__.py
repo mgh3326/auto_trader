@@ -1,7 +1,9 @@
 # app/models/__init__.py
 from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
+from .crypto_candles import CryptoCandle1d, CryptoCandle1m
 from .crypto_insight_snapshot import CryptoInsightSnapshot
+from .crypto_instruments import CryptoInstrument
 from .execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from .invest_momentum_event_snapshot import (
@@ -101,7 +103,10 @@ __all__ = [
     "Base",
     "ExecutionLedger",
     "ExecutionLedgerReconcileRun",
+    "CryptoCandle1d",
+    "CryptoCandle1m",
     "CryptoInsightSnapshot",
+    "CryptoInstrument",
     "Exchange",
     "Instrument",
     "User",

@@ -251,3 +251,102 @@ column will be NULL for all rows.
 The `_fetch_ohlcv_for_volume_profile` helper in the MCP tooling still uses
 the legacy `kis_ohlcv_cache` path for KR market data. It was not migrated to
 the durable store in this PR. Migration is a separate follow-up.
+
+---
+
+## ROB-284 pre-migration backup (one-time, before alembic upgrade)
+
+The `crypto_candles_1d` in-place migration drops legacy `symbol` / `market`
+columns. Before running `alembic upgrade head` on any environment with
+existing crypto candle data, take a backup table:
+
+```sql
+-- Run as DB superuser on the target environment.
+CREATE TABLE crypto_candles_1d_pre_rob283 AS
+SELECT * FROM crypto_candles_1d;
+
+-- Verify row count matches.
+SELECT
+  (SELECT COUNT(*) FROM crypto_candles_1d) AS live,
+  (SELECT COUNT(*) FROM crypto_candles_1d_pre_rob283) AS backup;
+```
+
+If `live != backup`, abort the migration. If they match, proceed:
+
+```bash
+uv run alembic upgrade head
+```
+
+To roll back manually after a failed migration:
+
+```sql
+DROP TABLE crypto_candles_1d;
+ALTER TABLE crypto_candles_1d_pre_rob283 RENAME TO crypto_candles_1d;
+-- Restore Timescale hypertable registration:
+SELECT create_hypertable('crypto_candles_1d', 'time',
+  chunk_time_interval => INTERVAL '90 days', migrate_data => TRUE);
+```
+
+Remove the backup table only after at least one full week of successful
+operation on the new schema:
+
+```sql
+DROP TABLE crypto_candles_1d_pre_rob283;
+```
+
+> The backup is an **operator step** in this runbook — it is NOT performed
+> automatically by the alembic migration. ROB-284's step-3 migration
+> additionally fails closed if any row still has `NULL instrument_id`,
+> `NULL base_volume`, or `NULL is_closed` after step 2 (the backfill).
+
+### Automated rollback via alembic downgrade
+
+If the issue is detected before the backup table is dropped, the cleanest
+rollback is to alembic-downgrade the three ROB-284 revisions:
+
+```bash
+# Step-by-step (verbose, recommended for production):
+uv run alembic downgrade 5fa5a347d85b   # noop if already at this rev
+uv run alembic downgrade 181f946296ff   # rolls back step 3 (finalize)
+uv run alembic downgrade 6acbc5e7fc93   # rolls back step 2 (backfill clear)
+uv run alembic downgrade e5df7fbd9803   # rolls back step 1 (drop columns)
+
+# Or in one shot (less granular control):
+uv run alembic downgrade e5df7fbd9803
+```
+
+This reverses step 3, step 2, and step 1 of the in-place migration.
+`crypto_instruments` is preserved (cheap, useful for re-running). The
+verification that the round-trip preserves row counts is performed by
+operators on a real DB before approving production cutover; the in-
+process test suite cannot exercise alembic against the test DB without
+colliding with `create_all` schema management (see
+`tests/services/daily_candles/test_migration_round_trip.py`).
+
+#### Post-downgrade schema check (operator action)
+
+After running the alembic downgrade, verify the restored schema matches
+the original `f974ac12e573_add_crypto_candles_1d` shape — in particular,
+the legacy `value` column must be `NOT NULL`:
+
+```sql
+SELECT column_name, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'crypto_candles_1d'
+  AND column_name IN ('symbol', 'market', 'volume', 'value')
+ORDER BY column_name;
+-- Expected: all four rows have is_nullable = 'NO'.
+```
+
+`value` is restored via `UPDATE ... SET value = COALESCE(quote_volume, 0)`
+inside the step-3 downgrade. Rows that were inserted under the new
+schema and had `quote_volume IS NULL` will have `value = 0` after the
+downgrade — this is a documented best-effort default because the new
+schema does not require `quote_volume`. Operators who downgrade in
+practice should additionally spot-check whether any rows show
+`value = 0` with `volume > 0` (a likely indicator of the 0-default
+substitution) and decide whether to refresh those rows from the source
+of truth before resuming production traffic.
+
+If alembic downgrade fails partway, fall back to the manual procedure
+above using `crypto_candles_1d_pre_rob283`.
