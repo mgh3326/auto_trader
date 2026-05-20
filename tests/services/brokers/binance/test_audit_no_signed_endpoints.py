@@ -113,38 +113,70 @@ def test_only_one_binance_package_path_exists() -> None:
     )
 
 
-def test_no_signed_endpoint_surface_in_binance_package() -> None:
+def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
+    """ROB-285 public-adapter invariant — extended by ROB-286.
+
+    The signed-endpoint vocabulary (``order``, ``cancel_order``, etc.) is
+    permitted ONLY inside ``app/services/brokers/binance/testnet/`` (the
+    isolated testnet execution adapter introduced by ROB-286). Anywhere
+    else under ``app/services/brokers/binance/`` is the read-only public
+    adapter and must not gain signed surface.
+    """
     repo_root = _repo_root()
     pkg = repo_root / "app" / "services" / "brokers" / "binance"
     if not pkg.exists():
         # Until Task 4 introduces the package, this is fine.
         return
+    testnet_pkg = pkg / "testnet"
     offenders: list[tuple[pathlib.Path, int, str]] = []
     for py_file in pkg.rglob("*.py"):
+        # ROB-286: skip the isolated testnet sub-package — signed methods
+        # legitimately live there.
+        try:
+            py_file.relative_to(testnet_pkg)
+            continue
+        except ValueError:
+            pass
         for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
             if SIGNED_SYMBOL_RE.search(line) and "def " in line:
                 offenders.append((py_file, lineno, line.strip()))
     assert not offenders, (
         f"Signed-endpoint method names found in Binance public adapter: "
         f"{offenders}. ROB-285 public adapter must not expose signed-endpoint "
-        "surface. If a name collision is unavoidable, rename or justify in PR "
+        "surface. Signed methods are allowed ONLY inside binance/testnet/. "
+        "If a name collision is unavoidable, rename or justify in PR "
         "description and update SIGNED_SYMBOL_RE."
     )
 
 
-def test_no_api_key_header_constants_in_binance_package() -> None:
+def test_no_api_key_header_constants_in_binance_public_package() -> None:
+    """ROB-285 invariant — extended by ROB-286.
+
+    The ``X-MBX-APIKEY`` header constant is permitted ONLY inside
+    ``app/services/brokers/binance/testnet/transport.py`` (where the
+    signed transport legitimately attaches it). Anywhere else under
+    ``app/services/brokers/binance/`` is the read-only public adapter.
+    """
     repo_root = _repo_root()
     pkg = repo_root / "app" / "services" / "brokers" / "binance"
     if not pkg.exists():
         return
+    testnet_pkg = pkg / "testnet"
     forbidden = "X-MBX-APIKEY"
     offenders: list[str] = []
     for py_file in pkg.rglob("*.py"):
+        # ROB-286: signed transport may legitimately reference the header.
+        try:
+            py_file.relative_to(testnet_pkg)
+            continue
+        except ValueError:
+            pass
         if forbidden in py_file.read_text():
             offenders.append(str(py_file))
     assert not offenders, (
         f"X-MBX-APIKEY header constant found in: {offenders}. "
-        "Public adapter must never construct API-key headers. "
+        "Public adapter must never construct API-key headers. The header "
+        "is permitted only inside app/services/brokers/binance/testnet/. "
         "The transport event hook checks for this header at request time "
         "as defense in depth; the source itself must not reference it."
     )
