@@ -1,6 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import { ScreenerFreshnessLine } from "../desktop/screener/ScreenerFreshnessLine";
+import type {
+  ScreenerFreshness,
+  ScreenerFreshnessPrimary,
+  ScreenerFreshnessDependency,
+} from "../types/screener";
 
 describe("ScreenerFreshnessLine", () => {
   test("renders asOfLabel and relativeLabel separated by '·'", () => {
@@ -60,5 +65,41 @@ describe("ScreenerFreshnessLine", () => {
     expect(screen.getByText(label)).toHaveClass(
       `screener-freshness-state--${dataState}`,
     );
+  });
+});
+
+describe("ScreenerFreshness type shape", () => {
+  test("accepts the ROB-277 additive fields", () => {
+    const primary: ScreenerFreshnessPrimary = {
+      kind: "screener_snapshot",
+      snapshotDate: "2026-05-13",
+      computedAt: "2026-05-13T06:35:00+00:00",
+      asOfLabel: "2026.05.13 장마감 기준",
+      dataState: "stale",
+      source: "invest_screener_snapshots",
+    };
+    const dep: ScreenerFreshnessDependency = {
+      kind: "investor_flow",
+      snapshotDate: "2026-05-18",
+      collectedAt: "2026-05-18T07:30:00+00:00",
+      lagLabel: "2거래일 지연",
+      dataState: "stale",
+      source: "investor_flow_snapshots",
+    };
+    const f: ScreenerFreshness = {
+      fetchedAt: "2026-05-13T06:35:00+00:00",
+      asOfLabel: "2026.05.13 장마감 기준",
+      relativeLabel: "5거래일 지연",
+      cacheHit: true,
+      source: "cached",
+      dataState: "stale",
+      servedAt: "2026-05-20T00:10:00+00:00",
+      servedRelativeLabel: "방금",
+      primary,
+      dependencies: [dep],
+      overallState: "stale",
+    };
+    expect(f.primary?.kind).toBe("screener_snapshot");
+    expect(f.dependencies?.[0]?.kind).toBe("investor_flow");
   });
 });
