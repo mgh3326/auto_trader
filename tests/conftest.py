@@ -449,6 +449,26 @@ async def db_session():
                         "ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
                     )
                 )
+                # ROB-284 — crypto_candles_1d migrates in-place from the
+                # legacy (symbol, market) shape to the (instrument_id, time)
+                # shape. The test DB picks up its schema from
+                # ``Base.metadata.create_all`` which is no-op against an
+                # existing table; if the legacy table is still present we
+                # drop it here so create_all rebuilds it from the new ORM
+                # model (``app.models.crypto_candles.CryptoCandle1d``).
+                legacy_has_symbol = (
+                    await conn.execute(
+                        text(
+                            "SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'crypto_candles_1d' "
+                            "AND column_name = 'symbol'"
+                        )
+                    )
+                ).first()
+                if legacy_has_symbol:
+                    await conn.execute(
+                        text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE")
+                    )
                 # ROB-269 Phase 3 — snapshot metadata + 3-layer stale gate
                 # layer (i). create_all is no-op for already-existing tables,
                 # so we patch the six new columns + index + CHECK constraint

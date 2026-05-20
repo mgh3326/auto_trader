@@ -12,7 +12,17 @@ import pathlib
 import subprocess
 
 
-ALLOWED = {"app/services/daily_candles/repository.py"}
+ALLOWED = {
+    # The repository is the sole production code consumer (reader/writer).
+    "app/services/daily_candles/repository.py",
+    # ORM model file declares __tablename__ = "crypto_candles_1d" and a
+    # docstring describing the table; these are definitional references,
+    # not additional consumers.
+    "app/models/crypto_candles.py",
+    # Docstring reference describing the FK relationship from
+    # crypto_instruments to crypto_candles_*.
+    "app/models/crypto_instruments.py",
+}
 
 
 def test_only_daily_candles_repository_references_crypto_candles_1d() -> None:
