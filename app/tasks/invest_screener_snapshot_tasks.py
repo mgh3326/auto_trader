@@ -38,6 +38,13 @@ from app.jobs.invest_screener_snapshots import (
     run_snapshot_build,
     run_snapshot_build_guarded,
 )
+from app.services.invest_screener_snapshots.alerts import (
+    send_screener_refresh_alert,
+)
+from app.services.invest_screener_snapshots.guards import (
+    InsufficientRowsError,
+    SuspiciousDistributionError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +175,30 @@ async def _run_scheduled_build(
         slot,
         commit,
     )
-    # Stage 5: dry-run → guards (dominant partition, min row count) → commit.
-    # Guard violations raise; Stage 6 catches and emits Discord alerts before
-    # re-raising to TaskIQ. Holiday gate above already filtered non-session
-    # days, so any guard violation here is a real data-quality signal.
-    result = await run_snapshot_build_guarded(request)
+    # Stage 5/6: dry-run → guards → commit, with Discord alerts on failure.
+    # Holiday gate above already filtered non-session days, so any exception
+    # reaching here is a real data-quality / system signal. Alerts go to
+    # discord_webhook_alerts (D3); Hermes is intentionally NOT used for ops.
+    try:
+        result = await run_snapshot_build_guarded(request)
+    except (SuspiciousDistributionError, InsufficientRowsError) as exc:
+        await send_screener_refresh_alert(
+            slot=slot,
+            market=market,
+            exception=exc,
+            distribution=exc.distribution,
+            commit_status="skipped",
+        )
+        raise
+    except Exception as exc:
+        await send_screener_refresh_alert(
+            slot=slot,
+            market=market,
+            exception=exc,
+            distribution=None,
+            commit_status="failed",
+        )
+        raise
 
     logger.info(
         "scheduled invest screener build finished: market=%s slot=%s "

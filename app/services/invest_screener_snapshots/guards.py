@@ -29,11 +29,48 @@ from typing import Literal
 
 
 class SuspiciousDistributionError(RuntimeError):
-    """Raised when no single ``snapshot_date`` holds the dominant majority."""
+    """Raised when no single ``snapshot_date`` holds the dominant majority.
+
+    Carries the offending distribution as ``distribution`` for downstream
+    alerting (Stage 6 Discord embed).
+    """
+
+    distribution: dict[str, int]
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        distribution: dict[str, int] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.distribution = dict(distribution or {})
 
 
 class InsufficientRowsError(RuntimeError):
-    """Raised when ``snapshots_built`` is below the market's row-count floor."""
+    """Raised when ``snapshots_built`` is below the market's row-count floor.
+
+    Carries ``count``, ``market``, and (after enrichment by the guarded
+    wrapper) the dry-run ``distribution`` so Stage 6 alerts can surface the
+    full context to operators.
+    """
+
+    distribution: dict[str, int]
+    count: int | None
+    market: str | None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        distribution: dict[str, int] | None = None,
+        count: int | None = None,
+        market: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.distribution = dict(distribution or {})
+        self.count = count
+        self.market = market
 
 
 _DOMINANT_PARTITION_THRESHOLD = 0.70
@@ -71,7 +108,8 @@ def assert_dominant_partition(
         raise SuspiciousDistributionError(
             f"no dominant partition: top={dominant_date} "
             f"({dominant_count}/{total} = {ratio:.2%}) below "
-            f"{threshold:.0%} threshold; distribution={dict(distribution)}"
+            f"{threshold:.0%} threshold; distribution={dict(distribution)}",
+            distribution=dict(distribution),
         )
     return dominant_date
 
@@ -88,5 +126,7 @@ def assert_min_row_count(count: int, market: Literal["kr", "us"]) -> None:
         raise ValueError(f"unknown market for min-row guard: {market}")
     if count < floor:
         raise InsufficientRowsError(
-            f"{market} snapshots_built={count} below floor={floor}"
+            f"{market} snapshots_built={count} below floor={floor}",
+            count=count,
+            market=market,
         )

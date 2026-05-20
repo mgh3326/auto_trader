@@ -17,6 +17,8 @@ import sqlalchemy as sa
 from app.core.db import AsyncSessionLocal
 from app.services.invest_screener_snapshots.builder import build_snapshots_for_market
 from app.services.invest_screener_snapshots.guards import (
+    InsufficientRowsError,
+    SuspiciousDistributionError,
     assert_dominant_partition,
     assert_min_row_count,
 )
@@ -310,8 +312,14 @@ async def run_snapshot_build_guarded(
     dry_run_request = replace(request, commit=False)
     dry_run_result = await run_snapshot_build(dry_run_request)
 
-    assert_dominant_partition(dry_run_result.snapshot_date_distribution)
-    assert_min_row_count(dry_run_result.snapshots_built, dry_run_result.market)
+    try:
+        assert_dominant_partition(dry_run_result.snapshot_date_distribution)
+        assert_min_row_count(dry_run_result.snapshots_built, dry_run_result.market)
+    except (SuspiciousDistributionError, InsufficientRowsError) as exc:
+        # Enrich the exception with the full dry-run distribution so Stage 6
+        # Discord alerts can render the offending context.
+        exc.distribution = dict(dry_run_result.snapshot_date_distribution)
+        raise
 
     if not request.commit:
         return dry_run_result

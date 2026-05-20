@@ -216,3 +216,122 @@ async def test_run_scheduled_build_commit_gate_passes_through() -> None:
     request: SnapshotBuildRequest = mock_run.call_args.args[0]
     assert request.commit is True  # commit gate True → request.commit True
     assert result["committed"] is True
+
+
+# --- Alert wiring (Stage 6) -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_build_does_not_alert_on_success() -> None:
+    """CRITICAL contract: success path must NEVER fire an ops alert."""
+    fake_result = _fake_build_result("kr", committed=True)
+    mock_run = AsyncMock(return_value=fake_result)
+    mock_alert = AsyncMock()
+    with (
+        patch.object(task_module, "is_market_session_today", return_value=True),
+        patch.object(task_module, "run_snapshot_build_guarded", new=mock_run),
+        patch.object(task_module, "send_screener_refresh_alert", new=mock_alert),
+    ):
+        await task_module._run_scheduled_build(market="kr", slot="nxt_final")
+
+    mock_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_build_fires_alert_on_suspicious_distribution() -> (
+    None
+):
+    from app.services.invest_screener_snapshots.guards import (
+        SuspiciousDistributionError,
+    )
+
+    exc = SuspiciousDistributionError(
+        "no dominant partition: top=2026-05-20",
+        distribution={"2026-05-20": 1800, "2026-05-19": 1200},
+    )
+    mock_run = AsyncMock(side_effect=exc)
+    mock_alert = AsyncMock(return_value=True)
+    with (
+        patch.object(task_module, "is_market_session_today", return_value=True),
+        patch.object(task_module, "run_snapshot_build_guarded", new=mock_run),
+        patch.object(task_module, "send_screener_refresh_alert", new=mock_alert),
+    ):
+        with pytest.raises(SuspiciousDistributionError):
+            await task_module._run_scheduled_build(
+                market="kr", slot="krx_preliminary"
+            )
+
+    mock_alert.assert_awaited_once()
+    alert_kwargs = mock_alert.await_args.kwargs
+    assert alert_kwargs["slot"] == "krx_preliminary"
+    assert alert_kwargs["market"] == "kr"
+    assert alert_kwargs["exception"] is exc
+    assert alert_kwargs["distribution"] == {
+        "2026-05-20": 1800,
+        "2026-05-19": 1200,
+    }
+    assert alert_kwargs["commit_status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_build_fires_alert_on_insufficient_rows() -> None:
+    from app.services.invest_screener_snapshots.guards import (
+        InsufficientRowsError,
+    )
+
+    exc = InsufficientRowsError(
+        "kr snapshots_built=50 below floor=2500",
+        count=50,
+        market="kr",
+        distribution={"2026-05-20": 50},
+    )
+    mock_run = AsyncMock(side_effect=exc)
+    mock_alert = AsyncMock(return_value=True)
+    with (
+        patch.object(task_module, "is_market_session_today", return_value=True),
+        patch.object(task_module, "run_snapshot_build_guarded", new=mock_run),
+        patch.object(task_module, "send_screener_refresh_alert", new=mock_alert),
+    ):
+        with pytest.raises(InsufficientRowsError):
+            await task_module._run_scheduled_build(market="kr", slot="nxt_final")
+
+    alert_kwargs = mock_alert.await_args.kwargs
+    assert alert_kwargs["distribution"] == {"2026-05-20": 50}
+    assert alert_kwargs["commit_status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_build_fires_alert_on_generic_failure() -> None:
+    """Generic exceptions (network, DB, etc.) also alert, with commit=failed."""
+    exc = RuntimeError("upstream timeout")
+    mock_run = AsyncMock(side_effect=exc)
+    mock_alert = AsyncMock(return_value=True)
+    with (
+        patch.object(task_module, "is_market_session_today", return_value=True),
+        patch.object(task_module, "run_snapshot_build_guarded", new=mock_run),
+        patch.object(task_module, "send_screener_refresh_alert", new=mock_alert),
+    ):
+        with pytest.raises(RuntimeError, match="upstream timeout"):
+            await task_module._run_scheduled_build(market="us", slot="post_close")
+
+    alert_kwargs = mock_alert.await_args.kwargs
+    assert alert_kwargs["slot"] == "post_close"
+    assert alert_kwargs["market"] == "us"
+    assert alert_kwargs["exception"] is exc
+    assert alert_kwargs["commit_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_build_holiday_skip_does_not_alert() -> None:
+    """Holiday skips are expected — must NOT fire an alert."""
+    mock_alert = AsyncMock()
+    with (
+        patch.object(task_module, "is_market_session_today", return_value=False),
+        patch.object(task_module, "send_screener_refresh_alert", new=mock_alert),
+    ):
+        result = await task_module._run_scheduled_build(
+            market="kr", slot="nxt_final"
+        )
+
+    assert result["skipped"] == "non_session_day"
+    mock_alert.assert_not_awaited()
