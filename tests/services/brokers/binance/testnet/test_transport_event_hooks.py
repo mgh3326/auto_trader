@@ -123,6 +123,65 @@ async def test_redirect_to_non_testnet_host_raises(httpx_mock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_place_stop_orders_reject_non_testnet_host(monkeypatch) -> None:
+    """TT5 — Cross-allowlist guard intact for the new stop-order methods.
+
+    Construct an adapter with a base URL the host-allowlist accepts
+    (testnet) but mutate ``_base_url`` to point the underlying httpx
+    client at a non-testnet host before each stop call. The transport
+    event hook must reject the outgoing request — the new placement
+    methods MUST route through ``build_testnet_client``'s event hooks
+    just like ``submit_order``.
+
+    Reviewer focus #2 in the plan: TT5 must actually exercise a
+    non-testnet host injection through the new methods, not just the
+    existing ones.
+    """
+    from app.services.brokers.binance.testnet.execution_client import (
+        BinanceTestnetExecutionClient,
+    )
+
+    monkeypatch.setenv("BINANCE_TESTNET_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "DUMMY_KEY")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "DUMMY_SECRET")
+    client = BinanceTestnetExecutionClient.from_env()
+    try:
+        # Re-bind the underlying httpx client to a non-testnet host so
+        # the post-build outgoing URL is routed to a live host literal.
+        # The event hook should raise before HTTP is attempted.
+        client._client.base_url = "https://api.binance.com"  # type: ignore[assignment]
+        from decimal import Decimal
+
+        with pytest.raises(
+            (BinanceLiveHostBlocked, BinanceTestnetCrossAllowlistViolation)
+        ):
+            await client.place_stop_limit_order(
+                symbol="BTCUSDT",
+                side="SELL",
+                quantity=Decimal("0.001"),
+                stop_price=Decimal("50500"),
+                limit_price=Decimal("50500"),
+                client_order_id="tp-leg-1",
+                dry_run=False,
+                confirm=True,
+            )
+        with pytest.raises(
+            (BinanceLiveHostBlocked, BinanceTestnetCrossAllowlistViolation)
+        ):
+            await client.place_stop_market_order(
+                symbol="BTCUSDT",
+                side="SELL",
+                quantity=Decimal("0.001"),
+                stop_price=Decimal("49500"),
+                client_order_id="sl-leg-1",
+                dry_run=False,
+                confirm=True,
+            )
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_default_base_url_is_testnet(httpx_mock) -> None:
     """Default base URL points to the testnet host, not anywhere else."""
     httpx_mock.add_response(

@@ -287,12 +287,38 @@ class BinanceTestnetLedgerService:
         self,
         *,
         client_order_id: str,
+        broker_order_id: str | None = None,
+        tp_or_sl: str | None = None,
+        stop_price: Decimal | None = None,
+        limit_price: Decimal | None = None,
         extra_metadata: dict[str, Any] | None = None,
     ) -> BinanceTestnetOrderLedger:
+        """Transition a TP or SL ledger row into ``tp_sl_armed`` state.
+
+        ROB-289 additive params (all optional for backward compatibility):
+          * ``broker_order_id`` — Binance-side order id returned by the
+            placement call. Persisted via the existing ``_transition``
+            mechanism (same column as ``record_submit``).
+          * ``tp_or_sl`` — ``"tp"`` or ``"sl"`` marker for downstream
+            queries; folded into ``extra_metadata``.
+          * ``stop_price`` / ``limit_price`` — the trigger and (for the
+            TP leg) the limit price actually placed at the broker;
+            folded into ``extra_metadata`` for the audit trail.
+        """
+        merged_metadata: dict[str, Any] = dict(extra_metadata or {})
+        if tp_or_sl is not None:
+            if tp_or_sl not in {"tp", "sl"}:
+                raise ValueError(f"tp_or_sl must be 'tp' or 'sl', got {tp_or_sl!r}")
+            merged_metadata.setdefault("tp_or_sl", tp_or_sl)
+        if stop_price is not None:
+            merged_metadata.setdefault("stop_price", str(stop_price))
+        if limit_price is not None:
+            merged_metadata.setdefault("limit_price", str(limit_price))
         return await self._transition(
             client_order_id=client_order_id,
             to_state="tp_sl_armed",
-            extra_metadata=extra_metadata,
+            broker_order_id=broker_order_id,
+            extra_metadata=merged_metadata or None,
         )
 
     async def record_tp_sl_triggered(
@@ -323,12 +349,23 @@ class BinanceTestnetLedgerService:
         self,
         *,
         client_order_id: str,
+        reason: str | None = None,
         extra_metadata: dict[str, Any] | None = None,
     ) -> BinanceTestnetOrderLedger:
+        """Transition a row to ``cancelled``.
+
+        ROB-289 ``reason`` param (optional) is folded into
+        ``extra_metadata`` under key ``cancel_reason`` for the audit
+        trail (e.g., ``"opposite_leg_triggered"``,
+        ``"fallback_after_broker_reject"``).
+        """
+        merged_metadata: dict[str, Any] = dict(extra_metadata or {})
+        if reason is not None:
+            merged_metadata.setdefault("cancel_reason", reason)
         return await self._transition(
             client_order_id=client_order_id,
             to_state="cancelled",
-            extra_metadata=extra_metadata,
+            extra_metadata=merged_metadata or None,
         )
 
     async def record_anomaly(

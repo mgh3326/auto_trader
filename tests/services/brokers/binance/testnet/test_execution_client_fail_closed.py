@@ -103,6 +103,84 @@ def test_secret_is_not_in_repr(monkeypatch) -> None:
     assert "PLACEHOLDER_API_KEY_DO_NOT_LOG" not in rendered
 
 
+def test_secret_not_in_logs_during_stop_placement_failure(monkeypatch, caplog) -> None:
+    """TT14 — API secret never appears in logs during a stop-order placement
+    failure.
+
+    Reviewer focus #7 in the plan: on a 4xx broker reject, ensure the
+    captured log message includes the broker error code but NOT the
+    signed query string (which contains ``signature=``, an HMAC of the
+    secret — even leaking the HMAC is a concern). We use a synthetic
+    secret string that pytest can grep for in caplog records.
+    """
+    import logging
+    import re
+    from decimal import Decimal
+
+    import httpx
+    import pytest_asyncio  # noqa: F401 — confirms env wiring
+
+    from app.services.brokers.binance.testnet.execution_client import (
+        BinanceTestnetExecutionClient,
+    )
+
+    secret_str = "PLACEHOLDER_SECRET_DO_NOT_LOG_ROB289"
+    monkeypatch.setenv("BINANCE_TESTNET_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "DUMMY_KEY")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", secret_str)
+    client = BinanceTestnetExecutionClient.from_env()
+
+    async def _run_and_capture():
+        # Use httpx_mock-style patching directly via monkeypatch on the
+        # client's transport. We force the underlying httpx POST to raise
+        # a 4xx so the runner-side anomaly path is exercised.
+        from unittest.mock import AsyncMock
+
+        request = httpx.Request("POST", "https://testnet.binance.vision/api/v3/order")
+        response = httpx.Response(
+            400, json={"code": -2010, "msg": "rejected"}, request=request
+        )
+
+        async def _post(*args, **kwargs):
+            response._request = request
+            response.raise_for_status()
+            return response  # unreachable
+
+        client._client.post = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "rejected",
+                request=request,
+                response=response,
+            )
+        )
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.place_stop_limit_order(
+                    symbol="BTCUSDT",
+                    side="SELL",
+                    quantity=Decimal("0.001"),
+                    stop_price=Decimal("50500"),
+                    limit_price=Decimal("50500"),
+                    client_order_id="tp-leg-secret-test",
+                    dry_run=False,
+                    confirm=True,
+                )
+
+    import asyncio
+
+    asyncio.run(_run_and_capture())
+    full_log = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert secret_str not in full_log, (
+        f"Secret leaked into log output during stop placement failure: {full_log!r}"
+    )
+    # Also defend against a signature-like leak (HMAC hex value).
+    # The HMAC of the secret would appear as ``signature=<64-hex>``; ensure
+    # no such pattern appears in caplog.
+    assert not re.search(r"signature=[0-9a-f]{64}", full_log), (
+        f"HMAC signature leaked in logs: {full_log!r}"
+    )
+
+
 def test_secret_not_in_logs_on_init_failure(monkeypatch, caplog) -> None:
     """Hard reviewer focus area #8 — secret never appears in caplog.
 
