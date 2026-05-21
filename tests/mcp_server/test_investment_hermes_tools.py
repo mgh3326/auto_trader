@@ -1,16 +1,21 @@
 """ROB-287 — Hermes MCP wiring round-trip tests.
 
-Covers the three tools introduced in this PR:
+Covers all four Hermes MCP tools (PRs #901 + #905):
 
 * ``investment_report_prepare_bundle``
 * ``investment_report_get_hermes_context``
+* ``investment_stage_artifacts_ingest_from_hermes``
 * ``investment_report_create_from_hermes_composition``
 
-All three tools are gated by ``settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
+All four tools are gated by ``settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
 — the gate-off path returns a structured ``success=False`` envelope. Gate-on
-paths exercise the existing service layer (``HermesContextExporter`` /
-``HermesCompositionIngestService``) via patched async sessions / repos so the
-suite stays unit-shaped (no DB required).
+paths exercise the underlying service layer (``HermesContextExporter`` /
+``HermesCompositionIngestService`` / ``HermesStageArtifactsIngestService``)
+via patched async sessions or mocked services so the suite stays
+unit-shaped — the deep service-level append-only tests for the
+stage-artifacts ingest live in
+``tests/services/investment_stages/test_hermes_stage_artifacts_ingest.py``
+and use the real ``db_session`` fixture.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from app.mcp_server.tooling.investment_hermes_handlers import (
     investment_report_create_from_hermes_composition_impl,
     investment_report_get_hermes_context_impl,
     investment_report_prepare_bundle_impl,
+    investment_stage_artifacts_ingest_from_hermes_impl,
     register_investment_hermes_tools,
 )
 
@@ -73,6 +79,7 @@ def test_investment_hermes_tool_names_lock() -> None:
         "investment_report_prepare_bundle",
         "investment_report_get_hermes_context",
         "investment_report_create_from_hermes_composition",
+        "investment_stage_artifacts_ingest_from_hermes",
     }
 
 
@@ -94,6 +101,10 @@ def test_tool_descriptions_advertise_no_internal_llm_or_mutation() -> None:
         "requires_user_approval"
         in by_name["investment_report_create_from_hermes_composition"]
     )
+    # New stage-artifacts ingest tool advertises append-only + no-side-effect.
+    stage_desc = by_name["investment_stage_artifacts_ingest_from_hermes"]
+    assert "append-only" in stage_desc.lower()
+    assert "no broker / order / watch / order-intent side effect" in stage_desc.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +136,56 @@ async def test_get_hermes_context_disabled_without_flag(monkeypatch) -> None:
     )
     assert result["success"] is False
     assert result["error"] == "snapshot_backed_report_generator_disabled"
+
+
+@pytest.mark.asyncio
+async def test_stage_artifacts_ingest_disabled_without_flag(monkeypatch) -> None:
+    monkeypatch.setattr(
+        settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", False, raising=False
+    )
+    result = await investment_stage_artifacts_ingest_from_hermes_impl(
+        run_envelope={
+            "run_uuid": str(uuid.uuid4()),
+            "snapshot_bundle_uuid": str(uuid.uuid4()),
+            "market": "kr",
+        },
+        artifacts=[
+            {
+                "stage_type": "market",
+                "verdict": "neutral",
+                "confidence": 50,
+            }
+        ],
+    )
+    assert result["success"] is False
+    assert result["error"] == "snapshot_backed_report_generator_disabled"
+
+
+@pytest.mark.asyncio
+async def test_stage_artifacts_ingest_invalid_envelope_returns_structured_error(
+    monkeypatch,
+) -> None:
+    """TS11 — envelope/schema validation errors come back as structured
+    ``invalid_stage_artifacts_request`` envelopes, not exceptions."""
+    monkeypatch.setattr(
+        settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
+    )
+    # Missing required ``run_uuid`` in run_envelope.
+    result = await investment_stage_artifacts_ingest_from_hermes_impl(
+        run_envelope={
+            "snapshot_bundle_uuid": str(uuid.uuid4()),
+            "market": "kr",
+        },
+        artifacts=[
+            {
+                "stage_type": "market",
+                "verdict": "neutral",
+                "confidence": 50,
+            }
+        ],
+    )
+    assert result["success"] is False
+    assert result["error"] == "invalid_stage_artifacts_request"
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,7 @@ from app.schemas.investment_stages import StageArtifactPayload
 
 HERMES_CONTEXT_VERSION = "hermes-context.v1"
 HERMES_COMPOSITION_VERSION = "hermes-composition.v1"
+HERMES_STAGE_ARTIFACTS_VERSION = "hermes-stage-artifacts.v1"
 
 
 class HermesCitedSnapshot(BaseModel):
@@ -163,3 +164,82 @@ class HermesCompositionIngestRequest(BaseModel):
     policy_version: str = "intraday_action_report_v1"
     status: Literal["draft", "published"] = "draft"
     created_by_profile: str = "HERMES_ADVISOR"
+
+
+class HermesStageRunEnvelope(BaseModel):
+    """Run-scope metadata Hermes attaches to each stage-artifact ingest call.
+
+    Locked decisions for stage-artifacts ingest (sign-off 2026-05-21):
+
+    * **D1 — run_uuid ownership**: Hermes generates ``run_uuid`` client-side
+      (UUID v4). auto_trader creates the run row on the first ingest and
+      reuses it for subsequent calls with the same ``run_uuid``. If a
+      pre-existing run row's envelope fields differ from this one, the
+      ingest is rejected for consistency (a single ``run_uuid`` must map
+      to a single ``(bundle_uuid, market, market_session, account_scope,
+      policy_version, generator_version)`` tuple).
+    * **D4 — finalization**: stage-artifact ingest leaves ``run.status``
+      at ``running``. The downstream
+      ``HermesCompositionIngestService.ingest_composition`` auto-flips the
+      run to ``completed`` when ``composition.metadata.investment_stage_run_uuid``
+      matches an existing ``running`` run row.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_uuid: uuid.UUID
+    snapshot_bundle_uuid: uuid.UUID
+    market: str
+    market_session: str | None = None
+    account_scope: str | None = None
+    policy_version: str = "intraday_action_report_v1"
+    generator_version: str = HERMES_STAGE_ARTIFACTS_VERSION
+    hermes_run_id: str | None = None
+
+
+class HermesStageArtifactsIngestRequest(BaseModel):
+    """Top-level envelope for stage-artifacts ingest.
+
+    Locked decisions:
+
+    * **D2 — schema**: artifacts are validated as :class:`StageArtifactPayload`
+      directly. No Hermes-specific extension fields — extending the artifact
+      shape requires bumping ``HERMES_STAGE_ARTIFACTS_VERSION`` and the
+      ``stage_type`` DB CHECK.
+    * **D5 — ordering**: artifacts may arrive in any order. auto_trader does
+      NOT enforce stage dependencies at the ingest layer; Hermes orchestrates
+      its own pipeline.
+    * **D8 — batching**: multiple artifacts allowed per call.
+    * **TS6 — empty list reject**: an empty ``artifacts`` list is rejected;
+      "create a run row with no artifacts" is not a supported use case in v1.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_version: Literal["hermes-stage-artifacts.v1"] = (
+        HERMES_STAGE_ARTIFACTS_VERSION
+    )
+    run_envelope: HermesStageRunEnvelope
+    artifacts: list[StageArtifactPayload] = Field(min_length=1)
+
+    @field_validator("artifacts")
+    @classmethod
+    def _enforce_unique_stage_types(
+        cls, artifacts: list[StageArtifactPayload]
+    ) -> list[StageArtifactPayload]:
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for art in artifacts:
+            if art.stage_type in seen:
+                duplicates.append(art.stage_type)
+            else:
+                seen.add(art.stage_type)
+        if duplicates:
+            raise ValueError(
+                "Hermes stage-artifacts ingest cannot include duplicate "
+                f"stage_type values in a single call: {duplicates!r}. The "
+                "ledger's (run_uuid, stage_type) UNIQUE constraint forbids "
+                "two artifacts with the same key; split into separate calls "
+                "if reattempting an artifact intentionally."
+            )
+        return artifacts
