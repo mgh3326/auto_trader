@@ -54,6 +54,13 @@ logger = logging.getLogger("app.services.scalping.runner")
 # Lifecycle states where the symbol is considered "busy" (no new entry).
 BUSY_STATES: frozenset[str] = frozenset({"submitted", "filled", "tp_sl_armed"})
 
+# States the broker is expected to still hold as open orders. A ``filled``
+# order is NOT in this set — broker open_orders won't return a filled
+# order, so cross-checking ``filled`` rows against ``open_orders`` would
+# always flag drift. ``filled`` rows are cross-checked against
+# ``recent_fills`` instead (see fills-side pass below).
+BROKER_OPEN_STATES: frozenset[str] = frozenset({"submitted", "tp_sl_armed"})
+
 
 @dataclass
 class ReconcileResult:
@@ -94,18 +101,27 @@ class ScalperRunner:
     async def reconcile_on_start(self) -> ReconcileResult:
         """Reconciliation pass per §B.C.10.
 
-        For each symbol in the MVP set:
-          1. Fetch the most recent ledger rows in busy states.
-          2. Fetch open orders from the broker.
-          3. If a ledger row is in ``submitted``/``tp_sl_armed`` without a
-             matching broker open order, transition the row to ``anomaly``
-             with reason ``reconcile_drift``.
+        Two-pass walk for each symbol in the MVP set:
+          1. **Open-orders pass** — Fetch ledger rows in
+             ``submitted``/``tp_sl_armed`` states (``BROKER_OPEN_STATES``).
+             A ``filled`` order is NOT expected to appear in broker
+             ``open_orders``, so ``filled`` rows are excluded here and
+             handled by pass 2. If a row in scope is missing from broker
+             ``open_orders``, transition it to ``anomaly`` with reason
+             ``reconcile_drift``.
+          2. **Fills-side pass (ROB-290)** — Fetch ledger rows in
+             ``filled`` state. If a row's ``broker_order_id`` is missing
+             from broker ``recent_fills``, transition it to ``anomaly``
+             with reason ``reconcile_drift_fills``. When no ``filled``
+             rows exist for the symbol, ``recent_fills`` is **not**
+             called — keeps dry-run paths from issuing signed reads.
 
         Lookback bounds: last ``reconcile_open_orders_limit`` orders /
         ``reconcile_recent_fills_limit`` fills, but never older than
         ``reconcile_lookback_hours``.
         """
         result = ReconcileResult()
+        fills_examined = 0
         cutoff = datetime.now(tz=UTC) - timedelta(
             hours=self.config.reconcile_lookback_hours
         )
@@ -119,9 +135,16 @@ class ScalperRunner:
                     exc,
                 )
                 continue
+            # --------------------------------------------------------------
+            # Pass 1 — open-orders walk (ROB-286).
+            #
+            # Excludes ``filled`` (handled by pass 2). A filled order is
+            # not expected to be in broker.open_orders, so cross-checking
+            # it here would always flag drift.
+            # --------------------------------------------------------------
             ledger_rows = await self.ledger_service.list_by_instrument(
                 instrument_id=instrument_id,
-                lifecycle_states=list(BUSY_STATES),
+                lifecycle_states=list(BROKER_OPEN_STATES),
                 limit=self.config.reconcile_open_orders_limit,
             )
             try:
@@ -163,11 +186,81 @@ class ScalperRunner:
                     await self.ledger_service.stamp_reconciliation_run(
                         client_order_id=row.client_order_id
                     )
+            # --------------------------------------------------------------
+            # Pass 2 — fills-side walk (ROB-290).
+            #
+            # For ``filled`` rows we cross-check against ``recent_fills``
+            # by ``broker_order_id``. Drift here means the local ledger
+            # claims a fill that Binance has no trade record of — an
+            # operator-investigatable anomaly (separate reason so the
+            # two walks are distinguishable in the row history).
+            # --------------------------------------------------------------
+            filled_rows = await self.ledger_service.list_by_instrument(
+                instrument_id=instrument_id,
+                lifecycle_states=["filled"],
+                limit=self.config.reconcile_recent_fills_limit,
+            )
+            if not filled_rows:
+                # No filled rows for this symbol — skip the signed
+                # ``recent_fills`` read entirely. Dry-run / shadow paths
+                # never reach ``filled`` state, so this keeps them from
+                # issuing /myTrades requests.
+                continue
+            try:
+                broker_fills = await self.execution_client.recent_fills(
+                    symbol=symbol,
+                    limit=self.config.reconcile_recent_fills_limit,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "reconcile_on_start: broker recent_fills failed for %s: %s",
+                    symbol,
+                    exc,
+                )
+                broker_fills = []
+            broker_fill_order_ids = {str(t.get("orderId", "")) for t in broker_fills}
+            for row in filled_rows:
+                fills_examined += 1
+                result.rows_examined += 1
+                created_at = row.created_at
+                # Time bound — skip very old rows (still stamp).
+                if (
+                    created_at is not None
+                    and created_at.tzinfo is not None
+                    and created_at < cutoff
+                ):
+                    await self.ledger_service.stamp_reconciliation_run(
+                        client_order_id=row.client_order_id
+                    )
+                    continue
+                broker_order_id = row.broker_order_id
+                if broker_order_id is None:
+                    # No broker handle to cross-check; stamp and move on.
+                    await self.ledger_service.stamp_reconciliation_run(
+                        client_order_id=row.client_order_id
+                    )
+                    continue
+                if str(broker_order_id) not in broker_fill_order_ids:
+                    await self.ledger_service.record_anomaly(
+                        client_order_id=row.client_order_id,
+                        reason="reconcile_drift_fills",
+                        extra_metadata={
+                            "reconciled_at": datetime.now(tz=UTC).isoformat(),
+                            "broker_order_id": str(broker_order_id),
+                        },
+                    )
+                    result.anomalies_detected += 1
+                    result.anomaly_client_order_ids.append(row.client_order_id)
+                else:
+                    await self.ledger_service.stamp_reconciliation_run(
+                        client_order_id=row.client_order_id
+                    )
         emit_sentry_breadcrumb(
             message="reconcile_on_start complete",
             data={
                 "anomalies_detected": result.anomalies_detected,
                 "rows_examined": result.rows_examined,
+                "fills_examined": fills_examined,
             },
         )
         return result

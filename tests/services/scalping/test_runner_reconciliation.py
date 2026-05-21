@@ -1,11 +1,16 @@
 """ROB-286 — Scalper runner reconciliation tests.
 
 Matrix rows T29, T30.
+
+ROB-290 — Fills-side reconciliation walk follow-up: adds
+``test_clean_fills_state_proceeds``, ``test_drift_in_fills_raises_anomaly``,
+and ``test_old_filled_rows_skipped_by_time_bound``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -169,4 +174,229 @@ async def test_drift_raises_anomaly(
     assert row is not None
     assert row.lifecycle_state == "anomaly"
     assert row.anomaly_reason == "reconcile_drift"
+    await execution_client.aclose()
+
+
+# ----------------------------------------------------------------------------
+# ROB-290 — Fills-side reconciliation walk tests.
+# ----------------------------------------------------------------------------
+
+
+async def _seed_filled_row(
+    *,
+    ledger: BinanceTestnetLedgerService,
+    instrument_id: int,
+    client_order_id: str,
+    broker_order_id: str,
+) -> None:
+    """Drive a row through planned → previewed → validated → submitted → filled."""
+    await ledger.record_plan(
+        instrument_id=instrument_id,
+        client_order_id=client_order_id,
+        side="BUY",
+        order_type="MARKET",
+        qty=Decimal("0.001"),
+    )
+    await ledger.record_preview(client_order_id=client_order_id)
+    await ledger.record_validation(client_order_id=client_order_id)
+    await ledger.record_submit(
+        client_order_id=client_order_id, broker_order_id=broker_order_id
+    )
+    await ledger.record_fill(client_order_id=client_order_id)
+
+
+@pytest.mark.asyncio
+async def test_clean_fills_state_proceeds(
+    db_session,
+    instrument: CryptoInstrument,
+    execution_client: BinanceTestnetExecutionClient,
+    monkeypatch,
+) -> None:
+    """ROB-290 — A ``filled`` ledger row whose ``broker_order_id`` appears in
+    ``recent_fills`` reconciles cleanly (no anomaly; stamped)."""
+    ledger = BinanceTestnetLedgerService(session=db_session)
+    config = ScalperConfig.default_for_testnet()
+    cid = "clean-filled-1"
+    broker_order_id = "broker-fill-clean"
+    await _seed_filled_row(
+        ledger=ledger,
+        instrument_id=instrument.id,
+        client_order_id=cid,
+        broker_order_id=broker_order_id,
+    )
+
+    runner = ScalperRunner(
+        execution_client=execution_client,
+        ledger_service=ledger,
+        config=config,
+        instrument_id_for_symbol=_instrument_id_factory(instrument.id),
+        market_snapshot_for_symbol=_snapshot_factory(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                last_price=Decimal("50000"),
+                rsi_5m=50.0,
+                ema_20_5m=Decimal("50000"),
+                ema_50_5m=Decimal("50000"),
+            )
+        ),
+        dry_run=True,
+    )
+
+    # Open-orders pass scopes to BROKER_OPEN_STATES (submitted /
+    # tp_sl_armed) — ``filled`` rows are excluded from pass 1 and only
+    # exercised by the fills-side pass. open_orders is empty because no
+    # row is in scope for pass 1.
+    async def _open_orders(*, symbol: str) -> list[dict[str, object]]:
+        return []
+
+    async def _recent_fills(
+        *, symbol: str, limit: int = 100
+    ) -> list[dict[str, object]]:
+        return [{"orderId": broker_order_id, "symbol": symbol}]
+
+    monkeypatch.setattr(execution_client, "open_orders", _open_orders)
+    monkeypatch.setattr(execution_client, "recent_fills", _recent_fills)
+    result = await runner.reconcile_on_start()
+
+    assert result.anomalies_detected == 0
+    assert result.anomaly_client_order_ids == []
+    row = await ledger.get_by_client_order_id(cid)
+    assert row is not None
+    assert row.lifecycle_state == "filled"
+    # Stamped by reconciliation pass.
+    assert row.last_reconciled_at is not None
+    await execution_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_drift_in_fills_raises_anomaly(
+    db_session,
+    instrument: CryptoInstrument,
+    execution_client: BinanceTestnetExecutionClient,
+    monkeypatch,
+) -> None:
+    """ROB-290 — A ``filled`` row whose ``broker_order_id`` is absent from
+    ``recent_fills`` transitions to ``anomaly`` with reason
+    ``reconcile_drift_fills``."""
+    ledger = BinanceTestnetLedgerService(session=db_session)
+    config = ScalperConfig.default_for_testnet()
+    cid = "drift-filled-1"
+    broker_order_id = "broker-fill-missing"
+    await _seed_filled_row(
+        ledger=ledger,
+        instrument_id=instrument.id,
+        client_order_id=cid,
+        broker_order_id=broker_order_id,
+    )
+
+    runner = ScalperRunner(
+        execution_client=execution_client,
+        ledger_service=ledger,
+        config=config,
+        instrument_id_for_symbol=_instrument_id_factory(instrument.id),
+        market_snapshot_for_symbol=_snapshot_factory(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                last_price=Decimal("50000"),
+                rsi_5m=50.0,
+                ema_20_5m=Decimal("50000"),
+                ema_50_5m=Decimal("50000"),
+            )
+        ),
+        dry_run=True,
+    )
+
+    # Open-orders pass scopes to BROKER_OPEN_STATES — the seeded row is
+    # in ``filled`` state and therefore excluded from pass 1. open_orders
+    # is empty; pass 2 (fills-side) is the only path that touches the row.
+    async def _open_orders(*, symbol: str) -> list[dict[str, object]]:
+        return []
+
+    # Recent fills returns an unrelated order id — the seeded broker order
+    # id is missing.
+    async def _recent_fills(
+        *, symbol: str, limit: int = 100
+    ) -> list[dict[str, object]]:
+        return [{"orderId": "broker-fill-unrelated", "symbol": symbol}]
+
+    monkeypatch.setattr(execution_client, "open_orders", _open_orders)
+    monkeypatch.setattr(execution_client, "recent_fills", _recent_fills)
+    result = await runner.reconcile_on_start()
+
+    assert result.anomalies_detected == 1
+    assert cid in result.anomaly_client_order_ids
+    row = await ledger.get_by_client_order_id(cid)
+    assert row is not None
+    assert row.lifecycle_state == "anomaly"
+    assert row.anomaly_reason == "reconcile_drift_fills"
+    assert row.extra_metadata is not None
+    assert row.extra_metadata.get("broker_order_id") == broker_order_id
+    assert "reconciled_at" in row.extra_metadata
+    await execution_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_old_filled_rows_skipped_by_time_bound(
+    db_session,
+    instrument: CryptoInstrument,
+    execution_client: BinanceTestnetExecutionClient,
+    monkeypatch,
+) -> None:
+    """ROB-290 — A ``filled`` ledger row older than
+    ``reconcile_lookback_hours`` is stamped (reconciliation run) but never
+    flagged as anomaly, regardless of what ``recent_fills`` returns."""
+    ledger = BinanceTestnetLedgerService(session=db_session)
+    config = ScalperConfig.default_for_testnet()
+    cid = "old-filled-1"
+    broker_order_id = "broker-fill-old"
+    await _seed_filled_row(
+        ledger=ledger,
+        instrument_id=instrument.id,
+        client_order_id=cid,
+        broker_order_id=broker_order_id,
+    )
+    # Backdate the row past the configured lookback so both walks treat it
+    # as an old row.
+    old_when = datetime.now(tz=UTC) - timedelta(
+        hours=config.reconcile_lookback_hours + 1
+    )
+    row = await ledger.get_by_client_order_id(cid)
+    assert row is not None
+    row.created_at = old_when
+    await db_session.flush()
+
+    runner = ScalperRunner(
+        execution_client=execution_client,
+        ledger_service=ledger,
+        config=config,
+        instrument_id_for_symbol=_instrument_id_factory(instrument.id),
+        market_snapshot_for_symbol=_snapshot_factory(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                last_price=Decimal("50000"),
+                rsi_5m=50.0,
+                ema_20_5m=Decimal("50000"),
+                ema_50_5m=Decimal("50000"),
+            )
+        ),
+        dry_run=True,
+    )
+
+    # Drift on both passes — but the time bound must suppress anomaly.
+    async def _empty_open(*, symbol: str) -> list[dict[str, object]]:
+        return []
+
+    async def _empty_fills(*, symbol: str, limit: int = 100) -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(execution_client, "open_orders", _empty_open)
+    monkeypatch.setattr(execution_client, "recent_fills", _empty_fills)
+    result = await runner.reconcile_on_start()
+
+    assert result.anomalies_detected == 0
+    assert result.anomaly_client_order_ids == []
+    refreshed = await ledger.get_by_client_order_id(cid)
+    assert refreshed is not None
+    assert refreshed.lifecycle_state == "filled"
+    assert refreshed.last_reconciled_at is not None
     await execution_client.aclose()
