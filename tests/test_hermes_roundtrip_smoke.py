@@ -50,6 +50,17 @@ from app.models.investment_snapshots import InvestmentSnapshotBundle
 from app.models.investment_stages import InvestmentStageArtifact, InvestmentStageRun
 from app.routers.investment_hermes_http import router as hermes_router
 
+# Cross-domain ``db_session`` test that writes to ``review.investment_reports``.
+# Without this fixture, xdist sibling workers running ``investment_reports_helpers``
+# can TRUNCATE the table between our ingest and our follow-up SELECT, returning
+# ``None`` for a row we just persisted. ``investment_reports_cleanup_lock``
+# serializes the cleanup window for the lifetime of the test, mirroring
+# ``tests._investment_reports_helpers.session``'s own advisory-lock guard. The
+# fix applies to both KR and US round-trip cases — KR happened to pass on the
+# original session by timing, US flushed the race because the second smoke
+# tightens the read window.
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "hermes"
 _TOKEN = "hermes-smoke-secret-1234"
 
