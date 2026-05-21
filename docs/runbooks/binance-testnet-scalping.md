@@ -59,7 +59,7 @@ Effect:
 
 ---
 
-## 4. Confirmed submission (opt-in; actually hits testnet)
+## 4. Confirmed submission (opt-in; reaches testnet)
 
 ```bash
 BINANCE_TESTNET_ENABLED=true \
@@ -70,8 +70,32 @@ uv run python -m scripts.binance_testnet_scalper_smoke \
 ```
 
 * `--confirm` must be passed on every invocation. It is **per-call**, not config-level — every submit-eligible tick must satisfy `confirm=True`.
-* `--no-dry-run` is needed alongside; passing `--confirm` without `--no-dry-run` warns and stays dry-run.
+* `--confirm` implies `--no-dry-run` at the CLI layer: when `--confirm` is set, the runner unconditionally executes with `dry_run=False`. There is **no warn-and-stay-dry-run path**. If the operator wants to keep dry-run while testing the `--confirm` argument plumbing, split it into two separate invocations.
 * The runner is bounded to the locked MVP set (`BTCUSDT/ETHUSDT/SOLUSDT`) and to `max_notional_usdt = 10` unless the call-site supplies a `notional_override_reason`.
+
+> **What this smoke does NOT auto-validate.** The smoke CLI's
+> `_market_snapshot_stub` returns `rsi_5m=50.0` for every symbol, which
+> always resolves to `Hold` in `decision.compute_action`. That means
+> even with `--no-dry-run --confirm`, the runner will:
+>
+> * Execute the reconciliation pass (signed `GET /api/v3/openOrders`
+>   reads — these DO reach testnet).
+> * Run one tick per MVP symbol; each tick resolves to `Hold`.
+> * Produce zero `submitted` / `filled` / `tp_sl_armed` ledger rows.
+>
+> Verifying the full `submitted → filled → tp_sl_armed → tp_sl_triggered
+> → closed → reconciled` lifecycle therefore requires either:
+>
+> 1. wiring a real market snapshot (e.g., a Child B WS-derived snapshot
+>    fed into `market_snapshot_for_symbol` — out of scope for the smoke
+>    CLI), or
+> 2. an operator-driven REPL invocation that calls `submit_order`
+>    directly with a deterministic input, observes the fill, then lets
+>    the runner place TP/SL.
+>
+> The smoke CLI's confirmed mode is intended to prove **connectivity +
+> credentials + reconciliation read path + signed-endpoint plumbing**,
+> not to exercise the full TP/SL lifecycle end-to-end on its own.
 
 ---
 
@@ -220,6 +244,132 @@ Same pattern as ROB-284 / ROB-285:
    single symbol, 5-minute duration).
 7. Production cutover is scheduled separately; this PR's merge alone
    does NOT enable any of the above.
+
+---
+
+## 10A. Evidence collection (ROB-293 smoke)
+
+For each step of the ROB-293 operator smoke, record the following
+artifacts. Treat anything missing as a stop-and-investigate signal —
+do **not** advance to the next step on a partial pass.
+
+**Step A — Instrument seeder (`scripts/binance_testnet_seed_instruments`)**
+
+* Expected: idempotent insert of `binance/spot/{BTCUSDT, ETHUSDT,
+  SOLUSDT}` rows; re-runs are no-ops.
+* Evidence: stdout from `--dry-run` then the actual run; SELECT against
+  `crypto_instruments WHERE venue='binance' AND product='spot'`
+  returning exactly the three MVP rows.
+
+**Step B — Default-disabled smoke (no env vars set)**
+
+* Expected: exit code `0`; single log line `"scalper disabled — set
+  BINANCE_TESTNET_ENABLED=true to opt in"`; zero HTTP, zero DB writes,
+  zero Sentry events.
+* Evidence: shell `$?`; captured stdout (one line); zero rows in
+  `binance_testnet_order_ledger` afterwards.
+
+**Step C — Opt-in dry-run smoke (`--dry-run`, env set)**
+
+* Expected: `reconcile_on_start` runs (signed GET to testnet); per-tick
+  decision returns `Hold` (stub snapshot); ledger gains zero
+  `submitted` rows; zero `anomaly` rows.
+* Evidence: stdout line `reconcile_on_start examined=N anomalies=0`;
+  ledger query `SELECT lifecycle_state, count(*) FROM
+  binance_testnet_order_ledger GROUP BY lifecycle_state` shows no
+  `submitted`/`filled` rows added by this run; Sentry has zero new
+  scalper events.
+
+**Step D — Confirmed smoke (`--no-dry-run --confirm`, env set)**
+
+* Expected (given §4 stub-snapshot limitation): `reconcile_on_start`
+  performs a real signed GET against `testnet.binance.vision`; each
+  tick still resolves to `Hold`; ledger again gains zero `submitted`
+  rows.
+* Evidence: stdout shows `reconcile_on_start examined=N anomalies=0`;
+  testnet API request logs (if available) show signed GET to
+  `/api/v3/openOrders`; no `BinanceLiveHostBlocked` raised; no secret
+  string appears anywhere in captured logs (`grep -i $API_KEY` over
+  the captured log is empty — the API key value itself must NOT be
+  pasted into the report; just record the grep exit code).
+
+**Step E (operator-driven, optional) — Full lifecycle**
+
+* Expected: ledger walks `submitted → filled → tp_sl_armed (×2 legs) →
+  tp_sl_triggered (one leg) → cancelled (sibling leg) → closed →
+  reconciled`. Testnet UI shows the matching paired stop orders + their
+  cancellation.
+* Evidence: ledger transitions log (one row per `record_*` call), TP
+  and SL order IDs from `StopOrderResult`, testnet UI screenshot
+  (with API key fields blanked), Sentry event count = 0 anomaly + 1
+  sanity `filled-after-submitted` (per open item #4 lean).
+
+**General — what to attach to the ROB-293 closure comment**
+
+* Step B exit code + one-line log.
+* Step C ledger row delta + Sentry delta.
+* Step D `reconcile_on_start` line + signed-GET evidence.
+* Step E (if performed) ledger transition log + testnet UI screenshot.
+* Explicit confirmation that `grep -F $BINANCE_TESTNET_API_KEY
+  $BINANCE_TESTNET_API_SECRET <captured-log>` returned no matches.
+
+Never paste raw credential values, raw signed query strings, or HMAC
+signature hex into the closure comment.
+
+---
+
+## 10B. Smoke kill-switch + rollback (ROB-293)
+
+If anything during the smoke goes off-script, follow this deterministic
+sequence rather than improvising. Order matters.
+
+**Immediate kill (any step)**
+
+1. `Ctrl-C` the smoke CLI. (The runner has no in-process retry loop —
+   one signal stops it cleanly.)
+2. `unset BINANCE_TESTNET_ENABLED` in the operator shell. This restores
+   the default-disabled gate so a stray re-invocation falls through to
+   the exit-0 path.
+3. Capture stdout + stderr into a file before exiting the shell.
+
+**Triage by category**
+
+| Symptom | Immediate action | Cleanup |
+|---|---|---|
+| `BinanceLiveHostBlocked` raised | Stop. Verify `BINANCE_TESTNET_BASE_URL` is the testnet host (or unset). Inspect `host_allowlist.py::TESTNET_HOSTS`. | None on ledger; failure is at adapter init before any write. |
+| `BinanceMissingCredentials` raised | Stop. Re-export the env vars in the shell; do not echo the values. | None on ledger. |
+| `BinanceTestnetDisabled` raised | Stop. Confirm `BINANCE_TESTNET_ENABLED=true` is truthy (`true`/`1`/`yes`/`on`). | None on ledger. |
+| `reconcile_drift` anomaly fired | Stop the runner. Inspect the affected `client_order_id`s via testnet UI. Manually cancel any broker-side stragglers. Use `record_reconciled` (§9) to close out the anomaly row. | Ledger: anomaly → reconciled (operator-initiated). |
+| `tp_sl_placement_rejected` or `tp_sl_placement_unknown` | Stop. Cancel any open broker-side stop orders via testnet UI. The plan's recovery is to let the next `reconcile_on_start` resolve, but during a smoke the operator clears manually to keep the audit trail clean. | Manual cancel + `record_cancel(..., reason="smoke_cleanup")` + `record_reconciled`. |
+| Secret value appears in log output | Stop and treat as a credential exposure. Rotate the testnet API key immediately on Binance's testnet UI. File a follow-up issue; do NOT re-run smoke until the leak is patched. | Rotate first, then ledger cleanup if any rows were created. |
+| Any other unexpected exception | Stop. Capture stdout + stderr. Treat as `not ready` and file an investigation note. | Inspect ledger for partial rows; clean via `record_cancel` + `record_reconciled` as needed. |
+
+**Post-smoke verification (regardless of outcome)**
+
+1. Query `binance_testnet_order_ledger` for rows added during the run
+   window (`created_at >= <start>`). Confirm every row reached either
+   `reconciled` or a deliberate intermediate stop (e.g., dry-run only
+   reaches `validated`).
+2. Confirm Sentry has zero unaddressed `anomaly` events for the run
+   window. Each anomaly must have a paired `record_reconciled` audit
+   row.
+3. Confirm `binance_testnet_order_ledger` has no orphan
+   `tp_sl_armed` rows whose sibling `client_order_id` (via
+   `parent_client_order_id`) is not also in `tp_sl_armed` or a
+   downstream state.
+
+**Hard "do not" list during smoke**
+
+* Do **not** run `alembic upgrade head` against a production DB —
+  smoke targets a non-prod DB only.
+* Do **not** enable any scheduler/TaskIQ/cron task — smoke is CLI-only
+  invocation.
+* Do **not** paste API key, API secret, signed query string, or HMAC
+  signature anywhere outside the operator shell.
+* Do **not** override `max_notional_usdt` above the default `10` for
+  the smoke run.
+* Do **not** broaden the MVP symbol set; smoke runs the locked triplet
+  only.
 
 ---
 
