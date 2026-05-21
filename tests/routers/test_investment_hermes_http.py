@@ -102,7 +102,7 @@ async def test_gate_off_returns_503(
     )
     app = _build_app()
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
         resp = await client.post(url, json=body)
     assert resp.status_code == 503
@@ -143,7 +143,7 @@ async def test_prepare_bundle_routes_through_ensure_service(
         return_value=ensure_svc,
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="https://test"
         ) as client:
             resp = await client.post(
                 "/trading/api/investment-reports/hermes/prepare-bundle",
@@ -192,7 +192,7 @@ async def test_context_returns_payload_on_success(
         return_value=exporter,
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="https://test"
         ) as client:
             resp = await client.post(
                 "/trading/api/investment-reports/hermes/context",
@@ -228,7 +228,7 @@ async def test_context_missing_bundle_returns_404(
         return_value=exporter,
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="https://test"
         ) as client:
             resp = await client.post(
                 "/trading/api/investment-reports/hermes/context",
@@ -301,7 +301,7 @@ async def test_stage_artifacts_happy_path(monkeypatch: pytest.MonkeyPatch) -> No
         return_value=svc,
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="https://test"
         ) as client:
             resp = await client.post(
                 "/trading/api/investment-reports/hermes/stage-artifacts",
@@ -351,7 +351,7 @@ async def test_stage_artifacts_error_mapping(
         return_value=svc,
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="https://test"
         ) as client:
             resp = await client.post(
                 "/trading/api/investment-reports/hermes/stage-artifacts",
@@ -375,7 +375,7 @@ async def test_stage_artifacts_rejects_empty_artifacts_list(
     body["artifacts"] = []
     app = _build_app()
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
         resp = await client.post(
             "/trading/api/investment-reports/hermes/stage-artifacts", json=body
@@ -434,7 +434,7 @@ async def test_composition_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
         return_value=svc,
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="https://test"
         ) as client:
             resp = await client.post(
                 "/trading/api/investment-reports/hermes/composition",
@@ -473,7 +473,7 @@ async def test_composition_missing_bundle_returns_404(
         return_value=svc,
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="https://test"
         ) as client:
             resp = await client.post(
                 "/trading/api/investment-reports/hermes/composition",
@@ -498,7 +498,7 @@ async def test_composition_rejects_invalid_items_at_validation(
 
     app = _build_app()
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
         resp = await client.post(
             "/trading/api/investment-reports/hermes/composition", json=body

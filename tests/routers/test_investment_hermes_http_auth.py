@@ -57,7 +57,7 @@ async def test_unconfigured_token_returns_403(
     monkeypatch.setattr(settings, "HERMES_INGEST_TOKEN", "", raising=False)
     app = _build_app()
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
         resp = await client.post(path, json={"market": "kr"})
     assert resp.status_code == 403
@@ -80,7 +80,7 @@ async def test_missing_or_wrong_token_returns_401(
 
     app = _build_app()
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
         # No header at all.
         resp = await client.post(path, json={"market": "kr"})
@@ -120,7 +120,7 @@ async def test_correct_token_lets_request_through_to_handler(
 
     app = _build_app()
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
         resp = await client.post(
             "/trading/api/investment-reports/hermes/context",
@@ -142,7 +142,7 @@ async def test_non_hermes_path_under_same_family_not_affected(
     monkeypatch.setattr(settings, "HERMES_INGEST_TOKEN", "", raising=False)
     app = _build_app()
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
         # 404 (route not registered) is fine — we just want to confirm
         # AuthMiddleware doesn't fire the Hermes branch on this prefix.
