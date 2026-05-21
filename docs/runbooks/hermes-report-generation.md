@@ -135,3 +135,76 @@ redeploy is required.
 | Hermes never sees a fresh bundle | Either the flow is disabled, the deployment is paused, or the cadence is too sparse for Hermes' poll interval. | Manually run the flow once and check `created=true` in the return. |
 
 The middleware token branches are at `app/middleware/auth.py`. The flow body is at `app/flows/hermes_bundle_preparation_flow.py`. The service layer that all four endpoints share is at `app/services/investment_stages/hermes_context.py` + `hermes_ingest.py`.
+
+---
+
+## 7. Phase C smoke — operator round-trip verification (ROB-287)
+
+After the activation steps in §3 / §4 land but **before** flipping ROB-287 to Done, the operator drives a single Hermes-shaped round-trip to confirm the wire contract end-to-end. The fixtures + CLI for this live in this repo and are pinned in lock-step with the contract tests so the smoke does not double as fixture-syntax validation.
+
+### 7.1 Pre-conditions
+
+- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` on the target auto_trader app.
+- `HERMES_INGEST_TOKEN` configured on the target app, value known to the operator.
+- One existing `InvestmentSnapshotBundle` row (use the prep flow once or seed manually). The smoke does NOT call `/prepare-bundle` — that's a separate concern.
+
+### 7.2 CLI usage
+
+```bash
+HERMES_INGEST_TOKEN="<value>" \
+uv run python -m scripts.hermes_roundtrip_smoke \
+  --base-url https://<auto_trader-host> \
+  --bundle-uuid <existing-bundle-uuid>
+```
+
+Optional flags:
+
+- `--token <value>` — bypass the env var (the env var is the default; never log either).
+- `--token-header <header>` — when the deployment uses a non-default header name.
+- `--run-uuid <uuid>` — fix the `run_uuid` for replay; default is a fresh UUID4 per invocation.
+- `--verbose` — full response bodies per step.
+
+### 7.3 Steps the CLI drives
+
+The CLI loads Hermes-shaped payloads from `tests/fixtures/hermes/*.json` and substitutes the two placeholder UUIDs (`{{run_uuid}}`, `{{snapshot_bundle_uuid}}`) at runtime:
+
+1. `POST /trading/api/investment-reports/hermes/context` — returns `HermesContextPayload` (5 deterministic stages render; missing snapshots surface as UNAVAILABLE without aborting).
+2. `POST /trading/api/investment-reports/hermes/stage-artifacts` — append-only ingest of 5 stage artifacts under one `run_uuid`. Re-running the same CLI invocation returns 200 OK with `idempotent_existing=true` on every artifact.
+3. `POST /trading/api/investment-reports/hermes/composition` — final composition + auto-finalize the stage run. The Investment­Report row lands with `metadata.hermes_composition.hermes_run_id="hermes-smoke-001"`.
+
+### 7.4 Expected output
+
+```
+... INFO base_url: https://<host>
+... INFO bundle_uuid: <uuid>
+... INFO run_uuid: <uuid>
+... INFO --- step 1/3: context export ---
+... INFO POST .../context → 200  (keys: bundle_status, constraints, ...)
+... INFO --- step 2/3: stage-artifacts ingest ---
+... INFO POST .../stage-artifacts → 200  (keys: ...)
+... INFO   artifacts: 5 (idempotent reuse: 0) run_status: running
+... INFO --- step 3/3: composition ingest ---
+... INFO POST .../composition → 200  (keys: ...)
+... INFO   report_uuid: <uuid>  items: 2  status: draft
+... INFO --- round-trip OK ---
+```
+
+Exit code 0 = full chain succeeded. Exit code 1 = some step returned a 4xx/5xx; stderr carries the body for triage. Re-runnable: stage-artifacts ingest is idempotent on `(run_uuid, stage_type)`, so an aborted run can be safely retried with the same `--run-uuid`.
+
+### 7.5 Hard invariants the smoke is allowed to assume
+
+- No external LLM is called — Hermes payloads come from the JSON fixtures.
+- No broker / order / watch / order-intent mutation reachable from any endpoint the smoke hits.
+- Token is never logged or printed; only its presence/absence is surfaced via `_redact_token`.
+- The CLI refuses to invent bundle UUIDs (`--bundle-uuid` is required).
+
+### 7.6 Closing ROB-287
+
+Done transition is approved after:
+
+- The smoke exits 0 against the production auto_trader instance with a fresh bundle UUID,
+- The InvestmentReport row is visible in the prod DB with the expected `hermes_composition` metadata,
+- The InvestmentStageRun row is `status='completed'` (auto-finalized by the composition step),
+- No anomalies in Sentry from `app/services/investment_stages/` for one trading session.
+
+Until those are signed off, ROB-287 stays In Progress.
