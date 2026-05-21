@@ -242,9 +242,12 @@ async def test_clean_fills_state_proceeds(
         dry_run=True,
     )
 
-    # Open-orders walk: claim the clientOrderId so the row passes pass 1.
+    # Open-orders pass scopes to BROKER_OPEN_STATES (submitted /
+    # tp_sl_armed) — ``filled`` rows are excluded from pass 1 and only
+    # exercised by the fills-side pass. open_orders is empty because no
+    # row is in scope for pass 1.
     async def _open_orders(*, symbol: str) -> list[dict[str, object]]:
-        return [{"clientOrderId": cid}]
+        return []
 
     async def _recent_fills(
         *, symbol: str, limit: int = 100
@@ -303,10 +306,11 @@ async def test_drift_in_fills_raises_anomaly(
         dry_run=True,
     )
 
-    # Open-orders walk: claim the clientOrderId so the row passes pass 1
-    # cleanly and is left available for the fills walk.
+    # Open-orders pass scopes to BROKER_OPEN_STATES — the seeded row is
+    # in ``filled`` state and therefore excluded from pass 1. open_orders
+    # is empty; pass 2 (fills-side) is the only path that touches the row.
     async def _open_orders(*, symbol: str) -> list[dict[str, object]]:
-        return [{"clientOrderId": cid}]
+        return []
 
     # Recent fills returns an unrelated order id — the seeded broker order
     # id is missing.

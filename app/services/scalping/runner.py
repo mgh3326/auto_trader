@@ -54,6 +54,13 @@ logger = logging.getLogger("app.services.scalping.runner")
 # Lifecycle states where the symbol is considered "busy" (no new entry).
 BUSY_STATES: frozenset[str] = frozenset({"submitted", "filled", "tp_sl_armed"})
 
+# States the broker is expected to still hold as open orders. A ``filled``
+# order is NOT in this set — broker open_orders won't return a filled
+# order, so cross-checking ``filled`` rows against ``open_orders`` would
+# always flag drift. ``filled`` rows are cross-checked against
+# ``recent_fills`` instead (see fills-side pass below).
+BROKER_OPEN_STATES: frozenset[str] = frozenset({"submitted", "tp_sl_armed"})
+
 
 @dataclass
 class ReconcileResult:
@@ -96,13 +103,18 @@ class ScalperRunner:
 
         Two-pass walk for each symbol in the MVP set:
           1. **Open-orders pass** — Fetch ledger rows in
-             ``submitted``/``filled``/``tp_sl_armed`` states. If a row is
-             missing from broker ``open_orders``, transition it to
-             ``anomaly`` with reason ``reconcile_drift``.
+             ``submitted``/``tp_sl_armed`` states (``BROKER_OPEN_STATES``).
+             A ``filled`` order is NOT expected to appear in broker
+             ``open_orders``, so ``filled`` rows are excluded here and
+             handled by pass 2. If a row in scope is missing from broker
+             ``open_orders``, transition it to ``anomaly`` with reason
+             ``reconcile_drift``.
           2. **Fills-side pass (ROB-290)** — Fetch ledger rows in
              ``filled`` state. If a row's ``broker_order_id`` is missing
              from broker ``recent_fills``, transition it to ``anomaly``
-             with reason ``reconcile_drift_fills``.
+             with reason ``reconcile_drift_fills``. When no ``filled``
+             rows exist for the symbol, ``recent_fills`` is **not**
+             called — keeps dry-run paths from issuing signed reads.
 
         Lookback bounds: last ``reconcile_open_orders_limit`` orders /
         ``reconcile_recent_fills_limit`` fills, but never older than
@@ -125,10 +137,14 @@ class ScalperRunner:
                 continue
             # --------------------------------------------------------------
             # Pass 1 — open-orders walk (ROB-286).
+            #
+            # Excludes ``filled`` (handled by pass 2). A filled order is
+            # not expected to be in broker.open_orders, so cross-checking
+            # it here would always flag drift.
             # --------------------------------------------------------------
             ledger_rows = await self.ledger_service.list_by_instrument(
                 instrument_id=instrument_id,
-                lifecycle_states=list(BUSY_STATES),
+                lifecycle_states=list(BROKER_OPEN_STATES),
                 limit=self.config.reconcile_open_orders_limit,
             )
             try:
@@ -184,6 +200,12 @@ class ScalperRunner:
                 lifecycle_states=["filled"],
                 limit=self.config.reconcile_recent_fills_limit,
             )
+            if not filled_rows:
+                # No filled rows for this symbol — skip the signed
+                # ``recent_fills`` read entirely. Dry-run / shadow paths
+                # never reach ``filled`` state, so this keeps them from
+                # issuing /myTrades requests.
+                continue
             try:
                 broker_fills = await self.execution_client.recent_fills(
                     symbol=symbol,
