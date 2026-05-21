@@ -55,6 +55,7 @@ class AuthMiddleware:
     RESEARCH_REPORTS_BULK_INGEST_PATH: ClassVar[str] = (
         "/trading/api/research-reports/ingest/bulk"
     )
+    HERMES_INGEST_PATH_PREFIX: ClassVar[str] = "/trading/api/investment-reports/hermes/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
     def __init__(self, app: ASGIApp):
@@ -194,6 +195,32 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid research reports ingest token"},
+                )
+            return None
+
+        # ROB-287 — Hermes-initiated HTTP ingest family. Same shape as the
+        # research-reports / news-ingestor token branches, but applies to a
+        # path *prefix* because we expose four endpoints under the same
+        # namespace (``prepare-bundle`` / ``context`` / ``stage-artifacts``
+        # / ``composition``).
+        if path.startswith(self.HERMES_INGEST_PATH_PREFIX):
+            expected_token = settings.HERMES_INGEST_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Hermes ingest token not configured"},
+                )
+            header_name = settings.HERMES_INGEST_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Hermes ingest token header not configured"},
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid Hermes ingest token"},
                 )
             return None
 
