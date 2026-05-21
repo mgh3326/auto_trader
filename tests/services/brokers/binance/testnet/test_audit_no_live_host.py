@@ -107,6 +107,114 @@ def test_no_scheduler_activation() -> None:
     )
 
 
+def _scan_non_docstring_lines(
+    *, pkg: pathlib.Path, needle: str
+) -> list[tuple[pathlib.Path, int, str]]:
+    """Return (file, lineno, line) tuples where ``needle`` appears in
+    source code that is NOT inside a docstring or a ``#`` comment.
+
+    We scan by parsing the AST to collect line ranges occupied by
+    module/class/function docstring constants, then check each raw line
+    against ``needle`` while skipping those ranges and comment-only lines.
+    Lines like ``x = "foo"`` are still checked (they are real code) but
+    triple-quoted docstrings are exempt.
+    """
+    import ast
+
+    offenders: list[tuple[pathlib.Path, int, str]] = []
+    for py_file in pkg.rglob("*.py"):
+        source = py_file.read_text()
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        # Collect line ranges occupied by docstrings (module/class/func).
+        docstring_ranges: list[tuple[int, int]] = []
+        for node in ast.walk(tree):
+            if isinstance(
+                node,
+                (
+                    ast.Module,
+                    ast.ClassDef,
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                ),
+            ):
+                doc_node = (
+                    node.body[0]
+                    if node.body
+                    and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)
+                    else None
+                )
+                if doc_node is not None:
+                    docstring_ranges.append(
+                        (
+                            doc_node.lineno,
+                            doc_node.end_lineno or doc_node.lineno,
+                        )
+                    )
+
+        def _in_docstring(lineno: int, ranges: list[tuple[int, int]]) -> bool:
+            for start, end in ranges:
+                if start <= lineno <= end:
+                    return True
+            return False
+
+        for lineno, line in enumerate(source.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if _in_docstring(lineno, docstring_ranges):
+                continue
+            if needle in line:
+                offenders.append((py_file, lineno, stripped))
+    return offenders
+
+
+def test_place_stop_orders_no_reduceonly_param() -> None:
+    """TT6 — No ``reduceOnly`` literal in real code under ``binance/testnet/``.
+
+    ROB-289 reviewer focus #6: ``reduceOnly`` is a futures-only concept
+    on Binance. Spot doesn't use it, and introducing it here (even
+    unused) would create a footgun for the future-path PR (ROB-291).
+    The audit walks the AST to skip docstring text, then flags any
+    remaining occurrence in real code (parameter literals, string
+    constants, identifier names, inline comments).
+    """
+    repo_root = _repo_root()
+    pkg = repo_root / "app" / "services" / "brokers" / "binance" / "testnet"
+    if not pkg.exists():
+        return
+    offenders = _scan_non_docstring_lines(pkg=pkg, needle="reduceOnly")
+    assert not offenders, (
+        "Forbidden ``reduceOnly`` literal found in real code under "
+        f"binance/testnet/: {offenders}. ROB-289 safety boundary #3: "
+        "spot doesn't use ``reduceOnly``; introducing it (even unused) "
+        "would invite futures-path leakage. Futures-side enforcement is "
+        "gated to ROB-291. Remove the literal or escalate."
+    )
+
+
+def test_place_stop_orders_no_futures_host_literal() -> None:
+    """Safety boundary #2 — futures testnet host literal must not appear
+    in real code under ``binance/testnet/``. Futures is ROB-291 scope."""
+    repo_root = _repo_root()
+    pkg = repo_root / "app" / "services" / "brokers" / "binance" / "testnet"
+    if not pkg.exists():
+        return
+    # Use a string concatenation in the test source so the audit itself
+    # doesn't trip on this file (the audit only scans the app package,
+    # but defense-in-depth keeps the test file readable on grep too).
+    needle = "testnet.binance" + "future.com"
+    offenders = _scan_non_docstring_lines(pkg=pkg, needle=needle)
+    assert not offenders, (
+        f"Forbidden futures testnet host literal in real code: {offenders}. "
+        "ROB-289 safety boundary #2 — futures path is ROB-291."
+    )
+
+
 def test_audit_module_grep_regex_is_sane() -> None:
     """Defensive check on the needle list above.
 

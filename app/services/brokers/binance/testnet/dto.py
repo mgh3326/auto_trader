@@ -77,6 +77,35 @@ class CancelResult:
 
 
 @dataclass(frozen=True, slots=True)
+class StopOrderResult:
+    """ROB-289 — Returned by ``place_stop_limit_order`` / ``place_stop_market_order``.
+
+    Same shape as ``OrderSubmitResult`` minus the broker fields that aren't
+    meaningful for stop orders (e.g., ``price`` for STOP_LOSS market). The
+    ``order_type`` field is locked to the two spot-only stop variants used
+    by the paired TP/SL flow:
+
+      * ``STOP_LOSS_LIMIT`` — used for the TP (take-profit) leg with GTC TIF.
+      * ``STOP_LOSS`` — stop-market for the SL (stop-loss) leg, no TIF.
+
+    Spot-only. No reduce-only field (split intentionally to keep the
+    forbidden-literal audit clean) — that flag is a futures concept and
+    would invite a future-path leak (reviewer focus #6 in the plan).
+    """
+
+    broker_order_id: str
+    client_order_id: str
+    symbol: str
+    side: str  # "BUY" or "SELL"
+    order_type: str  # "STOP_LOSS_LIMIT" or "STOP_LOSS"
+    stop_price: Decimal
+    limit_price: Decimal | None  # None for STOP_LOSS (stop-market)
+    status: str  # broker-reported initial status (e.g., "NEW")
+    transact_time_ms: int
+    raw_response: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class OpenOrder:
     """Returned by ``open_orders`` query."""
 

@@ -34,6 +34,7 @@ from app.services.brokers.binance.testnet.dto import (
     CancelResult,
     DryRunResult,
     OrderPreview,
+    StopOrderResult,
 )
 from app.services.brokers.binance.testnet.errors import (
     BinanceMissingCredentials,
@@ -401,6 +402,193 @@ class BinanceTestnetExecutionClient:
             broker_order_id=str(body.get("orderId", "")),
             symbol=body.get("symbol", symbol),
             status=body.get("status", "UNKNOWN"),
+            raw_response=body,
+        )
+
+    # ------------------------------------------------------------------
+    # ROB-289 — Paired TP/SL stop-order placement.
+    #
+    # Two new methods (``place_stop_limit_order``, ``place_stop_market_order``)
+    # share the existing signed transport, host allowlist, and HMAC chokepoint
+    # via ``_sign_request_params``. Spot-only — no reduce-only parameter
+    # (split intentionally to keep the forbidden-literal audit clean;
+    # that flag is a futures concept and would invite future-path leakage,
+    # gated to ROB-291). Default ``confirm=False`` returns a ``DryRunResult``
+    # with no HTTP attempted.
+    # ------------------------------------------------------------------
+    def _build_stop_preview(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: Decimal,
+        stop_price: Decimal,
+        limit_price: Decimal | None,
+        client_order_id: str,
+    ) -> OrderPreview:
+        if side not in ALLOWED_SIDES:
+            raise ValueError(f"side {side!r} not in {sorted(ALLOWED_SIDES)}")
+        if order_type not in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
+            raise ValueError(
+                f"order_type {order_type!r} not a supported spot stop variant"
+            )
+        # Build the params template that the signed transport would send.
+        # Mirror the existing ``_build_preview`` shape but with stop-order fields.
+        template: dict[str, str] = {
+            "symbol": symbol,
+            "side": side,
+            "type": order_type,
+            "quantity": str(quantity),
+            "stopPrice": str(stop_price),
+            "newClientOrderId": client_order_id,
+            "recvWindow": str(BINANCE_RECV_WINDOW_MS),
+        }
+        if order_type == "STOP_LOSS_LIMIT":
+            if limit_price is None:
+                raise ValueError("STOP_LOSS_LIMIT requires limit_price")
+            template["price"] = str(limit_price)
+            template["timeInForce"] = "GTC"
+        else:  # STOP_LOSS (stop-market)
+            if limit_price is not None:
+                raise ValueError("STOP_LOSS (market) must not carry a limit_price")
+        return OrderPreview(
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=limit_price,
+            notional_usdt=Decimal("0"),
+            client_order_id=client_order_id,
+            signed_payload_template=template,
+        )
+
+    async def place_stop_limit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        stop_price: Decimal,
+        limit_price: Decimal,
+        client_order_id: str,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> DryRunResult | StopOrderResult:
+        """Operator-gated stop-limit (TP leg) placement.
+
+        Without ``confirm=True``, no HTTP is sent — returns ``DryRunResult``.
+        With ``confirm=True`` and ``dry_run=False``, signs a POST to
+        ``/api/v3/order`` with ``type=STOP_LOSS_LIMIT`` and ``timeInForce=GTC``.
+        """
+        preview = self._build_stop_preview(
+            symbol=symbol,
+            side=side,
+            order_type="STOP_LOSS_LIMIT",
+            quantity=quantity,
+            stop_price=stop_price,
+            limit_price=limit_price,
+            client_order_id=client_order_id,
+        )
+        if not confirm:
+            return DryRunResult(
+                preview=preview,
+                reason="confirm=False — operator gate not passed; no HTTP attempted",
+            )
+        if dry_run:
+            return DryRunResult(
+                preview=preview,
+                reason="dry_run=True with confirm=True; treated as preview",
+            )
+        return await self._submit_stop_confirmed(
+            preview=preview,
+            stop_price=stop_price,
+            limit_price=limit_price,
+        )
+
+    async def place_stop_market_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        stop_price: Decimal,
+        client_order_id: str,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> DryRunResult | StopOrderResult:
+        """Operator-gated stop-market (SL leg) placement.
+
+        Without ``confirm=True``, no HTTP is sent — returns ``DryRunResult``.
+        With ``confirm=True`` and ``dry_run=False``, signs a POST to
+        ``/api/v3/order`` with ``type=STOP_LOSS`` (no ``timeInForce``).
+        """
+        preview = self._build_stop_preview(
+            symbol=symbol,
+            side=side,
+            order_type="STOP_LOSS",
+            quantity=quantity,
+            stop_price=stop_price,
+            limit_price=None,
+            client_order_id=client_order_id,
+        )
+        if not confirm:
+            return DryRunResult(
+                preview=preview,
+                reason="confirm=False — operator gate not passed; no HTTP attempted",
+            )
+        if dry_run:
+            return DryRunResult(
+                preview=preview,
+                reason="dry_run=True with confirm=True; treated as preview",
+            )
+        return await self._submit_stop_confirmed(
+            preview=preview,
+            stop_price=stop_price,
+            limit_price=None,
+        )
+
+    async def _submit_stop_confirmed(
+        self,
+        *,
+        preview: OrderPreview,
+        stop_price: Decimal,
+        limit_price: Decimal | None,
+    ) -> StopOrderResult:
+        """Confirmed live-submit for stop orders. Routes through the HMAC chokepoint.
+
+        Errors from the broker (4xx / 5xx) raise via ``raise_for_status`` —
+        caller (runner) catches and routes to anomaly/fallback per plan §3.
+        The signed query string is NEVER logged from this function.
+        """
+        params = dict(preview.signed_payload_template)
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.post(
+            "/api/v3/order",
+            params=signed,
+        )
+        # ``raise_for_status`` exposes a status code + URL but httpx redacts
+        # query strings via the default repr; even so, the runner-side
+        # anomaly recorder is responsible for sanitizing broker error
+        # payloads before persistence.
+        resp.raise_for_status()
+        body = resp.json()
+        return StopOrderResult(
+            broker_order_id=str(body.get("orderId", "")),
+            client_order_id=body.get("clientOrderId", preview.client_order_id),
+            symbol=body.get("symbol", preview.symbol),
+            side=body.get("side", preview.side),
+            order_type=body.get("type", preview.order_type),
+            stop_price=Decimal(str(body.get("stopPrice", stop_price))),
+            limit_price=(
+                Decimal(str(body["price"]))
+                if body.get("price")
+                and body["price"] != "0.00000000"
+                and limit_price is not None
+                else None
+            ),
+            status=body.get("status", "UNKNOWN"),
+            transact_time_ms=int(body.get("transactTime", 0)),
             raw_response=body,
         )
 

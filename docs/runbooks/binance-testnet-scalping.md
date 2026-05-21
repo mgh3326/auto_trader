@@ -108,19 +108,66 @@ uv run python -m scripts.binance_testnet_seed_instruments
 
 ---
 
-## 7. TP/SL representation (open item #6)
+## 7. TP/SL representation — paired stop orders (ROB-289)
 
-Spot doesn't have native OCO on testnet. The MVP records both legs as
-two ledger rows linked by `parent_client_order_id`:
+Spot doesn't have native OCO on testnet. ROB-289 wires real paired
+stop orders at the testnet broker after an entry fill:
 
 * Entry row: `client_order_id = E`, `parent_client_order_id = NULL`.
-* TP row: `client_order_id = E-tp`, `parent_client_order_id = E`.
-* SL row: `client_order_id = E-sl`, `parent_client_order_id = E`.
+* TP row: `client_order_id = E-tp`, `parent_client_order_id = E`, broker
+  type `STOP_LOSS_LIMIT` with `timeInForce=GTC`.
+* SL row: `client_order_id = E-sl`, `parent_client_order_id = E`, broker
+  type `STOP_LOSS` (stop-market, no `timeInForce`).
 
-When either TP or SL triggers, the other is cancelled (`record_cancel`)
-in the same transaction. The current MVP runner doesn't yet place
-paired stop/limit orders — that's a follow-up; for now `_handle_exit`
-issues a plain cancel.
+**Default path:** After the entry row transitions to `filled` the runner
+places both legs SEQUENTIALLY (TP first, SL second — never via
+`asyncio.gather`; parallel placement can produce ambiguous half-armed
+state on a broker reject). Each leg walks the lifecycle:
+
+    planned → previewed → validated → submitted → filled → tp_sl_armed
+
+Once both legs are `tp_sl_armed`, the runner's `_derive_symbol_state`
+treats the symbol as busy and the decision function holds until
+either TP or SL triggers.
+
+**Trigger behavior:** When the price snapshot crosses `tp_price` or
+`sl_price`, the decision function returns `Exit(take_profit|stop_loss)`.
+The runner:
+
+1. Marks the triggered leg as `tp_sl_triggered`.
+2. Looks up the sibling leg by the SHARED `parent_client_order_id`
+   (never by the TP/SL CIDs themselves).
+3. Cancels the sibling at the broker.
+4. Records `cancelled(cancel_reason=opposite_leg_triggered)` on the
+   sibling.
+
+**Broker-reject fallback (§3 of the plan):** If `place_stop_limit_order`
+or `place_stop_market_order` returns a 4xx:
+
+* First-leg-success-then-second-leg-reject (the most dangerous path):
+  the first leg is cancelled at the broker IMMEDIATELY before the call
+  returns (avoids half-armed broker state), then `record_anomaly` is
+  written on both the rejected leg and the entry row, then the existing
+  cancel-and-close fallback runs.
+* First-leg-reject: the second leg is skipped entirely (no retry), the
+  rejected leg + entry row get `record_anomaly(reason=
+  "tp_sl_placement_rejected")`, then cancel-and-close fallback.
+
+**Unknown state (timeout / 5xx):** The in-flight leg is recorded with
+`record_anomaly(reason="tp_sl_placement_unknown")` and reconciliation
+on the next runner startup walks `open_orders` + `recent_fills` to
+resolve the row deterministically. No auto-retry.
+
+**Sibling cancel failure (§3.3):** If the sibling-leg cancel call
+itself fails at the broker, the sibling row gets
+`record_anomaly(reason="opposite_leg_cancel_failed")` — operator action
+required; do not auto-retry.
+
+**Operator boundary:** None of these placements happen without
+`confirm=True` AND `dry_run=False`. The smoke CLI default keeps
+`dry_run=True`, so paired TP/SL placement code is reachable only via
+`--no-dry-run --confirm` (operator gated; ROB-293 is the live testnet
+opt-in issue).
 
 ---
 
