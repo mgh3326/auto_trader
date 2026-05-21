@@ -1,16 +1,21 @@
 """ROB-287 — Hermes MCP wiring round-trip tests.
 
-Covers the three tools introduced in this PR:
+Covers all four Hermes MCP tools (PRs #901 + #905):
 
 * ``investment_report_prepare_bundle``
 * ``investment_report_get_hermes_context``
+* ``investment_stage_artifacts_ingest_from_hermes``
 * ``investment_report_create_from_hermes_composition``
 
-All three tools are gated by ``settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
+All four tools are gated by ``settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
 — the gate-off path returns a structured ``success=False`` envelope. Gate-on
-paths exercise the existing service layer (``HermesContextExporter`` /
-``HermesCompositionIngestService``) via patched async sessions / repos so the
-suite stays unit-shaped (no DB required).
+paths exercise the underlying service layer (``HermesContextExporter`` /
+``HermesCompositionIngestService`` / ``HermesStageArtifactsIngestService``)
+via patched async sessions or mocked services so the suite stays
+unit-shaped — the deep service-level append-only tests for the
+stage-artifacts ingest live in
+``tests/services/investment_stages/test_hermes_stage_artifacts_ingest.py``
+and use the real ``db_session`` fixture.
 """
 
 from __future__ import annotations

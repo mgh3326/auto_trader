@@ -1,7 +1,6 @@
 """ROB-287 — MCP wiring for the Hermes-initiated composition contract.
 
-Three tools expose the existing service layer from PR #898 directly to
-Hermes:
+Four tools expose the service layer (PRs #898 + #905) directly to Hermes:
 
 * ``investment_report_prepare_bundle`` — ensure (reuse or create) the
   snapshot bundle Hermes will compose against. Deterministic bundle
@@ -10,20 +9,26 @@ Hermes:
 * ``investment_report_get_hermes_context`` — return a frozen
   :class:`HermesContextPayload` derived from a persisted bundle. Pure
   read.
+* ``investment_stage_artifacts_ingest_from_hermes`` — append-only
+  ingest of one or more Hermes-produced stage artifacts. Hermes
+  generates ``run_uuid`` client-side (§D1); auto_trader creates the
+  run row on first ingest and reuses it for subsequent calls.
+  ``(run_uuid, stage_type)`` is the idempotency key — identical
+  payload returns the stored row, differing payload is rejected
+  (§D3). Leaves ``run.status='running'`` — composition ingest is the
+  canonical finalizer (§D4).
 * ``investment_report_create_from_hermes_composition`` — validate a
   Hermes-produced :class:`HermesCompositionResult` and persist through
   the existing :class:`InvestmentReportIngestionService` so idempotency
-  + stale gate + bundle linkage stay authoritative.
+  + stale gate + bundle linkage stay authoritative. Also auto-finalises
+  any matching ``running`` Hermes stage run when
+  ``composition.metadata.investment_stage_run_uuid`` points at one.
 
-All three are gated by ``settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
+All four are gated by ``settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
 — the same flag the existing ``investment_report_generate_from_bundle``
 tool uses. No new env flag, no HTTP route, no token auth, no
-operational activation/Prefect wiring (those are explicit follow-ups).
-The fourth tool from the Linear locked decision —
-``investment_stage_artifacts_ingest_from_hermes`` — is intentionally
-deferred until the stage-artifact external-ingest contract is
-specified (stage_run identity, idempotency, partial-stage semantics,
-UI exposure).
+operational activation / Prefect wiring (those are explicit follow-up
+PRs per the user's Plan B directive).
 """
 
 from __future__ import annotations
