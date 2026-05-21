@@ -36,6 +36,7 @@ from app.core.db import AsyncSessionLocal
 from app.schemas.hermes_composition import (
     HermesCompositionIngestRequest,
     HermesCompositionResult,
+    HermesStageArtifactsIngestRequest,
 )
 from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
 from app.services.action_report.common.snapshot_bundle import (
@@ -48,6 +49,8 @@ from app.services.investment_stages.hermes_context import (
 from app.services.investment_stages.hermes_ingest import (
     HermesCompositionIngestError,
     HermesCompositionIngestService,
+    HermesStageArtifactsIngestError,
+    HermesStageArtifactsIngestService,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +61,7 @@ INVESTMENT_HERMES_TOOL_NAMES: set[str] = {
     "investment_report_prepare_bundle",
     "investment_report_get_hermes_context",
     "investment_report_create_from_hermes_composition",
+    "investment_stage_artifacts_ingest_from_hermes",
 }
 
 
@@ -250,6 +254,84 @@ async def investment_report_create_from_hermes_composition_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_stage_artifacts_ingest_from_hermes
+# ---------------------------------------------------------------------------
+async def investment_stage_artifacts_ingest_from_hermes_impl(
+    run_envelope: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Ingest one or more Hermes-produced stage artifacts.
+
+    Locked decisions (signed off 2026-05-21):
+
+    * §D1 — Hermes generates ``run_uuid`` client-side; auto_trader creates
+      the run row on the first ingest, reuses it on subsequent calls with
+      the same id.
+    * §D3 — Append-only idempotency on ``(run_uuid, stage_type)``. Same key
+      with identical payload returns the stored row; differing payload is
+      rejected with ``error='artifact_content_conflict'``.
+    * §D4 — This tool does NOT advance ``run.status`` to a terminal state;
+      ``investment_report_create_from_hermes_composition`` finalises a
+      ``running`` run when its composition references the same ``run_uuid``.
+    * §D5 — Artifacts may arrive in any order; auto_trader does not enforce
+      stage dependencies at the ingest layer.
+    * §D8 — Multiple artifacts allowed per call; duplicate ``stage_type``
+      values in a single call are rejected at the schema validator.
+    * §TS6 — Empty ``artifacts`` list is rejected.
+
+    Hard invariants:
+
+    * No external LLM is called.
+    * No broker / order / watch / order-intent mutation path is touched.
+    * Append-only: a successfully stored artifact is never mutated.
+
+    Gated by ``settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``. When
+    the flag is off, returns a structured ``success=False`` envelope.
+    """
+    disabled = _disabled_check()
+    if disabled is not None:
+        return disabled
+
+    try:
+        request = HermesStageArtifactsIngestRequest.model_validate(
+            {"run_envelope": run_envelope, "artifacts": artifacts}
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "success": False,
+            "error": "invalid_stage_artifacts_request",
+            "detail": str(exc),
+        }
+
+    async with AsyncSessionLocal() as db:
+        svc = HermesStageArtifactsIngestService(db)
+        try:
+            response = await svc.ingest_stage_artifacts(request)
+        except HermesStageArtifactsIngestError as exc:
+            return {
+                "success": False,
+                "error": exc.code,
+                "detail": str(exc),
+            }
+        await db.commit()
+
+    return {
+        "success": True,
+        "run_uuid": str(response.run.run_uuid),
+        "run_status": response.run.status,
+        "snapshot_bundle_uuid": str(response.run.snapshot_bundle_uuid),
+        "artifacts": [
+            {
+                "stage_type": r.stage_type,
+                "artifact_uuid": str(r.artifact.artifact_uuid),
+                "idempotent_existing": r.idempotent_existing,
+            }
+            for r in response.results
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 def register_investment_hermes_tools(mcp: FastMCP) -> None:
@@ -281,9 +363,26 @@ def register_investment_hermes_tools(mcp: FastMCP) -> None:
             "apply_policy='requires_user_approval'; the envelope is routed "
             "through the existing InvestmentReportIngestionService so "
             "idempotency + stale gate + bundle linkage stay authoritative. "
+            "Auto-finalises any matching Hermes stage run "
+            "(metadata.investment_stage_run_uuid) from 'running' to "
+            "'completed' (§D4). "
             "Gated by SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
         ),
     )(investment_report_create_from_hermes_composition_impl)
+    mcp.tool(
+        name="investment_stage_artifacts_ingest_from_hermes",
+        description=(
+            "ROB-287 — append-only ingest of Hermes-produced stage "
+            "artifacts. Hermes generates the run_uuid client-side; "
+            "auto_trader creates the run row on first ingest and reuses "
+            "it for subsequent calls. Same (run_uuid, stage_type) with "
+            "identical payload returns the stored row (idempotent); "
+            "differing payload is rejected. Does NOT finalise the run — "
+            "use investment_report_create_from_hermes_composition for "
+            "that (§D4). No broker / order / watch / order-intent side "
+            "effect. Gated by SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
+        ),
+    )(investment_stage_artifacts_ingest_from_hermes_impl)
 
 
 __all__ = [
@@ -291,5 +390,6 @@ __all__ = [
     "investment_report_create_from_hermes_composition_impl",
     "investment_report_get_hermes_context_impl",
     "investment_report_prepare_bundle_impl",
+    "investment_stage_artifacts_ingest_from_hermes_impl",
     "register_investment_hermes_tools",
 ]

@@ -30,15 +30,23 @@ class InvestmentStagesRepository:
         account_scope: str | None = None,
         policy_version: str = "v1",
         generator_version: str = "v1",
+        run_uuid: uuid.UUID | None = None,
     ) -> InvestmentStageRun:
-        run = InvestmentStageRun(
-            snapshot_bundle_uuid=snapshot_bundle_uuid,
-            market=market,
-            market_session=market_session,
-            account_scope=account_scope,
-            policy_version=policy_version,
-            generator_version=generator_version,
-        )
+        """Create a run row. ``run_uuid`` is optional — when omitted, the
+        DB ``gen_random_uuid()`` server default fills it in. Pass an
+        explicit UUID for the Hermes stage-artifacts ingest path where
+        Hermes generates the run id client-side (ROB-287 §D1)."""
+        kwargs: dict[str, object] = {
+            "snapshot_bundle_uuid": snapshot_bundle_uuid,
+            "market": market,
+            "market_session": market_session,
+            "account_scope": account_scope,
+            "policy_version": policy_version,
+            "generator_version": generator_version,
+        }
+        if run_uuid is not None:
+            kwargs["run_uuid"] = run_uuid
+        run = InvestmentStageRun(**kwargs)
         self._session.add(run)
         await self._session.flush()
         await self._session.refresh(run)
