@@ -208,3 +208,124 @@ Done transition is approved after:
 - No anomalies in Sentry from `app/services/investment_stages/` for one trading session.
 
 Until those are signed off, ROB-287 stays In Progress.
+
+---
+
+## 8. US narrow smoke (ROB-287 follow-up)
+
+A narrow, **non-prod** verification that the Hermes-first contract
+(four endpoints in §1) accepts a `market="us"` snapshot bundle and
+produces a **draft** `InvestmentReport` linked back to it. This is
+NOT a "US production support" milestone — it is a contract-shape
+check for the Hermes path on US-shaped payloads.
+
+### 8.1 Scope and boundaries
+
+- **In scope**: Hermes context export / stage-artifacts ingest /
+  composition ingest on a `market="us"`, `account_scope="alpaca_paper"`
+  snapshot bundle, producing a `status="draft"` report row.
+- **Out of scope** (do NOT execute as part of this smoke):
+  - Published US reports (`status="published"`) — operator review
+    required.
+  - The legacy `ReportGenerationRequest` snapshot-backed generator
+    (`/trading/api/investment-reports/snapshot-backed`) — its
+    request schema still only accepts `market` ∈ `{"kr", "crypto"}`
+    paired with `kis_live` / `upbit_live`. The Hermes-first
+    endpoints take `market` as a plain string and therefore work
+    on US bundles without that legacy validator firing.
+  - `auto_emit_from_evidence` — same legacy path, US bundles aren't
+    accepted there. The Hermes flow does not pass through that
+    proposer.
+  - Real-money broker mutation — every Hermes endpoint is
+    structurally read/persist-only on the report-database side; no
+    code path reaches `submit_order` / `cancel_order` /
+    `create_watch_intent` / order-intent shapes from any of the
+    four endpoints. The static guard from PR #898
+    auto-scans the staged path for re-introductions.
+  - Production env / secret application, Prefect registration or
+    unpause, production deploy, ROB-287 → Done reconciliation.
+
+### 8.2 Pre-conditions
+
+Same as §7.1 plus:
+
+- An existing `InvestmentSnapshotBundle` row with `market="us"` and
+  `account_scope="alpaca_paper"` in the non-prod DB. The smoke does
+  not call `/prepare-bundle`; seed the bundle row via whatever
+  out-of-band mechanism non-prod already has (or by calling the
+  `investment_snapshots_refresh_flow` once after the env var flip
+  in §3 — `purpose` field is opaque to the Hermes path).
+- Hermes will reach the endpoints from a host that has connectivity
+  to the non-prod auto_trader and a valid `HERMES_INGEST_TOKEN`
+  header. **Do not stage production tokens into a non-prod
+  environment.**
+
+### 8.3 CLI invocation (operator runs)
+
+```bash
+HERMES_INGEST_TOKEN="<value-from-non-prod-secret-manager>" \
+uv run python -m scripts.hermes_roundtrip_smoke \
+  --base-url https://<non-prod-auto_trader-host> \
+  --bundle-uuid <existing-us-bundle-uuid> \
+  --fixture-set us
+```
+
+- `--fixture-set us` switches the CLI to the US fixtures
+  (`tests/fixtures/hermes/{stage_artifacts_request_us,composition_request_us}.json`).
+  These are pinned to `market="us"`, `account_scope="alpaca_paper"`,
+  `status="draft"`, with example tickers `AAPL` + `MSFT`. The fixture
+  lock test (`test_us_fixtures_pin_alpaca_paper_and_draft_and_us_symbols`)
+  guards against scope drift.
+- Default `--fixture-set kr` matches PR #910 behaviour — operators
+  not interested in the US smoke don't need to change anything.
+
+### 8.4 Expected outcome
+
+Three POSTs in order (same chain as §7.3, but on US fixtures):
+
+1. `/context` — returns a `HermesContextPayload` with
+   `market="us"`, `account_scope="alpaca_paper"`. The 5 deterministic
+   stages render even with no items in the bundle (UNAVAILABLE).
+2. `/stage-artifacts` — 5 artifact rows persisted under one
+   `run_uuid`, `run_status="running"`.
+3. `/composition` — returns a 200 envelope with `status="draft"`,
+   `items_count=3`. The matching `InvestmentStageRun` row is
+   auto-finalised to `status="completed"` (§D4).
+
+### 8.5 DB-level invariants the operator confirms
+
+After the CLI exits 0:
+
+- `investment_stage_runs.status='completed'` for the run UUID the
+  CLI printed.
+- 5 `investment_stage_artifacts` rows linked to that `run_uuid`.
+- One `investment_reports` row with:
+  - `snapshot_bundle_uuid` = the US bundle UUID,
+  - `status='draft'` (**must not be `published`**),
+  - `market='us'`,
+  - `account_scope='alpaca_paper'`,
+  - `report_metadata.hermes_composition.hermes_run_id="hermes-smoke-us-001"`.
+
+If any of those fail, treat the smoke as failed and surface the
+exact mismatch on the ROB-287 ticket — do NOT attempt to publish or
+remediate the row.
+
+### 8.6 Closing the US narrow smoke
+
+The US narrow smoke does NOT close ROB-287. It is a contract-shape
+check that the Hermes-first endpoints round-trip on US bundles.
+ROB-287 → Done still requires the operator-driven prod-side cycle
+listed in §7.6 (and KR is the default fixture for that prod cycle
+until a separate decision approves US for production Hermes
+composition).
+
+If the US narrow smoke passes, the operator may flag the contract
+as "US-ready (advisory-only)" on the ROB-287 thread and decide
+separately whether to:
+
+- Expand `ReportGenerationRequest` to accept `market="us"` (out of
+  scope here — that's a different code change with its own
+  approval gate).
+- Schedule a US Prefect deployment (separate `robin-prefect-automations`
+  PR, separate operator approval).
+- Add US to the prod cutover checklist (operator decision).
