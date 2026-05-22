@@ -120,11 +120,29 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--fixture-set",
+        choices=("kr", "us"),
+        default="kr",
+        help=(
+            "Which Hermes fixture pair to send. ``kr`` uses the original "
+            "KR/KIS-paper payloads (default); ``us`` uses the US narrow "
+            "smoke payloads pinned to market='us', account_scope='alpaca_paper', "
+            "status='draft'. The operator chooses the set to match the bundle "
+            "they passed via --bundle-uuid."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print full response bodies for each step.",
     )
     return parser.parse_args(argv)
+
+
+_FIXTURE_BY_SET: dict[str, tuple[str, str]] = {
+    "kr": ("stage_artifacts_request.json", "composition_request.json"),
+    "us": ("stage_artifacts_request_us.json", "composition_request_us.json"),
+}
 
 
 async def _post(
@@ -165,9 +183,16 @@ async def _run(args: argparse.Namespace) -> int:
     headers = {args.token_header: args.token, "Content-Type": "application/json"}
 
     base_url = args.base_url.rstrip("/")
+    stage_fixture, composition_fixture = _FIXTURE_BY_SET[args.fixture_set]
     logger.info("base_url: %s", base_url)
     logger.info("bundle_uuid: %s", args.bundle_uuid)
     logger.info("run_uuid: %s", run_uuid)
+    logger.info(
+        "fixture_set: %s (stage=%s composition=%s)",
+        args.fixture_set,
+        stage_fixture,
+        composition_fixture,
+    )
 
     async with httpx.AsyncClient(timeout=args.timeout) as client:
         # 1. context export
@@ -183,7 +208,7 @@ async def _run(args: argparse.Namespace) -> int:
         # 2. stage-artifacts ingest
         logger.info("--- step 2/3: stage-artifacts ingest ---")
         stage_payload = _substitute_placeholders(
-            _load_fixture("stage_artifacts_request.json"),
+            _load_fixture(stage_fixture),
             run_uuid=run_uuid,
             snapshot_bundle_uuid=args.bundle_uuid,
         )
@@ -208,7 +233,7 @@ async def _run(args: argparse.Namespace) -> int:
         # 3. composition ingest
         logger.info("--- step 3/3: composition ingest ---")
         composition_payload = _substitute_placeholders(
-            _load_fixture("composition_request.json"),
+            _load_fixture(composition_fixture),
             run_uuid=run_uuid,
             snapshot_bundle_uuid=args.bundle_uuid,
         )

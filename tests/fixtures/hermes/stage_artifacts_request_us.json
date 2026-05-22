@@ -1,0 +1,111 @@
+{
+  "_comment": "ROB-287 follow-up — US narrow smoke. Hermes-produced stage-artifacts payload with market='us', account_scope='alpaca_paper'. Example holdings reference AAPL + MSFT. {{run_uuid}} / {{snapshot_bundle_uuid}} placeholders are substituted by the round-trip smoke test/CLI at runtime. NOTE: ReportGenerationRequest (legacy snapshot-backed generator) does NOT support market='us'; this fixture exercises ONLY the Hermes-first contract path, which accepts market as a plain string.",
+  "run_envelope": {
+    "run_uuid": "{{run_uuid}}",
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "market": "us",
+    "market_session": "regular",
+    "account_scope": "alpaca_paper",
+    "policy_version": "intraday_action_report_v1",
+    "generator_version": "hermes-stage-artifacts.v1",
+    "hermes_run_id": "hermes-smoke-us-001"
+  },
+  "artifacts": [
+    {
+      "stage_type": "market",
+      "verdict": "bull",
+      "confidence": 60,
+      "summary": "S&P 500 +0.5%, breadth net-positive; risk-on bias on rate-sensitive megacaps.",
+      "key_points": [
+        "SPX 5,210 (+0.5%)",
+        "adv/dec 2.1:1",
+        "VIX 12.4 (-3%)"
+      ],
+      "buy_evidence": [
+        "SPX 20d MA reclaimed",
+        "Megacap leadership intact"
+      ],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-us-market-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "news",
+      "verdict": "neutral",
+      "confidence": 42,
+      "summary": "Mixed earnings reads; no single dominant catalyst.",
+      "key_points": [
+        "AAPL services revenue mildly above consensus",
+        "MSFT cloud guide reiterated"
+      ],
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-us-news-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "portfolio_journal",
+      "verdict": "neutral",
+      "confidence": 50,
+      "summary": "Alpaca paper account: buying power 12% NAV; two open theses (AAPL, MSFT).",
+      "key_points": [
+        "NAV $50k, BP $6k",
+        "open: AAPL long, +1.8% unrealized",
+        "open: MSFT long, +0.6% unrealized"
+      ],
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [
+        "Sector concentration: tech-megacap >60% NAV"
+      ],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-us-portfolio-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "bull_reducer",
+      "verdict": "bull",
+      "confidence": 55,
+      "summary": "Market regime + earnings reads mildly positive; tech-megacap leadership intact.",
+      "key_points": [
+        "Regime: risk-on",
+        "Megacap earnings stable"
+      ],
+      "buy_evidence": [
+        "SPX breadth",
+        "AAPL services upside surprise"
+      ],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-bull-reducer-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "risk_review",
+      "verdict": "neutral",
+      "confidence": 38,
+      "summary": "Tech-megacap concentration overrides modest bull case; recommend hold-and-trim.",
+      "key_points": [
+        "Concentration: AAPL+MSFT >60% NAV"
+      ],
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [
+        "Single-sector exposure breach (>50% NAV)"
+      ],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-risk-review-v1",
+      "prompt_version": "v1"
+    }
+  ]
+}

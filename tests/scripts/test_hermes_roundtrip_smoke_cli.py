@@ -105,3 +105,65 @@ def test_parse_args_rejects_missing_required_args() -> None:
         _parse_args(["--base-url", "https://example"])
     with pytest.raises(SystemExit):
         _parse_args(["--bundle-uuid", str(uuid.uuid4())])
+
+
+def test_parse_args_defaults_fixture_set_to_kr() -> None:
+    """Backwards compatibility — operators who omit --fixture-set keep
+    getting the original KR payloads (PR #910 behaviour)."""
+    args = _parse_args(
+        [
+            "--base-url",
+            "https://example",
+            "--bundle-uuid",
+            str(uuid.uuid4()),
+        ]
+    )
+    assert args.fixture_set == "kr"
+
+
+def test_parse_args_accepts_us_fixture_set() -> None:
+    """``--fixture-set us`` switches the CLI to the US narrow smoke
+    fixtures pinned to market='us', account_scope='alpaca_paper',
+    status='draft'."""
+    args = _parse_args(
+        [
+            "--base-url",
+            "https://example",
+            "--bundle-uuid",
+            str(uuid.uuid4()),
+            "--fixture-set",
+            "us",
+        ]
+    )
+    assert args.fixture_set == "us"
+
+
+def test_parse_args_rejects_unknown_fixture_set() -> None:
+    """The fixture set is a closed enum — extending it requires a
+    code change (deliberate friction)."""
+    with pytest.raises(SystemExit):
+        _parse_args(
+            [
+                "--base-url",
+                "https://example",
+                "--bundle-uuid",
+                str(uuid.uuid4()),
+                "--fixture-set",
+                "kr_or_us_or_zz",
+            ]
+        )
+
+
+def test_fixture_by_set_map_locks_us_payload_files() -> None:
+    """Lock the fixture filenames bound to each set so an accidental
+    rename can't silently change what the CLI sends on the wire."""
+    from scripts.hermes_roundtrip_smoke import _FIXTURE_BY_SET
+
+    assert _FIXTURE_BY_SET["kr"] == (
+        "stage_artifacts_request.json",
+        "composition_request.json",
+    )
+    assert _FIXTURE_BY_SET["us"] == (
+        "stage_artifacts_request_us.json",
+        "composition_request_us.json",
+    )

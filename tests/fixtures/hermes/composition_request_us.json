@@ -1,0 +1,55 @@
+{
+  "_comment": "ROB-287 follow-up — US narrow smoke. Hermes-produced composition payload with market='us', account_scope='alpaca_paper'. metadata.investment_stage_run_uuid links to the matching stage run for §D4 auto-finalize. status MUST stay 'draft' for this smoke — published reports require operator review. {{...}} placeholders are substituted by the round-trip smoke at runtime. NOTE: ReportGenerationRequest (legacy snapshot-backed generator) does NOT support market='us'; this fixture exercises ONLY the Hermes-first contract path.",
+  "composition": {
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "hermes_run_id": "hermes-smoke-us-001",
+    "title": "Hermes Advisory — US intraday (smoke narrow round-trip)",
+    "summary": "Hold-and-trim bias on tech-megacap concentration. Market regime modest bull, but portfolio concentration overrides aggressive entries.",
+    "risk_summary": "Concentration: AAPL+MSFT combined >60% NAV. Recommend trim toward <50% sector exposure before adding new positions.",
+    "thesis_text": "Bull case from market + earnings stages does not outweigh sector-concentration risk on the Alpaca paper account. Defer new entries; consider scaling out partial AAPL or MSFT exposure.",
+    "no_action_note": null,
+    "items": [
+      {
+        "client_item_key": "smoke-us-risk-concentration-001",
+        "item_kind": "risk",
+        "operation": "review",
+        "intent": "risk_review",
+        "rationale": "Single-sector exposure breach: AAPL+MSFT >60% NAV on alpaca_paper account. Review before any new entry.",
+        "apply_policy": "requires_user_approval"
+      },
+      {
+        "client_item_key": "smoke-us-watch-aapl-trim-001",
+        "item_kind": "watch",
+        "operation": "review",
+        "symbol": "AAPL",
+        "intent": "trend_recovery_review",
+        "rationale": "Watch for scale-out opportunity once price tags short-term resistance; advisory only, no broker mutation.",
+        "apply_policy": "requires_user_approval"
+      },
+      {
+        "client_item_key": "smoke-us-watch-msft-trim-001",
+        "item_kind": "watch",
+        "operation": "review",
+        "symbol": "MSFT",
+        "intent": "trend_recovery_review",
+        "rationale": "Watch for partial trim if cloud guidance disappoints next quarter; advisory only, no broker mutation.",
+        "apply_policy": "requires_user_approval"
+      }
+    ],
+    "metadata": {
+      "investment_stage_run_uuid": "{{run_uuid}}",
+      "hermes_composition_version": "hermes-composition.v1",
+      "hermes_run_id": "hermes-smoke-us-001"
+    },
+    "cited_snapshot_uuids": []
+  },
+  "kst_date": "2026-05-22",
+  "market": "us",
+  "market_session": "regular",
+  "account_scope": "alpaca_paper",
+  "report_type": "snapshot_backed_advisory_v1",
+  "generator_version": "hermes-composition.v1",
+  "policy_version": "intraday_action_report_v1",
+  "status": "draft",
+  "created_by_profile": "HERMES_ADVISOR"
+}
