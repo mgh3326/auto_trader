@@ -125,69 +125,84 @@ def test_only_one_binance_package_path_exists() -> None:
 
 
 def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
-    """ROB-285 public-adapter invariant — extended by ROB-286.
+    """ROB-285 public-adapter invariant — extended by ROB-286 and ROB-296.
 
     The signed-endpoint vocabulary (``order``, ``cancel_order``, etc.) is
-    permitted ONLY inside ``app/services/brokers/binance/testnet/`` (the
-    isolated testnet execution adapter introduced by ROB-286). Anywhere
-    else under ``app/services/brokers/binance/`` is the read-only public
-    adapter and must not gain signed surface.
+    permitted ONLY inside the isolated signed sub-packages:
+      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet)
+      * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
+    Anywhere else under ``app/services/brokers/binance/`` is the
+    read-only public adapter and must not gain signed surface.
     """
     repo_root = _repo_root()
     pkg = repo_root / "app" / "services" / "brokers" / "binance"
     if not pkg.exists():
         # Until Task 4 introduces the package, this is fine.
         return
-    testnet_pkg = pkg / "testnet"
+    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo")
     offenders: list[tuple[pathlib.Path, int, str]] = []
     for py_file in pkg.rglob("*.py"):
-        # ROB-286: skip the isolated testnet sub-package — signed methods
-        # legitimately live there.
-        try:
-            py_file.relative_to(testnet_pkg)
+        # ROB-286 + ROB-296: skip the isolated signed sub-packages — signed
+        # methods legitimately live there.
+        skip = False
+        for signed_pkg in isolated_signed_pkgs:
+            try:
+                py_file.relative_to(signed_pkg)
+                skip = True
+                break
+            except ValueError:
+                continue
+        if skip:
             continue
-        except ValueError:
-            pass
         for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
             if SIGNED_SYMBOL_RE.search(line) and "def " in line:
                 offenders.append((py_file, lineno, line.strip()))
     assert not offenders, (
         f"Signed-endpoint method names found in Binance public adapter: "
         f"{offenders}. ROB-285 public adapter must not expose signed-endpoint "
-        "surface. Signed methods are allowed ONLY inside binance/testnet/. "
-        "If a name collision is unavoidable, rename or justify in PR "
-        "description and update SIGNED_SYMBOL_RE."
+        "surface. Signed methods are allowed ONLY inside binance/testnet/ "
+        "or binance/spot_demo/. If a name collision is unavoidable, rename "
+        "or justify in PR description and update SIGNED_SYMBOL_RE."
     )
 
 
 def test_no_api_key_header_constants_in_binance_public_package() -> None:
-    """ROB-285 invariant — extended by ROB-286.
+    """ROB-285 invariant — extended by ROB-286 and ROB-296.
 
-    The ``X-MBX-APIKEY`` header constant is permitted ONLY inside
-    ``app/services/brokers/binance/testnet/transport.py`` (where the
-    signed transport legitimately attaches it). Anywhere else under
-    ``app/services/brokers/binance/`` is the read-only public adapter.
+    The ``X-MBX-APIKEY`` header constant is permitted ONLY inside the
+    isolated signed sub-packages:
+      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet)
+      * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
+    Anywhere else under ``app/services/brokers/binance/`` is the
+    read-only public adapter and must not reference this header.
     """
     repo_root = _repo_root()
     pkg = repo_root / "app" / "services" / "brokers" / "binance"
     if not pkg.exists():
         return
-    testnet_pkg = pkg / "testnet"
+    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo")
     forbidden = "X-MBX-APIKEY"
     offenders: list[str] = []
     for py_file in pkg.rglob("*.py"):
-        # ROB-286: signed transport may legitimately reference the header.
-        try:
-            py_file.relative_to(testnet_pkg)
+        # ROB-286 + ROB-296: signed transports may legitimately reference
+        # the header.
+        skip = False
+        for signed_pkg in isolated_signed_pkgs:
+            try:
+                py_file.relative_to(signed_pkg)
+                skip = True
+                break
+            except ValueError:
+                continue
+        if skip:
             continue
-        except ValueError:
-            pass
         if forbidden in py_file.read_text():
             offenders.append(str(py_file))
     assert not offenders, (
         f"X-MBX-APIKEY header constant found in: {offenders}. "
         "Public adapter must never construct API-key headers. The header "
-        "is permitted only inside app/services/brokers/binance/testnet/. "
-        "The transport event hook checks for this header at request time "
-        "as defense in depth; the source itself must not reference it."
+        "is permitted only inside app/services/brokers/binance/testnet/ or "
+        "app/services/brokers/binance/spot_demo/. The transport event hook "
+        "checks for this header at request time as defense in depth; the "
+        "source itself must not reference it."
     )

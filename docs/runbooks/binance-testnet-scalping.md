@@ -10,6 +10,14 @@ is no live mode. The class name (`BinanceTestnetExecutionClient`), host
 allowlist (`TESTNET_HOSTS`), and transport factory all enforce this at
 the type/runtime layer.
 
+**Related lane (ROB-296)**: a parallel Spot Demo Mode lane lives at
+`app/services/brokers/binance/spot_demo/` and targets
+`demo-api.binance.com`. The two lanes share **no** code — env namespace
+(`BINANCE_TESTNET_*` vs `BINANCE_SPOT_DEMO_*`), host allowlist, transport
+factory, and exception types are all duplicated to preserve fail-closed
+isolation. See [`binance-spot-demo-smoke.md`](./binance-spot-demo-smoke.md)
+for the Spot Demo runbook and the cross-environment leakage guard tests.
+
 ---
 
 ## 1. Env variables
