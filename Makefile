@@ -91,18 +91,6 @@ sync-kr-candles-backfill: ## Backfill KR candles for recent sessions
 sync-kr-candles-incremental: ## Incremental KR candles sync (venue-gated)
 	uv run python scripts/sync_kr_candles.py --mode incremental
 
-frontend-install: ## Install React/Vite workspace deps (npm ci)
-	cd frontend/trading-decision && npm ci
-
-frontend-dev: ## Start Vite dev server on :5173 (requires `make dev` for the API on :8000)
-	cd frontend/trading-decision && npm run dev
-
-frontend-build: ## Build the React/Vite workspace into frontend/trading-decision/dist/
-	cd frontend/trading-decision && npm run build
-
-frontend-typecheck: ## Run tsc --noEmit on the React/Vite workspace
-	cd frontend/trading-decision && npm run typecheck
-
 docker-build: ## Build Docker image
 	vcs_ref="$$(git rev-parse HEAD)"; \
 	docker build --build-arg VCS_REF="$$vcs_ref" -f Dockerfile.api -t auto_trader-api:local .

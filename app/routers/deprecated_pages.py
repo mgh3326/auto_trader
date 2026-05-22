@@ -16,6 +16,7 @@ LEGACY_PREFIXES = (
     "/stock-latest",
     "/analysis-json",
     "/orderbook",
+    "/trading/decisions",
 )
 _DEPRECATED_AT = "2026-02-20T00:00:00+09:00"
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
