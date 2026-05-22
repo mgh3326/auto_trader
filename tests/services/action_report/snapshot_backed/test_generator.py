@@ -190,7 +190,11 @@ async def test_happy_path_crypto_published() -> None:
 
 @pytest.mark.asyncio
 async def test_unsupported_market_account_pair_rejected() -> None:
-    """US/kis_live or crypto/kis_live etc. are rejected at request validation."""
+    """crypto/kis_live etc. are rejected at the generator's pair validator.
+
+    Post ROB-297, ``us/kis_live`` is the canonical KIS overseas pair and
+    must NOT raise; see ``test_happy_path_us_kis_live_published``.
+    """
     ensure = _FakeEnsureService(_ensure_response())
     ingest = _FakeIngestionService()
     gen = SnapshotBackedReportGenerator(
@@ -200,6 +204,61 @@ async def test_unsupported_market_account_pair_rejected() -> None:
         snapshots_repository=_FakeSnapshotsRepository(),
     )
     req = _make_request(market="crypto", account_scope="kis_live")
+    with pytest.raises(SnapshotBackedReportGeneratorError):
+        await gen.generate(req)
+    assert ingest.calls == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-297 — market="us" + account_scope="kis_live" canonical pair.
+#
+# Guardrails (see ROB-297 pre-implementation comment):
+# - market="us" is a single market; brokers are separated by account_scope.
+# - canonical KIS overseas combo is ("us", "kis_live"); no kis_overseas_live
+#   alias is introduced.
+# - the existing ("kr", "kis_live") and ("crypto", "upbit_live") paths must
+#   keep working without regression.
+# ---------------------------------------------------------------------------
+def test_request_schema_accepts_us_kis_live() -> None:
+    """ReportGenerationRequest accepts market='us' with account_scope='kis_live'."""
+    req = _make_request(market="us", account_scope="kis_live")
+    assert req.market == "us"
+    assert req.account_scope == "kis_live"
+
+
+@pytest.mark.asyncio
+async def test_happy_path_us_kis_live_published() -> None:
+    """US/kis_live published flow: validator passes, bundle ensure called with us."""
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(market="us", account_scope="kis_live"))
+
+    assert response.report_uuid == ingest.report_uuid
+    assert ensure.calls[0].market == "us"
+    assert ensure.calls[0].account_scope == "kis_live"
+    # Round-trip: ingestion service received market="us" + account_scope="kis_live".
+    assert ingest.calls[0].market == "us"
+    assert ingest.calls[0].account_scope == "kis_live"
+
+
+@pytest.mark.asyncio
+async def test_us_upbit_live_pair_rejected() -> None:
+    """us/upbit_live passes Pydantic literal check but is rejected by the validator."""
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    req = _make_request(market="us", account_scope="upbit_live")
     with pytest.raises(SnapshotBackedReportGeneratorError):
         await gen.generate(req)
     assert ingest.calls == []
