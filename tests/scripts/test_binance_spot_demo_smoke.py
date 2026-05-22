@@ -1,10 +1,12 @@
-"""ROB-296 — Spot Demo smoke CLI tests.
+"""ROB-296 / ROB-298 — Spot Demo smoke CLI tests.
 
 Covers:
   * Default-disabled clean exit (no env → exit 0, single log line).
   * ``--plan-only`` produces source-labeled evidence with no HTTP.
-  * ``--confirm`` refuses with the documented follow-up message.
-  * No broker/HTTP mutation in dry-run.
+  * ``--confirm`` is wired (ROB-298 Task 10) but refuses cleanly when
+    credentials are missing — no HTTP attempted.
+  * Modes are mutually exclusive.
+  * No broker/HTTP mutation in plan-only mode.
 """
 
 from __future__ import annotations
@@ -122,26 +124,53 @@ def test_plan_only_marks_over_cap_without_crashing(
     assert payload["plan"]["within_cap"] is False
 
 
-def test_confirm_refused_with_followup_pointer(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_modes_are_mutually_exclusive(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``--confirm`` is refused with a pointer to the execution-client path.
+    """``--confirm`` and ``--plan-only`` are mutually exclusive at argparse.
 
-    ROB-298 wired ``BinanceSpotDemoExecutionClient`` for confirmed
-    submission, but the smoke CLI deliberately does NOT route through
-    it — operators must use the execution client + ledger service
-    surface directly. The smoke CLI remains read-only.
+    Passing both raises ``SystemExit(2)`` with an argparse error — no
+    code path runs, so the operator cannot accidentally trigger a real
+    submit by combining flags.
     """
     _clear_env(monkeypatch)
     monkeypatch.setenv("BINANCE_SPOT_DEMO_ENABLED", "true")
     monkeypatch.setenv("BINANCE_SPOT_DEMO_API_KEY", "key")
     monkeypatch.setenv("BINANCE_SPOT_DEMO_API_SECRET", "secret")
+    with pytest.raises(SystemExit) as excinfo:
+        smoke.main(["--confirm", "--plan-only"])
+    # argparse uses 2 for argument errors.
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "not allowed with argument" in err or "mutually exclusive" in err.lower()
+
+
+def test_confirm_without_credentials_refuses_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``--confirm`` with env on but credentials missing → exit 1, no HTTP.
+
+    Verifies the credential-fail-closed path BEFORE any HTTP / DB.
+    """
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("BINANCE_SPOT_DEMO_ENABLED", "true")
+
+    import httpx
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "--confirm with missing credentials must not construct an "
+            "httpx.AsyncClient. Credential check must precede transport."
+        )
+
+    monkeypatch.setattr(httpx, "AsyncClient", _boom)
     caplog.set_level(logging.ERROR, logger="scripts.binance_spot_demo_smoke")
-    exit_code = smoke.main(["--confirm", "--plan-only"])
+    exit_code = smoke.main(["--confirm", "--symbol", "BTCUSDT"])
     assert exit_code == 1
     error_messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
     assert any(
-        "--confirm" in m or "execution client" in m.lower() or "refused" in m.lower()
+        "credentials" in m.lower() or "refused" in m.lower()
         for m in error_messages
     ), error_messages
 
