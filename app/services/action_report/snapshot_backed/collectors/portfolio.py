@@ -19,10 +19,18 @@ Policy invariants:
   primary. KIS unavailable on a ``kis_live`` request yields
   ``primary_source="none"`` with ``freshness="unavailable"`` — the report
   generator's stale gate then handles publishing.
-* ``account_scope="kis_live"`` on KR requires an explicit ``user_id`` on the
-  collector request. ``user_id`` missing → fail-closed (no implicit default).
-* Non-(kr+kis_live) combos preserve the v1 manual-primary behaviour and add
+* ``account_scope="kis_live"`` on KR or US requires an explicit ``user_id``
+  on the collector request. ``user_id`` missing → fail-closed (no implicit
+  default).
+* Non-(kis_live) combos preserve the v1 manual-primary behaviour and add
   the ``primary_source="manual"`` label only.
+
+ROB-297 — ``market="us" + account_scope="kis_live"`` is the canonical KIS
+overseas combo and takes the same KIS-live path as ``market="kr"``. The KR/US
+disambiguation lives in ``market`` per ROB-297 guardrail #2; no
+``kis_overseas_live`` alias is introduced. Toss/manual US reference quantity
+is NEVER summed into KIS-primary holdings or ``sellable_summary``
+(guardrail #3).
 
 The collector itself never calls broker mutation paths. KIS reads go through
 ``KISHomeReader`` which uses ``BaseKISClient`` for read-only account/margin
@@ -56,6 +64,15 @@ _MARKET_TO_TYPES: dict[str, tuple[MarketType, ...]] = {
     "kr": (MarketType.KR,),
     "us": (MarketType.US,),
     "crypto": (MarketType.CRYPTO,),
+}
+
+# Maps the request's ``market`` to the value used on
+# :class:`~app.schemas.invest_home.Holding.market`. The KIS reader returns a
+# mixed list of KR + US holdings on the same account fetch; the KIS-live
+# branch filters that list by the request's market.
+_REQUEST_MARKET_TO_HOLDING_MARKET: dict[str, str] = {
+    "kr": "KR",
+    "us": "US",
 }
 
 
@@ -142,10 +159,15 @@ class PortfolioSnapshotCollector:
                 )
             ]
 
-        # ROB-278 — KR + kis_live uses the new KIS live path. Other combos
-        # preserve v1 manual-primary behaviour.
-        if request.market == "kr" and request.account_scope == "kis_live":
-            return await self._collect_kr_kis_live(request, market_types, now=now)
+        # ROB-278 / ROB-297 — (kr|us) + kis_live uses the KIS live path.
+        # Other combos preserve v1 manual-primary behaviour. KR/US disambig
+        # lives in ``market`` per ROB-297 guardrail #2; no ``kis_overseas_live``
+        # alias is introduced.
+        if request.account_scope == "kis_live" and request.market in (
+            "kr",
+            "us",
+        ):
+            return await self._collect_kis_live(request, market_types, now=now)
         return await self._collect_manual_primary(request, market_types, now=now)
 
     async def _collect_manual_primary(
@@ -199,15 +221,24 @@ class PortfolioSnapshotCollector:
             )
         ]
 
-    async def _collect_kr_kis_live(
+    async def _collect_kis_live(
         self,
         request: CollectorRequest,
         market_types: tuple[MarketType, ...],
         *,
         now: dt.datetime,
     ) -> list[SnapshotCollectResult]:
+        """KIS live path shared by ``(kr|us) + kis_live``.
+
+        ROB-278 introduced this for KR; ROB-297 extended it to US. The
+        request's ``market`` selects the holding filter on the
+        :class:`KISHomeReader` result (``"KR"`` vs ``"US"``); manual/Toss
+        rows are scoped to the matching :class:`MarketType` and surface
+        only via ``reference_holdings``.
+        """
         manual_rows = await self._read_manual_rows(market_types)
         reference_holdings = [_manual_row_to_dict(r) for r in manual_rows]
+        holding_market_filter = _REQUEST_MARKET_TO_HOLDING_MARKET[request.market]
 
         if request.user_id is None:
             # Lockdown — kis_live requires explicit user_id; manual is NOT
@@ -259,7 +290,9 @@ class PortfolioSnapshotCollector:
             logger.warning("KIS read-only fetch failed: %s", exc, exc_info=True)
             fetch_errors.append(f"{type(exc).__name__}: {exc}")
 
-        # Map KIS holdings filtered to the requested market.
+        # Map KIS holdings filtered to the requested market. KR/US live on
+        # the same KIS account fetch; the per-market filter keeps the
+        # payload scoped to ``request.market``.
         kis_holdings_dicts: list[dict[str, Any]] = []
         cash_payload: dict[str, Any] | None = None
         buying_power_payload: dict[str, Any] | None = None
@@ -268,14 +301,21 @@ class PortfolioSnapshotCollector:
         if kis_result is None:
             kis_fetch_status = "failed"
         else:
-            kr_holdings = [h for h in (kis_result.holdings or []) if h.market == "KR"]
-            kis_holdings_dicts = [_kis_holding_to_dict(h) for h in kr_holdings]
+            market_holdings = [
+                h
+                for h in (kis_result.holdings or [])
+                if h.market == holding_market_filter
+            ]
+            kis_holdings_dicts = [_kis_holding_to_dict(h) for h in market_holdings]
             if kis_result.warning is not None:
                 fetch_warnings.append(
                     f"{kis_result.warning.source}: {kis_result.warning.message}"
                 )
             account = next(iter(kis_result.accounts or []), None)
             if account is not None:
+                # Surface both currencies as-is; consumers pick the one that
+                # matches ``market``. The KIS account fetch returns USD for
+                # overseas accounts and KRW for domestic; either may be None.
                 cash_payload = {
                     "krw": account.cashBalances.krw,
                     "usd": account.cashBalances.usd,
@@ -286,11 +326,11 @@ class PortfolioSnapshotCollector:
                 }
             sellable_count = sum(
                 1
-                for h in kr_holdings
+                for h in market_holdings
                 if h.sellableQuantity is not None and h.sellableQuantity > 0
             )
             pending_sell_count = sum(
-                1 for h in kr_holdings if (h.pendingSellQuantity or 0) > 0
+                1 for h in market_holdings if (h.pendingSellQuantity or 0) > 0
             )
             sellable_summary = {
                 "sellable_count": sellable_count,

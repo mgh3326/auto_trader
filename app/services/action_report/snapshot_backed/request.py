@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.schemas.investment_reports import IngestReportItem
 from app.schemas.investment_snapshots import SnapshotRequestedBy
 
-GeneratorMarketLiteral = Literal["kr", "crypto"]
+GeneratorMarketLiteral = Literal["kr", "us", "crypto"]
 GeneratorAccountScopeLiteral = Literal["kis_live", "upbit_live"]
 GeneratorStatusLiteral = Literal["draft", "published"]
 
@@ -19,9 +19,15 @@ GeneratorStatusLiteral = Literal["draft", "published"]
 class ReportGenerationRequest(BaseModel):
     """Request envelope for :class:`SnapshotBackedReportGenerator.generate`.
 
-    Only ``kr / kis_live`` and ``crypto / upbit_live`` are supported in this
-    PR. The generator validates the pairing at runtime; expanding to US is
-    intentionally a follow-up.
+    Supported canonical pairs (enforced by the generator at runtime):
+
+    * ``kr / kis_live`` — KIS domestic stock account.
+    * ``us / kis_live`` — KIS overseas (US) stock account (ROB-297).
+    * ``crypto / upbit_live`` — Upbit spot.
+
+    ``account_scope`` stays a single canonical literal — KR vs US is
+    disambiguated by ``market`` per ROB-297 guardrail #2. No
+    ``kis_overseas_live`` alias is introduced.
     """
 
     model_config = ConfigDict(extra="forbid")

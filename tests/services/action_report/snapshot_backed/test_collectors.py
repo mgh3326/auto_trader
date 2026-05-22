@@ -63,11 +63,11 @@ def _request(market: str = "kr", account_scope: str = "kis_live") -> CollectorRe
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_portfolio_collector_returns_holdings(monkeypatch: pytest.MonkeyPatch):
-    """v1 manual-primary path remains for non-(kr+kis_live) combos.
+    """v1 manual-primary path remains for non-(kis_live) combos.
 
-    ROB-278 reserved the kr+kis_live combo for the new KIS live path
-    (see test_portfolio_v2_*). Other combos keep the v1 contract and
-    additionally surface the ``primary_source="manual"`` label.
+    ROB-278 reserved kr+kis_live and ROB-297 reserved us+kis_live for the
+    KIS live path (see test_portfolio_v2_*). Other combos keep the v1
+    contract and additionally surface ``primary_source="manual"``.
     """
     from app.models.manual_holdings import MarketType
 
@@ -88,7 +88,11 @@ async def test_portfolio_collector_returns_holdings(monkeypatch: pytest.MonkeyPa
     session.execute = AsyncMock(return_value=result)
 
     collector = PortfolioSnapshotCollector(session)
-    results = await collector.collect(_request(market="us", account_scope="kis_live"))
+    # us + alpaca_paper is a non-canonical (collector-only) combo that still
+    # falls back to manual_primary — exactly the contract this test asserts.
+    results = await collector.collect(
+        _request(market="us", account_scope="alpaca_paper")
+    )
     assert len(results) == 1
     assert results[0].snapshot_kind == "portfolio"
     assert results[0].source_kind == "auto_trader_mcp"
@@ -107,7 +111,9 @@ async def test_portfolio_collector_empty_holdings_returns_partial():
     session.execute = AsyncMock(return_value=result)
 
     collector = PortfolioSnapshotCollector(session)
-    results = await collector.collect(_request(market="us", account_scope="kis_live"))
+    results = await collector.collect(
+        _request(market="us", account_scope="alpaca_paper")
+    )
     assert len(results) == 1
     assert results[0].snapshot_kind == "portfolio"
     assert results[0].freshness_status == "partial"
@@ -363,6 +369,253 @@ async def test_portfolio_v2_crypto_upbit_live_preserves_v1_manual_primary():
     # New label is "manual" for non-KIS combos so payload always says where data came from.
     assert payload.get("primary_source") == "manual"
     reader.fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Portfolio v2 — ROB-297 KIS live path for US + kis_live.
+#
+# Guardrails (ROB-297 pre-implementation comment):
+#   - market="us" + account_scope="kis_live" is canonical KIS overseas.
+#   - Toss/manual US holdings stay reference-only — never summed into the
+#     KIS-primary ``holdings`` or ``sellable_summary``.
+#   - KIS unavailable → primary_source="none"; manual NEVER promoted.
+# ---------------------------------------------------------------------------
+def _us_kis_request(user_id: int | None = None) -> CollectorRequest:
+    return CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=None,
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=user_id,
+    )
+
+
+def _manual_us_session(rows: list[Any] | None = None) -> MagicMock:
+    """Session whose execute() returns Toss-style manual US holdings.
+
+    Default row is intentionally a different quantity from the KIS holding
+    fixture so any accidental KIS+manual sum surfaces as a test failure.
+    """
+    from app.models.manual_holdings import MarketType
+
+    class _ManualUSRow:
+        def __init__(
+            self,
+            ticker: str = "AAPL",
+            quantity: float = 5.0,
+            avg_price: float = 140.0,
+        ) -> None:
+            self.ticker = ticker
+            self.market_type = MarketType.US
+            self.quantity = quantity
+            self.avg_price = avg_price
+            self.display_name = ticker
+            self.updated_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
+
+    rows = rows if rows is not None else [_ManualUSRow()]
+    session = MagicMock()
+    scalars = MagicMock(all=MagicMock(return_value=rows))
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
+    )
+    return session
+
+
+def _kis_reader_with_us_holdings() -> MagicMock:
+    """KISHomeReader stub returning one US holding + USD cash.
+
+    The KIS quantity (10.0) is deliberately different from the
+    manual/Toss row default (5.0) so the Toss-no-sum invariant is
+    observable in assertions.
+    """
+    from app.schemas.invest_home import Account, CashAmounts, Holding
+    from app.services.invest_home_service import _SourceFetchResult
+
+    holding_us = Holding(
+        holdingId="kis:us:AAPL",
+        accountId="kis_overseas",
+        source="kis",
+        accountKind="live",
+        symbol="AAPL",
+        market="US",
+        assetType="equity",
+        assetCategory="us_stock",
+        displayName="Apple",
+        quantity=10.0,
+        averageCost=150.0,
+        costBasis=1_500.0,
+        currency="USD",
+        valueNative=1_700.0,
+        valueKrw=2_300_000.0,
+        pnlKrw=270_000.0,
+        pnlRate=0.1333,
+        sellableQuantity=8.0,
+        pendingSellQuantity=2.0,
+        referenceQuantity=0.0,
+    )
+    # KIS also exposes any KR-side holdings on the same account fetch;
+    # include one to verify the US branch filters by ``h.market == "US"``
+    # and does not mix domestic holdings into the US payload.
+    holding_kr_noise = Holding(
+        holdingId="kis:kr:005930",
+        accountId="kis_overseas",
+        source="kis",
+        accountKind="live",
+        symbol="005930",
+        market="KR",
+        assetType="equity",
+        assetCategory="kr_stock",
+        displayName="삼성전자",
+        quantity=99.0,
+        averageCost=70_000,
+        costBasis=6_930_000,
+        currency="KRW",
+        valueNative=7_000_000,
+        valueKrw=7_000_000,
+        pnlKrw=70_000,
+        pnlRate=0.01,
+        sellableQuantity=99.0,
+        pendingSellQuantity=0.0,
+        referenceQuantity=0.0,
+    )
+    account = Account(
+        accountId="kis_overseas",
+        displayName="KIS 해외주식",
+        source="kis",
+        accountKind="live",
+        includedInHome=True,
+        valueKrw=2_300_000.0,
+        costBasisKrw=2_000_000.0,
+        pnlKrw=300_000.0,
+        pnlRate=0.15,
+        cashBalances=CashAmounts(krw=None, usd=12_500.0),
+        buyingPower=CashAmounts(krw=None, usd=10_000.0),
+    )
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        return_value=_SourceFetchResult(
+            accounts=[account],
+            holdings=[holding_us, holding_kr_noise],
+            warning=None,
+        )
+    )
+    return reader
+
+
+def _kis_reader_us_failed() -> MagicMock:
+    from app.schemas.invest_home import InvestHomeWarning
+    from app.services.invest_home_service import _SourceFetchResult
+
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        return_value=_SourceFetchResult(
+            accounts=[],
+            holdings=[],
+            warning=InvestHomeWarning(source="kis", message="overseas auth refused"),
+        )
+    )
+    return reader
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_us_kis_live_missing_user_id_is_fail_closed():
+    """ROB-297 — no user_id on us+kis_live → unavailable, manual not promoted."""
+    session = _manual_us_session()
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        side_effect=AssertionError("KIS must not be called without user_id")
+    )
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_us_kis_request(user_id=None))
+    assert len(results) == 1
+    assert results[0].snapshot_kind == "portfolio"
+    assert results[0].freshness_status == "unavailable"
+    assert "user_id" in results[0].errors_json["reason"]
+    payload = results[0].payload_json
+    assert payload["primary_source"] == "none"
+    assert payload["holdings"] == []
+    # Manual US row stays visible as reference (never promoted).
+    assert len(payload["reference_holdings"]) == 1
+    assert payload["reference_holdings"][0]["source"] == "manual"
+    reader.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_us_kis_live_success_populates_kis_primary_with_toss_reference():
+    """ROB-297 — KIS US success: primary_source=kis, USD cash, Toss in reference.
+
+    Toss-no-sum invariant (ROB-297 guardrail #3): manual US quantity (5)
+    must NEVER be summed into KIS US holding (10) or sellable_summary.
+    """
+    session = _manual_us_session()
+    reader = _kis_reader_with_us_holdings()
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_us_kis_request(user_id=42))
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "fresh"
+    # KIS-primary holdings filtered to market="US"; KR noise stays out.
+    assert payload["primary_source"] == "kis"
+    assert payload["count"] == 1
+    assert payload["holdings"][0]["ticker"] == "AAPL"
+    assert payload["holdings"][0]["source"] == "kis"
+    assert payload["holdings"][0]["quantity"] == 10.0  # NOT 10+5 (Toss-no-sum).
+    assert payload["holdings"][0]["sellable_quantity"] == 8.0
+    assert payload["holdings"][0]["pending_sell_quantity"] == 2.0
+    # USD cash + buying_power surfaced for US.
+    assert payload["cash"]["usd"] == 12_500.0
+    assert payload["buying_power"]["usd"] == 10_000.0
+    # Sellable summary counts KIS holdings only — NOT Toss quantity.
+    assert payload["sellable_summary"]["sellable_count"] == 1
+    # Toss/manual US row appears in reference_holdings (untouched, source="manual").
+    assert len(payload["reference_holdings"]) == 1
+    assert payload["reference_holdings"][0]["ticker"] == "AAPL"
+    assert payload["reference_holdings"][0]["quantity"] == 5.0
+    assert payload["reference_holdings"][0]["source"] == "manual"
+    # Provenance.
+    assert payload["provenance"]["kis_fetch_status"] == "ok"
+    assert payload["provenance"]["account_scope"] == "kis_live"
+    reader.fetch.assert_awaited_once_with(user_id=42)
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_us_kis_live_failure_does_not_promote_manual():
+    """ROB-297 — KIS US failure: primary_source=none, manual stays reference."""
+    session = _manual_us_session()
+    reader = _kis_reader_us_failed()
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_us_kis_request(user_id=42))
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "unavailable"
+    assert payload["primary_source"] == "none"
+    assert payload["holdings"] == []
+    assert payload["count"] == 0
+    # Manual remains visible as reference, never promoted to primary.
+    assert len(payload["reference_holdings"]) == 1
+    assert payload["reference_holdings"][0]["source"] == "manual"
+    # Provenance carries the failure reason.
+    assert payload["provenance"]["kis_fetch_status"] == "failed"
+    assert "kis" in str(payload["provenance"]["warnings"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_us_kis_live_exception_is_fail_closed():
+    """ROB-297 — KISHomeReader raising on US is treated like 'failed', not crash."""
+    session = _manual_us_session()
+    reader = MagicMock()
+    reader.fetch = AsyncMock(side_effect=RuntimeError("overseas endpoint down"))
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_us_kis_request(user_id=42))
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "unavailable"
+    assert payload["primary_source"] == "none"
+    assert payload["holdings"] == []
+    # Manual US row remains visible.
+    assert len(payload["reference_holdings"]) == 1
+    assert payload["provenance"]["kis_fetch_status"] == "failed"
 
 
 # ---------------------------------------------------------------------------
