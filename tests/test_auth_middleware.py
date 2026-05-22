@@ -48,9 +48,9 @@ async def nested_api_data():
     return {"data": "nested-ok"}
 
 
-@app.get("/portfolio/", response_class=HTMLResponse)
-async def portfolio_page(request: Request):
-    return "Portfolio Page"
+@app.get("/secure-page/", response_class=HTMLResponse)
+async def secure_page(request: Request):
+    return "Secure Page"
 
 
 @app.get("/manual-holdings/", response_class=HTMLResponse)
@@ -69,7 +69,7 @@ async def legacy_api_placeholder():
         status_code=410,
         content={
             "detail": "deprecated",
-            "replacement_url": "/portfolio/",
+            "replacement_url": "/invest/",
             "deprecated_at": "2026-02-20T00:00:00+09:00",
         },
     )
@@ -81,7 +81,7 @@ async def legacy_dashboard_api_placeholder():
         status_code=410,
         content={
             "detail": "deprecated",
-            "replacement_url": "/portfolio/",
+            "replacement_url": "/invest/",
             "deprecated_at": "2026-02-20T00:00:00+09:00",
         },
     )
@@ -199,7 +199,7 @@ def test_legacy_deprecated_api_path_bypasses_auth_401(client, mock_session_local
     )
     assert response.status_code == 410
     payload = response.json()
-    assert payload["replacement_url"] == "/portfolio/"
+    assert payload["replacement_url"] == "/invest/"
 
 
 def test_dashboard_deprecated_api_path_bypasses_auth_401(client, mock_session_local):
@@ -210,7 +210,7 @@ def test_dashboard_deprecated_api_path_bypasses_auth_401(client, mock_session_lo
     )
     assert response.status_code == 410
     payload = response.json()
-    assert payload["replacement_url"] == "/portfolio/"
+    assert payload["replacement_url"] == "/invest/"
 
 
 def test_protected_route_redirects_cleanly_with_sentry_fastapi_enabled(monkeypatch):
@@ -245,19 +245,19 @@ def test_protected_route_redirects_cleanly_with_sentry_fastapi_enabled(monkeypat
 
 def test_redirect_next_uses_relative_path(client, mock_session_local):
     """AuthMiddleware must generate relative-path next, not absolute URL."""
-    response = client.get("/portfolio/", follow_redirects=False)
+    response = client.get("/secure-page/", follow_redirects=False)
     assert response.status_code == 303
     location = response.headers["location"]
-    # next must be a relative path, not http://testserver/portfolio/
-    assert location == "/web-auth/login?next=/portfolio/"
+    # next must be a relative path, not http://testserver/secure-page/
+    assert location == "/web-auth/login?next=/secure-page/"
 
 
 def test_redirect_next_preserves_query_string(client, mock_session_local):
     """Query string in original URL must survive the redirect."""
-    response = client.get("/portfolio/?tab=crypto&sort=asc", follow_redirects=False)
+    response = client.get("/secure-page/?tab=crypto&sort=asc", follow_redirects=False)
     assert response.status_code == 303
     location = response.headers["location"]
-    assert location == "/web-auth/login?next=/portfolio/?tab=crypto&sort=asc"
+    assert location == "/web-auth/login?next=/secure-page/?tab=crypto&sort=asc"
 
 
 def test_redirect_next_no_trailing_question_mark(client, mock_session_local):

@@ -35,7 +35,7 @@ def test_legacy_page_prefixes_return_410_html(client: TestClient, path: str) -> 
     assert response.status_code == 410
     assert "text/html" in response.headers.get("content-type", "")
     assert "410 Gone" in response.text
-    assert "/portfolio/" in response.text
+    assert "/invest/" in response.text
 
 
 @pytest.mark.parametrize(
@@ -59,7 +59,7 @@ def test_legacy_api_prefixes_return_410_json(client: TestClient, path: str) -> N
 
     payload = response.json()
     assert "detail" in payload
-    assert payload["replacement_url"] == "/portfolio/"
+    assert payload["replacement_url"] == "/invest/"
     assert payload["deprecated_at"]
 
 
@@ -72,7 +72,7 @@ def test_legacy_api_post_also_returns_410_json(client: TestClient) -> None:
 
     assert response.status_code == 410
     payload = response.json()
-    assert payload["replacement_url"] == "/portfolio/"
+    assert payload["replacement_url"] == "/invest/"
 
 
 @pytest.mark.parametrize(

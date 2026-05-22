@@ -4,7 +4,7 @@ Combines:
   - MergedPortfolioService (KIS + manual holdings, KR + US)
   - Upbit balances via existing helpers (CRYPTO)
   - ResearchPipelineService latest summary (decision/verdict/levels)
-  - PortfolioDashboardService journal snapshot (journal_status)
+  - TradeJournal presence check (journal_status)
 
 NEVER mutates broker state. NEVER writes order-intent / watch / trade rows.
 """
@@ -12,9 +12,11 @@ NEVER mutates broker state. NEVER writes order-intent / watch / trade rows.
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.research_pipeline import ResearchSession, ResearchSummary
+from app.models.trade_journal import JournalStatus, TradeJournal
 from app.schemas.portfolio_actions import (
     PortfolioActionCandidate,
     PortfolioActionsResponse,
@@ -179,20 +181,18 @@ class PortfolioActionService:
         }
 
     async def _load_journal_status(self, symbol: str) -> str:
-        try:
-            from app.services.portfolio_dashboard_service import (
-                PortfolioDashboardService,
+        stmt = (
+            select(TradeJournal.id)
+            .where(
+                TradeJournal.symbol == symbol,
+                TradeJournal.status.in_(
+                    [JournalStatus.draft, JournalStatus.active]
+                ),
             )
-        except ImportError:
-            return "missing"
-        try:
-            service = PortfolioDashboardService(self.db)
-            snapshot = await service.get_latest_journal_snapshot(symbol)
-        except Exception:
-            return "missing"
-        if snapshot is None:
-            return "missing"
-        return "present"
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return "present" if result.scalar_one_or_none() is not None else "missing"
 
 
 def _holding_quantity(value: Any) -> float:
