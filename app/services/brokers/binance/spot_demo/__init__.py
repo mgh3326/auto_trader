@@ -1,16 +1,16 @@
 """ROB-296 — Binance Spot Demo Mode adapter (signed, read-only preflight).
 
-This sub-package adds a parallel Spot Demo lane alongside the existing
-Spot Testnet lane (``app/services/brokers/binance/testnet/``). The two
-sub-packages share no code: env namespace, host allowlist, transport
-factory, exceptions, and signing chokepoint are all duplicated to
-preserve environment-specific fail-closed isolation.
+This sub-package is the canonical Spot mock-trading backend after
+ROB-298. The prior Spot Testnet lane (``app/services/brokers/binance/testnet/``)
+has been removed. Spot Demo's env namespace, host allowlist, transport
+factory, exceptions, and signing chokepoint are environment-specific by
+design to preserve fail-closed isolation.
 
 Default behavior is fail-closed:
   * Missing ``BINANCE_SPOT_DEMO_ENABLED`` → ``BinanceSpotDemoDisabled``.
   * Missing credentials → ``BinanceSpotDemoMissingCredentials``.
   * Base URL outside ``SPOT_DEMO_HOSTS`` → ``BinanceLiveHostBlocked``.
-  * Per-request host in ``TESTNET_HOSTS`` or ``PUBLIC_HOSTS`` →
+  * Per-request host in ``_DEPRECATED_TESTNET_HOSTS`` or ``PUBLIC_HOSTS`` →
     ``BinanceSpotDemoCrossAllowlistViolation``.
 
 This PR (ROB-296) implemented:

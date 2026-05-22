@@ -27,7 +27,7 @@ from binance_common.utils import hmac_hashing
 
 # Binance documents the default recvWindow as 5000 ms; allowed up to 60000.
 # We pin a conservative default at the chokepoint so call-sites don't need
-# to remember to pass it. Matches the testnet sibling's default.
+# to remember to pass it.
 BINANCE_SPOT_DEMO_RECV_WINDOW_MS: Final[int] = 5000
 
 

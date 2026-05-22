@@ -34,10 +34,10 @@ class BinanceSpotDemoMissingCredentials(BinanceAdapterError):
 
 
 class BinanceSpotDemoCrossAllowlistViolation(BinanceAdapterError):
-    """Raised when the Spot Demo transport sees a host in TESTNET_HOSTS or PUBLIC_HOSTS.
+    """Raised when the Spot Demo transport sees a host in _DEPRECATED_TESTNET_HOSTS or PUBLIC_HOSTS.
 
     Cross-allowlist guard: a signed Spot Demo request that lands on a
-    testnet host (Spot Testnet) or a live host (mainnet Binance) means a
+    deprecated testnet host or a live host (mainnet Binance) means a
     misconfigured deploy is one step from leaking credentials to the
     wrong environment. Fail hard at the request-event hook, no silent
     fallback.

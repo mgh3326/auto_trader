@@ -164,8 +164,9 @@ class BinanceSpotDemoExecutionClient:
           * ``BINANCE_SPOT_DEMO_BASE_URL`` (optional) MUST be a Spot Demo
             host if set; the transport factory enforces.
 
-        Note: ``BINANCE_TESTNET_*`` env vars MUST NOT activate this path.
-        They are read by the testnet adapter only.
+        Note: ``BINANCE_TESTNET_*`` env vars are ignored. The testnet
+        adapter was retired in ROB-298 and is not re-enabled by setting
+        those vars.
         """
         if not _truthy(os.environ.get("BINANCE_SPOT_DEMO_ENABLED")):
             raise BinanceSpotDemoDisabled(
