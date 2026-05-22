@@ -1,9 +1,12 @@
-"""ROB-296 — Cross-environment leakage tests.
+"""ROB-296 — Cross-environment leakage tests (Spot Demo side).
 
-Per Hermes review §4: explicitly prove that
-  * the existing testnet adapter rejects ``demo-api.binance.com``;
-  * the new Spot Demo adapter rejects ``testnet.binance.vision``;
-  * both adapters reject live/prod Binance hosts.
+Per Hermes review §4: explicitly prove that the Spot Demo adapter rejects
+``testnet.binance.vision`` and live/prod Binance hosts.
+
+The Spot Testnet runtime adapter was removed in ROB-298, so the
+testnet-side rejection tests were dropped. The deprecated testnet hosts
+remain inline in Spot Demo's host_allowlist as a defense-in-depth
+deny-list, which the surviving tests below exercise.
 """
 
 from __future__ import annotations
@@ -21,56 +24,14 @@ from app.services.brokers.binance.spot_demo.transport import (
 from app.services.brokers.binance.spot_demo.transport import (
     build_spot_demo_client,
 )
-from app.services.brokers.binance.testnet.transport import (
-    _on_request as testnet_on_request,
-)
-from app.services.brokers.binance.testnet.transport import (
-    build_testnet_client,
-)
 
 # -----------------------------------------------------------------------------
-# Testnet adapter must NOT accept Spot Demo or live hosts
-# -----------------------------------------------------------------------------
-
-
-def test_testnet_factory_rejects_spot_demo_base_url() -> None:
-    """Spot Testnet adapter must reject the Spot Demo base URL."""
-    with pytest.raises(BinanceLiveHostBlocked):
-        build_testnet_client(
-            api_key="testkey",
-            api_secret="testsecret",
-            base_url="https://demo-api.binance.com",
-        )
-
-
-def test_testnet_factory_rejects_live_base_url() -> None:
-    """Spot Testnet adapter must reject the live mainnet base URL."""
-    # The testnet transport raises BinanceLiveHostBlocked for any non-testnet
-    # host; PUBLIC_HOSTS membership escalates the message but the exception
-    # class hierarchy still includes BinanceLiveHostBlocked.
-    with pytest.raises(BinanceLiveHostBlocked):
-        build_testnet_client(
-            api_key="testkey",
-            api_secret="testsecret",
-            base_url="https://api.binance.com",
-        )
-
-
-@pytest.mark.asyncio
-async def test_testnet_request_hook_rejects_spot_demo_host() -> None:
-    """Per-request testnet hook refuses a Spot Demo host."""
-    request = httpx.Request("GET", "https://demo-api.binance.com/api/v3/account")
-    with pytest.raises(BinanceLiveHostBlocked):
-        await testnet_on_request(request)
-
-
-# -----------------------------------------------------------------------------
-# Spot Demo adapter must NOT accept testnet or live hosts
+# Spot Demo adapter must NOT accept (deprecated) testnet or live hosts
 # -----------------------------------------------------------------------------
 
 
 def test_spot_demo_factory_rejects_testnet_base_url() -> None:
-    """Spot Demo adapter must reject the Spot Testnet base URL."""
+    """Spot Demo adapter must reject the (deprecated) Spot Testnet base URL."""
     with pytest.raises(BinanceSpotDemoCrossAllowlistViolation):
         build_spot_demo_client(
             api_key="testkey",
@@ -91,7 +52,7 @@ def test_spot_demo_factory_rejects_live_base_url() -> None:
 
 @pytest.mark.asyncio
 async def test_spot_demo_request_hook_rejects_testnet_host() -> None:
-    """Per-request Spot Demo hook refuses a Spot Testnet host."""
+    """Per-request Spot Demo hook refuses a (deprecated) Spot Testnet host."""
     request = httpx.Request("GET", "https://testnet.binance.vision/api/v3/account")
     with pytest.raises(BinanceSpotDemoCrossAllowlistViolation):
         await spot_demo_on_request(request)

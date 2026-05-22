@@ -69,8 +69,11 @@ def test_sign_request_params_rejects_empty_secret() -> None:
         _sign_request_params(params={"symbol": "BTCUSDT"}, api_secret="")
 
 
-def test_recv_window_matches_testnet_default() -> None:
-    """Spot Demo recv_window matches the testnet default — Binance convention."""
-    from app.services.brokers.binance.testnet.signing import BINANCE_RECV_WINDOW_MS
+def test_recv_window_matches_binance_default() -> None:
+    """Spot Demo recv_window matches the documented Binance default (5000ms).
 
-    assert BINANCE_SPOT_DEMO_RECV_WINDOW_MS == BINANCE_RECV_WINDOW_MS
+    Previously this asserted equality with ``testnet.signing.BINANCE_RECV_WINDOW_MS``;
+    the testnet adapter was removed in ROB-298, so we pin the value
+    directly to the Binance-documented default.
+    """
+    assert BINANCE_SPOT_DEMO_RECV_WINDOW_MS == 5000

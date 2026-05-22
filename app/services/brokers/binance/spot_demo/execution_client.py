@@ -1,10 +1,10 @@
 """ROB-298 — Binance Spot Demo execution backend.
 
-Mutation-capable signed adapter for ``demo-api.binance.com``. Parallels
-``binance.testnet.execution_client.BinanceTestnetExecutionClient`` but
-uses the Spot Demo env namespace, host allowlist, exception hierarchy,
-and HMAC chokepoint — all environment-specific by design (see
-``spot_demo/__init__.py`` for the duplication rationale).
+Mutation-capable signed adapter for ``demo-api.binance.com``. Self-
+contained — the prior ``binance.testnet.execution_client`` sibling was
+removed in ROB-298. Uses the Spot Demo env namespace, host allowlist,
+exception hierarchy, and HMAC chokepoint, all environment-specific by
+design (see ``spot_demo/__init__.py`` for the rationale).
 
 Hard invariants enforced here:
 

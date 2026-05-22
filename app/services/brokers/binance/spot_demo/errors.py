@@ -1,16 +1,16 @@
 """ROB-296 — Binance Spot Demo Mode adapter error vocabulary.
 
-Mirrors the testnet sibling module (`binance.testnet.errors`) but keeps
-exception types **distinct** so a caller cannot accidentally treat a Spot
-Demo failure as a testnet failure (or vice versa) when catching by name.
+Self-contained exception hierarchy (the prior ``binance.testnet.errors``
+sibling was removed in ROB-298). Exception types remain Spot Demo
+specific so a caller cannot accidentally conflate Spot Demo failures
+with any future signed-lane failures when catching by name.
 
-Both hierarchies share `BinanceAdapterError` so call-sites that catch the
+Exceptions share `BinanceAdapterError` so call-sites that catch the
 common base still work.
 
-Constraint per ROB-296: do not reuse `BINANCE_TESTNET_*` config or
-`BinanceTestnetDisabled` for Spot Demo. The "Disabled" / "MissingCredentials"
-duplication below is intentional environment isolation, not duplication
-to be refactored away.
+Constraint per ROB-296: the "Disabled" / "MissingCredentials" naming is
+intentional environment isolation — keep it Spot Demo specific even when
+adding future signed lanes.
 """
 
 from __future__ import annotations

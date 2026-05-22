@@ -24,6 +24,17 @@ SPOT_DEMO_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# ROB-298: Binance Spot Testnet has been retired as an active trading
+# backend. We keep these hosts as a defense-in-depth deny-list so a
+# misconfigured BINANCE_SPOT_DEMO_BASE_URL pointing at testnet still
+# fails closed at the transport layer instead of dispatching there.
+_DEPRECATED_TESTNET_HOSTS: frozenset[str] = frozenset(
+    {
+        "testnet.binance.vision",
+        "stream.testnet.binance.vision",
+    }
+)
+
 
 def assert_spot_demo_host(host: str) -> None:
     """Raise ``BinanceLiveHostBlocked`` if ``host`` is not in ``SPOT_DEMO_HOSTS``.

@@ -33,11 +33,17 @@ def test_no_live_host_url_in_spot_demo_package() -> None:
     """No literal live-Binance host appears in ``binance/spot_demo/`` source.
 
     The Spot Demo signed adapter must never reference ``api.binance.com``
-    or ``fapi.binance.com``. The Spot Testnet host
-    ``testnet.binance.vision`` and the live Futures host
-    ``demo-fapi.binance.com`` (ROB-291 scope) must also not appear as
-    runtime literals — only inside comment-only lines that document the
-    invariant.
+    or ``fapi.binance.com``. The live Futures host ``demo-fapi.binance.com``
+    (ROB-291 scope) must also not appear as a runtime literal — only inside
+    comment-only lines that document the invariant.
+
+    ROB-298 exception: the deprecated Spot Testnet hosts
+    ``testnet.binance.vision`` and ``stream.testnet.binance.vision`` are
+    permitted ONLY inside ``host_allowlist.py`` under the
+    ``_DEPRECATED_TESTNET_HOSTS`` deny-list. The Spot Testnet runtime
+    adapter was removed in ROB-298; the deny-list keeps Spot Demo refusing
+    those hosts at the transport layer. The audit pins the literal to
+    that one file to prevent it from spreading to other Spot Demo modules.
     """
     repo_root = _repo_root()
     pkg = repo_root / "app" / "services" / "brokers" / "binance" / "spot_demo"
@@ -51,8 +57,13 @@ def test_no_live_host_url_in_spot_demo_package() -> None:
     forbidden_patterns = (
         re.compile(r"(?<![-A-Za-z0-9])api\.binance\.com"),
         re.compile(r"(?<![-A-Za-z0-9])fapi\.binance\.com"),
-        re.compile(r"(?<![-A-Za-z0-9])testnet\.binance\.vision"),
     )
+    # ROB-298: testnet host literals are permitted ONLY in host_allowlist.py
+    # under the _DEPRECATED_TESTNET_HOSTS deny-list. Anywhere else is a leak.
+    deprecated_testnet_pattern = re.compile(
+        r"(?<![-A-Za-z0-9])(?:stream\.)?testnet\.binance\.vision"
+    )
+    allowed_testnet_literal_file = pkg / "host_allowlist.py"
     offenders: list[tuple[pathlib.Path, int, str]] = []
     for py_file in pkg.rglob("*.py"):
         for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
@@ -63,11 +74,17 @@ def test_no_live_host_url_in_spot_demo_package() -> None:
                 if pattern.search(line):
                     offenders.append((py_file, lineno, line.strip()))
                     break
+            if (
+                deprecated_testnet_pattern.search(line)
+                and py_file != allowed_testnet_literal_file
+            ):
+                offenders.append((py_file, lineno, line.strip()))
     assert not offenders, (
         "Forbidden host literal(s) found inside spot_demo package: "
         f"{offenders}. ROB-296 invariant: the Spot Demo adapter must "
-        "only reference demo-api.binance.com. If a docstring needs to "
-        "mention another host for contrast, place it in a comment-only "
+        "only reference demo-api.binance.com. Deprecated testnet hosts "
+        "are permitted only in host_allowlist.py. If a docstring needs "
+        "to mention another host for contrast, place it in a comment-only "
         "line or split the words."
     )
 
