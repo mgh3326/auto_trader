@@ -1,0 +1,110 @@
+{
+  "_comment": "ROB-287 Phase C — sample Hermes-produced stage-artifacts ingest payload. The {{run_uuid}} / {{snapshot_bundle_uuid}} placeholders are substituted by the round-trip smoke test/script at runtime.",
+  "run_envelope": {
+    "run_uuid": "{{run_uuid}}",
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "market": "kr",
+    "market_session": "regular",
+    "account_scope": "kis_live",
+    "policy_version": "intraday_action_report_v1",
+    "generator_version": "hermes-stage-artifacts.v1",
+    "hermes_run_id": "hermes-smoke-001"
+  },
+  "artifacts": [
+    {
+      "stage_type": "market",
+      "verdict": "bull",
+      "confidence": 62,
+      "summary": "KOSPI +0.78%, breadth net-positive; risk-on bias on KRW pairs.",
+      "key_points": [
+        "KOSPI 2,540 (+0.78%)",
+        "adv/dec 612/238",
+        "foreign net-buy ₩280B"
+      ],
+      "buy_evidence": [
+        "KOSPI 5d MA reclaimed",
+        "foreign net-buy 3rd consecutive session"
+      ],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-kr-market-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "news",
+      "verdict": "neutral",
+      "confidence": 45,
+      "summary": "Mixed news flow; no dominant catalyst.",
+      "key_points": [
+        "Samsung HBM3e shipment update — modest positive",
+        "BoK rate decision unchanged (consensus)"
+      ],
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-kr-news-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "portfolio_journal",
+      "verdict": "neutral",
+      "confidence": 50,
+      "summary": "Buying power 8% NAV; one open thesis (005930).",
+      "key_points": [
+        "NAV ₩50M, BP ₩4M",
+        "open thesis: 005930 long, +2.3% unrealized"
+      ],
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [
+        "Concentration: 70% NAV in single name"
+      ],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-kr-portfolio-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "bull_reducer",
+      "verdict": "bull",
+      "confidence": 58,
+      "summary": "Market regime + news mild positive; no single catalyst.",
+      "key_points": [
+        "Regime: risk-on",
+        "Foreign flow constructive"
+      ],
+      "buy_evidence": [
+        "KOSPI breadth",
+        "Foreign net-buy streak"
+      ],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-bull-reducer-v1",
+      "prompt_version": "v1"
+    },
+    {
+      "stage_type": "risk_review",
+      "verdict": "neutral",
+      "confidence": 40,
+      "summary": "Concentration risk overrides modest bull case; recommend hold-and-trim.",
+      "key_points": [
+        "Concentration: 70% single name"
+      ],
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [
+        "Single-name exposure breach (>50% NAV)"
+      ],
+      "missing_data": [],
+      "cited_snapshots": [],
+      "model_name": "hermes-risk-review-v1",
+      "prompt_version": "v1"
+    }
+  ]
+}

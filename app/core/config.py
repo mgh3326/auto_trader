@@ -434,6 +434,22 @@ class Settings(BaseSettings):
     RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS: int = 24
     RESEARCH_REPORTS_INGEST_COMMIT_ENABLED: bool = False
 
+    # ROB-287 — Hermes-initiated HTTP ingest authentication. Mirror of the
+    # research-reports / news-ingestor token pattern: a single shared secret
+    # gates the entire ``/trading/api/investment-reports/hermes/*`` family.
+    # Required by the AuthMiddleware token branch; if unset, all four HTTP
+    # endpoints respond ``403 "token not configured"`` regardless of body.
+    HERMES_INGEST_TOKEN: str = ""
+    HERMES_INGEST_TOKEN_HEADER: str = "X-Hermes-Ingest-Token"
+    # ROB-287 Phase B — operational activation gate for the
+    # ``hermes_bundle_preparation_flow`` Prefect entry. Default ``False``
+    # makes the flow a structured dry-run (no ``SnapshotBundleEnsureService``
+    # write, no side effects) so the Prefect deployment can land in a
+    # paused state and operators flip the env var separately. The
+    # production cutover is owned by ``robin-prefect-automations``;
+    # nothing in this repo schedules the flow on its own.
+    HERMES_BUNDLE_PREPARATION_ENABLED: bool = False
+
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
     # ROB-269 Phase 2 — gates BOTH the 4 MCP snapshot tools AND the

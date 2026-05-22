@@ -387,7 +387,11 @@ def _double_buy_dependency_warnings(
 
 
 async def _load_consecutive_gainers_from_snapshots(
-    session: AsyncSession | None, *, market: str, limit: int = _SNAPSHOT_FIRST_LIMIT
+    session: AsyncSession | None,
+    *,
+    market: str,
+    limit: int = _SNAPSHOT_FIRST_LIMIT,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> _SnapshotLoadResult | None:
     """Return qualifying rows from the latest snapshot partition only.
 
@@ -413,7 +417,8 @@ async def _load_consecutive_gainers_from_snapshots(
     # window (or US pre-17:20 ET window), the expected baseline is the prior
     # trading session, not today — fixes the regression where a fresh
     # prior-day partition is labeled stale after KST/ET midnight rollover.
-    today = expected_baseline_date(market)
+    now_utc = now()
+    today = expected_baseline_date(market, now=now_utc)
 
     # Step 1: resolve the latest snapshot partition date.
     # This prevents older qualifying partitions from leaking into current results
@@ -485,7 +490,6 @@ async def _load_consecutive_gainers_from_snapshots(
                 exc_info=True,
             )
 
-    now = datetime.now(UTC)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for snap in candidate_snaps:
@@ -501,7 +505,7 @@ async def _load_consecutive_gainers_from_snapshots(
             computed_at=snap.computed_at,
             closes_window_len=len(snap.closes_window or []),
             today_trading_date_value=today,
-            now=now,
+            now=now_utc,
         )
         rows.append(
             {
@@ -548,7 +552,11 @@ async def _load_consecutive_gainers_from_snapshots(
 
 
 async def _load_investor_flow_discovery_from_snapshots(
-    session: AsyncSession | None, *, market: str, limit: int = 20
+    session: AsyncSession | None,
+    *,
+    market: str,
+    limit: int = 20,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> _SnapshotLoadResult | None:
     """Return MVP 수급 discovery rows from persisted investor_flow_snapshots.
 
@@ -632,8 +640,8 @@ async def _load_investor_flow_discovery_from_snapshots(
         today_trading_date,
     )
 
-    today = today_trading_date(market)
-    now_utc = datetime.now(UTC)
+    now_utc = now()
+    today = today_trading_date(market, now=now_utc)
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1481,6 +1489,7 @@ async def build_screener_results(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                now=now,
             )
             if _snapshot_load_result is not None:
                 _snapshot_check_result = _snapshot_load_result.rows
@@ -1489,6 +1498,7 @@ async def build_screener_results(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                now=now,
             )
             if _snapshot_load_result is not None:
                 _snapshot_check_result = _snapshot_load_result.rows
@@ -1581,7 +1591,7 @@ async def build_screener_results(
             _enrich_consecutive_up_days as _async_enrich,
         )
 
-        await _async_enrich(rows, market=requested_market, session=session)
+        await _async_enrich(rows, market=requested_market, session=session, now=now)
 
     # Aggregate snapshot dataState from enriched rows (set by _enrich_consecutive_up_days when session provided)
     from app.services.invest_screener_snapshots.freshness import aggregate_states
@@ -1689,12 +1699,13 @@ async def build_screener_results(
 
         if inv_meta:
             worst_sd, worst_collected = min(inv_meta, key=lambda t: t[0])
-            today_kr = today_trading_date("kr")
+            now_utc = now()
+            today_kr = today_trading_date("kr", now=now_utc)
             dep_state = classify_investor_flow_partition(
                 snapshot_date=worst_sd,
                 collected_at=worst_collected,
                 today_trading_date_value=today_kr,
-                now=now(),
+                now=now_utc,
             )
             dependency_specs.append(
                 {

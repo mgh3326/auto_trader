@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import inspect
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,6 +72,7 @@ async def _enrich_consecutive_up_days(
     market: str,
     lookback: int = _STREAK_LOOKBACK_DEFAULT,
     session: AsyncSession | None = None,
+    now: Callable[[], dt.datetime] | None = None,
 ) -> None:
     if not rows:
         return
@@ -77,7 +80,7 @@ async def _enrich_consecutive_up_days(
     market_type = "equity_kr" if market == "kr" else "equity_us"
 
     if session is not None and market in {"kr", "us"}:
-        await _hydrate_from_snapshots(rows, market=market, session=session)
+        await _hydrate_from_snapshots(rows, market=market, session=session, now=now)
 
     sem = asyncio.Semaphore(_STREAK_CONCURRENCY)
 
@@ -114,12 +117,15 @@ async def _enrich_consecutive_up_days(
 
 
 async def _hydrate_from_snapshots(
-    rows: list[dict[str, Any]], *, market: str, session: AsyncSession
+    rows: list[dict[str, Any]],
+    *,
+    market: str,
+    session: AsyncSession,
+    now: Callable[[], dt.datetime] | None = None,
 ) -> None:
-    import datetime as dt
-
+    now_utc = now() if now is not None else dt.datetime.now(dt.UTC)
     repo = InvestScreenerSnapshotsRepository(session)
-    today = today_trading_date(market)
+    today = today_trading_date(market, now=now_utc)
     symbols = [_streak_symbol(r) for r in rows]
     fetched = await repo.get_fresh(
         market=market, symbols=[s for s in symbols if s], on_or_after=dt.date.min
@@ -136,7 +142,6 @@ async def _hydrate_from_snapshots(
         ):
             by_symbol[snapshot.symbol] = snapshot
 
-    now = dt.datetime.now(dt.UTC)
     for row in rows:
         sym = _streak_symbol(row)
         snap = by_symbol.get(sym) if sym else None
@@ -148,7 +153,7 @@ async def _hydrate_from_snapshots(
             computed_at=snap.computed_at,
             closes_window_len=len(snap.closes_window or []),
             today_trading_date_value=today,
-            now=now,
+            now=now_utc,
         )
         row["_screener_snapshot_state"] = state
         if state in {"fresh", "partial"}:

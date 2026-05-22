@@ -1,0 +1,46 @@
+{
+  "_comment": "ROB-287 Phase C — sample Hermes-produced composition ingest payload. metadata.investment_stage_run_uuid links back to the stage run for auto-finalize (§D4). {{...}} placeholders are substituted by the round-trip smoke at runtime.",
+  "composition": {
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "hermes_run_id": "hermes-smoke-001",
+    "title": "Hermes Advisory — KR intraday (smoke round-trip)",
+    "summary": "Hold-and-trim bias on single-name concentration. Market regime modest bull, but portfolio concentration overrides aggressive entries.",
+    "risk_summary": "Concentration: 70% NAV in one name. Recommend trim to <50% NAV before adding new positions.",
+    "thesis_text": "Bull case from market + foreign-flow stages does not outweigh portfolio concentration risk. Defer new entries; consider scaling out existing single-name position.",
+    "no_action_note": null,
+    "items": [
+      {
+        "client_item_key": "smoke-risk-concentration-001",
+        "item_kind": "risk",
+        "operation": "review",
+        "intent": "risk_review",
+        "rationale": "Single-name exposure breach: 005930 at 70% NAV. Review before any new entry.",
+        "apply_policy": "requires_user_approval"
+      },
+      {
+        "client_item_key": "smoke-watch-005930-trim-001",
+        "item_kind": "watch",
+        "operation": "review",
+        "symbol": "005930",
+        "intent": "trend_recovery_review",
+        "rationale": "Watch for scale-out opportunity once price reclaims short-term resistance.",
+        "apply_policy": "requires_user_approval"
+      }
+    ],
+    "metadata": {
+      "investment_stage_run_uuid": "{{run_uuid}}",
+      "hermes_composition_version": "hermes-composition.v1",
+      "hermes_run_id": "hermes-smoke-001"
+    },
+    "cited_snapshot_uuids": []
+  },
+  "kst_date": "2026-05-21",
+  "market": "kr",
+  "market_session": "regular",
+  "account_scope": "kis_live",
+  "report_type": "snapshot_backed_advisory_v1",
+  "generator_version": "hermes-composition.v1",
+  "policy_version": "intraday_action_report_v1",
+  "status": "draft",
+  "created_by_profile": "HERMES_ADVISOR"
+}

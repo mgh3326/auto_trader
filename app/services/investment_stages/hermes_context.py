@@ -1,0 +1,194 @@
+"""Hermes context exporter (ROB-287).
+
+Read-only service that turns a persisted snapshot bundle into a
+:class:`HermesContextPayload` — the frozen, auditable input Hermes
+consumes for in-Hermes LLM reasoning. No external service calls, no DB
+writes; deterministic stages are executed in-process against bundle
+snapshots already in memory.
+
+This module is intentionally provider-free. Importing
+``GeminiProvider`` / ``RateLimitedGeminiProvider`` / any
+``AiProvider`` here would re-introduce the in-process LLM path the
+ROB-287 guard test forbids.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from collections import defaultdict
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.investment_snapshots import (
+    InvestmentSnapshot,
+    InvestmentSnapshotBundle,
+)
+from app.schemas.hermes_composition import (
+    HermesCitedSnapshot,
+    HermesContextPayload,
+    HermesStageInput,
+)
+from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
+from app.services.investment_snapshots.repository import (
+    InvestmentSnapshotsRepository,
+)
+from app.services.investment_stages.stages.base import (
+    Stage,
+    StageContext,
+    UnavailableStageError,
+)
+from app.services.investment_stages.stages.registry import get_default_v1_stages
+
+_logger = logging.getLogger(__name__)
+
+
+class HermesContextExportError(RuntimeError):
+    """Raised when the requested bundle cannot be loaded."""
+
+
+class HermesContextExporter:
+    """Build a :class:`HermesContextPayload` from a persisted bundle.
+
+    Pure read-only: the exporter inspects ``review.investment_snapshot_bundles``
+    + ``review.investment_snapshots`` and runs the deterministic v1 stage
+    set against the in-memory snapshots. No stage run / artifact rows are
+    persisted; the deterministic outputs travel as inline ``stage_inputs``
+    inside the payload so Hermes can audit them without a follow-up query.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        snapshots_repository: InvestmentSnapshotsRepository | None = None,
+        stages: list[Stage] | None = None,
+    ) -> None:
+        self._session = session
+        self._snapshots = snapshots_repository or InvestmentSnapshotsRepository(session)
+        self._stages = stages or get_default_v1_stages()
+
+    async def export(self, *, snapshot_bundle_uuid: uuid.UUID) -> HermesContextPayload:
+        bundle = await self._snapshots.get_bundle_by_uuid(snapshot_bundle_uuid)
+        if bundle is None:
+            raise HermesContextExportError(
+                f"snapshot bundle not found: {snapshot_bundle_uuid}"
+            )
+
+        item_snapshot_pairs = await self._snapshots.list_bundle_items_with_snapshots(
+            bundle.id
+        )
+        snapshots = [snap for _item, snap in item_snapshot_pairs]
+        snapshots_by_kind: dict[str, list[InvestmentSnapshot]] = defaultdict(list)
+        for snap in snapshots:
+            if snap.snapshot_kind:
+                snapshots_by_kind[snap.snapshot_kind].append(snap)
+
+        cited = [
+            HermesCitedSnapshot(
+                snapshot_uuid=snap.snapshot_uuid,
+                snapshot_kind=snap.snapshot_kind or "unknown",
+            )
+            for snap in snapshots
+        ]
+
+        stage_inputs = await self._render_stage_inputs(
+            bundle=bundle, snapshots_by_kind=dict(snapshots_by_kind)
+        )
+
+        return HermesContextPayload(
+            snapshot_bundle_uuid=bundle.bundle_uuid,
+            bundle_status=bundle.status,
+            market=bundle.market,
+            market_session=None,
+            account_scope=bundle.account_scope,
+            policy_version=bundle.policy_version,
+            coverage_summary=dict(bundle.coverage_summary or {}),
+            freshness_summary=dict(bundle.freshness_summary or {}),
+            unavailable_sources=self._derive_unavailable_sources(stage_inputs),
+            source_conflicts={},
+            stage_inputs=stage_inputs,
+            cited_snapshots=cited,
+        )
+
+    async def _render_stage_inputs(
+        self,
+        *,
+        bundle: InvestmentSnapshotBundle,
+        snapshots_by_kind: dict[str, list[InvestmentSnapshot]],
+    ) -> list[HermesStageInput]:
+        ctx = StageContext(
+            bundle_uuid=bundle.bundle_uuid,
+            snapshots_by_kind=snapshots_by_kind,
+            bundle_metadata={
+                "status": bundle.status,
+                "freshness_summary": dict(bundle.freshness_summary or {}),
+                "policy_version": bundle.policy_version,
+            },
+            prior_artifacts={},
+        )
+
+        rendered: list[HermesStageInput] = []
+        for stage in self._stages:
+            artifact = await self._run_stage_safely(stage, ctx)
+            rendered.append(
+                HermesStageInput(
+                    stage_type=stage.stage_type,
+                    artifact=artifact,
+                    cited_snapshots=[
+                        HermesCitedSnapshot(
+                            snapshot_uuid=c.snapshot_uuid,
+                            snapshot_kind=c.snapshot_kind,
+                            payload_path=c.payload_path,
+                        )
+                        for c in artifact.cited_snapshots
+                    ],
+                )
+            )
+            # ``StageContext`` is frozen, but ``prior_artifacts`` is a
+            # mutable mapping; we extend it in place exactly like the
+            # ``StageRunner`` does.
+            ctx.prior_artifacts[stage.stage_type] = artifact
+        return rendered
+
+    @staticmethod
+    async def _run_stage_safely(
+        stage: Stage, ctx: StageContext
+    ) -> StageArtifactPayload:
+        try:
+            return await stage.run(ctx)
+        except UnavailableStageError as exc:
+            _logger.info(
+                "hermes_context: stage %s unavailable: %s", stage.stage_type, exc
+            )
+            return StageArtifactPayload(
+                stage_type=stage.stage_type,
+                verdict=StageVerdict.UNAVAILABLE,
+                confidence=0,
+                summary=str(exc),
+                missing_data=[stage.stage_type],
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.exception("hermes_context: stage %s failed", stage.stage_type)
+            return StageArtifactPayload(
+                stage_type=stage.stage_type,
+                verdict=StageVerdict.UNAVAILABLE,
+                confidence=0,
+                summary=f"stage error: {exc!r}",
+                missing_data=[stage.stage_type],
+            )
+
+    @staticmethod
+    def _derive_unavailable_sources(
+        stage_inputs: list[HermesStageInput],
+    ) -> dict[str, Any]:
+        unavailable: dict[str, Any] = {}
+        for entry in stage_inputs:
+            if entry.artifact.verdict == StageVerdict.UNAVAILABLE:
+                unavailable[entry.stage_type] = {
+                    "status": "unavailable",
+                    "summary": entry.artifact.summary,
+                    "missing_data": list(entry.artifact.missing_data),
+                }
+        return unavailable

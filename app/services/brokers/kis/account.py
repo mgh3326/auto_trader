@@ -187,6 +187,9 @@ class AccountClient:
         self,
         *,
         is_mock: bool = False,
+        timeout: float = 5.0,
+        retry_request_errors: bool = True,
+        max_pages: int = 10,
     ) -> dict[str, Any]:
         """Fetch domestic balance as a single snapshot of holdings + cash.
 
@@ -201,6 +204,16 @@ class AccountClient:
         end-of-stream with ``D``/``E``/empty. The helper stops on end-of-stream
         even if the body still carries a non-empty cursor (this is the ROB-268
         phantom-page case that was causing duplicate VTS calls).
+
+        Args:
+            is_mock: when True, use the mock (VTS) TR id.
+            timeout: per-request timeout in seconds (default 5.0, preserves
+                live behavior; mock UI reader passes 10.0 — see ROB-270).
+            retry_request_errors: when False, httpx RequestError (incl.
+                ReadTimeout) raises after a single attempt; defaults True
+                to keep live behavior. 429 retry is independent of this flag.
+            max_pages: cap on snapshot pagination (default 10, preserves
+                live behavior; mock UI reader passes a smaller cap).
 
         Returns:
             ``{"holdings": list[dict], "cash": dict, "page_count": int}``.
@@ -219,8 +232,7 @@ class AccountClient:
         ctx_area_fk = ""
         ctx_area_nk = ""
         tr_cont_req = ""
-        page = 1
-        max_pages = 10
+        page = 0
         stop_reason = "max_pages"
 
         logging.info(
@@ -228,7 +240,8 @@ class AccountClient:
             is_mock,
         )
 
-        while page <= max_pages:
+        while page < max_pages:
+            page += 1
             params = {
                 "CANO": cano,
                 "ACNT_PRDT_CD": acnt_prdt_cd,
@@ -253,9 +266,10 @@ class AccountClient:
                 self._parent._kis_url(constants.DOMESTIC_BALANCE_URL),
                 headers=hdr,
                 params=params,
-                timeout=5,
+                timeout=timeout,
                 api_name="fetch_domestic_balance_snapshot",
                 tr_id=tr_id,
+                retry_request_errors=retry_request_errors,
             )
 
             if js.get("rt_cd") != "0":
@@ -294,7 +308,6 @@ class AccountClient:
             ctx_area_fk = new_ctx_area_fk
             ctx_area_nk = new_ctx_area_nk
             tr_cont_req = "N"
-            page += 1
             await asyncio.sleep(0.1)
 
         holdings = self._filter_nonzero_holdings(all_stocks, is_overseas=False)

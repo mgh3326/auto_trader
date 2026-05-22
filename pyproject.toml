@@ -47,6 +47,7 @@ dependencies = [
     "tvscreener>=0.3.0",
     "opendartreader>=0.2.3",
     "starlette-csrf>=3.0.0",
+    "binance-sdk-spot>=8.4.0",
 ]
 
 [dependency-groups]
@@ -65,6 +66,7 @@ dev = [
     "playwright>=1.56.0",
     "ruff>=0.14.10",
     "ty>=0.0.18,<0.1.0",
+    "pytest-httpx>=0.36.2",
 ]
 
 [tool.pytest.ini_options]
