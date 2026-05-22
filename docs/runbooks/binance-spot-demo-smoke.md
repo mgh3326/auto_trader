@@ -1,90 +1,128 @@
-# Binance Spot Demo Mode Smoke (ROB-296) — Runbook
+# Binance Spot Demo Smoke (ROB-298) — Runbook
 
-**Scope.** Operator runbook for the Binance Spot **Demo Mode** lane
-introduced by ROB-296 (`demo-api.binance.com`). This is a **separate
-adapter** from the Spot Testnet lane (ROB-286, `testnet.binance.vision`).
-Both lanes coexist; do **not** repurpose either env namespace for the
-other.
+**Scope.** Operator runbook for the Binance Spot **Demo** lane
+(`demo-api.binance.com`), which is the canonical mock-trading backend
+for Spot crypto under ROB-298. Covers all five CLI modes — including
+the **confirmed** order submission that ROB-298 PR 1 wires up — plus
+post-run ledger verification and manual reconciliation.
 
-**This PR (ROB-296 first cut)** opens the adapter/config/preflight/
-dry-run lane only. Confirmed order submission against Spot Demo is
-**not** implemented here — see §6 for the operator follow-up template.
+**Locked design decisions** for ROB-298 live in the Linear issue
+comment `d258c471-3202-444b-901b-c127f3ee44af` (env namespace, 10 USDT
+cap, LOT_SIZE floor sizing, ledger lifecycle, host allowlist, default-
+disabled). When in doubt, that comment wins.
 
 ---
 
-## 0. Lane boundaries at a glance
+## 1. Lane boundaries at a glance
 
-| Lane | Host | Env namespace | Adapter package |
+| Lane | Host | Env namespace | Status in this repo |
 |---|---|---|---|
-| Spot Testnet (ROB-286) | `testnet.binance.vision` | `BINANCE_TESTNET_*` | `app/services/brokers/binance/testnet/` |
-| **Spot Demo (this issue)** | **`demo-api.binance.com`** | **`BINANCE_SPOT_DEMO_*`** | **`app/services/brokers/binance/spot_demo/`** |
-| USD-M Futures Demo (ROB-291) | `demo-fapi.binance.com` | — | not implemented; tracked under [ROB-291](https://linear.app/mgh3326/issue/ROB-291) |
+| **Spot Demo** | **`demo-api.binance.com`** | **`BINANCE_SPOT_DEMO_*`** | **Active — canonical Spot mock lane (ROB-298)** |
+| Public market data | `api.binance.com`, `data-api.binance.vision`, etc. | (none — unsigned) | Active (read-only ingest) |
+| Spot Testnet | `testnet.binance.vision` | _(removed)_ | **Removed in ROB-298.** Runtime + tests + runbook deleted. `BINANCE_TESTNET_*` env vars are inert. |
+| USD-M Futures Demo | `demo-fapi.binance.com` | _(deferred)_ | **Deferred to ROB-298 PR 2.** No adapter, no host allowlist entry, no env. |
+| Live / mainnet trading | `api.binance.com`, `fapi.binance.com` | _(none)_ | **Refused fail-closed.** Live trading is not a feature of this repo. |
 
-**Hard invariants:**
-* The three host allowlists (`PUBLIC_HOSTS`, `TESTNET_HOSTS`,
-  `SPOT_DEMO_HOSTS`) are pairwise disjoint. Cross-environment leakage is
-  refused at the transport layer with
-  `BinanceSpotDemoCrossAllowlistViolation` (or
-  `BinanceLiveHostBlocked`).
-* `BINANCE_TESTNET_*` env vars do **not** activate the Spot Demo path,
-  and vice versa.
-* The Spot Demo adapter signs with HMAC-SHA256 (same as Spot Testnet).
-  If the operator's Spot Demo account requires Ed25519, the preflight
-  surfaces `BinanceSpotDemoUnsupportedAuth` — **do not** patch a signer
-  fallback in this PR; report as ROB-296 follow-up.
-* No scheduler / TaskIQ / Prefect / cron / Hermes activation in this
-  issue. ROB-292 remains blocked.
+Hard invariants enforced at the transport / signer layer:
+
+* The Spot Demo HTTP client only ever talks to hosts in
+  `SPOT_DEMO_HOSTS`. Any attempt to route a signed request to
+  `api.binance.com`, `fapi.binance.com`, `testnet.binance.vision`, etc.
+  raises `BinanceSpotDemoCrossAllowlistViolation` /
+  `BinanceLiveHostBlocked` before the socket opens.
+* `BINANCE_TESTNET_*` env vars **do not** activate the Spot Demo lane.
+  Setting them has zero runtime effect (the testnet runtime no longer
+  exists). A regression test asserts this.
+* No scheduler / TaskIQ / Prefect / cron / Hermes wiring touches the
+  Spot Demo execution client. The smoke CLI is the **only** path that
+  produces real Demo orders, and only when the operator passes
+  `--confirm`.
 
 ---
 
-## 1. Env variables
+## 2. Env variables (`BINANCE_SPOT_DEMO_*`)
 
 | Variable | Required when opted in? | Default | Notes |
 |---|---|---|---|
-| `BINANCE_SPOT_DEMO_ENABLED` | Yes (must be `true`) | unset → disabled | Master kill-switch. Default behavior is fail-closed. |
-| `BINANCE_SPOT_DEMO_API_KEY` | Yes (for preflight) | — | API key from your Spot Demo account. |
-| `BINANCE_SPOT_DEMO_API_SECRET` | Yes (for preflight) | — | API secret. Never logged. |
-| `BINANCE_SPOT_DEMO_BASE_URL` | No | `https://demo-api.binance.com` | Validated against `SPOT_DEMO_HOSTS` at factory init; a testnet or live host raises `BinanceSpotDemoCrossAllowlistViolation`. |
-| `BINANCE_SPOT_DEMO_MAX_NOTIONAL_USDT` | No | `10` | Per-order cap for the planned-order template. |
+| `BINANCE_SPOT_DEMO_ENABLED` | Yes (must be `true`) | unset → disabled | Master kill-switch. Default is fail-closed. |
+| `BINANCE_SPOT_DEMO_API_KEY` | Yes (for signed modes) | — | API key from your Spot Demo account. Never logged. |
+| `BINANCE_SPOT_DEMO_API_SECRET` | Yes (for signed modes) | — | API secret. Never logged. |
+| `BINANCE_SPOT_DEMO_BASE_URL` | No | `https://demo-api.binance.com` | Validated against `SPOT_DEMO_HOSTS` at factory init; a non-demo host raises `BinanceSpotDemoCrossAllowlistViolation`. |
+| `BINANCE_SPOT_DEMO_MAX_NOTIONAL_USDT` | No | `10` | Per-order notional cap. Hard enforced in sizing; you cannot override this above the env value at the CLI for `--confirm`. |
+
+`env.example` carries these already (`BINANCE_SPOT_DEMO_*` block).
+`BINANCE_TESTNET_*` are intentionally absent — they are inert.
 
 ---
 
-## 2. Default-disabled behavior
+## 3. Safety guarantees (read before `--confirm`)
+
+These are properties of the code as it ships, not aspirational:
+
+* **Default-disabled.** With `BINANCE_SPOT_DEMO_ENABLED` unset or
+  falsey, every mode (including `--confirm`) exits 0 with a single
+  "disabled" log line and zero HTTP / DB / Sentry side effects.
+* **Per-call operator gate.** `BinanceSpotDemoExecutionClient.submit_order(...)`
+  and `cancel_order(...)` require `confirm=True` on every call.
+  Without it they return a `SpotDemoDryRunResult` and emit no HTTP.
+  Only the `--confirm` CLI branch sets `confirm=True`.
+* **Host allowlist + cross-allowlist guard.** Any transport pointed at
+  testnet, public, or live hosts is rejected before signing. The
+  allowlists `PUBLIC_HOSTS` / `SPOT_DEMO_HOSTS` are pairwise disjoint;
+  there is no testnet allowlist anymore.
+* **10 USDT max notional cap.** The smoke CLI sizes every confirmed
+  order against `--cap-usdt` (default `10`), bounded above by
+  `BINANCE_SPOT_DEMO_MAX_NOTIONAL_USDT`. Exchange filters
+  (`LOT_SIZE`, `MIN_NOTIONAL`) are validated locally **and** by
+  `POST /api/v3/order/test` before any real placement.
+* **LOT_SIZE floor sizing.** Quantity is **floored** to `stepSize`,
+  never rounded up. If flooring drops the order below `MIN_NOTIONAL`,
+  sizing **blocks** with `SizingBlocked` and the CLI exits 1 — it does
+  not silently grow the order.
+* **Ledger lifecycle writes.** `--confirm` writes a row per state
+  transition into `binance_demo_order_ledger`:
+  `planned → previewed → validated → submitted → filled → closed →
+  reconciled`. Failures branch to `cancelled` or `anomaly`. The
+  service is the only write surface — direct SQL writes are forbidden.
+* **Secret redaction.** API key / secret never appear in logs,
+  evidence lines, or ledger rows. Only `<first4>…<last2>` fingerprints
+  and redacted broker payloads are emitted.
+
+---
+
+## 4. The five CLI modes
+
+The entry point is `scripts/binance_spot_demo_smoke.py`. The mode
+flags are mutually exclusive; omitting them all is the "default-
+disabled / guidance" exit.
+
+### 4.1 Default-disabled (no flags, no env)
 
 ```bash
 uv run python -m scripts.binance_spot_demo_smoke
-# → exit 0; single log line:
-#   "spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in"
-# → zero HTTP, zero DB writes, zero Sentry events
 ```
 
-This is the safe default. Setting only `BINANCE_TESTNET_*` does **not**
-activate Spot Demo.
+Result: exit 0, one log line ("spot demo disabled — set
+`BINANCE_SPOT_DEMO_ENABLED=true` to opt in"), zero HTTP, zero DB
+writes. **This is the production-safe default.** Setting only
+`BINANCE_TESTNET_*` does not change this behavior.
 
----
-
-## 3. Plan-only dry-run (no HTTP, no credentials needed)
+### 4.2 `--plan-only` (no HTTP, no credentials)
 
 ```bash
 BINANCE_SPOT_DEMO_ENABLED=true \
   uv run python -m scripts.binance_spot_demo_smoke \
     --plan-only \
     --symbol BTCUSDT --side BUY --order-type LIMIT \
-    --quantity 0.001 --price 50000
+    --quantity 0.0001 --price 50000
 ```
 
-Effect:
-* Stdout emits a single JSON line with `event: "spot_demo_plan"`.
-* No httpx client is constructed.
-* No DB writes, no ledger writes, no Sentry events.
-* Evidence is `source: "spot_demo"`, `venue: "binance"`, `product: "spot"`.
+Emits a single JSON line with `event: "spot_demo_plan"` describing
+the planned order shape. No httpx client is constructed. No ledger
+writes. Use this to verify the planning / filter pipeline without
+touching the Demo server.
 
-Use this when you want to verify the planning/filter pipeline without
-touching the Spot Demo server.
-
----
-
-## 4. Read-only preflight (one signed GET, no orders)
+### 4.3 `--preflight` (one signed GET, no orders)
 
 ```bash
 BINANCE_SPOT_DEMO_ENABLED=true \
@@ -93,88 +131,340 @@ BINANCE_SPOT_DEMO_ENABLED=true \
   uv run python -m scripts.binance_spot_demo_smoke --preflight
 ```
 
-Effect:
-* ONE signed `GET /api/v3/account` against `demo-api.binance.com`.
-* Stdout emits a single JSON line with `event: "spot_demo_preflight"`.
-* No DB writes, no ledger writes, no order placement.
-* `api_key_fingerprint` is `<first4>…<last2>` — full key/secret are
-  never logged.
-* Balance amounts are NOT logged; only the count of nonzero rows.
+Sends exactly one signed `GET /api/v3/account` to
+`demo-api.binance.com`. Stdout prints a redacted balance summary
+(nonzero-asset count, account `canTrade` flag, key fingerprint).
+Balance amounts are **not** logged. No DB writes, no ledger writes.
 
-**Auth-rejection surface:** if the server returns Binance error codes
-`-2014`, `-2008`, or `-1022`, the CLI exits non-zero and raises
-`BinanceSpotDemoUnsupportedAuth`. This typically means the Spot Demo
-account uses Ed25519 keys (not HMAC). **Report as ROB-296 follow-up
-rather than patching the signer in this PR.**
+If the server rejects auth (`-2014`, `-2008`, `-1022`), the CLI exits
+non-zero with `BinanceSpotDemoUnsupportedAuth`. The most common cause
+is an Ed25519-only Demo account; report as a follow-up rather than
+patching the signer.
 
----
-
-## 5. Cross-environment leakage smoke (always safe)
+### 4.4 `--order-test` (signed validation, no real order)
 
 ```bash
-uv run pytest tests/services/brokers/binance/spot_demo/test_cross_environment_leakage.py -q
-```
-
-Asserts:
-* The Spot Testnet adapter refuses `demo-api.binance.com`.
-* The Spot Demo adapter refuses `testnet.binance.vision`.
-* Both adapters refuse `api.binance.com`, `fapi.binance.com`,
-  `stream.binance.com`, `data-api.binance.vision`.
-
----
-
-## 6. Confirmed order-submit smoke — **NOT implemented in this PR**
-
-```bash
-# This command WILL refuse with BinanceSpotDemoOrderSubmitNotImplemented:
 BINANCE_SPOT_DEMO_ENABLED=true \
   BINANCE_SPOT_DEMO_API_KEY=$KEY \
   BINANCE_SPOT_DEMO_API_SECRET=$SECRET \
-  uv run python -m scripts.binance_spot_demo_smoke --confirm
+  uv run python -m scripts.binance_spot_demo_smoke --order-test \
+    --symbol BTCUSDT --order-type MARKET --cap-usdt 10
 ```
 
-Reason: the first ROB-296 PR deliberately opens only the adapter +
-preflight + dry-run lane. Order submission would require mirroring the
-~620-line `BinanceTestnetExecutionClient` plus a Spot Demo ledger
-decision, which the Hermes review intentionally deferred.
+Sizes the order against `--cap-usdt`, then sends a signed
+`POST /api/v3/order/test` (the Binance non-mutating validation
+endpoint). If exchange filters fail, the CLI exits non-zero with the
+broker reason and writes nothing to the ledger. If filters pass,
+the CLI prints `order_test_ok` and exits 0. **No real order is
+placed in this mode.**
 
-**Operator follow-up template** (use when authorized to expand scope):
-
-> Implement `BinanceSpotDemoExecutionClient` under
-> `app/services/brokers/binance/spot_demo/execution_client.py` mirroring
-> the testnet sibling. Decide ledger policy explicitly (reuse a
-> source-labeled testnet table? add a new Spot Demo ledger table? keep
-> log-only?). Land behind a separate operator approval gate; do NOT
-> reuse the ROB-296 PR.
-
----
-
-## 7. Verification command summary
+### 4.5 `--confirm` (real BUY + close, ledger-recorded)
 
 ```bash
-# Existing Binance safety suite (must still pass — no regressions):
-uv run pytest \
-  tests/services/brokers/binance/testnet/test_host_allowlist.py \
-  tests/services/brokers/binance/testnet/test_audit_no_live_host.py \
-  tests/services/brokers/binance/test_audit_no_signed_endpoints.py \
-  -q
-
-# New Spot Demo suite:
-uv run pytest \
-  tests/services/brokers/binance/spot_demo/ \
-  tests/scripts/test_binance_spot_demo_smoke.py \
-  -q
+BINANCE_SPOT_DEMO_ENABLED=true \
+  BINANCE_SPOT_DEMO_API_KEY=$KEY \
+  BINANCE_SPOT_DEMO_API_SECRET=$SECRET \
+  uv run python -m scripts.binance_spot_demo_smoke --confirm \
+    --symbol BTCUSDT --order-type MARKET \
+    --cap-usdt 10 --close-with SELL
 ```
+
+This is the only mode that places real Demo orders. It runs the
+full lifecycle:
+
+1. Resolve / create the `crypto_instruments` row for the symbol.
+2. Generate a `client_order_id` (`rob298-<uuid4hex[:24]>`).
+3. Write `planned` row to `binance_demo_order_ledger`.
+4. Local preview → write `previewed`.
+5. `POST /api/v3/order/test` → write `validated`.
+6. `POST /api/v3/order` with `confirm=True` for BUY → write
+   `submitted` and (if the server replies `FILLED`) `filled`.
+7. Close-side:
+   * `--close-with SELL` (default; valid for MARKET and LIMIT):
+     submit a market SELL with a fresh child `client_order_id`,
+     write its own `planned/previewed/validated/submitted/filled`
+     lineage, then mark the parent `closed`.
+   * `--close-with CANCEL` (LIMIT-only): call `cancel_order(...)`
+     against the BUY, write `cancelled` on the parent.
+8. `GET /api/v3/openOrders?symbol=...` → empty check → write
+   `reconciled` (or `anomaly` if residual open orders exist).
+
+Exit codes: `0` on a clean reconciled run, `1` on operator
+misconfiguration (missing creds, invalid `--close-with CANCEL` with
+non-LIMIT, etc.), `2` on runtime / reconciliation failures.
 
 ---
 
-## 8. Out of scope (do NOT do from this issue)
+## 5. Confirmed smoke — step-by-step operator procedure
 
-* Order submission against Spot Demo (see §6).
-* Persistent Spot Demo order ledger (no alembic migration in this PR).
-* Ed25519 signer (report as scope expansion if preflight surfaces it).
-* USD-M Futures Demo (`demo-fapi.binance.com`) — tracked under ROB-291.
-* TaskIQ / Prefect / cron / Hermes automation — ROB-292 is blocked.
-* Production deploy, production DB migration, or live/mainnet routing.
-* Touching Upbit, Alpaca, KIS, or any real-money broker path.
-* Printing, committing, persisting, or summarizing credential values.
+Run this whenever you need fresh evidence that the Spot Demo lane is
+healthy end-to-end (e.g., on a clean cutover, after a dependency bump,
+or as a smoke before reviewing a PR that touches the adapter).
+
+### 5.1 Set env
+
+```bash
+export BINANCE_SPOT_DEMO_ENABLED=true
+export BINANCE_SPOT_DEMO_API_KEY="…"        # from your Demo account
+export BINANCE_SPOT_DEMO_API_SECRET="…"     # ditto; never commit
+# Optional — defaults to https://demo-api.binance.com / 10:
+# export BINANCE_SPOT_DEMO_BASE_URL=https://demo-api.binance.com
+# export BINANCE_SPOT_DEMO_MAX_NOTIONAL_USDT=10
+```
+
+### 5.2 Verify intent (no HTTP)
+
+```bash
+uv run python -m scripts.binance_spot_demo_smoke --plan-only \
+  --symbol BTCUSDT --order-type MARKET --quantity 0.0001
+```
+
+Confirm the printed JSON has `source: "spot_demo"`, `product: "spot"`,
+and the expected symbol / side / qty. If anything is off, stop here.
+
+### 5.3 Confirm credentials work (one signed GET)
+
+```bash
+uv run python -m scripts.binance_spot_demo_smoke --preflight
+```
+
+Expect a redacted balance summary line and a 0 exit. If you get
+`BinanceSpotDemoUnsupportedAuth`, your Demo account likely uses
+Ed25519 — file a follow-up rather than running `--confirm`.
+
+### 5.4 Confirm exchange filters pass (signed, non-mutating)
+
+```bash
+uv run python -m scripts.binance_spot_demo_smoke --order-test \
+  --symbol BTCUSDT --order-type MARKET --cap-usdt 10
+```
+
+Expect `order_test_ok symbol=BTCUSDT side=BUY qty=...` and exit 0.
+
+### 5.5 Run the confirmed lifecycle
+
+```bash
+uv run python -m scripts.binance_spot_demo_smoke --confirm \
+  --symbol BTCUSDT --order-type MARKET \
+  --cap-usdt 10 --close-with SELL
+```
+
+Watch for the `[rob-298]` evidence lines (see §6). On a clean run the
+process exits 0 after `reconciled cid=...`. Anything else needs §7.
+
+### 5.6 Verify the ledger row
+
+```sql
+SELECT
+  id,
+  client_order_id,
+  parent_client_order_id,
+  side,
+  order_type,
+  lifecycle_state,
+  broker_order_id,
+  qty,
+  price,
+  venue_host,
+  planned_at,
+  previewed_at,
+  validated_at,
+  submitted_at,
+  filled_at,
+  closed_at,
+  cancelled_at,
+  reconciled_at
+FROM binance_demo_order_ledger
+WHERE client_order_id LIKE 'rob298-%'
+ORDER BY id DESC
+LIMIT 10;
+```
+
+You should see two rows per `--confirm SELL` run (parent BUY +
+child SELL) or one row per `--confirm CANCEL` run, all with
+`venue_host = 'demo-api.binance.com'` and the parent BUY ending in
+`lifecycle_state = 'reconciled'`.
+
+### 5.7 Confirm no stale open orders
+
+The CLI already does this as the last step, but you can re-check
+manually if you suspect drift:
+
+```bash
+uv run python -m scripts.binance_spot_demo_smoke --plan-only \
+  --symbol BTCUSDT --order-type MARKET --quantity 0.0001 \
+  >/dev/null    # only here to confirm the env still loads
+```
+
+…and then inspect Binance Demo's Order History UI for the symbol. The
+ledger's `reconciled_at` row is the source of truth; the UI is just a
+cross-check.
+
+---
+
+## 6. Expected redacted evidence shape
+
+A clean `--confirm --close-with SELL` run emits these lines on stdout,
+in order (UUIDs vary; secrets never appear):
+
+```
+[rob-298] planned cid=rob298-<uuid> product=spot symbol=BTCUSDT side=BUY qty=0.0001 venue=demo-api.binance.com
+[rob-298] previewed cid=rob298-<uuid>
+[rob-298] order_test_ok symbol=BTCUSDT
+[rob-298] validated cid=rob298-<uuid>
+[rob-298] submitted cid=rob298-<uuid> broker_order_id=<id> status=FILLED
+[rob-298] filled cid=rob298-<uuid>
+[rob-298] planned cid=rob298-<sell-uuid> product=spot symbol=BTCUSDT side=SELL qty=0.0001 venue=demo-api.binance.com
+[rob-298] previewed cid=rob298-<sell-uuid>
+[rob-298] validated cid=rob298-<sell-uuid>
+[rob-298] submitted cid=rob298-<sell-uuid> broker_order_id=<sell-id> status=FILLED
+[rob-298] filled cid=rob298-<sell-uuid>
+[rob-298] closed cid=rob298-<uuid>
+[rob-298] open_orders_check empty=true
+[rob-298] reconciled cid=rob298-<uuid>
+```
+
+For `--close-with CANCEL` (LIMIT only), the SELL block is replaced by:
+
+```
+[rob-298] cancelled cid=rob298-<uuid> broker_status=CANCELED
+[rob-298] open_orders_check empty=true
+[rob-298] reconciled cid=rob298-<uuid>
+```
+
+Anomalies print `anomaly cid=... reason=...` and the CLI exits 2.
+None of these lines contain the API key or secret.
+
+---
+
+## 7. Rollback / manual reconciliation
+
+If a `--confirm` run dies between `submitted` and `reconciled` (network
+blip, ctrl-C, server 5xx), the ledger will have a non-terminal row and
+there may be an open order on Demo.
+
+### 7.1 Inspect the ledger
+
+```sql
+SELECT *
+FROM binance_demo_order_ledger
+WHERE lifecycle_state NOT IN ('reconciled', 'cancelled', 'anomaly')
+  AND created_at > NOW() - INTERVAL '1 day'
+ORDER BY id DESC;
+```
+
+Grab the `client_order_id`(s) — you'll need them below.
+
+### 7.2 Check the broker for open orders
+
+From a Python shell (uses the same env you ran the smoke with):
+
+```python
+import asyncio
+from app.services.brokers.binance.spot_demo import BinanceSpotDemoExecutionClient
+
+async def main():
+    async with BinanceSpotDemoExecutionClient.from_env() as client:
+        open_orders = await client.get_open_orders(symbol="BTCUSDT")
+        print(open_orders)
+
+asyncio.run(main())
+```
+
+If `open_orders` is non-empty and includes your stranded
+`client_order_id`, cancel it explicitly:
+
+```python
+await client.cancel_order(
+    symbol="BTCUSDT",
+    client_order_id="rob298-<your-cid>",
+    confirm=True,
+)
+```
+
+`confirm=True` is required — without it the call returns a
+`SpotDemoDryRunResult` and changes nothing.
+
+### 7.3 Reconcile the ledger
+
+Bring the stranded row to a terminal state through the service (do
+**not** UPDATE the table directly):
+
+```python
+from app.services.brokers.binance.demo.ledger.service import (
+    BinanceDemoLedgerService,
+)
+# … construct the service with an async session …
+
+await ledger.record_cancelled(
+    client_order_id="rob298-<your-cid>",
+    broker_status="CANCELED",
+    now=...,
+)
+# Or, if you couldn't cleanly cancel and the order is unaccounted for:
+await ledger.record_anomaly(
+    client_order_id="rob298-<your-cid>",
+    reason="manual reconciliation: <what happened>",
+    now=...,
+)
+```
+
+After the row is terminal, re-run `get_open_orders(symbol=...)` and
+confirm it returns `[]`.
+
+### 7.4 Document and escalate
+
+If you had to reconcile manually:
+
+* Post a comment on **Linear ROB-298** describing the stranded
+  `client_order_id`, what state it was in, and how you resolved it.
+* If the cause looks like a code bug (not a transient network issue),
+  file a follow-up Linear issue and link it from the ROB-298 comment.
+
+---
+
+## 8. Verification suite
+
+```bash
+# Spot Demo unit + integration tests:
+uv run pytest tests/services/brokers/binance/spot_demo/ -q
+
+# Smoke CLI tests:
+uv run pytest tests/scripts/test_binance_spot_demo_smoke.py -q
+
+# Demo ledger tests:
+uv run pytest tests/services/brokers/binance/demo/ -q
+
+# Audit: no testnet imports remain anywhere:
+uv run pytest tests/services/brokers/binance/demo/test_no_testnet_imports.py -q
+```
+
+All four suites are expected to pass on every PR that touches
+`app/services/brokers/binance/`.
+
+---
+
+## 9. Linked decisions
+
+Authoritative source for ROB-298 design choices (env namespace, 10
+USDT cap, LOT_SIZE floor sizing, ledger lifecycle table, host
+allowlist, default-disabled, removal of testnet) — Linear ROB-298
+issue comment `d258c471-3202-444b-901b-c127f3ee44af`. Defer to that
+comment if this runbook ever drifts from it.
+
+---
+
+## 10. Out of scope (deferred to ROB-298 PR 2 and beyond)
+
+* **USD-M Futures Demo** (`demo-fapi.binance.com`). No adapter, no
+  host allowlist entry, no env in this PR. PR 2 will add a sibling
+  `BinanceUsdmFuturesDemoExecutionClient`, extend
+  `binance_demo_order_ledger` usage for `product = 'usdm_futures'`,
+  and update this runbook.
+* **Scheduler / TaskIQ / Prefect / cron / Hermes activation** of the
+  Spot Demo execution client. Tracked under ROB-292 and remains
+  paused.
+* **Production deploy, production DB migration, or live/mainnet
+  routing.** Live trading is not a feature of this repo.
+* **Touching Upbit, Alpaca, KIS, or any real-money broker path** from
+  the Binance Demo lane. Cross-broker behavior is out of scope.
