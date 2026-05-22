@@ -170,8 +170,7 @@ def test_confirm_without_credentials_refuses_cleanly(
     assert exit_code == 1
     error_messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
     assert any(
-        "credentials" in m.lower() or "refused" in m.lower()
-        for m in error_messages
+        "credentials" in m.lower() or "refused" in m.lower() for m in error_messages
     ), error_messages
 
 

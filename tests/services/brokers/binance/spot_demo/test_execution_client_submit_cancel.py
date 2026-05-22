@@ -280,6 +280,4 @@ async def test_secret_not_in_logs_on_submit_failure(
                 confirm=True,
             )
     full_log = "\n".join(rec.getMessage() for rec in caplog.records)
-    assert secret_str not in full_log, (
-        f"Secret leaked into log output: {full_log!r}"
-    )
+    assert secret_str not in full_log, f"Secret leaked into log output: {full_log!r}"

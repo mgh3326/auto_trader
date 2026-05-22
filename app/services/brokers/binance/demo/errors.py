@@ -4,6 +4,7 @@ Naming convention: ``BinanceDemo*`` for ledger/state errors that apply
 across products. Per-product transport/host errors live alongside their
 adapters (e.g. ``app.services.brokers.binance.spot_demo.errors``).
 """
+
 from __future__ import annotations
 
 

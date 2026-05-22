@@ -5,6 +5,7 @@ Service-internal. Never import this from outside
 ``tests/services/brokers/binance/demo/test_ledger_service.py``
 will fail if you do.
 """
+
 from __future__ import annotations
 
 import datetime as dt

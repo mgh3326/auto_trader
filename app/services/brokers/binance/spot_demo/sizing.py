@@ -5,6 +5,7 @@ exchangeInfo filters (``LOT_SIZE.stepSize`` + ``MIN_NOTIONAL``) and a
 ROB-298 max cap. Always floors to step; never rounds up. If floored
 quantity violates ``MIN_NOTIONAL``, returns ``SizingBlocked``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,7 +40,9 @@ def compute_demo_order_qty(
 
     effective_target = min(target_notional_usdt, cap_usdt)
     raw_qty = effective_target / price
-    floored_qty = (raw_qty / step_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * step_size
+    floored_qty = (raw_qty / step_size).quantize(
+        Decimal("1"), rounding=ROUND_DOWN
+    ) * step_size
     if floored_qty <= 0:
         return SizingBlocked(
             reason=(

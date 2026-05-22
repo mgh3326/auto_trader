@@ -154,9 +154,7 @@ async def test_invalid_state_transition_planned_to_filled(
 
 _REPO_MODULE = "app.services.brokers.binance.demo.ledger.repository"
 _REPO_CLASS = "BinanceDemoLedgerRepository"
-_ALLOWED_IMPORTER = pathlib.Path(
-    "app/services/brokers/binance/demo/ledger/service.py"
-)
+_ALLOWED_IMPORTER = pathlib.Path("app/services/brokers/binance/demo/ledger/service.py")
 
 
 def _repo_root() -> pathlib.Path:
@@ -178,9 +176,9 @@ def _imports_repository(tree: ast.AST) -> bool:
                 alias.name == "repository" for alias in node.names
             ):
                 return True
-            if module.startswith(
-                "app.services.brokers.binance.demo.ledger"
-            ) and any(alias.name == _REPO_CLASS for alias in node.names):
+            if module.startswith("app.services.brokers.binance.demo.ledger") and any(
+                alias.name == _REPO_CLASS for alias in node.names
+            ):
                 return True
         elif isinstance(node, ast.Import):
             for alias in node.names:
@@ -213,9 +211,7 @@ def test_repository_import_boundary_enforced() -> None:
         if rel == _ALLOWED_IMPORTER:
             continue
         try:
-            tree = ast.parse(
-                py_file.read_text(encoding="utf-8"), filename=str(py_file)
-            )
+            tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         except SyntaxError:
             continue
         if _imports_repository(tree):

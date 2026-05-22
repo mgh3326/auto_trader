@@ -1,4 +1,5 @@
 """ROB-298 — DTOs for Spot Demo execution backend responses."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

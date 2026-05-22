@@ -23,6 +23,7 @@ State machine (locked transition table; service raises
 on insert; anything else raises ``BinanceDemoInvalidProduct``. PR 1
 writes only ``"spot"`` rows; PR 2 will activate ``"usdm_futures"``.
 """
+
 from __future__ import annotations
 
 import datetime as dt

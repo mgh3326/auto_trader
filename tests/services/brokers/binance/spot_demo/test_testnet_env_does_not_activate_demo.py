@@ -1,4 +1,5 @@
 """ROB-298 — BINANCE_TESTNET_* must not activate Spot Demo trading."""
+
 from __future__ import annotations
 
 import pytest

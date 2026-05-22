@@ -1,4 +1,5 @@
 """ROB-298 — Spot Demo sizing helper: floor to LOT_SIZE, never round up."""
+
 from __future__ import annotations
 
 from decimal import Decimal

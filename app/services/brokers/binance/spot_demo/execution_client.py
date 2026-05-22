@@ -347,9 +347,7 @@ class BinanceSpotDemoExecutionClient:
             order_type=body.get("type", order_type),
             qty=Decimal(str(body.get("origQty", qty))),
             executed_qty=Decimal(str(body.get("executedQty", "0"))),
-            cummulative_quote_qty=Decimal(
-                str(body.get("cummulativeQuoteQty", "0"))
-            ),
+            cummulative_quote_qty=Decimal(str(body.get("cummulativeQuoteQty", "0"))),
             status=body.get("status", "UNKNOWN"),
             raw_response_redacted=_redact(body),
         )

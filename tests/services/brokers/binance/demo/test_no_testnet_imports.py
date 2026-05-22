@@ -7,6 +7,7 @@ No production code in ``app/`` may import from
 
 Scripts under ``scripts/`` are checked separately.
 """
+
 from __future__ import annotations
 
 import ast
