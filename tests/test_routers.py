@@ -34,10 +34,10 @@ class TestActiveSurfaceRouter:
         response = client.get("/screener")
         assert response.status_code == 200
 
-    def test_get_portfolio(self, client):
-        """Test portfolio page endpoint."""
+    def test_get_portfolio_is_deprecated(self, client):
+        """Legacy /portfolio/ surface returns 410 Gone."""
         response = client.get("/portfolio/")
-        assert response.status_code == 200
+        assert response.status_code == 410
 
 
 class TestRouterIntegration:

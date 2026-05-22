@@ -16,6 +16,9 @@ LEGACY_PREFIXES = (
     "/stock-latest",
     "/analysis-json",
     "/orderbook",
+    "/portfolio",
+    "/pending",
+    "/api/ai-markdown",
 )
 _DEPRECATED_AT = "2026-02-20T00:00:00+09:00"
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
@@ -44,7 +47,7 @@ def _build_payload(prefix: str) -> dict[str, str]:
         "detail": (
             f"'{prefix}' has been permanently deprecated and is no longer available."
         ),
-        "replacement_url": "/portfolio/",
+        "replacement_url": "/invest/",
         "deprecated_at": _DEPRECATED_AT,
     }
 
