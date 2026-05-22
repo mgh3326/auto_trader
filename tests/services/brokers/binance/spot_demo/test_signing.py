@@ -53,7 +53,12 @@ def test_sign_request_params_attaches_timestamp_when_missing() -> None:
 
 
 def test_sign_request_params_does_not_mutate_caller_dict() -> None:
-    original = {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.001"}
+    original = {
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "type": "MARKET",
+        "quantity": "0.001",
+    }
     snapshot = dict(original)
     _sign_request_params(params=original, api_secret="TEST_SECRET")
     assert original == snapshot

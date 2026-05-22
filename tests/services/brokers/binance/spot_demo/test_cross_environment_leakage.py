@@ -120,5 +120,7 @@ async def test_spot_demo_rejects_all_live_hosts(host: str) -> None:
     request = httpx.Request("GET", f"https://{host}/api/v3/account")
     # The exception is BinanceSpotDemoCrossAllowlistViolation for PUBLIC_HOSTS
     # members and BinanceLiveHostBlocked for non-allowlisted hosts.
-    with pytest.raises((BinanceSpotDemoCrossAllowlistViolation, BinanceLiveHostBlocked)):
+    with pytest.raises(
+        (BinanceSpotDemoCrossAllowlistViolation, BinanceLiveHostBlocked)
+    ):
         await spot_demo_on_request(request)

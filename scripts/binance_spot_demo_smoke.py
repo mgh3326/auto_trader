@@ -181,9 +181,7 @@ def _emit_evidence(payload: dict[str, object]) -> None:
 async def _run(args: argparse.Namespace) -> int:
     # Default-disabled gate — must match the testnet smoke CLI's UX.
     if not _truthy(os.environ.get("BINANCE_SPOT_DEMO_ENABLED")):
-        logger.info(
-            "spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in"
-        )
+        logger.info("spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in")
         return 0
 
     # --confirm: operator-only; not implemented in this PR.

@@ -147,9 +147,7 @@ def test_enabled_no_action_exits_with_guidance(
     exit_code = smoke.main([])
     assert exit_code == 0
     messages = [r.message for r in caplog.records]
-    assert any(
-        "--plan-only" in m or "--preflight" in m for m in messages
-    ), messages
+    assert any("--plan-only" in m or "--preflight" in m for m in messages), messages
 
 
 def test_preflight_without_credentials_exits_one(
