@@ -373,6 +373,164 @@ sequence rather than improvising. Order matters.
 
 ---
 
+## 10C. Lifecycle smoke (ROB-294)
+
+The ROB-286 smoke CLI (`scripts/binance_testnet_scalper_smoke.py`)
+uses a synthetic snapshot that always resolves to `Hold`, so it proves
+*connectivity + signed reads + confirm-gate plumbing* but never walks
+the `submitted → filled → tp_sl_armed → closed` lifecycle. ROB-294
+adds a companion CLI that injects a deterministic snapshot so an
+operator can drive a **single symbol, single cycle** through the full
+lifecycle with explicit gates.
+
+**File:** `scripts/binance_testnet_lifecycle_smoke.py`.
+
+All hard invariants from §1–§5 still apply: default-disabled gate,
+host allowlist, per-call `--confirm`, no scheduler/TaskIQ/cron/Prefect/
+Hermes wiring, no futures, no live hosts, no secret persistence.
+
+### 10C.1 Three operator stages
+
+```bash
+# Stage 1 — default-disabled (no env, no flags)
+uv run python -m scripts.binance_testnet_lifecycle_smoke
+# → exit 0, "scalper disabled" log line, zero side effects.
+
+# Stage 2 — credentialed dry-run lifecycle
+BINANCE_TESTNET_ENABLED=true \
+  BINANCE_TESTNET_API_KEY=$KEY \
+  BINANCE_TESTNET_API_SECRET=$SECRET \
+  uv run python -m scripts.binance_testnet_lifecycle_smoke \
+    --symbol BTCUSDT \
+    --simulate-price 50000 \
+    --simulate-rsi 20 \
+    --simulate-ema20 49600 \
+    --simulate-ema50 49000 \
+    --dry-run \
+    --evidence-json /tmp/rob-294-dry-run.json
+# → reconcile open_orders signed read against testnet;
+# → tick resolves to Entry(BUY);
+# → ledger walks planned → previewed → validated, then STOPS;
+# → evidence JSON written to /tmp/rob-294-dry-run.json.
+
+# Stage 3 — operator-confirmed single-cycle (real testnet submit)
+BINANCE_TESTNET_ENABLED=true \
+  BINANCE_TESTNET_API_KEY=$KEY \
+  BINANCE_TESTNET_API_SECRET=$SECRET \
+  uv run python -m scripts.binance_testnet_lifecycle_smoke \
+    --symbol BTCUSDT \
+    --simulate-price 50000 \
+    --simulate-rsi 20 \
+    --simulate-ema20 49600 \
+    --simulate-ema50 49000 \
+    --no-dry-run --confirm \
+    --evidence-json /tmp/rob-294-confirmed.json
+# → real signed POST to testnet.binance.vision /api/v3/order;
+# → if broker fills immediately, paired TP/SL placed (sequential);
+# → evidence JSON written.
+```
+
+### 10C.2 Evidence summary
+
+Every invocation prints (and with `--evidence-json` writes) a
+structured summary. Pertinent fields:
+
+| Field | Meaning |
+|---|---|
+| `mode` | `default-disabled` \| `dry-run` \| `confirmed-single-cycle` |
+| `symbol` | The single MVP symbol the operator chose |
+| `env_*_present` | Booleans only — credential values are never recorded |
+| `snapshot` | The deterministic indicator inputs used this tick |
+| `reconcile_rows_examined`, `reconcile_anomalies_detected` | `reconcile_on_start` result |
+| `ledger_rows_before` / `ledger_rows_after` | Symbol-scoped row delta |
+| `client_order_ids_created` | CIDs the runner generated this run |
+| `final_lifecycle_states` | `{cid → lifecycle_state}` for those CIDs |
+| `broker_open_orders_after` | Broker `openOrders` length post-tick |
+| `anomaly_client_order_ids` | Subset of CIDs that ended in `anomaly` |
+| `tick_action`, `tick_submitted`, `tick_dry_run`, `tick_notes` | Per-tick decision/runner output |
+| `notes` | Free-form operator-facing observations (cancel results, broker read failures, etc.) |
+| `cli_command` | The argv list (no env values; safe to paste) |
+| `exit_code` | 0 clean, 1 misconfig, 2 runtime failure |
+
+The JSON file is **safe to paste into Linear / Slack as-is** — it
+contains no credential values by construction. Confirm before pasting
+with `grep -F "$BINANCE_TESTNET_API_KEY" /tmp/rob-294-confirmed.json`
+returning no matches.
+
+### 10C.3 Lifecycle outcomes the CLI exposes
+
+| Outcome | How to reach it from the CLI | Evidence to verify |
+|---|---|---|
+| Entry held (no signal) | Default `--simulate-rsi 50` (neutral) | `tick_action="hold"`; zero new ledger rows |
+| Entry submitted not filled → operator cancel | Stage 3 + `--cancel-pending-on-exit`; broker returns `status=NEW` | `tick_submitted=true`; entry row final state `cancelled`; one cancel call |
+| Entry filled + paired TP/SL armed | Stage 3 with deterministic Entry snapshot; broker returns `status=FILLED` on MARKET | `final_lifecycle_states` shows entry=`filled` + two legs=`tp_sl_armed`; `broker_open_orders_after >= 2` |
+| TP triggered (sibling SL cancelled) | Second tick with `--simulate-price` ≥ `tp_price` after armed run | Sibling SL row → `cancelled(opposite_leg_triggered)`; TP row → `tp_sl_triggered` |
+| SL triggered (sibling TP cancelled) | Second tick with `--simulate-price` ≤ `sl_price` after armed run | Sibling TP row → `cancelled(opposite_leg_triggered)`; SL row → `tp_sl_triggered` |
+| Broker reject (4xx) on TP/SL placement | Real testnet may reject for filter failures (see §10C.4) | `anomaly_client_order_ids` non-empty; `reason` carried in `extra_metadata` |
+
+Each outcome above has at least one fake-client test under
+`tests/services/scalping/test_runner_lifecycle*.py` and is exercised by
+the runner without HTTP. The CLI's job is to expose the same paths to
+operators against the real testnet.
+
+### 10C.4 Binance `MIN_NOTIONAL` (`-1013 Filter failure`)
+
+Binance Spot enforces a per-symbol **`MIN_NOTIONAL`** filter — orders
+whose `price * quantity` falls below the symbol's minimum are rejected
+with `-1013 "Filter failure: MIN_NOTIONAL"`. The default
+`max_notional_usdt = 10` USDT may be too small for high-priced symbols
+on testnet (e.g., `BTCUSDT` when the testnet's `MIN_NOTIONAL` is set
+to `10` USDT exactly, the order may round below depending on
+`stepSize`/`tickSize` quantization).
+
+If a confirmed lifecycle run fails with `-1013` or `Filter failure`:
+
+1. **Stop the run.** The order was not submitted. There is no broker
+   state to clean up. The ledger row is in `validated` (the
+   `record_submit` call never happened because the POST raised).
+2. **Inspect the symbol's filters** via
+   `https://testnet.binance.vision/api/v3/exchangeInfo?symbol=BTCUSDT`
+   and read the `MIN_NOTIONAL` and `LOT_SIZE` filters.
+3. **Bump the notional** within the CLI ceiling using
+   `--max-notional`. The ceiling is `25` USDT (deliberate friction:
+   any higher requires editing
+   `scripts/binance_testnet_lifecycle_smoke.py::MAX_NOTIONAL_CEILING_USDT`
+   in a follow-up PR with reviewer sign-off).
+4. **Re-run** the lifecycle command with the bumped notional, e.g.::
+
+       uv run python -m scripts.binance_testnet_lifecycle_smoke \
+         --symbol BTCUSDT --simulate-rsi 20 \
+         --simulate-price 50000 \
+         --simulate-ema20 49600 --simulate-ema50 49000 \
+         --max-notional 15 \
+         --no-dry-run --confirm
+
+5. **Document the reason** in the PR/handoff: which symbol, what the
+   broker's reported `MIN_NOTIONAL` was, and what notional you used.
+
+Other common rejects (`-2010 NEW_ORDER_REJECTED`, `-1100 Illegal
+characters`) follow the same pattern: stop, inspect, adjust the
+deterministic snapshot or notional, re-run. Never bypass the
+`--confirm` gate to "force" through a filter failure — that is what
+the `anomaly` ledger state is for.
+
+### 10C.5 Emergency stop + clean-up reminder
+
+If anything goes off-script during Stage 3, follow §10B's
+kill-switch sequence (`Ctrl-C`, `unset BINANCE_TESTNET_ENABLED`,
+capture logs, triage by symptom). The lifecycle CLI's
+`--cancel-pending-on-exit` is the only path that issues a broker
+cancel itself; otherwise broker-side cleanup is operator-driven via
+the testnet UI plus `record_cancel` / `record_reconciled`.
+
+> **ROB-292 remains blocked.** This CLI is invoked manually by a human
+> operator. There is no scheduler / TaskIQ / cron / Prefect / Hermes
+> wiring. The no-scheduler audit
+> (`tests/services/brokers/binance/testnet/test_audit_no_live_host.py::test_no_scheduler_activation`)
+> still passes and remains the structural gate.
+
+---
+
 ## 11. What this PR does NOT do (locked non-goals)
 
 Echoing the plan's forbidden scope:
@@ -402,3 +560,8 @@ Echoing the plan's forbidden scope:
 | T33 | `test_no_live_host_url_in_testnet_package` | No `api.binance.com` literal |
 | T34 | `test_no_scheduler_activation` | No scheduler drift |
 | T35 | `test_no_signed_endpoint_surface_in_binance_public_package` | Child B public adapter unchanged |
+| TT7-TT13 | `tests/services/scalping/test_runner_lifecycle.py::test_*` | Paired TP/SL placement, trigger, anomaly fallbacks |
+| L1 | `test_entry_submitted_not_filled_then_operator_cancel` | ROB-294 submitted-not-filled → cancel branch |
+| L2 | `test_dry_run_lifecycle_produces_no_submitted_or_cancel_calls` | ROB-294 dry-run no-HTTP joint invariant |
+| L3 | `test_lifecycle_evidence_shape_after_full_armed_flow` | ROB-294 evidence-shape contract |
+| L4-L8 | `tests/scripts/test_binance_testnet_lifecycle_smoke.py::test_*` | Lifecycle CLI default-disabled / missing-symbol / non-MVP / notional-ceiling / dry-run |
