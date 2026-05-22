@@ -64,7 +64,7 @@ async def _make_row(
     side: str = "BUY",
     client_order_id: str | None = None,
 ) -> str:
-    now = dt.datetime(2026, 5, 22, 12, 0, 0, tzinfo=dt.timezone.utc)
+    now = dt.datetime(2026, 5, 22, 12, 0, 0, tzinfo=dt.UTC)
     coid = (
         client_order_id
         if client_order_id is not None
@@ -125,7 +125,7 @@ async def test_state_transition_planned_to_previewed(
         instrument_id=crypto_instrument_btc_id,
         client_order_id="demo-test-planned-to-previewed",
     )
-    now = dt.datetime(2026, 5, 22, 12, 0, 1, tzinfo=dt.timezone.utc)
+    now = dt.datetime(2026, 5, 22, 12, 0, 1, tzinfo=dt.UTC)
     await demo_ledger_service.record_previewed(client_order_id=cid, now=now)
     row = await demo_ledger_service.get_by_client_order_id(cid)
     assert row is not None
@@ -143,7 +143,7 @@ async def test_invalid_state_transition_planned_to_filled(
         instrument_id=crypto_instrument_btc_id,
         client_order_id="demo-test-planned-to-filled-illegal",
     )
-    now = dt.datetime(2026, 5, 22, 12, 0, 1, tzinfo=dt.timezone.utc)
+    now = dt.datetime(2026, 5, 22, 12, 0, 1, tzinfo=dt.UTC)
     with pytest.raises(BinanceDemoInvalidStateTransition):
         await demo_ledger_service.record_filled(client_order_id=cid, now=now)
 

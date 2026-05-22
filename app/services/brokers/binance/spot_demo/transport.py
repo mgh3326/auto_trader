@@ -33,8 +33,10 @@ from app.services.brokers.binance.spot_demo.errors import (
     BinanceSpotDemoCrossAllowlistViolation,
 )
 from app.services.brokers.binance.spot_demo.host_allowlist import (
-    SPOT_DEMO_HOSTS,
     _DEPRECATED_TESTNET_HOSTS as TESTNET_HOSTS,
+)
+from app.services.brokers.binance.spot_demo.host_allowlist import (
+    SPOT_DEMO_HOSTS,
     assert_spot_demo_host,
 )
 
