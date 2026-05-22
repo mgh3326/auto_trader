@@ -61,12 +61,8 @@ class BinanceSpotDemoUnsupportedAuth(BinanceAdapterError):
     """
 
 
-class BinanceSpotDemoOrderSubmitNotImplemented(BinanceAdapterError):
-    """Raised when ``--confirm`` is passed to the Spot Demo smoke CLI.
-
-    The first ROB-296 PR opens the adapter/config/preflight/dry-run lane
-    but deliberately does NOT mirror the 620-line testnet execution
-    client + ledger semantics. Confirmed order submission is a separate
-    follow-up. The smoke CLI raises this with the exact next-step
-    operator pointer when ``--confirm`` is requested.
-    """
+# Note: BinanceSpotDemoOrderSubmitNotImplemented was removed in ROB-298 when
+# the Spot Demo execution client (submit/test/cancel/status) landed. The
+# previous placeholder behavior is now covered by the operator gate on
+# ``BinanceSpotDemoExecutionClient.submit_order`` (default returns a
+# ``SpotDemoDryRunResult``; HTTP only on explicit ``confirm=True``).

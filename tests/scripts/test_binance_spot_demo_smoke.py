@@ -122,10 +122,16 @@ def test_plan_only_marks_over_cap_without_crashing(
     assert payload["plan"]["within_cap"] is False
 
 
-def test_confirm_refused_not_implemented(
+def test_confirm_refused_with_followup_pointer(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """``--confirm`` is refused with the documented follow-up message."""
+    """``--confirm`` is refused with a pointer to the execution-client path.
+
+    ROB-298 wired ``BinanceSpotDemoExecutionClient`` for confirmed
+    submission, but the smoke CLI deliberately does NOT route through
+    it — operators must use the execution client + ledger service
+    surface directly. The smoke CLI remains read-only.
+    """
     _clear_env(monkeypatch)
     monkeypatch.setenv("BINANCE_SPOT_DEMO_ENABLED", "true")
     monkeypatch.setenv("BINANCE_SPOT_DEMO_API_KEY", "key")
@@ -134,7 +140,10 @@ def test_confirm_refused_not_implemented(
     exit_code = smoke.main(["--confirm", "--plan-only"])
     assert exit_code == 1
     error_messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
-    assert any("not implemented" in m.lower() for m in error_messages), error_messages
+    assert any(
+        "--confirm" in m or "execution client" in m.lower() or "refused" in m.lower()
+        for m in error_messages
+    ), error_messages
 
 
 def test_enabled_no_action_exits_with_guidance(

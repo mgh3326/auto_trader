@@ -13,19 +13,27 @@ Default behavior is fail-closed:
   * Per-request host in ``TESTNET_HOSTS`` or ``PUBLIC_HOSTS`` →
     ``BinanceSpotDemoCrossAllowlistViolation``.
 
-This PR (ROB-296) implements:
+This PR (ROB-296) implemented:
   * Spot Demo config / env parsing.
   * Spot Demo host allowlist (single host: ``demo-api.binance.com``).
   * Spot Demo signed transport (HMAC-SHA256).
   * Read-only account preflight (``GET /api/v3/account``).
   * Default-disabled dry-run smoke CLI.
 
-This PR does NOT implement:
-  * Order submission (no ``execution_client.py`` parallel — see
-    ``BinanceSpotDemoOrderSubmitNotImplemented``).
-  * Persistent order ledger.
+ROB-298 adds:
+  * Mutation-capable execution client
+    (``BinanceSpotDemoExecutionClient``) with per-call operator gate
+    (``submit_order(..., confirm=True)`` required for HTTP). Without
+    ``confirm=True`` the call returns a ``SpotDemoDryRunResult`` and
+    dispatches zero HTTP.
+  * ``/api/v3/order/test`` validation surface (``order_test``).
+  * Read-side status queries (``get_open_orders``, ``get_order_status``).
+  * Persistent ``BinanceDemoOrderLedger`` (state machine + service +
+    repository) — see the ledger sub-package.
+
+Out of scope (deferred):
   * Scheduler / TaskIQ / Prefect / Hermes activation.
-  * Ed25519 signing (the preflight surfaces auth rejection as
+  * Ed25519 signing (preflight surfaces auth rejection as
     ``BinanceSpotDemoUnsupportedAuth`` if the server refuses HMAC).
 """
 
@@ -39,8 +47,11 @@ from app.services.brokers.binance.spot_demo.errors import (
     BinanceSpotDemoCrossAllowlistViolation,
     BinanceSpotDemoDisabled,
     BinanceSpotDemoMissingCredentials,
-    BinanceSpotDemoOrderSubmitNotImplemented,
     BinanceSpotDemoUnsupportedAuth,
+)
+from app.services.brokers.binance.spot_demo.execution_client import (
+    BinanceSpotDemoExecutionClient,
+    SpotDemoDryRunResult,
 )
 from app.services.brokers.binance.spot_demo.host_allowlist import (
     SPOT_DEMO_HOSTS,
@@ -58,7 +69,8 @@ __all__ = [
     "BinanceSpotDemoMissingCredentials",
     "BinanceSpotDemoCrossAllowlistViolation",
     "BinanceSpotDemoUnsupportedAuth",
-    "BinanceSpotDemoOrderSubmitNotImplemented",
+    "BinanceSpotDemoExecutionClient",
+    "SpotDemoDryRunResult",
     "SpotDemoPreflightClient",
     "SpotDemoPreflightResult",
     "SpotDemoPlannedOrder",

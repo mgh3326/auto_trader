@@ -5,9 +5,9 @@ Non-mutating credential-presence check. Calls ``GET /api/v3/account``
 smoke CLI can write to evidence JSON without leaking secrets.
 
 What this module does NOT do:
-  * Place, cancel, or query orders. Order submission is intentionally
-    absent from this first ROB-296 PR (see
-    ``BinanceSpotDemoOrderSubmitNotImplemented``).
+  * Place, cancel, or query orders. Order submission lives in the
+    sibling ``execution_client`` module (added in ROB-298) — this
+    preflight remains a read-only credential-presence check.
   * Touch the database / ledger.
   * Activate scheduler / TaskIQ / Prefect / Hermes.
   * Route to mainnet or testnet hosts (transport layer refuses).

@@ -1,9 +1,11 @@
 """ROB-296 — Binance Spot Demo Mode smoke CLI (default-disabled).
 
 Parallel to ``scripts.binance_testnet_scalper_smoke`` but targets the
-Spot Demo endpoint (``https://demo-api.binance.com``) and is read-only
-by design: this PR does NOT include order submission for Spot Demo (see
-``BinanceSpotDemoOrderSubmitNotImplemented``).
+Spot Demo endpoint (``https://demo-api.binance.com``). The smoke CLI
+itself remains read-only (plan + preflight); confirmed order submission
+lives in ``BinanceSpotDemoExecutionClient`` (ROB-298) and is not wired
+through this script — passing ``--confirm`` here still refuses with the
+operator follow-up pointer.
 
 Hard invariant: default behavior is fail-closed.
 
@@ -24,9 +26,10 @@ Opt-in with credentials (read-only GET /api/v3/account preflight):
       BINANCE_SPOT_DEMO_API_SECRET=... \\
       uv run python -m scripts.binance_spot_demo_smoke --preflight
 
-The ``--confirm`` flag is intentionally unsupported in this PR; the CLI
-raises ``BinanceSpotDemoOrderSubmitNotImplemented`` with the exact
-follow-up step.
+The ``--confirm`` flag is intentionally not wired through this smoke
+CLI in ROB-298; the CLI refuses with a ``RuntimeError`` carrying the
+operator follow-up pointer (use the execution client directly behind
+the ledger service).
 
 Exit codes:
   0 — clean run (or default-disabled exit)
@@ -48,7 +51,6 @@ from decimal import Decimal
 from app.services.brokers.binance.spot_demo import (
     BinanceSpotDemoDisabled,
     BinanceSpotDemoMissingCredentials,
-    BinanceSpotDemoOrderSubmitNotImplemented,
     BinanceSpotDemoUnsupportedAuth,
     SpotDemoPreflightClient,
     plan_spot_demo_order,
@@ -108,8 +110,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help=(
-            "Operator-only flag. Order submission is NOT implemented "
-            "in this PR; passing this raises with follow-up instructions."
+            "Operator-only flag. The smoke CLI does not wire confirmed "
+            "order submission directly; passing this refuses with a "
+            "pointer to the execution client + ledger service path."
         ),
     )
     parser.add_argument(
@@ -184,15 +187,15 @@ async def _run(args: argparse.Namespace) -> int:
         logger.info("spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in")
         return 0
 
-    # --confirm: operator-only; not implemented in this PR.
+    # --confirm: operator-only; the smoke CLI does not wire confirmed
+    # order submission directly. The execution client + ledger service
+    # are the supported path (see ROB-298 docs/runbooks).
     if args.confirm:
-        raise BinanceSpotDemoOrderSubmitNotImplemented(
-            "--confirm requires Spot Demo order submission, which is NOT "
-            "included in the ROB-296 first PR. Follow-up: implement a Spot "
-            "Demo execution client (mirror app/services/brokers/binance/"
-            "testnet/execution_client.py under spot_demo/, decide ledger "
-            "policy, and land behind operator approval). Until then, do not "
-            "pass --confirm."
+        raise RuntimeError(
+            "--confirm is not wired through the smoke CLI. To place a "
+            "confirmed Spot Demo order, use BinanceSpotDemoExecutionClient "
+            "behind BinanceDemoLedgerService (see ROB-298 runbook). The "
+            "smoke CLI remains a read-only plan + preflight surface."
         )
 
     cap = _resolve_notional_cap(args.max_notional_usdt)
@@ -271,8 +274,9 @@ def main(argv: list[str] | None = None) -> int:
     except BinanceSpotDemoMissingCredentials as exc:
         logger.error("spot demo credentials missing: %s", exc)
         return 1
-    except BinanceSpotDemoOrderSubmitNotImplemented as exc:
-        logger.error("spot demo order submit not implemented: %s", exc)
+    except RuntimeError as exc:
+        # --confirm path (smoke CLI does not wire confirmed submission).
+        logger.error("spot demo smoke refused: %s", exc)
         return 1
     except BinanceSpotDemoUnsupportedAuth as exc:
         logger.error("spot demo unsupported auth: %s", exc)
