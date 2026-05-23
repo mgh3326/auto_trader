@@ -1228,29 +1228,20 @@ def _crypto_candidate_source(row: dict[str, Any]) -> str:
 def _crypto_candidate_context(
     row: dict[str, Any], preset_id: str
 ) -> ScreenerCandidateContext | None:
-    reasons: list[str] = []
-    score_label: str | None = None
-    if preset_id == "crypto_high_volume":
-        trade_amount = _coerce_float(_metric_raw_value("trade_amount_24h", row))
-        if trade_amount is not None:
-            score_label = f"거래대금 {int(trade_amount):,}"
-            reasons.append("24시간 KRW 거래대금 상위")
-    elif preset_id == "crypto_oversold":
-        rsi = _coerce_float(row.get("rsi"))
-        if rsi is not None:
-            score_label = f"RSI {rsi:.1f}"
-            reasons.append("RSI 저점권 후보")
-    elif preset_id == "crypto_momentum":
-        change_rate = _coerce_float(row.get("change_rate"))
-        if change_rate is not None:
-            score_label = f"{change_rate:+.2f}%"
-            reasons.append("단기 상승 모멘텀 후보")
-    if not reasons:
+    from app.services.screener_evidence import build_candidate_evidence
+
+    evidence = build_candidate_evidence(market="crypto", preset=preset_id, rows=[row])
+    if not evidence:
+        return None
+    ev = evidence[0]
+    if ev.score_label == "-":
+        return None
+    if not ev.reasons:
         return None
     return ScreenerCandidateContext(
-        scoreLabel=score_label,
-        reasons=reasons,
-        source=_crypto_candidate_source(row),  # type: ignore[arg-type]
+        scoreLabel=ev.score_label,
+        reasons=ev.reasons,
+        source=ev.source,  # type: ignore[arg-type]
     )
 
 
