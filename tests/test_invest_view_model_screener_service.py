@@ -2433,10 +2433,17 @@ async def test_consecutive_gainers_zero_qualifiers_still_threads_partition_metad
 
 
 def test_crypto_candidate_context_matches_builder_labels():
-    from app.services.invest_view_model.screener_service import _crypto_candidate_context
+    from app.services.invest_view_model.screener_service import (
+        _crypto_candidate_context,
+    )
 
-    row = {"symbol": "KRW-BTC", "source": "tvscreener_upbit", "change_rate": 4.2,
-           "rsi": 40.0, "trade_amount_24h": 123456}
+    row = {
+        "symbol": "KRW-BTC",
+        "source": "tvscreener_upbit",
+        "change_rate": 4.2,
+        "rsi": 40.0,
+        "trade_amount_24h": 123456,
+    }
     ctx = _crypto_candidate_context(row, "crypto_momentum")
     assert ctx is not None
     assert ctx.scoreLabel == "+4.20%"

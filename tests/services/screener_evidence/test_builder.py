@@ -1,3 +1,4 @@
+from app.services.screener_evidence import build_candidate_evidence
 from app.services.screener_evidence.models import CandidateEvidence
 
 
@@ -29,9 +30,6 @@ def test_candidate_evidence_to_payload_dict_round_trips():
         "source": "tvscreener_upbit",
         "risk_flags": [],
     }
-
-
-from app.services.screener_evidence import build_candidate_evidence
 
 
 def _crypto_row(symbol, name, change_rate, rsi, trade_amount, *, warning=False):
@@ -75,7 +73,9 @@ def test_builder_crypto_high_volume_rank_score_and_label():
         _crypto_row("KRW-HI", "하이", 1.0, 50.0, 999.0),
         _crypto_row("KRW-LO", "로우", 1.0, 50.0, 1.0),
     ]
-    out = build_candidate_evidence(market="crypto", preset="crypto_high_volume", rows=rows)
+    out = build_candidate_evidence(
+        market="crypto", preset="crypto_high_volume", rows=rows
+    )
     assert out[0].symbol == "KRW-HI"
     assert out[0].score == 10.0
     assert out[0].reasons == ["24시간 KRW 거래대금 상위"]
@@ -90,9 +90,15 @@ def test_builder_marks_market_warning_risk_flag():
 
 def test_builder_equity_top_gainers_uses_change_rate_and_source():
     rows = [
-        {"symbol": "005930", "name": "삼성전자", "source": "kis",
-         "change_rate": 3.0, "price": 78500.0, "daily_volume": 14_000_000,
-         "consecutive_up_days": 3},
+        {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "source": "kis",
+            "change_rate": 3.0,
+            "price": 78500.0,
+            "daily_volume": 14_000_000,
+            "consecutive_up_days": 3,
+        },
     ]
     out = build_candidate_evidence(market="kr", preset="top_gainers", rows=rows)
     assert out[0].source == "kis"
@@ -103,4 +109,7 @@ def test_builder_equity_top_gainers_uses_change_rate_and_source():
 
 
 def test_builder_empty_rows_returns_empty():
-    assert build_candidate_evidence(market="crypto", preset="crypto_momentum", rows=[]) == []
+    assert (
+        build_candidate_evidence(market="crypto", preset="crypto_momentum", rows=[])
+        == []
+    )

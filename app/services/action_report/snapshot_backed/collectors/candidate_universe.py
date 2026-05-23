@@ -36,11 +36,19 @@ from app.services.screener_evidence import build_candidate_evidence
 
 TOP_N = 10
 
-_FRESHNESS_BY_USEFULNESS = {"useful": "fresh", "stale_only": "stale", "empty": "missing"}
+_FRESHNESS_BY_USEFULNESS = {
+    "useful": "fresh",
+    "stale_only": "stale",
+    "empty": "missing",
+}
 
 
 def _is_mock(obj: Any) -> bool:
-    return hasattr(obj, "_mock_children") or type(obj).__name__ in ("MagicMock", "AsyncMock", "Mock")
+    return hasattr(obj, "_mock_children") or type(obj).__name__ in (
+        "MagicMock",
+        "AsyncMock",
+        "Mock",
+    )
 
 
 def _classify_usefulness(*, actionable: int, stale: int) -> tuple[str, str | None]:
@@ -170,7 +178,9 @@ class CandidateUniverseSnapshotCollector:
         if _is_mock(self._session) or _is_mock(self._equity_repo):
             payload: dict[str, Any] = {
                 "market": coverage.market,
-                "today_trading_date": coverage.today_trading_date.isoformat() if hasattr(coverage.today_trading_date, "isoformat") else str(coverage.today_trading_date),
+                "today_trading_date": coverage.today_trading_date.isoformat()
+                if hasattr(coverage.today_trading_date, "isoformat")
+                else str(coverage.today_trading_date),
                 "fresh_count": coverage.fresh_count,
                 "actionable_count": coverage.fresh_count,
                 "stale_count": coverage.stale_count,
@@ -242,7 +252,9 @@ class CandidateUniverseSnapshotCollector:
                     "candidates": [],
                     "source_coverage": {},
                     "missing_data": _missing_data(request.market, usefulness),
-                    "freshness_status": _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial"),
+                    "freshness_status": _FRESHNESS_BY_USEFULNESS.get(
+                        usefulness, "partial"
+                    ),
                 }
                 return [
                     build_result(
@@ -266,7 +278,9 @@ class CandidateUniverseSnapshotCollector:
             usefulness, no_data_reason = _classify_usefulness(actionable=count, stale=0)
             payload = {
                 "market": "crypto",
-                "latest_partition": latest_date.isoformat() if hasattr(latest_date, "isoformat") else str(latest_date),
+                "latest_partition": latest_date.isoformat()
+                if hasattr(latest_date, "isoformat")
+                else str(latest_date),
                 "fresh_count": count,
                 "actionable_count": count,
                 "stale_count": 0,
@@ -340,7 +354,9 @@ class CandidateUniverseSnapshotCollector:
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,
             "stale_count": stale_count,
-            "last_computed_at": last_computed_at.isoformat() if last_computed_at else None,
+            "last_computed_at": last_computed_at.isoformat()
+            if last_computed_at
+            else None,
             "usefulness": usefulness,
             "missing_data": missing,
         }

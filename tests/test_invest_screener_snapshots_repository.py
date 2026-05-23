@@ -68,8 +68,11 @@ async def test_get_fresh_filters_stale(db_session):
 @pytest.mark.asyncio
 async def test_coverage_counts(db_session):
     from sqlalchemy import text
+
     await db_session.execute(
-        text("DELETE FROM invest_screener_snapshots WHERE symbol IN ('T_TOP_A', 'T_TOP_B', 'T_TOP_OLD')")
+        text(
+            "DELETE FROM invest_screener_snapshots WHERE symbol IN ('T_TOP_A', 'T_TOP_B', 'T_TOP_OLD')"
+        )
     )
     await db_session.commit()
 
@@ -104,25 +107,51 @@ async def test_coverage_counts(db_session):
 
 
 @pytest.mark.asyncio
-async def test_list_top_candidates_orders_by_change_rate_from_latest_partition(db_session):
+async def test_list_top_candidates_orders_by_change_rate_from_latest_partition(
+    db_session,
+):
     from sqlalchemy import text
+
     # Clean up any persistent dirty rows from previous runs.
     await db_session.execute(
-        text("DELETE FROM invest_screener_snapshots WHERE symbol IN ('T_TOP_A', 'T_TOP_B', 'T_TOP_OLD')")
+        text(
+            "DELETE FROM invest_screener_snapshots WHERE symbol IN ('T_TOP_A', 'T_TOP_B', 'T_TOP_OLD')"
+        )
     )
     await db_session.commit()
 
     repo = InvestScreenerSnapshotsRepository(db_session)
-    base = dict(market="kr", snapshot_date=dt.date(2030, 5, 22), source="yahoo")
-    await repo.upsert(SnapshotUpsert(symbol="T_TOP_A", latest_close=Decimal("10"),
-                                     change_rate=Decimal("1.0"), closes_window=[10], **base))
-    await repo.upsert(SnapshotUpsert(symbol="T_TOP_B", latest_close=Decimal("10"),
-                                     change_rate=Decimal("9.0"), closes_window=[10], **base))
+    base = {"market": "kr", "snapshot_date": dt.date(2030, 5, 22), "source": "yahoo"}
+    await repo.upsert(
+        SnapshotUpsert(
+            symbol="T_TOP_A",
+            latest_close=Decimal("10"),
+            change_rate=Decimal("1.0"),
+            closes_window=[10],
+            **base,
+        )
+    )
+    await repo.upsert(
+        SnapshotUpsert(
+            symbol="T_TOP_B",
+            latest_close=Decimal("10"),
+            change_rate=Decimal("9.0"),
+            closes_window=[10],
+            **base,
+        )
+    )
     # An older partition row that must be excluded (not latest).
-    await repo.upsert(SnapshotUpsert(symbol="T_TOP_OLD", latest_close=Decimal("10"),
-                                     change_rate=Decimal("50.0"), closes_window=[10],
-                                     market="kr", snapshot_date=dt.date(2030, 5, 1),
-                                     source="yahoo"))
+    await repo.upsert(
+        SnapshotUpsert(
+            symbol="T_TOP_OLD",
+            latest_close=Decimal("10"),
+            change_rate=Decimal("50.0"),
+            closes_window=[10],
+            market="kr",
+            snapshot_date=dt.date(2030, 5, 1),
+            source="yahoo",
+        )
+    )
     await db_session.commit()
 
     rows = await repo.list_top_candidates(market="kr", limit=10)
