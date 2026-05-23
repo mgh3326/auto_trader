@@ -1036,7 +1036,11 @@ def _quantize_qty(
         target = Decimal(1).scaleb(-quantity_precision)
     else:
         exponent = step_size.normalize().as_tuple().exponent
-        target = Decimal(1).scaleb(exponent) if isinstance(exponent, int) and exponent < 0 else Decimal(1)
+        target = (
+            Decimal(1).scaleb(exponent)
+            if isinstance(exponent, int) and exponent < 0
+            else Decimal(1)
+        )
     return qty.quantize(target, rounding=ROUND_DOWN)
 
 

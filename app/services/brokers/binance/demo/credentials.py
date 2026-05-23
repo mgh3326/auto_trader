@@ -146,7 +146,9 @@ def inspect_demo_credential(
         resolved = resolve_demo_credentials(product, env)
     except BinanceDemoIncompleteCredentialOverride:
         key_env, secret_env = _PRODUCT_ENV[product]
-        key_present = bool(_clean(env.get(key_env)) or _clean(env.get(CANONICAL_KEY_ENV)))
+        key_present = bool(
+            _clean(env.get(key_env)) or _clean(env.get(CANONICAL_KEY_ENV))
+        )
         secret_present = bool(
             _clean(env.get(secret_env)) or _clean(env.get(CANONICAL_SECRET_ENV))
         )
