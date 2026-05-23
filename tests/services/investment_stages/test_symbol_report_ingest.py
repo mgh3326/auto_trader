@@ -50,9 +50,7 @@ async def _make_run(db_session, bundle_uuid: uuid.UUID) -> uuid.UUID:
     return run.run_uuid
 
 
-def _envelope(
-    run_uuid: uuid.UUID, bundle_uuid: uuid.UUID
-) -> HermesStageRunEnvelope:
+def _envelope(run_uuid: uuid.UUID, bundle_uuid: uuid.UUID) -> HermesStageRunEnvelope:
     return HermesStageRunEnvelope(
         run_uuid=run_uuid,
         snapshot_bundle_uuid=bundle_uuid,
