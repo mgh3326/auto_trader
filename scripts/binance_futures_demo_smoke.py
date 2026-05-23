@@ -176,6 +176,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "position mode; writes the full ledger lifecycle."
         ),
     )
+    mode.add_argument(
+        "--readiness",
+        action="store_true",
+        help="No-secret env readiness report. No HTTP, no credentials required.",
+    )
     parser.add_argument(
         "--symbol",
         default="XRPUSDT",
@@ -1006,6 +1011,15 @@ def _now_utc() -> dt.datetime:
 # Top-level orchestration.
 # ---------------------------------------------------------------------------
 async def _run(args: argparse.Namespace) -> int:
+    if getattr(args, "readiness", False):
+        from app.services.brokers.binance.futures_demo.readiness import (
+            evaluate_futures_demo_env_readiness,
+        )
+
+        readiness = evaluate_futures_demo_env_readiness()
+        _evidence({"event": "futures_demo_env_readiness", **readiness.to_evidence_dict()})
+        return 0 if readiness.ready else 1
+
     # Hard invariant #1: default-disabled. The gate is checked AFTER
     # argparse so `--help` still works without the env set, but BEFORE
     # any mode dispatch / HTTP / DB.
