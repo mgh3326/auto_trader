@@ -290,4 +290,40 @@ class EvidenceAutoEmitter:
                 )
             )
 
+        # Held-and-trending — held names that also surface in the screener
+        # candidate universe. Review-only awareness signal (held names are
+        # excluded from buy candidates above); no broker mutation.
+        already_proposed = {item.symbol for item in items if item.symbol}
+        for sym, cand in candidate_by_symbol.items():
+            if sym not in held or sym in already_proposed:
+                continue
+            reasons = cand.get("reasons") or []
+            items.append(
+                IngestReportItem(
+                    client_item_key=f"auto-hold-trend-{sym}",
+                    item_kind="watch",
+                    symbol=sym,
+                    intent="trend_recovery_review",
+                    rationale=(
+                        f"보유 종목 {sym}가 스크리너 추세 상위에 등장 — 관망/추가검토 "
+                        f"(score {cand.get('score')}, {', '.join(reasons)})"
+                    ),
+                    operation="review",
+                    apply_policy="requires_user_approval",
+                    evidence_snapshot=_make_evidence(
+                        candidate_snapshot,
+                        extra={
+                            "candidate_snapshot_uuid": _snapshot_uuid(
+                                candidate_snapshot
+                            ),
+                            "candidate_score": cand.get("score"),
+                            "candidate_reasons": reasons,
+                            "candidate_source": cand.get("source"),
+                            "held": True,
+                            "proposer": "auto_emit/held_and_trending",
+                        },
+                    ),
+                )
+            )
+
         return items
