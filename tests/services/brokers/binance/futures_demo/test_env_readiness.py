@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.services.brokers.binance.futures_demo.readiness import (
     evaluate_futures_demo_env_readiness,
 )
@@ -27,9 +25,7 @@ def test_no_secret_values_in_evidence(monkeypatch):
     monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     monkeypatch.setenv("BINANCE_FUTURES_DEMO_API_KEY", "SUPER_SECRET_KEY_VALUE")
     monkeypatch.setenv("BINANCE_FUTURES_DEMO_API_SECRET", "SUPER_SECRET_SECRET_VALUE")
-    monkeypatch.setenv(
-        "BINANCE_FUTURES_DEMO_BASE_URL", "https://demo-fapi.binance.com"
-    )
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_BASE_URL", "https://demo-fapi.binance.com")
     ev = evaluate_futures_demo_env_readiness().to_evidence_dict()
     blob = repr(ev)
     assert "SUPER_SECRET_KEY_VALUE" not in blob

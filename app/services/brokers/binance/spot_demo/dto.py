@@ -69,4 +69,3 @@ class SpotDemoAssetBalance:
     asset: str
     free: Decimal
     locked: Decimal
-

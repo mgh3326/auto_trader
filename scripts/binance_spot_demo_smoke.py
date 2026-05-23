@@ -268,9 +268,7 @@ async def _run_preflight(args: argparse.Namespace) -> int:
         result = await client.preflight_account()
     finally:
         await client.aclose()
-    _evidence(
-        {"event": "spot_demo_preflight", "preflight": result.to_evidence_dict()}
-    )
+    _evidence({"event": "spot_demo_preflight", "preflight": result.to_evidence_dict()})
     return 0
 
 
@@ -305,7 +303,9 @@ async def _run_order_test(args: argparse.Namespace) -> int:
             order_type="MARKET",
             qty=sizing.qty,
         )
-        _trace(f"order_test_ok symbol={result.symbol} side={result.side} qty={result.qty}")
+        _trace(
+            f"order_test_ok symbol={result.symbol} side={result.side} qty={result.qty}"
+        )
         _evidence(
             {
                 "event": "spot_demo_order_test",
@@ -368,8 +368,10 @@ async def _run_confirm(args: argparse.Namespace) -> int:
 
     try:
         filters = await _fetch_symbol_filters(base_url, args.symbol)
-        ref_price = args.price if args.order_type == "LIMIT" else await _fetch_reference_price(
-            base_url, args.symbol
+        ref_price = (
+            args.price
+            if args.order_type == "LIMIT"
+            else await _fetch_reference_price(base_url, args.symbol)
         )
         sizing = compute_demo_order_qty(
             target_notional_usdt=args.cap_usdt,
@@ -885,9 +887,7 @@ async def _reconcile(
             await ledger.record_closed(client_order_id=close_cid, now=_now_utc())
             await ledger.record_reconciled(client_order_id=close_cid, now=_now_utc())
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "close-row reconcile non-fatal: %s (cid=%s)", exc, close_cid
-            )
+            logger.warning("close-row reconcile non-fatal: %s (cid=%s)", exc, close_cid)
     await session.commit()
     _trace(f"reconciled cid={buy_cid}")
     _evidence(
@@ -1057,9 +1057,7 @@ async def _run(args: argparse.Namespace) -> int:
     # argparse so `--help` still works without the env set, but BEFORE
     # any mode dispatch / HTTP / DB.
     if not _truthy(os.environ.get("BINANCE_SPOT_DEMO_ENABLED")):
-        logger.info(
-            "spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in"
-        )
+        logger.info("spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in")
         return 0
 
     if args.plan_only:

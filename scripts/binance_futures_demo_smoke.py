@@ -1017,7 +1017,9 @@ async def _run(args: argparse.Namespace) -> int:
         )
 
         readiness = evaluate_futures_demo_env_readiness()
-        _evidence({"event": "futures_demo_env_readiness", **readiness.to_evidence_dict()})
+        _evidence(
+            {"event": "futures_demo_env_readiness", **readiness.to_evidence_dict()}
+        )
         return 0 if readiness.ready else 1
 
     # Hard invariant #1: default-disabled. The gate is checked AFTER
