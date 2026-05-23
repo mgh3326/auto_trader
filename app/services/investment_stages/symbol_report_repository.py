@@ -48,6 +48,21 @@ class SymbolIntermediateReportRepository:
         )
         return int(current or 0) + 1
 
+    async def get_by_uuids(
+        self, symbol_report_uuids: list[uuid.UUID]
+    ) -> list[InvestmentSymbolIntermediateReport]:
+        """Batch fetch by ``symbol_report_uuid`` (one query, no N+1)."""
+        if not symbol_report_uuids:
+            return []
+        result = await self._session.scalars(
+            select(InvestmentSymbolIntermediateReport).where(
+                InvestmentSymbolIntermediateReport.symbol_report_uuid.in_(
+                    symbol_report_uuids
+                )
+            )
+        )
+        return list(result.all())
+
     async def list_for_run(
         self, run_uuid: uuid.UUID
     ) -> list[InvestmentSymbolIntermediateReport]:

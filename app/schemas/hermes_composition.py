@@ -117,6 +117,11 @@ class HermesCompositionResult(BaseModel):
     items: list[IngestReportItem] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     cited_snapshot_uuids: list[uuid.UUID] = Field(default_factory=list)
+    # ROB-301 D3: optional references to the symbol-scoped intermediate reports
+    # this composition consumed. Empty for legacy composition — the current item
+    # path is then byte-identical (REGRESSION). Validated for existence (and
+    # run membership) on ingest.
+    symbol_intermediate_report_uuids: list[uuid.UUID] = Field(default_factory=list)
 
     @field_validator("items")
     @classmethod
