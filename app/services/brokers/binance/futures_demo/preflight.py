@@ -1,7 +1,7 @@
 """ROB-298 PR 2 — Binance Futures Demo read-only preflight client.
 
 Non-mutating credential-presence check for the USD-M Futures Demo lane.
-Calls ``GET /fapi/v1/account`` (read-only signed endpoint) and returns a
+Calls ``GET /fapi/v2/account`` (read-only signed endpoint) and returns a
 redacted summary that the smoke CLI can write to evidence JSON without
 leaking secrets.
 
@@ -39,6 +39,8 @@ from typing import Any, Final
 
 import httpx
 
+from app.services.brokers.binance.demo.credentials import resolve_demo_credentials
+from app.services.brokers.binance.demo.errors import BinanceDemoCredentialError
 from app.services.brokers.binance.futures_demo.errors import (
     BinanceFuturesDemoDisabled,
     BinanceFuturesDemoMissingCredentials,
@@ -55,7 +57,7 @@ from app.services.brokers.binance.futures_demo.transport import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL: Final[str] = "https://demo-fapi.binance.com"
-_ACCOUNT_PATH: Final[str] = "/fapi/v1/account"
+_ACCOUNT_PATH: Final[str] = "/fapi/v2/account"
 
 # Binance error codes that indicate the server rejected our HMAC-SHA256
 # signature. If the operator's Futures Demo account requires Ed25519
@@ -218,8 +220,10 @@ class FuturesDemoPreflightClient:
 
         Env contract:
           * ``BINANCE_FUTURES_DEMO_ENABLED`` MUST be truthy.
-          * ``BINANCE_FUTURES_DEMO_API_KEY`` MUST be present and non-empty.
-          * ``BINANCE_FUTURES_DEMO_API_SECRET`` MUST be present and non-empty.
+          * Credentials (ROB-302): the ``BINANCE_FUTURES_DEMO_API_*`` pair
+            OR the canonical ``BINANCE_DEMO_API_*`` pair MUST be present
+            (the per-product pair wins when set). A half-set pair fails
+            closed. Resolved via ``demo.credentials.resolve_demo_credentials``.
           * ``BINANCE_FUTURES_DEMO_BASE_URL`` (optional) MUST be a Futures
             Demo host if set; transport factory enforces.
 
@@ -232,20 +236,17 @@ class FuturesDemoPreflightClient:
                 "BINANCE_FUTURES_DEMO_ENABLED=true to opt in to the Futures "
                 "Demo preflight path. Default is fail-closed."
             )
-        api_key = os.environ.get("BINANCE_FUTURES_DEMO_API_KEY", "")
-        api_secret = os.environ.get("BINANCE_FUTURES_DEMO_API_SECRET", "")
-        if not api_key:
-            raise BinanceFuturesDemoMissingCredentials(
-                "BINANCE_FUTURES_DEMO_API_KEY is empty or missing. Refusing "
-                "to construct Futures Demo preflight client."
-            )
-        if not api_secret:
-            raise BinanceFuturesDemoMissingCredentials(
-                "BINANCE_FUTURES_DEMO_API_SECRET is empty or missing. "
-                "Refusing to construct Futures Demo preflight client."
-            )
+        # ROB-302: credentials resolve through the shared canonical pair.
+        # Re-raise as the lane-specific error so existing fail-closed contracts
+        # and the smoke CLI's catch block are preserved.
+        try:
+            creds = resolve_demo_credentials("futures", os.environ)
+        except BinanceDemoCredentialError as exc:
+            raise BinanceFuturesDemoMissingCredentials(str(exc)) from exc
         base_url = os.environ.get("BINANCE_FUTURES_DEMO_BASE_URL", _DEFAULT_BASE_URL)
-        return cls(api_key=api_key, api_secret=api_secret, base_url=base_url)
+        return cls(
+            api_key=creds.api_key, api_secret=creds.api_secret, base_url=base_url
+        )
 
     def __repr__(self) -> str:
         # Never reference _api_secret in repr/str. api_key half is
@@ -259,7 +260,7 @@ class FuturesDemoPreflightClient:
         await self._client.aclose()
 
     async def preflight_account(self) -> FuturesDemoPreflightResult:
-        """Call ``GET /fapi/v1/account`` and return a redacted summary.
+        """Call ``GET /fapi/v2/account`` and return a redacted summary.
 
         Side effects: ONE signed HTTP GET against
         ``demo-fapi.binance.com``. No DB writes, no ledger writes, no
@@ -277,7 +278,7 @@ class FuturesDemoPreflightClient:
             params={"recvWindow": BINANCE_FUTURES_DEMO_RECV_WINDOW_MS},
             api_secret=self._api_secret,
         )
-        # Path MUST stay /fapi/v1/account. httpx joins base_url + path
+        # Path MUST stay /fapi/v2/account. httpx joins base_url + path
         # without /fapi/fapi/v1 duplication because base_url has no path
         # component beyond the host.
         response = await self._client.get(_ACCOUNT_PATH, params=signed)

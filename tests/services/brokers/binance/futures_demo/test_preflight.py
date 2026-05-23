@@ -1,4 +1,4 @@
-"""ROB-298 PR 2 — Futures Demo preflight (signed GET /fapi/v1/account).
+"""ROB-298 PR 2 — Futures Demo preflight (signed GET /fapi/v2/account).
 
 Mirrors the Spot Demo preflight contract under an independent fail-closed
 exception hierarchy. The preflight is read-only: ONE signed HTTP GET
@@ -11,7 +11,7 @@ Contract coverage:
       - API key or secret is missing → ``BinanceFuturesDemoMissingCredentials``
       - ``BINANCE_FUTURES_DEMO_BASE_URL`` resolves to a non-Futures-Demo host
         (Spot Demo / Spot Testnet / Live spot / Live futures / arbitrary)
-  * Signed GET ``/fapi/v1/account`` returns a redacted summary on 200.
+  * Signed GET ``/fapi/v2/account`` returns a redacted summary on 200.
   * Returned dataclass has expected source/venue/product = futures_demo/binance/usdm_futures.
   * Secret never appears in repr/caplog (regression sentinel).
   * ``aclose()`` shuts down the httpx client cleanly.
@@ -157,7 +157,7 @@ def test_base_url_rejects_arbitrary(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Signed GET /fapi/v1/account success path                                    #
+# Signed GET /fapi/v2/account success path                                    #
 # --------------------------------------------------------------------------- #
 
 
@@ -174,10 +174,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> FuturesDemoPreflightClient:
 async def test_preflight_account_success(
     client: FuturesDemoPreflightClient, httpx_mock
 ) -> None:
-    """``preflight_account`` hits /fapi/v1/account and returns a redacted summary."""
+    """``preflight_account`` hits /fapi/v2/account and returns a redacted summary."""
     httpx_mock.add_response(
         method="GET",
-        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/account\?.*$"),
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v2/account\?.*$"),
         status_code=200,
         json={
             "canTrade": True,
@@ -224,7 +224,7 @@ async def test_preflight_account_success(
     requests = httpx_mock.get_requests()
     assert len(requests) == 1
     url_str = str(requests[0].url)
-    assert "/fapi/v1/account" in url_str
+    assert "/fapi/v2/account" in url_str
     assert "signature=" in url_str
     assert "timestamp=" in url_str
 
@@ -238,7 +238,7 @@ async def test_preflight_to_evidence_dict_shape(
     """``to_evidence_dict`` is JSON-serializable and has the expected shape."""
     httpx_mock.add_response(
         method="GET",
-        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/account\?.*$"),
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v2/account\?.*$"),
         status_code=200,
         json={
             "canTrade": True,
@@ -278,7 +278,7 @@ async def test_preflight_account_unsupported_auth_codes(
     """Server-side HMAC rejection codes → BinanceFuturesDemoUnsupportedAuth."""
     httpx_mock.add_response(
         method="GET",
-        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/account\?.*$"),
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v2/account\?.*$"),
         status_code=401,
         json={"code": code, "msg": "Signature for this request is not valid."},
     )
@@ -294,7 +294,7 @@ async def test_preflight_account_other_4xx_raises_http_status_error(
     """Non-auth 4xx surfaces as ``httpx.HTTPStatusError``."""
     httpx_mock.add_response(
         method="GET",
-        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/account\?.*$"),
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v2/account\?.*$"),
         status_code=429,
         json={"code": -1003, "msg": "Too many requests."},
     )
@@ -341,7 +341,7 @@ async def test_secret_not_in_caplog_on_4xx(
     client = FuturesDemoPreflightClient.from_env()
     httpx_mock.add_response(
         method="GET",
-        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/account\?.*$"),
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v2/account\?.*$"),
         status_code=401,
         json={"code": -1022, "msg": "Signature for this request is not valid."},
     )

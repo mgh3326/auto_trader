@@ -49,6 +49,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final
 
+from app.services.brokers.binance.demo.credentials import resolve_demo_credentials
+from app.services.brokers.binance.demo.errors import BinanceDemoCredentialError
 from app.services.brokers.binance.futures_demo.dto import (
     FuturesDemoCancelResult,
     FuturesDemoLeverageResult,
@@ -156,8 +158,10 @@ class BinanceFuturesDemoExecutionClient:
 
         Env contract:
           * ``BINANCE_FUTURES_DEMO_ENABLED`` MUST be truthy.
-          * ``BINANCE_FUTURES_DEMO_API_KEY`` MUST be present and non-empty.
-          * ``BINANCE_FUTURES_DEMO_API_SECRET`` MUST be present and non-empty.
+          * Credentials (ROB-302): the ``BINANCE_FUTURES_DEMO_API_*`` pair
+            OR the canonical ``BINANCE_DEMO_API_*`` pair MUST be present
+            (the per-product pair wins when set). A half-set pair fails
+            closed. Resolved via ``demo.credentials.resolve_demo_credentials``.
           * ``BINANCE_FUTURES_DEMO_BASE_URL`` (optional) MUST be a Futures
             Demo host if set; transport factory enforces.
 
@@ -170,20 +174,16 @@ class BinanceFuturesDemoExecutionClient:
                 "BINANCE_FUTURES_DEMO_ENABLED=true to opt in to the Futures "
                 "Demo execution path. Default is fail-closed."
             )
-        api_key = os.environ.get("BINANCE_FUTURES_DEMO_API_KEY", "")
-        api_secret = os.environ.get("BINANCE_FUTURES_DEMO_API_SECRET", "")
-        if not api_key:
-            raise BinanceFuturesDemoMissingCredentials(
-                "BINANCE_FUTURES_DEMO_API_KEY is empty or missing. Refusing "
-                "to construct Futures Demo execution client."
-            )
-        if not api_secret:
-            raise BinanceFuturesDemoMissingCredentials(
-                "BINANCE_FUTURES_DEMO_API_SECRET is empty or missing. "
-                "Refusing to construct Futures Demo execution client."
-            )
+        # ROB-302: credentials resolve through the shared canonical pair.
+        # Re-raise as the lane-specific error so fail-closed contracts hold.
+        try:
+            creds = resolve_demo_credentials("futures", os.environ)
+        except BinanceDemoCredentialError as exc:
+            raise BinanceFuturesDemoMissingCredentials(str(exc)) from exc
         base_url = os.environ.get("BINANCE_FUTURES_DEMO_BASE_URL", _DEFAULT_BASE_URL)
-        return cls(api_key=api_key, api_secret=api_secret, base_url=base_url)
+        return cls(
+            api_key=creds.api_key, api_secret=creds.api_secret, base_url=base_url
+        )
 
     def __repr__(self) -> str:
         # Never reference _api_secret in repr/str. api_key half is
