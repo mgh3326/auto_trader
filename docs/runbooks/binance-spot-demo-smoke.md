@@ -11,6 +11,15 @@ comment `d258c471-3202-444b-901b-c127f3ee44af` (env namespace, 10 USDT
 cap, LOT_SIZE floor sizing, ledger lifecycle, host allowlist, default-
 disabled). When in doubt, that comment wins.
 
+**Sibling lane.** Binance USD-M Futures Demo
+(`demo-fapi.binance.com`) is now available under ROB-298 PR 2 — see
+`docs/runbooks/binance-futures-demo-smoke.md`. The futures lane has an
+independent env namespace (`BINANCE_FUTURES_DEMO_*`), host allowlist
+(`FUTURES_DEMO_HOSTS`), and execution client
+(`BinanceFuturesDemoExecutionClient`); the two lanes share only the
+`binance_demo_order_ledger` table via the `product` discriminator
+(`spot` vs `usdm_futures`).
+
 ---
 
 ## 1. Lane boundaries at a glance
@@ -20,7 +29,7 @@ disabled). When in doubt, that comment wins.
 | **Spot Demo** | **`demo-api.binance.com`** | **`BINANCE_SPOT_DEMO_*`** | **Active — canonical Spot mock lane (ROB-298)** |
 | Public market data | `api.binance.com`, `data-api.binance.vision`, etc. | (none — unsigned) | Active (read-only ingest) |
 | Spot Testnet | `testnet.binance.vision` | _(removed)_ | **Removed in ROB-298.** Runtime + tests + runbook deleted. `BINANCE_TESTNET_*` env vars are inert. |
-| USD-M Futures Demo | `demo-fapi.binance.com` | _(deferred)_ | **Deferred to ROB-298 PR 2.** No adapter, no host allowlist entry, no env. |
+| USD-M Futures Demo | `demo-fapi.binance.com` | `BINANCE_FUTURES_DEMO_*` | Active — sibling lane added in ROB-298 PR 2; see `docs/runbooks/binance-futures-demo-smoke.md`. |
 | Live / mainnet trading | `api.binance.com`, `fapi.binance.com` | _(none)_ | **Refused fail-closed.** Live trading is not a feature of this repo. |
 
 Hard invariants enforced at the transport / signer layer:
@@ -454,13 +463,12 @@ comment if this runbook ever drifts from it.
 
 ---
 
-## 10. Out of scope (deferred to ROB-298 PR 2 and beyond)
+## 10. Out of scope (deferred to ROB-298 follow-ups and beyond)
 
-* **USD-M Futures Demo** (`demo-fapi.binance.com`). No adapter, no
-  host allowlist entry, no env in this PR. PR 2 will add a sibling
-  `BinanceUsdmFuturesDemoExecutionClient`, extend
-  `binance_demo_order_ledger` usage for `product = 'usdm_futures'`,
-  and update this runbook.
+* **USD-M Futures Demo** (`demo-fapi.binance.com`) — landed as a
+  sibling lane in ROB-298 PR 2. See
+  `docs/runbooks/binance-futures-demo-smoke.md` for that runbook;
+  there is nothing further to do from the Spot Demo side.
 * **Scheduler / TaskIQ / Prefect / cron / Hermes activation** of the
   Spot Demo execution client. Tracked under ROB-292 and remains
   paused.

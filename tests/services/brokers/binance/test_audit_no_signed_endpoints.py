@@ -127,8 +127,9 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
 
     The signed-endpoint vocabulary (``order``, ``cancel_order``, etc.) is
     permitted ONLY inside the isolated signed sub-packages:
-      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet)
+      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet, deleted in ROB-298)
       * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
+      * ``app/services/brokers/binance/futures_demo/`` (ROB-298 PR 2 — Futures Demo)
     Anywhere else under ``app/services/brokers/binance/`` is the
     read-only public adapter and must not gain signed surface.
     """
@@ -137,11 +138,11 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
     if not pkg.exists():
         # Until Task 4 introduces the package, this is fine.
         return
-    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo")
+    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo", pkg / "futures_demo")
     offenders: list[tuple[pathlib.Path, int, str]] = []
     for py_file in pkg.rglob("*.py"):
-        # ROB-286 + ROB-296: skip the isolated signed sub-packages — signed
-        # methods legitimately live there.
+        # ROB-286 + ROB-296 + ROB-298 PR 2: skip the isolated signed sub-packages
+        # — signed methods legitimately live there.
         skip = False
         for signed_pkg in isolated_signed_pkgs:
             try:
@@ -158,9 +159,10 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
     assert not offenders, (
         f"Signed-endpoint method names found in Binance public adapter: "
         f"{offenders}. ROB-285 public adapter must not expose signed-endpoint "
-        "surface. Signed methods are allowed ONLY inside binance/testnet/ "
-        "or binance/spot_demo/. If a name collision is unavoidable, rename "
-        "or justify in PR description and update SIGNED_SYMBOL_RE."
+        "surface. Signed methods are allowed ONLY inside binance/testnet/, "
+        "binance/spot_demo/, or binance/futures_demo/. If a name collision is "
+        "unavoidable, rename or justify in PR description and update "
+        "SIGNED_SYMBOL_RE."
     )
 
 
@@ -169,8 +171,9 @@ def test_no_api_key_header_constants_in_binance_public_package() -> None:
 
     The ``X-MBX-APIKEY`` header constant is permitted ONLY inside the
     isolated signed sub-packages:
-      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet)
+      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet, deleted in ROB-298)
       * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
+      * ``app/services/brokers/binance/futures_demo/`` (ROB-298 PR 2 — Futures Demo)
     Anywhere else under ``app/services/brokers/binance/`` is the
     read-only public adapter and must not reference this header.
     """
@@ -178,12 +181,12 @@ def test_no_api_key_header_constants_in_binance_public_package() -> None:
     pkg = repo_root / "app" / "services" / "brokers" / "binance"
     if not pkg.exists():
         return
-    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo")
+    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo", pkg / "futures_demo")
     forbidden = "X-MBX-APIKEY"
     offenders: list[str] = []
     for py_file in pkg.rglob("*.py"):
-        # ROB-286 + ROB-296: signed transports may legitimately reference
-        # the header.
+        # ROB-286 + ROB-296 + ROB-298 PR 2: signed transports may legitimately
+        # reference the header.
         skip = False
         for signed_pkg in isolated_signed_pkgs:
             try:
@@ -199,8 +202,9 @@ def test_no_api_key_header_constants_in_binance_public_package() -> None:
     assert not offenders, (
         f"X-MBX-APIKEY header constant found in: {offenders}. "
         "Public adapter must never construct API-key headers. The header "
-        "is permitted only inside app/services/brokers/binance/testnet/ or "
-        "app/services/brokers/binance/spot_demo/. The transport event hook "
+        "is permitted only inside app/services/brokers/binance/testnet/, "
+        "app/services/brokers/binance/spot_demo/, or "
+        "app/services/brokers/binance/futures_demo/. The transport event hook "
         "checks for this header at request time as defense in depth; the "
         "source itself must not reference it."
     )
