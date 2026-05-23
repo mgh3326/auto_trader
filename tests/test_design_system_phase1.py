@@ -80,7 +80,6 @@ def test_common_entrypoints_load_shared_design_tokens() -> None:
     for template in [
         "base.html",
         "screener/_layout.html",
-        "portfolio_dashboard.html",
     ]:
         html = (TEMPLATE_DIR / template).read_text(encoding="utf-8")
         assert expected in html

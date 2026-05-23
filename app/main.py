@@ -23,7 +23,6 @@ from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
-    ai_markdown,
     alpaca_paper_ledger,
     candidate_discovery,
     deprecated_pages,
@@ -46,8 +45,6 @@ from app.routers import (
     openclaw_callback,
     order_estimation,
     order_previews,
-    pending_orders,
-    portfolio,
     portfolio_actions,
     preopen,
     research_pipeline,
@@ -59,9 +56,6 @@ from app.routers import (
     symbol_settings,
     test,
     trade_journals,
-    trading,
-    trading_decisions,
-    trading_decisions_spa,
     user_defaults,
     websocket,
 )
@@ -171,7 +165,6 @@ def create_app() -> FastAPI:
     app.include_router(web_auth_router)
     app.include_router(admin_router)
     app.include_router(screener.router)
-    app.include_router(pending_orders.router)
     app.include_router(health.router)
     app.include_router(news_analysis.router)
     app.include_router(n8n.router)
@@ -188,12 +181,7 @@ def create_app() -> FastAPI:
     if settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED:
         app.include_router(investment_snapshots.router)
     app.include_router(symbol_settings.router)
-    app.include_router(portfolio.router)
-    app.include_router(ai_markdown.router)
     app.include_router(deprecated_pages.router)
-    app.include_router(trading.router)
-    app.include_router(trading_decisions.router)
-    app.include_router(trading_decisions_spa.router)
     app.include_router(invest_api.router)
     app.include_router(invest_fills.router)
     app.include_router(invest_app_spa.router)

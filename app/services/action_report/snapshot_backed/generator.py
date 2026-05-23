@@ -70,6 +70,7 @@ from app.services.investment_snapshots.repository import (
 
 _MARKET_ACCOUNT_PAIRS: dict[str, str] = {
     "kr": "kis_live",
+    "us": "kis_live",  # ROB-297 — KIS overseas (US) stock account.
     "crypto": "upbit_live",
 }
 

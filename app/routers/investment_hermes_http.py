@@ -41,6 +41,7 @@ from app.schemas.hermes_composition import (
     HermesStageArtifactsIngestRequest,
 )
 from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
+from app.schemas.investment_symbol_reports import HermesSymbolReportsIngestRequest
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
 )
@@ -53,6 +54,10 @@ from app.services.investment_stages.hermes_ingest import (
     HermesCompositionIngestService,
     HermesStageArtifactsIngestError,
     HermesStageArtifactsIngestService,
+)
+from app.services.investment_stages.symbol_report_ingest import (
+    SymbolIntermediateReportIngestService,
+    SymbolReportIngestError,
 )
 
 router = APIRouter(
@@ -212,6 +217,10 @@ _INGEST_ERROR_HTTP_STATUS: dict[str, int] = {
     "run_envelope_mismatch": status.HTTP_409_CONFLICT,
     "artifact_content_conflict": status.HTTP_409_CONFLICT,
     "append_only_race": status.HTTP_409_CONFLICT,
+    # ROB-301 symbol-reports ingest codes.
+    "stage_run_not_found": status.HTTP_404_NOT_FOUND,
+    "symbol_report_race": status.HTTP_409_CONFLICT,
+    # open_action_missing_side / unknown_bucket fall through to 400.
 }
 
 
@@ -303,6 +312,56 @@ async def composition_ingest(
         "snapshot_bundle_uuid": str(body.composition.snapshot_bundle_uuid),
         "status": report.status,
         "items_count": len(body.composition.items),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /symbol-reports  (ROB-301)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/symbol-reports")
+async def symbol_reports_ingest(
+    body: HermesSymbolReportsIngestRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Hermes push-only ingest of symbol-scoped intermediate reports (D9).
+
+    Under the same ``/trading/api/investment-reports/hermes`` prefix as the
+    other Hermes endpoints, so the AuthMiddleware token branch (403 if the
+    ingest token is unset, 401 if wrong) and the enable gate both apply.
+    """
+    _require_enabled()
+
+    svc = SymbolIntermediateReportIngestService(db)
+    try:
+        response = await svc.ingest_from_hermes(body)
+    except SymbolReportIngestError as exc:
+        await db.rollback()
+        http_status = _INGEST_ERROR_HTTP_STATUS.get(
+            exc.code, status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(
+            status_code=http_status,
+            detail={"error": exc.code, "message": str(exc)},
+        ) from exc
+    await db.commit()
+    return {
+        "success": True,
+        "run_uuid": str(response.run.run_uuid),
+        "run_status": response.run.status,
+        "snapshot_bundle_uuid": str(response.run.snapshot_bundle_uuid),
+        "symbol_reports": [
+            {
+                "symbol": r.symbol,
+                "symbol_report_uuid": str(r.report.symbol_report_uuid),
+                "decision_bucket": r.report.decision_bucket,
+                "verdict": r.report.verdict,
+                "artifact_version": r.report.artifact_version,
+                "idempotent_existing": r.idempotent_existing,
+            }
+            for r in response.results
+        ],
     }
 
 

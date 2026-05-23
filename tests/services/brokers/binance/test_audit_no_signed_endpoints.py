@@ -24,18 +24,15 @@ import subprocess
 
 # Allowed package directories for new Binance-related code in this PR.
 # - app/services/brokers/binance: the public adapter (REST + WS) + the
-#   testnet signed sub-package (ROB-286).
+#   spot_demo signed sub-package (ROB-296) + the demo ledger sub-package
+#   (ROB-298). The legacy testnet sub-package was deleted in ROB-298.
 # - app/services/instrument_health: write surface for crypto_instrument_health
 #   (mentions Binance in docstrings as the first consumer; the service is
 #   generic and could later be consumed by other crypto adapters).
-# - app/services/scalping: ROB-286 deterministic scalper. Mentions Binance
-#   in docstrings (testnet is the first consumer); the runner imports
-#   BinanceTestnetExecutionClient from the testnet sub-package.
 ALLOWED_PACKAGE_PATHS: frozenset[str] = frozenset(
     {
         "app/services/brokers/binance",
         "app/services/instrument_health",
-        "app/services/scalping",
     }
 )
 
@@ -67,11 +64,12 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # the docstring or sentry tag mentions "Binance" as the first
         # consumer / source of these flows.
         "app/models/crypto_instrument_health.py",
-        # ROB-286 — the testnet order ledger ORM model lives under
+        # ROB-298 — the Spot Demo order ledger ORM model lives under
         # app/models/. The model is registered in app/models/__init__.py
         # (one-line import); both files are tracked here so the audit
-        # doesn't flag them as "unexpected Binance locations".
-        "app/models/binance_testnet_order_ledger.py",
+        # doesn't flag them as "unexpected Binance locations". The legacy
+        # binance_testnet_order_ledger.py file was deleted in ROB-298.
+        "app/models/binance_demo_order_ledger.py",
         "app/models/__init__.py",
     }
 )
@@ -125,69 +123,88 @@ def test_only_one_binance_package_path_exists() -> None:
 
 
 def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
-    """ROB-285 public-adapter invariant — extended by ROB-286.
+    """ROB-285 public-adapter invariant — extended by ROB-286 and ROB-296.
 
     The signed-endpoint vocabulary (``order``, ``cancel_order``, etc.) is
-    permitted ONLY inside ``app/services/brokers/binance/testnet/`` (the
-    isolated testnet execution adapter introduced by ROB-286). Anywhere
-    else under ``app/services/brokers/binance/`` is the read-only public
-    adapter and must not gain signed surface.
+    permitted ONLY inside the isolated signed sub-packages:
+      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet, deleted in ROB-298)
+      * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
+      * ``app/services/brokers/binance/futures_demo/`` (ROB-298 PR 2 — Futures Demo)
+    Anywhere else under ``app/services/brokers/binance/`` is the
+    read-only public adapter and must not gain signed surface.
     """
     repo_root = _repo_root()
     pkg = repo_root / "app" / "services" / "brokers" / "binance"
     if not pkg.exists():
         # Until Task 4 introduces the package, this is fine.
         return
-    testnet_pkg = pkg / "testnet"
+    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo", pkg / "futures_demo")
     offenders: list[tuple[pathlib.Path, int, str]] = []
     for py_file in pkg.rglob("*.py"):
-        # ROB-286: skip the isolated testnet sub-package — signed methods
-        # legitimately live there.
-        try:
-            py_file.relative_to(testnet_pkg)
+        # ROB-286 + ROB-296 + ROB-298 PR 2: skip the isolated signed sub-packages
+        # — signed methods legitimately live there.
+        skip = False
+        for signed_pkg in isolated_signed_pkgs:
+            try:
+                py_file.relative_to(signed_pkg)
+                skip = True
+                break
+            except ValueError:
+                continue
+        if skip:
             continue
-        except ValueError:
-            pass
         for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
             if SIGNED_SYMBOL_RE.search(line) and "def " in line:
                 offenders.append((py_file, lineno, line.strip()))
     assert not offenders, (
         f"Signed-endpoint method names found in Binance public adapter: "
         f"{offenders}. ROB-285 public adapter must not expose signed-endpoint "
-        "surface. Signed methods are allowed ONLY inside binance/testnet/. "
-        "If a name collision is unavoidable, rename or justify in PR "
-        "description and update SIGNED_SYMBOL_RE."
+        "surface. Signed methods are allowed ONLY inside binance/testnet/, "
+        "binance/spot_demo/, or binance/futures_demo/. If a name collision is "
+        "unavoidable, rename or justify in PR description and update "
+        "SIGNED_SYMBOL_RE."
     )
 
 
 def test_no_api_key_header_constants_in_binance_public_package() -> None:
-    """ROB-285 invariant — extended by ROB-286.
+    """ROB-285 invariant — extended by ROB-286 and ROB-296.
 
-    The ``X-MBX-APIKEY`` header constant is permitted ONLY inside
-    ``app/services/brokers/binance/testnet/transport.py`` (where the
-    signed transport legitimately attaches it). Anywhere else under
-    ``app/services/brokers/binance/`` is the read-only public adapter.
+    The ``X-MBX-APIKEY`` header constant is permitted ONLY inside the
+    isolated signed sub-packages:
+      * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet, deleted in ROB-298)
+      * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
+      * ``app/services/brokers/binance/futures_demo/`` (ROB-298 PR 2 — Futures Demo)
+    Anywhere else under ``app/services/brokers/binance/`` is the
+    read-only public adapter and must not reference this header.
     """
     repo_root = _repo_root()
     pkg = repo_root / "app" / "services" / "brokers" / "binance"
     if not pkg.exists():
         return
-    testnet_pkg = pkg / "testnet"
+    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo", pkg / "futures_demo")
     forbidden = "X-MBX-APIKEY"
     offenders: list[str] = []
     for py_file in pkg.rglob("*.py"):
-        # ROB-286: signed transport may legitimately reference the header.
-        try:
-            py_file.relative_to(testnet_pkg)
+        # ROB-286 + ROB-296 + ROB-298 PR 2: signed transports may legitimately
+        # reference the header.
+        skip = False
+        for signed_pkg in isolated_signed_pkgs:
+            try:
+                py_file.relative_to(signed_pkg)
+                skip = True
+                break
+            except ValueError:
+                continue
+        if skip:
             continue
-        except ValueError:
-            pass
         if forbidden in py_file.read_text():
             offenders.append(str(py_file))
     assert not offenders, (
         f"X-MBX-APIKEY header constant found in: {offenders}. "
         "Public adapter must never construct API-key headers. The header "
-        "is permitted only inside app/services/brokers/binance/testnet/. "
-        "The transport event hook checks for this header at request time "
-        "as defense in depth; the source itself must not reference it."
+        "is permitted only inside app/services/brokers/binance/testnet/, "
+        "app/services/brokers/binance/spot_demo/, or "
+        "app/services/brokers/binance/futures_demo/. The transport event hook "
+        "checks for this header at request time as defense in depth; the "
+        "source itself must not reference it."
     )

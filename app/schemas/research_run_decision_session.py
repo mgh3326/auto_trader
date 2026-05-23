@@ -200,8 +200,7 @@ class ResearchRunDecisionSessionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Reference: shape of `proposal.original_payload` for proposals derived from a
 # research run. Built by `app.services.research_run_decision_session_service.
-# _proposal_payload`. Consumed (read-only) by the trading-decision SPA in
-# `frontend/trading-decision/src/api/reconciliation.ts`.
+# _proposal_payload`.
 #
 # {
 #   "advisory_only": True,

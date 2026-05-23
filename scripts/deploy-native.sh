@@ -126,7 +126,6 @@ build_frontend_workspace() {
 }
 
 build_frontend() {
-  build_frontend_workspace "trading-decision" "frontend/trading-decision"
   build_frontend_workspace "invest" "frontend/invest"
 }
 

@@ -58,6 +58,9 @@ from app.services.investment_stages.repository import (
     AppendOnlyViolation,
     InvestmentStagesRepository,
 )
+from app.services.investment_stages.symbol_report_repository import (
+    SymbolIntermediateReportRepository,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -318,11 +321,15 @@ class HermesCompositionIngestService:
         ingestion_service: InvestmentReportIngestionService | None = None,
         snapshots_repository: InvestmentSnapshotsRepository | None = None,
         stages_repository: InvestmentStagesRepository | None = None,
+        symbol_reports_repository: SymbolIntermediateReportRepository | None = None,
     ) -> None:
         self._session = session
         self._ingestion = ingestion_service or InvestmentReportIngestionService(session)
         self._snapshots = snapshots_repository or InvestmentSnapshotsRepository(session)
         self._stages = stages_repository or InvestmentStagesRepository(session)
+        self._symbol_reports = (
+            symbol_reports_repository or SymbolIntermediateReportRepository(session)
+        )
 
     async def ingest_composition(
         self, request: HermesCompositionIngestRequest
@@ -353,6 +360,15 @@ class HermesCompositionIngestService:
             },
         }
 
+        # ROB-301 D3: validate + attach the symbol-report references. Empty for
+        # legacy composition, in which case metadata is unchanged (REGRESSION).
+        symbol_report_refs = await self._validate_symbol_report_refs(
+            composition.symbol_intermediate_report_uuids,
+            stage_run_uuid=composition.metadata.get("investment_stage_run_uuid"),
+        )
+        if symbol_report_refs:
+            metadata["symbol_intermediate_report_uuids"] = symbol_report_refs
+
         ingest_request = IngestReportRequest(
             report_type=request.report_type,
             market=cast(MarketLiteral, request.market),
@@ -381,6 +397,38 @@ class HermesCompositionIngestService:
         report = await self._ingestion.ingest(ingest_request)
         await self._maybe_finalize_stage_run(composition.metadata)
         return report
+
+    async def _validate_symbol_report_refs(
+        self,
+        symbol_report_uuids: list[uuid.UUID],
+        *,
+        stage_run_uuid: Any = None,
+    ) -> list[str]:
+        """Validate referenced symbol reports exist (Codex #12). When the
+        composition names its stage run, every referenced report must belong to
+        it (cross-run UUID mixups rejected). Returns string UUIDs for the
+        metadata reference; empty input returns ``[]`` (legacy path)."""
+        if not symbol_report_uuids:
+            return []
+        found = await self._symbol_reports.get_by_uuids(list(symbol_report_uuids))
+        found_by_uuid = {r.symbol_report_uuid: r for r in found}
+        missing = [str(u) for u in symbol_report_uuids if u not in found_by_uuid]
+        if missing:
+            raise HermesCompositionIngestError(
+                "composition references unknown symbol intermediate reports: "
+                + ", ".join(missing)
+            )
+        parsed_run = _coerce_uuid(stage_run_uuid)
+        if parsed_run is not None:
+            wrong_run = [
+                str(u) for u, r in found_by_uuid.items() if r.run_uuid != parsed_run
+            ]
+            if wrong_run:
+                raise HermesCompositionIngestError(
+                    "symbol intermediate reports do not belong to stage run "
+                    f"{parsed_run}: {', '.join(wrong_run)}"
+                )
+        return [str(u) for u in symbol_report_uuids]
 
     async def _maybe_finalize_stage_run(
         self, composition_metadata: dict[str, Any]
@@ -442,3 +490,13 @@ __all__ = [
 # zero remaining references (none today).
 def _uuid_str(value: uuid.UUID | None) -> str | None:
     return str(value) if value is not None else None
+
+
+def _coerce_uuid(value: Any) -> uuid.UUID | None:
+    """Parse a str/UUID into a UUID, returning None for anything unparseable."""
+    if value is None or not isinstance(value, str | uuid.UUID):
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
