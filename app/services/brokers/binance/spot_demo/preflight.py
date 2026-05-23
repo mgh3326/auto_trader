@@ -30,6 +30,8 @@ from typing import Any, Final
 
 import httpx
 
+from app.services.brokers.binance.demo.credentials import resolve_demo_credentials
+from app.services.brokers.binance.demo.errors import BinanceDemoCredentialError
 from app.services.brokers.binance.spot_demo.errors import (
     BinanceSpotDemoDisabled,
     BinanceSpotDemoMissingCredentials,
@@ -176,8 +178,10 @@ class SpotDemoPreflightClient:
 
         Env contract:
           * ``BINANCE_SPOT_DEMO_ENABLED`` MUST be truthy.
-          * ``BINANCE_SPOT_DEMO_API_KEY`` MUST be present and non-empty.
-          * ``BINANCE_SPOT_DEMO_API_SECRET`` MUST be present and non-empty.
+          * Credentials (ROB-302): the ``BINANCE_SPOT_DEMO_API_*`` pair
+            OR the canonical ``BINANCE_DEMO_API_*`` pair MUST be present
+            (the per-product pair wins when set). A half-set pair fails
+            closed. Resolved via ``demo.credentials.resolve_demo_credentials``.
           * ``BINANCE_SPOT_DEMO_BASE_URL`` (optional) MUST be a Spot Demo
             host if set; transport factory enforces.
 
@@ -190,20 +194,17 @@ class SpotDemoPreflightClient:
                 "BINANCE_SPOT_DEMO_ENABLED=true to opt in to the Spot Demo "
                 "preflight path. Default is fail-closed."
             )
-        api_key = os.environ.get("BINANCE_SPOT_DEMO_API_KEY", "")
-        api_secret = os.environ.get("BINANCE_SPOT_DEMO_API_SECRET", "")
-        if not api_key:
-            raise BinanceSpotDemoMissingCredentials(
-                "BINANCE_SPOT_DEMO_API_KEY is empty or missing. Refusing to "
-                "construct Spot Demo preflight client."
-            )
-        if not api_secret:
-            raise BinanceSpotDemoMissingCredentials(
-                "BINANCE_SPOT_DEMO_API_SECRET is empty or missing. Refusing "
-                "to construct Spot Demo preflight client."
-            )
+        # ROB-302: credentials resolve through the shared canonical pair.
+        # Additive — when BINANCE_SPOT_DEMO_API_* is set this is byte-identical
+        # to the prior contract. Re-raise as the lane-specific error.
+        try:
+            creds = resolve_demo_credentials("spot", os.environ)
+        except BinanceDemoCredentialError as exc:
+            raise BinanceSpotDemoMissingCredentials(str(exc)) from exc
         base_url = os.environ.get("BINANCE_SPOT_DEMO_BASE_URL", _DEFAULT_BASE_URL)
-        return cls(api_key=api_key, api_secret=api_secret, base_url=base_url)
+        return cls(
+            api_key=creds.api_key, api_secret=creds.api_secret, base_url=base_url
+        )
 
     def __repr__(self) -> str:
         # Never reference _api_secret in repr/str. api_key half is

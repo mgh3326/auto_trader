@@ -52,6 +52,35 @@ def test_ignores_spot_and_testnet_env(monkeypatch):
     assert r.api_secret_present is False
 
 
+def test_canonical_demo_creds_make_ready(monkeypatch):
+    """ROB-302: canonical BINANCE_DEMO_* pair satisfies futures readiness."""
+    for k in (
+        "BINANCE_FUTURES_DEMO_API_KEY",
+        "BINANCE_FUTURES_DEMO_API_SECRET",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_DEMO_API_KEY", "CANON_KEY_VALUE")
+    monkeypatch.setenv("BINANCE_DEMO_API_SECRET", "CANON_SECRET_VALUE")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_BASE_URL", "https://demo-fapi.binance.com")
+    ev = evaluate_futures_demo_env_readiness().to_evidence_dict()
+    assert ev["ready"] is True
+    assert ev["api_key_present"] is True
+    assert ev["credential_source"] == "shared_demo_env"
+    assert "CANON_KEY_VALUE" not in repr(ev)
+    assert "CANON_SECRET_VALUE" not in repr(ev)
+
+
+def test_futures_specific_creds_label_source(monkeypatch):
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_API_KEY", "k")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_API_SECRET", "s")
+    monkeypatch.setenv("BINANCE_FUTURES_DEMO_BASE_URL", "https://demo-fapi.binance.com")
+    ev = evaluate_futures_demo_env_readiness().to_evidence_dict()
+    assert ev["credential_source"] == "futures_demo_env"
+    assert ev["ready"] is True
+
+
 def test_host_judgment_rejects_non_demo_host_without_raising(monkeypatch):
     monkeypatch.setenv("BINANCE_FUTURES_DEMO_ENABLED", "true")
     monkeypatch.setenv("BINANCE_FUTURES_DEMO_API_KEY", "k")
