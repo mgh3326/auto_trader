@@ -56,7 +56,6 @@ from app.routers import (
     symbol_settings,
     test,
     trade_journals,
-    trading,
     trading_decisions,
     trading_decisions_spa,
     user_defaults,
@@ -185,7 +184,6 @@ def create_app() -> FastAPI:
         app.include_router(investment_snapshots.router)
     app.include_router(symbol_settings.router)
     app.include_router(deprecated_pages.router)
-    app.include_router(trading.router)
     app.include_router(trading_decisions.router)
     app.include_router(trading_decisions_spa.router)
     app.include_router(invest_api.router)

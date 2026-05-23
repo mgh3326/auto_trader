@@ -19,6 +19,9 @@ LEGACY_PREFIXES = (
     "/portfolio",
     "/pending",
     "/api/ai-markdown",
+    "/trading/api/buy",
+    "/trading/api/sell",
+    "/trading/api/v1/trading",
 )
 _DEPRECATED_AT = "2026-02-20T00:00:00+09:00"
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
