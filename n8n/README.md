@@ -81,7 +81,6 @@ docker exec auto_trader_n8n_prod n8n import:workflow \
   - `misrouted_review`: `in_review` 상태인데 agent만 할당 (user reviewer 없음). **30분 grace** 후 `medium` severity 알림
 - **주의**:
   - 현재 workflow는 inline Node.js probe를 사용한다
-  - `scripts/paperclip_cli_probe.py`는 host-side canonical/reference 구현이다
   - cold container 기준 `npx -y paperclipai` 3회 호출은 ~199초까지 늘어날 수 있어, 운영 이미지는 `Dockerfile.n8n`에서 `paperclipai`를 bake-in 하도록 전환했다
 
 ### ~~Paperclip Review/Blocked Notify~~ (deprecated)
