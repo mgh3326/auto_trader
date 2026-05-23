@@ -1,4 +1,10 @@
-"""ROB-296 — Spot Demo host allowlist + 3-way cross-allowlist disjointness."""
+"""ROB-296 — Spot Demo host allowlist + 3-way cross-allowlist disjointness.
+
+The Spot Testnet runtime adapter was removed in ROB-298, but the
+deprecated testnet hosts are preserved inline (``_DEPRECATED_TESTNET_HOSTS``)
+as a defense-in-depth deny-list. These tests still verify that those
+hosts cannot reach Spot Demo signing.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +13,12 @@ import pytest
 from app.services.brokers.binance.errors import BinanceLiveHostBlocked
 from app.services.brokers.binance.host_allowlist import PUBLIC_HOSTS
 from app.services.brokers.binance.spot_demo.host_allowlist import (
+    _DEPRECATED_TESTNET_HOSTS as TESTNET_HOSTS,
+)
+from app.services.brokers.binance.spot_demo.host_allowlist import (
     SPOT_DEMO_HOSTS,
     assert_spot_demo_host,
 )
-from app.services.brokers.binance.testnet.host_allowlist import TESTNET_HOSTS
 
 
 def test_spot_demo_hosts_is_frozen() -> None:

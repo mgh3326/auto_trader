@@ -14,10 +14,10 @@ Three-way cross-allowlist guard fires at:
   3. Post-response hook — rejects 3xx redirects; Spot Demo endpoints do
      not legitimately redirect.
 
-Implementation note: this module intentionally duplicates
-``binance.testnet.transport`` rather than sharing a generic factory. The
-host-set membership and exception type are environment-specific by
-design.
+Implementation note: this module is self-contained. The prior
+``binance.testnet.transport`` sibling was removed in ROB-298; the
+deprecated testnet hosts are preserved here as a defense-in-depth
+deny-list (see ``_DEPRECATED_TESTNET_HOSTS`` in ``host_allowlist``).
 """
 
 from __future__ import annotations
@@ -33,10 +33,12 @@ from app.services.brokers.binance.spot_demo.errors import (
     BinanceSpotDemoCrossAllowlistViolation,
 )
 from app.services.brokers.binance.spot_demo.host_allowlist import (
+    _DEPRECATED_TESTNET_HOSTS as TESTNET_HOSTS,
+)
+from app.services.brokers.binance.spot_demo.host_allowlist import (
     SPOT_DEMO_HOSTS,
     assert_spot_demo_host,
 )
-from app.services.brokers.binance.testnet.host_allowlist import TESTNET_HOSTS
 
 _DEFAULT_TIMEOUT: Final[float] = 10.0
 _DEFAULT_SPOT_DEMO_BASE: Final[str] = "https://demo-api.binance.com"

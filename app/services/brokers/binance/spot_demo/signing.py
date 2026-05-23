@@ -1,12 +1,12 @@
 """ROB-296 — HMAC-SHA256 signing chokepoint for Binance Spot Demo.
 
-Intentionally duplicates ``binance.testnet.signing`` rather than sharing
-a generic helper. Per ROB-296 Hermes review §1 (Option A): preserving
-environment-specific fail-closed isolation outweighs deduplication for
-this first PR. If a future PR introduces a 3rd signed lane and the
-duplication grows untenable, extract a pure ``hmac_sign(params, secret)``
-helper under ``binance/`` and have each lane wrap it with its own
-fail-closed validation — but not in this PR.
+Self-contained signer (the prior ``binance.testnet.signing`` module was
+removed in ROB-298). Per ROB-296 Hermes review §1 (Option A): preserving
+environment-specific fail-closed isolation outweighs deduplication. If a
+future PR introduces a 2nd signed lane and the duplication grows
+untenable, extract a pure ``hmac_sign(params, secret)`` helper under
+``binance/`` and have each lane wrap it with its own fail-closed
+validation — but not in this PR.
 
 Per ROB-296 §5: if the operator's Spot Demo account requires Ed25519
 signing instead of HMAC-SHA256, this signer will produce a syntactically
@@ -27,7 +27,7 @@ from binance_common.utils import hmac_hashing
 
 # Binance documents the default recvWindow as 5000 ms; allowed up to 60000.
 # We pin a conservative default at the chokepoint so call-sites don't need
-# to remember to pass it. Matches the testnet sibling's default.
+# to remember to pass it.
 BINANCE_SPOT_DEMO_RECV_WINDOW_MS: Final[int] = 5000
 
 

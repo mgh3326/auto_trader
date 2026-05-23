@@ -1,16 +1,16 @@
 """ROB-296 — Binance Spot Demo Mode adapter error vocabulary.
 
-Mirrors the testnet sibling module (`binance.testnet.errors`) but keeps
-exception types **distinct** so a caller cannot accidentally treat a Spot
-Demo failure as a testnet failure (or vice versa) when catching by name.
+Self-contained exception hierarchy (the prior ``binance.testnet.errors``
+sibling was removed in ROB-298). Exception types remain Spot Demo
+specific so a caller cannot accidentally conflate Spot Demo failures
+with any future signed-lane failures when catching by name.
 
-Both hierarchies share `BinanceAdapterError` so call-sites that catch the
+Exceptions share `BinanceAdapterError` so call-sites that catch the
 common base still work.
 
-Constraint per ROB-296: do not reuse `BINANCE_TESTNET_*` config or
-`BinanceTestnetDisabled` for Spot Demo. The "Disabled" / "MissingCredentials"
-duplication below is intentional environment isolation, not duplication
-to be refactored away.
+Constraint per ROB-296: the "Disabled" / "MissingCredentials" naming is
+intentional environment isolation — keep it Spot Demo specific even when
+adding future signed lanes.
 """
 
 from __future__ import annotations
@@ -34,10 +34,10 @@ class BinanceSpotDemoMissingCredentials(BinanceAdapterError):
 
 
 class BinanceSpotDemoCrossAllowlistViolation(BinanceAdapterError):
-    """Raised when the Spot Demo transport sees a host in TESTNET_HOSTS or PUBLIC_HOSTS.
+    """Raised when the Spot Demo transport sees a host in _DEPRECATED_TESTNET_HOSTS or PUBLIC_HOSTS.
 
     Cross-allowlist guard: a signed Spot Demo request that lands on a
-    testnet host (Spot Testnet) or a live host (mainnet Binance) means a
+    deprecated testnet host or a live host (mainnet Binance) means a
     misconfigured deploy is one step from leaking credentials to the
     wrong environment. Fail hard at the request-event hook, no silent
     fallback.
@@ -61,12 +61,8 @@ class BinanceSpotDemoUnsupportedAuth(BinanceAdapterError):
     """
 
 
-class BinanceSpotDemoOrderSubmitNotImplemented(BinanceAdapterError):
-    """Raised when ``--confirm`` is passed to the Spot Demo smoke CLI.
-
-    The first ROB-296 PR opens the adapter/config/preflight/dry-run lane
-    but deliberately does NOT mirror the 620-line testnet execution
-    client + ledger semantics. Confirmed order submission is a separate
-    follow-up. The smoke CLI raises this with the exact next-step
-    operator pointer when ``--confirm`` is requested.
-    """
+# Note: BinanceSpotDemoOrderSubmitNotImplemented was removed in ROB-298 when
+# the Spot Demo execution client (submit/test/cancel/status) landed. The
+# previous placeholder behavior is now covered by the operator gate on
+# ``BinanceSpotDemoExecutionClient.submit_order`` (default returns a
+# ``SpotDemoDryRunResult``; HTTP only on explicit ``confirm=True``).

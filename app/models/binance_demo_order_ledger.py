@@ -1,19 +1,21 @@
-"""ROB-286 — ORM model for ``binance_testnet_order_ledger``.
+"""ROB-298 — ORM model for ``binance_demo_order_ledger``.
 
-Dedicated lifecycle ledger for the testnet execution adapter. All writes
-must go through ``BinanceTestnetLedgerService``; the repository
-(``BinanceTestnetLedgerRepository``) is service-internal (see ROB-285's
-``CryptoInstrumentHealthRepository`` for the same module-import-guard
-pattern).
+Unified Demo-oriented order lifecycle ledger. Keyed by a ``product``
+discriminator ('spot' | 'usdm_futures'). PR 1 writes only 'spot' rows;
+PR 2 adds 'usdm_futures'.
 
-State vocabulary is locked by a CHECK constraint:
+All writes must go through
+``app.services.brokers.binance.demo.ledger.service.BinanceDemoLedgerService``;
+the repository (``BinanceDemoLedgerRepository``) is service-internal and
+guarded by an AST-scanning test (see ``test_ledger_service.py``).
 
-    planned → previewed → validated → submitted → filled →
-    tp_sl_armed → tp_sl_triggered → closed → reconciled
-    (with cancelled and anomaly branches; full table in Task 9 service)
+State vocabulary (CHECK-constrained at DB layer):
 
-Lifecycle semantics + transitions are enforced in service layer; the DB
-only enforces the bag of allowed strings.
+    planned → previewed → validated → submitted → filled → closed → reconciled
+    (with cancelled and anomaly branches)
+
+Service layer enforces the transition graph; DB only validates the bag
+of allowed strings.
 """
 
 from __future__ import annotations
@@ -38,37 +40,38 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
 
-class BinanceTestnetOrderLedger(Base):
-    """Order lifecycle ledger for the Binance testnet execution adapter."""
+class BinanceDemoOrderLedger(Base):
+    """Unified lifecycle ledger for Binance Spot Demo and USD-M Futures Demo."""
 
-    __tablename__ = "binance_testnet_order_ledger"
+    __tablename__ = "binance_demo_order_ledger"
     __table_args__ = (
         UniqueConstraint(
             "client_order_id",
-            name="uq_binance_testnet_ledger_client_order_id",
+            name="uq_binance_demo_ledger_client_order_id",
+        ),
+        CheckConstraint(
+            "product IN ('spot','usdm_futures')",
+            name="binance_demo_ledger_product",
         ),
         CheckConstraint(
             "lifecycle_state IN ("
             "'planned','previewed','validated','submitted','filled',"
-            "'tp_sl_armed','tp_sl_triggered','closed','cancelled',"
-            "'reconciled','anomaly'"
+            "'closed','cancelled','reconciled','anomaly'"
             ")",
-            name="binance_testnet_ledger_lifecycle_state",
+            name="binance_demo_ledger_lifecycle_state",
         ),
-        CheckConstraint(
-            "side IN ('BUY','SELL')",
-            name="binance_testnet_ledger_side",
-        ),
+        CheckConstraint("side IN ('BUY','SELL')", name="binance_demo_ledger_side"),
         CheckConstraint(
             "order_type IN ('LIMIT','MARKET')",
-            name="binance_testnet_ledger_order_type",
+            name="binance_demo_ledger_order_type",
         ),
-        Index("ix_binance_testnet_ledger_instrument_id", "instrument_id"),
-        Index("ix_binance_testnet_ledger_broker_order_id", "broker_order_id"),
-        Index("ix_binance_testnet_ledger_lifecycle_state", "lifecycle_state"),
-        Index("ix_binance_testnet_ledger_created_at", "created_at"),
+        Index("ix_binance_demo_ledger_product", "product"),
+        Index("ix_binance_demo_ledger_instrument_id", "instrument_id"),
+        Index("ix_binance_demo_ledger_broker_order_id", "broker_order_id"),
+        Index("ix_binance_demo_ledger_lifecycle_state", "lifecycle_state"),
+        Index("ix_binance_demo_ledger_created_at", "created_at"),
         Index(
-            "ix_binance_testnet_ledger_parent_client_order_id",
+            "ix_binance_demo_ledger_parent_client_order_id",
             "parent_client_order_id",
         ),
     )
@@ -79,19 +82,20 @@ class BinanceTestnetOrderLedger(Base):
         BigInteger,
         ForeignKey(
             "crypto_instruments.id",
-            name="fk_binance_testnet_ledger_instrument_id_crypto_instruments",
+            name="fk_binance_demo_ledger_instrument_id_crypto_instruments",
         ),
         nullable=False,
     )
 
-    # Per-order identifier we generate (UUID4 hex). UNIQUE.
+    # Discriminator: 'spot' (PR 1) or 'usdm_futures' (PR 2).
+    product: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # The host this row was written against — evidence trail to confirm
+    # demo-api.binance.com vs demo-fapi.binance.com.
+    venue_host: Mapped[str] = mapped_column(Text, nullable=False)
+
     client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
-
-    # TP/SL pairing: when an entry fill arms both a TP-sell and SL-sell
-    # ledger row, both reference the entry's client_order_id here.
     parent_client_order_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Binance-side order id, populated on first submit response.
     broker_order_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     side: Mapped[str] = mapped_column(Text, nullable=False)
@@ -104,8 +108,6 @@ class BinanceTestnetOrderLedger(Base):
 
     lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # Lifecycle timestamps. Each one is populated when the transition
-    # into that state is first recorded.
     planned_at: Mapped[dt.datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
@@ -121,12 +123,6 @@ class BinanceTestnetOrderLedger(Base):
     filled_at: Mapped[dt.datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
-    tp_sl_armed_at: Mapped[dt.datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
-    )
-    tp_sl_triggered_at: Mapped[dt.datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
-    )
     closed_at: Mapped[dt.datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
@@ -140,20 +136,14 @@ class BinanceTestnetOrderLedger(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
-    # Anomaly bookkeeping
     anomaly_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     anomaly_at: Mapped[dt.datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
 
-    # Notional/override audit trail
     notional_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     notional_override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Free-form JSON metadata (broker response excerpts, etc.).
-    # SQLAlchemy reserves ``metadata`` on declarative base; we map a
-    # Python ``extra_metadata`` attribute to the DB column ``metadata`` to
-    # match the convention used by ``crypto_instruments``.
     extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(
         "metadata", JSONB, nullable=True
     )

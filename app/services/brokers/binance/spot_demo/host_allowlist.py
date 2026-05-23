@@ -1,10 +1,13 @@
-"""ROB-296 — Spot Demo host allowlist (frozen, disjoint from PUBLIC + TESTNET).
+"""ROB-296 — Spot Demo host allowlist (frozen, disjoint from PUBLIC + deprecated TESTNET).
 
-Three separate host sets with cross-allowlist guards:
+Two active host sets with cross-allowlist guards:
 
   * Public adapter (Child B)         → ``PUBLIC_HOSTS``
-  * Spot Testnet signed adapter      → ``TESTNET_HOSTS``
   * Spot Demo signed adapter (here)  → ``SPOT_DEMO_HOSTS``
+
+Historical context (ROB-298):
+
+  * Spot Testnet signed adapter → removed; hosts kept as ``_DEPRECATED_TESTNET_HOSTS`` deny-list
 
 A host appearing in two sets would let a signed request leak between
 environments. The pairwise disjointness assertion lives in
@@ -21,6 +24,17 @@ from app.services.brokers.binance.errors import BinanceLiveHostBlocked
 SPOT_DEMO_HOSTS: frozenset[str] = frozenset(
     {
         "demo-api.binance.com",
+    }
+)
+
+# ROB-298: Binance Spot Testnet has been retired as an active trading
+# backend. We keep these hosts as a defense-in-depth deny-list so a
+# misconfigured BINANCE_SPOT_DEMO_BASE_URL pointing at testnet still
+# fails closed at the transport layer instead of dispatching there.
+_DEPRECATED_TESTNET_HOSTS: frozenset[str] = frozenset(
+    {
+        "testnet.binance.vision",
+        "stream.testnet.binance.vision",
     }
 )
 
