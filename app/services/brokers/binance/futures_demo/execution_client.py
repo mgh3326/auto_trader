@@ -80,7 +80,9 @@ _DEFAULT_BASE_URL: Final[str] = "https://demo-fapi.binance.com"
 _ORDER_PATH: Final[str] = "/fapi/v1/order"
 _ORDER_TEST_PATH: Final[str] = "/fapi/v1/order/test"
 _OPEN_ORDERS_PATH: Final[str] = "/fapi/v1/openOrders"
-_POSITION_RISK_PATH: Final[str] = "/fapi/v1/positionRisk"
+# ROB-303: demo-fapi rejects /fapi/v1/positionRisk with -5000 ("Path ...
+# is invalid"). v2 is the demo-fapi-supported position-reconcile source.
+_POSITION_RISK_PATH: Final[str] = "/fapi/v2/positionRisk"
 _POSITION_SIDE_DUAL_PATH: Final[str] = "/fapi/v1/positionSide/dual"
 _LEVERAGE_PATH: Final[str] = "/fapi/v1/leverage"
 
@@ -525,7 +527,7 @@ class BinanceFuturesDemoExecutionClient:
         return FuturesDemoOpenOrdersResult(orders=orders)
 
     async def get_position(self, *, symbol: str) -> FuturesDemoPositionResult:
-        """Query the current position for ``symbol`` from /fapi/v1/positionRisk.
+        """Query the current position for ``symbol`` from /fapi/v2/positionRisk.
 
         Returns the signed ``positionAmt`` (positive=long, negative=short,
         zero=flat) along with ``entryPrice`` and ``leverage``. Used by the
@@ -539,7 +541,7 @@ class BinanceFuturesDemoExecutionClient:
         resp = await self._client.get(_POSITION_RISK_PATH, params=signed)
         resp.raise_for_status()
         body = resp.json()
-        # /fapi/v1/positionRisk?symbol=... returns a list; pick the matching row.
+        # /fapi/v2/positionRisk?symbol=... returns a list; pick the matching row.
         entry: dict[str, Any] = {}
         if isinstance(body, list):
             for item in body:
