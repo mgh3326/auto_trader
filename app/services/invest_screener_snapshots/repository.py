@@ -101,3 +101,31 @@ class InvestScreenerSnapshotsRepository:
             stale_count=int(row.stale or 0),
             last_computed_at=row.last_computed_at,
         )
+
+    async def latest_partition(self, *, market: str) -> dt.date | None:
+        result = await self._session.execute(
+            select(func.max(InvestScreenerSnapshot.snapshot_date)).where(
+                InvestScreenerSnapshot.market == market
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_top_candidates(
+        self, *, market: str, limit: int = 10
+    ) -> list[InvestScreenerSnapshot]:
+        latest = await self.latest_partition(market=market)
+        if latest is None:
+            return []
+        result = await self._session.execute(
+            select(InvestScreenerSnapshot)
+            .where(
+                InvestScreenerSnapshot.market == market,
+                InvestScreenerSnapshot.snapshot_date == latest,
+            )
+            .order_by(
+                InvestScreenerSnapshot.change_rate.desc().nullslast(),
+                InvestScreenerSnapshot.symbol.asc(),
+            )
+            .limit(limit)
+        )
+        return list(result.scalars().all())
