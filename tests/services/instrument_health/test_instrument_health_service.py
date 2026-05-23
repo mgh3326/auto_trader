@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 
 import pytest
 from sqlalchemy import text
@@ -16,6 +17,16 @@ from app.services.instrument_health.service import (
 )
 
 
+def _unique_symbol(prefix: str) -> str:
+    """Return a venue_symbol unique to this test run.
+
+    Avoids collisions on ``uq_crypto_instruments_venue_product_symbol``
+    when other suites in the parallel xdist run also seed binance/spot
+    rows for the same base ticker (BTCUSDT/ETHUSDT/...).
+    """
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
 @pytest.mark.asyncio
 async def test_default_state_is_healthy_on_first_touch(
     db_session: AsyncSession,
@@ -23,7 +34,7 @@ async def test_default_state_is_healthy_on_first_touch(
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="BTCUSDT",
+        venue_symbol=_unique_symbol("BTCUSDT"),
         base_asset="BTC",
         quote_asset="USDT",
         status="active",
@@ -42,7 +53,7 @@ async def test_record_degraded_then_back_to_healthy(
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="ETHUSDT",
+        venue_symbol=_unique_symbol("ETHUSDT"),
         base_asset="ETH",
         quote_asset="USDT",
         status="active",
@@ -63,7 +74,7 @@ async def test_record_rate_limited_persists_retry_after(
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="ADAUSDT",
+        venue_symbol=_unique_symbol("ADAUSDT"),
         base_asset="ADA",
         quote_asset="USDT",
         status="active",
@@ -85,7 +96,7 @@ async def test_record_manual_backfill_required_does_not_auto_clear(
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="SOLUSDT",
+        venue_symbol=_unique_symbol("SOLUSDT"),
         base_asset="SOL",
         quote_asset="USDT",
         status="active",
@@ -110,7 +121,7 @@ async def test_invalid_state_raises_at_db_level(db_session: AsyncSession) -> Non
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="DOGEUSDT",
+        venue_symbol=_unique_symbol("DOGEUSDT"),
         base_asset="DOGE",
         quote_asset="USDT",
         status="active",

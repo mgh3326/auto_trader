@@ -35,12 +35,12 @@ class TestApplicationIntegration:
         response = client.get("/screener")
         assert response.status_code == 200
 
-        response = client.get("/portfolio/")
-        assert response.status_code == 200
-
     def test_deprecated_dashboard_returns_410(self, client):
         """Test deprecated dashboard returns 410 Gone."""
         response = client.get("/dashboard/")
+        assert response.status_code == 410
+
+        response = client.get("/portfolio/")
         assert response.status_code == 410
 
     def test_application_structure(self, client):
