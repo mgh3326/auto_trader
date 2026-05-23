@@ -22,7 +22,6 @@ import pytest
 
 import scripts.binance_futures_demo_smoke as smoke
 
-
 _FUTURES_DEMO_ENV_VARS = (
     "BINANCE_FUTURES_DEMO_ENABLED",
     "BINANCE_FUTURES_DEMO_API_KEY",
@@ -156,10 +155,7 @@ def test_modes_are_mutually_exclusive(
     # argparse uses 2 for argument errors.
     assert excinfo.value.code == 2
     err = capsys.readouterr().err
-    assert (
-        "not allowed with argument" in err
-        or "mutually exclusive" in err.lower()
-    )
+    assert "not allowed with argument" in err or "mutually exclusive" in err.lower()
 
 
 def test_confirm_without_credentials_refuses_cleanly(
@@ -182,12 +178,9 @@ def test_confirm_without_credentials_refuses_cleanly(
     caplog.set_level(logging.ERROR, logger="scripts.binance_futures_demo_smoke")
     exit_code = smoke.main(["--confirm", "--symbol", "XRPUSDT"])
     assert exit_code == 1
-    error_messages = [
-        r.message for r in caplog.records if r.levelno >= logging.ERROR
-    ]
+    error_messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
     assert any(
-        "credentials" in m.lower() or "refused" in m.lower()
-        for m in error_messages
+        "credentials" in m.lower() or "refused" in m.lower() for m in error_messages
     ), error_messages
 
 
@@ -235,6 +228,5 @@ def test_enabled_no_action_exits_with_guidance(
     assert exit_code == 0
     messages = [r.message for r in caplog.records]
     assert any(
-        "--plan-only" in m or "--preflight" in m or "--confirm" in m
-        for m in messages
+        "--plan-only" in m or "--preflight" in m or "--confirm" in m for m in messages
     ), messages

@@ -6,15 +6,15 @@ import pytest
 
 from app.services.brokers.binance.errors import BinanceLiveHostBlocked
 from app.services.brokers.binance.futures_demo.host_allowlist import (
-    FUTURES_DEMO_HOSTS,
     _DEPRECATED_FUTURES_TESTNET_HOSTS,
+    FUTURES_DEMO_HOSTS,
     assert_futures_demo_host,
 )
-from app.services.brokers.binance.spot_demo.host_allowlist import (
-    SPOT_DEMO_HOSTS,
-    _DEPRECATED_TESTNET_HOSTS,
-)
 from app.services.brokers.binance.host_allowlist import PUBLIC_HOSTS
+from app.services.brokers.binance.spot_demo.host_allowlist import (
+    _DEPRECATED_TESTNET_HOSTS,
+    SPOT_DEMO_HOSTS,
+)
 
 
 def test_futures_demo_hosts_only_demo_fapi() -> None:

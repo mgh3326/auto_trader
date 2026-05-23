@@ -92,7 +92,10 @@ def test_futures_demo_does_not_import_spot_demo() -> None:
             if isinstance(node, ast.ImportFrom):
                 if node.module and "binance.spot_demo" in node.module:
                     # Skip if this is a sanctioned cross-import.
-                    if str(py) in SANCTIONED_ALLOWLIST_CROSS_IMPORTS and node.module in SANCTIONED_TARGETS:
+                    if (
+                        str(py) in SANCTIONED_ALLOWLIST_CROSS_IMPORTS
+                        and node.module in SANCTIONED_TARGETS
+                    ):
                         continue
                     offenders.append(f"{py}: from {node.module} import ...")
             elif isinstance(node, ast.Import):
@@ -100,7 +103,7 @@ def test_futures_demo_does_not_import_spot_demo() -> None:
                     if "binance.spot_demo" in alias.name:
                         offenders.append(f"{py}: import {alias.name}")
     assert not offenders, (
-        f"futures_demo must not import from spot_demo (except sanctioned host_allowlist cross-checks). Offenders:\n"
+        "futures_demo must not import from spot_demo (except sanctioned host_allowlist cross-checks). Offenders:\n"
         + "\n".join(offenders)
     )
 
@@ -127,6 +130,6 @@ def test_spot_demo_does_not_import_futures_demo() -> None:
                     if "binance.futures_demo" in alias.name:
                         offenders.append(f"{py}: import {alias.name}")
     assert not offenders, (
-        f"spot_demo must not import from futures_demo. Offenders:\n"
+        "spot_demo must not import from futures_demo. Offenders:\n"
         + "\n".join(offenders)
     )
