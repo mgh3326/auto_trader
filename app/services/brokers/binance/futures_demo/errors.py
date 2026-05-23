@@ -17,6 +17,24 @@ class BinanceFuturesDemoCrossAllowlistViolation(BinanceAdapterError):
     """Raised when a signed request would route to a non-Futures-Demo host."""
 
 
+class BinanceFuturesDemoUnsupportedAuth(BinanceAdapterError):
+    """Raised when the Futures Demo server rejects HMAC-SHA256 signing.
+
+    Mirrors ``BinanceSpotDemoUnsupportedAuth`` (ROB-296 §5): if the
+    operator's Futures Demo account requires Ed25519 (or any non-HMAC
+    signing mechanism), this PR does NOT silently fall back. The
+    preflight surfaces the auth-rejection response and raises this
+    exception so the operator reports it as a scope-expansion follow-up
+    rather than landing a half-baked signer.
+
+    Detected via Binance API error codes returned from a read-only
+    preflight call: -2014 (API-key format invalid), -2008 (Invalid
+    API-key), -1022 (Signature for this request is not valid). The
+    underlying response is summarized in the exception message with
+    credential values redacted.
+    """
+
+
 class BinanceFuturesDemoHedgeModeBlocked(BinanceAdapterError):
     """Raised when the Demo account is in Hedge mode.
 
