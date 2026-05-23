@@ -16,7 +16,10 @@
 
 ## Unreleased
 
-### Fixed (ROB-302 — Binance Futures Demo smoke: credential alias, v2 preflight, XRPUSDT sizing)
+### Fixed (ROB-303 — Futures Demo confirm reconcile: v2 positionRisk)
+- `BinanceFuturesDemoExecutionClient.get_position` now calls `GET /fapi/v2/positionRisk` instead of `/fapi/v1/positionRisk`. `demo-fapi.binance.com` rejects the v1 path with `404 {"code": -5000, "msg": "Path /fapi/v1/positionRisk, Method GET is invalid"}`, which aborted `--confirm` after a real Demo position had been opened — leaving the ledger row in `anomaly`. v2 returns the same `positionAmt` / `entryPrice` / `leverage` list shape, so parsing is unchanged. Constant, docstrings, and the position DTO doc are updated to match; the smoke runbook already documented v2.
+
+
 - Futures Demo preflight now calls `GET /fapi/v2/account` instead of `/fapi/v1/account`. `demo-fapi.binance.com` returns `404` for v1; v2 returns the same redacted summary fields (`canTrade`, nonzero asset/position counts) so evidence shape is unchanged.
 - `scripts/binance_futures_demo_smoke.py` now selects the requested symbol's row from the `exchangeInfo` response instead of `symbols[0]`. demo-fapi does not honor the `symbol=` query param and can lead the array with BTCUSDT, so XRPUSDT was being sized against BTCUSDT's step/precision/min-notional (cap-10 falsely blocked at `MIN_NOTIONAL=50`). The requested symbol is now matched and the helper fails closed if it is absent.
 - The submitted MARKET quantity is quantized to the symbol's `quantityPrecision` on **both** the open leg and the reduceOnly close leg. A step-floored `Decimal` carried the `exchangeInfo` step string's trailing zeros (`"0.10000000"` → `"30.00000000"`) which `format(qty, "f")` emitted verbatim, triggering Binance `-1111 Precision is over the maximum`. The close leg sizes from `abs(positionAmt)` and is now quantized identically, so a confirmed open can no longer be left with a failing close.

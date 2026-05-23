@@ -59,7 +59,7 @@ class FuturesDemoOpenOrdersResult:
 
 @dataclass(frozen=True)
 class FuturesDemoPositionResult:
-    """Single-symbol position snapshot from ``/fapi/v1/positionRisk``."""
+    """Single-symbol position snapshot from ``/fapi/v2/positionRisk``."""
 
     symbol: str
     position_amt: Decimal  # signed; positive=long, negative=short, 0=flat
