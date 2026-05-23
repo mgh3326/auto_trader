@@ -9,7 +9,7 @@ Five operating modes (mutually exclusive; default exits with guidance):
      exits 0, zero HTTP / DB / ledger writes.
   2. ``--plan-only`` — print a JSON plan; no HTTP, no DB, no signing.
      Rejects BTCUSDT (excluded from the futures allowlist).
-  3. ``--preflight`` — signed ``GET /fapi/v1/account``; redacted summary.
+  3. ``--preflight`` — signed ``GET /fapi/v2/account``; redacted summary.
   4. ``--order-test`` — signed ``POST /fapi/v1/order/test``; non-mutating
      server-side validation of the order shape.
   5. ``--confirm`` — full BUY (open) + reduceOnly SELL (close) round-trip
@@ -53,7 +53,7 @@ import logging
 import os
 import sys
 import uuid
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 import httpx
@@ -153,7 +153,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--preflight",
         action="store_true",
         help=(
-            "Run a read-only GET /fapi/v1/account preflight against the "
+            "Run a read-only GET /fapi/v2/account preflight against the "
             "Futures Demo endpoint. Requires env gate + credentials."
         ),
     )
@@ -306,7 +306,7 @@ async def _run_plan_only(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Mode: --preflight — signed GET /fapi/v1/account, redacted summary.
+# Mode: --preflight — signed GET /fapi/v2/account, redacted summary.
 # ---------------------------------------------------------------------------
 async def _run_preflight(args: argparse.Namespace) -> int:
     try:
@@ -359,11 +359,18 @@ async def _run_order_test(args: argparse.Namespace) -> int:
         if isinstance(sizing, FuturesSizingBlocked):
             logger.error("order_test sizing blocked: %s", sizing.reason)
             return 1
+        # ROB-302 (Codex #6): quantize to quantityPrecision so the submitted
+        # quantity STRING has no step-string trailing zeros (avoids -1111).
+        submit_qty = _quantize_qty(
+            sizing.qty,
+            step_size=filters["step_size"],
+            quantity_precision=filters["quantity_precision"],
+        )
         result = await execution.order_test(
             symbol=symbol,
             side=args.side,
             order_type="MARKET",
-            qty=sizing.qty,
+            qty=submit_qty,
         )
         _trace(
             f"order_test_ok symbol={result.symbol} side={result.side} qty={result.qty}"
@@ -436,12 +443,13 @@ async def _run_confirm(args: argparse.Namespace) -> int:
             if args.order_type == "LIMIT"
             else await _fetch_reference_price(base_url, symbol)
         )
+        sizing_step = _step_for_order_type(filters, args.order_type)
         sizing = compute_futures_demo_order_qty(
             symbol=symbol,
             target_notional_usdt=args.cap_usdt,
             price=ref_price,
             min_notional=filters["min_notional"],
-            step_size=filters["step_size"],
+            step_size=sizing_step,
             cap_usdt=args.cap_usdt,
             symbol_allowlist_override=allowlist,
         )
@@ -449,6 +457,16 @@ async def _run_confirm(args: argparse.Namespace) -> int:
             logger.error("confirm sizing blocked: %s", sizing.reason)
             return 1
         assert isinstance(sizing, FuturesSizingResult)
+        # ROB-302 (Codex #6): quantize to quantityPrecision before submit so the
+        # outbound quantity STRING is Binance-valid (avoids -1111).
+        submit_qty = _quantize_qty(
+            sizing.qty,
+            step_size=sizing_step,
+            quantity_precision=filters["quantity_precision"],
+        )
+        # Recompute notional from the actually-submitted qty so the ledger
+        # records the real exposure, not the pre-quantize estimate (Codex).
+        submit_notional = submit_qty * ref_price
 
         async with AsyncSessionLocal() as session:
             ledger = BinanceDemoLedgerService(session)
@@ -468,10 +486,13 @@ async def _run_confirm(args: argparse.Namespace) -> int:
                 side=args.side,
                 order_type=args.order_type,
                 price=args.price,
-                qty=sizing.qty,
-                notional=sizing.notional_usdt,
+                qty=submit_qty,
+                notional=submit_notional,
                 leverage=args.leverage,
                 close_with=args.close_with,
+                # close leg (always MARKET) quantizes against MARKET step.
+                close_step_size=filters["step_size"],
+                quantity_precision=filters["quantity_precision"],
             )
     finally:
         await execution.aclose()
@@ -494,6 +515,8 @@ async def _execute_confirm_lifecycle(
     notional: Decimal,
     leverage: int,
     close_with: str,
+    close_step_size: Decimal,
+    quantity_precision: int | None,
 ) -> int:
     """Run the full planned→reconciled lifecycle. Returns exit code."""
     # 1. Position-mode check (One-way required for PR 2).
@@ -668,7 +691,14 @@ async def _execute_confirm_lifecycle(
     _trace(f"position_check symbol={symbol} amt={position_amt}")
 
     # 9. Close side — reduceOnly always true.
-    close_qty = abs(position_amt)
+    # ROB-302 (Codex): positionAmt from /positionRisk can carry a fixed scale
+    # (e.g. "30.00000000"); submitting it raw would hit -1111 on the reduceOnly
+    # close, leaving an open position. Quantize the same way as the open leg.
+    close_qty = _quantize_qty(
+        abs(position_amt),
+        step_size=close_step_size,
+        quantity_precision=quantity_precision,
+    )
     return await _close_with_reduce_only(
         execution=execution,
         ledger=ledger,
@@ -910,26 +940,35 @@ async def _reconcile(
 # Public-read helpers — used by --order-test and --confirm to pull live
 # exchangeInfo filters + a reference price. No signing needed.
 # ---------------------------------------------------------------------------
-async def _fetch_symbol_filters(base_url: str, symbol: str) -> dict[str, Decimal]:
-    """Pull ``LOT_SIZE.stepSize`` + ``MIN_NOTIONAL.notional`` for ``symbol``.
+def _parse_symbol_filters(body: dict[str, Any], symbol: str) -> dict[str, Any]:
+    """Extract sizing constraints for ``symbol`` from an exchangeInfo body.
 
-    USD-M Futures uses ``filterType == 'MIN_NOTIONAL'`` with field
-    ``notional`` (no fallback aliases needed for the demo deployment).
+    ROB-302 (Codex #5): demo-fapi does not honor the ``symbol=`` query param —
+    the response can contain many symbols led by BTCUSDT. Select the row whose
+    ``symbol`` matches the request and fail closed if it is absent (never fall
+    back to ``symbols[0]``, which applied BTCUSDT filters to XRPUSDT).
+
+    Returns ``step_size`` (MARKET_LOT_SIZE preferred over LOT_SIZE for MARKET
+    orders), ``min_notional`` (matched row, default 5), and ``quantity_precision``
+    (used to format the submitted quantity string — see ``_quantize_qty``).
     """
-    async with httpx.AsyncClient(base_url=base_url, timeout=10.0) as client:
-        resp = await client.get(_EXCHANGE_INFO_PATH, params={"symbol": symbol})
-        resp.raise_for_status()
-        body = resp.json()
-    symbols = body.get("symbols") or []
-    if not symbols:
-        raise RuntimeError(f"exchangeInfo returned no symbols for {symbol!r}")
-    filters = symbols[0].get("filters") or []
-    step_size: Decimal | None = None
+    row: dict[str, Any] | None = None
+    for entry in body.get("symbols") or []:
+        if entry.get("symbol") == symbol:
+            row = entry
+            break
+    if row is None:
+        raise RuntimeError(f"exchangeInfo has no row for {symbol!r}")
+
+    market_step: Decimal | None = None
+    lot_step: Decimal | None = None
     min_notional: Decimal | None = None
-    for entry in filters:
+    for entry in row.get("filters") or []:
         ftype = entry.get("filterType")
-        if ftype == "LOT_SIZE":
-            step_size = Decimal(str(entry.get("stepSize", "0")))
+        if ftype == "MARKET_LOT_SIZE":
+            market_step = Decimal(str(entry.get("stepSize", "0")))
+        elif ftype == "LOT_SIZE":
+            lot_step = Decimal(str(entry.get("stepSize", "0")))
         elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
             mn = (
                 entry.get("notional")
@@ -938,13 +977,76 @@ async def _fetch_symbol_filters(base_url: str, symbol: str) -> dict[str, Decimal
             )
             if mn is not None:
                 min_notional = Decimal(str(mn))
-    if step_size is None:
-        raise RuntimeError(f"no LOT_SIZE filter in exchangeInfo for {symbol!r}")
+
+    # MARKET orders must respect MARKET_LOT_SIZE when present; LOT_SIZE otherwise.
+    # LIMIT orders use LOT_SIZE (Codex: MARKET_LOT_SIZE can be coarser than
+    # LOT_SIZE, so applying it to a LIMIT order would over-floor or block it).
+    market_usable = market_step is not None and market_step > 0
+    lot_usable = lot_step is not None and lot_step > 0
+    step_size = market_step if market_usable else lot_step
+    lot_step_size = lot_step if lot_usable else step_size
+    if step_size is None or step_size <= 0:
+        raise RuntimeError(
+            f"no usable LOT_SIZE/MARKET_LOT_SIZE step in exchangeInfo for {symbol!r}"
+        )
     if min_notional is None:
-        # Fall back to a conservative 5 USDT if the server doesn't expose
-        # the filter. XRPUSDT on demo-fapi is typically 5 USDT.
+        # Conservative default if the server omits the filter; XRPUSDT is 5 USDT.
+        # Binance enforces the real MIN_NOTIONAL server-side regardless, so this
+        # local default is a pre-check, not the authority.
         min_notional = Decimal("5")
-    return {"step_size": step_size, "min_notional": min_notional}
+
+    qp = row.get("quantityPrecision")
+    quantity_precision = int(qp) if qp is not None else None
+    return {
+        "step_size": step_size,  # MARKET step (MARKET_LOT_SIZE preferred)
+        "lot_step_size": lot_step_size,  # LOT_SIZE step for LIMIT orders
+        "min_notional": min_notional,
+        "quantity_precision": quantity_precision,
+    }
+
+
+def _step_for_order_type(filters: dict[str, Any], order_type: str) -> Decimal:
+    """Pick the LOT step appropriate to ``order_type``.
+
+    MARKET orders floor to MARKET_LOT_SIZE (``step_size``); LIMIT orders floor to
+    LOT_SIZE (``lot_step_size``).
+    """
+    if order_type == "LIMIT":
+        return filters["lot_step_size"]
+    return filters["step_size"]
+
+
+def _quantize_qty(
+    qty: Decimal,
+    *,
+    step_size: Decimal,
+    quantity_precision: int | None,
+) -> Decimal:
+    """Round ``qty`` DOWN to a Binance-submittable precision.
+
+    ROB-302 (Codex #6): the step-floored Decimal carries the exchangeInfo step
+    string's exponent (``"0.10000000"`` -> exponent -8), so ``format(qty, "f")``
+    in the execution client emits ``"30.00000000"`` and Binance rejects it with
+    ``-1111 Precision is over the maximum``. Quantizing to the symbol's
+    ``quantityPrecision`` (or, absent that, the step's normalized exponent)
+    strips the trailing zeros without changing the numeric value for a
+    step-floored quantity. ROUND_DOWN keeps us within the notional cap.
+    """
+    if quantity_precision is not None:
+        target = Decimal(1).scaleb(-quantity_precision)
+    else:
+        exponent = step_size.normalize().as_tuple().exponent
+        target = Decimal(1).scaleb(exponent) if isinstance(exponent, int) and exponent < 0 else Decimal(1)
+    return qty.quantize(target, rounding=ROUND_DOWN)
+
+
+async def _fetch_symbol_filters(base_url: str, symbol: str) -> dict[str, Any]:
+    """Fetch exchangeInfo and parse sizing constraints for ``symbol``."""
+    async with httpx.AsyncClient(base_url=base_url, timeout=10.0) as client:
+        resp = await client.get(_EXCHANGE_INFO_PATH, params={"symbol": symbol})
+        resp.raise_for_status()
+        body = resp.json()
+    return _parse_symbol_filters(body, symbol)
 
 
 async def _fetch_reference_price(base_url: str, symbol: str) -> Decimal:
