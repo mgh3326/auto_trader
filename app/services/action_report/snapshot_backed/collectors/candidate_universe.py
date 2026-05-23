@@ -1,10 +1,12 @@
 """Candidate-universe snapshot collector (read-only, optional).
 
-For ``market=kr|us`` the collector reads :class:`InvestScreenerSnapshot`
-counts via ``InvestScreenerSnapshotsRepository.coverage``. For
-``market=crypto`` it falls back to a count + latest-partition probe over
-:class:`InvestCryptoScreenerSnapshot`. Either branch is read-only and
-degrades to ``unavailable`` on exception.
+For ``market=kr|us`` the collector loads the latest ``InvestScreenerSnapshot``
+partition's top movers; for ``market=crypto`` the latest
+``InvestCryptoScreenerSnapshot`` partition. Rows are normalized into
+``CandidateEvidence`` (symbols, 0-10 scores, Korean reasons, source
+provenance) and serialized into the payload alongside coverage counts,
+source provenance, and structured Korean missing-data. Either branch is
+read-only and degrades to ``unavailable`` on exception.
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
@@ -32,7 +33,7 @@ from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
 )
-from app.services.screener_evidence import build_candidate_evidence
+from app.services.screener_evidence import CandidateEvidence, build_candidate_evidence
 
 TOP_N = 10
 
@@ -43,24 +44,18 @@ _FRESHNESS_BY_USEFULNESS = {
 }
 
 
-def _is_mock(obj: Any) -> bool:
-    return hasattr(obj, "_mock_children") or type(obj).__name__ in (
-        "MagicMock",
-        "AsyncMock",
-        "Mock",
-    )
+def _classify_usefulness(*, actionable: int, stale: int) -> str:
+    """Map fresh/stale counts to the usefulness contract.
 
-
-def _classify_usefulness(*, actionable: int, stale: int) -> tuple[str, str | None]:
-    """Return ``(usefulness, no_data_reason)`` from counts."""
+    ``useful`` means actionable (fresh) rows exist; ``stale_only`` means
+    only stale rows exist (candidates can still be surfaced but freshness
+    is degraded); ``empty`` means no rows at all.
+    """
     if actionable > 0:
-        return "useful", None
+        return "useful"
     if stale > 0:
-        return (
-            "stale_only",
-            f"no fresh candidates today; {stale} stale row(s) only",
-        )
-    return "empty", "candidate_universe has no rows for this market"
+        return "stale_only"
+    return "empty"
 
 
 def _equity_row_to_input(row: InvestScreenerSnapshot) -> dict[str, Any]:
@@ -91,7 +86,7 @@ def _crypto_row_to_input(row: InvestCryptoScreenerSnapshot) -> dict[str, Any]:
     }
 
 
-def _source_coverage(evidence: list) -> dict[str, int]:
+def _source_coverage(evidence: list[CandidateEvidence]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for ev in evidence:
         counts[ev.source] = counts.get(ev.source, 0) + 1
@@ -127,10 +122,14 @@ class CandidateUniverseSnapshotCollector:
         session: AsyncSession,
         *,
         equity_repository: InvestScreenerSnapshotsRepository | None = None,
+        crypto_repository: InvestCryptoScreenerSnapshotsRepository | None = None,
     ) -> None:
         self._session = session
         self._equity_repo = equity_repository or InvestScreenerSnapshotsRepository(
             session
+        )
+        self._crypto_repo = (
+            crypto_repository or InvestCryptoScreenerSnapshotsRepository(session)
         )
 
     async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
@@ -167,49 +166,12 @@ class CandidateUniverseSnapshotCollector:
     async def _collect_equity(
         self, request: CollectorRequest, now: dt.datetime
     ) -> list[SnapshotCollectResult]:
-        today = now.date()
         coverage = await self._equity_repo.coverage(
-            market=request.market, today_trading_date=today
+            market=request.market, today_trading_date=now.date()
         )
-        usefulness, no_data_reason = _classify_usefulness(
+        usefulness = _classify_usefulness(
             actionable=coverage.fresh_count, stale=coverage.stale_count
         )
-
-        if _is_mock(self._session) or _is_mock(self._equity_repo):
-            payload: dict[str, Any] = {
-                "market": coverage.market,
-                "today_trading_date": coverage.today_trading_date.isoformat()
-                if hasattr(coverage.today_trading_date, "isoformat")
-                else str(coverage.today_trading_date),
-                "fresh_count": coverage.fresh_count,
-                "actionable_count": coverage.fresh_count,
-                "stale_count": coverage.stale_count,
-                "last_computed_at": coverage.last_computed_at,
-                "usefulness": usefulness,
-                "no_data_reason": no_data_reason,
-                "candidates": [],
-                "source_coverage": {},
-                "missing_data": _missing_data(request.market, usefulness),
-                "freshness_status": _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial"),
-            }
-            freshness_status = "partial" if usefulness == "empty" else "fresh"
-            return [
-                build_result(
-                    snapshot_kind=self.snapshot_kind,
-                    market=request.market,
-                    account_scope=request.account_scope,
-                    payload=payload,
-                    origin="auto_trader_db",
-                    as_of=now,
-                    freshness_status=freshness_status,
-                    coverage={
-                        "actionable_count": coverage.fresh_count,
-                        "stale_count": coverage.stale_count,
-                        "usefulness": usefulness,
-                    },
-                )
-            ]
-
         rows = await self._equity_repo.list_top_candidates(
             market=request.market, limit=TOP_N
         )
@@ -235,80 +197,13 @@ class CandidateUniverseSnapshotCollector:
     async def _collect_crypto(
         self, request: CollectorRequest, now: dt.datetime
     ) -> list[SnapshotCollectResult]:
-        if _is_mock(self._session):
-            latest_date_row = await self._session.execute(
-                select(func.max(InvestCryptoScreenerSnapshot.snapshot_date))
-            )
-            latest_date = latest_date_row.scalar_one_or_none()
-            if latest_date is None:
-                usefulness, no_data_reason = _classify_usefulness(actionable=0, stale=0)
-                payload = {
-                    "market": "crypto",
-                    "fresh_count": 0,
-                    "actionable_count": 0,
-                    "stale_count": 0,
-                    "usefulness": usefulness,
-                    "no_data_reason": no_data_reason,
-                    "candidates": [],
-                    "source_coverage": {},
-                    "missing_data": _missing_data(request.market, usefulness),
-                    "freshness_status": _FRESHNESS_BY_USEFULNESS.get(
-                        usefulness, "partial"
-                    ),
-                }
-                return [
-                    build_result(
-                        snapshot_kind=self.snapshot_kind,
-                        market=request.market,
-                        account_scope=request.account_scope,
-                        payload=payload,
-                        origin="auto_trader_db",
-                        as_of=now,
-                        freshness_status="partial",
-                        coverage={"actionable_count": 0, "usefulness": usefulness},
-                    )
-                ]
-
-            count_row = await self._session.execute(
-                select(func.count()).where(
-                    InvestCryptoScreenerSnapshot.snapshot_date == latest_date
-                )
-            )
-            count = int(count_row.scalar_one() or 0)
-            usefulness, no_data_reason = _classify_usefulness(actionable=count, stale=0)
-            payload = {
-                "market": "crypto",
-                "latest_partition": latest_date.isoformat()
-                if hasattr(latest_date, "isoformat")
-                else str(latest_date),
-                "fresh_count": count,
-                "actionable_count": count,
-                "stale_count": 0,
-                "usefulness": usefulness,
-                "no_data_reason": no_data_reason,
-                "candidates": [],
-                "source_coverage": {},
-                "missing_data": _missing_data(request.market, usefulness),
-                "freshness_status": _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial"),
-            }
-            return [
-                build_result(
-                    snapshot_kind=self.snapshot_kind,
-                    market=request.market,
-                    account_scope=request.account_scope,
-                    payload=payload,
-                    origin="auto_trader_db",
-                    as_of=now,
-                    coverage={"actionable_count": count, "usefulness": usefulness},
-                )
-            ]
-
-        crypto_repo = InvestCryptoScreenerSnapshotsRepository(self._session)
-        cov = await crypto_repo.coverage(today=now.date())
-        usefulness, _reason = _classify_usefulness(
+        cov = await self._crypto_repo.coverage(today=now.date())
+        usefulness = _classify_usefulness(
             actionable=cov.latest_partition_count, stale=cov.stale_count
         )
-        rows = await crypto_repo.list_latest(preset_id="crypto_momentum", limit=TOP_N)
+        rows = await self._crypto_repo.list_latest(
+            preset_id="crypto_momentum", limit=TOP_N
+        )
         evidence = build_candidate_evidence(
             market="crypto",
             preset="crypto_momentum",
@@ -335,7 +230,7 @@ class CandidateUniverseSnapshotCollector:
         now: dt.datetime,
         market: str,
         preset: str,
-        evidence: list,
+        evidence: list[CandidateEvidence],
         fresh_count: int,
         stale_count: int,
         last_computed_at: dt.datetime | None,
@@ -343,7 +238,6 @@ class CandidateUniverseSnapshotCollector:
     ) -> SnapshotCollectResult:
         freshness_status = _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial")
         candidates = [e.to_payload_dict() for e in evidence]
-        missing = _missing_data(market, usefulness)
         payload: dict[str, Any] = {
             "market": market,
             "preset": preset,
@@ -358,7 +252,7 @@ class CandidateUniverseSnapshotCollector:
             if last_computed_at
             else None,
             "usefulness": usefulness,
-            "missing_data": missing,
+            "missing_data": _missing_data(market, usefulness),
         }
         return build_result(
             snapshot_kind=self.snapshot_kind,
@@ -367,6 +261,8 @@ class CandidateUniverseSnapshotCollector:
             payload=payload,
             origin="auto_trader_db",
             as_of=now,
+            # Optional kind: non-useful degrades the bundle to ``partial``,
+            # never fails it.
             freshness_status="fresh" if usefulness == "useful" else "partial",
             coverage={
                 "actionable_count": fresh_count,
