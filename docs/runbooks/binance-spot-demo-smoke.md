@@ -88,6 +88,18 @@ These are properties of the code as it ships, not aspirational:
   never rounded up. If flooring drops the order below `MIN_NOTIONAL`,
   sizing **blocks** with `SizingBlocked` and the CLI exits 1 — it does
   not silently grow the order.
+* **Fee-aware close.** During a `--confirm --close-with SELL` run, the close
+  quantity is derived dynamically from the live free asset balance (via
+  signed read-side method `get_asset_balance`), rather than reusing the original
+  buy quantity. This avoids attempting to sell more than the free balance, which is
+  often reduced by trading commission fees.
+* **Dust-vs-anomaly ledger semantics.** If residual base asset balance remains
+  post-close, and the order book is clean with zero open orders:
+  - If the residual is sub-min-notional (too small to place a SELL), it is classified
+    as benign **dust** and the ledger record is marked `reconciled` with a `residual_dust`
+    metadata note.
+  - If a sellable (>= min-notional) chunk remains or open orders exist, it is classified
+    as an **anomaly** and marked `anomaly` on the ledger along with a remediation hint.
 * **Ledger lifecycle writes.** `--confirm` writes a row per state
   transition into `binance_demo_order_ledger`:
   `planned → previewed → validated → submitted → filled → closed →
@@ -343,6 +355,28 @@ For `--close-with CANCEL` (LIMIT only), the SELL block is replaced by:
 
 Anomalies print `anomaly cid=... reason=...` and the CLI exits 2.
 None of these lines contain the API key or secret.
+
+At the very end of the run, a structured non-secret `spot_demo_smoke_report` JSON evidence event is stdout-streamed, containing:
+```json
+{
+  "event": "spot_demo_smoke_report",
+  "deployed_sha": "abc1234",
+  "env_enabled": true,
+  "env_credentials_present": true,
+  "buy_qty": "0.0001",
+  "buy_status": "FILLED",
+  "close_qty": "0.0000999",
+  "close_status": "FILLED",
+  "open_orders_count": 0,
+  "residual_dust": {
+    "amount": "0.0000001",
+    "notional_usdt": "0.000005"
+  },
+  "reconciliation_status": "dust",
+  "blockers": [],
+  "remediation_hint": null
+}
+```
 
 ---
 

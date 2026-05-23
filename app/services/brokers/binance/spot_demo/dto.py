@@ -53,3 +53,19 @@ class SpotDemoOpenOrder:
 @dataclass(frozen=True)
 class SpotDemoOpenOrdersResult:
     orders: list[SpotDemoOpenOrder]
+
+
+@dataclass(frozen=True)
+class SpotDemoAssetBalance:
+    """Free/locked amounts for a SINGLE asset.
+
+    Deliberately narrow: ``get_asset_balance`` returns only the one asset
+    the caller asked about so the full account payload (every balance row +
+    account-level flags) never enters logs or evidence. ``free`` is the
+    amount sellable right now (post-commission); ``locked`` is reserved by
+    open orders.
+    """
+
+    asset: str
+    free: Decimal
+    locked: Decimal

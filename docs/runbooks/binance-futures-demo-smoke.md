@@ -126,7 +126,7 @@ These are properties of the code as it ships, not aspirational:
 
 ---
 
-## 4. The five CLI modes
+## 4. The six CLI modes
 
 The entry point is `scripts/binance_futures_demo_smoke.py`. The mode
 flags are mutually exclusive; omitting them all is the "default-
@@ -247,6 +247,35 @@ the full lifecycle:
 Exit codes: `0` on a clean reconciled run, `1` on operator
 misconfiguration (missing creds, hedge mode, excluded symbol,
 leverage mismatch), `2` on runtime / reconciliation failures.
+
+### 4.6 `--readiness` (no HTTP, no credentials)
+
+```bash
+uv run python -m scripts.binance_futures_demo_smoke --readiness
+```
+
+Result: exits 0 if the `BINANCE_FUTURES_DEMO_*` environment quartet is correctly configured (present, truthy, and base_url host is in `FUTURES_DEMO_HOSTS`), or exits 1 if missing or misconfigured. Runs cleanly without any secrets, zero HTTP requests, and does not require credentials.
+
+It explicitly ignores `BINANCE_SPOT_DEMO_*` and `BINANCE_TESTNET_*` variables.
+
+At the end, it emits a structured non-secret `futures_demo_env_readiness` evidence event:
+```json
+{
+  "event": "futures_demo_env_readiness",
+  "source": "futures_demo",
+  "venue": "binance",
+  "product": "usdm_futures",
+  "enabled_present": true,
+  "enabled_truthy": true,
+  "api_key_present": true,
+  "api_secret_present": true,
+  "base_url_present": true,
+  "base_url_host": "demo-fapi.binance.com",
+  "base_url_host_allowed": true,
+  "missing": [],
+  "ready": true
+}
+```
 
 ---
 

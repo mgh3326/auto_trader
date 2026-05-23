@@ -16,6 +16,15 @@
 
 ## Unreleased
 
+### Added (ROB-299 — Binance Demo smoke hardening + Futures env readiness)
+- Spot Demo `--confirm` close path is now fee-aware: the closing SELL sizes from the live free base-asset balance (step-floored, min-notional gated) instead of reusing the original BUY quantity, so a commission-reduced balance no longer triggers an insufficient-balance failure that needs manual remediation.
+- New `--readiness` mode on `scripts/binance_futures_demo_smoke.py`: a no-secret, no-HTTP report of `BINANCE_FUTURES_DEMO_{ENABLED,API_KEY,API_SECRET,BASE_URL}` presence/truthiness and host-allowlist judgment, surfacing every missing var at once. Reads only the Futures Demo namespace — Spot Demo and legacy testnet env never leak in.
+- New narrow `BinanceSpotDemoExecutionClient.get_asset_balance(asset)` signed read-side method returning only the requested asset's free/locked amounts; the full account payload never enters logs or evidence.
+- Structured `spot_demo_smoke_report` evidence event summarizing deployed SHA, env readiness, buy/close quantities and status, open-order count, residual dust, reconciliation status, and blockers.
+
+### Changed (ROB-299)
+- Spot Demo close reconciliation now classifies sub-min-notional residue as benign **dust** (ledger row marked `reconciled` with a `residual_dust` note) instead of an anomaly. A dirty order book or a still-sellable remainder is recorded as an anomaly carrying an operator-readable remediation hint.
+
 ### Added (ROB-179 — /invest/api/feed/research)
 - New `GET /invest/api/feed/research` endpoint on the existing `/invest/api` router. Exposes the ROB-178 `research_reports` table as a paginated, citation-shaped user feed with cursor pagination, 7 tabs (`top`, `latest`, `mine`, `watchlist`, `holdings`, `kr`, `us`), and filters (`source`, `symbol`, `analyst`, `category`, `query`, `fromDate`, `toDate`). Mirrors `/invest/api/feed/news` shape and conventions. Copyright guardrail tests (recursive scan for body fields) are the structural safety gate.
 

@@ -40,6 +40,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from app.services.brokers.binance.spot_demo.dto import (
+    SpotDemoAssetBalance,
     SpotDemoCancelResult,
     SpotDemoOpenOrder,
     SpotDemoOpenOrdersResult,
@@ -62,6 +63,7 @@ _DEFAULT_BASE_URL: Final[str] = "https://demo-api.binance.com"
 _ORDER_PATH: Final[str] = "/api/v3/order"
 _ORDER_TEST_PATH: Final[str] = "/api/v3/order/test"
 _OPEN_ORDERS_PATH: Final[str] = "/api/v3/openOrders"
+_ACCOUNT_PATH: Final[str] = "/api/v3/account"
 ALLOWED_SIDES: Final[frozenset[str]] = frozenset({"BUY", "SELL"})
 ALLOWED_ORDER_TYPES: Final[frozenset[str]] = frozenset({"LIMIT", "MARKET"})
 
@@ -482,6 +484,29 @@ class BinanceSpotDemoExecutionClient:
         resp = await self._client.get(_ORDER_PATH, params=signed)
         resp.raise_for_status()
         return _redact(resp.json())
+
+    async def get_asset_balance(self, *, asset: str) -> SpotDemoAssetBalance:
+        """Signed ``GET /api/v3/account``; return only ``asset``'s free/locked.
+
+        Narrow by design: every other balance row and all account-level
+        flags are dropped here so the full account payload never reaches a
+        caller, log line, or evidence file. If the account holds none of
+        ``asset``, returns zero free/locked (absence == zero, not an error).
+        Read-side only — no mutation, no operator gate.
+        """
+        params = {"recvWindow": str(BINANCE_SPOT_DEMO_RECV_WINDOW_MS)}
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.get(_ACCOUNT_PATH, params=signed)
+        resp.raise_for_status()
+        body = resp.json()
+        for entry in body.get("balances") or []:
+            if entry.get("asset") == asset:
+                return SpotDemoAssetBalance(
+                    asset=asset,
+                    free=Decimal(str(entry.get("free", "0"))),
+                    locked=Decimal(str(entry.get("locked", "0"))),
+                )
+        return SpotDemoAssetBalance(asset=asset, free=Decimal("0"), locked=Decimal("0"))
 
 
 def _redact(payload: Any) -> dict[str, Any]:

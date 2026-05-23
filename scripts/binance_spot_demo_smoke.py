@@ -64,8 +64,12 @@ from app.services.brokers.binance.spot_demo.execution_client import (
     SpotDemoDryRunResult,
 )
 from app.services.brokers.binance.spot_demo.sizing import (
+    CloseQtyDust,
+    CloseQtyResult,
     SizingBlocked,
     SizingResult,
+    classify_close_residual,
+    compute_close_qty,
     compute_demo_order_qty,
 )
 
@@ -264,9 +268,7 @@ async def _run_preflight(args: argparse.Namespace) -> int:
         result = await client.preflight_account()
     finally:
         await client.aclose()
-    _evidence(
-        {"event": "spot_demo_preflight", "preflight": result.to_evidence_dict()}
-    )
+    _evidence({"event": "spot_demo_preflight", "preflight": result.to_evidence_dict()})
     return 0
 
 
@@ -301,7 +303,9 @@ async def _run_order_test(args: argparse.Namespace) -> int:
             order_type="MARKET",
             qty=sizing.qty,
         )
-        _trace(f"order_test_ok symbol={result.symbol} side={result.side} qty={result.qty}")
+        _trace(
+            f"order_test_ok symbol={result.symbol} side={result.side} qty={result.qty}"
+        )
         _evidence(
             {
                 "event": "spot_demo_order_test",
@@ -355,10 +359,19 @@ async def _run_confirm(args: argparse.Namespace) -> int:
         BinanceDemoLedgerService,
     )
 
+    report = {
+        "deployed_sha": _deployed_sha(),
+        "env_enabled": True,
+        "env_credentials_present": True,
+        "blockers": [],
+    }
+
     try:
         filters = await _fetch_symbol_filters(base_url, args.symbol)
-        ref_price = args.price if args.order_type == "LIMIT" else await _fetch_reference_price(
-            base_url, args.symbol
+        ref_price = (
+            args.price
+            if args.order_type == "LIMIT"
+            else await _fetch_reference_price(base_url, args.symbol)
         )
         sizing = compute_demo_order_qty(
             target_notional_usdt=args.cap_usdt,
@@ -369,8 +382,11 @@ async def _run_confirm(args: argparse.Namespace) -> int:
         )
         if isinstance(sizing, SizingBlocked):
             logger.error("confirm sizing blocked: %s", sizing.reason)
+            report["blockers"].append(sizing.reason)
             return 1
         assert isinstance(sizing, SizingResult)
+
+        report["buy_qty"] = str(sizing.qty)
 
         async with AsyncSessionLocal() as session:
             ledger = BinanceDemoLedgerService(session)
@@ -392,8 +408,13 @@ async def _run_confirm(args: argparse.Namespace) -> int:
                 qty=sizing.qty,
                 notional=sizing.notional_usdt,
                 close_with=args.close_with,
+                step_size=filters["step_size"],
+                min_notional=filters["min_notional"],
+                ref_price=ref_price,
+                report=report,
             )
     finally:
+        _evidence(build_spot_smoke_report(report))
         await execution.aclose()
 
 
@@ -412,6 +433,10 @@ async def _execute_confirm_lifecycle(
     qty: Decimal,
     notional: Decimal,
     close_with: str,
+    step_size: Decimal,
+    min_notional: Decimal,
+    ref_price: Decimal,
+    report: dict[str, Any],
 ) -> int:
     """Run the full planned→reconciled lifecycle. Returns exit code."""
     now = _now_utc()
@@ -487,6 +512,8 @@ async def _execute_confirm_lifecycle(
             confirm=True,
         )
     except Exception as exc:  # noqa: BLE001
+        report["buy_status"] = "FAILED"
+        report["blockers"].append(f"submit_failed: {exc}")
         await ledger.record_anomaly(
             client_order_id=buy_cid,
             reason=f"submit_failed: {exc}",
@@ -509,6 +536,7 @@ async def _execute_confirm_lifecycle(
     _trace(
         f"submitted cid={buy_cid} broker_order_id={broker_id} status={submit_status}"
     )
+    report["buy_status"] = submit_status
 
     # 5. FILLED — if the server reports FILLED on response, record it.
     # MARKET responses normally fill immediately on Spot Demo; LIMIT may
@@ -539,6 +567,10 @@ async def _execute_confirm_lifecycle(
             symbol=symbol,
             qty=qty,
             notional=notional,
+            step_size=step_size,
+            min_notional=min_notional,
+            ref_price=ref_price,
+            report=report,
         )
     # close_with == "CANCEL"
     return await _close_with_cancel(
@@ -547,6 +579,10 @@ async def _execute_confirm_lifecycle(
         session=session,
         buy_cid=buy_cid,
         symbol=symbol,
+        step_size=step_size,
+        min_notional=min_notional,
+        ref_price=ref_price,
+        report=report,
     )
 
 
@@ -562,8 +598,50 @@ async def _close_with_sell(
     symbol: str,
     qty: Decimal,
     notional: Decimal,
+    step_size: Decimal,
+    min_notional: Decimal,
+    ref_price: Decimal,
+    report: dict[str, Any],
 ) -> int:
     """Round-trip the position with a MARKET SELL."""
+    base_asset = symbol.removesuffix("USDT")
+    balance = await execution.get_asset_balance(asset=base_asset)
+    close_sizing = compute_close_qty(
+        free_balance=balance.free,
+        price=ref_price,
+        min_notional=min_notional,
+        step_size=step_size,
+    )
+    if isinstance(close_sizing, CloseQtyDust):
+        # Nothing sellable at min-notional; the BUY left only dust. Confirm a
+        # clean book, then reconcile with a dust note (NOT anomaly).
+        report["close_qty"] = "0"
+        report["residual_dust_amount"] = str(close_sizing.free)
+        report["residual_dust_notional"] = str(close_sizing.notional_usdt)
+        await ledger.record_closed(client_order_id=buy_cid, now=_now_utc())
+        await session.commit()
+        _trace(
+            f"close skipped dust base={base_asset} free={close_sizing.free} "
+            f"notional={close_sizing.notional_usdt} reason={close_sizing.reason}"
+        )
+        return await _reconcile(
+            execution=execution,
+            ledger=ledger,
+            session=session,
+            buy_cid=buy_cid,
+            close_cid=None,
+            symbol=symbol,
+            sell_was_filled=None,
+            dust_note=close_sizing.reason,
+            report=report,
+            step_size=step_size,
+            min_notional=min_notional,
+            ref_price=ref_price,
+        )
+    assert isinstance(close_sizing, CloseQtyResult)
+    close_qty = close_sizing.qty
+    report["close_qty"] = str(close_qty)
+
     now = _now_utc()
     await ledger.record_planned(
         instrument_id=instrument_id,
@@ -572,9 +650,9 @@ async def _close_with_sell(
         client_order_id=close_cid,
         side="SELL",
         order_type="MARKET",
-        qty=qty,
+        qty=close_qty,
         price=None,
-        notional_usdt=notional,
+        notional_usdt=close_sizing.notional_usdt,
         parent_client_order_id=buy_cid,
         extra_metadata={"source": "rob-298-smoke", "role": "close"},
         now=now,
@@ -582,7 +660,7 @@ async def _close_with_sell(
     await session.commit()
     _trace(
         f"planned cid={close_cid} product=spot symbol={symbol} side=SELL "
-        f"qty={qty} venue={venue_host}"
+        f"qty={close_qty} venue={venue_host}"
     )
     await ledger.record_previewed(client_order_id=close_cid, now=_now_utc())
     await ledger.record_validated(client_order_id=close_cid, now=_now_utc())
@@ -595,11 +673,13 @@ async def _close_with_sell(
             symbol=symbol,
             side="SELL",
             order_type="MARKET",
-            qty=qty,
+            qty=close_qty,
             client_order_id=close_cid,
             confirm=True,
         )
     except Exception as exc:  # noqa: BLE001
+        report["close_status"] = "FAILED"
+        report["blockers"].append(f"sell_submit_failed: {exc}")
         await ledger.record_anomaly(
             client_order_id=close_cid,
             reason=f"sell_submit_failed: {exc}",
@@ -616,6 +696,7 @@ async def _close_with_sell(
         return 2
     assert isinstance(sell_result, SpotDemoOrderSubmitResult)
     sell_status = sell_result.status
+    report["close_status"] = sell_status
     await ledger.record_submitted(
         client_order_id=close_cid,
         broker_order_id=sell_result.broker_order_id,
@@ -645,6 +726,10 @@ async def _close_with_sell(
         close_cid=close_cid,
         symbol=symbol,
         sell_was_filled=sell_status == "FILLED",
+        report=report,
+        step_size=step_size,
+        min_notional=min_notional,
+        ref_price=ref_price,
     )
 
 
@@ -655,6 +740,10 @@ async def _close_with_cancel(
     session: Any,
     buy_cid: str,
     symbol: str,
+    step_size: Decimal,
+    min_notional: Decimal,
+    ref_price: Decimal,
+    report: dict[str, Any],
 ) -> int:
     """Cancel an unfilled LIMIT BUY."""
     try:
@@ -662,6 +751,8 @@ async def _close_with_cancel(
             symbol=symbol, client_order_id=buy_cid, confirm=True
         )
     except Exception as exc:  # noqa: BLE001
+        report["close_status"] = "FAILED"
+        report["blockers"].append(f"cancel_failed: {exc}")
         await ledger.record_anomaly(
             client_order_id=buy_cid,
             reason=f"cancel_failed: {exc}",
@@ -674,6 +765,7 @@ async def _close_with_cancel(
     await ledger.record_cancelled(client_order_id=buy_cid, now=_now_utc())
     await session.commit()
     cancel_status = getattr(cancel_result, "status", "CANCELED")
+    report["close_status"] = str(cancel_status)
     _trace(f"cancelled cid={buy_cid} broker_status={cancel_status}")
 
     return await _reconcile(
@@ -684,6 +776,10 @@ async def _close_with_cancel(
         close_cid=None,
         symbol=symbol,
         sell_was_filled=None,
+        report=report,
+        step_size=step_size,
+        min_notional=min_notional,
+        ref_price=ref_price,
     )
 
 
@@ -696,6 +792,11 @@ async def _reconcile(
     close_cid: str | None,
     symbol: str,
     sell_was_filled: bool | None,
+    dust_note: str | None = None,
+    report: dict[str, Any],
+    step_size: Decimal,
+    min_notional: Decimal,
+    ref_price: Decimal,
 ) -> int:
     """Verify ``get_open_orders`` is empty and mark BUY reconciled.
 
@@ -704,6 +805,8 @@ async def _reconcile(
     try:
         open_orders = await execution.get_open_orders(symbol=symbol)
     except Exception as exc:  # noqa: BLE001
+        report["reconciliation_status"] = "anomaly"
+        report["blockers"].append(f"open_orders_query_failed: {exc}")
         await ledger.record_anomaly(
             client_order_id=buy_cid,
             reason=f"open_orders_query_failed: {exc}",
@@ -715,9 +818,17 @@ async def _reconcile(
         return 2
 
     is_empty = not open_orders.orders
+    report["open_orders_count"] = len(open_orders.orders)
     _trace(f"open_orders_check empty={'true' if is_empty else 'false'}")
     if not is_empty:
         residual_cids = [o.client_order_id for o in open_orders.orders]
+        hint = (
+            "Open orders remain after close. Cancel residual open orders, "
+            "then re-run --confirm or remediate manually."
+        )
+        report["reconciliation_status"] = "anomaly"
+        report["blockers"].append(f"open_orders_residual: {residual_cids!r}")
+        report["remediation_hint"] = hint
         await ledger.record_anomaly(
             client_order_id=buy_cid,
             reason=f"open_orders_residual: {residual_cids!r}",
@@ -727,7 +838,47 @@ async def _reconcile(
         _trace(f"anomaly cid={buy_cid} reason=open_orders_residual")
         return 2
 
-    await ledger.record_reconciled(client_order_id=buy_cid, now=_now_utc())
+    base_asset = symbol.removesuffix("USDT")
+    balance = await execution.get_asset_balance(asset=base_asset)
+    outcome = classify_close_residual(
+        free_after=balance.free,
+        price=ref_price,
+        min_notional=min_notional,
+        step_size=step_size,
+        open_orders_empty=is_empty,
+    )
+    if outcome.kind == "anomaly":
+        report["reconciliation_status"] = "anomaly"
+        report["blockers"].append(outcome.remediation_hint or "residual_after_close")
+        report["remediation_hint"] = outcome.remediation_hint
+        await ledger.record_anomaly(
+            client_order_id=buy_cid,
+            reason=f"residual_after_close: {outcome.remediation_hint}",
+            now=_now_utc(),
+        )
+        await session.commit()
+        _trace(f"anomaly cid={buy_cid} reason=residual_after_close")
+        return 2
+
+    # dust or clean: reconcile with a note recording residual size.
+    report["reconciliation_status"] = "dust" if balance.free > 0 else "reconciled"
+    report["residual_dust_amount"] = str(balance.free)
+    report["residual_dust_notional"] = str(balance.free * ref_price)
+
+    await ledger.record_reconciled(
+        client_order_id=buy_cid,
+        now=_now_utc(),
+        extra_metadata_merge={
+            "residual_dust": {
+                "asset": base_asset,
+                "free": str(balance.free),
+                "notional_usdt": str(balance.free * ref_price),
+                "note": dust_note or "post-close residual within dust threshold",
+            }
+        }
+        if balance.free > 0
+        else None,
+    )
     if close_cid is not None and sell_was_filled:
         # Best-effort: also reconcile the close row when its lifecycle
         # reached ``filled``. (Close rows that never reached filled are
@@ -736,9 +887,7 @@ async def _reconcile(
             await ledger.record_closed(client_order_id=close_cid, now=_now_utc())
             await ledger.record_reconciled(client_order_id=close_cid, now=_now_utc())
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "close-row reconcile non-fatal: %s (cid=%s)", exc, close_cid
-            )
+            logger.warning("close-row reconcile non-fatal: %s (cid=%s)", exc, close_cid)
     await session.commit()
     _trace(f"reconciled cid={buy_cid}")
     _evidence(
@@ -853,6 +1002,53 @@ def _now_utc() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+def _deployed_sha() -> str:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("DEPLOYED_SHA", "unknown")
+
+
+def build_spot_smoke_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Pure: shape the accumulated fields into the final evidence event.
+
+    Contains no secrets — only the operator-facing run summary."""
+    dust_amount = report.get("residual_dust_amount")
+    residual = (
+        {
+            "amount": dust_amount,
+            "notional_usdt": report.get("residual_dust_notional"),
+        }
+        if dust_amount is not None
+        else None
+    )
+    return {
+        "event": "spot_demo_smoke_report",
+        "deployed_sha": report.get("deployed_sha", "unknown"),
+        "env_enabled": report.get("env_enabled"),
+        "env_credentials_present": report.get("env_credentials_present"),
+        "buy_qty": report.get("buy_qty"),
+        "buy_status": report.get("buy_status"),
+        "close_qty": report.get("close_qty"),
+        "close_status": report.get("close_status"),
+        "open_orders_count": report.get("open_orders_count"),
+        "residual_dust": residual,
+        "reconciliation_status": report.get("reconciliation_status"),
+        "blockers": list(report.get("blockers", [])),
+        "remediation_hint": report.get("remediation_hint"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Top-level orchestration.
 # ---------------------------------------------------------------------------
@@ -861,9 +1057,7 @@ async def _run(args: argparse.Namespace) -> int:
     # argparse so `--help` still works without the env set, but BEFORE
     # any mode dispatch / HTTP / DB.
     if not _truthy(os.environ.get("BINANCE_SPOT_DEMO_ENABLED")):
-        logger.info(
-            "spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in"
-        )
+        logger.info("spot demo disabled — set BINANCE_SPOT_DEMO_ENABLED=true to opt in")
         return 0
 
     if args.plan_only:
