@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.models.investment_snapshots import InvestmentSnapshot
 from app.schemas.investment_stages import (
     StageArtifactPayload,
     StageCitation,
@@ -21,6 +22,36 @@ def _cap_confidence(base: int, freshness_status: str, source_count: int) -> int:
     if source_count <= 1:
         confidence = min(confidence, 65)
     return confidence
+
+
+def _norm_symbol(value: str) -> str:
+    s = (value or "").strip().upper()
+    return s[4:] if s.startswith("KRW-") else s
+
+
+def _held_symbols(
+    context: StageContext,
+) -> tuple[set[str], InvestmentSnapshot | None]:
+    """Union of held + reference holdings (awareness only, never sellability).
+
+    Returns the normalized held-symbol set and the portfolio snapshot used
+    (for citation), or ``(set(), None)`` when no portfolio snapshot is present
+    or no holdings are found. The crypto ``KRW-`` prefix is normalized so a
+    candidate ``KRW-BTC`` matches a held ticker ``BTC`` or ``KRW-BTC``.
+    """
+    portfolio_snaps = context.snapshots_for("portfolio")
+    if not portfolio_snaps:
+        return set(), None
+    snap = portfolio_snaps[0]
+    payload = snap.payload_json or {}
+    held: set[str] = set()
+    for key in ("holdings", "reference_holdings"):
+        rows = payload.get(key) or []
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and isinstance(row.get("ticker"), str):
+                    held.add(_norm_symbol(row["ticker"]))
+    return held, (snap if held else None)
 
 
 class CandidateUniverseStage:
@@ -54,17 +85,43 @@ class CandidateUniverseStage:
 
         confidence = _cap_confidence(base, freshness_status, len(source_coverage))
 
+        held, portfolio_snap = _held_symbols(context)
+
+        def _is_held(c: dict) -> bool:
+            return _norm_symbol(c.get("symbol", "")) in held
+
         key_points = [
+            f"[{'보유·추세' if _is_held(c) else '신규'}] "
             f"{c.get('symbol', '?')} (score={c.get('score', 0):.1f}): "
             f"{', '.join(c.get('reasons', []))} [{c.get('source', '?')}]"
             for c in top
         ]
+        held_trending = [c.get("symbol", "?") for c in top if _is_held(c)]
+        if held_trending:
+            summary = f"{summary} · 보유·추세: {', '.join(held_trending)}"
+
         missing_lines: list[str] = []
         freshness_summary = None
         if missing:
             missing_lines = [missing.get("what", ""), missing.get("why", "")]
             missing_lines = [m for m in missing_lines if m]
             freshness_summary = {"candidate_universe": missing}
+
+        cited = [
+            StageCitation(
+                snapshot_uuid=snap.snapshot_uuid,
+                snapshot_kind="candidate_universe",
+                payload_path="$.candidates",
+            )
+        ]
+        if portfolio_snap is not None:
+            cited.append(
+                StageCitation(
+                    snapshot_uuid=portfolio_snap.snapshot_uuid,
+                    snapshot_kind="portfolio",
+                    payload_path="$.holdings",
+                )
+            )
 
         return StageArtifactPayload(
             stage_type=self.stage_type,
@@ -77,11 +134,5 @@ class CandidateUniverseStage:
             else [],
             missing_data=missing_lines,
             freshness_summary=freshness_summary,
-            cited_snapshots=[
-                StageCitation(
-                    snapshot_uuid=snap.snapshot_uuid,
-                    snapshot_kind="candidate_universe",
-                    payload_path="$.candidates",
-                )
-            ],
+            cited_snapshots=cited,
         )

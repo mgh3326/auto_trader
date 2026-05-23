@@ -99,3 +99,91 @@ async def test_stage_missing_snapshot_raises():
     )
     with pytest.raises(UnavailableStageError):
         await CandidateUniverseStage().run(ctx)
+
+
+def _ctx_with_portfolio(candidate_payload, portfolio_payload):
+    return StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "candidate_universe": [_Snap(candidate_payload)],
+            "portfolio": [_Snap(portfolio_payload)],
+        },
+        bundle_metadata={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_stage_tags_held_and_trending_candidate():
+    candidate_payload = {
+        "freshness_status": "fresh",
+        "source_coverage": {"kis": 2},
+        "candidates": [
+            {
+                "symbol": "005930",
+                "score": 8.0,
+                "reasons": ["단기 상승 모멘텀 후보"],
+                "source": "kis",
+            },
+            {
+                "symbol": "000660",
+                "score": 7.5,
+                "reasons": ["단기 상승 모멘텀 후보"],
+                "source": "kis",
+            },
+        ],
+        "missing_data": None,
+    }
+    portfolio_payload = {
+        "primary_source": "kis",
+        "holdings": [{"ticker": "005930"}],
+        "reference_holdings": [],
+    }
+    out = await CandidateUniverseStage().run(
+        _ctx_with_portfolio(candidate_payload, portfolio_payload)
+    )
+    held_lines = [kp for kp in out.key_points if "보유·추세" in kp]
+    assert any("005930" in kp for kp in held_lines)
+    assert any("000660" in kp and "신규" in kp for kp in out.key_points)
+    assert "005930" in (out.summary or "")
+    assert any(c.snapshot_kind == "portfolio" for c in out.cited_snapshots)
+
+
+@pytest.mark.asyncio
+async def test_stage_held_crosscheck_normalizes_crypto_prefix():
+    candidate_payload = {
+        "freshness_status": "fresh",
+        "source_coverage": {"tvscreener_upbit": 1},
+        "candidates": [
+            {
+                "symbol": "KRW-BTC",
+                "score": 9.0,
+                "reasons": ["단기 상승 모멘텀 후보"],
+                "source": "tvscreener_upbit",
+            },
+        ],
+        "missing_data": None,
+    }
+    portfolio_payload = {
+        "primary_source": "manual",
+        "holdings": [{"ticker": "BTC"}],
+        "reference_holdings": [],
+    }
+    out = await CandidateUniverseStage().run(
+        _ctx_with_portfolio(candidate_payload, portfolio_payload)
+    )
+    assert any("보유·추세" in kp and "KRW-BTC" in kp for kp in out.key_points)
+
+
+@pytest.mark.asyncio
+async def test_stage_no_portfolio_marks_all_new():
+    candidate_payload = {
+        "freshness_status": "fresh",
+        "source_coverage": {"kis": 1},
+        "candidates": [
+            {"symbol": "005930", "score": 8.0, "reasons": ["x"], "source": "kis"},
+        ],
+        "missing_data": None,
+    }
+    out = await CandidateUniverseStage().run(_ctx(candidate_payload))
+    assert all("보유·추세" not in kp for kp in out.key_points)
+    assert not any(c.snapshot_kind == "portfolio" for c in out.cited_snapshots)
