@@ -31,7 +31,6 @@
 - **Persistence:**
   - `automation` (JSONB): Control flags for auto-approval and execution.
   - `artifacts` (JSONB): Structured store for `evidence`, `risk_review`, `portfolio_approval`, and `execution_preview`.
-- **Frontend:** Mirror types in `frontend/trading-decision/src/api/types.ts`.
 
 ## ANTI-PATTERNS
 - Do not duplicate app bootstrap wiring across random modules.
