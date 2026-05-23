@@ -338,9 +338,7 @@ async def _run_order_test(args: argparse.Namespace) -> int:
     except BinanceFuturesDemoMissingCredentials as exc:
         logger.error("order_test refused: %s", exc)
         return 1
-    base_url = os.environ.get(
-        "BINANCE_FUTURES_DEMO_BASE_URL", _DEFAULT_BASE_URL
-    )
+    base_url = os.environ.get("BINANCE_FUTURES_DEMO_BASE_URL", _DEFAULT_BASE_URL)
     try:
         filters = await _fetch_symbol_filters(base_url, symbol)
         ref_price = await _fetch_reference_price(base_url, symbol)
@@ -363,8 +361,7 @@ async def _run_order_test(args: argparse.Namespace) -> int:
             qty=sizing.qty,
         )
         _trace(
-            f"order_test_ok symbol={result.symbol} side={result.side} "
-            f"qty={result.qty}"
+            f"order_test_ok symbol={result.symbol} side={result.side} qty={result.qty}"
         )
         _evidence(
             {
@@ -418,9 +415,7 @@ async def _run_confirm(args: argparse.Namespace) -> int:
     except BinanceFuturesDemoMissingCredentials as exc:
         logger.error("confirm refused: %s", exc)
         return 1
-    base_url = os.environ.get(
-        "BINANCE_FUTURES_DEMO_BASE_URL", _DEFAULT_BASE_URL
-    )
+    base_url = os.environ.get("BINANCE_FUTURES_DEMO_BASE_URL", _DEFAULT_BASE_URL)
     venue_host = httpx.URL(base_url).host
 
     # Deferred DB import so default-disabled exit imports zero DB code.
@@ -513,18 +508,14 @@ async def _execute_confirm_lifecycle(
 
     # 2. Leverage set + echo verification.
     try:
-        lev_result = await execution.set_leverage(
-            symbol=symbol, leverage=leverage
-        )
+        lev_result = await execution.set_leverage(symbol=symbol, leverage=leverage)
     except BinanceFuturesDemoLeverageMismatch as exc:
         logger.error("leverage mismatch: %s", exc)
         return 2
     except Exception as exc:  # noqa: BLE001
         logger.error("set_leverage failed: %s", exc)
         return 2
-    _trace(
-        f"leverage_set symbol={lev_result.symbol} leverage={lev_result.leverage}"
-    )
+    _trace(f"leverage_set symbol={lev_result.symbol} leverage={lev_result.leverage}")
 
     opposite_side = "SELL" if side == "BUY" else "BUY"
     now = _now_utc()
@@ -661,12 +652,9 @@ async def _execute_confirm_lifecycle(
             now=_now_utc(),
         )
         await session.commit()
-        _trace(
-            f"anomaly cid={open_cid} reason=open_did_not_take_effect"
-        )
+        _trace(f"anomaly cid={open_cid} reason=open_did_not_take_effect")
         logger.error(
-            "open side did not take effect — position is flat after submit "
-            "(status=%s)",
+            "open side did not take effect — position is flat after submit (status=%s)",
             submit_status,
         )
         return 2
@@ -886,9 +874,7 @@ async def _reconcile(
     if not post_pos.is_flat:
         await ledger.record_anomaly(
             client_order_id=open_cid,
-            reason=(
-                f"position_not_flat_after_close: amt={post_pos.position_amt}"
-            ),
+            reason=(f"position_not_flat_after_close: amt={post_pos.position_amt}"),
             now=_now_utc(),
         )
         await session.commit()
@@ -898,16 +884,10 @@ async def _reconcile(
     await ledger.record_reconciled(client_order_id=open_cid, now=_now_utc())
     if close_cid is not None and close_was_filled:
         try:
-            await ledger.record_closed(
-                client_order_id=close_cid, now=_now_utc()
-            )
-            await ledger.record_reconciled(
-                client_order_id=close_cid, now=_now_utc()
-            )
+            await ledger.record_closed(client_order_id=close_cid, now=_now_utc())
+            await ledger.record_reconciled(client_order_id=close_cid, now=_now_utc())
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "close-row reconcile non-fatal: %s (cid=%s)", exc, close_cid
-            )
+            logger.warning("close-row reconcile non-fatal: %s (cid=%s)", exc, close_cid)
     await session.commit()
     _trace(f"reconciled cid={open_cid}")
     _evidence(
@@ -954,9 +934,7 @@ async def _fetch_symbol_filters(base_url: str, symbol: str) -> dict[str, Decimal
             if mn is not None:
                 min_notional = Decimal(str(mn))
     if step_size is None:
-        raise RuntimeError(
-            f"no LOT_SIZE filter in exchangeInfo for {symbol!r}"
-        )
+        raise RuntimeError(f"no LOT_SIZE filter in exchangeInfo for {symbol!r}")
     if min_notional is None:
         # Fall back to a conservative 5 USDT if the server doesn't expose
         # the filter. XRPUSDT on demo-fapi is typically 5 USDT.
@@ -972,9 +950,7 @@ async def _fetch_reference_price(base_url: str, symbol: str) -> Decimal:
         body = resp.json()
     price = body.get("price")
     if price is None:
-        raise RuntimeError(
-            f"ticker/price returned no price for {symbol!r}"
-        )
+        raise RuntimeError(f"ticker/price returned no price for {symbol!r}")
     return Decimal(str(price))
 
 
@@ -1035,8 +1011,7 @@ async def _run(args: argparse.Namespace) -> int:
     # any mode dispatch / HTTP / DB.
     if not _truthy(os.environ.get("BINANCE_FUTURES_DEMO_ENABLED")):
         logger.info(
-            "futures demo disabled — set BINANCE_FUTURES_DEMO_ENABLED=true "
-            "to opt in"
+            "futures demo disabled — set BINANCE_FUTURES_DEMO_ENABLED=true to opt in"
         )
         return 0
 
