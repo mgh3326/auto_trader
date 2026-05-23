@@ -93,6 +93,40 @@ async def test_order_test_limit_includes_price_and_tif(
 
 
 @pytest.mark.asyncio
+async def test_order_test_rejects_limit_with_zero_price(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``order_test(LIMIT, price=0)`` raises ValueError BEFORE any signing/HTTP."""
+    with pytest.raises(ValueError, match=r"LIMIT price must be > 0"):
+        await client.order_test(
+            symbol="XRPUSDT",
+            side="BUY",
+            order_type="LIMIT",
+            qty=Decimal("10"),
+            price=Decimal("0"),
+            time_in_force="GTC",
+        )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_order_test_rejects_limit_with_negative_price(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``order_test(LIMIT, price=-1)`` raises ValueError BEFORE any signing/HTTP."""
+    with pytest.raises(ValueError, match=r"LIMIT price must be > 0"):
+        await client.order_test(
+            symbol="XRPUSDT",
+            side="BUY",
+            order_type="LIMIT",
+            qty=Decimal("10"),
+            price=Decimal("-1"),
+            time_in_force="GTC",
+        )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
 async def test_order_test_signs_with_apikey_header(
     client: BinanceFuturesDemoExecutionClient, httpx_mock
 ) -> None:

@@ -252,6 +252,93 @@ async def test_get_open_orders_signs_and_hits_demo_futures_host(
 
 
 @pytest.mark.asyncio
+async def test_submit_order_rejects_zero_qty_before_signing(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``submit_order(qty=0, confirm=True)`` raises ValueError; zero HTTP."""
+    with pytest.raises(ValueError, match=r"qty must be > 0"):
+        await client.submit_order(
+            symbol="XRPUSDT",
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("0"),
+            client_order_id="zero-qty-cid",
+            confirm=True,
+        )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_submit_order_rejects_negative_qty(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``submit_order(qty=-0.001, confirm=True)`` raises ValueError; zero HTTP."""
+    with pytest.raises(ValueError, match=r"qty must be > 0"):
+        await client.submit_order(
+            symbol="XRPUSDT",
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("-0.001"),
+            client_order_id="neg-qty-cid",
+            confirm=True,
+        )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_submit_order_rejects_empty_symbol(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``submit_order(symbol="", confirm=True)`` raises ValueError; zero HTTP."""
+    with pytest.raises(ValueError, match=r"symbol must be non-empty"):
+        await client.submit_order(
+            symbol="",
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("10"),
+            client_order_id="empty-symbol-cid",
+            confirm=True,
+        )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_rejects_empty_client_order_id(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``cancel_order(client_order_id="")`` raises ValueError; zero HTTP."""
+    with pytest.raises(ValueError, match=r"client_order_id must be non-empty"):
+        await client.cancel_order(symbol="XRPUSDT", client_order_id="")
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_rejects_empty_symbol(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``cancel_order(symbol="")`` raises ValueError; zero HTTP."""
+    with pytest.raises(ValueError, match=r"symbol must be non-empty"):
+        await client.cancel_order(symbol="", client_order_id="some-cid")
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_preview_submit_rejects_zero_qty(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``preview_submit(qty=0)`` raises ValueError; zero HTTP (no signing either)."""
+    with pytest.raises(ValueError, match=r"qty must be > 0"):
+        client.preview_submit(
+            symbol="XRPUSDT",
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("0"),
+            client_order_id="preview-zero-qty",
+        )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
 async def test_secret_not_in_logs_on_submit_failure(
     enabled_env: None, monkeypatch: pytest.MonkeyPatch, caplog
 ) -> None:

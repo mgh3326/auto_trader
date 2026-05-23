@@ -98,6 +98,42 @@ async def test_set_leverage_raises_on_mismatched_echo(
 
 
 @pytest.mark.asyncio
+async def test_set_leverage_rejects_leverage_5_before_http(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``set_leverage(leverage=5)`` raises BEFORE any HTTP (1x pin guard).
+
+    ROB-298 PR 2 design lock (comment d258c471): leverage=1 forced.
+    The client must refuse any other value at the boundary, BEFORE the
+    signed POST is dispatched. No mocked response is needed because
+    no HTTP should occur at all.
+    """
+    with pytest.raises(BinanceFuturesDemoLeverageMismatch):
+        await client.set_leverage(symbol="XRPUSDT", leverage=5)
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_set_leverage_rejects_leverage_0(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``set_leverage(leverage=0)`` raises BEFORE any HTTP."""
+    with pytest.raises(BinanceFuturesDemoLeverageMismatch):
+        await client.set_leverage(symbol="XRPUSDT", leverage=0)
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_set_leverage_rejects_leverage_negative(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """``set_leverage(leverage=-1)`` raises BEFORE any HTTP."""
+    with pytest.raises(BinanceFuturesDemoLeverageMismatch):
+        await client.set_leverage(symbol="XRPUSDT", leverage=-1)
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
 async def test_set_leverage_is_signed(
     client: BinanceFuturesDemoExecutionClient, httpx_mock
 ) -> None:

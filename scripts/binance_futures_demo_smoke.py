@@ -199,9 +199,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         type=int,
         default=1,
         help=(
-            "Leverage for --confirm (default: 1). Smoke contract pins "
-            "1x exactly; values other than 1 are passed through to "
-            "Binance but the echo verification still enforces equality."
+            "Leverage for --confirm (default: 1). ROB-298 PR 2 only "
+            "supports leverage=1; values other than 1 are rejected at "
+            "the client BEFORE any signed POST (raises "
+            "BinanceFuturesDemoLeverageMismatch). The arg is kept for "
+            "audit-trail visibility, not as a tunable."
         ),
     )
     parser.add_argument(

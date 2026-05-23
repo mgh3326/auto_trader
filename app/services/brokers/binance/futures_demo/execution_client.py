@@ -212,24 +212,63 @@ class BinanceFuturesDemoExecutionClient:
     def _validate_order_args(
         self,
         *,
+        symbol: str,
         side: str,
         order_type: str,
+        qty: Decimal,
         price: Decimal | None,
         time_in_force: str | None,
     ) -> None:
+        """Validate order arguments before any signing/HTTP.
+
+        Boundary validation — caller-side programming errors are rejected
+        here as plain ``ValueError`` so they fail closed at the adapter
+        boundary rather than relying on Binance to reject malformed
+        payloads. This guards against:
+
+          * empty ``symbol`` (would emit a signed request for a meaningless
+            symbol)
+          * ``qty <= 0`` (zero or negative quantity)
+          * LIMIT order with ``price <= 0``
+          * unknown ``side`` / ``order_type``
+          * LIMIT order missing ``price`` or ``time_in_force``
+          * MARKET order carrying a stray ``price``
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("symbol must be non-empty")
         if side not in ALLOWED_SIDES:
             raise ValueError(f"side {side!r} not in {sorted(ALLOWED_SIDES)}")
         if order_type not in ALLOWED_ORDER_TYPES:
             raise ValueError(
                 f"order_type {order_type!r} not in {sorted(ALLOWED_ORDER_TYPES)}"
             )
+        if qty <= 0:
+            raise ValueError(f"qty must be > 0, got {qty}")
         if order_type == "LIMIT":
             if price is None:
                 raise ValueError("LIMIT order requires explicit price")
+            if price <= 0:
+                raise ValueError(f"LIMIT price must be > 0, got {price}")
             if time_in_force is None:
                 raise ValueError("LIMIT order requires time_in_force (e.g. GTC)")
         if order_type == "MARKET" and price is not None:
             raise ValueError("MARKET order must not carry a price")
+
+    def _validate_cancel_args(
+        self,
+        *,
+        symbol: str,
+        client_order_id: str,
+    ) -> None:
+        """Validate cancel arguments before any signing/HTTP.
+
+        Empty ``symbol`` or ``client_order_id`` would emit a signed DELETE
+        with a meaningless payload; reject at the adapter boundary.
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("symbol must be non-empty")
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must be non-empty")
 
     def _build_order_params(
         self,
@@ -274,9 +313,24 @@ class BinanceFuturesDemoExecutionClient:
         order_type: str,
         qty: Decimal,
         client_order_id: str | None = None,
+        price: Decimal | None = None,
+        time_in_force: str | None = None,
         reduce_only: bool = False,
     ) -> FuturesDemoDryRunResult:
-        """Pure dry-run preview. No HTTP, no signing."""
+        """Pure dry-run preview. No HTTP, no signing.
+
+        Still runs boundary validation so the same rejection contract
+        applies whether the operator is previewing or confirming — a
+        preview with ``qty=0`` is a caller bug, not a "harmless dry run".
+        """
+        self._validate_order_args(
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            qty=qty,
+            price=price,
+            time_in_force=time_in_force,
+        )
         cid = client_order_id or self._new_client_order_id()
         return FuturesDemoDryRunResult(
             symbol=symbol,
@@ -312,8 +366,10 @@ class BinanceFuturesDemoExecutionClient:
         defaults to ``reduceOnly=false`` on absence).
         """
         self._validate_order_args(
+            symbol=symbol,
             side=side,
             order_type=order_type,
+            qty=qty,
             price=price,
             time_in_force=time_in_force,
         )
@@ -368,7 +424,12 @@ class BinanceFuturesDemoExecutionClient:
         called, the operator has already committed to running against the
         broker. (Matches the model the smoke CLI uses to clean up a NEW
         order that didn't fill.)
+
+        Boundary validation: empty ``symbol`` or ``client_order_id`` is
+        rejected as ``ValueError`` before any signing/HTTP — caller bug,
+        not broker-environment fail-closed.
         """
+        self._validate_cancel_args(symbol=symbol, client_order_id=client_order_id)
         params = {
             "symbol": symbol,
             "origClientOrderId": client_order_id,
@@ -409,8 +470,10 @@ class BinanceFuturesDemoExecutionClient:
         real submit (modulo path).
         """
         self._validate_order_args(
+            symbol=symbol,
             side=side,
             order_type=order_type,
+            qty=qty,
             price=price,
             time_in_force=time_in_force,
         )
@@ -528,13 +591,25 @@ class BinanceFuturesDemoExecutionClient:
     ) -> FuturesDemoLeverageResult:
         """Set leverage for ``symbol`` via POST /fapi/v1/leverage.
 
-        Verifies the Binance response echoes the requested leverage; any
-        mismatch (e.g. requested ``leverage=1`` but Binance echoes
-        ``leverage=5``) raises ``BinanceFuturesDemoLeverageMismatch``. The
-        smoke contract pins 1x leverage exactly; any other value
-        indicates either a Binance bug or env tampering and the client
-        must refuse to proceed.
+        ROB-298 PR 2 pins leverage to ``1`` exactly (locked design
+        decision, see ROB-298 comment d258c471 — "leverage: 1x 강제").
+        Any other requested value is rejected at the adapter boundary
+        BEFORE the signed POST is dispatched — this is the structural
+        guard against accidentally requesting >1x leverage on the demo
+        account. The existing post-HTTP echo check remains as defense
+        in depth.
+
+        Also rejects empty ``symbol`` (caller bug; would emit a
+        meaningless signed request).
         """
+        if not symbol or not symbol.strip():
+            raise ValueError("symbol must be non-empty")
+        if leverage != 1:
+            raise BinanceFuturesDemoLeverageMismatch(
+                f"Futures Demo set_leverage refused: leverage={leverage} "
+                "but ROB-298 PR 2 pins leverage=1 exactly. Refusing to "
+                "dispatch signed POST."
+            )
         params = {
             "symbol": symbol,
             "leverage": str(leverage),
