@@ -119,6 +119,7 @@ class EvidenceAutoEmitter:
         symbol_quotes: dict[str, tuple[Any, dict[str, Any]]] = {}
         news_matches: dict[str, int] = {}
         candidate_usefulness: str | None = None
+        candidate_by_symbol: dict[str, dict[str, Any]] = {}
         portfolio_snapshot: Any | None = None
         candidate_snapshot: Any | None = None
         news_snapshot: Any | None = None
@@ -139,6 +140,12 @@ class EvidenceAutoEmitter:
                 candidate_usefulness = (
                     payload.get("usefulness") if isinstance(payload, dict) else None
                 )
+                raw_candidates = (
+                    payload.get("candidates", []) if isinstance(payload, dict) else []
+                )
+                for cand in raw_candidates:
+                    if isinstance(cand, dict) and isinstance(cand.get("symbol"), str):
+                        candidate_by_symbol[cand["symbol"]] = cand
             elif kind == "news":
                 news_snapshot = snapshot
                 matches = payload.get("symbol_matches") or {}
@@ -204,11 +211,15 @@ class EvidenceAutoEmitter:
                     continue
                 if not _quote_is_actionable(quote):
                     continue
+                cand = candidate_by_symbol.get(sym, {})
                 evidence = _make_evidence(
                     symbol_snapshot,
                     extra={
                         "candidate_snapshot_uuid": _snapshot_uuid(candidate_snapshot),
                         "candidate_usefulness": candidate_usefulness,
+                        "candidate_score": cand.get("score"),
+                        "candidate_reasons": cand.get("reasons"),
+                        "candidate_source": cand.get("source"),
                         "news_matches": news_matches.get(sym, 0),
                         "quote_status": quote.get("status"),
                         "best_bid": quote.get("best_bid"),
@@ -276,6 +287,42 @@ class EvidenceAutoEmitter:
                     operation="review",
                     apply_policy="requires_user_approval",
                     evidence_snapshot=evidence,
+                )
+            )
+
+        # Held-and-trending — held names that also surface in the screener
+        # candidate universe. Review-only awareness signal (held names are
+        # excluded from buy candidates above); no broker mutation.
+        already_proposed = {item.symbol for item in items if item.symbol}
+        for sym, cand in candidate_by_symbol.items():
+            if sym not in held or sym in already_proposed:
+                continue
+            reasons = cand.get("reasons") or []
+            items.append(
+                IngestReportItem(
+                    client_item_key=f"auto-hold-trend-{sym}",
+                    item_kind="watch",
+                    symbol=sym,
+                    intent="trend_recovery_review",
+                    rationale=(
+                        f"보유 종목 {sym}가 스크리너 추세 상위에 등장 — 관망/추가검토 "
+                        f"(score {cand.get('score')}, {', '.join(reasons)})"
+                    ),
+                    operation="review",
+                    apply_policy="requires_user_approval",
+                    evidence_snapshot=_make_evidence(
+                        candidate_snapshot,
+                        extra={
+                            "candidate_snapshot_uuid": _snapshot_uuid(
+                                candidate_snapshot
+                            ),
+                            "candidate_score": cand.get("score"),
+                            "candidate_reasons": reasons,
+                            "candidate_source": cand.get("source"),
+                            "held": True,
+                            "proposer": "auto_emit/held_and_trending",
+                        },
+                    ),
                 )
             )
 

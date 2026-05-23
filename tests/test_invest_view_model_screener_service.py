@@ -2430,3 +2430,22 @@ async def test_consecutive_gainers_zero_qualifiers_still_threads_partition_metad
     assert "2026.05.20" not in f.asOfLabel
     # source enum: cached (snapshot was checked)
     assert f.source == "cached"
+
+
+def test_crypto_candidate_context_matches_builder_labels():
+    from app.services.invest_view_model.screener_service import (
+        _crypto_candidate_context,
+    )
+
+    row = {
+        "symbol": "KRW-BTC",
+        "source": "tvscreener_upbit",
+        "change_rate": 4.2,
+        "rsi": 40.0,
+        "trade_amount_24h": 123456,
+    }
+    ctx = _crypto_candidate_context(row, "crypto_momentum")
+    assert ctx is not None
+    assert ctx.scoreLabel == "+4.20%"
+    assert ctx.reasons == ["단기 상승 모멘텀 후보"]
+    assert ctx.source == "tvscreener_upbit"

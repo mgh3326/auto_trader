@@ -1279,10 +1279,11 @@ async def test_symbol_collector_quote_respects_enrichment_cap():
 # Candidate-universe collector
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_candidate_universe_kr_returns_coverage_counts():
+async def test_candidate_universe_kr_emits_candidate_evidence():
+    from types import SimpleNamespace
+
     from app.services.invest_screener_snapshots.repository import CoverageCounts
 
-    session = MagicMock()
     repo = MagicMock()
     repo.coverage = AsyncMock(
         return_value=CoverageCounts(
@@ -1293,86 +1294,37 @@ async def test_candidate_universe_kr_returns_coverage_counts():
             last_computed_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
         )
     )
-    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
-    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
-    assert results[0].payload_json["fresh_count"] == 12
-    assert results[0].payload_json["stale_count"] == 3
-
-
-@pytest.mark.asyncio
-async def test_candidate_universe_kr_returns_partial_when_no_rows():
-    from app.services.invest_screener_snapshots.repository import CoverageCounts
-
-    session = MagicMock()
-    repo = MagicMock()
-    repo.coverage = AsyncMock(
-        return_value=CoverageCounts(
-            market="kr",
-            today_trading_date=dt.date(2026, 5, 19),
-            fresh_count=0,
-            stale_count=0,
-            last_computed_at=None,
-        )
+    repo.list_top_candidates = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                symbol="005930",
+                source="kis",
+                change_rate=3.0,
+                latest_close=78500,
+                daily_volume=14_000_000,
+                consecutive_up_days=3,
+            )
+        ]
     )
-    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
-    results = await collector.collect(_request(market="kr", account_scope="kis_live"))
-    assert results[0].freshness_status == "partial"
-
-
-@pytest.mark.asyncio
-async def test_candidate_universe_crypto_queries_crypto_partition():
-    session = MagicMock()
-    latest_result = MagicMock(
-        scalar_one_or_none=MagicMock(return_value=dt.date(2026, 5, 19))
-    )
-    count_result = MagicMock(scalar_one=MagicMock(return_value=42))
-    session.execute = AsyncMock(side_effect=[latest_result, count_result])
-
-    collector = CandidateUniverseSnapshotCollector(session)
-    results = await collector.collect(
-        _request(market="crypto", account_scope="upbit_live")
-    )
-    assert results[0].payload_json["fresh_count"] == 42
-    assert results[0].payload_json["latest_partition"] == "2026-05-19"
-
-
-@pytest.mark.asyncio
-async def test_candidate_universe_kr_usefulness_useful_when_fresh_present():
-    """ROB-278 Phase 2 — fresh_count > 0 → usefulness='useful', no no_data_reason."""
-    from app.services.invest_screener_snapshots.repository import CoverageCounts
-
-    session = MagicMock()
-    repo = MagicMock()
-    repo.coverage = AsyncMock(
-        return_value=CoverageCounts(
-            market="kr",
-            today_trading_date=dt.date(2026, 5, 19),
-            fresh_count=5,
-            stale_count=10,
-            last_computed_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
-        )
-    )
-    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    collector = CandidateUniverseSnapshotCollector(MagicMock(), equity_repository=repo)
     results = await collector.collect(_request(market="kr", account_scope="kis_live"))
     payload = results[0].payload_json
-    # Freshness stays 'fresh' because the bundle has fresh data.
-    assert results[0].freshness_status == "fresh"
-    # Usefulness reflects actionability.
     assert payload["usefulness"] == "useful"
-    assert payload["actionable_count"] == 5
-    assert payload["stale_count"] == 10
-    assert payload.get("no_data_reason") is None
+    assert payload["fresh_count"] == 12
+    assert payload["stale_count"] == 3
+    assert payload["freshness_status"] == "fresh"
+    assert payload["candidates"][0]["symbol"] == "005930"
+    assert payload["candidates"][0]["score"] == 6.5
+    assert payload["source_coverage"] == {"kis": 1}
+    assert payload["missing_data"] is None
 
 
 @pytest.mark.asyncio
-async def test_candidate_universe_kr_usefulness_stale_only_when_no_fresh():
-    """ROB-278 Phase 2 — stale_count > 0 + fresh_count = 0 →
-    usefulness='stale_only', explicit no_data_reason. Freshness can stay
-    'fresh' because the snapshot row itself is current; usefulness is the
-    semantic the report generator should consult."""
+async def test_candidate_universe_kr_stale_only_sets_missing_data():
+    from types import SimpleNamespace
+
     from app.services.invest_screener_snapshots.repository import CoverageCounts
 
-    session = MagicMock()
     repo = MagicMock()
     repo.coverage = AsyncMock(
         return_value=CoverageCounts(
@@ -1383,21 +1335,34 @@ async def test_candidate_universe_kr_usefulness_stale_only_when_no_fresh():
             last_computed_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
         )
     )
-    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    repo.list_top_candidates = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                symbol="000660",
+                source="kis",
+                change_rate=1.5,
+                latest_close=120000,
+                daily_volume=5_000_000,
+                consecutive_up_days=1,
+            )
+        ]
+    )
+    collector = CandidateUniverseSnapshotCollector(MagicMock(), equity_repository=repo)
     results = await collector.collect(_request(market="kr", account_scope="kis_live"))
     payload = results[0].payload_json
     assert payload["usefulness"] == "stale_only"
-    assert payload["actionable_count"] == 0
-    assert payload["stale_count"] == 42
-    assert "stale" in payload["no_data_reason"].lower()
+    assert payload["freshness_status"] == "stale"
+    assert payload["candidates"], "stale partition still yields candidate rows"
+    assert payload["missing_data"]["confidence_impact"] == "cap 40"
+    assert "stale" in payload["missing_data"]["what"].lower()
+    # Optional kind degrades the bundle to partial, never fails it.
+    assert results[0].freshness_status == "partial"
 
 
 @pytest.mark.asyncio
-async def test_candidate_universe_kr_usefulness_empty_when_no_rows():
-    """ROB-278 Phase 2 — both counts 0 → usefulness='empty' + no_data_reason."""
+async def test_candidate_universe_kr_empty_sets_missing_data():
     from app.services.invest_screener_snapshots.repository import CoverageCounts
 
-    session = MagicMock()
     repo = MagicMock()
     repo.coverage = AsyncMock(
         return_value=CoverageCounts(
@@ -1408,35 +1373,63 @@ async def test_candidate_universe_kr_usefulness_empty_when_no_rows():
             last_computed_at=None,
         )
     )
-    collector = CandidateUniverseSnapshotCollector(session, equity_repository=repo)
+    repo.list_top_candidates = AsyncMock(return_value=[])
+    collector = CandidateUniverseSnapshotCollector(MagicMock(), equity_repository=repo)
     results = await collector.collect(_request(market="kr", account_scope="kis_live"))
     payload = results[0].payload_json
     assert payload["usefulness"] == "empty"
-    assert payload["actionable_count"] == 0
-    assert payload["stale_count"] == 0
-    assert payload["no_data_reason"]
-    # The legacy freshness signal (partial) is still preserved for callers
-    # that only look at freshness_status.
+    assert payload["candidates"] == []
+    assert payload["source_coverage"] == {}
+    assert payload["missing_data"]["confidence_impact"] == "cap 20"
     assert results[0].freshness_status == "partial"
 
 
 @pytest.mark.asyncio
-async def test_candidate_universe_crypto_includes_usefulness_fields():
-    """ROB-278 Phase 2 — crypto branch carries the same usefulness contract."""
-    session = MagicMock()
-    latest_result = MagicMock(
-        scalar_one_or_none=MagicMock(return_value=dt.date(2026, 5, 19))
-    )
-    count_result = MagicMock(scalar_one=MagicMock(return_value=7))
-    session.execute = AsyncMock(side_effect=[latest_result, count_result])
+async def test_candidate_universe_crypto_emits_candidate_evidence():
+    from types import SimpleNamespace
 
-    collector = CandidateUniverseSnapshotCollector(session)
+    from app.services.invest_crypto_screener_snapshots.repository import (
+        CryptoCoverageCounts,
+    )
+
+    crypto_repo = MagicMock()
+    crypto_repo.coverage = AsyncMock(
+        return_value=CryptoCoverageCounts(
+            latest_partition_date=dt.date(2026, 5, 19),
+            latest_partition_count=7,
+            stale_count=0,
+            last_computed_at=dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
+        )
+    )
+    crypto_repo.list_latest = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                symbol="KRW-BTC",
+                name="비트코인",
+                source="tvscreener_upbit",
+                change_rate=8.0,
+                latest_close=95_000_000,
+                rsi=60,
+                adx=30,
+                trade_amount_24h=500_000_000,
+                volume_24h=10,
+                market_cap=None,
+                market_warning=False,
+            )
+        ]
+    )
+    collector = CandidateUniverseSnapshotCollector(
+        MagicMock(), crypto_repository=crypto_repo
+    )
     results = await collector.collect(
         _request(market="crypto", account_scope="upbit_live")
     )
     payload = results[0].payload_json
-    assert payload["actionable_count"] == 7
     assert payload["usefulness"] == "useful"
+    assert payload["actionable_count"] == 7
+    assert payload["candidates"][0]["symbol"] == "KRW-BTC"
+    assert payload["candidates"][0]["score"] == 9.0
+    assert payload["source_coverage"] == {"tvscreener_upbit": 1}
 
 
 @pytest.mark.asyncio
