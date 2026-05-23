@@ -185,9 +185,7 @@ class PortfolioActionService:
             select(TradeJournal.id)
             .where(
                 TradeJournal.symbol == symbol,
-                TradeJournal.status.in_(
-                    [JournalStatus.draft, JournalStatus.active]
-                ),
+                TradeJournal.status.in_([JournalStatus.draft, JournalStatus.active]),
             )
             .limit(1)
         )
