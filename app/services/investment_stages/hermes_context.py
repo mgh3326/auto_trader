@@ -31,6 +31,10 @@ from app.schemas.hermes_composition import (
     HermesStageInput,
 )
 from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
+from app.services.invest_screener_snapshots.repository import (
+    InvestScreenerSnapshotsRepository,
+)
+from app.services.investment_dimensions.market_evidence import build_market_evidence
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
@@ -97,6 +101,27 @@ class HermesContextExporter:
             bundle=bundle, snapshots_by_kind=dict(snapshots_by_kind)
         )
 
+        dimension_evidence = {}
+        if bundle.market in ("kr", "us"):
+            try:
+                held = set()
+                portfolio_snapshots = snapshots_by_kind.get("portfolio", [])
+                for snap in portfolio_snapshots:
+                    holdings = (snap.payload_json or {}).get("holdings", [])
+                    for h in holdings:
+                        ticker = h.get("ticker")
+                        if ticker:
+                            held.add(ticker)
+
+                screener_repo = InvestScreenerSnapshotsRepository(self._session)
+                market_evidence = await build_market_evidence(
+                    screener_repo, market=bundle.market, held=held
+                )
+                dimension_evidence["market"] = market_evidence
+            except Exception as exc:
+                _logger.exception("Failed to build market evidence for context export")
+                dimension_evidence["market"] = {"unavailable": str(exc)}
+
         return HermesContextPayload(
             snapshot_bundle_uuid=bundle.bundle_uuid,
             bundle_status=bundle.status,
@@ -108,6 +133,7 @@ class HermesContextExporter:
             freshness_summary=dict(bundle.freshness_summary or {}),
             unavailable_sources=self._derive_unavailable_sources(stage_inputs),
             source_conflicts={},
+            dimension_evidence=dimension_evidence,
             stage_inputs=stage_inputs,
             cited_snapshots=cited,
         )

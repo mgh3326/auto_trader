@@ -40,10 +40,15 @@ from app.schemas.hermes_composition import (
     HermesCompositionResult,
     HermesStageArtifactsIngestRequest,
 )
+from app.schemas.investment_dimension_reports import HermesDimensionReportsIngestRequest
 from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
 from app.schemas.investment_symbol_reports import HermesSymbolReportsIngestRequest
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
+)
+from app.services.investment_dimensions.dimension_report_ingest import (
+    DimensionReportIngestError,
+    DimensionReportIngestService,
 )
 from app.services.investment_stages.hermes_context import (
     HermesContextExporter,
@@ -357,6 +362,50 @@ async def symbol_reports_ingest(
                 "symbol_report_uuid": str(r.report.symbol_report_uuid),
                 "decision_bucket": r.report.decision_bucket,
                 "verdict": r.report.verdict,
+                "artifact_version": r.report.artifact_version,
+                "idempotent_existing": r.idempotent_existing,
+            }
+            for r in response.results
+        ],
+    }
+
+
+@router.post("/dimension-reports")
+async def dimension_reports_ingest(
+    body: HermesDimensionReportsIngestRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Hermes push-only ingest of per-dimension analyst reports (ROB-306).
+
+    Same ``/trading/api/investment-reports/hermes`` prefix, so the
+    AuthMiddleware token branch (403 unset / 401 wrong) + enable gate apply.
+    """
+    _require_enabled()
+
+    svc = DimensionReportIngestService(db)
+    try:
+        response = await svc.ingest_from_hermes(body)
+    except DimensionReportIngestError as exc:
+        await db.rollback()
+        http_status = _INGEST_ERROR_HTTP_STATUS.get(
+            exc.code, status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(
+            status_code=http_status,
+            detail={"error": exc.code, "message": str(exc)},
+        ) from exc
+    await db.commit()
+    return {
+        "success": True,
+        "run_uuid": str(response.run.run_uuid),
+        "dimension_reports": [
+            {
+                "dimension": r.dimension,
+                "dimension_report_uuid": str(r.report.dimension_report_uuid),
+                "market": r.report.market,
+                "symbol": r.report.symbol,
+                "stance": r.report.stance,
+                "confidence": r.report.confidence,
                 "artifact_version": r.report.artifact_version,
                 "idempotent_existing": r.idempotent_existing,
             }
