@@ -105,9 +105,6 @@ class BinanceDemoLedgerService:
     ) -> list[BinanceDemoOrderLedger]:
         return await self._repo.closed_rows_since(since=since)
 
-    async def list_held_bracketed(self) -> list[tuple[str, str]]:
-        return await self._repo.list_held_bracketed()
-
     async def record_planned(
         self,
         *,
