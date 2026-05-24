@@ -48,6 +48,9 @@ from app.schemas.investment_reports import (
     MarketSessionLiteral,
 )
 from app.schemas.investment_stages import StageArtifactPayload
+from app.services.investment_dimensions.dimension_report_repository import (
+    DimensionReportRepository,
+)
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
@@ -322,6 +325,7 @@ class HermesCompositionIngestService:
         snapshots_repository: InvestmentSnapshotsRepository | None = None,
         stages_repository: InvestmentStagesRepository | None = None,
         symbol_reports_repository: SymbolIntermediateReportRepository | None = None,
+        dimension_reports_repository: DimensionReportRepository | None = None,
     ) -> None:
         self._session = session
         self._ingestion = ingestion_service or InvestmentReportIngestionService(session)
@@ -329,6 +333,9 @@ class HermesCompositionIngestService:
         self._stages = stages_repository or InvestmentStagesRepository(session)
         self._symbol_reports = (
             symbol_reports_repository or SymbolIntermediateReportRepository(session)
+        )
+        self._dimension_reports = (
+            dimension_reports_repository or DimensionReportRepository(session)
         )
 
     async def ingest_composition(
@@ -368,6 +375,15 @@ class HermesCompositionIngestService:
         )
         if symbol_report_refs:
             metadata["symbol_intermediate_report_uuids"] = symbol_report_refs
+
+        # ROB-308: validate + attach the dimension-report references. Empty for
+        # legacy composition.
+        dimension_report_refs = await self._validate_dimension_report_refs(
+            composition.dimension_report_uuids,
+            stage_run_uuid=composition.metadata.get("investment_stage_run_uuid"),
+        )
+        if dimension_report_refs:
+            metadata["dimension_report_uuids"] = dimension_report_refs
 
         ingest_request = IngestReportRequest(
             report_type=request.report_type,
@@ -429,6 +445,36 @@ class HermesCompositionIngestService:
                     f"{parsed_run}: {', '.join(wrong_run)}"
                 )
         return [str(u) for u in symbol_report_uuids]
+
+    async def _validate_dimension_report_refs(
+        self,
+        dimension_report_uuids: list[uuid.UUID],
+        *,
+        stage_run_uuid: Any = None,
+    ) -> list[str]:
+        """Validate referenced dimension reports exist. When the
+        composition names its stage run, every referenced report must belong to
+        it (cross-run UUID mixups rejected). Returns string UUIDs for the
+        metadata reference; empty input returns ``[]`` (legacy path)."""
+        if not dimension_report_uuids:
+            return []
+        found = await self._dimension_reports.get_by_uuids(list(dimension_report_uuids))
+        found_by_uuid = {r.dimension_report_uuid: r for r in found}
+        missing = [str(u) for u in dimension_report_uuids if u not in found_by_uuid]
+        if missing:
+            raise HermesCompositionIngestError(
+                f"dimension reports not found: {missing}"
+            )
+        parsed_run = _coerce_uuid(stage_run_uuid)
+        if parsed_run is not None:
+            wrong_run = [
+                str(u) for u, r in found_by_uuid.items() if r.run_uuid != parsed_run
+            ]
+            if wrong_run:
+                raise HermesCompositionIngestError(
+                    f"dimension reports not in run {parsed_run}: {wrong_run}"
+                )
+        return [str(u) for u in dimension_report_uuids]
 
     async def _maybe_finalize_stage_run(
         self, composition_metadata: dict[str, Any]

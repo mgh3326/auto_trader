@@ -609,3 +609,12 @@ async def test_event_survives_alert_deletion(session: AsyncSession) -> None:
     assert event.action_mode == "notify_only"
     assert event.source_report_uuid == report.report_uuid
     assert event.source_item_uuid == item.item_uuid
+
+
+def test_report_item_has_classification_columns():
+    from app.models.investment_reports import InvestmentReportItem
+
+    cols = InvestmentReportItem.__table__.c
+    assert "decision_bucket" in cols and cols["decision_bucket"].nullable is True
+    assert "cited_symbol_report_uuid" in cols
+    assert "cited_dimension_report_uuids" in cols

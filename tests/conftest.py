@@ -555,10 +555,37 @@ async def db_session():
                     "ADD COLUMN IF NOT EXISTS proposed_state JSONB",
                     "ADD COLUMN IF NOT EXISTS diff JSONB",
                     "ADD COLUMN IF NOT EXISTS apply_policy TEXT",
+                    "ADD COLUMN IF NOT EXISTS decision_bucket TEXT",
+                    "ADD COLUMN IF NOT EXISTS cited_symbol_report_uuid UUID",
+                    "ADD COLUMN IF NOT EXISTS cited_dimension_report_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
                 ):
                     await conn.execute(
                         text(f"ALTER TABLE review.investment_report_items {column_sql}")
                     )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_ck_investment_report_items_decision_bucket"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_items_decision_bucket"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT ck_investment_report_items_decision_bucket "
+                        "CHECK ("
+                        "decision_bucket IS NULL OR decision_bucket IN ("
+                        "'new_buy_candidate','open_action','completed_or_existing','deferred_no_action','risk_watch'"
+                        "))"
+                    )
+                )
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS "

@@ -157,4 +157,7 @@ class InvestmentReportIngestionService:
             proposed_state=item_req.proposed_state,
             diff=item_req.diff,
             apply_policy=item_req.apply_policy,
+            decision_bucket=item_req.decision_bucket,
+            cited_symbol_report_uuid=item_req.cited_symbol_report_uuid,
+            cited_dimension_report_uuids=list(item_req.cited_dimension_report_uuids),
         )

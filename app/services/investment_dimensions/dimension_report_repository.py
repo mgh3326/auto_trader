@@ -50,3 +50,30 @@ class DimensionReportRepository:
         self._session.add(row)
         await self._session.flush()
         return row
+
+    async def list_for_run(
+        self, run_uuid: uuid.UUID
+    ) -> list[InvestmentDimensionReport]:
+        result = await self._session.execute(
+            select(InvestmentDimensionReport)
+            .where(InvestmentDimensionReport.run_uuid == run_uuid)
+            .order_by(
+                InvestmentDimensionReport.dimension,
+                InvestmentDimensionReport.artifact_version.desc(),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_by_uuids(
+        self, dimension_report_uuids: list[uuid.UUID]
+    ) -> list[InvestmentDimensionReport]:
+        if not dimension_report_uuids:
+            return []
+        result = await self._session.execute(
+            select(InvestmentDimensionReport).where(
+                InvestmentDimensionReport.dimension_report_uuid.in_(
+                    dimension_report_uuids
+                )
+            )
+        )
+        return list(result.scalars().all())
