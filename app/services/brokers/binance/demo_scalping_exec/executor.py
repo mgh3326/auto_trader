@@ -542,6 +542,101 @@ class DemoScalpingExecutor:
         }
         return info, tuple(oco.leg_client_order_ids)
 
+    async def _symbol_for_instrument(self, instrument_id: int) -> str:
+        symbol = await self.session.scalar(
+            select(CryptoInstrument.venue_symbol).where(
+                CryptoInstrument.id == instrument_id
+            )
+        )
+        if symbol is None:
+            raise RuntimeError(f"no crypto_instrument for id={instrument_id}")
+        return symbol
+
+    async def reconcile_bracket(self, *, open_client_order_id: str) -> ExecutionResult:
+        """Reconcile a held bracketed position on a later tick.
+
+        Still holding (futures non-flat / spot OCO legs resting) → no-op
+        (``still_protected``). Exit fired (futures flat / spot OCO
+        resolved) → cancel any surviving leg and drive the parent
+        ``filled → closed → reconciled``. A parent not in ``filled`` is a
+        no-op (already terminal).
+        """
+        row = await self.ledger.get_by_client_order_id(open_client_order_id)
+        if row is None:
+            raise ValueError(f"no ledger row for {open_client_order_id!r}")
+        # ``intent`` is only needed for the result envelope; rebuild a minimal one.
+        intent = OrderIntent(
+            product=row.product,  # type: ignore[arg-type]
+            symbol=await self._symbol_for_instrument(row.instrument_id),
+            side=row.side,  # type: ignore[arg-type]
+            order_type=row.order_type,
+            target_notional_usdt=row.notional_usdt or Decimal("0"),
+            entry_reference_price=None,
+            tp_price=row.tp_price,
+            sl_price=row.sl_price,
+            confidence=Decimal("0"),
+            reason_codes=(),
+            source_candle_close_time_ms=0,
+            evaluated_at_ms=0,
+        )
+        if row.lifecycle_state != "filled":
+            return ExecutionResult(
+                intent=intent, status="noop", open_client_order_id=open_client_order_id
+            )
+
+        symbol = intent.symbol
+        if row.product == "usdm_futures":
+            position = await self.client.get_position(symbol=symbol)
+            if not position.is_flat:
+                return ExecutionResult(
+                    intent=intent,
+                    status="still_protected",
+                    open_client_order_id=open_client_order_id,
+                    final_flat=False,
+                )
+            open_orders = await self.client.get_open_orders(symbol=symbol)
+            for order in open_orders.orders:
+                await self.client.cancel_order(
+                    symbol=symbol, client_order_id=order.client_order_id
+                )
+            remaining = await self.client.get_open_orders(symbol=symbol)
+            if len(remaining.orders) != 0:
+                reason = "bracket_reconcile_dirty: open orders remain after cancel"
+                await self.ledger.record_anomaly(
+                    client_order_id=open_client_order_id, reason=reason, now=self.now
+                )
+                return ExecutionResult(
+                    intent=intent,
+                    status="anomaly",
+                    open_client_order_id=open_client_order_id,
+                    anomaly_reason=reason,
+                    final_open_orders=len(remaining.orders),
+                    final_flat=True,
+                )
+        else:  # spot: OCO self-cancels its sibling, so resolved == no open orders
+            open_orders = await self.client.get_open_orders(symbol=symbol)
+            if len(open_orders.orders) != 0:
+                return ExecutionResult(
+                    intent=intent,
+                    status="still_protected",
+                    open_client_order_id=open_client_order_id,
+                    final_open_orders=len(open_orders.orders),
+                )
+
+        await self.ledger.record_closed(
+            client_order_id=open_client_order_id, now=self.now
+        )
+        await self.ledger.record_reconciled(
+            client_order_id=open_client_order_id, now=self.now
+        )
+        return ExecutionResult(
+            intent=intent,
+            status="reconciled",
+            open_client_order_id=open_client_order_id,
+            final_open_orders=0,
+            final_flat=True,
+        )
+
     async def _failsafe_close(self, intent, qty, close_side) -> None:
         """Best-effort flatten after a bracket-placement failure."""
         try:
