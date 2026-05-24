@@ -23,6 +23,28 @@ class FuturesDemoOrderSubmitResult:
 
 
 @dataclass(frozen=True)
+class FuturesDemoOrderStatusResult:
+    """Single-order status snapshot from a signed ``GET /fapi/v1/order``.
+
+    ROB-305 §4: used to reconcile a submit response of ``status=NEW`` — the
+    smoke polls this endpoint (bounded) to learn whether the order actually
+    ``FILLED`` before the ledger is advanced past ``submitted``.
+    """
+
+    client_order_id: str
+    broker_order_id: str
+    symbol: str
+    side: str
+    order_type: str
+    status: str  # FILLED / PARTIALLY_FILLED / NEW / CANCELED / REJECTED / ...
+    orig_qty: Decimal
+    executed_qty: Decimal
+    avg_price: Decimal
+    reduce_only: bool
+    raw_response_redacted: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class FuturesDemoOrderTestResult:
     """``/fapi/v1/order/test`` returned 200 with empty body."""
 

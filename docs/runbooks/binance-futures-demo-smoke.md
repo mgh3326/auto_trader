@@ -132,6 +132,20 @@ These are properties of the code as it ships, not aspirational:
   `planned → previewed → validated → submitted → filled → closed →
   reconciled`. Failures branch to `cancelled` or `anomaly`. The
   service is the only write surface — direct SQL writes are forbidden.
+* **`status=NEW` reconciliation (ROB-305 §4).** A MARKET submit can
+  return `status=NEW` even though the account later reflects the fill.
+  A submit-response `NEW` is **never** treated as immediate success or
+  failure, and a `submitted` row is **never** advanced straight to
+  `closed` (the locked state machine forbids `submitted → closed`).
+  Instead the CLI proves the fill before advancing the ledger, via —
+  in order — the submit status, a **bounded** `GET /fapi/v1/order` poll
+  (`_FILL_RECONCILE_MAX_POLLS`, no unbounded loop), then a non-flat
+  `GET /fapi/v2/positionRisk` (the account reflecting the fill). Only
+  with one of these does the row reach `filled` and then
+  `closed`/`reconciled`. If a fill cannot be proven yet the account is
+  flat with zero open orders, the close row is recorded as a **safe
+  anomaly** and the run exits `2` — a benign final state is never
+  reported as a clean success without fill evidence.
 * **Secret redaction.** API key / secret never appear in logs,
   evidence lines, or ledger rows. Only `<first4>…<last2>` fingerprints
   and redacted broker payloads are emitted.
@@ -238,27 +252,40 @@ the full lifecycle:
 7. `POST /fapi/v1/order/test` (open, `reduceOnly=false`) → write
    `validated`.
 8. `POST /fapi/v1/order` (open, `reduceOnly=false`, `confirm=True`)
-   → write `submitted` and (if `FILLED`) `filled`.
+   → write `submitted`, then **reconcile the fill** (ROB-305 §4): if
+   the submit status is not `FILLED`, poll `GET /fapi/v1/order`
+   (bounded) before recording `filled`.
 9. `GET /fapi/v2/positionRisk?symbol=...` → verify position amount is
-   non-zero in the expected direction.
+   non-zero in the expected direction. A non-flat position is the third
+   fill-evidence source: if order status never confirmed `FILLED`, the
+   open is recorded `filled` from this account-state evidence (tagged
+   `fill_evidence=position_risk_nonflat`) so the close keeps the legal
+   `submitted → filled → closed` chain. A flat position here → `anomaly`
+   (open did not take effect).
 10. Close lineage (always `reduceOnly=true`):
     * Generate child `client_order_id`.
     * Write `planned/previewed` for the close child.
     * `POST /fapi/v1/order/test` (close, `reduceOnly=true`) → write
       `validated`.
     * `POST /fapi/v1/order` (close MARKET, `reduceOnly=true`,
-      `confirm=True`) → write `submitted` and `filled`.
+      `confirm=True`) → write `submitted`, then reconcile the close
+      fill the same way (submit status / bounded `GET /fapi/v1/order`).
     * Mark the parent `closed`.
 11. Reconciliation:
     * `GET /fapi/v1/openOrders?symbol=...` → assert empty.
     * `GET /fapi/v2/positionRisk?symbol=...` → assert
       `positionAmt == 0`.
-    * If both clean → write `reconciled` on the parent. Otherwise
-      write `anomaly` with the reason.
+    * If both clean **and the close fill was proven** → write
+      `reconciled` on the parent (and the close child). If both clean
+      but the close fill could **not** be proven, the close child is
+      written `anomaly` and the run exits `2` — a flat/clean account is
+      never reported as success without fill evidence. Any drift (open
+      orders or non-flat position) → `anomaly` with the reason.
 
 Exit codes: `0` on a clean reconciled run, `1` on operator
 misconfiguration (missing creds, hedge mode, excluded symbol,
-leverage mismatch), `2` on runtime / reconciliation failures.
+leverage mismatch), `2` on runtime / reconciliation failures (including
+an unprovable close fill on an otherwise-flat account).
 
 ### 4.6 `--readiness` (no HTTP, no credentials)
 
