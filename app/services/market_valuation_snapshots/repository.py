@@ -145,7 +145,7 @@ class MarketValuationSnapshotsRepository:
         return {(r.market, r.symbol, r.snapshot_date, r.source) for r in result.all()}
 
     async def latest_for_symbols(
-        self, *, market: str, symbols: "set[str]"
+        self, *, market: str, symbols: set[str]
     ) -> list[MarketValuationSnapshot]:
         if not symbols:
             return []
@@ -166,4 +166,3 @@ class MarketValuationSnapshotsRepository:
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
-

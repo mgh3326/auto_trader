@@ -34,6 +34,9 @@ from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
 )
+from app.services.investment_dimensions.fundamentals_evidence import (
+    build_fundamentals_evidence,
+)
 from app.services.investment_dimensions.market_evidence import build_market_evidence
 from app.services.investment_dimensions.news_evidence import build_news_evidence
 from app.services.investment_snapshots.repository import (
@@ -45,13 +48,10 @@ from app.services.investment_stages.stages.base import (
     UnavailableStageError,
 )
 from app.services.investment_stages.stages.registry import get_default_v1_stages
-from app.services.research_reports.query_service import ResearchReportsQueryService
-from app.services.investment_dimensions.fundamentals_evidence import (
-    build_fundamentals_evidence,
-)
 from app.services.market_valuation_snapshots.repository import (
     MarketValuationSnapshotsRepository,
 )
+from app.services.research_reports.query_service import ResearchReportsQueryService
 from app.services.stock_info_service import StockInfoService
 
 _logger = logging.getLogger(__name__)
@@ -165,7 +165,6 @@ class HermesContextExporter:
                     "Failed to build fundamentals evidence for context export"
                 )
                 dimension_evidence["fundamentals"] = {"unavailable": str(exc)}
-
 
         is_mock = (
             hasattr(self._session, "assert_called")

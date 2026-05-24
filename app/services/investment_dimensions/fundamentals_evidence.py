@@ -60,9 +60,8 @@ async def build_fundamentals_evidence(
 
     if not per_symbol:
         status = "unavailable"
-    elif (
-        latest_date is not None
-        and latest_date >= (now_dt.date() - dt.timedelta(days=FRESH_WINDOW_DAYS))
+    elif latest_date is not None and latest_date >= (
+        now_dt.date() - dt.timedelta(days=FRESH_WINDOW_DAYS)
     ):
         status = "fresh"
     else:

@@ -1,24 +1,25 @@
 import datetime as dt
-from decimal import Decimal
 import uuid
+from decimal import Decimal
 
 import pytest
 
 from app.models.analysis import StockInfo
-from app.models.market_valuation_snapshot import MarketValuationSnapshot
 from app.models.investment_stages import InvestmentStageRun
-from app.services.investment_stages.hermes_context import HermesContextExporter
-from app.services.investment_snapshots.repository import InvestmentSnapshotsRepository
+from app.models.market_valuation_snapshot import MarketValuationSnapshot
 from app.schemas.investment_snapshots import (
-    SnapshotRunCreate,
-    SnapshotCreate,
     BundleCreate,
     BundleItemCreate,
+    SnapshotCreate,
+    SnapshotRunCreate,
 )
+from app.services.investment_snapshots.repository import InvestmentSnapshotsRepository
+from app.services.investment_stages.hermes_context import HermesContextExporter
 
 
 async def _clear(db_session):
     from sqlalchemy import text
+
     await db_session.execute(text("DELETE FROM market_valuation_snapshots"))
     await db_session.execute(text("DELETE FROM stock_info WHERE symbol = 'AAPL'"))
     await db_session.commit()
@@ -31,7 +32,7 @@ async def test_exporter_attaches_fundamentals_evidence_bundle(db_session) -> Non
     # 1. Seed InvestmentSnapshotBundle + Snapshot + BundleItem (holding AAPL)
     snapshots_repo = InvestmentSnapshotsRepository(db_session)
     now = dt.datetime.now(tz=dt.UTC)
-    
+
     run_obj = await snapshots_repo.insert_run(
         SnapshotRunCreate(
             purpose="report_generation",
@@ -41,7 +42,7 @@ async def test_exporter_attaches_fundamentals_evidence_bundle(db_session) -> Non
             policy_version="intraday_action_report_v1",
         )
     )
-    
+
     portfolio_snap = await snapshots_repo.insert_snapshot(
         SnapshotCreate(
             run_uuid=run_obj.run_uuid,
@@ -68,7 +69,7 @@ async def test_exporter_attaches_fundamentals_evidence_bundle(db_session) -> Non
             freshness_status="fresh",
         )
     )
-    
+
     bundle = await snapshots_repo.insert_bundle(
         BundleCreate(
             purpose=f"fundamentals_test_{uuid.uuid4().hex[:8]}",
@@ -79,10 +80,12 @@ async def test_exporter_attaches_fundamentals_evidence_bundle(db_session) -> Non
             status="complete",
         )
     )
-    
+
     await snapshots_repo.link_bundle_item(
         bundle_uuid=bundle.bundle_uuid,
-        item=BundleItemCreate(snapshot_uuid=portfolio_snap.snapshot_uuid, role="required"),
+        item=BundleItemCreate(
+            snapshot_uuid=portfolio_snap.snapshot_uuid, role="required"
+        ),
     )
 
     # 2. Seed a MarketValuationSnapshot for AAPL
@@ -138,10 +141,9 @@ async def test_exporter_attaches_fundamentals_evidence_bundle(db_session) -> Non
     assert fund["data_health"]["requested"] >= 1
     assert fund["data_health"]["covered"] >= 1
     assert fund["covered_count"] >= 1
-    
+
     aapl_row = next(r for r in fund["per_symbol"] if r["symbol"] == "AAPL")
     assert aapl_row["sector"] == "Technology"
     assert aapl_row["per"] == 28.5
     assert aapl_row["dividend_yield"] == 0.005
     assert fund["freshness"]["status"] == "fresh"
-
