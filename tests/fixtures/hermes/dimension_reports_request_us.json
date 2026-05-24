@@ -1,0 +1,58 @@
+{
+  "_comment": "ROB-309 — US narrow dimension-reports ingest payload (ROB-306 contract) pinned to market='us'. Per-dimension analyst reports for the SAME US stage run. confidence is capped by freshness on ingest. {{...}} placeholders substituted by the round-trip smoke at runtime.",
+  "request_version": "hermes-dimension-reports.v1",
+  "run_envelope": {
+    "run_uuid": "{{run_uuid}}",
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "market": "us",
+    "market_session": "regular",
+    "account_scope": "alpaca_paper",
+    "policy_version": "intraday_action_report_v1",
+    "generator_version": "hermes-stage-artifacts.v1",
+    "hermes_run_id": "hermes-smoke-us-001"
+  },
+  "dimension_reports": [
+    {
+      "dimension": "market",
+      "market": "us",
+      "symbol": null,
+      "report_text": "S&P 500 risk-on: breadth net-positive, megacap leadership intact, VIX subdued. Constructive regime for selective longs.",
+      "key_findings": [
+        "SPX 5,210 (+0.5%)",
+        "adv/dec 2.1:1",
+        "VIX 12.4 (-3%)"
+      ],
+      "signals": {
+        "regime": "risk_on",
+        "breadth": "net_positive"
+      },
+      "stance": "bullish",
+      "confidence": 60,
+      "missing_data": [],
+      "freshness_summary": {
+        "status": "fresh"
+      },
+      "cited_snapshot_uuids": []
+    },
+    {
+      "dimension": "news",
+      "market": "us",
+      "symbol": null,
+      "report_text": "Mixed earnings reads; no single dominant catalyst. AAPL services mildly above consensus, MSFT cloud guide reiterated.",
+      "key_findings": [
+        "AAPL services revenue mildly above consensus",
+        "MSFT cloud guide reiterated"
+      ],
+      "signals": {
+        "catalyst": "none_dominant"
+      },
+      "stance": "neutral",
+      "confidence": 42,
+      "missing_data": [],
+      "freshness_summary": {
+        "status": "fresh"
+      },
+      "cited_snapshot_uuids": []
+    }
+  ]
+}

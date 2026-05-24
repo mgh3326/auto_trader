@@ -1,5 +1,5 @@
 {
-  "_comment": "ROB-287 Phase C — sample Hermes-produced composition ingest payload. metadata.investment_stage_run_uuid links back to the stage run for auto-finalize (§D4). {{...}} placeholders are substituted by the round-trip smoke at runtime.",
+  "_comment": "ROB-287 Phase C + ROB-309 — sample Hermes-produced composition ingest payload. metadata.investment_stage_run_uuid links back to the stage run for auto-finalize (§D4). symbol_intermediate_report_uuids (ROB-301) + dimension_report_uuids (ROB-308) reference the per-symbol / per-dimension reports this composition consumed; the {{symbol_report_uuid}} / {{dimension_report_uuid}} placeholders are substituted from the symbol-reports / dimension-reports POST responses at runtime. One item carries decision_bucket='new_buy_candidate' + per-item citations to exercise the held-action vs new-candidate bundle grouping (ROB-308 C5). {{...}} placeholders are substituted by the round-trip smoke at runtime.",
   "composition": {
     "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
     "hermes_run_id": "hermes-smoke-001",
@@ -25,6 +25,19 @@
         "intent": "trend_recovery_review",
         "rationale": "Watch for scale-out opportunity once price reclaims short-term resistance.",
         "apply_policy": "requires_user_approval"
+      },
+      {
+        "client_item_key": "smoke-action-005930-buy-candidate-001",
+        "item_kind": "action",
+        "operation": "review",
+        "symbol": "005930",
+        "side": "buy",
+        "intent": "buy_review",
+        "rationale": "Fresh long candidate on foreign net-buy + breadth; advisory only, requires user approval before any entry.",
+        "apply_policy": "requires_user_approval",
+        "decision_bucket": "new_buy_candidate",
+        "cited_symbol_report_uuid": "{{symbol_report_uuid}}",
+        "cited_dimension_report_uuids": ["{{dimension_report_uuid}}"]
       }
     ],
     "metadata": {
@@ -32,7 +45,9 @@
       "hermes_composition_version": "hermes-composition.v1",
       "hermes_run_id": "hermes-smoke-001"
     },
-    "cited_snapshot_uuids": []
+    "cited_snapshot_uuids": [],
+    "symbol_intermediate_report_uuids": ["{{symbol_report_uuid}}"],
+    "dimension_report_uuids": ["{{dimension_report_uuid}}"]
   },
   "kst_date": "2026-05-21",
   "market": "kr",

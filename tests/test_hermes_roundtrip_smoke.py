@@ -48,7 +48,12 @@ from app.middleware.auth import AuthMiddleware
 from app.models.investment_reports import InvestmentReport
 from app.models.investment_snapshots import InvestmentSnapshotBundle
 from app.models.investment_stages import InvestmentStageArtifact, InvestmentStageRun
+from app.routers.dependencies import get_authenticated_user
+from app.routers.investment_dimension_reports import (
+    router as dimension_reports_router,
+)
 from app.routers.investment_hermes_http import router as hermes_router
+from app.routers.investment_reports import router as investment_reports_router
 
 # Cross-domain ``db_session`` test that writes to ``review.investment_reports``.
 # Without this fixture, xdist sibling workers running ``investment_reports_helpers``
@@ -73,13 +78,28 @@ def _load_fixture(name: str) -> dict[str, Any]:
 
 
 def _substitute_placeholders(
-    payload: dict[str, Any], *, run_uuid: uuid.UUID, snapshot_bundle_uuid: uuid.UUID
+    payload: dict[str, Any],
+    *,
+    run_uuid: uuid.UUID,
+    snapshot_bundle_uuid: uuid.UUID,
+    symbol_report_uuid: uuid.UUID | str | None = None,
+    dimension_report_uuid: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
-    """Recursive string substitution for ``{{run_uuid}}`` and
-    ``{{snapshot_bundle_uuid}}`` placeholders inside the fixture."""
+    """String substitution for the placeholder UUIDs inside a fixture.
+
+    ``run_uuid`` / ``snapshot_bundle_uuid`` are always known. The
+    ``symbol_report_uuid`` / ``dimension_report_uuid`` placeholders (ROB-309)
+    are only known after the symbol-reports / dimension-reports ingests return
+    their server-assigned UUIDs, so they are substituted in a second pass on
+    the composition payload.
+    """
     raw = json.dumps(payload)
     raw = raw.replace("{{run_uuid}}", str(run_uuid))
     raw = raw.replace("{{snapshot_bundle_uuid}}", str(snapshot_bundle_uuid))
+    if symbol_report_uuid is not None:
+        raw = raw.replace("{{symbol_report_uuid}}", str(symbol_report_uuid))
+    if dimension_report_uuid is not None:
+        raw = raw.replace("{{dimension_report_uuid}}", str(dimension_report_uuid))
     return json.loads(raw)
 
 
@@ -112,6 +132,30 @@ def _build_app(db_session) -> FastAPI:
         yield db_session
 
     app.dependency_overrides[get_db] = _db_override
+    return app
+
+
+def _build_read_app(db_session) -> FastAPI:
+    """ROB-309 — read-surface app (no AuthMiddleware).
+
+    The dimension-reports read surface + the final report bundle GET are
+    session-authed in production (NOT the Hermes ingest token), so they live
+    on a separate app whose ``get_authenticated_user`` dependency is overridden
+    with a stub user, mirroring the established pattern in the other
+    ``/invest`` / ``/trading`` router tests. Shares the same ``db_session`` so
+    rows written through the ingest app are visible here.
+    """
+    from types import SimpleNamespace
+
+    app = FastAPI()
+    app.include_router(investment_reports_router)
+    app.include_router(dimension_reports_router)
+
+    async def _db_override() -> AsyncIterator[object]:
+        yield db_session
+
+    app.dependency_overrides[get_db] = _db_override
+    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=1)
     return app
 
 
@@ -188,21 +232,36 @@ def _auth_headers() -> dict[str, str]:
 async def test_roundtrip_context_artifacts_composition(
     db_session, _enabled, _seeded_bundle
 ) -> None:
-    """Drive the full chain: context → stage-artifacts → composition.
+    """Drive the FULL current contract (ROB-309): context →
+    stage-artifacts → symbol-reports → dimension-reports → context
+    re-pull → composition → read surfaces.
 
     Asserts:
     * /context returns a HermesContextPayload referencing the seeded bundle.
     * /stage-artifacts creates a stage run + 5 artifact rows.
-    * /composition creates an InvestmentReport row and auto-finalises
-      the stage run to ``status='completed'`` (§D4).
+    * /symbol-reports persists per-symbol reductions (ROB-301).
+    * /dimension-reports persists per-dimension reports (ROB-306).
+    * /context re-pull now carries non-empty ``dimension_reports`` +
+      ``symbol_intermediate_reports``.
+    * /composition stores the ``dimension_report_uuids`` +
+      ``symbol_intermediate_report_uuids`` it consumed and classifies a
+      ``new_buy_candidate`` item (ROB-308); the run auto-finalises (§D4).
+    * The dimension-reports read surface + the final report bundle render
+      the held-action vs new-candidate grouping.
     """
     bundle = _seeded_bundle
     run_uuid = uuid.uuid4()
 
     app = _build_app(db_session)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="https://test"
-    ) as client:
+    read_app = _build_read_app(db_session)
+    async with (
+        AsyncClient(
+            transport=ASGITransport(app=app), base_url="https://test"
+        ) as client,
+        AsyncClient(
+            transport=ASGITransport(app=read_app), base_url="https://test"
+        ) as read_client,
+    ):
         # --- 1. context export ---
         ctx_resp = await client.post(
             "/trading/api/investment-reports/hermes/context",
@@ -215,6 +274,9 @@ async def test_roundtrip_context_artifacts_composition(
         assert ctx_body["context_version"] == "hermes-context.v1"
         assert ctx_body["snapshot_bundle_uuid"] == str(bundle.bundle_uuid)
         assert ctx_body["constraints"]["advisory_only"] is True
+        # First pull (before any reports ingested) carries empty report lists.
+        assert ctx_body["dimension_reports"] == []
+        assert ctx_body["symbol_intermediate_reports"] == []
         # 5 deterministic stages render even with no snapshots (they
         # surface as UNAVAILABLE).
         stage_types = {entry["stage_type"] for entry in ctx_body["stage_inputs"]}
@@ -245,12 +307,69 @@ async def test_roundtrip_context_artifacts_composition(
         assert len(stage_body["artifacts"]) == 5
         assert all(not r["idempotent_existing"] for r in stage_body["artifacts"])
 
-        # --- 3. composition ingest ---
+        # --- 3. symbol-reports ingest (ROB-301) ---
+        symbol_payload = _substitute_placeholders(
+            _load_fixture("symbol_reports_request.json"),
+            run_uuid=run_uuid,
+            snapshot_bundle_uuid=bundle.bundle_uuid,
+        )
+        sym_resp = await client.post(
+            "/trading/api/investment-reports/hermes/symbol-reports",
+            headers=_auth_headers(),
+            json=symbol_payload,
+        )
+        assert sym_resp.status_code == 200, sym_resp.text
+        sym_body = sym_resp.json()
+        assert sym_body["success"] is True
+        assert sym_body["run_uuid"] == str(run_uuid)
+        assert len(sym_body["symbol_reports"]) == 2
+        assert all(not r["idempotent_existing"] for r in sym_body["symbol_reports"])
+        symbol_report_uuid = sym_body["symbol_reports"][0]["symbol_report_uuid"]
+
+        # --- 4. dimension-reports ingest (ROB-306) ---
+        dimension_payload = _substitute_placeholders(
+            _load_fixture("dimension_reports_request.json"),
+            run_uuid=run_uuid,
+            snapshot_bundle_uuid=bundle.bundle_uuid,
+        )
+        dim_resp = await client.post(
+            "/trading/api/investment-reports/hermes/dimension-reports",
+            headers=_auth_headers(),
+            json=dimension_payload,
+        )
+        assert dim_resp.status_code == 200, dim_resp.text
+        dim_body = dim_resp.json()
+        assert dim_body["success"] is True
+        assert dim_body["run_uuid"] == str(run_uuid)
+        assert len(dim_body["dimension_reports"]) == 2
+        market_dim = next(
+            d for d in dim_body["dimension_reports"] if d["dimension"] == "market"
+        )
+        dimension_report_uuid = market_dim["dimension_report_uuid"]
+
+        # --- 5. context re-pull carries both report families ---
+        ctx2_resp = await client.post(
+            "/trading/api/investment-reports/hermes/context",
+            headers=_auth_headers(),
+            json={"snapshot_bundle_uuid": str(bundle.bundle_uuid)},
+        )
+        assert ctx2_resp.status_code == 200, ctx2_resp.text
+        ctx2_body = ctx2_resp.json()
+        assert len(ctx2_body["dimension_reports"]) == 2, (
+            "context re-pull must surface the freshly-ingested dimension reports"
+        )
+        assert len(ctx2_body["symbol_intermediate_reports"]) == 2, (
+            "context re-pull must surface the freshly-ingested symbol reports"
+        )
+
+        # --- 6. composition ingest (threads the captured report UUIDs) ---
         composition_payload = _make_unique_for_test_db(
             _substitute_placeholders(
                 _load_fixture("composition_request.json"),
                 run_uuid=run_uuid,
                 snapshot_bundle_uuid=bundle.bundle_uuid,
+                symbol_report_uuid=symbol_report_uuid,
+                dimension_report_uuid=dimension_report_uuid,
             ),
             run_uuid=run_uuid,
         )
@@ -263,7 +382,7 @@ async def test_roundtrip_context_artifacts_composition(
         comp_body = comp_resp.json()
         assert comp_body["success"] is True
         assert comp_body["status"] == "draft"
-        assert comp_body["items_count"] == 2
+        assert comp_body["items_count"] == 3
 
         # --- Assertions on persisted state ---
         from sqlalchemy import select
@@ -300,6 +419,46 @@ async def test_roundtrip_context_artifacts_composition(
         # Stage-run linkage is preserved in metadata.
         hermes_meta = report_row.report_metadata.get("hermes_composition", {})
         assert hermes_meta.get("hermes_run_id") == "hermes-smoke-001"
+        # ROB-308/ROB-301 — the consumed report UUIDs are threaded into metadata.
+        assert report_row.report_metadata.get("symbol_intermediate_report_uuids") == [
+            symbol_report_uuid
+        ]
+        assert report_row.report_metadata.get("dimension_report_uuids") == [
+            dimension_report_uuid
+        ]
+
+        # --- 7. dimension-reports read surface (session-authed) ---
+        dim_view_resp = await read_client.get(
+            f"/trading/api/investment-reports/runs/{run_uuid}/dimension-reports",
+            params={"dimension": "market"},
+        )
+        assert dim_view_resp.status_code == 200, dim_view_resp.text
+        dim_view = dim_view_resp.json()
+        assert dim_view["dimension"] == "market"
+        assert len(dim_view["reports"]) == 1
+        assert dim_view["reports"][0]["stance"] == "bullish"
+
+        # --- 8. final report bundle grouping (held-action vs new-candidate) ---
+        bundle_resp = await read_client.get(
+            f"/trading/api/investment-reports/{report_uuid}"
+        )
+        assert bundle_resp.status_code == 200, bundle_resp.text
+        bundle_body = bundle_resp.json()
+        rollup = bundle_body["decision_rollup"]
+        assert len(rollup["new_candidate"]) == 1, (
+            "the new_buy_candidate item must classify into decision_rollup"
+        )
+        assert rollup["new_candidate"][0]["decision_bucket"] == "new_buy_candidate"
+        assert rollup["new_candidate"][0]["cited_symbol_report_uuid"] == (
+            symbol_report_uuid
+        )
+        assert rollup["new_candidate"][0]["cited_dimension_report_uuids"] == [
+            dimension_report_uuid
+        ]
+        # item_groups keys items by decision_bucket; unclassified items land
+        # under "unclassified".
+        assert "new_buy_candidate" in bundle_body["item_groups"]
+        assert "unclassified" in bundle_body["item_groups"]
 
 
 @pytest.mark.asyncio
@@ -419,8 +578,12 @@ def test_fixture_files_exist_and_are_well_formed() -> None:
     trip itself doesn't double as fixture-syntax validation."""
     for name in (
         "stage_artifacts_request.json",
+        "symbol_reports_request.json",
+        "dimension_reports_request.json",
         "composition_request.json",
         "stage_artifacts_request_us.json",
+        "symbol_reports_request_us.json",
+        "dimension_reports_request_us.json",
         "composition_request_us.json",
     ):
         path = _FIXTURE_DIR / name
@@ -434,6 +597,17 @@ def test_fixture_files_exist_and_are_well_formed() -> None:
         )
         assert re.search(r"\{\{run_uuid\}\}", text), (
             f"{name}: missing {{run_uuid}} placeholder"
+        )
+
+    # The composition fixtures additionally carry the report-UUID placeholders
+    # (ROB-309) substituted from the symbol-/dimension-reports responses.
+    for name in ("composition_request.json", "composition_request_us.json"):
+        text = (_FIXTURE_DIR / name).read_text(encoding="utf-8")
+        assert re.search(r"\{\{symbol_report_uuid\}\}", text), (
+            f"{name}: missing {{symbol_report_uuid}} placeholder"
+        )
+        assert re.search(r"\{\{dimension_report_uuid\}\}", text), (
+            f"{name}: missing {{dimension_report_uuid}} placeholder"
         )
 
 
@@ -503,14 +677,63 @@ async def test_roundtrip_us_narrow_smoke(db_session, _enabled) -> None:
         assert len(stage_body["artifacts"]) == 5
         assert all(not r["idempotent_existing"] for r in stage_body["artifacts"])
 
-        # 3. composition ingest (US fixture) — keep status=draft and make
+        # 3. symbol-reports ingest (US fixture, ROB-301)
+        symbol_payload = _substitute_placeholders(
+            _load_fixture("symbol_reports_request_us.json"),
+            run_uuid=run_uuid,
+            snapshot_bundle_uuid=bundle.bundle_uuid,
+        )
+        sym_resp = await client.post(
+            "/trading/api/investment-reports/hermes/symbol-reports",
+            headers=_auth_headers(),
+            json=symbol_payload,
+        )
+        assert sym_resp.status_code == 200, sym_resp.text
+        sym_body = sym_resp.json()
+        assert len(sym_body["symbol_reports"]) == 2
+        symbol_report_uuid = sym_body["symbol_reports"][0]["symbol_report_uuid"]
+
+        # 4. dimension-reports ingest (US fixture, ROB-306)
+        dimension_payload = _substitute_placeholders(
+            _load_fixture("dimension_reports_request_us.json"),
+            run_uuid=run_uuid,
+            snapshot_bundle_uuid=bundle.bundle_uuid,
+        )
+        dim_resp = await client.post(
+            "/trading/api/investment-reports/hermes/dimension-reports",
+            headers=_auth_headers(),
+            json=dimension_payload,
+        )
+        assert dim_resp.status_code == 200, dim_resp.text
+        dim_body = dim_resp.json()
+        assert len(dim_body["dimension_reports"]) == 2
+        market_dim = next(
+            d for d in dim_body["dimension_reports"] if d["dimension"] == "market"
+        )
+        dimension_report_uuid = market_dim["dimension_report_uuid"]
+
+        # 5. context re-pull carries both report families (US shape)
+        ctx2_resp = await client.post(
+            "/trading/api/investment-reports/hermes/context",
+            headers=_auth_headers(),
+            json={"snapshot_bundle_uuid": str(bundle.bundle_uuid)},
+        )
+        assert ctx2_resp.status_code == 200, ctx2_resp.text
+        ctx2_body = ctx2_resp.json()
+        assert len(ctx2_body["dimension_reports"]) == 2
+        assert len(ctx2_body["symbol_intermediate_reports"]) == 2
+
+        # 6. composition ingest (US fixture) — keep status=draft and make
         # generator_version unique so the shared db_session doesn't reuse
-        # an existing report row from a sibling test.
+        # an existing report row from a sibling test. Threads the captured
+        # symbol/dimension report UUIDs into the payload (ROB-308/ROB-301).
         composition_payload = _make_unique_for_test_db(
             _substitute_placeholders(
                 _load_fixture("composition_request_us.json"),
                 run_uuid=run_uuid,
                 snapshot_bundle_uuid=bundle.bundle_uuid,
+                symbol_report_uuid=symbol_report_uuid,
+                dimension_report_uuid=dimension_report_uuid,
             ),
             run_uuid=run_uuid,
         )
@@ -531,7 +754,7 @@ async def test_roundtrip_us_narrow_smoke(db_session, _enabled) -> None:
         assert comp_body["status"] == "draft", (
             "InvestmentReport row MUST be 'draft' for the US narrow smoke."
         )
-        assert comp_body["items_count"] == 3
+        assert comp_body["items_count"] == 4
 
         # --- DB-level assertions ---
         from sqlalchemy import select
@@ -585,6 +808,26 @@ async def test_roundtrip_us_narrow_smoke(db_session, _enabled) -> None:
         assert report_row.account_scope == "alpaca_paper"
         hermes_meta = report_row.report_metadata.get("hermes_composition", {})
         assert hermes_meta.get("hermes_run_id") == "hermes-smoke-us-001"
+        # ROB-308/ROB-301 — consumed report UUIDs threaded into metadata.
+        assert report_row.report_metadata.get("symbol_intermediate_report_uuids") == [
+            symbol_report_uuid
+        ]
+        assert report_row.report_metadata.get("dimension_report_uuids") == [
+            dimension_report_uuid
+        ]
+
+        # Read surface: the final bundle classifies the new_buy_candidate item.
+        read_app = _build_read_app(db_session)
+        async with AsyncClient(
+            transport=ASGITransport(app=read_app), base_url="https://test"
+        ) as read_client:
+            bundle_resp = await read_client.get(
+                f"/trading/api/investment-reports/{report_uuid}"
+            )
+            assert bundle_resp.status_code == 200, bundle_resp.text
+            rollup = bundle_resp.json()["decision_rollup"]
+            assert len(rollup["new_candidate"]) == 1
+            assert rollup["new_candidate"][0]["decision_bucket"] == "new_buy_candidate"
 
 
 def test_us_fixtures_pin_alpaca_paper_and_draft_and_us_symbols() -> None:

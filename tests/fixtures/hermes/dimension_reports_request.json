@@ -1,0 +1,58 @@
+{
+  "_comment": "ROB-309 — sample Hermes-produced dimension-reports ingest payload (ROB-306 contract). Per-dimension analyst reports for the SAME stage run as the stage-artifacts. run_envelope must match the stage run (snapshot_bundle_uuid + market). confidence is capped by freshness on ingest. {{run_uuid}} / {{snapshot_bundle_uuid}} placeholders are substituted by the round-trip smoke test/CLI at runtime.",
+  "request_version": "hermes-dimension-reports.v1",
+  "run_envelope": {
+    "run_uuid": "{{run_uuid}}",
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "market": "kr",
+    "market_session": "regular",
+    "account_scope": "kis_live",
+    "policy_version": "intraday_action_report_v1",
+    "generator_version": "hermes-stage-artifacts.v1",
+    "hermes_run_id": "hermes-smoke-001"
+  },
+  "dimension_reports": [
+    {
+      "dimension": "market",
+      "market": "kr",
+      "symbol": null,
+      "report_text": "KOSPI risk-on: breadth net-positive, foreign net-buy streak intact. Constructive regime for selective longs.",
+      "key_findings": [
+        "KOSPI 2,540 (+0.78%)",
+        "foreign net-buy ₩280B",
+        "adv/dec 612/238"
+      ],
+      "signals": {
+        "regime": "risk_on",
+        "breadth": "net_positive"
+      },
+      "stance": "bullish",
+      "confidence": 62,
+      "missing_data": [],
+      "freshness_summary": {
+        "status": "fresh"
+      },
+      "cited_snapshot_uuids": []
+    },
+    {
+      "dimension": "news",
+      "market": "kr",
+      "symbol": null,
+      "report_text": "Mixed news flow; no dominant catalyst. HBM3e shipment update modest positive, BoK on hold as expected.",
+      "key_findings": [
+        "Samsung HBM3e shipment update — modest positive",
+        "BoK rate decision unchanged (consensus)"
+      ],
+      "signals": {
+        "catalyst": "none_dominant"
+      },
+      "stance": "neutral",
+      "confidence": 45,
+      "missing_data": [],
+      "freshness_summary": {
+        "status": "fresh"
+      },
+      "cited_snapshot_uuids": []
+    }
+  ]
+}
