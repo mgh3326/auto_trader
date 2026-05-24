@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -104,6 +105,7 @@ class ExecutionResult:
     final_open_orders: int | None = None
     final_flat: bool | None = None
     bracket_client_order_ids: tuple[str, ...] = field(default_factory=tuple)
+    exit_reason: str | None = None  # take_profit | stop_loss | timeout | immediate
 
     def to_evidence_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +113,7 @@ class ExecutionResult:
             "product": self.intent.product,
             "symbol": self.intent.symbol,
             "side": self.intent.side,
+            "exit_reason": self.exit_reason,
             "open_client_order_id": self.open_client_order_id,
             "close_client_order_id": self.close_client_order_id,
             "bracket_client_order_ids": list(self.bracket_client_order_ids),
@@ -137,6 +140,7 @@ class DemoScalpingExecutor:
         reference: DemoReferenceData | Any,
         now: dt.datetime,
         limits: ScalpingRiskLimits | None = None,
+        market_data: Any | None = None,
         poll_max: int = _FILL_POLL_MAX,
         poll_delay_seconds: float = _FILL_POLL_DELAY_SECONDS,
     ) -> None:
@@ -146,6 +150,7 @@ class DemoScalpingExecutor:
         self.reference = reference
         self.now = now
         self.limits = limits or ScalpingRiskLimits()
+        self.market_data = market_data  # required for execute_monitored
         self.ledger = BinanceDemoLedgerService(session)
         self.poll_max = poll_max
         self.poll_delay_seconds = poll_delay_seconds
@@ -153,14 +158,118 @@ class DemoScalpingExecutor:
     async def execute(
         self, intent: OrderIntent, *, confirm: bool = False
     ) -> ExecutionResult:
-        # 1. Risk re-check against the live ledger (durable caps + symbol gate).
+        """One-shot: open + immediate close-flat (no hold)."""
+        prep = await self._preflight(intent, confirm)
+        if isinstance(prep, ExecutionResult):
+            return prep
+        ref, qty, notional, instrument_id = prep
+        open_cid, error = await self._open_position(
+            intent, ref, qty, notional, instrument_id
+        )
+        if error is not None:
+            return error
+        return await self._close_and_reconcile(
+            intent,
+            ref,
+            qty,
+            notional,
+            open_cid,
+            instrument_id,
+            exit_reason="immediate",
+        )
+
+    async def execute_monitored(
+        self,
+        intent: OrderIntent,
+        *,
+        confirm: bool = False,
+        tp_bps: Decimal = Decimal("30"),
+        sl_bps: Decimal = Decimal("20"),
+        max_poll_count: int = 30,
+        poll_interval_s: float | None = None,
+        max_runtime_s: float = 300.0,
+    ) -> ExecutionResult:
+        """Open, then poll the bookTicker within a bounded window and
+        MARKET-close on a TP/SL cross — failsafe-close at window end. Always
+        ends flat in-run (no unattended position; no broker-side bracket)."""
+        prep = await self._preflight(intent, confirm)
+        if isinstance(prep, ExecutionResult):
+            return prep
+        ref, qty, notional, instrument_id = prep
+        if self.market_data is None:
+            raise ValueError("execute_monitored requires a market_data source")
+
+        long = intent.side == "BUY"
+        if long:
+            tp = _align_price(ref.price * (Decimal("1") + tp_bps / _BPS), ref.tick_size)
+            sl = _align_price(ref.price * (Decimal("1") - sl_bps / _BPS), ref.tick_size)
+        else:
+            tp = _align_price(ref.price * (Decimal("1") - tp_bps / _BPS), ref.tick_size)
+            sl = _align_price(ref.price * (Decimal("1") + sl_bps / _BPS), ref.tick_size)
+
+        open_cid, error = await self._open_position(
+            intent, ref, qty, notional, instrument_id
+        )
+        if error is not None:
+            return error
+
+        exit_reason = await self._monitor_until_exit(
+            intent,
+            tp=tp,
+            sl=sl,
+            long=long,
+            max_poll_count=max_poll_count,
+            poll_interval=(
+                poll_interval_s
+                if poll_interval_s is not None
+                else self.poll_delay_seconds
+            ),
+            max_runtime_s=max_runtime_s,
+        )
+        return await self._close_and_reconcile(
+            intent,
+            ref,
+            qty,
+            notional,
+            open_cid,
+            instrument_id,
+            exit_reason=exit_reason,
+        )
+
+    async def _monitor_until_exit(
+        self, intent, *, tp, sl, long, max_poll_count, poll_interval, max_runtime_s
+    ) -> str:
+        """Bounded poll loop → 'take_profit' | 'stop_loss' | 'timeout'."""
+        deadline = time.monotonic() + max_runtime_s
+        for _ in range(max_poll_count):
+            book = await self.market_data.fetch_book_ticker(
+                intent.product, intent.symbol
+            )
+            mid = (book.bid + book.ask) / Decimal("2")
+            if long:
+                if mid >= tp:
+                    return "take_profit"
+                if mid <= sl:
+                    return "stop_loss"
+            else:
+                if mid <= tp:
+                    return "take_profit"
+                if mid >= sl:
+                    return "stop_loss"
+            if time.monotonic() >= deadline:
+                break
+            if poll_interval > 0:
+                await asyncio.sleep(poll_interval)
+        return "timeout"
+
+    async def _preflight(
+        self, intent: OrderIntent, confirm: bool
+    ) -> ExecutionResult | tuple[SymbolReference, Decimal, Decimal, int]:
+        """Risk re-check + reference + sizing + dry-run gate. Returns an
+        ExecutionResult (blocked/dry_run) to short-circuit, else the prepared
+        ``(ref, qty, notional, instrument_id)``."""
         snapshot = await load_ledger_snapshot(
             self.ledger, product=intent.product, symbol=intent.symbol, now=self.now
-        )
-        market = MarketConditions(
-            spread_bps=Decimal("0"),
-            data_age_seconds=0.0,
-            spot_free_base_qty=Decimal("0"),
         )
         risk = evaluate_risk(
             product=intent.product,
@@ -169,14 +278,16 @@ class DemoScalpingExecutor:
             target_notional_usdt=intent.target_notional_usdt,
             limits=self.limits,
             ledger=snapshot,
-            market=market,
+            market=MarketConditions(
+                spread_bps=Decimal("0"),
+                data_age_seconds=0.0,
+                spot_free_base_qty=Decimal("0"),
+            ),
         )
         if not risk.allowed:
             return ExecutionResult(
                 intent=intent, status="blocked", reason_codes=risk.reason_codes
             )
-
-        # 2. Reference + sizing (floor; never round up past the cap).
         ref = await self.reference.fetch(intent.product, intent.symbol)
         sized = self._size(intent, ref)
         if isinstance(sized, str):
@@ -184,8 +295,6 @@ class DemoScalpingExecutor:
                 intent=intent, status="blocked", reason_codes=(sized,)
             )
         qty, notional = sized
-
-        # 3. Dry-run gate: zero broker mutation.
         if not confirm:
             return ExecutionResult(
                 intent=intent,
@@ -193,13 +302,75 @@ class DemoScalpingExecutor:
                 sized_qty=qty,
                 sized_notional_usdt=notional,
             )
-
         instrument_id = await self._resolve_or_create_instrument(intent.symbol)
+        return (ref, qty, notional, instrument_id)
+
+    async def _open_position(
+        self, intent, ref, qty, notional, instrument_id
+    ) -> tuple[str | None, ExecutionResult | None]:
+        """Product-specific open + fill. Returns ``(open_cid, None)`` on a
+        proven fill, else ``(None, error_result)``."""
         if intent.product == "usdm_futures":
-            return await self._execute_futures(
-                intent, ref, qty, notional, instrument_id
+            mode = await self.client.get_position_mode()
+            if mode.is_hedge_mode:
+                return None, ExecutionResult(
+                    intent=intent,
+                    status="blocked",
+                    reason_codes=("futures_hedge_mode_blocked",),
+                )
+            leverage = await self.client.set_leverage(symbol=intent.symbol, leverage=1)
+            if leverage.leverage != 1:
+                return None, ExecutionResult(
+                    intent=intent,
+                    status="blocked",
+                    reason_codes=("futures_leverage_mismatch",),
+                )
+            open_cid, submit = await self._open_leg(
+                intent, instrument_id, qty, notional
             )
-        return await self._execute_spot(intent, ref, qty, notional, instrument_id)
+            proven = await self._fill_proven(intent.symbol, open_cid, submit.status)
+            if proven:
+                await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
+            else:
+                position = await self.client.get_position(symbol=intent.symbol)
+                if not position.is_flat:
+                    await self.ledger.record_filled(
+                        client_order_id=open_cid,
+                        now=self.now,
+                        extra_metadata_merge={"fill_evidence": "position_risk_nonflat"},
+                    )
+                else:
+                    reason = "futures_open_fill_unproven"
+                    await self.ledger.record_anomaly(
+                        client_order_id=open_cid, reason=reason, now=self.now
+                    )
+                    return None, ExecutionResult(
+                        intent=intent,
+                        status="anomaly",
+                        open_client_order_id=open_cid,
+                        anomaly_reason=reason,
+                        sized_qty=qty,
+                        sized_notional_usdt=notional,
+                        final_flat=True,
+                    )
+            return open_cid, None
+
+        open_cid, submit = await self._open_leg(intent, instrument_id, qty, notional)
+        if submit.status != "FILLED":
+            reason = f"spot_open_not_filled: {submit.status}"
+            await self.ledger.record_anomaly(
+                client_order_id=open_cid, reason=reason, now=self.now
+            )
+            return None, ExecutionResult(
+                intent=intent,
+                status="anomaly",
+                open_client_order_id=open_cid,
+                anomaly_reason=reason,
+                sized_qty=qty,
+                sized_notional_usdt=notional,
+            )
+        await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
+        return open_cid, None
 
     # ------------------------------------------------------------------
     # Sizing + instrument
@@ -673,27 +844,22 @@ class DemoScalpingExecutor:
             logger.exception("failsafe close failed for %s", intent.symbol)
 
     # ------------------------------------------------------------------
-    # Spot lifecycle
+    # Close + reconcile (shared by execute() and execute_monitored()).
     # ------------------------------------------------------------------
-    async def _execute_spot(
-        self, intent, ref, qty, notional, instrument_id
+    async def _close_and_reconcile(
+        self, intent, ref, qty, notional, open_cid, instrument_id, *, exit_reason
     ) -> ExecutionResult:
-        open_cid, submit = await self._open_leg(intent, instrument_id, qty, notional)
-        if submit.status != "FILLED":
-            reason = f"spot_open_not_filled: {submit.status}"
-            await self.ledger.record_anomaly(
-                client_order_id=open_cid, reason=reason, now=self.now
+        if intent.product == "usdm_futures":
+            return await self._close_and_reconcile_futures(
+                intent, ref, qty, notional, open_cid, instrument_id, exit_reason
             )
-            return ExecutionResult(
-                intent=intent,
-                status="anomaly",
-                open_client_order_id=open_cid,
-                anomaly_reason=reason,
-                sized_qty=qty,
-                sized_notional_usdt=notional,
-            )
-        await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
+        return await self._close_and_reconcile_spot(
+            intent, ref, qty, notional, open_cid, instrument_id, exit_reason
+        )
 
+    async def _close_and_reconcile_spot(
+        self, intent, ref, qty, notional, open_cid, instrument_id, exit_reason
+    ) -> ExecutionResult:
         # Close: SELL the free base balance (never reuse the BUY qty).
         base = _base_asset(intent.symbol)
         balance = await self.client.get_asset_balance(asset=base)
@@ -772,6 +938,7 @@ class DemoScalpingExecutor:
                 sized_qty=qty,
                 sized_notional_usdt=notional,
                 final_open_orders=len(open_orders.orders),
+                exit_reason=exit_reason,
             )
         reason = f"spot_reconcile_dirty: {residual.remediation_hint}"
         await self.ledger.record_anomaly(
@@ -786,56 +953,12 @@ class DemoScalpingExecutor:
             sized_qty=qty,
             sized_notional_usdt=notional,
             final_open_orders=len(open_orders.orders),
+            exit_reason=exit_reason,
         )
 
-    # ------------------------------------------------------------------
-    # Futures lifecycle
-    # ------------------------------------------------------------------
-    async def _execute_futures(
-        self, intent, ref, qty, notional, instrument_id
+    async def _close_and_reconcile_futures(
+        self, intent, ref, qty, notional, open_cid, instrument_id, exit_reason
     ) -> ExecutionResult:
-        mode = await self.client.get_position_mode()
-        if mode.is_hedge_mode:
-            return ExecutionResult(
-                intent=intent,
-                status="blocked",
-                reason_codes=("futures_hedge_mode_blocked",),
-            )
-        leverage = await self.client.set_leverage(symbol=intent.symbol, leverage=1)
-        if leverage.leverage != 1:
-            return ExecutionResult(
-                intent=intent,
-                status="blocked",
-                reason_codes=("futures_leverage_mismatch",),
-            )
-
-        open_cid, submit = await self._open_leg(intent, instrument_id, qty, notional)
-        proven = await self._fill_proven(intent.symbol, open_cid, submit.status)
-        if proven:
-            await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
-        else:
-            position = await self.client.get_position(symbol=intent.symbol)
-            if not position.is_flat:
-                await self.ledger.record_filled(
-                    client_order_id=open_cid,
-                    now=self.now,
-                    extra_metadata_merge={"fill_evidence": "position_risk_nonflat"},
-                )
-            else:
-                reason = "futures_open_fill_unproven"
-                await self.ledger.record_anomaly(
-                    client_order_id=open_cid, reason=reason, now=self.now
-                )
-                return ExecutionResult(
-                    intent=intent,
-                    status="anomaly",
-                    open_client_order_id=open_cid,
-                    anomaly_reason=reason,
-                    sized_qty=qty,
-                    sized_notional_usdt=notional,
-                    final_flat=True,
-                )
-
         # Close with reduceOnly opposite side of the live position.
         position = await self.client.get_position(symbol=intent.symbol)
         close_cid: str | None = None
@@ -914,6 +1037,7 @@ class DemoScalpingExecutor:
                 sized_notional_usdt=notional,
                 final_open_orders=0,
                 final_flat=True,
+                exit_reason=exit_reason,
             )
         reason = (
             f"futures_reconcile_dirty: open_orders={len(open_orders.orders)} "
@@ -932,4 +1056,5 @@ class DemoScalpingExecutor:
             sized_notional_usdt=notional,
             final_open_orders=len(open_orders.orders),
             final_flat=final_position.is_flat,
+            exit_reason=exit_reason,
         )
