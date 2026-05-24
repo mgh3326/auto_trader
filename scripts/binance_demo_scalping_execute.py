@@ -127,13 +127,13 @@ async def _run(args: argparse.Namespace) -> int:
             BinanceSpotDemoExecutionClient,
         )
 
-        client = await BinanceSpotDemoExecutionClient.from_env()
+        client = BinanceSpotDemoExecutionClient.from_env()
     else:
         from app.services.brokers.binance.futures_demo.execution_client import (
             BinanceFuturesDemoExecutionClient,
         )
 
-        client = await BinanceFuturesDemoExecutionClient.from_env()
+        client = BinanceFuturesDemoExecutionClient.from_env()
 
     reference = DemoReferenceData()
     try:
