@@ -11,6 +11,7 @@ from app.services.investment_stages.hermes_context import HermesContextExporter
 
 async def _clear(db_session):
     from sqlalchemy import text
+
     await db_session.execute(text("DELETE FROM research_reports"))
     await db_session.commit()
 

@@ -50,9 +50,8 @@ async def build_news_evidence(
 
     if not citations:
         status = "unavailable"
-    elif (
-        latest_published is not None
-        and latest_published >= now_dt - dt.timedelta(hours=lookback_hours)
+    elif latest_published is not None and latest_published >= now_dt - dt.timedelta(
+        hours=lookback_hours
     ):
         status = "fresh"
     else:

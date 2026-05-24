@@ -36,7 +36,6 @@ from app.services.invest_screener_snapshots.repository import (
 )
 from app.services.investment_dimensions.market_evidence import build_market_evidence
 from app.services.investment_dimensions.news_evidence import build_news_evidence
-from app.services.research_reports.query_service import ResearchReportsQueryService
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
@@ -46,6 +45,7 @@ from app.services.investment_stages.stages.base import (
     UnavailableStageError,
 )
 from app.services.investment_stages.stages.registry import get_default_v1_stages
+from app.services.research_reports.query_service import ResearchReportsQueryService
 
 _logger = logging.getLogger(__name__)
 

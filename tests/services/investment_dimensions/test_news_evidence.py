@@ -3,12 +3,13 @@ import datetime as dt
 import pytest
 
 from app.models.research_reports import ResearchReport
-from app.services.research_reports.query_service import ResearchReportsQueryService
 from app.services.investment_dimensions.news_evidence import build_news_evidence
+from app.services.research_reports.query_service import ResearchReportsQueryService
 
 
 async def _clear(db_session):
     from sqlalchemy import text
+
     await db_session.execute(text("DELETE FROM research_reports"))
     await db_session.commit()
 
