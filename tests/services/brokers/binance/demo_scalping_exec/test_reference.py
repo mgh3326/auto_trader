@@ -23,6 +23,7 @@ _SPOT_EXCHANGE_INFO = {
         {
             "symbol": "XRPUSDT",
             "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.00010000"},
                 {"filterType": "LOT_SIZE", "stepSize": "0.10000000"},
                 {"filterType": "NOTIONAL", "minNotional": "5.00000000"},
             ],
@@ -35,6 +36,7 @@ _FUTURES_EXCHANGE_INFO = {
         {
             "symbol": "XRPUSDT",
             "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.0001"},
                 {"filterType": "LOT_SIZE", "stepSize": "0.1"},
                 {"filterType": "MARKET_LOT_SIZE", "stepSize": "0.1"},
                 {"filterType": "MIN_NOTIONAL", "notional": "5"},
@@ -61,6 +63,7 @@ async def test_fetch_spot_reference(httpx_mock) -> None:
         price=Decimal("1.36010000"),
         step_size=Decimal("0.10000000"),
         min_notional=Decimal("5.00000000"),
+        tick_size=Decimal("0.00010000"),
     )
 
 
@@ -82,6 +85,7 @@ async def test_fetch_futures_reference_uses_demo_fapi_and_market_lot(
     assert ref.price == Decimal("1.3595")
     assert ref.step_size == Decimal("0.1")
     assert ref.min_notional == Decimal("5")
+    assert ref.tick_size == Decimal("0.0001")
 
 
 @pytest.mark.asyncio
