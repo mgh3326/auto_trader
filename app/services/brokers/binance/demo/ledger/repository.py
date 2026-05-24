@@ -12,10 +12,24 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+from app.models.crypto_instruments import CryptoInstrument
+
+# Lifecycle states that block starting a new lifecycle for a symbol: a
+# row is either in flight (planned..filled) or in an unresolved anomaly.
+# closed / reconciled / cancelled free the slot (cooldown then spaces
+# re-entry). Single source of truth for read-side "is this open?".
+OPEN_LIFECYCLE_STATES: tuple[str, ...] = (
+    "planned",
+    "previewed",
+    "validated",
+    "submitted",
+    "filled",
+    "anomaly",
+)
 
 
 class BinanceDemoLedgerRepository:
@@ -76,6 +90,74 @@ class BinanceDemoLedgerRepository:
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # Read-only queries (ROB-307 ledger-backed durable scalping state §4).
+    # ------------------------------------------------------------------
+
+    async def resolve_instrument_id(
+        self, *, venue: str, product: str, venue_symbol: str
+    ) -> int | None:
+        """Map a ``(venue, product, venue_symbol)`` triple to instrument id."""
+        return await self._session.scalar(
+            select(CryptoInstrument.id).where(
+                CryptoInstrument.venue == venue,
+                CryptoInstrument.product == product,
+                CryptoInstrument.venue_symbol == venue_symbol,
+            )
+        )
+
+    async def count_open_lifecycles(self) -> int:
+        """Count table-wide rows in an open/blocking lifecycle state."""
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(BinanceDemoOrderLedger)
+            .where(BinanceDemoOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES))
+        )
+        return count or 0
+
+    async def has_open_lifecycle_for_instrument(
+        self, *, product: str, instrument_id: int
+    ) -> bool:
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(BinanceDemoOrderLedger)
+            .where(
+                BinanceDemoOrderLedger.product == product,
+                BinanceDemoOrderLedger.instrument_id == instrument_id,
+                BinanceDemoOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES),
+            )
+        )
+        return (count or 0) > 0
+
+    async def count_lifecycles_since(self, *, since: dt.datetime) -> int:
+        """Count lifecycles initiated (``planned_at``) at or after ``since``."""
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(BinanceDemoOrderLedger)
+            .where(BinanceDemoOrderLedger.planned_at >= since)
+        )
+        return count or 0
+
+    async def latest_close_at_for_instrument(
+        self, *, product: str, instrument_id: int
+    ) -> dt.datetime | None:
+        return await self._session.scalar(
+            select(func.max(BinanceDemoOrderLedger.closed_at)).where(
+                BinanceDemoOrderLedger.product == product,
+                BinanceDemoOrderLedger.instrument_id == instrument_id,
+            )
+        )
+
+    async def closed_rows_since(
+        self, *, since: dt.datetime
+    ) -> list[BinanceDemoOrderLedger]:
+        result = await self._session.execute(
+            select(BinanceDemoOrderLedger).where(
+                BinanceDemoOrderLedger.closed_at >= since
+            )
+        )
+        return list(result.scalars().all())
 
     async def update_state(
         self,

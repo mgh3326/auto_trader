@@ -68,6 +68,43 @@ class BinanceDemoLedgerService:
     ) -> BinanceDemoOrderLedger | None:
         return await self._repo.get_by_client_order_id(client_order_id)
 
+    # ------------------------------------------------------------------
+    # Read-only surface (ROB-307 ledger-backed durable scalping state §4).
+    # No writes; delegates to the service-internal repository.
+    # ------------------------------------------------------------------
+
+    async def resolve_instrument_id(
+        self, *, venue: str, product: str, venue_symbol: str
+    ) -> int | None:
+        return await self._repo.resolve_instrument_id(
+            venue=venue, product=product, venue_symbol=venue_symbol
+        )
+
+    async def count_open_lifecycles(self) -> int:
+        return await self._repo.count_open_lifecycles()
+
+    async def has_open_lifecycle_for_instrument(
+        self, *, product: str, instrument_id: int
+    ) -> bool:
+        return await self._repo.has_open_lifecycle_for_instrument(
+            product=product, instrument_id=instrument_id
+        )
+
+    async def count_lifecycles_since(self, *, since: dt.datetime) -> int:
+        return await self._repo.count_lifecycles_since(since=since)
+
+    async def latest_close_at_for_instrument(
+        self, *, product: str, instrument_id: int
+    ) -> dt.datetime | None:
+        return await self._repo.latest_close_at_for_instrument(
+            product=product, instrument_id=instrument_id
+        )
+
+    async def closed_rows_since(
+        self, *, since: dt.datetime
+    ) -> list[BinanceDemoOrderLedger]:
+        return await self._repo.closed_rows_since(since=since)
+
     async def record_planned(
         self,
         *,
