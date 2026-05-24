@@ -34,6 +34,9 @@ from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
 )
+from app.services.investment_dimensions.fundamentals_evidence import (
+    build_fundamentals_evidence,
+)
 from app.services.investment_dimensions.market_evidence import build_market_evidence
 from app.services.investment_dimensions.news_evidence import build_news_evidence
 from app.services.investment_snapshots.repository import (
@@ -45,7 +48,11 @@ from app.services.investment_stages.stages.base import (
     UnavailableStageError,
 )
 from app.services.investment_stages.stages.registry import get_default_v1_stages
+from app.services.market_valuation_snapshots.repository import (
+    MarketValuationSnapshotsRepository,
+)
 from app.services.research_reports.query_service import ResearchReportsQueryService
+from app.services.stock_info_service import StockInfoService
 
 _logger = logging.getLogger(__name__)
 
@@ -132,6 +139,32 @@ class HermesContextExporter:
             except Exception as exc:  # noqa: BLE001 — best-effort, like market
                 _logger.exception("Failed to build news evidence for context export")
                 dimension_evidence["news"] = {"unavailable": str(exc)}
+
+            try:
+                fundamentals_symbols: set[str] = set()
+                for snap in snapshots_by_kind.get("portfolio", []):
+                    for h in (snap.payload_json or {}).get("holdings", []):
+                        ticker = h.get("ticker")
+                        if ticker:
+                            fundamentals_symbols.add(ticker)
+                market_dim = dimension_evidence.get("market")
+                if isinstance(market_dim, dict):
+                    for mover in market_dim.get("top_movers", []):
+                        sym = mover.get("symbol")
+                        if sym:
+                            fundamentals_symbols.add(sym)
+                fundamentals_evidence = await build_fundamentals_evidence(
+                    MarketValuationSnapshotsRepository(self._session),
+                    StockInfoService(self._session),
+                    market=bundle.market,
+                    symbols=fundamentals_symbols,
+                )
+                dimension_evidence["fundamentals"] = fundamentals_evidence
+            except Exception as exc:  # noqa: BLE001 — best-effort, like market/news
+                _logger.exception(
+                    "Failed to build fundamentals evidence for context export"
+                )
+                dimension_evidence["fundamentals"] = {"unavailable": str(exc)}
 
         is_mock = (
             hasattr(self._session, "assert_called")
