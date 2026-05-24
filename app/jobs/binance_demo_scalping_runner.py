@@ -65,11 +65,11 @@ async def run_demo_scalping_tick(*, now: dt.datetime | None = None) -> dict[str,
     # Lazy imports so the disabled path triggers zero engine/credential setup.
     from app.core.db import AsyncSessionLocal
     from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
+    from app.services.brokers.binance.demo_scalping.market_data import (
+        DemoScalpingMarketData,
+    )
     from app.services.brokers.binance.demo_scalping_exec.executor import (
         DemoScalpingExecutor,
-    )
-    from app.services.brokers.binance.demo_scalping_exec.market_data import (
-        DemoScalpingMarketData,
     )
     from app.services.brokers.binance.demo_scalping_exec.reference import (
         DemoReferenceData,
