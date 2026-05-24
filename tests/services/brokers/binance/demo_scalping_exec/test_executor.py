@@ -221,10 +221,16 @@ async def _instrument(db_session, symbol, product) -> int:
 
 
 _SPOT_REF = SymbolReference(
-    price=Decimal("1.36"), step_size=Decimal("0.1"), min_notional=Decimal("5")
+    price=Decimal("1.36"),
+    step_size=Decimal("0.1"),
+    min_notional=Decimal("5"),
+    tick_size=Decimal("0.0001"),
 )
 _FUT_REF = SymbolReference(
-    price=Decimal("1.36"), step_size=Decimal("0.1"), min_notional=Decimal("5")
+    price=Decimal("1.36"),
+    step_size=Decimal("0.1"),
+    min_notional=Decimal("5"),
+    tick_size=Decimal("0.0001"),
 )
 
 

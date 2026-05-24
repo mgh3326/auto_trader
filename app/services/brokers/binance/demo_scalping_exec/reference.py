@@ -40,8 +40,9 @@ class ReferenceDataError(RuntimeError):
 @dataclass(frozen=True)
 class SymbolReference:
     price: Decimal
-    step_size: Decimal  # MARKET sizing step
+    step_size: Decimal  # MARKET sizing step (LOT_SIZE / MARKET_LOT_SIZE)
     min_notional: Decimal
+    tick_size: Decimal  # PRICE_FILTER tick — for tick-aligning bracket prices
 
 
 def _find_symbol_row(body: dict[str, Any], symbol: str) -> dict[str, Any]:
@@ -51,7 +52,8 @@ def _find_symbol_row(body: dict[str, Any], symbol: str) -> dict[str, Any]:
     raise ReferenceDataError(f"exchangeInfo has no row for {symbol!r}")
 
 
-def _market_step_and_min_notional(row: dict[str, Any]) -> tuple[Decimal, Decimal]:
+def _parse_filters(row: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal]:
+    """Return ``(market_step, min_notional, tick_size)`` from a symbol row."""
     filters = {f.get("filterType"): f for f in row.get("filters", [])}
 
     # MARKET orders use MARKET_LOT_SIZE when present and non-zero, else LOT_SIZE.
@@ -78,7 +80,14 @@ def _market_step_and_min_notional(row: dict[str, Any]) -> tuple[Decimal, Decimal
                 break
         if min_notional > 0:
             break
-    return step, min_notional
+
+    # PRICE_FILTER tickSize — needed to tick-align bracket stop/limit prices.
+    price_filter = filters.get("PRICE_FILTER")
+    if not price_filter or Decimal(str(price_filter.get("tickSize", "0"))) <= 0:
+        raise ReferenceDataError("no usable PRICE_FILTER tickSize")
+    tick_size = Decimal(str(price_filter["tickSize"]))
+
+    return step, min_notional, tick_size
 
 
 class DemoReferenceData:
@@ -94,7 +103,7 @@ class DemoReferenceData:
             base + _EXCHANGE_INFO_PATH[product], params={"symbol": symbol}
         )
         info.raise_for_status()
-        step, min_notional = _market_step_and_min_notional(
+        step, min_notional, tick_size = _parse_filters(
             _find_symbol_row(info.json(), symbol)
         )
 
@@ -110,6 +119,7 @@ class DemoReferenceData:
             price=Decimal(str(raw_price)),
             step_size=step,
             min_notional=min_notional,
+            tick_size=tick_size,
         )
 
     async def aclose(self) -> None:

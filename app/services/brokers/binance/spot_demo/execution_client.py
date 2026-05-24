@@ -44,6 +44,7 @@ from app.services.brokers.binance.demo.errors import BinanceDemoCredentialError
 from app.services.brokers.binance.spot_demo.dto import (
     SpotDemoAssetBalance,
     SpotDemoCancelResult,
+    SpotDemoOcoResult,
     SpotDemoOpenOrder,
     SpotDemoOpenOrdersResult,
     SpotDemoOrderSubmitResult,
@@ -63,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL: Final[str] = "https://demo-api.binance.com"
 _ORDER_PATH: Final[str] = "/api/v3/order"
+_OCO_PATH: Final[str] = "/api/v3/order/oco"
 _ORDER_TEST_PATH: Final[str] = "/api/v3/order/test"
 _OPEN_ORDERS_PATH: Final[str] = "/api/v3/openOrders"
 _ACCOUNT_PATH: Final[str] = "/api/v3/account"
@@ -351,6 +353,79 @@ class BinanceSpotDemoExecutionClient:
             executed_qty=Decimal(str(body.get("executedQty", "0"))),
             cummulative_quote_qty=Decimal(str(body.get("cummulativeQuoteQty", "0"))),
             status=body.get("status", "UNKNOWN"),
+            raw_response_redacted=_redact(body),
+        )
+
+    async def submit_oco(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        tp_price: Decimal,
+        sl_stop_price: Decimal,
+        sl_limit_price: Decimal,
+        time_in_force: str = "GTC",
+        list_client_order_id: str | None = None,
+        confirm: bool = False,
+    ) -> SpotDemoOcoResult | SpotDemoDryRunResult:
+        """Operator-gated SELL OCO bracket on a held long (TP + SL).
+
+        Spot has no reduceOnly, so the broker-side bracket is a one-cancels-
+        other pair: a LIMIT take-profit (``tp_price``, above) and a
+        STOP_LOSS_LIMIT (trigger ``sl_stop_price`` / limit ``sl_limit_price``,
+        below). Dry-run with zero HTTP unless ``confirm=True``; the signed
+        POST goes to ``demo-api.binance.com/api/v3/order/oco``.
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("symbol must be non-empty")
+        if side not in ALLOWED_SIDES:
+            raise ValueError(f"side {side!r} not in {sorted(ALLOWED_SIDES)}")
+        if quantity <= 0:
+            raise ValueError(f"quantity must be > 0, got {quantity}")
+        for label, value in (
+            ("tp_price", tp_price),
+            ("sl_stop_price", sl_stop_price),
+            ("sl_limit_price", sl_limit_price),
+        ):
+            if value <= 0:
+                raise ValueError(f"{label} must be > 0, got {value}")
+        if side == "SELL" and tp_price <= sl_stop_price:
+            raise ValueError(
+                "SELL OCO requires tp_price above sl_stop_price "
+                f"(got tp={tp_price}, sl={sl_stop_price})"
+            )
+        cid = list_client_order_id or self._new_client_order_id()
+        if not confirm:
+            return SpotDemoDryRunResult(
+                symbol=symbol,
+                side=side,
+                order_type="OCO",
+                qty=quantity,
+                client_order_id=cid,
+            )
+        params: dict[str, str] = {
+            "symbol": symbol,
+            "side": side,
+            "quantity": format(quantity, "f"),
+            "price": format(tp_price, "f"),
+            "stopPrice": format(sl_stop_price, "f"),
+            "stopLimitPrice": format(sl_limit_price, "f"),
+            "stopLimitTimeInForce": time_in_force,
+            "listClientOrderId": cid,
+            "recvWindow": str(BINANCE_SPOT_DEMO_RECV_WINDOW_MS),
+        }
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.post(_OCO_PATH, params=signed)
+        resp.raise_for_status()
+        body = resp.json()
+        legs = tuple(
+            str(order.get("clientOrderId", "")) for order in body.get("orders", [])
+        )
+        return SpotDemoOcoResult(
+            order_list_id=str(body.get("orderListId", "")),
+            list_status=str(body.get("listOrderStatus", "UNKNOWN")),
+            leg_client_order_ids=legs,
             raw_response_redacted=_redact(body),
         )
 
