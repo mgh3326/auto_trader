@@ -519,8 +519,15 @@ async def _poll_order_filled(
     ROB-305 §4: a submit-response ``NEW`` is NOT a final state. This polls
     the order's real status up to ``_FILL_RECONCILE_MAX_POLLS`` times — a
     bounded loop, never unbounded. Returns ``True`` only on an observed
-    ``FILLED``; a terminal non-fill (CANCELED/REJECTED/EXPIRED) or a query
-    error returns ``False`` (fail-closed: caller must not assume a fill).
+    ``FILLED``.
+
+    A transient query error is NOT fatal to the poll: demo-fapi returns
+    ``400`` for an order it has just accepted but not yet indexed for lookup
+    (observed in the ROB-305 live smoke — the same order returns ``200
+    FILLED`` a moment later). We log it and keep polling within the bound;
+    only after exhausting all attempts do we return ``False`` (fail-closed —
+    the caller must not assume a fill). A terminal non-fill
+    (CANCELED/REJECTED/EXPIRED) ends the poll early with ``False``.
     """
     for attempt in range(_FILL_RECONCILE_MAX_POLLS):
         if attempt > 0:
@@ -530,10 +537,16 @@ async def _poll_order_filled(
                 symbol=symbol, client_order_id=client_order_id
             )
         except Exception as exc:  # noqa: BLE001
+            # Transient (e.g. order not yet queryable) — keep polling within
+            # the bound rather than giving up on the first error.
             logger.warning(
-                "get_order reconcile poll failed (cid=%s): %s", client_order_id, exc
+                "get_order reconcile poll attempt=%d failed (cid=%s): %s — "
+                "retrying within bound",
+                attempt,
+                client_order_id,
+                exc,
             )
-            return False
+            continue
         _trace(
             f"order_status_poll cid={client_order_id} attempt={attempt} "
             f"status={status_result.status}"

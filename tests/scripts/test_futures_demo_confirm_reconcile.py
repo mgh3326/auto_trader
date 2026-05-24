@@ -58,6 +58,8 @@ class _FakeFuturesExecution:
         close_submit_status: str,
         open_get_order_statuses: list[str] | None = None,
         close_get_order_statuses: list[str] | None = None,
+        open_get_order_raises: int = 0,
+        close_get_order_raises: int = 0,
         position_after_open: Decimal = _QTY,
         position_after_close: Decimal = Decimal("0"),
     ) -> None:
@@ -65,6 +67,11 @@ class _FakeFuturesExecution:
         self._close_submit_status = close_submit_status
         self._open_get_order_statuses = list(open_get_order_statuses or [])
         self._close_get_order_statuses = list(close_get_order_statuses or [])
+        # Number of leading get_order calls (per leg) that raise a transient
+        # error before normal behaviour — models demo-fapi returning 400 for a
+        # just-submitted order it has not yet indexed for lookup.
+        self._open_get_order_raises = open_get_order_raises
+        self._close_get_order_raises = close_get_order_raises
         self._position_after_open = position_after_open
         self._position_after_close = position_after_close
         self._open_cid: str | None = None
@@ -157,9 +164,15 @@ class _FakeFuturesExecution:
     ) -> FuturesDemoOrderStatusResult:
         self.get_order_calls.append(client_order_id)
         if client_order_id == self._close_cid:
+            if self._close_get_order_raises > 0:
+                self._close_get_order_raises -= 1
+                raise RuntimeError("demo-fapi 400: order not yet queryable")
             queue = self._close_get_order_statuses
             fallback = self._close_submit_status
         else:
+            if self._open_get_order_raises > 0:
+                self._open_get_order_raises -= 1
+                raise RuntimeError("demo-fapi 400: order not yet queryable")
             queue = self._open_get_order_statuses
             fallback = self._open_submit_status
         status = queue.pop(0) if queue else fallback
@@ -298,6 +311,35 @@ async def test_close_new_resolved_filled_via_get_order(db_session: Any) -> None:
     assert close_row.filled_at is not None
     assert close_row.lifecycle_state == "reconciled"
     assert close_cid in execution.get_order_calls
+
+
+@pytest.mark.asyncio
+async def test_close_new_get_order_transient_error_then_filled(db_session: Any) -> None:
+    """Close NEW, get_order 400s on the first poll then returns FILLED.
+
+    Regression for the real demo-fapi smoke (ROB-305): a just-submitted order
+    is not yet queryable, so ``GET /fapi/v1/order`` returns 400 on the
+    immediate first poll. The bounded poll must tolerate the transient error
+    and keep polling — not give up on the first exception — so the close
+    proves FILLED and reconciles cleanly instead of falling to anomaly.
+    """
+    execution = _FakeFuturesExecution(
+        open_submit_status="FILLED",
+        close_submit_status="NEW",
+        close_get_order_statuses=["FILLED"],
+        close_get_order_raises=1,  # first poll 400s, then the queue applies
+    )
+    exit_code, ledger, _open_cid, close_cid = await _run_lifecycle(
+        execution=execution, db_session=db_session
+    )
+
+    assert exit_code == 0
+    close_row = await ledger.get_by_client_order_id(close_cid)
+    assert close_row is not None
+    assert close_row.lifecycle_state == "reconciled"
+    assert close_row.filled_at is not None
+    # The poll was retried after the transient error (>1 get_order call).
+    assert execution.get_order_calls.count(close_cid) >= 2
 
 
 @pytest.mark.asyncio
