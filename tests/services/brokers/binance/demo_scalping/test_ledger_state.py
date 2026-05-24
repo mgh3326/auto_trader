@@ -179,3 +179,17 @@ async def test_fresh_service_instance_reads_committed_state(
         fresh_service, product="spot", symbol="EEEUSDT", now=_NOW
     )
     assert snap.has_open_lifecycle_for_symbol is True
+
+
+@pytest.mark.asyncio
+async def test_list_held_bracketed_includes_filled_row(service, db_session) -> None:
+    iid = await _instrument_id(db_session, "HELDUSDT")
+    await _plan(service, instrument_id=iid, coid="held-row")
+    await service.record_previewed(client_order_id="held-row", now=_NOW)
+    await service.record_validated(client_order_id="held-row", now=_NOW)
+    await service.record_submitted(
+        client_order_id="held-row", broker_order_id="b", now=_NOW
+    )
+    await service.record_filled(client_order_id="held-row", now=_NOW)
+    held = await service.list_held_bracketed()
+    assert ("held-row", "spot") in held
