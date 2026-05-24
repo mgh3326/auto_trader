@@ -37,7 +37,15 @@ logger = logging.getLogger("rob307.demo_scalping_execute")
 
 _ENABLED_ENV = "BINANCE_DEMO_SCALPING_ENABLED"
 _VALID_PRODUCTS = ("spot", "usdm_futures")
-_EXIT_BY_STATUS = {"reconciled": 0, "dry_run": 0, "blocked": 1, "anomaly": 2}
+_EXIT_BY_STATUS = {
+    "reconciled": 0,
+    "dry_run": 0,
+    "bracketed": 0,  # opened + protected (held); success
+    "still_protected": 0,  # reconcile no-op; position still held + protected
+    "noop": 0,  # nothing to reconcile (already terminal)
+    "blocked": 1,
+    "anomaly": 2,
+}
 
 
 def _truthy(value: str | None) -> bool:
@@ -92,6 +100,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="Place real Demo orders. Without it, dry-run (no mutation).",
     )
+    parser.add_argument(
+        "--bracket",
+        action="store_true",
+        help=(
+            "Open + place broker-side TP/SL and HOLD the protected position "
+            "(vs the default open+close-flat). Reconcile later with --reconcile."
+        ),
+    )
+    parser.add_argument(
+        "--reconcile",
+        metavar="OPEN_CID",
+        help=(
+            "Reconcile a held bracketed position by its open client_order_id: "
+            "detect exit, cancel any surviving leg, close+reconcile the parent."
+        ),
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 
@@ -105,13 +129,6 @@ async def _run(args: argparse.Namespace) -> int:
 
     now = dt.datetime.now(dt.UTC)
     limits = ScalpingRiskLimits()
-    intent = build_manual_intent(
-        product=args.product,
-        symbol=args.symbol,
-        side=args.side,
-        now=now,
-        limits=limits,
-    )
 
     # Lazy imports so the disabled path triggers zero engine/credential setup.
     from app.core.db import AsyncSessionLocal
@@ -146,7 +163,24 @@ async def _run(args: argparse.Namespace) -> int:
                 now=now,
                 limits=limits,
             )
-            result = await executor.execute(intent, confirm=args.confirm)
+            if args.reconcile:
+                result = await executor.reconcile_bracket(
+                    open_client_order_id=args.reconcile
+                )
+            else:
+                intent = build_manual_intent(
+                    product=args.product,
+                    symbol=args.symbol,
+                    side=args.side,
+                    now=now,
+                    limits=limits,
+                )
+                if args.bracket:
+                    result = await executor.execute_bracket(
+                        intent, confirm=args.confirm
+                    )
+                else:
+                    result = await executor.execute(intent, confirm=args.confirm)
             await session.commit()
     finally:
         await reference.aclose()

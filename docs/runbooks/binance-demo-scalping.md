@@ -166,11 +166,65 @@ don't (correctly) trip the global cap. Procedure:
 5. Capture the redacted evidence line + a broker/ledger reconciliation
    check (open orders 0; futures position flat).
 
-## Not in PR2 (later phases)
+## Broker-side bracket TP/SL (PR3)
 
-- TP/SL exit strategy (PR3) — broker-side bracket preferred, else a
-  bounded app-managed monitor (§2). PR2 never leaves an unattended
-  position.
-- Scheduler scaffold + kill switch (PR4) — TaskIQ default-OFF; any
-  Prefect deployment lives in `robin-prefect-automations` and activation
-  is a separate operator gate.
+PR3 adds the §2-preferred **broker-side bracket**: after entry, place
+exchange-native exits and **hold the protected position** (it survives
+across scheduler runs — that's the point). Exit detection + cleanup is a
+separate reconcile step.
+
+| Surface | Added |
+|---|---|
+| `futures_demo` exec client | `submit_reduce_only_trigger` (STOP_MARKET / TAKE_PROFIT_MARKET, reduceOnly) |
+| `spot_demo` exec client | `submit_oco` (SELL OCO: TP limit + SL stop-limit) |
+| `demo_scalping_exec/reference.py` | `tick_size` (PRICE_FILTER) for tick-aligned bracket prices |
+| `demo_scalping_exec/executor.py` | `execute_bracket` (open + place TP/SL + hold) and `reconcile_bracket` (detect exit, cancel survivor, close+reconcile) |
+| `scripts/binance_demo_scalping_execute.py` | `--bracket` and `--reconcile OPEN_CID` modes |
+
+**Lifecycle:** `execute_bracket` → open (MARKET) → fill-resolve → place
+TP+SL (futures: two reduceOnly triggers; spot: one OCO, tick-aligned) →
+`record_filled` with the bracket leg ids in `extra_metadata` → status
+`bracketed` (parent stays `filled`, exits resting). Unproven fill →
+`anomaly` (no bracket). Bracket-placement failure → best-effort failsafe
+close + `anomaly` (never left unprotected). On a later tick,
+`reconcile_bracket` → still holding = `still_protected` (no-op); exit
+fired = cancel any surviving futures leg (spot OCO self-cancels) →
+parent `filled→closed→reconciled`.
+
+```bash
+# Open + bracket + HOLD (real; clean ledger DB + Demo creds + product gate)
+BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
+  uv run python scripts/binance_demo_scalping_execute.py \
+    --product usdm_futures --symbol XRPUSDT --bracket --confirm
+# → status=bracketed; note the open_client_order_id from the evidence line
+
+# Later: reconcile the held position by its open client_order_id
+BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
+  uv run python scripts/binance_demo_scalping_execute.py \
+    --product usdm_futures --symbol XRPUSDT --reconcile rob307-<...>
+# → still_protected (held) OR reconciled (exit fired, survivor cancelled)
+```
+
+### Live demo trigger-firing validation (operator, clean env)
+
+Unit tests cover placement + cancellation + reconcile logic with a fake
+broker; they **cannot** prove Binance Demo actually *fires* a STOP/TP
+trigger (needs real price movement). Validate live in a clean demo ledger
+DB:
+
+1. `--bracket --confirm` a tiny position; confirm both exit legs rest
+   (`GET openOrders` shows STOP_MARKET + TAKE_PROFIT_MARKET, or the OCO
+   list) and the position is held.
+2. Wait for (or nudge via a near-the-money trigger) one leg to fire;
+   confirm the position goes flat.
+3. `--reconcile <open_cid>`; confirm the surviving leg is cancelled
+   (futures), open orders = 0, and the parent ledger row reconciles.
+4. Capture redacted evidence (order ids, leg statuses, final flat /
+   open-orders-0).
+
+## Not in PR3 (later phases)
+
+- Scheduler scaffold + kill switch (PR4) — TaskIQ default-OFF that drives
+  `execute_bracket` on a signal and `reconcile_bracket` on held positions
+  each tick; any Prefect deployment lives in `robin-prefect-automations`
+  and activation is a separate operator gate.
