@@ -296,3 +296,4 @@ frontend/**/.vite/
 .antigravitycli/
 # ROB-178 smoke scratch — runtime payload/evidence; never commit.
 .smoke-out/
+.gstack/

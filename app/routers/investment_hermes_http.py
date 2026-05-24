@@ -40,10 +40,15 @@ from app.schemas.hermes_composition import (
     HermesCompositionResult,
     HermesStageArtifactsIngestRequest,
 )
+from app.schemas.investment_dimension_reports import HermesDimensionReportsIngestRequest
 from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
 from app.schemas.investment_symbol_reports import HermesSymbolReportsIngestRequest
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
+)
+from app.services.investment_dimensions.dimension_report_ingest import (
+    DimensionReportIngestError,
+    DimensionReportIngestService,
 )
 from app.services.investment_stages.hermes_context import (
     HermesContextExporter,
@@ -54,11 +59,6 @@ from app.services.investment_stages.hermes_ingest import (
     HermesCompositionIngestService,
     HermesStageArtifactsIngestError,
     HermesStageArtifactsIngestService,
-)
-from app.schemas.investment_dimension_reports import HermesDimensionReportsIngestRequest
-from app.services.investment_dimensions.dimension_report_ingest import (
-    DimensionReportIngestService,
-    DimensionReportIngestError,
 )
 from app.services.investment_stages.symbol_report_ingest import (
     SymbolIntermediateReportIngestService,

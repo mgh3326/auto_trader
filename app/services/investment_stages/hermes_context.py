@@ -31,13 +31,13 @@ from app.schemas.hermes_composition import (
     HermesStageInput,
 )
 from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
-from app.services.investment_snapshots.repository import (
-    InvestmentSnapshotsRepository,
-)
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
 )
 from app.services.investment_dimensions.market_evidence import build_market_evidence
+from app.services.investment_snapshots.repository import (
+    InvestmentSnapshotsRepository,
+)
 from app.services.investment_stages.stages.base import (
     Stage,
     StageContext,
