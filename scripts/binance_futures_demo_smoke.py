@@ -90,6 +90,16 @@ _EXCHANGE_INFO_PATH = "/fapi/v1/exchangeInfo"
 _PRICE_PATH = "/fapi/v1/ticker/price"
 _CID_PREFIX = "rob-298-fut-"
 
+# ROB-305 §4 — bounded reconciliation of a submit response of status=NEW.
+# A MARKET submit can report NEW even when the account later reflects the
+# fill. We poll GET /fapi/v1/order a BOUNDED number of times (never an
+# unbounded retry loop) to learn whether the order actually FILLED before
+# advancing the ledger past `submitted`.
+_FILL_RECONCILE_MAX_POLLS = 5
+_FILL_RECONCILE_DELAY_SECONDS = 1.0
+# Terminal non-fill statuses end the poll early (no point retrying).
+_TERMINAL_NONFILL_STATUSES = frozenset({"CANCELED", "REJECTED", "EXPIRED"})
+
 
 def _truthy(value: str | None) -> bool:
     if not value:
@@ -498,6 +508,43 @@ async def _run_confirm(args: argparse.Namespace) -> int:
         await execution.aclose()
 
 
+async def _poll_order_filled(
+    execution: BinanceFuturesDemoExecutionClient,
+    *,
+    symbol: str,
+    client_order_id: str,
+) -> bool:
+    """Bounded ``GET /fapi/v1/order`` poll. Returns ``True`` iff FILLED.
+
+    ROB-305 §4: a submit-response ``NEW`` is NOT a final state. This polls
+    the order's real status up to ``_FILL_RECONCILE_MAX_POLLS`` times — a
+    bounded loop, never unbounded. Returns ``True`` only on an observed
+    ``FILLED``; a terminal non-fill (CANCELED/REJECTED/EXPIRED) or a query
+    error returns ``False`` (fail-closed: caller must not assume a fill).
+    """
+    for attempt in range(_FILL_RECONCILE_MAX_POLLS):
+        if attempt > 0:
+            await asyncio.sleep(_FILL_RECONCILE_DELAY_SECONDS)
+        try:
+            status_result = await execution.get_order(
+                symbol=symbol, client_order_id=client_order_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "get_order reconcile poll failed (cid=%s): %s", client_order_id, exc
+            )
+            return False
+        _trace(
+            f"order_status_poll cid={client_order_id} attempt={attempt} "
+            f"status={status_result.status}"
+        )
+        if status_result.status == "FILLED":
+            return True
+        if status_result.status in _TERMINAL_NONFILL_STATUSES:
+            return False
+    return False
+
+
 async def _execute_confirm_lifecycle(
     *,
     execution: BinanceFuturesDemoExecutionClient,
@@ -649,9 +696,17 @@ async def _execute_confirm_lifecycle(
         f"status={submit_status} reduce_only=false"
     )
 
-    # 7. FILLED — record when server reports FILLED.
-    open_was_filled = submit_status == "FILLED"
-    if open_was_filled:
+    # 7. Resolve the OPEN fill (ROB-305 §4). A submit-response NEW is NOT a
+    #    final state — we never advance the ledger to `filled` (or later
+    #    `closed`) without fill evidence. Evidence sources, in order: submit
+    #    status FILLED, then a bounded GET /fapi/v1/order poll. A non-flat
+    #    positionRisk is the third source, applied after the position check.
+    open_fill_proven = submit_status == "FILLED"
+    if not open_fill_proven and submit_status not in _TERMINAL_NONFILL_STATUSES:
+        open_fill_proven = await _poll_order_filled(
+            execution, symbol=symbol, client_order_id=open_cid
+        )
+    if open_fill_proven:
         await ledger.record_filled(client_order_id=open_cid, now=_now_utc())
         await session.commit()
         _trace(f"filled cid={open_cid}")
@@ -686,6 +741,20 @@ async def _execute_confirm_lifecycle(
             submit_status,
         )
         return 2
+
+    # Position is non-flat: the open executed even if the order status had not
+    # yet flipped to FILLED. Record `filled` from account-state evidence so the
+    # later close keeps the legal `submitted → filled → closed` chain — we never
+    # close a still-`submitted` row.
+    if not open_fill_proven:
+        await ledger.record_filled(
+            client_order_id=open_cid,
+            now=_now_utc(),
+            extra_metadata_merge={"fill_evidence": "position_risk_nonflat"},
+        )
+        await session.commit()
+        open_fill_proven = True
+        _trace(f"filled cid={open_cid} evidence=position_risk_nonflat")
 
     position_amt = pre_close_pos.position_amt
     _trace(f"position_check symbol={symbol} amt={position_amt}")
@@ -826,13 +895,20 @@ async def _close_with_reduce_only(
         f"submitted cid={close_cid} broker_order_id={close_result.broker_order_id} "
         f"status={close_status} reduce_only=true"
     )
-    close_was_filled = close_status == "FILLED"
-    if close_was_filled:
+    # Resolve the CLOSE fill (ROB-305 §4): submit-response NEW is not final.
+    # Prove FILLED via submit status or a bounded GET /fapi/v1/order poll
+    # before advancing the close row past `submitted`.
+    close_fill_proven = close_status == "FILLED"
+    if not close_fill_proven and close_status not in _TERMINAL_NONFILL_STATUSES:
+        close_fill_proven = await _poll_order_filled(
+            execution, symbol=symbol, client_order_id=close_cid
+        )
+    if close_fill_proven:
         await ledger.record_filled(client_order_id=close_cid, now=_now_utc())
         await session.commit()
         _trace(f"filled cid={close_cid}")
 
-    # Close out the open row before reconciliation.
+    # Close out the open row before reconciliation (open is `filled`).
     await ledger.record_closed(client_order_id=open_cid, now=_now_utc())
     await session.commit()
     _trace(f"closed cid={open_cid}")
@@ -844,7 +920,7 @@ async def _close_with_reduce_only(
         open_cid=open_cid,
         close_cid=close_cid,
         symbol=symbol,
-        close_was_filled=close_was_filled,
+        close_fill_proven=close_fill_proven,
     )
 
 
@@ -856,11 +932,16 @@ async def _reconcile(
     open_cid: str,
     close_cid: str | None,
     symbol: str,
-    close_was_filled: bool | None,
+    close_fill_proven: bool | None,
 ) -> int:
     """Reconciliation gate: open_orders empty AND position flat.
 
     Returns 0 on clean reconcile, 2 on drift / anomaly.
+
+    ROB-305 §4: even when the account is flat with zero open orders, a clean
+    success (exit 0) requires the close fill to have been proven. If it could
+    not be (``close_fill_proven`` is falsey), the close row is recorded as a
+    safe anomaly and the run returns 2 — never a silent fake success.
     """
     try:
         open_orders = await execution.get_open_orders(symbol=symbol)
@@ -917,14 +998,47 @@ async def _reconcile(
         return 2
 
     await ledger.record_reconciled(client_order_id=open_cid, now=_now_utc())
-    if close_cid is not None and close_was_filled:
+    await session.commit()
+    _trace(f"reconciled cid={open_cid}")
+
+    if close_cid is not None and not close_fill_proven:
+        # Account is flat with zero open orders, but the close order was never
+        # observed FILLED. Record a safe anomaly with evidence (ROB-305 §4) and
+        # fail-closed — do NOT report this run as a clean success.
+        await ledger.record_anomaly(
+            client_order_id=close_cid,
+            reason=(
+                "close_fill_unproven_after_flat_reconcile: position flat and "
+                "open orders 0, but close order never observed FILLED"
+            ),
+            now=_now_utc(),
+        )
+        await session.commit()
+        _trace(
+            f"anomaly cid={close_cid} reason=close_fill_unproven_after_flat_reconcile"
+        )
+        _evidence(
+            {
+                "event": "futures_demo_confirm_close_fill_unproven",
+                "open_client_order_id": open_cid,
+                "close_client_order_id": close_cid,
+                "symbol": symbol,
+            }
+        )
+        logger.error(
+            "close fill could not be proven though account is flat with 0 open "
+            "orders — recorded anomaly (cid=%s); operator verification required.",
+            close_cid,
+        )
+        return 2
+
+    if close_cid is not None:
         try:
             await ledger.record_closed(client_order_id=close_cid, now=_now_utc())
             await ledger.record_reconciled(client_order_id=close_cid, now=_now_utc())
         except Exception as exc:  # noqa: BLE001
             logger.warning("close-row reconcile non-fatal: %s (cid=%s)", exc, close_cid)
     await session.commit()
-    _trace(f"reconciled cid={open_cid}")
     _evidence(
         {
             "event": "futures_demo_confirm_reconciled",
