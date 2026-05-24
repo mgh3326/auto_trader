@@ -85,6 +85,7 @@ class HermesContextPayload(BaseModel):
     freshness_summary: dict[str, Any] = Field(default_factory=dict)
     unavailable_sources: dict[str, Any] = Field(default_factory=dict)
     source_conflicts: dict[str, Any] = Field(default_factory=dict)
+    dimension_evidence: dict[str, Any] = Field(default_factory=dict)
     stage_inputs: list[HermesStageInput] = Field(default_factory=list)
     cited_snapshots: list[HermesCitedSnapshot] = Field(default_factory=list)
     constraints: HermesContextConstraints = Field(
