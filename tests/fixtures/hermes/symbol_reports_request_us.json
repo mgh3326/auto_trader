@@ -1,0 +1,54 @@
+{
+  "_comment": "ROB-309 — US narrow symbol-reports ingest payload (ROB-301 contract) pinned to market='us', account_scope='alpaca_paper'. Belongs to the SAME stage run as the US stage-artifacts. verdict is NOT a field — the service derives it. Symbols stay within AAPL/MSFT (stress-test ticker, not universe). {{...}} placeholders substituted by the round-trip smoke at runtime.",
+  "request_version": "hermes-symbol-reports.v1",
+  "run_envelope": {
+    "run_uuid": "{{run_uuid}}",
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "market": "us",
+    "market_session": "regular",
+    "account_scope": "alpaca_paper",
+    "policy_version": "intraday_action_report_v1",
+    "generator_version": "hermes-stage-artifacts.v1",
+    "hermes_run_id": "hermes-smoke-us-001"
+  },
+  "report_kind": "final_report_symbol",
+  "symbol_reports": [
+    {
+      "symbol": "AAPL",
+      "symbol_name": "Apple Inc.",
+      "data_available": true,
+      "decision_bucket": "new_buy_candidate",
+      "side": "buy",
+      "confidence": 58,
+      "summary": "Services upside surprise + megacap leadership support a fresh paper long.",
+      "rationale": "SPX breadth net-positive, AAPL services revenue above consensus. Advisory entry on pullback; alpaca_paper only.",
+      "buy_evidence": [
+        "AAPL services revenue above consensus",
+        "Megacap leadership intact"
+      ],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshot_uuids": [],
+      "source_stage_artifact_uuids": []
+    },
+    {
+      "symbol": "MSFT",
+      "symbol_name": "Microsoft Corp.",
+      "data_available": true,
+      "decision_bucket": "risk_watch",
+      "side": null,
+      "confidence": 41,
+      "summary": "Hold and watch; cloud guide reiterated but no fresh entry edge.",
+      "rationale": "No dominant catalyst; watch for cloud guidance next quarter before adding.",
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [
+        "Sector concentration: tech-megacap >60% NAV"
+      ],
+      "missing_data": [],
+      "cited_snapshot_uuids": [],
+      "source_stage_artifact_uuids": []
+    }
+  ]
+}

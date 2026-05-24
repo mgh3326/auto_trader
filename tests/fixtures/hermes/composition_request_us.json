@@ -1,5 +1,5 @@
 {
-  "_comment": "ROB-287 follow-up — US narrow smoke. Hermes-produced composition payload with market='us', account_scope='alpaca_paper'. metadata.investment_stage_run_uuid links to the matching stage run for §D4 auto-finalize. status MUST stay 'draft' for this smoke — published reports require operator review. {{...}} placeholders are substituted by the round-trip smoke at runtime. NOTE: ReportGenerationRequest (legacy snapshot-backed generator) does NOT support market='us'; this fixture exercises ONLY the Hermes-first contract path.",
+  "_comment": "ROB-287 follow-up + ROB-309 — US narrow smoke. Hermes-produced composition payload with market='us', account_scope='alpaca_paper'. metadata.investment_stage_run_uuid links to the matching stage run for §D4 auto-finalize. symbol_intermediate_report_uuids (ROB-301) + dimension_report_uuids (ROB-308) reference the per-symbol / per-dimension reports consumed; {{symbol_report_uuid}} / {{dimension_report_uuid}} placeholders are substituted from the symbol-reports / dimension-reports POST responses at runtime. One item carries decision_bucket='new_buy_candidate' + per-item citations (ROB-308 C5). status MUST stay 'draft' — published reports require operator review. {{...}} placeholders are substituted by the round-trip smoke at runtime. NOTE: ReportGenerationRequest (legacy snapshot-backed generator) does NOT support market='us'; this fixture exercises ONLY the Hermes-first contract path.",
   "composition": {
     "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
     "hermes_run_id": "hermes-smoke-us-001",
@@ -34,6 +34,19 @@
         "intent": "trend_recovery_review",
         "rationale": "Watch for partial trim if cloud guidance disappoints next quarter; advisory only, no broker mutation.",
         "apply_policy": "requires_user_approval"
+      },
+      {
+        "client_item_key": "smoke-us-action-aapl-buy-candidate-001",
+        "item_kind": "action",
+        "operation": "review",
+        "symbol": "AAPL",
+        "side": "buy",
+        "intent": "buy_review",
+        "rationale": "Fresh long candidate on services upside + megacap leadership; advisory only on alpaca_paper, requires user approval before any entry.",
+        "apply_policy": "requires_user_approval",
+        "decision_bucket": "new_buy_candidate",
+        "cited_symbol_report_uuid": "{{symbol_report_uuid}}",
+        "cited_dimension_report_uuids": ["{{dimension_report_uuid}}"]
       }
     ],
     "metadata": {
@@ -41,7 +54,9 @@
       "hermes_composition_version": "hermes-composition.v1",
       "hermes_run_id": "hermes-smoke-us-001"
     },
-    "cited_snapshot_uuids": []
+    "cited_snapshot_uuids": [],
+    "symbol_intermediate_report_uuids": ["{{symbol_report_uuid}}"],
+    "dimension_report_uuids": ["{{dimension_report_uuid}}"]
   },
   "kst_date": "2026-05-22",
   "market": "us",
