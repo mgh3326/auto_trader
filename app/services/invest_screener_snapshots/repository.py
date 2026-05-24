@@ -143,13 +143,23 @@ class InvestScreenerSnapshotsRepository:
     async def breadth(self, *, market: str) -> Breadth:
         latest = await self.latest_partition(market=market)
         if latest is None:
-            return Breadth(market=market, partition_date=None, total=0,
-                           advancers=0, decliners=0, unchanged=0)
+            return Breadth(
+                market=market,
+                partition_date=None,
+                total=0,
+                advancers=0,
+                decliners=0,
+                unchanged=0,
+            )
         result = await self._session.execute(
             select(
                 func.count().label("total"),
-                func.count().filter(InvestScreenerSnapshot.change_rate > 0).label("adv"),
-                func.count().filter(InvestScreenerSnapshot.change_rate < 0).label("dec"),
+                func.count()
+                .filter(InvestScreenerSnapshot.change_rate > 0)
+                .label("adv"),
+                func.count()
+                .filter(InvestScreenerSnapshot.change_rate < 0)
+                .label("dec"),
             ).where(
                 InvestScreenerSnapshot.market == market,
                 InvestScreenerSnapshot.snapshot_date == latest,
@@ -157,5 +167,11 @@ class InvestScreenerSnapshotsRepository:
         )
         row = result.one()
         total, adv, dec = int(row.total or 0), int(row.adv or 0), int(row.dec or 0)
-        return Breadth(market=market, partition_date=latest, total=total,
-                       advancers=adv, decliners=dec, unchanged=total - adv - dec)
+        return Breadth(
+            market=market,
+            partition_date=latest,
+            total=total,
+            advancers=adv,
+            decliners=dec,
+            unchanged=total - adv - dec,
+        )

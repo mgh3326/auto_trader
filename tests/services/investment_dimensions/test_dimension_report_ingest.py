@@ -4,11 +4,11 @@ import uuid
 import pytest
 
 from app.models.investment_stages import InvestmentStageRun
+from app.schemas.hermes_composition import HermesStageRunEnvelope
 from app.schemas.investment_dimension_reports import (
     HermesDimensionReport,
     HermesDimensionReportsIngestRequest,
 )
-from app.schemas.hermes_composition import HermesStageRunEnvelope
 from app.services.investment_dimensions.dimension_report_ingest import (
     DimensionReportIngestService,
 )
@@ -41,9 +41,13 @@ def _request(run, *, confidence, freshness_status):
         ),
         dimension_reports=[
             HermesDimensionReport(
-                dimension="market", market="us", report_text="미국 시장 개요",
-                stance="bullish", confidence=confidence,
-                key_findings=["상승 우위 60%"], signals={"breadth": "60% adv"},
+                dimension="market",
+                market="us",
+                report_text="미국 시장 개요",
+                stance="bullish",
+                confidence=confidence,
+                key_findings=["상승 우위 60%"],
+                signals={"breadth": "60% adv"},
                 freshness_summary={"status": freshness_status},
             )
         ],
@@ -75,7 +79,10 @@ async def test_ingest_is_idempotent(db_session):
     r2 = await svc.ingest_from_hermes(req)
     await db_session.commit()
     assert r2.results[0].idempotent_existing is True
-    assert r1.results[0].report.dimension_report_uuid == r2.results[0].report.dimension_report_uuid
+    assert (
+        r1.results[0].report.dimension_report_uuid
+        == r2.results[0].report.dimension_report_uuid
+    )
 
 
 @pytest.mark.asyncio

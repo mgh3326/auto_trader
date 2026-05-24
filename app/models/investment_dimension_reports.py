@@ -79,7 +79,9 @@ class InvestmentDimensionReport(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     dimension_report_uuid: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False, unique=True,
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        unique=True,
         server_default=text("gen_random_uuid()"),
     )
     run_uuid: Mapped[uuid.UUID] = mapped_column(
@@ -105,10 +107,13 @@ class InvestmentDimensionReport(Base):
     stance: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     missing_data: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
-    freshness_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    freshness_summary: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     cited_snapshot_uuids: Mapped[list[uuid.UUID]] = mapped_column(
-        ARRAY(PG_UUID(as_uuid=True)), nullable=False,
+        ARRAY(PG_UUID(as_uuid=True)),
+        nullable=False,
         server_default=text("ARRAY[]::uuid[]"),
     )
     idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
@@ -116,6 +121,8 @@ class InvestmentDimensionReport(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        server_default=func.now(), onupdate=func.now(),
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

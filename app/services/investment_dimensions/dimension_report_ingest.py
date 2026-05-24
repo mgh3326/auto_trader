@@ -15,8 +15,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.investment_stages import InvestmentStageRun
 from app.models.investment_dimension_reports import InvestmentDimensionReport
+from app.models.investment_stages import InvestmentStageRun
 from app.schemas.investment_dimension_reports import (
     HermesDimensionReport,
     HermesDimensionReportsIngestRequest,
@@ -62,7 +62,9 @@ def cap_confidence(payload: HermesDimensionReport) -> int | None:
     return min(payload.confidence, cap)
 
 
-def content_hash(payload: HermesDimensionReport, *, capped_confidence: int | None) -> str:
+def content_hash(
+    payload: HermesDimensionReport, *, capped_confidence: int | None
+) -> str:
     canonical: dict[str, Any] = {
         "dimension": payload.dimension,
         "market": payload.market,
@@ -134,8 +136,10 @@ class DimensionReportIngestService:
             return existing, True
 
         version = await self._reports.next_version(
-            run_uuid=run.run_uuid, dimension=payload.dimension,
-            market=payload.market, symbol=payload.symbol,
+            run_uuid=run.run_uuid,
+            dimension=payload.dimension,
+            market=payload.market,
+            symbol=payload.symbol,
         )
         report = await self._reports.persist(
             run_uuid=run.run_uuid,

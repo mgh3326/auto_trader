@@ -18,12 +18,26 @@ async def test_build_market_evidence_bundle(db_session):
         text("DELETE FROM invest_screener_snapshots WHERE market = 'us'")
     )
     repo = InvestScreenerSnapshotsRepository(db_session)
-    base = dict(market="us", snapshot_date=dt.date(2026, 5, 23), source="yahoo")
-    await repo.upsert(SnapshotUpsert(symbol="AAA", latest_close=Decimal("10"),
-                                     change_rate=Decimal("5.0"), closes_window=[10],
-                                     consecutive_up_days=3, **base))
-    await repo.upsert(SnapshotUpsert(symbol="BBB", latest_close=Decimal("10"),
-                                     change_rate=Decimal("-2.0"), closes_window=[10], **base))
+    base = {"market": "us", "snapshot_date": dt.date(2026, 5, 23), "source": "yahoo"}
+    await repo.upsert(
+        SnapshotUpsert(
+            symbol="AAA",
+            latest_close=Decimal("10"),
+            change_rate=Decimal("5.0"),
+            closes_window=[10],
+            consecutive_up_days=3,
+            **base,
+        )
+    )
+    await repo.upsert(
+        SnapshotUpsert(
+            symbol="BBB",
+            latest_close=Decimal("10"),
+            change_rate=Decimal("-2.0"),
+            closes_window=[10],
+            **base,
+        )
+    )
     await db_session.commit()
 
     bundle = await build_market_evidence(repo, market="us", held={"AAA"})

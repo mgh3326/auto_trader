@@ -14,8 +14,12 @@ def test_dimension_report_rejects_unknown_dimension():
 
 def test_dimension_report_accepts_market_wide_null_symbol():
     r = HermesDimensionReport(
-        dimension="market", report_text="시장 개요", stance="bullish",
-        confidence=70, key_findings=["상승 우위"], signals={"breadth": "60% adv"},
+        dimension="market",
+        report_text="시장 개요",
+        stance="bullish",
+        confidence=70,
+        key_findings=["상승 우위"],
+        signals={"breadth": "60% adv"},
     )
     assert r.symbol is None and r.stance == "bullish"
 
