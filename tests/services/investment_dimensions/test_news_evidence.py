@@ -1,0 +1,90 @@
+import datetime as dt
+
+import pytest
+
+from app.models.research_reports import ResearchReport
+from app.services.research_reports.query_service import ResearchReportsQueryService
+from app.services.investment_dimensions.news_evidence import build_news_evidence
+
+
+async def _clear(db_session):
+    from sqlalchemy import text
+    await db_session.execute(text("DELETE FROM research_reports"))
+    await db_session.commit()
+
+
+def _report(dedup_key, *, published_at, title, symbols):
+    return ResearchReport(
+        dedup_key=dedup_key,
+        report_type="research-reports.v1",
+        source="naver_research",
+        title=title,
+        analyst="홍길동",
+        summary_text="요약",
+        detail_excerpt="발췌",
+        published_at=published_at,
+        published_at_text=published_at.isoformat(),
+        symbol_candidates=[
+            {"symbol": s, "market": "kr", "source": "naver_research"} for s in symbols
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_news_evidence_fresh(db_session):
+    await _clear(db_session)
+    now = dt.datetime(2026, 5, 24, 12, 0, tzinfo=dt.UTC)
+    db_session.add(
+        _report(
+            "k1",
+            published_at=now - dt.timedelta(hours=2),
+            title="삼성전자 목표가 상향",
+            symbols=["005930"],
+        )
+    )
+    await db_session.commit()
+
+    bundle = await build_news_evidence(
+        ResearchReportsQueryService(db_session), market="kr", now=now
+    )
+    assert bundle["market"] == "kr"
+    assert bundle["count"] == 1
+    assert bundle["citations"][0]["title"] == "삼성전자 목표가 상향"
+    assert bundle["citations"][0]["symbol_candidates"][0]["symbol"] == "005930"
+    assert bundle["freshness"]["status"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_build_news_evidence_stale_when_old(db_session):
+    await _clear(db_session)
+    now = dt.datetime(2026, 5, 24, 12, 0, tzinfo=dt.UTC)
+    db_session.add(
+        _report(
+            "k_old",
+            published_at=now - dt.timedelta(days=5),
+            title="오래된 리포트",
+            symbols=["000660"],
+        )
+    )
+    await db_session.commit()
+    bundle = await build_news_evidence(
+        ResearchReportsQueryService(db_session),
+        market="kr",
+        lookback_hours=24,
+        now=now,
+    )
+    assert bundle["count"] == 1
+    assert bundle["freshness"]["status"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_build_news_evidence_empty_is_unavailable(db_session):
+    await _clear(db_session)
+    bundle = await build_news_evidence(
+        ResearchReportsQueryService(db_session),
+        market="us",
+        now=dt.datetime(2026, 5, 24, tzinfo=dt.UTC),
+    )
+    assert bundle["count"] == 0
+    assert bundle["citations"] == []
+    assert bundle["freshness"]["status"] == "unavailable"
