@@ -149,6 +149,20 @@ class BinanceDemoLedgerRepository:
             )
         )
 
+    async def list_held_bracketed(self) -> list[tuple[str, str]]:
+        """``(client_order_id, product)`` for rows currently ``filled``.
+
+        A ``filled`` Demo lifecycle that was not closed in-run is a held
+        bracketed position (``execute_bracket`` leaves the parent at
+        ``filled`` with exits resting). The scheduler reconciles these.
+        """
+        stmt = select(
+            BinanceDemoOrderLedger.client_order_id,
+            BinanceDemoOrderLedger.product,
+        ).where(BinanceDemoOrderLedger.lifecycle_state == "filled")
+        result = await self._session.execute(stmt)
+        return [(row[0], row[1]) for row in result.all()]
+
     async def closed_rows_since(
         self, *, since: dt.datetime
     ) -> list[BinanceDemoOrderLedger]:
