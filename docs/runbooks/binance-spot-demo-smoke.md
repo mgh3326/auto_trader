@@ -54,10 +54,27 @@ Hard invariants enforced at the transport / signer layer:
 | Variable | Required when opted in? | Default | Notes |
 |---|---|---|---|
 | `BINANCE_SPOT_DEMO_ENABLED` | Yes (must be `true`) | unset → disabled | Master kill-switch. Default is fail-closed. |
-| `BINANCE_SPOT_DEMO_API_KEY` | Yes (for signed modes) | — | API key from your Spot Demo account. Never logged. |
-| `BINANCE_SPOT_DEMO_API_SECRET` | Yes (for signed modes) | — | API secret. Never logged. |
+| `BINANCE_DEMO_API_KEY` | Yes¹ (for signed modes) | — | Canonical shared Demo key. Used by Spot AND Futures. Never logged. |
+| `BINANCE_DEMO_API_SECRET` | Yes¹ (for signed modes) | — | Canonical shared Demo secret. Never logged. |
+| `BINANCE_SPOT_DEMO_API_KEY` | No (override) | — | Optional Spot-only override; wins over canonical when set. |
+| `BINANCE_SPOT_DEMO_API_SECRET` | No (override) | — | Optional Spot-only override. |
 | `BINANCE_SPOT_DEMO_BASE_URL` | No | `https://demo-api.binance.com` | Validated against `SPOT_DEMO_HOSTS` at factory init; a non-demo host raises `BinanceSpotDemoCrossAllowlistViolation`. |
 | `BINANCE_SPOT_DEMO_MAX_NOTIONAL_USDT` | No | `10` | Per-order notional cap. Hard enforced in sizing; you cannot override this above the env value at the CLI for `--confirm`. |
+
+¹ Credential resolution (ROB-302): set EITHER the canonical
+`BINANCE_DEMO_API_KEY`/`BINANCE_DEMO_API_SECRET` pair (shared by both Demo
+lanes — set once, no duplication) OR the Spot-specific override pair. The
+override wins when present. A half-set pair (key without secret, or vice versa)
+fails closed — it is never completed from the canonical pair (prevents pairing a
+Spot key with a canonical secret).
+
+Resolution order for the Spot lane:
+`BINANCE_SPOT_DEMO_API_*` → `BINANCE_DEMO_API_*` → `BinanceSpotDemoMissingCredentials`.
+
+Isolation: a Futures-specific override (`BINANCE_FUTURES_DEMO_API_*`) never
+resolves for Spot — crossing happens only through the canonical pair. The legacy
+Spot-prefixed names are a `legacy_spot_demo_alias`, not a Spot-only credential or
+a Futures fallback.
 
 `env.example` carries these already (`BINANCE_SPOT_DEMO_*` block).
 `BINANCE_TESTNET_*` are intentionally absent — they are inert.
