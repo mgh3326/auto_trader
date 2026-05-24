@@ -205,3 +205,32 @@ async def test_previous_context_with_prior_reports(session: AsyncSession) -> Non
     )
     prior_uuids = {r.report_uuid for r in response.prior_reports}
     assert prior_uuids == {r1.report_uuid, r2.report_uuid}
+
+
+@pytest.mark.asyncio
+async def test_get_bundle_groups_items(session: AsyncSession) -> None:
+    ingest = InvestmentReportIngestionService(session)
+    req = _request(kst_date="2026-05-18")
+    # Add custom items
+    item1 = _action_item(client_item_key="item-1")
+    item1.decision_bucket = "new_buy_candidate"
+    item2 = _action_item(client_item_key="item-2")
+    item2.decision_bucket = "open_action"
+    # Clear out default items and set our custom items
+    req.items = [item1, item2]
+
+    report = await ingest.ingest(req)
+    await session.commit()
+
+    service = InvestmentReportQueryService(session)
+    bundle = await get_investment_report(
+        report_uuid=report.report_uuid, _user=_USER, service=service
+    )
+
+    assert "new_buy_candidate" in bundle.item_groups
+    assert "open_action" in bundle.item_groups
+    assert len(bundle.item_groups["new_buy_candidate"]) == 1
+    assert len(bundle.item_groups["open_action"]) == 1
+
+    assert len(bundle.decision_rollup["new_candidate"]) == 1
+    assert len(bundle.decision_rollup["held_action"]) == 1

@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    ARRAY,
     TIMESTAMP,
     BigInteger,
     CheckConstraint,
@@ -260,6 +261,12 @@ class InvestmentReportItem(Base):
             "OR valid_until IS NOT NULL",
             name="ck_investment_report_items_watch_has_expiry",
         ),
+        CheckConstraint(
+            "decision_bucket IS NULL OR decision_bucket IN "
+            "('new_buy_candidate','open_action','completed_or_existing',"
+            "'deferred_no_action','risk_watch')",
+            name="ck_investment_report_items_decision_bucket",
+        ),
         Index(
             "ix_investment_report_items_report",
             "report_id",
@@ -339,6 +346,17 @@ class InvestmentReportItem(Base):
     proposed_state: Mapped[dict | None] = mapped_column(JSONB)
     diff: Mapped[list | None] = mapped_column(JSONB)
     apply_policy: Mapped[str | None] = mapped_column(Text)
+
+    # ROB-308 — final-item classification + citations.
+    decision_bucket: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cited_symbol_report_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    cited_dimension_report_uuids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)),
+        nullable=False,
+        server_default=text("ARRAY[]::uuid[]"),
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False

@@ -59,6 +59,20 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         decisions_by_item_uuid[str(item.item_uuid)] = [
             InvestmentReportItemDecisionResponse.model_validate(d) for d in rows
         ]
+
+    _HELD_BUCKETS = {"open_action", "risk_watch", "completed_or_existing"}
+    item_groups: dict[str, list[InvestmentReportItemResponse]] = {}
+    for it in item_responses:
+        item_groups.setdefault(it.decision_bucket or "unclassified", []).append(it)
+    rollup = {
+        "new_candidate": [
+            i for i in item_responses if i.decision_bucket == "new_buy_candidate"
+        ],
+        "held_action": [
+            i for i in item_responses if i.decision_bucket in _HELD_BUCKETS
+        ],
+    }
+
     return InvestmentReportBundle(
         report=InvestmentReportResponse.model_validate(bundle["report"]),
         items=item_responses,
@@ -69,6 +83,8 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         events=[
             InvestmentWatchEventResponse.model_validate(e) for e in bundle["events"]
         ],
+        item_groups=item_groups,
+        decision_rollup=rollup,
     )
 
 

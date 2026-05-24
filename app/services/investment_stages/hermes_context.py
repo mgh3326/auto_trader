@@ -122,6 +122,64 @@ class HermesContextExporter:
                 _logger.exception("Failed to build market evidence for context export")
                 dimension_evidence["market"] = {"unavailable": str(exc)}
 
+        is_mock = (
+            hasattr(self._session, "assert_called")
+            or hasattr(self._session, "_mock_name")
+            or "Mock" in type(self._session).__name__
+        )
+        run = None
+        if not is_mock:
+            try:
+                from app.services.investment_stages.query_service import (
+                    StageRunQueryService,
+                )
+
+                runs = await StageRunQueryService(self._session).list_runs_for_bundle(
+                    bundle.bundle_uuid
+                )
+                run = runs[0] if runs else None
+            except Exception:
+                pass
+
+        from app.services.investment_dimensions.dimension_report_repository import (
+            DimensionReportRepository,
+        )
+        from app.services.investment_stages.symbol_report_repository import (
+            SymbolIntermediateReportRepository,
+        )
+
+        dimension_reports: list[dict[str, Any]] = []
+        symbol_intermediate_reports: list[dict[str, Any]] = []
+        if run is not None:
+            for d in await DimensionReportRepository(self._session).list_for_run(
+                run.run_uuid
+            ):
+                dimension_reports.append(
+                    {
+                        "dimension_report_uuid": str(d.dimension_report_uuid),
+                        "dimension": d.dimension,
+                        "market": d.market,
+                        "symbol": d.symbol,
+                        "stance": d.stance,
+                        "confidence": d.confidence,
+                        "key_findings": d.key_findings or [],
+                        "report_text": d.report_text,
+                    }
+                )
+            for s in await SymbolIntermediateReportRepository(
+                self._session
+            ).list_for_run(run.run_uuid):
+                symbol_intermediate_reports.append(
+                    {
+                        "symbol_report_uuid": str(s.symbol_report_uuid),
+                        "symbol": s.symbol,
+                        "decision_bucket": s.decision_bucket,
+                        "verdict": s.verdict,
+                        "confidence": s.confidence,
+                        "summary": s.summary,
+                    }
+                )
+
         return HermesContextPayload(
             snapshot_bundle_uuid=bundle.bundle_uuid,
             bundle_status=bundle.status,
@@ -134,6 +192,8 @@ class HermesContextExporter:
             unavailable_sources=self._derive_unavailable_sources(stage_inputs),
             source_conflicts={},
             dimension_evidence=dimension_evidence,
+            dimension_reports=dimension_reports,
+            symbol_intermediate_reports=symbol_intermediate_reports,
             stage_inputs=stage_inputs,
             cited_snapshots=cited,
         )

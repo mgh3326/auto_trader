@@ -230,3 +230,50 @@ def test_report_snapshot_detail_response_includes_full_payload() -> None:
     )
     assert response.role == "required"
     assert response.payload_json == {"cash_krw": 1_000_000}
+
+
+def test_item_accepts_decision_bucket_and_citations():
+    su = uuid.uuid4()
+    du = uuid.uuid4()
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="action",
+        intent="buy_review",
+        rationale="r",
+        operation="review",
+        apply_policy="requires_user_approval",
+        symbol="AAA",
+        side="buy",
+        decision_bucket="new_buy_candidate",
+        cited_symbol_report_uuid=su,
+        cited_dimension_report_uuids=[du],
+    )
+    assert item.decision_bucket == "new_buy_candidate"
+    assert item.cited_symbol_report_uuid == su
+    assert item.cited_dimension_report_uuids == [du]
+
+
+def test_item_rejects_unknown_decision_bucket():
+    with pytest.raises(ValidationError):
+        IngestReportItem(
+            client_item_key="k1",
+            item_kind="action",
+            intent="buy_review",
+            rationale="r",
+            operation="review",
+            apply_policy="requires_user_approval",
+            decision_bucket="macro_call",
+        )
+
+
+def test_item_decision_bucket_optional():
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="action",
+        intent="buy_review",
+        rationale="r",
+        operation="review",
+        apply_policy="requires_user_approval",
+    )
+    assert item.decision_bucket is None
+    assert item.cited_dimension_report_uuids == []
