@@ -157,3 +157,21 @@ async def test_list_top_candidates_orders_by_change_rate_from_latest_partition(
     rows = await repo.list_top_candidates(market="kr", limit=10)
     syms = [r.symbol for r in rows if r.symbol in {"T_TOP_A", "T_TOP_B", "T_TOP_OLD"}]
     assert syms == ["T_TOP_B", "T_TOP_A"]  # latest partition only, change_rate desc
+
+
+@pytest.mark.asyncio
+async def test_breadth_counts_advancers_decliners_in_latest_partition(db_session):
+    repo = InvestScreenerSnapshotsRepository(db_session)
+    base = dict(market="us", snapshot_date=dt.date(2026, 5, 23), source="yahoo")
+    await repo.upsert(SnapshotUpsert(symbol="T_BR_UP1", latest_close=Decimal("10"),
+                                     change_rate=Decimal("2.0"), closes_window=[10], **base))
+    await repo.upsert(SnapshotUpsert(symbol="T_BR_UP2", latest_close=Decimal("10"),
+                                     change_rate=Decimal("0.5"), closes_window=[10], **base))
+    await repo.upsert(SnapshotUpsert(symbol="T_BR_DN1", latest_close=Decimal("10"),
+                                     change_rate=Decimal("-1.0"), closes_window=[10], **base))
+    await db_session.commit()
+
+    b = await repo.breadth(market="us")
+    assert b.advancers >= 2
+    assert b.decliners >= 1
+    assert b.total == b.advancers + b.decliners + b.unchanged
