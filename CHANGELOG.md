@@ -16,6 +16,17 @@
 
 ## Unreleased
 
+### Added (ROB-305 — Futures Demo `status=NEW` MARKET reconcile)
+- `BinanceFuturesDemoExecutionClient.get_order` — signed `GET /fapi/v1/order?symbol=&origClientOrderId=` single-order status query, plus a `FuturesDemoOrderStatusResult` DTO. This is the bounded fill-evidence source for §4 reconciliation.
+
+### Fixed (ROB-305 — Futures Demo `status=NEW` MARKET reconcile)
+- `scripts/binance_futures_demo_smoke.py` no longer treats a MARKET submit response of `status=NEW` as an immediate success/failure. A `submitted` ledger row is never advanced straight to `closed` (the locked state machine forbids `submitted → closed`); previously a `NEW` open response left the row in `submitted` and the unconditional `record_closed(open)` raised an illegal transition. Fill evidence is now proven — in order — via submit status, a **bounded** `GET /fapi/v1/order` poll (`_FILL_RECONCILE_MAX_POLLS`, no unbounded loop), then a non-flat `GET /fapi/v2/positionRisk` — before the row reaches `filled` and then `closed`/`reconciled`. Applies to both the open and reduceOnly close legs.
+- When the post-close account is flat with zero open orders but the close fill could not be proven, the close row is recorded as a **safe anomaly** and `--confirm` exits `2`. A benign final account state is never reported as a clean success without fill evidence.
+- The bounded fill poll tolerates a transient `GET /fapi/v1/order` error: demo-fapi returns `400` for an order it has just accepted but not yet indexed for lookup (the same order returns `200 FILLED` a moment later). The poll logs and keeps retrying within `_FILL_RECONCILE_MAX_POLLS` (still bounded, still fail-closed after exhaustion) instead of giving up on the first error — found and fixed via the live Demo smoke.
+
+### Documentation (ROB-305)
+- Spot Demo runbook now documents the canonical shared `BINANCE_DEMO_API_KEY` / `BINANCE_DEMO_API_SECRET` pair (matching the Futures runbook and the ROB-302 resolver); the legacy `BINANCE_SPOT_DEMO_API_*` names are described as a transitional alias, not a Spot-only credential or a Futures fallback. Both Demo runbooks and `CLAUDE.md` document the §4 `NEW`-reconcile lifecycle.
+
 ### Fixed (ROB-303 — Futures Demo confirm reconcile: v2 positionRisk)
 - `BinanceFuturesDemoExecutionClient.get_position` now calls `GET /fapi/v2/positionRisk` instead of `/fapi/v1/positionRisk`. `demo-fapi.binance.com` rejects the v1 path with `404 {"code": -5000, "msg": "Path /fapi/v1/positionRisk, Method GET is invalid"}`, which aborted `--confirm` after a real Demo position had been opened — leaving the ledger row in `anomaly`. v2 returns the same `positionAmt` / `entryPrice` / `leverage` list shape, so parsing is unchanged. Constant, docstrings, and the position DTO doc are updated to match; the smoke runbook already documented v2.
 

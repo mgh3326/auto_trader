@@ -56,6 +56,7 @@ from app.services.brokers.binance.futures_demo.dto import (
     FuturesDemoLeverageResult,
     FuturesDemoOpenOrder,
     FuturesDemoOpenOrdersResult,
+    FuturesDemoOrderStatusResult,
     FuturesDemoOrderSubmitResult,
     FuturesDemoOrderTestResult,
     FuturesDemoPositionModeResult,
@@ -525,6 +526,50 @@ class BinanceFuturesDemoExecutionClient:
             for entry in body
         ]
         return FuturesDemoOpenOrdersResult(orders=orders)
+
+    async def get_order(
+        self,
+        *,
+        symbol: str,
+        client_order_id: str,
+    ) -> FuturesDemoOrderStatusResult:
+        """Query a single order's status by ``client_order_id`` (read-side).
+
+        Signed ``GET /fapi/v1/order?symbol=&origClientOrderId=``. ROB-305 §4
+        uses this to reconcile a submit response of ``status=NEW``: the smoke
+        polls this endpoint (bounded) to learn whether the order actually
+        ``FILLED`` before advancing the ledger past ``submitted``. Surfaces
+        the broker status verbatim — no interpretation happens here.
+
+        Boundary validation: empty ``symbol`` or ``client_order_id`` is a
+        caller bug, rejected as ``ValueError`` before any signing/HTTP.
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("symbol must be non-empty")
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must be non-empty")
+        params = {
+            "symbol": symbol,
+            "origClientOrderId": client_order_id,
+            "recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS),
+        }
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.get(_ORDER_PATH, params=signed)
+        resp.raise_for_status()
+        body = resp.json()
+        return FuturesDemoOrderStatusResult(
+            client_order_id=str(body.get("clientOrderId", client_order_id)),
+            broker_order_id=str(body.get("orderId", "")),
+            symbol=str(body.get("symbol", symbol)),
+            side=str(body.get("side", "")),
+            order_type=str(body.get("type", "")),
+            status=str(body.get("status", "UNKNOWN")),
+            orig_qty=Decimal(str(body.get("origQty", "0"))),
+            executed_qty=Decimal(str(body.get("executedQty", "0"))),
+            avg_price=Decimal(str(body.get("avgPrice", "0"))),
+            reduce_only=bool(body.get("reduceOnly", False)),
+            raw_response_redacted=_redact(body),
+        )
 
     async def get_position(self, *, symbol: str) -> FuturesDemoPositionResult:
         """Query the current position for ``symbol`` from /fapi/v2/positionRisk.
