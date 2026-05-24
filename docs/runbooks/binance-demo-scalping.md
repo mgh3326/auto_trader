@@ -222,9 +222,55 @@ DB:
 4. Capture redacted evidence (order ids, leg statuses, final flat /
    open-orders-0).
 
-## Not in PR3 (later phases)
+## Scheduler scaffold (PR4) — default-OFF, no activation
 
-- Scheduler scaffold + kill switch (PR4) — TaskIQ default-OFF that drives
-  `execute_bracket` on a signal and `reconcile_bracket` on held positions
-  each tick; any Prefect deployment lives in `robin-prefect-automations`
-  and activation is a separate operator gate.
+PR4 adds the scheduler **scaffold**: one tick reconciles held bracketed
+positions then runs the signal per allowlisted symbol and places brackets
+on entries. It is **registered with no schedule** (a manual entry point
+only) and **default-OFF** behind a two-key flag gate.
+
+| Surface | Added |
+|---|---|
+| `app/services/.../demo_scalping_exec/scheduler.py` | `run_scalping_tick` — reconcile held + signal-driven bracket entries; `enabled=False` kill switch; per-item error collection (failure-only) |
+| `app/jobs/binance_demo_scalping_runner.py` | `run_demo_scalping_tick` — env-wired, two-key gate |
+| `app/tasks/binance_demo_scalping_tasks.py` | `@broker.task("binance.demo_scalping.tick")` — **no `schedule=`** |
+| ledger service | `list_held_bracketed` (rows in `filled` = held) |
+
+### Flags (all default-OFF)
+
+| Env var | Effect |
+|---|---|
+| `BINANCE_DEMO_SCALPING_ENABLED` | shared feature gate |
+| `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED` | scheduler **kill switch** |
+| `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM` | second key — without it the tick runs signals + risk re-checks but every `execute_bracket` is a **dry-run** (zero broker mutation) |
+
+Both `*_ENABLED` flags must be truthy or the tick builds zero clients,
+touches no DB, and returns `{"status": "disabled"}`. **The kill switch is:
+unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`** (or set it false) — the
+next tick is an immediate no-op.
+
+### Manual invocation (no schedule registered)
+
+```bash
+# Dry-run tick (signals + risk, zero orders): scheduler on, confirm off
+BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED=true \
+  uv run taskiq kick app.core.taskiq_broker:broker binance.demo_scalping.tick
+
+# Real tick (places brackets): add the second key + product gates + creds,
+# and run against a CLEAN demo ledger DB
+BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED=true \
+BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM=true \
+BINANCE_SPOT_DEMO_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
+  uv run taskiq kick app.core.taskiq_broker:broker binance.demo_scalping.tick
+```
+
+### Activation — separate operator gate
+
+No recurring schedule is registered by this repo. Production recurrence
+(`paused=false`) is an operations decision: TaskIQ cron or a Prefect
+deployment in `robin-prefect-automations`. **Do not activate** without
+the §"Hard safety boundaries" gates satisfied + explicit operator
+approval. Failure-only alerting wires onto the tick's error log
+(`logger.error` / the `TickSummary.errors` list); a clean tick is quiet.
+Rollback = unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED` (kill switch)
+and pause/disable the schedule in the ops repo.

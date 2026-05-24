@@ -71,6 +71,13 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # binance_testnet_order_ledger.py file was deleted in ROB-298.
         "app/models/binance_demo_order_ledger.py",
         "app/models/__init__.py",
+        # ROB-307 PR4 — Demo scalping scheduler orchestration. These
+        # *orchestrate* the in-package Demo adapters (executor/clients) and
+        # perform no signed HTTP themselves (the HMAC chokepoints stay inside
+        # spot_demo/ + futures_demo/). They reference "Binance" only via
+        # imports + the BINANCE_DEMO_SCALPING_* env-flag names.
+        "app/jobs/binance_demo_scalping_runner.py",
+        "app/tasks/binance_demo_scalping_tasks.py",
     }
 )
 
