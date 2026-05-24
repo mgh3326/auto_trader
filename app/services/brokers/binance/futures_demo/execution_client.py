@@ -89,6 +89,10 @@ _LEVERAGE_PATH: Final[str] = "/fapi/v1/leverage"
 
 ALLOWED_SIDES: Final[frozenset[str]] = frozenset({"BUY", "SELL"})
 ALLOWED_ORDER_TYPES: Final[frozenset[str]] = frozenset({"LIMIT", "MARKET"})
+# ROB-307 PR3 — broker-side bracket exit legs (always reduceOnly).
+TRIGGER_ORDER_TYPES: Final[frozenset[str]] = frozenset(
+    {"STOP_MARKET", "TAKE_PROFIT_MARKET"}
+)
 
 
 def _truthy(value: str | None) -> bool:
@@ -411,6 +415,75 @@ class BinanceFuturesDemoExecutionClient:
             avg_price=Decimal(str(body.get("avgPrice", "0"))),
             status=str(body.get("status", "UNKNOWN")),
             reduce_only=bool(body.get("reduceOnly", reduce_only)),
+            raw_response_redacted=_redact(body),
+        )
+
+    async def submit_reduce_only_trigger(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        order_type: str,
+        qty: Decimal,
+        stop_price: Decimal,
+        client_order_id: str | None = None,
+        confirm: bool = False,
+    ) -> FuturesDemoOrderSubmitResult | FuturesDemoDryRunResult:
+        """Operator-gated reduceOnly trigger exit (STOP_MARKET / TAKE_PROFIT_MARKET).
+
+        A broker-side bracket exit leg: MARKET-triggered at ``stop_price``
+        and **always** ``reduceOnly=true`` (these only ever close a
+        position, never open one). Dry-run with zero HTTP unless
+        ``confirm=True``; ``confirm=True`` signs the params via the HMAC
+        chokepoint and POSTs to ``demo-fapi.binance.com/fapi/v1/order``.
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("symbol must be non-empty")
+        if side not in ALLOWED_SIDES:
+            raise ValueError(f"side {side!r} not in {sorted(ALLOWED_SIDES)}")
+        if order_type not in TRIGGER_ORDER_TYPES:
+            raise ValueError(
+                f"order_type {order_type!r} not in {sorted(TRIGGER_ORDER_TYPES)}"
+            )
+        if qty <= 0:
+            raise ValueError(f"qty must be > 0, got {qty}")
+        if stop_price <= 0:
+            raise ValueError(f"stop_price must be > 0, got {stop_price}")
+        cid = client_order_id or self._new_client_order_id()
+        if not confirm:
+            return FuturesDemoDryRunResult(
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                qty=qty,
+                client_order_id=cid,
+                reduce_only=True,
+            )
+        params: dict[str, str] = {
+            "symbol": symbol,
+            "side": side,
+            "type": order_type,
+            "quantity": format(qty, "f"),
+            "stopPrice": format(stop_price, "f"),
+            "reduceOnly": "true",
+            "recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS),
+            "newClientOrderId": cid,
+        }
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.post(_ORDER_PATH, params=signed)
+        resp.raise_for_status()
+        body = resp.json()
+        return FuturesDemoOrderSubmitResult(
+            client_order_id=str(body.get("clientOrderId", cid)),
+            broker_order_id=str(body.get("orderId", "")),
+            symbol=str(body.get("symbol", symbol)),
+            side=str(body.get("side", side)),
+            order_type=str(body.get("type", order_type)),
+            qty=Decimal(str(body.get("origQty", qty))),
+            executed_qty=Decimal(str(body.get("executedQty", "0"))),
+            avg_price=Decimal(str(body.get("avgPrice", "0"))),
+            status=str(body.get("status", "UNKNOWN")),
+            reduce_only=bool(body.get("reduceOnly", True)),
             raw_response_redacted=_redact(body),
         )
 
