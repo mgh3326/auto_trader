@@ -178,6 +178,239 @@ async def test_monitored_take_profit_writes_correct_analytics_row(db_session) ->
     assert row.exit_reason == "take_profit"
 
 
+class _FakeFuturesOpenPollFill:
+    """Open submit returns NEW/avg=0; the open ``get_order`` poll proves the
+    fill at ``filled_px``. Close reduceOnly fills immediately at ``close_px``.
+    Exercises the ROB-315 0b fix: the recorded entry price must come from the
+    fill-proven poll, never the reference price."""
+
+    def __init__(self, filled_px, close_px):
+        self.filled_px = Decimal(str(filled_px))
+        self.close_px = Decimal(str(close_px))
+        self._amt = Decimal("0")
+
+    async def get_position_mode(self):
+        return type("M", (), {"is_hedge_mode": False})()
+
+    async def set_leverage(self, *, symbol, leverage):
+        return type("L", (), {"leverage": 1})()
+
+    async def submit_order(
+        self,
+        *,
+        symbol,
+        side,
+        order_type,
+        qty,
+        client_order_id=None,
+        price=None,
+        time_in_force=None,
+        reduce_only=False,
+        confirm=False,
+    ):
+        if reduce_only:
+            self._amt = Decimal("0")
+            return _Sub("FILLED", client_order_id, self.close_px, qty)
+        self._amt = qty if side == "BUY" else -qty
+        return _Sub("NEW", client_order_id, Decimal("0"), Decimal("0"))
+
+    async def get_order(self, *, symbol, client_order_id):
+        return _Sub("FILLED", client_order_id, self.filled_px, Decimal("0.1"))
+
+    async def get_position(self, *, symbol):
+        return _Pos(self._amt)
+
+    async def get_open_orders(self, *, symbol):
+        return _OO([])
+
+
+class _FakeFuturesClosePollFill:
+    """Open fills immediately at ``open_px``; the close reduceOnly submit
+    returns NEW and is proven FILLED at ``close_px`` only by the close
+    ``get_order`` poll. The recorded exit price must come from that poll."""
+
+    def __init__(self, open_px, close_px):
+        self.open_px = Decimal(str(open_px))
+        self.close_px = Decimal(str(close_px))
+        self._amt = Decimal("0")
+
+    async def get_position_mode(self):
+        return type("M", (), {"is_hedge_mode": False})()
+
+    async def set_leverage(self, *, symbol, leverage):
+        return type("L", (), {"leverage": 1})()
+
+    async def submit_order(
+        self,
+        *,
+        symbol,
+        side,
+        order_type,
+        qty,
+        client_order_id=None,
+        price=None,
+        time_in_force=None,
+        reduce_only=False,
+        confirm=False,
+    ):
+        if reduce_only:
+            self._amt = Decimal("0")
+            return _Sub("NEW", client_order_id, Decimal("0"), Decimal("0"))
+        self._amt = qty if side == "BUY" else -qty
+        return _Sub("FILLED", client_order_id, self.open_px, qty)
+
+    async def get_order(self, *, symbol, client_order_id):
+        return _Sub("FILLED", client_order_id, self.close_px, Decimal("0.1"))
+
+    async def get_position(self, *, symbol):
+        return _Pos(self._amt)
+
+    async def get_open_orders(self, *, symbol):
+        return _OO([])
+
+
+class _FakeFuturesOpenNoPrice:
+    """Open submit NEW/avg=0; ``get_order`` never proves FILLED (stays NEW),
+    so the fill is proven only by a non-flat positionRisk — which carries NO
+    usable fill price. The close fills at ``close_px``. ROB-315 0b: with no
+    derivable entry fill price, analytics must record a partial row (entry
+    price NULL, no economics), never fabricate it from the reference."""
+
+    def __init__(self, close_px):
+        self.close_px = Decimal(str(close_px))
+        self._amt = Decimal("0")
+
+    async def get_position_mode(self):
+        return type("M", (), {"is_hedge_mode": False})()
+
+    async def set_leverage(self, *, symbol, leverage):
+        return type("L", (), {"leverage": 1})()
+
+    async def submit_order(
+        self,
+        *,
+        symbol,
+        side,
+        order_type,
+        qty,
+        client_order_id=None,
+        price=None,
+        time_in_force=None,
+        reduce_only=False,
+        confirm=False,
+    ):
+        if reduce_only:
+            self._amt = Decimal("0")
+            return _Sub("FILLED", client_order_id, self.close_px, qty)
+        self._amt = qty if side == "BUY" else -qty
+        return _Sub("NEW", client_order_id, Decimal("0"), Decimal("0"))
+
+    async def get_order(self, *, symbol, client_order_id):
+        return _Sub("NEW", client_order_id, Decimal("0"), Decimal("0"))
+
+    async def get_position(self, *, symbol):
+        return _Pos(self._amt)
+
+    async def get_open_orders(self, *, symbol):
+        return _OO([])
+
+
+@pytest.mark.asyncio
+async def test_open_NEW_then_get_order_filled_uses_polled_entry_price(
+    db_session,
+) -> None:
+    """Submit NEW/avgPrice=0, later get_order FILLED/avgPrice>0 → entry price
+    is the polled fill (101), not the reference (100)."""
+    client = _FakeFuturesOpenPollFill(filled_px="101", close_px="101")
+    md = _MD([101.0, 101.4])  # 2nd poll crosses TP relative to ref=100
+    ex = DemoScalpingExecutor(
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("POLLENTRYUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
+    )
+    result = await ex.execute_monitored(
+        _intent("POLLENTRYUSDT"), confirm=True, max_poll_count=5
+    )
+    assert result.status == "reconciled"
+    row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
+        result.open_client_order_id
+    )
+    assert row is not None
+    assert row.entry_price == Decimal("101")  # polled fill, NOT ref price 100
+    # BUY adverse slippage vs reference 100: (101-100)/100 * 10_000 = 100 bps.
+    assert row.entry_slippage_bps == Decimal("100")
+
+
+@pytest.mark.asyncio
+async def test_close_NEW_then_get_order_filled_uses_polled_exit_price(
+    db_session,
+) -> None:
+    """Close submit NEW, proven FILLED only by the close get_order poll →
+    exit price + PnL use the polled close fill (100.5)."""
+    client = _FakeFuturesClosePollFill(open_px="100", close_px="100.5")
+    md = _MD([100.0, 100.4])  # cross TP so we close
+    ex = DemoScalpingExecutor(
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("POLLEXITUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
+    )
+    result = await ex.execute_monitored(
+        _intent("POLLEXITUSDT"), confirm=True, max_poll_count=5
+    )
+    assert result.status == "reconciled"
+    row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
+        result.open_client_order_id
+    )
+    assert row is not None
+    assert row.entry_price == Decimal("100")
+    assert row.exit_price == Decimal("100.5")  # polled close fill, not NULL
+    # gross = (100.5 - 100) * 0.1 = 0.05
+    assert row.gross_pnl_usdt == Decimal("0.05")
+
+
+@pytest.mark.asyncio
+async def test_open_proven_by_position_without_price_records_partial_row(
+    db_session,
+) -> None:
+    """Fill proven only by non-flat positionRisk (no order fill price) →
+    partial analytics row: entry price NULL, no fabricated economics from the
+    reference price."""
+    client = _FakeFuturesOpenNoPrice(close_px="100.4")
+    md = _MD([100.0, 100.4])
+    ex = DemoScalpingExecutor(
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("NOPRICEUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
+    )
+    result = await ex.execute_monitored(
+        _intent("NOPRICEUSDT"), confirm=True, max_poll_count=5
+    )
+    assert result.status == "reconciled"
+    row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
+        result.open_client_order_id
+    )
+    assert row is not None  # round-trip is recorded (audit trail)
+    assert row.entry_price is None  # NOT fabricated from reference price 100
+    assert row.entry_notional_usdt is None
+    assert row.gross_pnl_usdt is None
+    assert row.net_pnl_usdt is None
+
+
 @pytest.mark.asyncio
 async def test_dry_run_writes_no_analytics_row(db_session) -> None:
     client = _FakeFutures(open_px="100", close_px="100.40")

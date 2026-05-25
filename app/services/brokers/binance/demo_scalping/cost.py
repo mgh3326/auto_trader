@@ -63,14 +63,10 @@ def net_pnl_usdt(
     return gross - entry_fee_usdt - exit_fee_usdt
 
 
-def net_return_bps(
-    *, net_pnl_usdt: Decimal, entry_notional_usdt: Decimal
-) -> Decimal:
+def net_return_bps(*, net_pnl_usdt: Decimal, entry_notional_usdt: Decimal) -> Decimal:
     """Per-trade return in bps relative to the entry notional."""
     if entry_notional_usdt <= 0:
-        raise ValueError(
-            f"entry_notional_usdt must be > 0, got {entry_notional_usdt}"
-        )
+        raise ValueError(f"entry_notional_usdt must be > 0, got {entry_notional_usdt}")
     return net_pnl_usdt / entry_notional_usdt * _BPS
 
 

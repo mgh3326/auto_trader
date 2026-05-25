@@ -81,9 +81,7 @@ class TestFeeEstimateUsdt:
 
     def test_negative_rate_raises(self) -> None:
         with pytest.raises(ValueError):
-            fee_estimate_usdt(
-                notional_usdt=Decimal("2000"), fee_rate_bps=Decimal("-1")
-            )
+            fee_estimate_usdt(notional_usdt=Decimal("2000"), fee_rate_bps=Decimal("-1"))
 
 
 class TestNetPnlUsdt:

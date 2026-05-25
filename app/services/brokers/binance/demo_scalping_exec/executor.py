@@ -213,9 +213,16 @@ class DemoScalpingExecutor:
         session tag are deferred to a follow-up commit (all nullable)."""
         if result.open_client_order_id is None:
             return
-        entry_fill = self._open_fill_price or ref.price
-        entry_ref = intent.entry_reference_price or ref.price
+        # ROB-315 0b: the entry price must come from fill-proven evidence
+        # (the submit/get_order avg fill captured during the run). It is NEVER
+        # the reference price — a missing fill price means we cannot fabricate
+        # economics, so we record a partial row instead of a fake success.
+        entry_fill = self._open_fill_price
         try:
+            if entry_fill is None:
+                await self._record_partial_analytics(intent, qty, instrument_id, result)
+                return
+            entry_ref = intent.entry_reference_price or ref.price
             econ = build_round_trip_economics(
                 side=intent.side,
                 qty=qty,
@@ -254,6 +261,35 @@ class DemoScalpingExecutor:
                 intent.symbol,
             )
 
+    async def _record_partial_analytics(
+        self,
+        intent: OrderIntent,
+        qty: Decimal,
+        instrument_id: int,
+        result: ExecutionResult,
+    ) -> None:
+        """Record a round-trip with no derivable entry fill price: the fill is
+        proven (the run reached reconcile) but no avg price evidence exists, so
+        entry price / economics stay NULL — never fabricated (ROB-315 0b). The
+        raw close fill price (if any) is still stored as informational."""
+        assert result.open_client_order_id is not None
+        async with self.session.begin_nested():
+            await self.analytics.record(
+                open_client_order_id=result.open_client_order_id,
+                close_client_order_id=result.close_client_order_id,
+                instrument_id=instrument_id,
+                product=intent.product,
+                symbol=intent.symbol,
+                side=intent.side,
+                qty=qty,
+                entry_price=None,
+                exit_price=self._close_fill_price,
+                entry_notional_usdt=None,
+                fee_rate_bps=DEMO_SCALPING_FEE_RATE_BPS,
+                exit_reason=result.exit_reason,
+                now=self.now,
+            )
+
     async def execute(
         self, intent: OrderIntent, *, confirm: bool = False
     ) -> ExecutionResult:
@@ -276,7 +312,9 @@ class DemoScalpingExecutor:
             instrument_id,
             exit_reason="immediate",
         )
-        await self._finalize_analytics(intent, ref, qty, notional, instrument_id, result)
+        await self._finalize_analytics(
+            intent, ref, qty, notional, instrument_id, result
+        )
         return result
 
     async def execute_monitored(
@@ -350,7 +388,9 @@ class DemoScalpingExecutor:
             exit_reason=exit_reason,
             monitor_error=monitor_error,
         )
-        await self._finalize_analytics(intent, ref, qty, notional, instrument_id, result)
+        await self._finalize_analytics(
+            intent, ref, qty, notional, instrument_id, result
+        )
         return result
 
     async def _monitor_until_exit(
@@ -452,9 +492,19 @@ class DemoScalpingExecutor:
             open_cid, submit = await self._open_leg(
                 intent, instrument_id, qty, notional
             )
-            proven = await self._fill_proven(intent.symbol, open_cid, submit.status)
+            proven, polled_price = await self._fill_proven(
+                intent.symbol, open_cid, submit.status
+            )
             if proven:
                 await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
+                # ROB-315 0b: capture the entry fill price from whichever
+                # evidence proved the fill — the polled get_order avg price when
+                # the submit was NEW, else the FILLED submit's own avg price.
+                self._open_fill_price = (
+                    polled_price
+                    if polled_price is not None
+                    else self._extract_fill_price(submit)
+                )
             else:
                 position = await self.client.get_position(symbol=intent.symbol)
                 if not position.is_flat:
@@ -463,6 +513,10 @@ class DemoScalpingExecutor:
                         now=self.now,
                         extra_metadata_merge={"fill_evidence": "position_risk_nonflat"},
                     )
+                    # Proven by positionRisk only — no usable fill price.
+                    # Leave it None; _finalize records a partial row rather
+                    # than fabricating a price from the reference.
+                    self._open_fill_price = None
                 else:
                     reason = "futures_open_fill_unproven"
                     await self.ledger.record_anomaly(
@@ -477,7 +531,6 @@ class DemoScalpingExecutor:
                         sized_notional_usdt=notional,
                         final_flat=True,
                     )
-            self._open_fill_price = self._extract_fill_price(submit)
             return open_cid, None
 
         open_cid, submit = await self._open_leg(intent, instrument_id, qty, notional)
@@ -555,11 +608,21 @@ class DemoScalpingExecutor:
     # ------------------------------------------------------------------
     # Fill resolution (no ledger writes; caller records)
     # ------------------------------------------------------------------
-    async def _fill_proven(self, symbol: str, cid: str, submit_status: str) -> bool:
+    async def _fill_proven(
+        self, symbol: str, cid: str, submit_status: str
+    ) -> tuple[bool, Decimal | None]:
+        """Prove a fill, returning ``(proven, polled_fill_price)``.
+
+        ``polled_fill_price`` is the avg fill price from the ``get_order`` poll
+        that proved a NEW submit (ROB-315 0b — captured here so the caller does
+        not have to re-derive it). It is ``None`` when the submit was already
+        FILLED (the caller uses the submit's own price) or the fill was not
+        proven via order status.
+        """
         if submit_status == "FILLED":
-            return True
+            return True, None
         if submit_status in _TERMINAL_NONFILL:
-            return False
+            return False, None
         for attempt in range(self.poll_max):
             if attempt > 0:
                 await asyncio.sleep(self.poll_delay_seconds)
@@ -568,10 +631,10 @@ class DemoScalpingExecutor:
             except Exception:  # noqa: BLE001 — transient poll error, retry
                 continue
             if order.status == "FILLED":
-                return True
+                return True, self._extract_fill_price(order)
             if order.status in _TERMINAL_NONFILL:
-                return False
-        return False  # fail-closed: fill not proven
+                return False, None
+        return False, None  # fail-closed: fill not proven
 
     async def _open_leg(
         self,
@@ -830,10 +893,16 @@ class DemoScalpingExecutor:
                 extra_metadata_merge={"submit_status": csubmit.status},
             )
             self._close_fill_price = self._extract_fill_price(csubmit)
-            cproven = await self._fill_proven(intent.symbol, close_cid, csubmit.status)
+            cproven, cpolled_price = await self._fill_proven(
+                intent.symbol, close_cid, csubmit.status
+            )
             if cproven:
                 await self.ledger.record_filled(client_order_id=close_cid, now=self.now)
                 close_filled = True
+                # ROB-315 0b: prefer the polled get_order avg price when the
+                # close submit was NEW; never leave it at a reference fallback.
+                if cpolled_price is not None:
+                    self._close_fill_price = cpolled_price
             else:
                 post = await self.client.get_position(symbol=intent.symbol)
                 if post.is_flat:

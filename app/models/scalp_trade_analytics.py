@@ -86,7 +86,9 @@ class ScalpTradeAnalytics(Base):
 
     # Fees (estimated from fee_rate_bps; the rate used is stored for audit).
     fee_rate_bps: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
-    entry_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    entry_fee_usdt: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True
+    )
     exit_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
 
     # Execution quality (exact, fill vs reference). Adverse = positive.
@@ -108,9 +110,13 @@ class ScalpTradeAnalytics(Base):
     mfe_bps: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
 
     # Performance.
-    gross_pnl_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    gross_pnl_usdt: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True
+    )
     net_pnl_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
-    net_return_bps: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    net_return_bps: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
 
     holding_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # take_profit | stop_loss | timeout | monitor_error | immediate | anomaly
