@@ -19,6 +19,17 @@ _BANNED_PREFIXES = (
 )
 
 
+def _is_banned(module: str) -> bool:
+    """Match a banned package exactly or as a dotted-prefix submodule.
+
+    Uses ``== p`` or ``startswith(p + ".")`` rather than a bare
+    ``startswith(p)`` so a sibling package whose name merely begins with a
+    banned name is not a false positive — e.g. ``app.services.scalping_reviews``
+    (ROB-315 review layer) is NOT the deleted ``app.services.scalping`` package.
+    """
+    return any(module == p or module.startswith(p + ".") for p in _BANNED_PREFIXES)
+
+
 def _scan(roots: list[pathlib.Path]) -> list[str]:
     offenders: list[str] = []
     for root in roots:
@@ -29,13 +40,11 @@ def _scan(roots: list[pathlib.Path]) -> list[str]:
                 continue
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    if node.module and any(
-                        node.module.startswith(p) for p in _BANNED_PREFIXES
-                    ):
+                    if node.module and _is_banned(node.module):
                         offenders.append(f"{py}: from {node.module} import ...")
                 elif isinstance(node, ast.Import):
                     for alias in node.names:
-                        if any(alias.name.startswith(p) for p in _BANNED_PREFIXES):
+                        if _is_banned(alias.name):
                             offenders.append(f"{py}: import {alias.name}")
     return offenders
 

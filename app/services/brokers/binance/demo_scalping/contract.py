@@ -28,6 +28,12 @@ DEFAULT_ALLOWLIST: frozenset[str] = frozenset({"XRPUSDT", "DOGEUSDT", "SOLUSDT"}
 EXCLUDED_SYMBOLS: frozenset[str] = frozenset({"BTCUSDT"})
 MAX_NOTIONAL_USDT: Decimal = Decimal("10")
 
+# ROB-313 D3 — fee-rate used to *estimate* per-leg fees for cost analytics.
+# Demo's "exact" commission is not real-VIP/BNB-accurate, so a single
+# shared rate (also consumed by the future backtester) is more useful than
+# chasing an idealized demo fee. Conservative USD-M taker default.
+DEMO_SCALPING_FEE_RATE_BPS: Decimal = Decimal("5")
+
 
 class ReasonCode:
     """Stable string reason codes for signal/risk audit trails.
