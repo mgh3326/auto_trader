@@ -9,14 +9,14 @@ from app.services.scalping_reviews.rollup import build_rollup
 
 
 def _row(**kw) -> ScalpTradeAnalytics:
-    base = dict(
-        open_client_order_id="o",
-        instrument_id=1,
-        product="usdm_futures",
-        symbol="XRPUSDT",
-        side="BUY",
-        qty=Decimal("1"),
-    )
+    base = {
+        "open_client_order_id": "o",
+        "instrument_id": 1,
+        "product": "usdm_futures",
+        "symbol": "XRPUSDT",
+        "side": "BUY",
+        "qty": Decimal("1"),
+    }
     base.update(kw)
     return ScalpTradeAnalytics(**base)
 

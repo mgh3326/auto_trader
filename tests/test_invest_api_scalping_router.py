@@ -12,7 +12,6 @@ import datetime as dt
 import pathlib
 from decimal import Decimal
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -26,53 +25,53 @@ _NOW = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.UTC)
 
 
 def _make_review(review_id: int, **kw) -> ScalpingDailyReview:
-    base = dict(
-        id=review_id,
-        review_date=dt.date(2026, 5, 25),
-        product="usdm_futures",
-        account_scope="binance_demo",
-        session_tag="",
-        trade_count=2,
-        win_count=1,
-        loss_count=1,
-        anomaly_count=0,
-        gross_pnl_usdt=Decimal("0.0"),
-        net_pnl_usdt=Decimal("-0.2"),
-        net_return_bps=Decimal("-10"),
-        avg_slippage_bps=Decimal("3"),
-        avg_spread_bps=None,
-        avg_mae_bps=Decimal("-10"),
-        avg_mfe_bps=Decimal("40"),
-        avg_holding_seconds=15,
-        exit_reason_counts={"take_profit": 1, "stop_loss": 1},
-        observation=None,
-        root_cause=None,
-        improvement=None,
-        next_run_plan=None,
-        decision="review",
-        status="draft",
-        source_payload={"row_count": 2},
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
+    base = {
+        "id": review_id,
+        "review_date": dt.date(2026, 5, 25),
+        "product": "usdm_futures",
+        "account_scope": "binance_demo",
+        "session_tag": "",
+        "trade_count": 2,
+        "win_count": 1,
+        "loss_count": 1,
+        "anomaly_count": 0,
+        "gross_pnl_usdt": Decimal("0.0"),
+        "net_pnl_usdt": Decimal("-0.2"),
+        "net_return_bps": Decimal("-10"),
+        "avg_slippage_bps": Decimal("3"),
+        "avg_spread_bps": None,
+        "avg_mae_bps": Decimal("-10"),
+        "avg_mfe_bps": Decimal("40"),
+        "avg_holding_seconds": 15,
+        "exit_reason_counts": {"take_profit": 1, "stop_loss": 1},
+        "observation": None,
+        "root_cause": None,
+        "improvement": None,
+        "next_run_plan": None,
+        "decision": "review",
+        "status": "draft",
+        "source_payload": {"row_count": 2},
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
     base.update(kw)
     return ScalpingDailyReview(**base)
 
 
 def _make_action(action_id: int, review_id: int, **kw) -> ScalpingReviewAction:
-    base = dict(
-        id=action_id,
-        review_id=review_id,
-        action_type="parameter_change",
-        title="widen TP",
-        rationale=None,
-        target_component=None,
-        proposed_change=None,
-        expected_effect=None,
-        status="open",
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
+    base = {
+        "id": action_id,
+        "review_id": review_id,
+        "action_type": "parameter_change",
+        "title": "widen TP",
+        "rationale": None,
+        "target_component": None,
+        "proposed_change": None,
+        "expected_effect": None,
+        "status": "open",
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
     base.update(kw)
     return ScalpingReviewAction(**base)
 
@@ -80,25 +79,25 @@ def _make_action(action_id: int, review_id: int, **kw) -> ScalpingReviewAction:
 def _make_analytics(**kw):
     from app.models.scalp_trade_analytics import ScalpTradeAnalytics
 
-    base = dict(
-        id=1,
-        open_client_order_id="o-1",
-        instrument_id=1,
-        product="usdm_futures",
-        symbol="XRPUSDT",
-        side="BUY",
-        qty=Decimal("1"),
-        entry_price=Decimal("100"),
-        exit_price=Decimal("101"),
-        entry_slippage_bps=Decimal("2"),
-        mae_bps=Decimal("-10"),
-        mfe_bps=Decimal("40"),
-        net_pnl_usdt=Decimal("0.9"),
-        holding_seconds=12,
-        exit_reason="take_profit",
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
+    base = {
+        "id": 1,
+        "open_client_order_id": "o-1",
+        "instrument_id": 1,
+        "product": "usdm_futures",
+        "symbol": "XRPUSDT",
+        "side": "BUY",
+        "qty": Decimal("1"),
+        "entry_price": Decimal("100"),
+        "exit_price": Decimal("101"),
+        "entry_slippage_bps": Decimal("2"),
+        "mae_bps": Decimal("-10"),
+        "mfe_bps": Decimal("40"),
+        "net_pnl_usdt": Decimal("0.9"),
+        "holding_seconds": 12,
+        "exit_reason": "take_profit",
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
     base.update(kw)
     return ScalpTradeAnalytics(**base)
 
