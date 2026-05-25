@@ -248,13 +248,35 @@ BINANCE_SPOT_DEMO_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
   uv run taskiq kick app.core.taskiq_broker:broker binance.demo_scalping.tick
 ```
 
+### Scheduler entrypoint CLI (`scripts/binance_demo_scalping_tick.py`)
+
+`scripts/binance_demo_scalping_tick.py` is the operator-facing, **env-driven**
+one-tick entrypoint an external scheduler shells out to. It wraps
+`run_demo_scalping_tick`, prints a single-line JSON summary to stdout, and maps
+it to an exit code (0 = disabled/clean, 1 = ran-with-errors or runner raised).
+No flags — the same two-key gate + `_CONFIRM` env vars above apply.
+
+```bash
+# Gate OFF (default) → no-op, zero clients, exit 0
+uv run python -m scripts.binance_demo_scalping_tick
+# → {"base_enabled": false, "scheduler_enabled": false, "status": "disabled"}
+
+# Dry-run tick (signals + risk, zero orders)
+BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED=true \
+  uv run python -m scripts.binance_demo_scalping_tick
+```
+
+This is the command the (paused) Prefect deployment in `robin-prefect-automations`
+invokes; the Prefect repo owns scheduling/retry/alerting and only ever calls
+this CLI (it never imports auto_trader trading logic).
+
 ### Activation — separate operator gate
 
 No recurring schedule is registered by this repo. Production recurrence
-(`paused=false`) is an operations decision: TaskIQ cron or a Prefect
-deployment in `robin-prefect-automations`. **Do not activate** without
+(`paused=false`) lives in `robin-prefect-automations` as a **paused-by-default**
+deployment that shells out to the tick CLI above. **Do not activate** without
 the §"Hard safety boundaries" gates satisfied + explicit operator
 approval. Failure-only alerting wires onto the tick's error log
-(`logger.error` / the `TickSummary.errors` list); a clean tick is quiet.
-Rollback = unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED` (kill switch)
-and pause/disable the schedule in the ops repo.
+(`logger.error` / the `TickSummary.errors` list) and the CLI's non-zero exit; a
+clean tick is quiet. Rollback = unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`
+(kill switch) and pause the deployment in the ops repo.
