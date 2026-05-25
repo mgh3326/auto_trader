@@ -86,7 +86,20 @@ class SnapshotBundleEnsureService:
             bundle_freshness = classify_freshness(
                 as_of=latest.as_of, now=now, policy=policy.bundle_ttl
             )
-            if bundle_freshness in ("fresh", "soft_stale"):
+            reusable = bundle_freshness in ("fresh", "soft_stale")
+            # ROB-314 — a time-fresh but content-failed bundle (a required
+            # source was unavailable, e.g. one built before user_id /
+            # production collectors were wired into the prepare entrypoint)
+            # must NOT short-circuit ensure_fresh collection. Fall through and
+            # re-collect. reuse_only keeps prior behaviour: it explicitly asked
+            # for an existing bundle only and does not collect.
+            if (
+                reusable
+                and request.mode == "ensure_fresh"
+                and latest.status == "failed"
+            ):
+                reusable = False
+            if reusable:
                 return EnsureBundleResponse(
                     bundle_uuid=latest.bundle_uuid,
                     status="reused",
@@ -128,6 +141,7 @@ class SnapshotBundleEnsureService:
                         "mode": request.mode,
                         "symbols": request.symbols,
                         "candidate_limit": request.candidate_limit,
+                        "user_id": request.user_id,
                         "manual_snapshot_kinds": (
                             sorted((request.manual_snapshots or {}).keys())
                         ),

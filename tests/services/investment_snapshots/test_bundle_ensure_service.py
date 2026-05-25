@@ -230,6 +230,79 @@ async def test_ensure_fresh_second_call_within_soft_ttl_reuses_bundle(db_session
 
 
 @pytest.mark.asyncio
+async def test_ensure_fresh_does_not_reuse_fresh_failed_bundle(db_session):
+    """ROB-314 regression: a time-fresh but status=failed bundle (e.g. built
+    earlier without user_id / with the empty default registry) must NOT
+    short-circuit collection under ensure_fresh. The second call re-collects
+    and produces a real bundle instead of returning status='reused'.
+
+    The clock advances 10s between calls (well within the 180s soft TTL) so
+    the failed bundle is still classified 'fresh' — exactly the scenario the
+    fix targets — while the distinct ``as_of`` lets the re-collection persist a
+    new bundle row rather than colliding on the deterministic idempotency key.
+    """
+    purpose = _unique_purpose("failed_no_reuse")
+    clock_now = {"t": _FIXED_NOW}
+    svc = SnapshotBundleEnsureService(db_session, clock=lambda: clock_now["t"])
+
+    # First call: empty registry, no manual data → failed bundle, still fresh.
+    first = await svc.ensure(
+        EnsureBundleRequest(
+            purpose=purpose,
+            market="kr",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+        )
+    )
+    await db_session.commit()
+    assert first.status == "failed"
+    assert first.bundle_uuid is not None
+
+    # Second call within soft TTL, now WITH required data available. Must not
+    # reuse the failed bundle; must re-collect into a new bundle.
+    clock_now["t"] = _FIXED_NOW + dt.timedelta(seconds=10)
+    second = await svc.ensure(
+        EnsureBundleRequest(
+            purpose=purpose,
+            market="kr",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            manual_snapshots=_all_required_manual_snapshots(),
+        )
+    )
+    await db_session.commit()
+    assert second.status == "complete"
+    assert second.created is True
+    assert second.bundle_uuid != first.bundle_uuid
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_records_user_id_in_run_metadata(db_session):
+    """ROB-314: user_id is captured in run audit metadata so a later smoke can
+    confirm which user scope a bundle was collected for."""
+    svc = SnapshotBundleEnsureService(db_session, clock=_frozen_clock())
+    response = await svc.ensure(
+        EnsureBundleRequest(
+            purpose=_unique_purpose("user_scope_audit"),
+            market="kr",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            manual_snapshots=_all_required_manual_snapshots(),
+            user_id=42,
+        )
+    )
+    await db_session.commit()
+
+    run = await db_session.scalar(
+        sa.select(InvestmentSnapshotRun).where(
+            InvestmentSnapshotRun.run_uuid == response.run_uuid
+        )
+    )
+    assert run is not None
+    assert run.run_metadata["ensure_request"]["user_id"] == 42
+
+
+@pytest.mark.asyncio
 async def test_ensure_fresh_writes_run_with_frozen_policy_snapshot(db_session):
     svc = SnapshotBundleEnsureService(db_session, clock=_frozen_clock())
     response = await svc.ensure(

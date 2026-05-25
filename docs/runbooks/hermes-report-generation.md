@@ -427,4 +427,3 @@ market, journal, and watch coverage.
 MCP `investment_snapshot_bundle_ensure` tool intentionally stay on the empty default
 registry; the refresh path is part of the separate scheduler-activation track. Locked by
 `tests/test_rob314_deferred_call_sites.py`.
-
