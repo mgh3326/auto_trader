@@ -66,6 +66,7 @@ from .research_run import (
     ResearchRunStatus,
 )
 from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
+from .scalp_trade_analytics import ScalpTradeAnalytics
 from .sell_condition import SellCondition
 from .symbol_trade_settings import SymbolTradeSettings
 from .trade_journal import JournalStatus, TradeJournal
@@ -104,6 +105,7 @@ from .user_settings import UserSetting
 __all__ = [
     "Base",
     "BinanceDemoOrderLedger",
+    "ScalpTradeAnalytics",
     "ExecutionLedger",
     "ExecutionLedgerReconcileRun",
     "CryptoCandle1d",

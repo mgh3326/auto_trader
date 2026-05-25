@@ -61,10 +61,12 @@ class _Result:
 class _FakeExecutor:
     def __init__(self, *, entry_status="reconciled", raise_on_entry=False):
         self.entered: list[str] = []
+        self.markets: list = []  # ROB-315 0c: captured market conditions
         self._entry_status = entry_status
         self._raise_on_entry = raise_on_entry
 
     async def execute_monitored(self, intent, *, confirm, **kwargs):
+        self.markets.append(kwargs.get("market"))
         if self._raise_on_entry:
             raise RuntimeError("boom")
         self.entered.append(intent.symbol)
@@ -72,11 +74,18 @@ class _FakeExecutor:
 
 
 class _FakeMarketData:
-    def __init__(self, candles):
+    def __init__(self, candles, *, book=None):
         self._candles = candles
+        self._book = book
 
     async def fetch_klines(self, product, symbol, *, interval="1m", limit=50):
         return self._candles
+
+    async def fetch_book_ticker(self, product, symbol):
+        # Tight default spread (~2 bps) so the D4 gates don't block entries.
+        from app.services.brokers.binance.demo_scalping.market_data import BookTicker
+
+        return self._book or BookTicker(bid=Decimal("100"), ask=Decimal("100.02"))
 
 
 def _executors(spot, fut):
@@ -116,6 +125,33 @@ async def test_enters_monitored_on_signal() -> None:
     assert spot.entered == ["XRPUSDT"]  # uptrend -> long entry placed (monitored)
     assert fut.entered == ["XRPUSDT"]
     assert summary.errors == []
+
+
+@pytest.mark.asyncio
+async def test_passes_real_market_conditions_to_executor() -> None:
+    """ROB-315 0c / D4: the tick computes spread (from bookTicker) + data age
+    (from the latest candle) and threads them into execute_monitored, so the
+    executor's SPREAD_TOO_WIDE / STALE_DATA gates have real inputs."""
+    from app.services.brokers.binance.demo_scalping.market_data import BookTicker
+
+    fut = _FakeExecutor()
+    md = _FakeMarketData(
+        _uptrend(), book=BookTicker(bid=Decimal("100"), ask=Decimal("100.10"))
+    )
+    summary = await run_scalping_tick(
+        executors=_executors(_FakeExecutor(), fut),
+        market_data=md,
+        symbols=["XRPUSDT"],
+        products=["usdm_futures"],
+        now=_NOW,
+        limits=ScalpingRiskLimits(),
+        confirm=True,
+        enabled=True,
+    )
+    assert summary.status == "ran"
+    assert fut.markets and fut.markets[0] is not None
+    assert fut.markets[0].spread_bps > 0  # ~10 bps from the 100/100.10 book
+    assert fut.markets[0].data_age_seconds >= 0
 
 
 @pytest.mark.asyncio
