@@ -10,7 +10,6 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-
 from sqlalchemy import select
 
 from app.models.crypto_instruments import CryptoInstrument
@@ -50,16 +49,16 @@ async def _instrument(session, symbol="RVWXRPUSDT") -> int:
 
 
 async def _analytics(session, instrument_id, *, created_at=_NOW, **kw):
-    base = dict(
-        open_client_order_id=f"o-{kw.get('tag', '0')}",
-        instrument_id=instrument_id,
-        product="usdm_futures",
-        symbol="XRPUSDT",
-        side="BUY",
-        qty=Decimal("1"),
-        created_at=created_at,
-        updated_at=created_at,
-    )
+    base = {
+        "open_client_order_id": f"o-{kw.get('tag', '0')}",
+        "instrument_id": instrument_id,
+        "product": "usdm_futures",
+        "symbol": "XRPUSDT",
+        "side": "BUY",
+        "qty": Decimal("1"),
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
     kw.pop("tag", None)
     base.update(kw)
     row = ScalpTradeAnalytics(**base)
