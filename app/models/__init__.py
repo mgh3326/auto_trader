@@ -67,6 +67,7 @@ from .research_run import (
 )
 from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .scalp_trade_analytics import ScalpTradeAnalytics
+from .scalping_reviews import ScalpingDailyReview, ScalpingReviewAction
 from .sell_condition import SellCondition
 from .symbol_trade_settings import SymbolTradeSettings
 from .trade_journal import JournalStatus, TradeJournal
@@ -106,6 +107,8 @@ __all__ = [
     "Base",
     "BinanceDemoOrderLedger",
     "ScalpTradeAnalytics",
+    "ScalpingDailyReview",
+    "ScalpingReviewAction",
     "ExecutionLedger",
     "ExecutionLedgerReconcileRun",
     "CryptoCandle1d",

@@ -78,6 +78,10 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # binance_demo_order_ledger.py above. The model is registered in
         # app/models/__init__.py (one-line import).
         "app/models/scalp_trade_analytics.py",
+        # ROB-315 — the scalping review-loop ORM model. Analytics/review
+        # persistence only (no HTTP/WS, no signed surface); references Binance
+        # solely via the ``binance_demo`` account-scope literal + docstring.
+        "app/models/scalping_reviews.py",
         # ROB-307 PR4 — Demo scalping scheduler orchestration. These
         # *orchestrate* the in-package Demo adapters (executor/clients) and
         # perform no signed HTTP themselves (the HMAC chokepoints stay inside
