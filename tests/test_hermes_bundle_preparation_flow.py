@@ -215,6 +215,10 @@ async def test_gate_on_routes_through_ensure_service(
             return_value=_session_factory_returning_fake(),
         ),
         patch(
+            "app.flows.hermes_bundle_preparation_flow.production_collector_registry",
+            return_value=object(),
+        ),
+        patch(
             "app.flows.hermes_bundle_preparation_flow.SnapshotBundleEnsureService",
             return_value=ensure_service,
         ),
@@ -240,6 +244,60 @@ async def test_gate_on_routes_through_ensure_service(
     assert called_request.account_scope == "kis_live"
     assert called_request.symbols == ["005930"]
     assert called_request.requested_by == "hermes"
+
+
+@pytest.mark.asyncio
+async def test_gate_on_injects_production_registry_and_user_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import uuid
+
+    monkeypatch.setattr(
+        settings, "HERMES_BUNDLE_PREPARATION_ENABLED", True, raising=False
+    )
+    from app.flows.hermes_bundle_preparation_flow import run_hermes_bundle_preparation
+
+    bundle_uuid = uuid.uuid4()
+    ensure_response = SimpleNamespace(
+        bundle_uuid=bundle_uuid,
+        status="partial",
+        freshness_summary={},
+        coverage_summary={},
+        missing_sources=[],
+        warnings=[],
+        created=True,
+    )
+    ensure_svc = AsyncMock()
+    ensure_svc.ensure = AsyncMock(return_value=ensure_response)
+    sentinel_registry = object()
+
+    with (
+        patch(
+            "app.flows.hermes_bundle_preparation_flow._session_factory",
+            return_value=_session_factory_returning_fake(),
+        ),
+        patch(
+            "app.flows.hermes_bundle_preparation_flow.production_collector_registry",
+            return_value=sentinel_registry,
+        ) as mock_registry,
+        patch(
+            "app.flows.hermes_bundle_preparation_flow.SnapshotBundleEnsureService",
+            return_value=ensure_svc,
+        ) as mock_cls,
+    ):
+        result = await run_hermes_bundle_preparation(
+            market="kr",
+            account_scope="kis_live",
+            symbols=["005930"],
+            user_id=11,
+        )
+
+    assert result["status"] == "ok"
+    mock_registry.assert_called_once()
+    assert mock_cls.call_args.kwargs["collectors"] is sentinel_registry
+    called = ensure_svc.ensure.call_args.args[0]
+    assert called.user_id == 11
+    assert called.market == "kr"
 
 
 @pytest.mark.asyncio

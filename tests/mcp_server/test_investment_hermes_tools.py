@@ -296,6 +296,10 @@ async def test_prepare_bundle_routes_through_ensure_service(_flag_on) -> None:
             _patched_session_local,
         ),
         patch(
+            "app.mcp_server.tooling.investment_hermes_handlers.production_collector_registry",
+            return_value=object(),
+        ),
+        patch(
             "app.mcp_server.tooling.investment_hermes_handlers.SnapshotBundleEnsureService",
             return_value=ensure_svc,
         ),
@@ -314,6 +318,61 @@ async def test_prepare_bundle_routes_through_ensure_service(_flag_on) -> None:
     assert called_request.market == "crypto"
     assert called_request.account_scope == "upbit_live"
     assert called_request.requested_by == "hermes"
+
+
+@pytest.mark.asyncio
+async def test_prepare_bundle_injects_production_registry_and_user_id(_flag_on) -> None:
+    bundle_uuid = uuid.uuid4()
+    ensure_response = SimpleNamespace(
+        bundle_uuid=bundle_uuid,
+        status="complete",
+        coverage_summary={},
+        freshness_summary={},
+        missing_sources=[],
+        warnings=[],
+        created=True,
+    )
+    ensure_response.model_dump = lambda mode="json": {
+        "bundle_uuid": str(bundle_uuid),
+        "status": "complete",
+        "coverage_summary": {},
+        "freshness_summary": {},
+        "missing_sources": [],
+        "warnings": [],
+        "created": True,
+    }
+    ensure_svc = AsyncMock()
+    ensure_svc.ensure = AsyncMock(return_value=ensure_response)
+    sentinel_registry = object()
+
+    with (
+        patch(
+            "app.mcp_server.tooling.investment_hermes_handlers.AsyncSessionLocal",
+            _patched_session_local,
+        ),
+        patch(
+            "app.mcp_server.tooling.investment_hermes_handlers.production_collector_registry",
+            return_value=sentinel_registry,
+        ) as mock_registry,
+        patch(
+            "app.mcp_server.tooling.investment_hermes_handlers.SnapshotBundleEnsureService",
+            return_value=ensure_svc,
+        ) as mock_cls,
+    ):
+        result = await investment_report_prepare_bundle_impl(
+            market="kr",
+            account_scope="kis_live",
+            symbols=["005930"],
+            user_id=7,
+        )
+
+    assert result["success"] is True
+    mock_registry.assert_called_once()
+    assert mock_cls.call_args.kwargs["collectors"] is sentinel_registry
+    called_request = ensure_svc.ensure.call_args.args[0]
+    assert called_request.user_id == 7
+    assert called_request.market == "kr"
+    assert called_request.account_scope == "kis_live"
 
 
 @pytest.mark.asyncio

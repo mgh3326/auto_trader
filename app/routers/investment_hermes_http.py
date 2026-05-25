@@ -46,6 +46,9 @@ from app.schemas.investment_symbol_reports import HermesSymbolReportsIngestReque
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
 )
+from app.services.action_report.snapshot_backed.collectors.registry import (
+    production_collector_registry,
+)
 from app.services.investment_dimensions.dimension_report_ingest import (
     DimensionReportIngestError,
     DimensionReportIngestService,
@@ -114,6 +117,7 @@ class _PrepareBundleBody(BaseModel):
     candidate_limit: int | None = None
     requested_by: str = "hermes"
     purpose: str = "report_generation"
+    user_id: int | None = None
 
 
 class _GetHermesContextBody(BaseModel):
@@ -169,6 +173,7 @@ async def prepare_bundle(
             symbols=body.symbols,
             candidate_limit=body.candidate_limit,
             requested_by=body.requested_by,  # type: ignore[arg-type]
+            user_id=body.user_id,
         )
     except ValidationError as exc:
         raise HTTPException(
@@ -179,7 +184,7 @@ async def prepare_bundle(
             },
         ) from exc
 
-    svc = SnapshotBundleEnsureService(db)
+    svc = SnapshotBundleEnsureService(db, collectors=production_collector_registry(db))
     response = await svc.ensure(ensure_request)
     await db.commit()
     return {"success": True, **response.model_dump(mode="json")}

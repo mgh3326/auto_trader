@@ -18,18 +18,22 @@ import test is ``skipif(True, reason="prefect not yet a project
 dependency; import verified when added")`` and flips on once Prefect
 lands as a dep through a separate ops change.
 
-Phase 2 design constraint: the production collector registry is empty
-in this codebase. Running ``ensure_snapshot_bundle`` with ``mode='ensure_fresh'``
-against an empty registry returns a ``failed`` bundle (no data) for new
-identity tuples, or ``reused`` for an existing fresh bundle. The flow is
-the seam Phase 5 collectors will populate.
+ROB-314 scope decision: this refresh flow deliberately stays on the
+default *empty* collector registry. Production collectors are wired only
+into the report-generation entrypoints (MCP ``investment_report_prepare_bundle``,
+HTTP ``/hermes/prepare-bundle``, and ``hermes_bundle_preparation_flow``); this
+deferred flow belongs to the separate scheduler-activation track. Running
+``ensure_snapshot_bundle`` here therefore returns a ``failed`` bundle (no data)
+for new identity tuples, or ``reused`` for an existing fresh bundle, until that
+track lands. Locked by ``tests/test_rob314_deferred_call_sites.py``.
 
 Safety:
 * Read-mostly snapshot service; the only DB writes are the Phase 1
   append-only INSERTs into ``review.investment_snapshot_*`` tables.
 * No broker / order / watch-intent mutation.
 * No live HTTP fetches in this flow file — the underlying ensure service
-  uses the collector registry, which is empty in production today.
+  uses the collector registry, which this deferred flow intentionally
+  leaves at the default empty registry (see the ROB-314 note above).
 """
 
 from __future__ import annotations
@@ -100,6 +104,12 @@ async def run_snapshot_bundle_refresh(
     )
 
     async with _session_factory()() as session:
+        # ROB-314: deliberately NOT wired to production_collector_registry.
+        # The scheduler refresh path belongs to the separate scheduler-
+        # activation track; only the report-generation entrypoints (MCP
+        # prepare_bundle, HTTP prepare-bundle, hermes_bundle_preparation_flow)
+        # inject production collectors. Locked by
+        # tests/test_rob314_deferred_call_sites.py.
         service = SnapshotBundleEnsureService(session)
         response = await service.ensure(request)
         await session.commit()

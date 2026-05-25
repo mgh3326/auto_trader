@@ -64,6 +64,9 @@ from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
 )
+from app.services.action_report.snapshot_backed.collectors.registry import (
+    production_collector_registry,
+)
 
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
@@ -91,6 +94,7 @@ async def run_hermes_bundle_preparation(
     requested_by: str = "hermes",
     symbols: list[str] | None = None,
     candidate_limit: int | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """Coroutine body — separated from the Prefect ``@task`` so tests can
     invoke it directly without a Prefect runtime. The behaviour is
@@ -107,10 +111,13 @@ async def run_hermes_bundle_preparation(
         symbols=symbols,
         candidate_limit=candidate_limit,
         requested_by=requested_by,  # type: ignore[arg-type]
+        user_id=user_id,
     )
 
     async with _session_factory()() as session:
-        service = SnapshotBundleEnsureService(session)
+        service = SnapshotBundleEnsureService(
+            session, collectors=production_collector_registry(session)
+        )
         response = await service.ensure(request)
         await session.commit()
 
@@ -143,6 +150,7 @@ async def hermes_bundle_preparation_task(
     requested_by: str = "hermes",
     symbols: list[str] | None = None,
     candidate_limit: int | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     return await run_hermes_bundle_preparation(
         market=market,
@@ -152,6 +160,7 @@ async def hermes_bundle_preparation_task(
         requested_by=requested_by,
         symbols=symbols,
         candidate_limit=candidate_limit,
+        user_id=user_id,
     )
 
 
@@ -165,6 +174,7 @@ async def hermes_bundle_preparation_flow(
     requested_by: str = "hermes",
     symbols: list[str] | None = None,
     candidate_limit: int | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """Top-level Prefect flow.
 
@@ -181,6 +191,7 @@ async def hermes_bundle_preparation_flow(
         requested_by=requested_by,
         symbols=symbols,
         candidate_limit=candidate_limit,
+        user_id=user_id,
     )
 
 
