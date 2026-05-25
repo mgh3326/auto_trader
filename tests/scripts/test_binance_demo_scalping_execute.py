@@ -94,15 +94,13 @@ class _FakeExecutor:
     async def execute(self, intent, *, confirm: bool):
         return _FakeResult("dry_run")
 
-    async def execute_bracket(self, intent, *, confirm: bool):
-        return _FakeResult("bracketed")
-
-    async def reconcile_bracket(self, *, open_client_order_id: str):
+    async def execute_monitored(self, intent, *, confirm: bool, **kwargs):
         return _FakeResult("reconciled")
 
 
 def _patch_wiring(monkeypatch) -> None:
     import app.core.db as dbmod
+    import app.services.brokers.binance.demo_scalping.market_data as mdmod
     import app.services.brokers.binance.demo_scalping_exec.executor as exmod
     import app.services.brokers.binance.demo_scalping_exec.reference as refmod
     from app.services.brokers.binance.futures_demo.execution_client import (
@@ -117,6 +115,7 @@ def _patch_wiring(monkeypatch) -> None:
         monkeypatch.setattr(cls, "from_env", classmethod(lambda cls: _FakeClient()))
     monkeypatch.setattr(dbmod, "AsyncSessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(refmod, "DemoReferenceData", _FakeReference)
+    monkeypatch.setattr(mdmod, "DemoScalpingMarketData", _FakeReference)
     monkeypatch.setattr(exmod, "DemoScalpingExecutor", _FakeExecutor)
 
 
@@ -148,19 +147,10 @@ def test_enabled_dry_run_wiring_does_not_await_sync_from_env(
     assert "dry_run" in capsys.readouterr().out
 
 
-def test_bracket_flag_routes_to_execute_bracket(monkeypatch, capsys) -> None:
+def test_monitor_flag_routes_to_execute_monitored(monkeypatch, capsys) -> None:
     _patch_wiring(monkeypatch)
     rc = main(
-        ["--product", "usdm_futures", "--symbol", "XRPUSDT", "--bracket", "--confirm"]
+        ["--product", "usdm_futures", "--symbol", "XRPUSDT", "--monitor", "--confirm"]
     )
-    assert rc == 0  # bracketed -> success
-    assert "bracketed" in capsys.readouterr().out
-
-
-def test_reconcile_flag_routes_to_reconcile_bracket(monkeypatch, capsys) -> None:
-    _patch_wiring(monkeypatch)
-    rc = main(
-        ["--product", "usdm_futures", "--symbol", "XRPUSDT", "--reconcile", "rob307-x"]
-    )
-    assert rc == 0  # reconciled -> success
+    assert rc == 0  # reconciled (monitored, flat) -> success
     assert "reconciled" in capsys.readouterr().out

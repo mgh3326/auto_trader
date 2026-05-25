@@ -1,9 +1,9 @@
-"""ROB-307 PR4 — tests for the default-OFF scalping tick orchestration.
+"""ROB-307 follow-up — tests for the default-OFF scalping tick orchestration.
 
-One tick = reconcile held bracketed positions, then run the deterministic
-signal per allowlisted symbol and place a bracket on entries. Kill-switch
+One tick = run the deterministic signal per allowlisted symbol and place a
+bounded-monitor entry (which always exits flat in-run). Kill-switch
 (``enabled=False`` → no-op), failure-only alerting (errors collected, tick
-continues). All broker/ledger I/O is faked; no network, no real orders.
+continues). Broker/market data faked; no network, no real orders.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from app.services.brokers.binance.demo_scalping_exec.scheduler import (
     run_scalping_tick,
 )
 
-_NOW = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.UTC)
+_NOW = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.UTC)
 _NOW_MS = int(_NOW.timestamp() * 1000)
 
 
@@ -59,17 +59,12 @@ class _Result:
 
 
 class _FakeExecutor:
-    def __init__(self, *, entry_status="bracketed", raise_on_entry=False):
-        self.reconciled: list[str] = []
+    def __init__(self, *, entry_status="reconciled", raise_on_entry=False):
         self.entered: list[str] = []
         self._entry_status = entry_status
         self._raise_on_entry = raise_on_entry
 
-    async def reconcile_bracket(self, *, open_client_order_id):
-        self.reconciled.append(open_client_order_id)
-        return _Result("reconciled")
-
-    async def execute_bracket(self, intent, *, confirm):
+    async def execute_monitored(self, intent, *, confirm, **kwargs):
         if self._raise_on_entry:
             raise RuntimeError("boom")
         self.entered.append(intent.symbol)
@@ -84,14 +79,6 @@ class _FakeMarketData:
         return self._candles
 
 
-class _FakeLedger:
-    def __init__(self, held):
-        self._held = held
-
-    async def list_held_bracketed(self):
-        return list(self._held)
-
-
 def _executors(spot, fut):
     return {"spot": spot, "usdm_futures": fut}
 
@@ -102,7 +89,6 @@ async def test_disabled_is_noop() -> None:
     summary = await run_scalping_tick(
         executors=_executors(spot, fut),
         market_data=_FakeMarketData(_uptrend()),
-        ledger=_FakeLedger([]),
         symbols=["XRPUSDT"],
         products=["spot"],
         now=_NOW,
@@ -110,16 +96,15 @@ async def test_disabled_is_noop() -> None:
         enabled=False,
     )
     assert summary.status == "disabled"
-    assert spot.entered == [] and spot.reconciled == []
+    assert spot.entered == []
 
 
 @pytest.mark.asyncio
-async def test_reconciles_held_then_enters_on_signal() -> None:
+async def test_enters_monitored_on_signal() -> None:
     spot, fut = _FakeExecutor(), _FakeExecutor()
     summary = await run_scalping_tick(
         executors=_executors(spot, fut),
         market_data=_FakeMarketData(_uptrend()),
-        ledger=_FakeLedger([("held-1", "usdm_futures")]),
         symbols=["XRPUSDT"],
         products=["spot", "usdm_futures"],
         now=_NOW,
@@ -128,8 +113,7 @@ async def test_reconciles_held_then_enters_on_signal() -> None:
         enabled=True,
     )
     assert summary.status == "ran"
-    assert fut.reconciled == ["held-1"]
-    assert spot.entered == ["XRPUSDT"]  # uptrend -> long entry placed
+    assert spot.entered == ["XRPUSDT"]  # uptrend -> long entry placed (monitored)
     assert fut.entered == ["XRPUSDT"]
     assert summary.errors == []
 
@@ -140,7 +124,6 @@ async def test_no_entry_when_flat() -> None:
     summary = await run_scalping_tick(
         executors=_executors(spot, fut),
         market_data=_FakeMarketData(_flat()),
-        ledger=_FakeLedger([]),
         symbols=["XRPUSDT"],
         products=["spot"],
         now=_NOW,
@@ -158,7 +141,6 @@ async def test_entry_error_is_collected_and_tick_continues() -> None:
     summary = await run_scalping_tick(
         executors=_executors(spot, fut),
         market_data=_FakeMarketData(_uptrend()),
-        ledger=_FakeLedger([]),
         symbols=["XRPUSDT", "DOGEUSDT"],
         products=["spot"],
         now=_NOW,
@@ -175,7 +157,7 @@ async def test_dry_run_threads_confirm_false() -> None:
     captured = {}
 
     class _Spy(_FakeExecutor):
-        async def execute_bracket(self, intent, *, confirm):
+        async def execute_monitored(self, intent, *, confirm, **kwargs):
             captured["confirm"] = confirm
             return _Result("dry_run")
 
@@ -183,7 +165,6 @@ async def test_dry_run_threads_confirm_false() -> None:
     await run_scalping_tick(
         executors=_executors(spy, _FakeExecutor()),
         market_data=_FakeMarketData(_uptrend()),
-        ledger=_FakeLedger([]),
         symbols=["XRPUSDT"],
         products=["spot"],
         now=_NOW,

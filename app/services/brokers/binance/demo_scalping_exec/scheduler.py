@@ -1,11 +1,11 @@
 """ROB-307 PR4 — default-OFF Demo scalping tick orchestration.
 
-One tick: (1) reconcile every held bracketed position via the executor's
-``reconcile_bracket``; (2) run the deterministic signal per allowlisted
-symbol and place a broker-side bracket (``execute_bracket``) on entries.
-The executor's own live-ledger risk re-check enforces capacity (one open
-lifecycle per product+symbol, global/daily caps), so the tick never needs
-its own capacity bookkeeping.
+One tick runs the deterministic signal per allowlisted symbol and places a
+bounded-monitor entry (``execute_monitored``) on each signal — open →
+bounded TP/SL poll → MARKET-close → flat, all in-run. There is no held
+position to reconcile across ticks. The executor's own live-ledger risk
+re-check enforces capacity (one open lifecycle per product+symbol,
+global/daily caps), so the tick never needs its own capacity bookkeeping.
 
 Kill switch: ``enabled=False`` → no-op. Failure-only alerting: per-item
 errors are collected (the tick never crashes mid-loop) and logged at
@@ -38,17 +38,14 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class TickSummary:
     status: str  # "disabled" | "ran"
-    reconciled: list[tuple[str, str]] = field(default_factory=list)
     entered: list[tuple[str, str, str]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def to_evidence_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
-            "reconciled_count": len(self.reconciled),
             "entered_count": len(self.entered),
             "error_count": len(self.errors),
-            "reconciled": [list(r) for r in self.reconciled],
             "entered": [list(e) for e in self.entered],
             "errors": list(self.errors),
         }
@@ -58,7 +55,6 @@ async def run_scalping_tick(
     *,
     executors: Mapping[str, Any],
     market_data: Any,
-    ledger: Any,
     symbols: Sequence[str],
     products: Sequence[Product],
     now: dt.datetime,
@@ -68,36 +64,24 @@ async def run_scalping_tick(
     signal_config_for: Callable[[str], SignalConfig] | None = None,
     interval: str = "1m",
     limit: int = 50,
+    monitor_kwargs: dict[str, Any] | None = None,
 ) -> TickSummary:
-    """Run one scalping tick. ``enabled=False`` is the kill switch (no-op)."""
+    """Run one scalping tick: signal → bounded-monitor entry per symbol.
+
+    ``enabled=False`` is the kill switch (no-op). Entries always exit flat
+    in-run (``execute_monitored``), so there is no held-position reconcile
+    phase. Capacity (per-symbol / global / daily caps) is enforced by the
+    executor's live-ledger risk re-check.
+    """
     if not enabled:
         logger.info("demo scalping scheduler disabled — no-op tick")
         return TickSummary(status="disabled")
 
     limits = limits or ScalpingRiskLimits()
-    reconciled: list[tuple[str, str]] = []
     entered: list[tuple[str, str, str]] = []
     errors: list[str] = []
+    monitor_kwargs = monitor_kwargs or {}
 
-    # Phase 1 — reconcile held bracketed positions (cleanup before entering).
-    try:
-        held = await ledger.list_held_bracketed()
-    except Exception as exc:  # noqa: BLE001 — collect, never crash the tick
-        held = []
-        errors.append(f"list_held_bracketed: {exc}")
-    for cid, product in held:
-        executor = executors.get(product)
-        if executor is None:
-            errors.append(f"reconcile {cid}: no executor for product {product!r}")
-            continue
-        try:
-            result = await executor.reconcile_bracket(open_client_order_id=cid)
-            reconciled.append((cid, result.status))
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"reconcile {cid}: {exc}")
-
-    # Phase 2 — signal-driven bracketed entries (capacity enforced by the
-    # executor's live-ledger risk re-check).
     for product in products:
         executor = executors.get(product)
         if executor is None:
@@ -126,7 +110,9 @@ async def run_scalping_tick(
                 )
                 if intent is None:
                     continue
-                result = await executor.execute_bracket(intent, confirm=confirm)
+                result = await executor.execute_monitored(
+                    intent, confirm=confirm, **monitor_kwargs
+                )
                 entered.append((product, symbol, result.status))
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"enter {product}/{symbol}: {exc}")
@@ -136,6 +122,4 @@ async def run_scalping_tick(
         logger.error(
             "demo scalping tick completed with %d error(s): %s", len(errors), errors
         )
-    return TickSummary(
-        status="ran", reconciled=reconciled, entered=entered, errors=errors
-    )
+    return TickSummary(status="ran", entered=entered, errors=errors)

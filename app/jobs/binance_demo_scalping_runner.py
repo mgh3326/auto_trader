@@ -10,8 +10,8 @@ call the same entrypoint). **Default-OFF, two-key gate:**
 Both must be truthy or the tick is a no-op that builds zero clients and
 touches no DB. Even when both are on, real orders are placed only if
 ``BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM`` is also truthy; otherwise the
-tick runs the signals + risk re-checks but every ``execute_bracket`` is a
-dry-run (zero broker mutation).
+tick runs the signals + risk re-checks but every ``execute_monitored`` is
+a dry-run (zero broker mutation).
 
 No schedule is registered anywhere — production recurrence + activation
 is a separate operator gate (see the runbook).
@@ -64,12 +64,11 @@ async def run_demo_scalping_tick(*, now: dt.datetime | None = None) -> dict[str,
 
     # Lazy imports so the disabled path triggers zero engine/credential setup.
     from app.core.db import AsyncSessionLocal
-    from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
+    from app.services.brokers.binance.demo_scalping.market_data import (
+        DemoScalpingMarketData,
+    )
     from app.services.brokers.binance.demo_scalping_exec.executor import (
         DemoScalpingExecutor,
-    )
-    from app.services.brokers.binance.demo_scalping_exec.market_data import (
-        DemoScalpingMarketData,
     )
     from app.services.brokers.binance.demo_scalping_exec.reference import (
         DemoReferenceData,
@@ -97,6 +96,7 @@ async def run_demo_scalping_tick(*, now: dt.datetime | None = None) -> dict[str,
                     session=session,
                     reference=reference,
                     now=now,
+                    market_data=market_data,
                 ),
                 "usdm_futures": DemoScalpingExecutor(
                     product="usdm_futures",
@@ -104,12 +104,12 @@ async def run_demo_scalping_tick(*, now: dt.datetime | None = None) -> dict[str,
                     session=session,
                     reference=reference,
                     now=now,
+                    market_data=market_data,
                 ),
             }
             summary = await run_scalping_tick(
                 executors=executors,
                 market_data=market_data,
-                ledger=BinanceDemoLedgerService(session),
                 symbols=symbols,
                 products=list(_PRODUCTS),
                 now=now,

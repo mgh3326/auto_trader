@@ -69,13 +69,3 @@ class SpotDemoAssetBalance:
     asset: str
     free: Decimal
     locked: Decimal
-
-
-@dataclass(frozen=True)
-class SpotDemoOcoResult:
-    """ROB-307 PR3 — a placed OCO order list (TP limit + SL stop-limit)."""
-
-    order_list_id: str
-    list_status: str
-    leg_client_order_ids: tuple[str, ...]
-    raw_response_redacted: dict[str, Any] = field(default_factory=dict)

@@ -50,3 +50,52 @@ async def test_taskiq_task_is_unscheduled_manual_entrypoint(monkeypatch) -> None
     _no_client(monkeypatch)
     result = await binance_demo_scalping_tick()
     assert result["status"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_enabled_path_wires_without_import_errors(monkeypatch) -> None:
+    # Both gates on → the enabled path executes all imports + wiring. Heavy
+    # deps are faked (no creds/DB/network). This would have caught the
+    # wrong-package import of DemoScalpingMarketData.
+    import app.core.db as dbmod
+    import app.services.brokers.binance.demo_scalping_exec.scheduler as schedmod
+    from app.services.brokers.binance.futures_demo.execution_client import (
+        BinanceFuturesDemoExecutionClient,
+    )
+    from app.services.brokers.binance.spot_demo.execution_client import (
+        BinanceSpotDemoExecutionClient,
+    )
+
+    monkeypatch.setenv("BINANCE_DEMO_SCALPING_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED", "true")
+
+    class _Cli:
+        async def aclose(self):
+            return None
+
+    for cls in (BinanceSpotDemoExecutionClient, BinanceFuturesDemoExecutionClient):
+        monkeypatch.setattr(cls, "from_env", classmethod(lambda cls: _Cli()))
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(dbmod, "AsyncSessionLocal", lambda: _Sess())
+
+    class _Summary:
+        def to_evidence_dict(self):
+            return {"status": "ran", "entered_count": 0}
+
+    async def _fake_tick(**kwargs):
+        return _Summary()
+
+    monkeypatch.setattr(schedmod, "run_scalping_tick", _fake_tick)
+
+    result = await run_demo_scalping_tick()
+    assert result["status"] == "ran"

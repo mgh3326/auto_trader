@@ -166,75 +166,59 @@ don't (correctly) trip the global cap. Procedure:
 5. Capture the redacted evidence line + a broker/ledger reconciliation
    check (open orders 0; futures position flat).
 
-## Broker-side bracket TP/SL (PR3)
+## Bounded-monitor TP/SL (`execute_monitored`)
 
-PR3 adds the §2-preferred **broker-side bracket**: after entry, place
-exchange-native exits and **hold the protected position** (it survives
-across scheduler runs — that's the point). Exit detection + cleanup is a
-separate reconcile step.
+The TP/SL exit is a **bounded app-managed monitor** (MARKET-only). After
+entry, poll the bookTicker within a bounded window and MARKET-close on a
+TP/SL cross, else failsafe-close at the window end — the run **always ends
+flat** (no unattended position).
 
-| Surface | Added |
+> **Why not broker-side brackets?** That approach was attempted (futures
+> STOP_MARKET/TAKE_PROFIT_MARKET, spot OCO) but **demo-fapi rejects
+> conditional orders** via `/fapi/v1/order` with `-4120 "Order type not
+> supported for this endpoint. Please use the Algo Order API endpoints
+> instead."` (live-confirmed 2026-05-25), even though `exchangeInfo`
+> advertises the types. The bracket path was removed; the bounded monitor
+> uses only MARKET orders, which are proven on demo.
+
+| Surface | Behaviour |
 |---|---|
-| `futures_demo` exec client | `submit_reduce_only_trigger` (STOP_MARKET / TAKE_PROFIT_MARKET, reduceOnly) |
-| `spot_demo` exec client | `submit_oco` (SELL OCO: TP limit + SL stop-limit) |
-| `demo_scalping_exec/reference.py` | `tick_size` (PRICE_FILTER) for tick-aligned bracket prices |
-| `demo_scalping_exec/executor.py` | `execute_bracket` (open + place TP/SL + hold) and `reconcile_bracket` (detect exit, cancel survivor, close+reconcile) |
-| `scripts/binance_demo_scalping_execute.py` | `--bracket` and `--reconcile OPEN_CID` modes |
+| `demo_scalping_exec/executor.py` | `execute_monitored(intent, …, max_poll_count/poll_interval_s/max_runtime_s)` — open → bounded poll → TP/SL MARKET-close or failsafe → reconcile flat. Shares `_open_position` + `_close_and_reconcile` with `execute()`. |
+| `scripts/binance_demo_scalping_execute.py` | `--monitor` (+ `--max-poll-count`) flag |
 
-**Lifecycle:** `execute_bracket` → open (MARKET) → fill-resolve → place
-TP+SL (futures: two reduceOnly triggers; spot: one OCO, tick-aligned) →
-`record_filled` with the bracket leg ids in `extra_metadata` → status
-`bracketed` (parent stays `filled`, exits resting). Unproven fill →
-`anomaly` (no bracket). Bracket-placement failure → best-effort failsafe
-close + `anomaly` (never left unprotected). On a later tick,
-`reconcile_bracket` → still holding = `still_protected` (no-op); exit
-fired = cancel any surviving futures leg (spot OCO self-cancels) →
-parent `filled→closed→reconciled`.
+**Lifecycle:** open (MARKET) → fill-resolve → monitor (poll mid price;
+`mid≥tp`→`take_profit`, `mid≤sl`→`stop_loss`, bounds exhausted→`timeout`)
+→ MARKET close (spot SELL free / futures `reduceOnly`) → reconcile to
+flat / open-orders-0. `result.exit_reason` records which path fired. TP/SL
+prices are `entry ± bps`, tick-aligned (`reference.tick_size`).
 
 ```bash
-# Open + bracket + HOLD (real; clean ledger DB + Demo creds + product gate)
+# Monitored entry (real; clean ledger DB + Demo creds + product gate)
 BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
   uv run python scripts/binance_demo_scalping_execute.py \
-    --product usdm_futures --symbol XRPUSDT --bracket --confirm
-# → status=bracketed; note the open_client_order_id from the evidence line
-
-# Later: reconcile the held position by its open client_order_id
-BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
-  uv run python scripts/binance_demo_scalping_execute.py \
-    --product usdm_futures --symbol XRPUSDT --reconcile rob307-<...>
-# → still_protected (held) OR reconciled (exit fired, survivor cancelled)
+    --product usdm_futures --symbol XRPUSDT --monitor --confirm
+# → status=reconciled, exit_reason ∈ {take_profit, stop_loss, timeout}, flat
 ```
 
-### Live demo trigger-firing validation (operator, clean env)
+### Live validation (operator, clean env)
 
-Unit tests cover placement + cancellation + reconcile logic with a fake
-broker; they **cannot** prove Binance Demo actually *fires* a STOP/TP
-trigger (needs real price movement). Validate live in a clean demo ledger
-DB:
-
-1. `--bracket --confirm` a tiny position; confirm both exit legs rest
-   (`GET openOrders` shows STOP_MARKET + TAKE_PROFIT_MARKET, or the OCO
-   list) and the position is held.
-2. Wait for (or nudge via a near-the-money trigger) one leg to fire;
-   confirm the position goes flat.
-3. `--reconcile <open_cid>`; confirm the surviving leg is cancelled
-   (futures), open orders = 0, and the parent ledger row reconciles.
-4. Capture redacted evidence (order ids, leg statuses, final flat /
-   open-orders-0).
+Unit tests cover TP/SL/timeout decisions + close+reconcile with a fake
+broker + scripted prices. Live-validate against a **clean demo ledger DB**:
+a `--monitor --confirm` entry ends `status=reconciled` with `exit_reason`
+set, position flat, open orders 0. Capture redacted evidence.
 
 ## Scheduler scaffold (PR4) — default-OFF, no activation
 
-PR4 adds the scheduler **scaffold**: one tick reconciles held bracketed
-positions then runs the signal per allowlisted symbol and places brackets
-on entries. It is **registered with no schedule** (a manual entry point
-only) and **default-OFF** behind a two-key flag gate.
+PR4 adds the scheduler **scaffold**: one tick runs the signal per
+allowlisted symbol and places a **bounded-monitor entry** (which always
+exits flat in-run) on each signal. It is **registered with no schedule**
+(a manual entry point only) and **default-OFF** behind a two-key flag gate.
 
 | Surface | Added |
 |---|---|
-| `app/services/.../demo_scalping_exec/scheduler.py` | `run_scalping_tick` — reconcile held + signal-driven bracket entries; `enabled=False` kill switch; per-item error collection (failure-only) |
+| `app/services/.../demo_scalping_exec/scheduler.py` | `run_scalping_tick` — signal-driven `execute_monitored` entries; `enabled=False` kill switch; per-item error collection (failure-only) |
 | `app/jobs/binance_demo_scalping_runner.py` | `run_demo_scalping_tick` — env-wired, two-key gate |
 | `app/tasks/binance_demo_scalping_tasks.py` | `@broker.task("binance.demo_scalping.tick")` — **no `schedule=`** |
-| ledger service | `list_held_bracketed` (rows in `filled` = held) |
 
 ### Flags (all default-OFF)
 
@@ -242,7 +226,7 @@ only) and **default-OFF** behind a two-key flag gate.
 |---|---|
 | `BINANCE_DEMO_SCALPING_ENABLED` | shared feature gate |
 | `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED` | scheduler **kill switch** |
-| `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM` | second key — without it the tick runs signals + risk re-checks but every `execute_bracket` is a **dry-run** (zero broker mutation) |
+| `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM` | second key — without it the tick runs signals + risk re-checks but every `execute_monitored` is a **dry-run** (zero broker mutation) |
 
 Both `*_ENABLED` flags must be truthy or the tick builds zero clients,
 touches no DB, and returns `{"status": "disabled"}`. **The kill switch is:
@@ -256,8 +240,8 @@ next tick is an immediate no-op.
 BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED=true \
   uv run taskiq kick app.core.taskiq_broker:broker binance.demo_scalping.tick
 
-# Real tick (places brackets): add the second key + product gates + creds,
-# and run against a CLEAN demo ledger DB
+# Real tick (places monitored entries): add the second key + product gates
+# + creds, and run against a CLEAN demo ledger DB
 BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED=true \
 BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM=true \
 BINANCE_SPOT_DEMO_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
