@@ -35,15 +35,23 @@ from sqlalchemy import select
 from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 from app.services.brokers.binance.demo_scalping.contract import (
+    DEMO_SCALPING_FEE_RATE_BPS,
     MarketConditions,
     Product,
     ScalpingRiskLimits,
     evaluate_risk,
 )
+from app.services.brokers.binance.demo_scalping.cost import (
+    build_round_trip_economics,
+    spot_avg_fill_price,
+)
 from app.services.brokers.binance.demo_scalping.ledger_state import (
     load_ledger_snapshot,
 )
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
+from app.services.brokers.binance.demo_scalping_exec.analytics import (
+    ScalpTradeAnalyticsService,
+)
 from app.services.brokers.binance.demo_scalping_exec.reference import (
     DemoReferenceData,
     SymbolReference,
@@ -164,8 +172,87 @@ class DemoScalpingExecutor:
         self.limits = limits or ScalpingRiskLimits()
         self.market_data = market_data  # required for execute_monitored
         self.ledger = BinanceDemoLedgerService(session)
+        self.analytics = ScalpTradeAnalyticsService(session)
         self.poll_max = poll_max
         self.poll_delay_seconds = poll_delay_seconds
+        # Avg fill prices captured during a single run (ROB-313 cost capture).
+        self._open_fill_price: Decimal | None = None
+        self._close_fill_price: Decimal | None = None
+
+    def _extract_fill_price(self, submit: Any) -> Decimal | None:
+        """Avg fill price from a submit/order result. Futures carries
+        ``avgPrice``; spot is derived from cumQuote/executedQty. ``None``
+        when not derivable (unfilled / missing fields)."""
+        if self.product == "usdm_futures":
+            ap = getattr(submit, "avg_price", None)
+            return ap if ap is not None and ap > 0 else None
+        cq = getattr(submit, "cummulative_quote_qty", None)
+        eq = getattr(submit, "executed_qty", None)
+        if cq is None or eq is None:
+            return None
+        return spot_avg_fill_price(cummulative_quote_qty=cq, executed_qty=eq)
+
+    async def _finalize_analytics(
+        self,
+        intent: OrderIntent,
+        ref: SymbolReference,
+        qty: Decimal,
+        notional: Decimal,
+        instrument_id: int,
+        result: ExecutionResult,
+    ) -> None:
+        """Best-effort: write one ``scalp_trade_analytics`` round-trip row.
+
+        Runs in a SAVEPOINT so an analytics failure can never poison the
+        trade-lifecycle transaction. Only called once the run reached
+        close/reconcile; open-stage failures return earlier and record no
+        row (no real round-trip). Exit-derived fields stay NULL when the
+        close leg did not fill (ROB-313 — never a fabricated success).
+
+        MAE/MFE, spread@fill, exit-slippage reference, holding time and
+        session tag are deferred to a follow-up commit (all nullable)."""
+        if result.open_client_order_id is None:
+            return
+        entry_fill = self._open_fill_price or ref.price
+        entry_ref = intent.entry_reference_price or ref.price
+        try:
+            econ = build_round_trip_economics(
+                side=intent.side,
+                qty=qty,
+                entry_reference_price=entry_ref,
+                entry_fill_price=entry_fill,
+                fee_rate_bps=DEMO_SCALPING_FEE_RATE_BPS,
+                exit_fill_price=self._close_fill_price,
+            )
+            async with self.session.begin_nested():
+                await self.analytics.record(
+                    open_client_order_id=result.open_client_order_id,
+                    close_client_order_id=result.close_client_order_id,
+                    instrument_id=instrument_id,
+                    product=intent.product,
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    qty=qty,
+                    entry_price=entry_fill,
+                    exit_price=self._close_fill_price,
+                    entry_notional_usdt=econ.entry_notional_usdt,
+                    fee_rate_bps=DEMO_SCALPING_FEE_RATE_BPS,
+                    entry_fee_usdt=econ.entry_fee_usdt,
+                    exit_fee_usdt=econ.exit_fee_usdt,
+                    entry_slippage_bps=econ.entry_slippage_bps,
+                    exit_slippage_bps=econ.exit_slippage_bps,
+                    gross_pnl_usdt=econ.gross_pnl_usdt,
+                    net_pnl_usdt=econ.net_pnl_usdt,
+                    net_return_bps=econ.net_return_bps,
+                    exit_reason=result.exit_reason,
+                    now=self.now,
+                )
+        except Exception:  # noqa: BLE001 — analytics is best-effort, never fatal
+            logger.exception(
+                "scalp analytics write failed for %s %s",
+                intent.product,
+                intent.symbol,
+            )
 
     async def execute(
         self, intent: OrderIntent, *, confirm: bool = False
@@ -180,7 +267,7 @@ class DemoScalpingExecutor:
         )
         if error is not None:
             return error
-        return await self._close_and_reconcile(
+        result = await self._close_and_reconcile(
             intent,
             ref,
             qty,
@@ -189,6 +276,8 @@ class DemoScalpingExecutor:
             instrument_id,
             exit_reason="immediate",
         )
+        await self._finalize_analytics(intent, ref, qty, notional, instrument_id, result)
+        return result
 
     async def execute_monitored(
         self,
@@ -251,7 +340,7 @@ class DemoScalpingExecutor:
                 intent.product,
                 intent.symbol,
             )
-        return await self._close_and_reconcile(
+        result = await self._close_and_reconcile(
             intent,
             ref,
             qty,
@@ -261,6 +350,8 @@ class DemoScalpingExecutor:
             exit_reason=exit_reason,
             monitor_error=monitor_error,
         )
+        await self._finalize_analytics(intent, ref, qty, notional, instrument_id, result)
+        return result
 
     async def _monitor_until_exit(
         self, intent, *, tp, sl, long, max_poll_count, poll_interval, max_runtime_s
@@ -386,6 +477,7 @@ class DemoScalpingExecutor:
                         sized_notional_usdt=notional,
                         final_flat=True,
                     )
+            self._open_fill_price = self._extract_fill_price(submit)
             return open_cid, None
 
         open_cid, submit = await self._open_leg(intent, instrument_id, qty, notional)
@@ -403,6 +495,7 @@ class DemoScalpingExecutor:
                 sized_notional_usdt=notional,
             )
         await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
+        self._open_fill_price = self._extract_fill_price(submit)
         return open_cid, None
 
     # ------------------------------------------------------------------
@@ -630,6 +723,7 @@ class DemoScalpingExecutor:
             if csubmit.status == "FILLED":
                 await self.ledger.record_filled(client_order_id=close_cid, now=self.now)
                 close_filled = True
+            self._close_fill_price = self._extract_fill_price(csubmit)
 
         await self.ledger.record_closed(client_order_id=open_cid, now=self.now)
 
@@ -735,6 +829,7 @@ class DemoScalpingExecutor:
                 now=self.now,
                 extra_metadata_merge={"submit_status": csubmit.status},
             )
+            self._close_fill_price = self._extract_fill_price(csubmit)
             cproven = await self._fill_proven(intent.symbol, close_cid, csubmit.status)
             if cproven:
                 await self.ledger.record_filled(client_order_id=close_cid, now=self.now)

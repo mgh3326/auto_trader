@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models.crypto_instruments import CryptoInstrument
-from app.services.brokers.binance.demo_scalping.analytics import (
+from app.services.brokers.binance.demo_scalping_exec.analytics import (
     ScalpTradeAnalyticsService,
 )
 
