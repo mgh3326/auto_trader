@@ -77,7 +77,36 @@ def _make_action(action_id: int, review_id: int, **kw) -> ScalpingReviewAction:
     return ScalpingReviewAction(**base)
 
 
+def _make_analytics(**kw):
+    from app.models.scalp_trade_analytics import ScalpTradeAnalytics
+
+    base = dict(
+        id=1,
+        open_client_order_id="o-1",
+        instrument_id=1,
+        product="usdm_futures",
+        symbol="XRPUSDT",
+        side="BUY",
+        qty=Decimal("1"),
+        entry_price=Decimal("100"),
+        exit_price=Decimal("101"),
+        entry_slippage_bps=Decimal("2"),
+        mae_bps=Decimal("-10"),
+        mfe_bps=Decimal("40"),
+        net_pnl_usdt=Decimal("0.9"),
+        holding_seconds=12,
+        exit_reason="take_profit",
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+    base.update(kw)
+    return ScalpTradeAnalytics(**base)
+
+
 class _StubService:
+    async def list_analytics(self, *, review_date, product):
+        return [_make_analytics(), _make_analytics(id=2, entry_price=None)]
+
     async def list_reviews(self, *, review_date=None, product=None):
         return [_make_review(1)]
 
@@ -136,6 +165,19 @@ def test_list_reviews_serializes_metrics() -> None:
     assert m["netPnlUsdt"] == "-0.2"  # Decimal serialized as string
     assert m["avgSpreadBps"] is None  # n/a, not 0
     assert m["exitReasonCounts"] == {"take_profit": 1, "stop_loss": 1}
+
+
+def test_list_analytics_marks_anomaly_rows() -> None:
+    resp = _client().get(
+        "/invest/api/scalping/analytics?date=2026-05-25&product=usdm_futures"
+    )
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 2
+    assert items[0]["isAnomaly"] is False
+    assert items[0]["entryPrice"] == "100"
+    assert items[1]["isAnomaly"] is True  # no derivable fill price
+    assert items[1]["entryPrice"] is None
 
 
 def test_get_review_includes_actions() -> None:

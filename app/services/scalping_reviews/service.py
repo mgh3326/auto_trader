@@ -119,21 +119,31 @@ class ScalpingReviewService:
             )
         )
 
-    async def _rollup_for(self, review_date: dt.date, product: str) -> RollupResult:
+    async def list_analytics(
+        self, *, review_date: dt.date, product: str
+    ) -> list[ScalpTradeAnalytics]:
+        """Raw scalp_trade_analytics round-trip rows for a day/product, oldest
+        first. Read-only — the per-trade table renders these; the review UI
+        never edits them."""
         start = dt.datetime.combine(review_date, dt.time.min, tzinfo=dt.UTC)
         end = start + dt.timedelta(days=1)
-        rows = (
-            await self._session.scalars(
-                select(ScalpTradeAnalytics)
-                .where(
-                    ScalpTradeAnalytics.product == product,
-                    ScalpTradeAnalytics.created_at >= start,
-                    ScalpTradeAnalytics.created_at < end,
+        return list(
+            (
+                await self._session.scalars(
+                    select(ScalpTradeAnalytics)
+                    .where(
+                        ScalpTradeAnalytics.product == product,
+                        ScalpTradeAnalytics.created_at >= start,
+                        ScalpTradeAnalytics.created_at < end,
+                    )
+                    .order_by(ScalpTradeAnalytics.created_at)
                 )
-                .order_by(ScalpTradeAnalytics.created_at)
-            )
-        ).all()
-        return build_rollup(list(rows))
+            ).all()
+        )
+
+    async def _rollup_for(self, review_date: dt.date, product: str) -> RollupResult:
+        rows = await self.list_analytics(review_date=review_date, product=product)
+        return build_rollup(rows)
 
     @staticmethod
     def _apply_rollup(review: ScalpingDailyReview, rollup: RollupResult) -> None:

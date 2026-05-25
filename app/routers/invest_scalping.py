@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.models.scalp_trade_analytics import ScalpTradeAnalytics
 from app.models.scalping_reviews import ScalpingDailyReview, ScalpingReviewAction
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.invest_scalping import (
@@ -101,6 +102,40 @@ def _serialize_review(review: ScalpingDailyReview) -> dict[str, Any]:
         "createdAt": _iso(review.created_at),
         "updatedAt": _iso(review.updated_at),
     }
+
+
+def _serialize_analytics(row: ScalpTradeAnalytics) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "openClientOrderId": row.open_client_order_id,
+        "symbol": row.symbol,
+        "side": row.side,
+        "qty": _num(row.qty),
+        "entryPrice": _num(row.entry_price),
+        "exitPrice": _num(row.exit_price),
+        "entrySlippageBps": _num(row.entry_slippage_bps),
+        "exitSlippageBps": _num(row.exit_slippage_bps),
+        "entrySpreadBps": _num(row.entry_spread_bps),
+        "exitSpreadBps": _num(row.exit_spread_bps),
+        "maeBps": _num(row.mae_bps),
+        "mfeBps": _num(row.mfe_bps),
+        "netPnlUsdt": _num(row.net_pnl_usdt),
+        "holdingSeconds": row.holding_seconds,
+        "exitReason": row.exit_reason,
+        # No derivable entry fill price → a partial/anomaly row (ROB-315 0b).
+        "isAnomaly": row.entry_price is None,
+    }
+
+
+@router.get("/analytics")
+async def list_analytics(
+    user: _USER,
+    service: _SVC,
+    review_date: Annotated[date, Query(alias="date")],
+    product: Annotated[Product, Query()],
+) -> dict[str, Any]:
+    rows = await service.list_analytics(review_date=review_date, product=product)
+    return {"items": [_serialize_analytics(r) for r in rows]}
 
 
 @router.get("/reviews")
