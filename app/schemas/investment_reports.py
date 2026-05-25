@@ -20,7 +20,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.investment_snapshots import (
     BundleItemRole,
@@ -156,6 +156,21 @@ class IngestReportItem(BaseModel):
     proposed_state: dict[str, Any] | None = None
     diff: list[dict[str, Any]] | None = None
     apply_policy: ApplyPolicyLiteral | None = None
+
+    # ROB-308 — final-item classification (held action vs new candidate) +
+    # per-item source citations. All optional; legacy items omit them.
+    decision_bucket: str | None = None
+    cited_symbol_report_uuid: UUID | None = None
+    cited_dimension_report_uuids: list[UUID] = Field(default_factory=list)
+
+    @field_validator("decision_bucket")
+    @classmethod
+    def _decision_bucket_in_vocab(cls, v: str | None) -> str | None:
+        from app.models.investment_symbol_intermediate_reports import DECISION_BUCKETS
+
+        if v is not None and v not in DECISION_BUCKETS:
+            raise ValueError(f"decision_bucket={v!r} not in {DECISION_BUCKETS!r}")
+        return v
 
     @model_validator(mode="after")
     def _validate_watch_invariants(self) -> IngestReportItem:
@@ -379,6 +394,11 @@ class InvestmentReportItemResponse(BaseModel):
     diff: list[dict[str, Any]] | None = None
     apply_policy: ApplyPolicyLiteral | None = None
 
+    # ROB-308 — final-item classification + citations
+    decision_bucket: str | None = None
+    cited_symbol_report_uuid: UUID | None = None
+    cited_dimension_report_uuids: list[UUID] = Field(default_factory=list)
+
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
@@ -484,6 +504,13 @@ class InvestmentReportBundle(BaseModel):
     decisions_by_item_uuid: dict[str, list[InvestmentReportItemDecisionResponse]]
     alerts: list[InvestmentWatchAlertResponse]
     events: list[InvestmentWatchEventResponse]
+    # ROB-308 — read-side grouping
+    item_groups: dict[str, list[InvestmentReportItemResponse]] = Field(
+        default_factory=dict
+    )
+    decision_rollup: dict[str, list[InvestmentReportItemResponse]] = Field(
+        default_factory=dict
+    )
 
 
 class InvestmentReportListResponse(BaseModel):

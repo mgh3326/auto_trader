@@ -1,0 +1,54 @@
+{
+  "_comment": "ROB-309 — sample Hermes-produced symbol-reports ingest payload (ROB-301 contract). Belongs to the SAME stage run as the cross-symbol artifacts it consumes, so run_envelope must match the stage-artifacts run_envelope. verdict is NOT a field — the service derives it from (decision_bucket, side, availability). {{run_uuid}} / {{snapshot_bundle_uuid}} placeholders are substituted by the round-trip smoke test/CLI at runtime.",
+  "request_version": "hermes-symbol-reports.v1",
+  "run_envelope": {
+    "run_uuid": "{{run_uuid}}",
+    "snapshot_bundle_uuid": "{{snapshot_bundle_uuid}}",
+    "market": "kr",
+    "market_session": "regular",
+    "account_scope": "kis_live",
+    "policy_version": "intraday_action_report_v1",
+    "generator_version": "hermes-stage-artifacts.v1",
+    "hermes_run_id": "hermes-smoke-001"
+  },
+  "report_kind": "final_report_symbol",
+  "symbol_reports": [
+    {
+      "symbol": "005930",
+      "symbol_name": "삼성전자",
+      "data_available": true,
+      "decision_bucket": "new_buy_candidate",
+      "side": "buy",
+      "confidence": 61,
+      "summary": "Foreign net-buy + breadth support a fresh long; entry on pullback to 5d MA.",
+      "rationale": "Market regime risk-on, foreign net-buy 3rd session, HBM3e shipment catalyst modest positive. Scale in on dip.",
+      "buy_evidence": [
+        "Foreign net-buy 3rd consecutive session",
+        "KOSPI breadth net-positive"
+      ],
+      "sell_evidence": [],
+      "risk_evidence": [],
+      "missing_data": [],
+      "cited_snapshot_uuids": [],
+      "source_stage_artifact_uuids": []
+    },
+    {
+      "symbol": "000660",
+      "symbol_name": "SK하이닉스",
+      "data_available": true,
+      "decision_bucket": "risk_watch",
+      "side": null,
+      "confidence": 44,
+      "summary": "Hold and watch; memory cycle read mixed, no fresh entry edge.",
+      "rationale": "No dominant catalyst; keep on watch for trend reclaim before adding.",
+      "buy_evidence": [],
+      "sell_evidence": [],
+      "risk_evidence": [
+        "Memory pricing read mixed"
+      ],
+      "missing_data": [],
+      "cited_snapshot_uuids": [],
+      "source_stage_artifact_uuids": []
+    }
+  ]
+}

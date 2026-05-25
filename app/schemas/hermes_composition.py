@@ -85,6 +85,9 @@ class HermesContextPayload(BaseModel):
     freshness_summary: dict[str, Any] = Field(default_factory=dict)
     unavailable_sources: dict[str, Any] = Field(default_factory=dict)
     source_conflicts: dict[str, Any] = Field(default_factory=dict)
+    dimension_evidence: dict[str, Any] = Field(default_factory=dict)
+    dimension_reports: list[dict[str, Any]] = Field(default_factory=list)
+    symbol_intermediate_reports: list[dict[str, Any]] = Field(default_factory=list)
     stage_inputs: list[HermesStageInput] = Field(default_factory=list)
     cited_snapshots: list[HermesCitedSnapshot] = Field(default_factory=list)
     constraints: HermesContextConstraints = Field(
@@ -122,6 +125,9 @@ class HermesCompositionResult(BaseModel):
     # path is then byte-identical (REGRESSION). Validated for existence (and
     # run membership) on ingest.
     symbol_intermediate_report_uuids: list[uuid.UUID] = Field(default_factory=list)
+    # ROB-308: dimension reports (ROB-306) this composition consumed. Empty for
+    # legacy composition. Validated for existence + run membership on ingest.
+    dimension_report_uuids: list[uuid.UUID] = Field(default_factory=list)
 
     @field_validator("items")
     @classmethod

@@ -72,6 +72,11 @@ async def investment_snapshot_bundle_ensure(
         requested_by=requested_by,  # type: ignore[arg-type]
     )
     async with _session_factory()() as db:
+        # ROB-314: deliberately NOT wired to production_collector_registry.
+        # This is the generic bundle-ensure primitive — callers feed manual
+        # snapshots or rely on reuse. Production collectors are injected only
+        # at the report-generation entrypoints. Locked by
+        # tests/test_rob314_deferred_call_sites.py.
         svc = SnapshotBundleEnsureService(db)
         response = await svc.ensure(request)
         await db.commit()

@@ -173,3 +173,16 @@ def test_composition_accepts_no_items_partial_data_case() -> None:
     comp = _make_composition(bundle_uuid=bundle_uuid, items=[])
     assert comp.items == []
     assert comp.snapshot_bundle_uuid == bundle_uuid
+
+
+def test_composition_accepts_dimension_report_uuids():
+    bundle_uuid = uuid.uuid4()
+    du = uuid.uuid4()
+    c = HermesCompositionResult(
+        snapshot_bundle_uuid=bundle_uuid,
+        hermes_run_id="h1",
+        title="t",
+        summary="s",
+        dimension_report_uuids=[du],
+    )
+    assert c.dimension_report_uuids == [du]

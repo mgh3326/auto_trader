@@ -143,3 +143,26 @@ class MarketValuationSnapshotsRepository:
             ).where(sa.or_(*conditions))
         )
         return {(r.market, r.symbol, r.snapshot_date, r.source) for r in result.all()}
+
+    async def latest_for_symbols(
+        self, *, market: str, symbols: set[str]
+    ) -> list[MarketValuationSnapshot]:
+        if not symbols:
+            return []
+        norm_market = market.strip().lower()
+        norm_symbols = {s.strip().upper() for s in symbols}
+        stmt = (
+            select(MarketValuationSnapshot)
+            .where(
+                MarketValuationSnapshot.market == norm_market,
+                MarketValuationSnapshot.symbol.in_(norm_symbols),
+            )
+            .order_by(
+                MarketValuationSnapshot.symbol.asc(),
+                MarketValuationSnapshot.snapshot_date.desc(),
+                MarketValuationSnapshot.computed_at.desc(),
+            )
+            .distinct(MarketValuationSnapshot.symbol)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())

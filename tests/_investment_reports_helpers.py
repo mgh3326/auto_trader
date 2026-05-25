@@ -136,6 +136,22 @@ async def session() -> AsyncSession:
                         "ADD COLUMN IF NOT EXISTS diff JSONB",
                         "ALTER TABLE review.investment_report_items "
                         "ADD COLUMN IF NOT EXISTS apply_policy TEXT",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS decision_bucket TEXT",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS cited_symbol_report_uuid UUID",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS cited_dimension_report_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_report_items_ck_investment_report_items_decision_bucket",
+                        "ALTER TABLE review.investment_report_items "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_report_items_decision_bucket",
+                        "ALTER TABLE review.investment_report_items "
+                        "ADD CONSTRAINT ck_investment_report_items_decision_bucket "
+                        "CHECK ("
+                        "decision_bucket IS NULL OR decision_bucket IN ("
+                        "'new_buy_candidate','open_action','completed_or_existing','deferred_no_action','risk_watch'"
+                        "))",
                         "CREATE INDEX IF NOT EXISTS "
                         "ix_investment_report_items_operation_kind "
                         "ON review.investment_report_items "

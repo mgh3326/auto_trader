@@ -166,36 +166,63 @@ Optional flags:
 
 ### 7.3 Steps the CLI drives
 
-The CLI loads Hermes-shaped payloads from `tests/fixtures/hermes/*.json` and substitutes the two placeholder UUIDs (`{{run_uuid}}`, `{{snapshot_bundle_uuid}}`) at runtime:
+The CLI loads Hermes-shaped payloads from `tests/fixtures/hermes/*.json` and substitutes the placeholder UUIDs (`{{run_uuid}}`, `{{snapshot_bundle_uuid}}` always; `{{symbol_report_uuid}}` / `{{dimension_report_uuid}}` are filled in from the symbol-/dimension-reports responses before the composition POST). As of ROB-309 a single run exercises the **full current contract** — ROB-287 baseline + ROB-301 symbol-reports + ROB-306 dimension-reports + ROB-308 final-synthesis fields:
 
-1. `POST /trading/api/investment-reports/hermes/context` — returns `HermesContextPayload` (5 deterministic stages render; missing snapshots surface as UNAVAILABLE without aborting).
+1. `POST /trading/api/investment-reports/hermes/context` — returns `HermesContextPayload` (5 deterministic stages render; missing snapshots surface as UNAVAILABLE without aborting). On this first pull `dimension_reports` / `symbol_intermediate_reports` are empty.
 2. `POST /trading/api/investment-reports/hermes/stage-artifacts` — append-only ingest of 5 stage artifacts under one `run_uuid`. Re-running the same CLI invocation returns 200 OK with `idempotent_existing=true` on every artifact.
-3. `POST /trading/api/investment-reports/hermes/composition` — final composition + auto-finalize the stage run. The Investment­Report row lands with `metadata.hermes_composition.hermes_run_id="hermes-smoke-001"`.
+3. `POST /trading/api/investment-reports/hermes/symbol-reports` (ROB-301) — per-symbol reductions for the same `run_uuid`. The CLI captures the first returned `symbol_report_uuid`.
+4. `POST /trading/api/investment-reports/hermes/dimension-reports` (ROB-306) — per-dimension analyst reports for the same `run_uuid`. The CLI captures the `market` dimension's `dimension_report_uuid`.
+5. `POST /trading/api/investment-reports/hermes/context` (re-pull) — the CLI asserts the response now carries **non-empty** `dimension_reports` and `symbol_intermediate_reports`, confirming the run linkage surfaces back to Hermes.
+6. `POST /trading/api/investment-reports/hermes/composition` (ROB-308) — final composition + auto-finalize the stage run. The payload threads `symbol_intermediate_report_uuids` + `dimension_report_uuids` (validated for existence + run membership) and includes one `decision_bucket="new_buy_candidate"` item with `cited_symbol_report_uuid` / `cited_dimension_report_uuids`. The Investment­Report row lands with `metadata.hermes_composition.hermes_run_id="hermes-smoke-001"` plus `metadata.symbol_intermediate_report_uuids` / `metadata.dimension_report_uuids`.
+7. `GET /trading/api/investment-reports/runs/{run_uuid}/dimension-reports?dimension=market` — read surface; the CLI asserts the market dimension report renders (stance `bullish`). **Session-authed** (see §7.4 note).
+8. `GET /trading/api/investment-reports/{report_uuid}` — final report bundle; the CLI asserts `decision_rollup.new_candidate` is non-empty and `item_groups` carries the `new_buy_candidate` group alongside the held/unclassified items (ROB-308 C5 held-action vs new-candidate split). **Session-authed.**
 
 ### 7.4 Expected output
+
+The two GET read surfaces (steps 7–8) are authenticated by the **operator session cookie**, NOT the Hermes ingest token (only the five `…/hermes/*` POSTs use the token). Supply the cookie via `--session-cookie "<cookie>"` or `HERMES_SMOKE_SESSION_COOKIE`. When the cookie is omitted the CLI runs the ingest chain (steps 1–6), logs a warning, and exits 0 without the read-surface assertions — verify the grouping manually in that case (see §7.4 note below).
 
 ```
 ... INFO base_url: https://<host>
 ... INFO bundle_uuid: <uuid>
 ... INFO run_uuid: <uuid>
-... INFO --- step 1/3: context export ---
-... INFO POST .../context → 200  (keys: bundle_status, constraints, ...)
-... INFO --- step 2/3: stage-artifacts ingest ---
+... INFO read-surface GETs: enabled (session cookie supplied)
+... INFO --- step 1/8: context export ---
+... INFO POST .../context → 200  (keys: bundle_status, constraints, dimension_reports, ...)
+... INFO --- step 2/8: stage-artifacts ingest ---
 ... INFO POST .../stage-artifacts → 200  (keys: ...)
 ... INFO   artifacts: 5 (idempotent reuse: 0) run_status: running
-... INFO --- step 3/3: composition ingest ---
+... INFO --- step 3/8: symbol-reports ingest ---
+... INFO POST .../symbol-reports → 200  (keys: ...)
+... INFO   symbol_reports: 2  first symbol_report_uuid: <uuid>
+... INFO --- step 4/8: dimension-reports ingest ---
+... INFO POST .../dimension-reports → 200  (keys: ...)
+... INFO   dimension_reports: 2  market dimension_report_uuid: <uuid>
+... INFO --- step 5/8: context re-pull (carries reports) ---
+... INFO POST .../context → 200  (keys: ...)
+... INFO   context carries dimension_reports: 2  symbol_intermediate_reports: 2
+... INFO --- step 6/8: composition ingest ---
 ... INFO POST .../composition → 200  (keys: ...)
-... INFO   report_uuid: <uuid>  items: 2  status: draft
+... INFO   report_uuid: <uuid>  items: 3  status: draft
+... INFO --- step 7/8: dimension-reports read surface ---
+... INFO GET .../runs/<uuid>/dimension-reports?dimension=market → 200  (keys: ...)
+... INFO   read-surface market reports: 1  stance: bullish
+... INFO --- step 8/8: final report bundle grouping ---
+... INFO GET .../<report_uuid> → 200  (keys: ...)
+... INFO   decision_rollup: new_candidate=1 held_action=0  groups: new_buy_candidate, unclassified
 ... INFO --- round-trip OK ---
 ```
 
-Exit code 0 = full chain succeeded. Exit code 1 = some step returned a 4xx/5xx; stderr carries the body for triage. Re-runnable: stage-artifacts ingest is idempotent on `(run_uuid, stage_type)`, so an aborted run can be safely retried with the same `--run-uuid`.
+(The US fixture set — `--fixture-set us` — drives the same 8 steps but composes 4 items and tags `hermes-smoke-us-001`.)
+
+Exit code 0 = full chain succeeded. Exit code 1 = some step returned a 4xx/5xx (or a contract assertion failed, e.g. the context re-pull did not carry the reports, or the bundle had no `new_candidate`); stderr carries the body for triage. Re-runnable: the stage-artifacts / symbol-reports / dimension-reports ingests are content-idempotent, so an aborted run can be safely retried with the same `--run-uuid`.
+
+> **Note — verifying the new legs during the real-Hermes operator run.** After the smoke exits 0, confirm in the prod DB / read API that (a) the `investment_dimension_reports` row for the `market` dimension exists for the run (or `GET …/runs/{run_uuid}/dimension-reports?dimension=market` returns it), and (b) the final bundle's `decision_rollup` splits the items correctly — the `new_buy_candidate` item lands under `new_candidate` while held/risk/completed items land under `held_action`. If you ran without `--session-cookie`, drive those two GETs by hand with an authenticated session to close the verification.
 
 ### 7.5 Hard invariants the smoke is allowed to assume
 
 - No external LLM is called — Hermes payloads come from the JSON fixtures.
-- No broker / order / watch / order-intent mutation reachable from any endpoint the smoke hits.
-- Token is never logged or printed; only its presence/absence is surfaced via `_redact_token`.
+- No broker / order / watch / order-intent mutation reachable from any endpoint the smoke hits (the symbol-/dimension-reports and composition are advisory-only; items stay `operation ∈ {review, cancel, keep}` + `apply_policy=requires_user_approval`).
+- Token is never logged or printed; only its presence/absence is surfaced via `_redact_token`. The `--session-cookie` value is likewise never logged.
 - The CLI refuses to invent bundle UUIDs (`--bundle-uuid` is required).
 
 ### 7.6 Closing ROB-287
@@ -203,7 +230,8 @@ Exit code 0 = full chain succeeded. Exit code 1 = some step returned a 4xx/5xx; 
 Done transition is approved after:
 
 - The smoke exits 0 against the production auto_trader instance with a fresh bundle UUID,
-- The InvestmentReport row is visible in the prod DB with the expected `hermes_composition` metadata,
+- The InvestmentReport row is visible in the prod DB with the expected `hermes_composition` metadata **and** the consumed `symbol_intermediate_report_uuids` / `dimension_report_uuids`,
+- The dimension report read surface returns the `market` dimension row and the final bundle splits held-action vs new-candidate (§7.4 note),
 - The InvestmentStageRun row is `status='completed'` (auto-finalized by the composition step),
 - No anomalies in Sentry from `app/services/investment_stages/` for one trading session.
 
@@ -271,7 +299,7 @@ uv run python -m scripts.hermes_roundtrip_smoke \
 ```
 
 - `--fixture-set us` switches the CLI to the US fixtures
-  (`tests/fixtures/hermes/{stage_artifacts_request_us,composition_request_us}.json`).
+  (`tests/fixtures/hermes/{stage_artifacts_request_us,symbol_reports_request_us,dimension_reports_request_us,composition_request_us}.json`).
   These are pinned to `market="us"`, `account_scope="alpaca_paper"`,
   `status="draft"`, with example tickers `AAPL` + `MSFT`. The fixture
   lock test (`test_us_fixtures_pin_alpaca_paper_and_draft_and_us_symbols`)
@@ -281,16 +309,26 @@ uv run python -m scripts.hermes_roundtrip_smoke \
 
 ### 8.4 Expected outcome
 
-Three POSTs in order (same chain as §7.3, but on US fixtures):
+Same 8-step chain as §7.3, on the US fixtures (the read-surface GETs in
+steps 7–8 still need `--session-cookie`):
 
 1. `/context` — returns a `HermesContextPayload` with
    `market="us"`, `account_scope="alpaca_paper"`. The 5 deterministic
-   stages render even with no items in the bundle (UNAVAILABLE).
+   stages render even with no items in the bundle (UNAVAILABLE);
+   `dimension_reports` / `symbol_intermediate_reports` start empty.
 2. `/stage-artifacts` — 5 artifact rows persisted under one
    `run_uuid`, `run_status="running"`.
-3. `/composition` — returns a 200 envelope with `status="draft"`,
-   `items_count=3`. The matching `InvestmentStageRun` row is
-   auto-finalised to `status="completed"` (§D4).
+3. `/symbol-reports` — 2 per-symbol reductions (AAPL/MSFT).
+4. `/dimension-reports` — 2 per-dimension reports (market/news).
+5. `/context` (re-pull) — now carries 2 `dimension_reports` + 2
+   `symbol_intermediate_reports`.
+6. `/composition` — returns a 200 envelope with `status="draft"`,
+   `items_count=4` (the extra item is the `new_buy_candidate` on AAPL).
+   The matching `InvestmentStageRun` row is auto-finalised to
+   `status="completed"` (§D4).
+7. `/runs/{run_uuid}/dimension-reports?dimension=market` — the US
+   market dimension report renders.
+8. `/{report_uuid}` — `decision_rollup.new_candidate` is non-empty.
 
 ### 8.5 DB-level invariants the operator confirms
 
@@ -299,12 +337,17 @@ After the CLI exits 0:
 - `investment_stage_runs.status='completed'` for the run UUID the
   CLI printed.
 - 5 `investment_stage_artifacts` rows linked to that `run_uuid`.
+- 2 `investment_symbol_intermediate_reports` + 2
+  `investment_dimension_reports` rows linked to that `run_uuid`.
 - One `investment_reports` row with:
   - `snapshot_bundle_uuid` = the US bundle UUID,
   - `status='draft'` (**must not be `published`**),
   - `market='us'`,
   - `account_scope='alpaca_paper'`,
-  - `report_metadata.hermes_composition.hermes_run_id="hermes-smoke-us-001"`.
+  - `report_metadata.hermes_composition.hermes_run_id="hermes-smoke-us-001"`,
+  - `report_metadata.symbol_intermediate_report_uuids` /
+    `report_metadata.dimension_report_uuids` populated with the
+    consumed report UUIDs.
 
 If any of those fail, treat the smoke as failed and surface the
 exact mismatch on the ROB-287 ticket — do NOT attempt to publish or
@@ -329,3 +372,58 @@ separately whether to:
 - Schedule a US Prefect deployment (separate `robin-prefect-automations`
   PR, separate operator approval).
 - Add US to the prod cutover checklist (operator decision).
+
+---
+
+## 9. ROB-314 — production-collector bundle preparation (real KR/kis_live evidence)
+
+The three report-generation entrypoints now inject `production_collector_registry(session)` and accept a `user_id`:
+
+- MCP `investment_report_prepare_bundle` (`user_id` is an optional tool arg)
+- HTTP `POST /trading/api/investment-reports/hermes/prepare-bundle` (`user_id` is an optional body field)
+- Prefect `hermes_bundle_preparation_flow` (`user_id` is an optional flow param)
+
+Because these paths are token-authed (HTTP) or have no user context (MCP), `user_id`
+must be supplied explicitly by the caller — it is never derived from an authenticated
+session here. The REST `SnapshotBackedReportGenerator` path keeps deriving it from its
+own request.
+
+**Behaviour change — prepare is no longer DB-only.** With production collectors injected,
+prepare-bundle now performs live, read-only external calls in addition to DB reads:
+KIS quote/orderbook (`SymbolSnapshotCollector`) and KIS/Upbit open-orders
+(`PendingOrdersSnapshotCollector`). No order/watch/order-intent mutation occurs. Live
+read credentials must be present on the host; absent/misconfigured credentials make those
+collectors emit per-source `unavailable` rather than crashing. Expect added latency and
+broker rate-limit sensitivity.
+
+**Operator smoke (read-only, placeholders only — do not paste real secrets):**
+
+```bash
+# Gate must be on for the endpoint to do anything.
+export SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true
+# HTTP transport (token-authed):
+curl -sS -X POST "$HOST/trading/api/investment-reports/hermes/prepare-bundle" \
+  -H "X-Hermes-Ingest-Token: $HERMES_INGEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"market":"kr","account_scope":"kis_live","symbols":["<HELD_SYMBOL>","<CANDIDATE>"],"user_id":<USER_ID>}'
+```
+
+Inspect `coverage_summary` / `missing_sources` in the response to confirm portfolio,
+market, journal, and watch coverage.
+
+**Diagnostics ladder — interpreting a still-empty / blocked bundle:**
+
+| Symptom | Likely cause | Operator action |
+|---|---|---|
+| 503 `snapshot_backed_report_generator_disabled` | feature flag off | set `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` |
+| 403 / 401 on HTTP | token misconfig / wrong token | check `HERMES_INGEST_TOKEN[_HEADER]` |
+| portfolio `unavailable` but holdings exist | `user_id` not supplied to this entrypoint | pass `user_id` in the request |
+| all required sources `unavailable` | wrong/empty collector registry (regression) | confirm this entrypoint injects `production_collector_registry` |
+| specific source `unavailable` w/ credentials absent | missing live read precondition | provision read creds for that broker/source |
+| source present but `hard_stale` | stale data precondition | refresh upstream data; not a code bug |
+| `complete`/`partial` with a real no-action verdict | genuine no-action report | none — this is a valid outcome |
+
+**Deferred (ROB-314 scope decision):** `investment_snapshots_refresh_flow` and the generic
+MCP `investment_snapshot_bundle_ensure` tool intentionally stay on the empty default
+registry; the refresh path is part of the separate scheduler-activation track. Locked by
+`tests/test_rob314_deferred_call_sites.py`.

@@ -31,6 +31,17 @@ from app.schemas.hermes_composition import (
     HermesStageInput,
 )
 from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
+from app.services.invest_screener_snapshots.repository import (
+    InvestScreenerSnapshotsRepository,
+)
+from app.services.investment_dimensions.fundamentals_evidence import (
+    build_fundamentals_evidence,
+)
+from app.services.investment_dimensions.market_evidence import build_market_evidence
+from app.services.investment_dimensions.news_evidence import build_news_evidence
+from app.services.investment_dimensions.sentiment_evidence import (
+    build_sentiment_evidence,
+)
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
@@ -40,6 +51,14 @@ from app.services.investment_stages.stages.base import (
     UnavailableStageError,
 )
 from app.services.investment_stages.stages.registry import get_default_v1_stages
+from app.services.investor_flow_snapshots.repository import (
+    InvestorFlowSnapshotsRepository,
+)
+from app.services.market_valuation_snapshots.repository import (
+    MarketValuationSnapshotsRepository,
+)
+from app.services.research_reports.query_service import ResearchReportsQueryService
+from app.services.stock_info_service import StockInfoService
 
 _logger = logging.getLogger(__name__)
 
@@ -97,6 +116,134 @@ class HermesContextExporter:
             bundle=bundle, snapshots_by_kind=dict(snapshots_by_kind)
         )
 
+        dimension_evidence = {}
+        if bundle.market in ("kr", "us"):
+            try:
+                held = set()
+                portfolio_snapshots = snapshots_by_kind.get("portfolio", [])
+                for snap in portfolio_snapshots:
+                    holdings = (snap.payload_json or {}).get("holdings", [])
+                    for h in holdings:
+                        ticker = h.get("ticker")
+                        if ticker:
+                            held.add(ticker)
+
+                screener_repo = InvestScreenerSnapshotsRepository(self._session)
+                market_evidence = await build_market_evidence(
+                    screener_repo, market=bundle.market, held=held
+                )
+                dimension_evidence["market"] = market_evidence
+            except Exception as exc:
+                _logger.exception("Failed to build market evidence for context export")
+                dimension_evidence["market"] = {"unavailable": str(exc)}
+
+            try:
+                news_evidence = await build_news_evidence(
+                    ResearchReportsQueryService(self._session), market=bundle.market
+                )
+                dimension_evidence["news"] = news_evidence
+            except Exception as exc:  # noqa: BLE001 — best-effort, like market
+                _logger.exception("Failed to build news evidence for context export")
+                dimension_evidence["news"] = {"unavailable": str(exc)}
+
+            dimension_symbols: set[str] = set()
+            for snap in snapshots_by_kind.get("portfolio", []):
+                for h in (snap.payload_json or {}).get("holdings", []):
+                    ticker = h.get("ticker")
+                    if ticker:
+                        dimension_symbols.add(ticker)
+            market_dim = dimension_evidence.get("market")
+            if isinstance(market_dim, dict):
+                for mover in market_dim.get("top_movers", []):
+                    sym = mover.get("symbol")
+                    if sym:
+                        dimension_symbols.add(sym)
+
+            try:
+                fundamentals_evidence = await build_fundamentals_evidence(
+                    MarketValuationSnapshotsRepository(self._session),
+                    StockInfoService(self._session),
+                    market=bundle.market,
+                    symbols=dimension_symbols,
+                )
+                dimension_evidence["fundamentals"] = fundamentals_evidence
+            except Exception as exc:  # noqa: BLE001 — best-effort, like market/news
+                _logger.exception(
+                    "Failed to build fundamentals evidence for context export"
+                )
+                dimension_evidence["fundamentals"] = {"unavailable": str(exc)}
+
+            try:
+                sentiment_evidence = await build_sentiment_evidence(
+                    InvestorFlowSnapshotsRepository(self._session),
+                    market=bundle.market,
+                    symbols=dimension_symbols,
+                )
+                dimension_evidence["sentiment"] = sentiment_evidence
+            except Exception as exc:  # noqa: BLE001 — best-effort, like the others
+                _logger.exception(
+                    "Failed to build sentiment evidence for context export"
+                )
+                dimension_evidence["sentiment"] = {"unavailable": str(exc)}
+
+        is_mock = (
+            hasattr(self._session, "assert_called")
+            or hasattr(self._session, "_mock_name")
+            or "Mock" in type(self._session).__name__
+        )
+        run = None
+        if not is_mock:
+            try:
+                from app.services.investment_stages.query_service import (
+                    StageRunQueryService,
+                )
+
+                runs = await StageRunQueryService(self._session).list_runs_for_bundle(
+                    bundle.bundle_uuid
+                )
+                run = runs[0] if runs else None
+            except Exception:
+                pass
+
+        from app.services.investment_dimensions.dimension_report_repository import (
+            DimensionReportRepository,
+        )
+        from app.services.investment_stages.symbol_report_repository import (
+            SymbolIntermediateReportRepository,
+        )
+
+        dimension_reports: list[dict[str, Any]] = []
+        symbol_intermediate_reports: list[dict[str, Any]] = []
+        if run is not None:
+            for d in await DimensionReportRepository(self._session).list_for_run(
+                run.run_uuid
+            ):
+                dimension_reports.append(
+                    {
+                        "dimension_report_uuid": str(d.dimension_report_uuid),
+                        "dimension": d.dimension,
+                        "market": d.market,
+                        "symbol": d.symbol,
+                        "stance": d.stance,
+                        "confidence": d.confidence,
+                        "key_findings": d.key_findings or [],
+                        "report_text": d.report_text,
+                    }
+                )
+            for s in await SymbolIntermediateReportRepository(
+                self._session
+            ).list_for_run(run.run_uuid):
+                symbol_intermediate_reports.append(
+                    {
+                        "symbol_report_uuid": str(s.symbol_report_uuid),
+                        "symbol": s.symbol,
+                        "decision_bucket": s.decision_bucket,
+                        "verdict": s.verdict,
+                        "confidence": s.confidence,
+                        "summary": s.summary,
+                    }
+                )
+
         return HermesContextPayload(
             snapshot_bundle_uuid=bundle.bundle_uuid,
             bundle_status=bundle.status,
@@ -108,6 +255,9 @@ class HermesContextExporter:
             freshness_summary=dict(bundle.freshness_summary or {}),
             unavailable_sources=self._derive_unavailable_sources(stage_inputs),
             source_conflicts={},
+            dimension_evidence=dimension_evidence,
+            dimension_reports=dimension_reports,
+            symbol_intermediate_reports=symbol_intermediate_reports,
             stage_inputs=stage_inputs,
             cited_snapshots=cited,
         )

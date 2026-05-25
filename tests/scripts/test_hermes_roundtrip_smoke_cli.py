@@ -63,6 +63,54 @@ def test_substitute_placeholders_works_on_composition() -> None:
     )
 
 
+def test_substitute_placeholders_threads_report_uuids_into_composition() -> None:
+    """ROB-309 — the composition fixture carries {{symbol_report_uuid}} +
+    {{dimension_report_uuid}} placeholders, substituted in a second pass once
+    the symbol-reports / dimension-reports POSTs return their server UUIDs."""
+    bundle_uuid = uuid.uuid4()
+    run_uuid = uuid.uuid4()
+    symbol_report_uuid = uuid.uuid4()
+    dimension_report_uuid = uuid.uuid4()
+    payload = _substitute_placeholders(
+        _load_fixture("composition_request.json"),
+        run_uuid=run_uuid,
+        snapshot_bundle_uuid=bundle_uuid,
+        symbol_report_uuid=symbol_report_uuid,
+        dimension_report_uuid=dimension_report_uuid,
+    )
+    composition = payload["composition"]
+    assert composition["symbol_intermediate_report_uuids"] == [str(symbol_report_uuid)]
+    assert composition["dimension_report_uuids"] == [str(dimension_report_uuid)]
+    # The classified item threads both citations.
+    candidate = next(
+        it
+        for it in composition["items"]
+        if it.get("decision_bucket") == "new_buy_candidate"
+    )
+    assert candidate["cited_symbol_report_uuid"] == str(symbol_report_uuid)
+    assert candidate["cited_dimension_report_uuids"] == [str(dimension_report_uuid)]
+    # No placeholder braces survive the full substitution.
+    serialised = json.dumps(payload)
+    assert "{{" not in serialised
+    assert "}}" not in serialised
+
+
+def test_substitute_placeholders_works_on_symbol_and_dimension_fixtures() -> None:
+    bundle_uuid = uuid.uuid4()
+    run_uuid = uuid.uuid4()
+    for name in ("symbol_reports_request.json", "dimension_reports_request.json"):
+        payload = _substitute_placeholders(
+            _load_fixture(name),
+            run_uuid=run_uuid,
+            snapshot_bundle_uuid=bundle_uuid,
+        )
+        assert payload["run_envelope"]["run_uuid"] == str(run_uuid)
+        assert payload["run_envelope"]["snapshot_bundle_uuid"] == str(bundle_uuid)
+        serialised = json.dumps(payload)
+        assert "{{" not in serialised
+        assert "}}" not in serialised
+
+
 @pytest.mark.parametrize(
     ("raw", "expected_substr"),
     [
@@ -154,16 +202,48 @@ def test_parse_args_rejects_unknown_fixture_set() -> None:
         )
 
 
-def test_fixture_by_set_map_locks_us_payload_files() -> None:
+def test_fixture_by_set_map_locks_payload_files() -> None:
     """Lock the fixture filenames bound to each set so an accidental
-    rename can't silently change what the CLI sends on the wire."""
+    rename can't silently change what the CLI sends on the wire. ROB-309
+    extends each set with the symbol-reports + dimension-reports fixtures."""
     from scripts.hermes_roundtrip_smoke import _FIXTURE_BY_SET
 
-    assert _FIXTURE_BY_SET["kr"] == (
-        "stage_artifacts_request.json",
-        "composition_request.json",
+    assert _FIXTURE_BY_SET["kr"] == {
+        "stage_artifacts": "stage_artifacts_request.json",
+        "symbol_reports": "symbol_reports_request.json",
+        "dimension_reports": "dimension_reports_request.json",
+        "composition": "composition_request.json",
+    }
+    assert _FIXTURE_BY_SET["us"] == {
+        "stage_artifacts": "stage_artifacts_request_us.json",
+        "symbol_reports": "symbol_reports_request_us.json",
+        "dimension_reports": "dimension_reports_request_us.json",
+        "composition": "composition_request_us.json",
+    }
+
+
+def test_parse_args_session_cookie_defaults_empty() -> None:
+    """The read-surface GETs need a session cookie; it defaults to empty so
+    the ingest chain still runs (read-surface assertions are then skipped)."""
+    args = _parse_args(
+        [
+            "--base-url",
+            "https://example",
+            "--bundle-uuid",
+            str(uuid.uuid4()),
+        ]
     )
-    assert _FIXTURE_BY_SET["us"] == (
-        "stage_artifacts_request_us.json",
-        "composition_request_us.json",
+    assert args.session_cookie == ""
+
+
+def test_parse_args_session_cookie_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HERMES_SMOKE_SESSION_COOKIE", "session=abc123")
+    args = _parse_args(
+        [
+            "--base-url",
+            "https://example",
+            "--bundle-uuid",
+            str(uuid.uuid4()),
+        ]
     )
+    assert args.session_cookie == "session=abc123"
