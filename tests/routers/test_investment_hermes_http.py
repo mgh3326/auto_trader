@@ -138,9 +138,15 @@ async def test_prepare_bundle_routes_through_ensure_service(
     ensure_svc.ensure = AsyncMock(return_value=response)
 
     app = _build_app()
-    with patch(
-        "app.routers.investment_hermes_http.SnapshotBundleEnsureService",
-        return_value=ensure_svc,
+    with (
+        patch(
+            "app.routers.investment_hermes_http.production_collector_registry",
+            return_value=object(),
+        ),
+        patch(
+            "app.routers.investment_hermes_http.SnapshotBundleEnsureService",
+            return_value=ensure_svc,
+        ),
     ):
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="https://test"
@@ -158,6 +164,61 @@ async def test_prepare_bundle_routes_through_ensure_service(
     assert called.market == "kr"
     assert called.account_scope == "kis_live"
     assert called.requested_by == "hermes"
+
+
+@pytest.mark.asyncio
+async def test_prepare_bundle_injects_production_registry_and_user_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
+    )
+    bundle_uuid = uuid.uuid4()
+    response = SimpleNamespace(bundle_uuid=bundle_uuid, status="partial")
+    response.model_dump = lambda mode="json": {
+        "bundle_uuid": str(bundle_uuid),
+        "status": "partial",
+        "coverage_summary": {},
+        "freshness_summary": {},
+        "missing_sources": [],
+        "warnings": [],
+        "created": True,
+    }
+    ensure_svc = AsyncMock()
+    ensure_svc.ensure = AsyncMock(return_value=response)
+    sentinel_registry = object()
+
+    app = _build_app()
+    with (
+        patch(
+            "app.routers.investment_hermes_http.production_collector_registry",
+            return_value=sentinel_registry,
+        ) as mock_registry,
+        patch(
+            "app.routers.investment_hermes_http.SnapshotBundleEnsureService",
+            return_value=ensure_svc,
+        ) as mock_cls,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="https://test"
+        ) as client:
+            resp = await client.post(
+                "/trading/api/investment-reports/hermes/prepare-bundle",
+                json={
+                    "market": "kr",
+                    "account_scope": "kis_live",
+                    "symbols": ["005930"],
+                    "user_id": 7,
+                },
+            )
+
+    assert resp.status_code == 200, resp.text
+    mock_registry.assert_called_once()
+    assert mock_cls.call_args.kwargs["collectors"] is sentinel_registry
+    called = ensure_svc.ensure.call_args.args[0]
+    assert called.user_id == 7
+    assert called.market == "kr"
+    assert called.account_scope == "kis_live"
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,9 @@ from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
 )
+from app.services.action_report.snapshot_backed.collectors.registry import (
+    production_collector_registry,
+)
 from app.services.investment_stages.hermes_context import (
     HermesContextExporter,
     HermesContextExportError,
@@ -109,6 +112,7 @@ async def investment_report_prepare_bundle_impl(
     candidate_limit: int | None = None,
     requested_by: str = "hermes",
     purpose: str = "report_generation",
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """Ensure a snapshot bundle exists for Hermes to compose against.
 
@@ -132,9 +136,12 @@ async def investment_report_prepare_bundle_impl(
         symbols=symbols,
         candidate_limit=candidate_limit,
         requested_by=requested_by,  # type: ignore[arg-type]
+        user_id=user_id,
     )
     async with AsyncSessionLocal() as db:
-        svc = SnapshotBundleEnsureService(db)
+        svc = SnapshotBundleEnsureService(
+            db, collectors=production_collector_registry(db)
+        )
         response = await svc.ensure(request)
         await db.commit()
     return {"success": True, **response.model_dump(mode="json")}

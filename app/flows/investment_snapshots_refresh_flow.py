@@ -100,6 +100,12 @@ async def run_snapshot_bundle_refresh(
     )
 
     async with _session_factory()() as session:
+        # ROB-314: deliberately NOT wired to production_collector_registry.
+        # The scheduler refresh path belongs to the separate scheduler-
+        # activation track; only the report-generation entrypoints (MCP
+        # prepare_bundle, HTTP prepare-bundle, hermes_bundle_preparation_flow)
+        # inject production collectors. Locked by
+        # tests/test_rob314_deferred_call_sites.py.
         service = SnapshotBundleEnsureService(session)
         response = await service.ensure(request)
         await session.commit()

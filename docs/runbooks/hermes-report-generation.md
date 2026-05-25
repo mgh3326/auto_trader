@@ -372,3 +372,59 @@ separately whether to:
 - Schedule a US Prefect deployment (separate `robin-prefect-automations`
   PR, separate operator approval).
 - Add US to the prod cutover checklist (operator decision).
+
+---
+
+## 9. ROB-314 — production-collector bundle preparation (real KR/kis_live evidence)
+
+The three report-generation entrypoints now inject `production_collector_registry(session)` and accept a `user_id`:
+
+- MCP `investment_report_prepare_bundle` (`user_id` is an optional tool arg)
+- HTTP `POST /trading/api/investment-reports/hermes/prepare-bundle` (`user_id` is an optional body field)
+- Prefect `hermes_bundle_preparation_flow` (`user_id` is an optional flow param)
+
+Because these paths are token-authed (HTTP) or have no user context (MCP), `user_id`
+must be supplied explicitly by the caller — it is never derived from an authenticated
+session here. The REST `SnapshotBackedReportGenerator` path keeps deriving it from its
+own request.
+
+**Behaviour change — prepare is no longer DB-only.** With production collectors injected,
+prepare-bundle now performs live, read-only external calls in addition to DB reads:
+KIS quote/orderbook (`SymbolSnapshotCollector`) and KIS/Upbit open-orders
+(`PendingOrdersSnapshotCollector`). No order/watch/order-intent mutation occurs. Live
+read credentials must be present on the host; absent/misconfigured credentials make those
+collectors emit per-source `unavailable` rather than crashing. Expect added latency and
+broker rate-limit sensitivity.
+
+**Operator smoke (read-only, placeholders only — do not paste real secrets):**
+
+```bash
+# Gate must be on for the endpoint to do anything.
+export SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true
+# HTTP transport (token-authed):
+curl -sS -X POST "$HOST/trading/api/investment-reports/hermes/prepare-bundle" \
+  -H "X-Hermes-Ingest-Token: $HERMES_INGEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"market":"kr","account_scope":"kis_live","symbols":["<HELD_SYMBOL>","<CANDIDATE>"],"user_id":<USER_ID>}'
+```
+
+Inspect `coverage_summary` / `missing_sources` in the response to confirm portfolio,
+market, journal, and watch coverage.
+
+**Diagnostics ladder — interpreting a still-empty / blocked bundle:**
+
+| Symptom | Likely cause | Operator action |
+|---|---|---|
+| 503 `snapshot_backed_report_generator_disabled` | feature flag off | set `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` |
+| 403 / 401 on HTTP | token misconfig / wrong token | check `HERMES_INGEST_TOKEN[_HEADER]` |
+| portfolio `unavailable` but holdings exist | `user_id` not supplied to this entrypoint | pass `user_id` in the request |
+| all required sources `unavailable` | wrong/empty collector registry (regression) | confirm this entrypoint injects `production_collector_registry` |
+| specific source `unavailable` w/ credentials absent | missing live read precondition | provision read creds for that broker/source |
+| source present but `hard_stale` | stale data precondition | refresh upstream data; not a code bug |
+| `complete`/`partial` with a real no-action verdict | genuine no-action report | none — this is a valid outcome |
+
+**Deferred (ROB-314 scope decision):** `investment_snapshots_refresh_flow` and the generic
+MCP `investment_snapshot_bundle_ensure` tool intentionally stay on the empty default
+registry; the refresh path is part of the separate scheduler-activation track. Locked by
+`tests/test_rob314_deferred_call_sites.py`.
+
