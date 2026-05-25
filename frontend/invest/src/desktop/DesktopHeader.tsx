@@ -11,6 +11,7 @@ const LINKS: { to: string; label: string; end?: boolean }[] = [
   { to: "/market", label: "시장" },
   { to: "/coverage", label: "커버리지" },
   { to: "/screener", label: "골라보기" },
+  { to: "/scalping", label: "스캘핑 일지" },
 ];
 
 export function DesktopHeader() {

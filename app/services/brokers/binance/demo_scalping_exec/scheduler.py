@@ -20,11 +20,17 @@ import datetime as dt
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
     Product,
     ScalpingRiskLimits,
+)
+from app.services.brokers.binance.demo_scalping.market_data import (
+    data_age_seconds,
+    spread_bps,
 )
 from app.services.brokers.binance.demo_scalping.order_intent import build_order_intent
 from app.services.brokers.binance.demo_scalping.signal import (
@@ -110,8 +116,20 @@ async def run_scalping_tick(
                 )
                 if intent is None:
                     continue
+                # ROB-315 0c / D4: feed the real spread + data-age snapshot into
+                # the executor preflight so SPREAD_TOO_WIDE / STALE_DATA gates
+                # fire (and entry spread@fill is captured). bookTicker reuse —
+                # one extra read per entered signal, none on the no-signal path.
+                book = await market_data.fetch_book_ticker(product, symbol)
+                market = MarketConditions(
+                    spread_bps=spread_bps(book),
+                    data_age_seconds=data_age_seconds(
+                        candles[-1], now_ms=int(now.timestamp() * 1000)
+                    ),
+                    spot_free_base_qty=Decimal("0"),
+                )
                 result = await executor.execute_monitored(
-                    intent, confirm=confirm, **monitor_kwargs
+                    intent, confirm=confirm, market=market, **monitor_kwargs
                 )
                 entered.append((product, symbol, result.status))
             except Exception as exc:  # noqa: BLE001
