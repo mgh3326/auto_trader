@@ -13,7 +13,10 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.brokers.binance.demo_scalping.contract import ScalpingRiskLimits
+from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
+    ScalpingRiskLimits,
+)
 from app.services.brokers.binance.demo_scalping.market_data import BookTicker
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec.analytics import (
@@ -409,6 +412,142 @@ async def test_open_proven_by_position_without_price_records_partial_row(
     assert row.entry_notional_usdt is None
     assert row.gross_pnl_usdt is None
     assert row.net_pnl_usdt is None
+
+
+class _MDBook:
+    """Market data fake returning an explicit ``(bid, ask)`` sequence so the
+    monitor's conservative price path + spread are deterministic."""
+
+    def __init__(self, books):
+        self._b = [(Decimal(str(x)), Decimal(str(y))) for x, y in books]
+        self.i = 0
+
+    async def fetch_book_ticker(self, product, symbol):
+        bid, ask = self._b[min(self.i, len(self._b) - 1)]
+        self.i += 1
+        return BookTicker(bid=bid, ask=ask)
+
+
+@pytest.mark.asyncio
+async def test_monitored_run_captures_full_telemetry(db_session) -> None:
+    """ROB-315 0c: MAE/MFE, spread@fill (entry from preflight market / exit
+    from monitor book), holding time, and exit-slippage reference are all
+    captured on a normal monitored round-trip."""
+    client = _FakeFutures(open_px="100", close_px="100.40")
+    # Conservative (bid) path 99.9 -> 100.4 (within sl=99.80..tp=100.30 band on
+    # poll 1, crosses tp on poll 2).
+    md = _MDBook([(99.9, 100.0), (100.4, 100.5)])
+    market = MarketConditions(
+        spread_bps=Decimal("10"),
+        data_age_seconds=5.0,
+        spot_free_base_qty=Decimal("0"),
+    )
+    ex = DemoScalpingExecutor(
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("TELEUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
+    )
+    result = await ex.execute_monitored(
+        _intent("TELEUSDT"), confirm=True, market=market, max_poll_count=5
+    )
+    assert result.status == "reconciled"
+    assert result.exit_reason == "take_profit"
+    row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
+        result.open_client_order_id
+    )
+    assert row is not None
+    # MAE/MFE vs entry reference 100, over conservative path 99.9..100.4.
+    assert row.mfe_bps == Decimal("40")  # (100.4-100)/100 * 10_000
+    assert row.mae_bps == Decimal("-10")  # (99.9-100)/100 * 10_000
+    assert row.entry_spread_bps == Decimal("10")  # from preflight market snapshot
+    assert row.exit_spread_bps is not None and row.exit_spread_bps > 0
+    assert row.holding_seconds is not None and row.holding_seconds >= 0
+    assert row.exit_slippage_bps is not None  # exit reference now present
+
+
+@pytest.mark.asyncio
+async def test_preflight_blocks_on_wide_spread(db_session) -> None:
+    """ROB-315 0c / D4: a spread above the 20 bps cap blocks the entry."""
+    client = _FakeFutures(open_px="100", close_px="100")
+    md = _MDBook([(100.0, 100.1)])
+    market = MarketConditions(
+        spread_bps=Decimal("25"),
+        data_age_seconds=5.0,
+        spot_free_base_qty=Decimal("0"),
+    )
+    ex = DemoScalpingExecutor(
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("WIDEUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
+    )
+    result = await ex.execute_monitored(
+        _intent("WIDEUSDT"), confirm=True, market=market, max_poll_count=5
+    )
+    assert result.status == "blocked"
+    assert "spread_too_wide" in result.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_preflight_blocks_on_stale_data(db_session) -> None:
+    """ROB-315 0c / D4: data older than the 120s cap blocks the entry."""
+    client = _FakeFutures(open_px="100", close_px="100")
+    md = _MDBook([(100.0, 100.1)])
+    market = MarketConditions(
+        spread_bps=Decimal("5"),
+        data_age_seconds=300.0,
+        spot_free_base_qty=Decimal("0"),
+    )
+    ex = DemoScalpingExecutor(
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("STALEUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
+    )
+    result = await ex.execute_monitored(
+        _intent("STALEUSDT"), confirm=True, market=market, max_poll_count=5
+    )
+    assert result.status == "blocked"
+    assert "stale_data" in result.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_preflight_passes_within_market_bounds(db_session) -> None:
+    """ROB-315 0c / D4: spread + data age within bounds do not block."""
+    client = _FakeFutures(open_px="100", close_px="100.40")
+    md = _MDBook([(99.5, 99.6), (100.4, 100.5)])
+    market = MarketConditions(
+        spread_bps=Decimal("5"),
+        data_age_seconds=10.0,
+        spot_free_base_qty=Decimal("0"),
+    )
+    ex = DemoScalpingExecutor(
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("OKUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
+    )
+    result = await ex.execute_monitored(
+        _intent("OKUSDT"), confirm=True, market=market, max_poll_count=5
+    )
+    assert result.status == "reconciled"
 
 
 @pytest.mark.asyncio

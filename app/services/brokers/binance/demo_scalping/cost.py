@@ -70,6 +70,36 @@ def net_return_bps(*, net_pnl_usdt: Decimal, entry_notional_usdt: Decimal) -> De
     return net_pnl_usdt / entry_notional_usdt * _BPS
 
 
+def mae_mfe_bps(
+    *,
+    side: Side,
+    entry_price: Decimal,
+    path_min: Decimal | None,
+    path_max: Decimal | None,
+) -> tuple[Decimal | None, Decimal | None]:
+    """Max adverse / max favorable excursion in bps vs ``entry_price``,
+    direction-aware. Returns ``(mae_bps, mfe_bps)``.
+
+    Favorable is the up-move for a long (entry BUY) and the down-move for a
+    short (entry SELL). MFE is the best excursion reached over the observed
+    price path, MAE the worst — so ``mfe >= mae`` always. ``(None, None)`` when
+    no path was observed (e.g. an immediate exit with zero monitor polls).
+    """
+    if path_min is None or path_max is None:
+        return None, None
+    if entry_price <= 0:
+        raise ValueError(f"entry_price must be > 0, got {entry_price}")
+    if side == "BUY":
+        mfe = (path_max - entry_price) / entry_price * _BPS
+        mae = (path_min - entry_price) / entry_price * _BPS
+    elif side == "SELL":
+        mfe = (entry_price - path_min) / entry_price * _BPS
+        mae = (entry_price - path_max) / entry_price * _BPS
+    else:
+        raise ValueError(f"side must be 'BUY' or 'SELL', got {side!r}")
+    return mae, mfe
+
+
 def spot_avg_fill_price(
     *, cummulative_quote_qty: Decimal, executed_qty: Decimal
 ) -> Decimal | None:

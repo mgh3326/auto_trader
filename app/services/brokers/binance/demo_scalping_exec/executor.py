@@ -43,10 +43,14 @@ from app.services.brokers.binance.demo_scalping.contract import (
 )
 from app.services.brokers.binance.demo_scalping.cost import (
     build_round_trip_economics,
+    mae_mfe_bps,
     spot_avg_fill_price,
 )
 from app.services.brokers.binance.demo_scalping.ledger_state import (
     load_ledger_snapshot,
+)
+from app.services.brokers.binance.demo_scalping.market_data import (
+    spread_bps as md_spread_bps,
 )
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec.analytics import (
@@ -150,6 +154,34 @@ class ExecutionResult:
         }
 
 
+@dataclass(frozen=True)
+class _MonitorOutcome:
+    """What the bounded monitor observed, for ROB-315 0c telemetry. All
+    price-path fields are over the **conservative** price the close would
+    actually achieve (bid for a long exit, ask for a short exit)."""
+
+    exit_reason: str
+    min_conservative: Decimal | None = None
+    max_conservative: Decimal | None = None
+    # Conservative price + spread at the poll that decided the exit (or the
+    # last poll on timeout). Used for exit slippage reference + spread@fill.
+    exit_conservative: Decimal | None = None
+    exit_spread_bps: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class _RunTelemetry:
+    """ROB-315 0c diagnostics threaded into the analytics row. All optional —
+    ``execute()`` (immediate) leaves the monitor-derived fields None."""
+
+    entry_spread_bps: Decimal | None = None
+    exit_spread_bps: Decimal | None = None
+    mae_bps: Decimal | None = None
+    mfe_bps: Decimal | None = None
+    holding_seconds: int | None = None
+    exit_reference_price: Decimal | None = None
+
+
 class DemoScalpingExecutor:
     def __init__(
         self,
@@ -178,6 +210,9 @@ class DemoScalpingExecutor:
         # Avg fill prices captured during a single run (ROB-313 cost capture).
         self._open_fill_price: Decimal | None = None
         self._close_fill_price: Decimal | None = None
+        # Spread at the preflight market snapshot ≈ spread at the open fill
+        # (ROB-315 0c spread@fill entry leg).
+        self._entry_spread_bps: Decimal | None = None
 
     def _extract_fill_price(self, submit: Any) -> Decimal | None:
         """Avg fill price from a submit/order result. Futures carries
@@ -200,6 +235,7 @@ class DemoScalpingExecutor:
         notional: Decimal,
         instrument_id: int,
         result: ExecutionResult,
+        telemetry: _RunTelemetry | None = None,
     ) -> None:
         """Best-effort: write one ``scalp_trade_analytics`` round-trip row.
 
@@ -209,20 +245,24 @@ class DemoScalpingExecutor:
         row (no real round-trip). Exit-derived fields stay NULL when the
         close leg did not fill (ROB-313 — never a fabricated success).
 
-        MAE/MFE, spread@fill, exit-slippage reference, holding time and
-        session tag are deferred to a follow-up commit (all nullable)."""
+        ROB-315 0c: MAE/MFE, spread@fill, exit-slippage reference and holding
+        time arrive via ``telemetry`` (monitor-derived); they are independent
+        of the entry fill price and are recorded even on a partial row."""
         if result.open_client_order_id is None:
             return
+        tele = telemetry or _RunTelemetry()
         # ROB-315 0b: the entry price must come from fill-proven evidence
         # (the submit/get_order avg fill captured during the run). It is NEVER
         # the reference price — a missing fill price means we cannot fabricate
         # economics, so we record a partial row instead of a fake success.
         entry_fill = self._open_fill_price
+        entry_ref = intent.entry_reference_price or ref.price
         try:
             if entry_fill is None:
-                await self._record_partial_analytics(intent, qty, instrument_id, result)
+                await self._record_partial_analytics(
+                    intent, qty, instrument_id, result, tele
+                )
                 return
-            entry_ref = intent.entry_reference_price or ref.price
             econ = build_round_trip_economics(
                 side=intent.side,
                 qty=qty,
@@ -230,6 +270,7 @@ class DemoScalpingExecutor:
                 entry_fill_price=entry_fill,
                 fee_rate_bps=DEMO_SCALPING_FEE_RATE_BPS,
                 exit_fill_price=self._close_fill_price,
+                exit_reference_price=tele.exit_reference_price,
             )
             async with self.session.begin_nested():
                 await self.analytics.record(
@@ -248,9 +289,14 @@ class DemoScalpingExecutor:
                     exit_fee_usdt=econ.exit_fee_usdt,
                     entry_slippage_bps=econ.entry_slippage_bps,
                     exit_slippage_bps=econ.exit_slippage_bps,
+                    entry_spread_bps=tele.entry_spread_bps,
+                    exit_spread_bps=tele.exit_spread_bps,
+                    mae_bps=tele.mae_bps,
+                    mfe_bps=tele.mfe_bps,
                     gross_pnl_usdt=econ.gross_pnl_usdt,
                     net_pnl_usdt=econ.net_pnl_usdt,
                     net_return_bps=econ.net_return_bps,
+                    holding_seconds=tele.holding_seconds,
                     exit_reason=result.exit_reason,
                     now=self.now,
                 )
@@ -267,11 +313,13 @@ class DemoScalpingExecutor:
         qty: Decimal,
         instrument_id: int,
         result: ExecutionResult,
+        tele: _RunTelemetry,
     ) -> None:
         """Record a round-trip with no derivable entry fill price: the fill is
         proven (the run reached reconcile) but no avg price evidence exists, so
         entry price / economics stay NULL — never fabricated (ROB-315 0b). The
-        raw close fill price (if any) is still stored as informational."""
+        raw close fill price (if any) and monitor-derived telemetry are still
+        stored as informational."""
         assert result.open_client_order_id is not None
         async with self.session.begin_nested():
             await self.analytics.record(
@@ -286,15 +334,24 @@ class DemoScalpingExecutor:
                 exit_price=self._close_fill_price,
                 entry_notional_usdt=None,
                 fee_rate_bps=DEMO_SCALPING_FEE_RATE_BPS,
+                entry_spread_bps=tele.entry_spread_bps,
+                exit_spread_bps=tele.exit_spread_bps,
+                mae_bps=tele.mae_bps,
+                mfe_bps=tele.mfe_bps,
+                holding_seconds=tele.holding_seconds,
                 exit_reason=result.exit_reason,
                 now=self.now,
             )
 
     async def execute(
-        self, intent: OrderIntent, *, confirm: bool = False
+        self,
+        intent: OrderIntent,
+        *,
+        confirm: bool = False,
+        market: MarketConditions | None = None,
     ) -> ExecutionResult:
         """One-shot: open + immediate close-flat (no hold)."""
-        prep = await self._preflight(intent, confirm)
+        prep = await self._preflight(intent, confirm, market)
         if isinstance(prep, ExecutionResult):
             return prep
         ref, qty, notional, instrument_id = prep
@@ -312,8 +369,10 @@ class DemoScalpingExecutor:
             instrument_id,
             exit_reason="immediate",
         )
+        # No monitor path on an immediate run: only spread@fill (entry) is known.
+        telemetry = _RunTelemetry(entry_spread_bps=self._entry_spread_bps)
         await self._finalize_analytics(
-            intent, ref, qty, notional, instrument_id, result
+            intent, ref, qty, notional, instrument_id, result, telemetry
         )
         return result
 
@@ -322,6 +381,7 @@ class DemoScalpingExecutor:
         intent: OrderIntent,
         *,
         confirm: bool = False,
+        market: MarketConditions | None = None,
         tp_bps: Decimal = Decimal("30"),
         sl_bps: Decimal = Decimal("20"),
         max_poll_count: int = 30,
@@ -331,7 +391,7 @@ class DemoScalpingExecutor:
         """Open, then poll the bookTicker within a bounded window and
         MARKET-close on a TP/SL cross — failsafe-close at window end. Always
         ends flat in-run (no unattended position; no broker-side bracket)."""
-        prep = await self._preflight(intent, confirm)
+        prep = await self._preflight(intent, confirm, market)
         if isinstance(prep, ExecutionResult):
             return prep
         ref, qty, notional, instrument_id = prep
@@ -356,8 +416,10 @@ class DemoScalpingExecutor:
         # monitor poll raises (timeout / rate-limit / network), fall through
         # to close+reconcile anyway with exit_reason=monitor_error.
         monitor_error: str | None = None
+        outcome: _MonitorOutcome
+        hold_start = time.monotonic()
         try:
-            exit_reason = await self._monitor_until_exit(
+            outcome = await self._monitor_until_exit(
                 intent,
                 tp=tp,
                 sl=sl,
@@ -371,13 +433,14 @@ class DemoScalpingExecutor:
                 max_runtime_s=max_runtime_s,
             )
         except Exception as exc:  # noqa: BLE001 — never leave the position open
-            exit_reason = "monitor_error"
+            outcome = _MonitorOutcome("monitor_error")
             monitor_error = f"{type(exc).__name__}: {exc}"
             logger.exception(
                 "monitor poll failed for %s %s — forcing close",
                 intent.product,
                 intent.symbol,
             )
+        holding_seconds = int(time.monotonic() - hold_start)
         result = await self._close_and_reconcile(
             intent,
             ref,
@@ -385,18 +448,38 @@ class DemoScalpingExecutor:
             notional,
             open_cid,
             instrument_id,
-            exit_reason=exit_reason,
+            exit_reason=outcome.exit_reason,
             monitor_error=monitor_error,
         )
+        # ROB-315 0c telemetry — entry spread from the preflight snapshot, the
+        # rest from the monitor's own polls (MAE/MFE vs the entry reference).
+        entry_ref = intent.entry_reference_price or ref.price
+        mae, mfe = mae_mfe_bps(
+            side=intent.side,
+            entry_price=entry_ref,
+            path_min=outcome.min_conservative,
+            path_max=outcome.max_conservative,
+        )
+        telemetry = _RunTelemetry(
+            entry_spread_bps=self._entry_spread_bps,
+            exit_spread_bps=outcome.exit_spread_bps,
+            mae_bps=mae,
+            mfe_bps=mfe,
+            holding_seconds=holding_seconds,
+            exit_reference_price=outcome.exit_conservative,
+        )
         await self._finalize_analytics(
-            intent, ref, qty, notional, instrument_id, result
+            intent, ref, qty, notional, instrument_id, result, telemetry
         )
         return result
 
     async def _monitor_until_exit(
         self, intent, *, tp, sl, long, max_poll_count, poll_interval, max_runtime_s
-    ) -> str:
-        """Bounded poll loop → 'take_profit' | 'stop_loss' | 'timeout'.
+    ) -> _MonitorOutcome:
+        """Bounded poll loop → ``_MonitorOutcome`` (exit reason + price-path
+        telemetry; ROB-315 0c). No new polls — the min/max conservative price,
+        the exit-poll conservative price and its spread are all read off the
+        same bookTicker polls the TP/SL trigger already consumes.
 
         Conservative trigger price: a long exits via a SELL, so judge it on
         the **bid** (the price it would actually sell at); a short exits via
@@ -404,34 +487,57 @@ class DemoScalpingExecutor:
         the close could not actually achieve.
         """
         deadline = time.monotonic() + max_runtime_s
+        path_min: Decimal | None = None
+        path_max: Decimal | None = None
+        last_price: Decimal | None = None
+        last_spread: Decimal | None = None
         for _ in range(max_poll_count):
             book = await self.market_data.fetch_book_ticker(
                 intent.product, intent.symbol
             )
+            price = book.bid if long else book.ask
+            path_min = price if path_min is None else min(path_min, price)
+            path_max = price if path_max is None else max(path_max, price)
+            last_price = price
+            last_spread = md_spread_bps(book)
             if long:
-                price = book.bid  # close = SELL at the bid
                 if price >= tp:
-                    return "take_profit"
+                    return _MonitorOutcome(
+                        "take_profit", path_min, path_max, price, last_spread
+                    )
                 if price <= sl:
-                    return "stop_loss"
+                    return _MonitorOutcome(
+                        "stop_loss", path_min, path_max, price, last_spread
+                    )
             else:
-                price = book.ask  # close = BUY at the ask
                 if price <= tp:
-                    return "take_profit"
+                    return _MonitorOutcome(
+                        "take_profit", path_min, path_max, price, last_spread
+                    )
                 if price >= sl:
-                    return "stop_loss"
+                    return _MonitorOutcome(
+                        "stop_loss", path_min, path_max, price, last_spread
+                    )
             if time.monotonic() >= deadline:
                 break
             if poll_interval > 0:
                 await asyncio.sleep(poll_interval)
-        return "timeout"
+        return _MonitorOutcome("timeout", path_min, path_max, last_price, last_spread)
 
     async def _preflight(
-        self, intent: OrderIntent, confirm: bool
+        self, intent: OrderIntent, confirm: bool, market: MarketConditions | None = None
     ) -> ExecutionResult | tuple[SymbolReference, Decimal, Decimal, int]:
         """Risk re-check + reference + sizing + dry-run gate. Returns an
         ExecutionResult (blocked/dry_run) to short-circuit, else the prepared
-        ``(ref, qty, notional, instrument_id)``."""
+        ``(ref, qty, notional, instrument_id)``.
+
+        ROB-315 0c / D4: the caller supplies the real ``market`` snapshot
+        (spread + data age) so the ``SPREAD_TOO_WIDE`` / ``STALE_DATA`` gates
+        actually fire. When omitted the gates are inert (0/0) — the prior
+        behavior — so non-scheduler callers are unaffected."""
+        # The spread@fill entry leg is the preflight spread (captured just
+        # before the open). Reset per run so a blocked/early return is clean.
+        self._entry_spread_bps = market.spread_bps if market is not None else None
         snapshot = await load_ledger_snapshot(
             self.ledger, product=intent.product, symbol=intent.symbol, now=self.now
         )
@@ -442,7 +548,8 @@ class DemoScalpingExecutor:
             target_notional_usdt=intent.target_notional_usdt,
             limits=self.limits,
             ledger=snapshot,
-            market=MarketConditions(
+            market=market
+            or MarketConditions(
                 spread_bps=Decimal("0"),
                 data_age_seconds=0.0,
                 spot_free_base_qty=Decimal("0"),

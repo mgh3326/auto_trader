@@ -15,11 +15,43 @@ import pytest
 from app.services.brokers.binance.demo_scalping.cost import (
     build_round_trip_economics,
     fee_estimate_usdt,
+    mae_mfe_bps,
     net_pnl_usdt,
     net_return_bps,
     slippage_bps,
     spot_avg_fill_price,
 )
+
+
+class TestMaeMfeBps:
+    """Max adverse / max favorable excursion vs entry, direction-aware.
+    MFE >= MAE always; favorable is the up-move for a long, the down-move for
+    a short. No observed path → (None, None)."""
+
+    def test_long_excursions(self) -> None:
+        mae, mfe = mae_mfe_bps(
+            side="BUY",
+            entry_price=Decimal("100"),
+            path_min=Decimal("99"),
+            path_max=Decimal("103"),
+        )
+        assert mfe == Decimal("300")  # (103-100)/100 * 10_000, favorable up
+        assert mae == Decimal("-100")  # (99-100)/100 * 10_000, adverse down
+
+    def test_short_excursions(self) -> None:
+        mae, mfe = mae_mfe_bps(
+            side="SELL",
+            entry_price=Decimal("100"),
+            path_min=Decimal("97"),
+            path_max=Decimal("101"),
+        )
+        assert mfe == Decimal("300")  # (100-97)/100 * 10_000, favorable down
+        assert mae == Decimal("-100")  # (100-101)/100 * 10_000, adverse up
+
+    def test_no_path_returns_none(self) -> None:
+        assert mae_mfe_bps(
+            side="BUY", entry_price=Decimal("100"), path_min=None, path_max=None
+        ) == (None, None)
 
 
 class TestSlippageBps:
