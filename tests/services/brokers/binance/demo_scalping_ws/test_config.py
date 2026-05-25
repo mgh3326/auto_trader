@@ -15,18 +15,25 @@ def test_empty_env_is_fully_disabled() -> None:
 
 
 def test_daemon_active_requires_both_base_and_ws() -> None:
-    assert WsDaemonGates.from_env(
-        {"BINANCE_DEMO_SCALPING_ENABLED": "true"}
-    ).daemon_active is False
-    assert WsDaemonGates.from_env(
-        {"BINANCE_DEMO_SCALPING_WS_ENABLED": "true"}
-    ).daemon_active is False
-    assert WsDaemonGates.from_env(
-        {
-            "BINANCE_DEMO_SCALPING_ENABLED": "true",
-            "BINANCE_DEMO_SCALPING_WS_ENABLED": "true",
-        }
-    ).daemon_active is True
+    assert (
+        WsDaemonGates.from_env({"BINANCE_DEMO_SCALPING_ENABLED": "true"}).daemon_active
+        is False
+    )
+    assert (
+        WsDaemonGates.from_env(
+            {"BINANCE_DEMO_SCALPING_WS_ENABLED": "true"}
+        ).daemon_active
+        is False
+    )
+    assert (
+        WsDaemonGates.from_env(
+            {
+                "BINANCE_DEMO_SCALPING_ENABLED": "true",
+                "BINANCE_DEMO_SCALPING_WS_ENABLED": "true",
+            }
+        ).daemon_active
+        is True
+    )
 
 
 def test_confirm_alone_never_enables_mutation() -> None:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from scripts.binance_demo_scalping_ws_daemon import build_summary, main
 from app.services.brokers.binance.demo_scalping_ws.config import WsDaemonGates
+from scripts.binance_demo_scalping_ws_daemon import build_summary, main
 
 
 def test_summary_disabled_when_gates_off() -> None:

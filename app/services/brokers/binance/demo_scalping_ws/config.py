@@ -46,7 +46,7 @@ class WsDaemonGates:
         return self.base_enabled and self.ws_enabled and self.ws_confirm
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "WsDaemonGates":
+    def from_env(cls, env: dict[str, str] | None = None) -> WsDaemonGates:
         source = dict(os.environ) if env is None else env
         return cls(
             base_enabled=_truthy(source.get(_BASE_ENV)),
