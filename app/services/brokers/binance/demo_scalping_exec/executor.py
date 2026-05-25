@@ -82,17 +82,30 @@ def _base_asset(symbol: str) -> str:
 
 
 def _align_price(price: Decimal, tick: Decimal) -> Decimal:
-    """Floor ``price`` to the exchange ``tick`` (PRICE_FILTER) so a bracket
-    stop/limit price is never rejected for tick misalignment."""
+    """Floor ``price`` to the exchange ``tick`` (PRICE_FILTER) so a computed
+    TP/SL price is never rejected for tick misalignment."""
     if tick <= 0:
         return price
     return (price // tick) * tick
 
 
+def _exit_metadata(
+    exit_reason: str, monitor_error: str | None, residual: str | None = None
+) -> dict[str, Any]:
+    """Ledger ``extra_metadata`` for the reconcile transition."""
+    meta: dict[str, Any] = {"exit_reason": exit_reason}
+    if residual is not None:
+        meta["residual"] = residual
+    if monitor_error is not None:
+        meta["monitor_error"] = monitor_error
+    return meta
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     intent: OrderIntent
-    status: str  # blocked | dry_run | reconciled | anomaly
+    # blocked | dry_run | reconciled | anomaly
+    status: str
     open_client_order_id: str | None = None
     close_client_order_id: str | None = None
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
@@ -101,8 +114,10 @@ class ExecutionResult:
     sized_notional_usdt: Decimal | None = None
     final_open_orders: int | None = None
     final_flat: bool | None = None
-    bracket_client_order_ids: tuple[str, ...] = field(default_factory=tuple)
-    exit_reason: str | None = None  # take_profit | stop_loss | timeout | immediate
+    # take_profit | stop_loss | timeout | monitor_error | immediate
+    exit_reason: str | None = None
+    # set when the monitor poll raised; the position is still closed flat
+    monitor_error: str | None = None
 
     def to_evidence_dict(self) -> dict[str, Any]:
         return {
@@ -111,9 +126,9 @@ class ExecutionResult:
             "symbol": self.intent.symbol,
             "side": self.intent.side,
             "exit_reason": self.exit_reason,
+            "monitor_error": self.monitor_error,
             "open_client_order_id": self.open_client_order_id,
             "close_client_order_id": self.close_client_order_id,
-            "bracket_client_order_ids": list(self.bracket_client_order_ids),
             "reason_codes": list(self.reason_codes),
             "anomaly_reason": self.anomaly_reason,
             "sized_qty": None if self.sized_qty is None else str(self.sized_qty),
@@ -210,19 +225,32 @@ class DemoScalpingExecutor:
         if error is not None:
             return error
 
-        exit_reason = await self._monitor_until_exit(
-            intent,
-            tp=tp,
-            sl=sl,
-            long=long,
-            max_poll_count=max_poll_count,
-            poll_interval=(
-                poll_interval_s
-                if poll_interval_s is not None
-                else self.poll_delay_seconds
-            ),
-            max_runtime_s=max_runtime_s,
-        )
+        # Once a position is open it MUST be closed flat in-run. If the
+        # monitor poll raises (timeout / rate-limit / network), fall through
+        # to close+reconcile anyway with exit_reason=monitor_error.
+        monitor_error: str | None = None
+        try:
+            exit_reason = await self._monitor_until_exit(
+                intent,
+                tp=tp,
+                sl=sl,
+                long=long,
+                max_poll_count=max_poll_count,
+                poll_interval=(
+                    poll_interval_s
+                    if poll_interval_s is not None
+                    else self.poll_delay_seconds
+                ),
+                max_runtime_s=max_runtime_s,
+            )
+        except Exception as exc:  # noqa: BLE001 — never leave the position open
+            exit_reason = "monitor_error"
+            monitor_error = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "monitor poll failed for %s %s — forcing close",
+                intent.product,
+                intent.symbol,
+            )
         return await self._close_and_reconcile(
             intent,
             ref,
@@ -231,27 +259,35 @@ class DemoScalpingExecutor:
             open_cid,
             instrument_id,
             exit_reason=exit_reason,
+            monitor_error=monitor_error,
         )
 
     async def _monitor_until_exit(
         self, intent, *, tp, sl, long, max_poll_count, poll_interval, max_runtime_s
     ) -> str:
-        """Bounded poll loop → 'take_profit' | 'stop_loss' | 'timeout'."""
+        """Bounded poll loop → 'take_profit' | 'stop_loss' | 'timeout'.
+
+        Conservative trigger price: a long exits via a SELL, so judge it on
+        the **bid** (the price it would actually sell at); a short exits via
+        a BUY, so judge it on the **ask**. This avoids triggering on a mid
+        the close could not actually achieve.
+        """
         deadline = time.monotonic() + max_runtime_s
         for _ in range(max_poll_count):
             book = await self.market_data.fetch_book_ticker(
                 intent.product, intent.symbol
             )
-            mid = (book.bid + book.ask) / Decimal("2")
             if long:
-                if mid >= tp:
+                price = book.bid  # close = SELL at the bid
+                if price >= tp:
                     return "take_profit"
-                if mid <= sl:
+                if price <= sl:
                     return "stop_loss"
             else:
-                if mid <= tp:
+                price = book.ask  # close = BUY at the ask
+                if price <= tp:
                     return "take_profit"
-                if mid >= sl:
+                if price >= sl:
                     return "stop_loss"
             if time.monotonic() >= deadline:
                 break
@@ -504,18 +540,49 @@ class DemoScalpingExecutor:
     # Close + reconcile (shared by execute() and execute_monitored()).
     # ------------------------------------------------------------------
     async def _close_and_reconcile(
-        self, intent, ref, qty, notional, open_cid, instrument_id, *, exit_reason
+        self,
+        intent,
+        ref,
+        qty,
+        notional,
+        open_cid,
+        instrument_id,
+        *,
+        exit_reason,
+        monitor_error: str | None = None,
     ) -> ExecutionResult:
         if intent.product == "usdm_futures":
             return await self._close_and_reconcile_futures(
-                intent, ref, qty, notional, open_cid, instrument_id, exit_reason
+                intent,
+                ref,
+                qty,
+                notional,
+                open_cid,
+                instrument_id,
+                exit_reason,
+                monitor_error,
             )
         return await self._close_and_reconcile_spot(
-            intent, ref, qty, notional, open_cid, instrument_id, exit_reason
+            intent,
+            ref,
+            qty,
+            notional,
+            open_cid,
+            instrument_id,
+            exit_reason,
+            monitor_error,
         )
 
     async def _close_and_reconcile_spot(
-        self, intent, ref, qty, notional, open_cid, instrument_id, exit_reason
+        self,
+        intent,
+        ref,
+        qty,
+        notional,
+        open_cid,
+        instrument_id,
+        exit_reason,
+        monitor_error=None,
     ) -> ExecutionResult:
         # Close: SELL the free base balance (never reuse the BUY qty).
         base = _base_asset(intent.symbol)
@@ -580,7 +647,7 @@ class DemoScalpingExecutor:
             await self.ledger.record_reconciled(
                 client_order_id=open_cid,
                 now=self.now,
-                extra_metadata_merge={"residual": "dust"},
+                extra_metadata_merge=_exit_metadata(exit_reason, monitor_error, "dust"),
             )
             if close_cid is not None and close_filled:
                 await self.ledger.record_closed(client_order_id=close_cid, now=self.now)
@@ -596,6 +663,7 @@ class DemoScalpingExecutor:
                 sized_notional_usdt=notional,
                 final_open_orders=len(open_orders.orders),
                 exit_reason=exit_reason,
+                monitor_error=monitor_error,
             )
         reason = f"spot_reconcile_dirty: {residual.remediation_hint}"
         await self.ledger.record_anomaly(
@@ -611,10 +679,19 @@ class DemoScalpingExecutor:
             sized_notional_usdt=notional,
             final_open_orders=len(open_orders.orders),
             exit_reason=exit_reason,
+            monitor_error=monitor_error,
         )
 
     async def _close_and_reconcile_futures(
-        self, intent, ref, qty, notional, open_cid, instrument_id, exit_reason
+        self,
+        intent,
+        ref,
+        qty,
+        notional,
+        open_cid,
+        instrument_id,
+        exit_reason,
+        monitor_error=None,
     ) -> ExecutionResult:
         # Close with reduceOnly opposite side of the live position.
         position = await self.client.get_position(symbol=intent.symbol)
@@ -679,7 +756,11 @@ class DemoScalpingExecutor:
         final_position = await self.client.get_position(symbol=intent.symbol)
         clean = len(open_orders.orders) == 0 and final_position.is_flat
         if clean:
-            await self.ledger.record_reconciled(client_order_id=open_cid, now=self.now)
+            await self.ledger.record_reconciled(
+                client_order_id=open_cid,
+                now=self.now,
+                extra_metadata_merge=_exit_metadata(exit_reason, monitor_error),
+            )
             if close_cid is not None and close_filled:
                 await self.ledger.record_closed(client_order_id=close_cid, now=self.now)
                 await self.ledger.record_reconciled(
@@ -695,6 +776,7 @@ class DemoScalpingExecutor:
                 final_open_orders=0,
                 final_flat=True,
                 exit_reason=exit_reason,
+                monitor_error=monitor_error,
             )
         reason = (
             f"futures_reconcile_dirty: open_orders={len(open_orders.orders)} "
@@ -714,4 +796,5 @@ class DemoScalpingExecutor:
             final_open_orders=len(open_orders.orders),
             final_flat=final_position.is_flat,
             exit_reason=exit_reason,
+            monitor_error=monitor_error,
         )

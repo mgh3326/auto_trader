@@ -243,3 +243,40 @@ async def test_monitor_dry_run_places_nothing(db_session) -> None:
     ).execute_monitored(_intent("spot", "MONDRYUSDT"), confirm=False, max_poll_count=5)
     assert result.status == "dry_run"
     assert client.submits == []
+
+
+class _RaisingMD:
+    """bookTicker poll raises (simulates timeout / rate-limit / network)."""
+
+    async def fetch_book_ticker(self, product, symbol):
+        raise RuntimeError("bookTicker poll failed (network)")
+
+
+@pytest.mark.asyncio
+async def test_spot_monitor_error_still_closes_flat(db_session) -> None:
+    client = _FakeSpot()
+    result = await _executor(
+        "spot", client, _RaisingMD(), db_session, "MONERRSPOTUSDT"
+    ).execute_monitored(
+        _intent("spot", "MONERRSPOTUSDT"), confirm=True, max_poll_count=5
+    )
+    # Open succeeded, monitor raised -> still closed + reconciled flat.
+    assert result.status == "reconciled"
+    assert result.exit_reason == "monitor_error"
+    assert result.monitor_error is not None and "network" in result.monitor_error
+    assert client.submits == ["BUY", "SELL"]  # failsafe close ran despite the error
+
+
+@pytest.mark.asyncio
+async def test_futures_monitor_error_still_reduce_only_closes_flat(db_session) -> None:
+    client = _FakeFutures()
+    result = await _executor(
+        "usdm_futures", client, _RaisingMD(), db_session, "MONERRFUTUSDT"
+    ).execute_monitored(
+        _intent("usdm_futures", "MONERRFUTUSDT"), confirm=True, max_poll_count=5
+    )
+    assert result.status == "reconciled"
+    assert result.exit_reason == "monitor_error"
+    assert result.final_flat is True
+    # open (reduce_only False) then reduceOnly close (True) even after the error.
+    assert [s[1] for s in client.submits] == [False, True]
