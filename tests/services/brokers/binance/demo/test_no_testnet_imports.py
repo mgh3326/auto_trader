@@ -19,6 +19,18 @@ _BANNED_PREFIXES = (
 )
 
 
+def _module_is_banned(name: str) -> bool:
+    """True when ``name`` is a banned module or a submodule of one.
+
+    Matching is module-boundary aware: a banned prefix only matches when it is
+    the whole module name or is followed by a ``.``. This keeps the deleted
+    ``app.services.scalping`` package (and its submodules) banned without
+    falsely catching unrelated siblings such as the ROB-315
+    ``app.services.scalping_reviews`` package.
+    """
+    return any(name == p or name.startswith(p + ".") for p in _BANNED_PREFIXES)
+
+
 def _scan(roots: list[pathlib.Path]) -> list[str]:
     offenders: list[str] = []
     for root in roots:
@@ -29,15 +41,28 @@ def _scan(roots: list[pathlib.Path]) -> list[str]:
                 continue
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    if node.module and any(
-                        node.module.startswith(p) for p in _BANNED_PREFIXES
-                    ):
+                    if node.module and _module_is_banned(node.module):
                         offenders.append(f"{py}: from {node.module} import ...")
                 elif isinstance(node, ast.Import):
                     for alias in node.names:
-                        if any(alias.name.startswith(p) for p in _BANNED_PREFIXES):
+                        if _module_is_banned(alias.name):
                             offenders.append(f"{py}: import {alias.name}")
     return offenders
+
+
+def test_banned_match_is_module_boundary_aware() -> None:
+    """ROB-298 bans the *deleted* ``app.services.scalping`` package, but the
+    match must respect module boundaries so the unrelated ROB-315
+    ``app.services.scalping_reviews`` package is NOT falsely flagged."""
+    # Banned: exact module and any submodule of the deleted packages.
+    assert _module_is_banned("app.services.scalping")
+    assert _module_is_banned("app.services.scalping.foo")
+    assert _module_is_banned("app.services.brokers.binance.testnet")
+    assert _module_is_banned("app.services.brokers.binance.testnet.client")
+    # Allowed: sibling packages that merely share a name prefix.
+    assert not _module_is_banned("app.services.scalping_reviews")
+    assert not _module_is_banned("app.services.scalping_reviews.service")
+    assert not _module_is_banned("app.services.brokers.binance.demo")
 
 
 def test_no_testnet_imports_in_app() -> None:
