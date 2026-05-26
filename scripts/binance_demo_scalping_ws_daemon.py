@@ -12,6 +12,12 @@ opening a socket. With the gates on it prints a ``running`` summary, subscribes
 to the read-only fstream futures streams, and routes triggers to the
 confirm-gated WsExecutionBridge. Demo hosts only; no live/testnet path; no
 secrets printed.
+
+Bounded operator mode (for first-live validation): ``--max-runtime-sec`` and
+``--max-triggers`` / ``--exit-after-first-trigger`` make the daemon exit cleanly
+after a small, observable run. Real Demo orders need BOTH
+``BINANCE_DEMO_SCALPING_WS_CONFIRM=true`` AND the explicit ``--confirm`` flag,
+and confirmed runs must carry a trigger bound (fail-closed otherwise).
 """
 
 from __future__ import annotations
@@ -72,7 +78,42 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         )
     )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--max-runtime-sec",
+        type=float,
+        default=None,
+        help="Wall-clock cap: exit cleanly after this many seconds.",
+    )
+    parser.add_argument(
+        "--max-triggers",
+        type=int,
+        default=None,
+        help="Exit cleanly after N triggers (bounded operator mode).",
+    )
+    parser.add_argument(
+        "--exit-after-first-trigger",
+        action="store_true",
+        help="Shorthand for --max-triggers 1.",
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help=(
+            "Required (in addition to BINANCE_DEMO_SCALPING_WS_CONFIRM=true) to "
+            "place real Demo orders. Confirmed runs also require a trigger bound."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def resolve_confirm(gates: WsDaemonGates, *, confirm_flag: bool) -> bool:
+    """Whether real Demo order mutation is permitted.
+
+    Requires BOTH the env gate (all three env vars, surfaced as
+    ``gates.mutation_allowed``) AND the explicit ``--confirm`` flag. Either one
+    missing → dry-run (fail-closed). The flag alone never enables mutation.
+    """
+    return gates.mutation_allowed and confirm_flag
 
 
 logger = logging.getLogger("rob317.demo_scalping_ws_daemon")
@@ -100,12 +141,18 @@ async def run_daemon(
     on_trigger: OnTrigger | None = None,
     confirm: bool = False,
     clock: Callable[[], dt.datetime] | None = None,
-) -> None:
-    """Run the trigger pipeline.
+    max_triggers: int | None = None,
+    max_runtime_sec: float | None = None,
+) -> int:
+    """Run the trigger pipeline; return the number of triggers processed.
+
+    Bounded operator mode: ``max_triggers`` stops cleanly after N triggers
+    (count survives reconnects); ``max_runtime_sec`` is a wall-clock cap that
+    cancels even a stream blocked with no events. Both default off (unbounded).
 
     Production: ``on_trigger`` defaults to the env-built WsExecutionBridge
-    (confirm passed in from gates). Tests inject ``source_factory`` +
-    ``on_trigger`` to stay network/DB-free.
+    (confirm passed in). Tests inject ``source_factory`` + ``on_trigger`` to
+    stay network/DB-free.
     """
     factory = source_factory or _real_source_factory(symbols)
     sup = ScalpingDaemonSupervisor(
@@ -119,11 +166,37 @@ async def run_daemon(
 
         bridge, aclose = await build_ws_execution_bridge_from_env(confirm=confirm)
         on_trigger = bridge
+
+    triggers = 0
+    sink = on_trigger
+
+    async def _counting(trigger: TriggerEvent) -> None:
+        nonlocal triggers
+        await sink(trigger)
+        triggers += 1
+
+    def _stop_when() -> bool:
+        return max_triggers is not None and triggers >= max_triggers
+
     try:
-        await sup.run_with_reconnect(factory, on_trigger=on_trigger)
+        runner = sup.run_with_reconnect(
+            factory, on_trigger=_counting, stop_when=_stop_when
+        )
+        if max_runtime_sec is not None:
+            try:
+                await asyncio.wait_for(runner, timeout=max_runtime_sec)
+            except TimeoutError:
+                logger.info(
+                    "daemon exiting: --max-runtime-sec=%.3f reached (triggers=%d)",
+                    max_runtime_sec,
+                    triggers,
+                )
+        else:
+            await runner
     finally:
         if aclose is not None:
             await aclose()
+    return triggers
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -134,12 +207,29 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(summary, sort_keys=True))
     if not gates.daemon_active:
         return 0
+    max_triggers = 1 if args.exit_after_first_trigger else args.max_triggers
+    confirm = resolve_confirm(gates, confirm_flag=args.confirm)
+    if confirm and max_triggers is None:
+        logger.error(
+            "confirmed mode requires a trigger bound: pass --max-triggers N or "
+            "--exit-after-first-trigger (fail-closed; no order placed)"
+        )
+        return 2
     symbols = sorted(DEFAULT_ALLOWLIST)
     logger.info(
-        "WS daemon active (mutation_allowed=%s) — turning triggers into real Demo orders",
-        gates.mutation_allowed,
+        "WS daemon active: confirm=%s max_triggers=%s max_runtime_sec=%s",
+        confirm,
+        max_triggers,
+        args.max_runtime_sec,
     )
-    asyncio.run(run_daemon(symbols=symbols, confirm=gates.mutation_allowed))
+    asyncio.run(
+        run_daemon(
+            symbols=symbols,
+            confirm=confirm,
+            max_triggers=max_triggers,
+            max_runtime_sec=args.max_runtime_sec,
+        )
+    )
     return 0
 
 
