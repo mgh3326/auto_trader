@@ -49,7 +49,6 @@ def _run_single(catalog_path: Path, symbol: str, tp: int, sl: int, trade_size: s
     from nautilus_trader.model.identifiers import Venue
     from nautilus_trader.model.objects import Money
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
-
     from strategy_breakout import BreakoutScalper, BreakoutScalperConfig
 
     catalog = ParquetDataCatalog(str(catalog_path))

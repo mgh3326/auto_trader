@@ -21,7 +21,7 @@ backtest/fee-sweep harness work unchanged.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 
 from app.services.brokers.binance.demo_scalping.signal import Candle, SignalDecision

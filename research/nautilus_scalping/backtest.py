@@ -25,7 +25,6 @@ from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
-
 from strategy_breakout import BreakoutScalper, BreakoutScalperConfig
 
 

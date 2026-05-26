@@ -16,13 +16,13 @@ from decimal import Decimal
 
 from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.model.objects import Price, Quantity
+from signal_bridge import SignalState, bar_to_candle, required_bars
 
 from app.services.brokers.binance.demo_scalping.signal import (
     Candle,
     SignalConfig,
     evaluate_signal,
 )
-from signal_bridge import SignalState, bar_to_candle, required_bars
 
 _BAR_TYPE = BarType.from_str("XRPUSDT.BINANCE-1-MINUTE-LAST-INTERNAL")
 
