@@ -64,6 +64,28 @@ class _FakeKisOrdersFail(_FakeKis):
         raise RuntimeError("overseas orders endpoint unsupported in mock")
 
 
+class _FakeKisMarginUnsupported(_FakeKis):
+    """KIS mock real behavior: overseas margin is OPSQ0002 (no service), holdings work."""
+
+    async def inquire_overseas_margin(self, is_mock=False):
+        self.margin_calls.append(is_mock)
+        raise RuntimeError("OPSQ0002 없는 서비스 코드 입니다")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_margin_unsupported_is_graceful_holdings_still_read():
+    fake = _FakeKisMarginUnsupported()
+    adapter = KisMockUsAdapter(kis_client=fake, enabled=True)
+    summary = await adapter.read_account_state()
+    # overseas margin unsupported in KIS mock (OPSQ0002) → cash/bp None, not a crash
+    assert summary.cash_usd is None
+    assert summary.buying_power_usd is None
+    # holdings read still succeeds on the mock host
+    assert summary.position_count == 2
+    assert fake.holdings_calls == [True]
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_open_order_count_summed_across_exchanges_is_mock_pinned():

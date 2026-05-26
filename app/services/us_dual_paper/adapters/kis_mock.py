@@ -39,9 +39,14 @@ def _is_usd_row(row: Mapping[str, Any]) -> bool:
 
 
 def _default_kis_client() -> Any:
-    from app.services.brokers.kis import kis  # local import: never at module scope
+    # Mock vs live is decided by the CLIENT INSTANCE (host), not the per-call
+    # is_mock arg (which only selects the TR id). The module-level `kis`
+    # singleton is a LIVE-host client, so mock TRs sent through it are rejected
+    # by the live server (EGW02005). A KISClient(is_mock=True) targets the mock
+    # host (openapivts) where overseas balance reads succeed.
+    from app.services.brokers.kis.client import KISClient  # local import
 
-    return kis
+    return KISClient(is_mock=True)
 
 
 class KisMockUsAdapter(BrokerPreviewAdapter):
@@ -70,14 +75,20 @@ class KisMockUsAdapter(BrokerPreviewAdapter):
         return [name for name, present in checks.items() if not present]
 
     async def read_account_state(self) -> AccountStateSummary:
-        rows = await self._kis_client.inquire_overseas_margin(is_mock=True)
         cash_usd: float | None = None
         buying_power_usd: float | None = None
-        for row in rows or []:
-            if isinstance(row, Mapping) and _is_usd_row(row):
-                cash_usd = _to_float(row.get("frcr_dncl_amt1"))
-                buying_power_usd = _to_float(row.get("frcr_ord_psbl_amt1"))
-                break
+        try:
+            # KIS mock does NOT offer overseas foreign-margin (OPSQ0002 "no such
+            # service code"); treat USD cash/buying-power as best-effort.
+            rows = await self._kis_client.inquire_overseas_margin(is_mock=True)
+            for row in rows or []:
+                if isinstance(row, Mapping) and _is_usd_row(row):
+                    cash_usd = _to_float(row.get("frcr_dncl_amt1"))
+                    buying_power_usd = _to_float(row.get("frcr_ord_psbl_amt1"))
+                    break
+        except Exception:  # mock lacks overseas margin — holdings still read below
+            cash_usd = None
+            buying_power_usd = None
         holdings = await self._kis_client.fetch_my_us_stocks(is_mock=True)
         open_order_count = await self._read_open_order_count()
         return AccountStateSummary(

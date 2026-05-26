@@ -19,7 +19,6 @@ def get_capability_matrix() -> dict[str, dict[str, Any]]:
         "supported_order_types": ["limit"],
         "preview_supported": True,
         "submit_gate": "confirm_only_default_disabled",
-        "account_cash_read": True,
         "positions_read": True,
     }
     return {
@@ -27,17 +26,30 @@ def get_capability_matrix() -> dict[str, dict[str, Any]]:
             **common,
             "broker": "kis",
             "account_mode": "kis_mock",
-            "open_orders_read": "partial",  # mock open-order reader may be unavailable
+            # Verified by live smoke (2026-05-27): KIS 모의투자 offers no overseas
+            # foreign-margin service (OPSQ0002 "없는 서비스 코드"), so USD cash /
+            # buying-power cannot be read; the overseas pending-orders inquiry
+            # (TTTS3018R) is hard-blocked in mock. Overseas holdings/positions DO
+            # read on the mock host (openapivts) via VTTS3012R.
+            "account_cash_read": False,
+            "open_orders_read": False,
             "market_session_note": (
-                "Mock overseas reads work pre/post regular session; quote freshness "
+                "Mock overseas holdings read pre/post regular session on the mock "
+                "host; USD cash/buying-power unsupported (OPSQ0002); quote freshness "
                 "is operator-supplied until a US quote adapter lands."
             ),
-            "known_unknown_fields": ["live_quote_state"],
+            "known_unknown_fields": [
+                "cash_usd",
+                "buying_power_usd",
+                "open_orders",
+                "live_quote_state",
+            ],
         },
         "alpaca_paper": {
             **common,
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
+            "account_cash_read": True,
             "open_orders_read": True,
             "market_session_note": (
                 "Paper account/positions readable anytime; limit preview is "
