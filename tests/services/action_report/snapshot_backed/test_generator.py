@@ -1104,3 +1104,65 @@ async def test_action_item_unchanged_when_quote_evidence_ok() -> None:
     # untouched (no operation set by classifier).
     assert sent_item.operation is None
     assert "quote" not in (sent_item.rationale or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_rob323_external_only_unavailable_does_not_block_published() -> None:
+    """ROB-323 — toss/naver/browser all unavailable + every critical kind
+    fresh + bundle_status='partial' → published report generates, overall is
+    NOT 'unavailable', and no PublishBlockedByStaleGateError is raised."""
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="partial",
+            freshness_summary={
+                "portfolio": {"status": "fresh"},
+                "journal": {"status": "fresh"},
+                "watch_context": {"status": "fresh"},
+                "market": {"status": "fresh"},
+                "toss_remote_debug": {"status": "unavailable"},
+                "naver_remote_debug": {"status": "unavailable"},
+                "browser_probe": {"status": "unavailable"},
+            },
+            missing_sources=[
+                "toss_remote_debug",
+                "naver_remote_debug",
+                "browser_probe",
+            ],
+        )
+    )
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=_FakeIngestionService(),
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="published"))
+    assert response.snapshot_freshness_summary["overall"] == "partial"
+    assert response.stale_gate["reject"] is False
+
+
+@pytest.mark.asyncio
+async def test_rob323_critical_unavailable_still_blocks_published() -> None:
+    """ROB-323 — a CORE kind unavailable must keep failing closed even though
+    the external sources are healthy."""
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="failed",
+            freshness_summary={
+                "portfolio": {"status": "unavailable"},
+                "journal": {"status": "fresh"},
+                "watch_context": {"status": "fresh"},
+                "market": {"status": "fresh"},
+                "toss_remote_debug": {"status": "fresh"},
+            },
+            missing_sources=["portfolio"],
+        )
+    )
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=_FakeIngestionService(),
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    with pytest.raises(PublishBlockedByStaleGateError):
+        await gen.generate(_make_request(status="published"))

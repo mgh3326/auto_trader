@@ -40,4 +40,12 @@ export const DIAGNOSTIC_KIND_LABELS: Record<string, string> = {
   news: "뉴스",
   candidate_universe: "후보군",
   symbol: "종목",
+  // ROB-323 — external cross-check sources.
+  toss_remote_debug: "토스증권 교차검증",
+  naver_remote_debug: "네이버증권 교차검증",
+  browser_probe: "브라우저 교차검증",
 };
+
+// ROB-323 — external cross-check section copy.
+export const EXTERNAL_CROSS_CHECK_TITLE = "외부 교차검증";
+export const EXTERNAL_CROSS_CHECK_NOTE = "리포트 생성에는 영향 없음";

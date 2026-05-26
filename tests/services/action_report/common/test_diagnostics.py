@@ -238,3 +238,127 @@ def test_build_report_diagnostics_bundles_three_rollups() -> None:
         "user_id_missing"
     )
     assert out["report_quality_summary"]["grade"] == "informational_only"
+
+
+def test_build_external_cross_checks_marks_affects_generation_false() -> None:
+    from app.services.action_report.common.diagnostics import (
+        build_external_cross_checks,
+    )
+
+    out = build_external_cross_checks(
+        {
+            "portfolio": {"status": "fresh"},  # core — ignored here
+            "toss_remote_debug": {
+                "status": "unavailable",
+                "reason_code": "unavailable",
+                "as_of": "2026-05-26T00:00:00Z",
+            },
+            "naver_remote_debug": {"status": "partial"},
+        }
+    )
+    assert set(out) == {"toss_remote_debug", "naver_remote_debug"}
+    assert out["toss_remote_debug"]["affects_report_generation"] is False
+    assert out["toss_remote_debug"]["status"] == "unavailable"
+    assert out["toss_remote_debug"]["reason_code"] == "unavailable"
+    assert out["toss_remote_debug"]["as_of"] == "2026-05-26T00:00:00Z"
+    assert out["naver_remote_debug"]["affects_report_generation"] is False
+
+
+def test_build_external_cross_checks_empty_when_no_external_present() -> None:
+    from app.services.action_report.common.diagnostics import (
+        build_external_cross_checks,
+    )
+
+    assert build_external_cross_checks({"portfolio": {"status": "fresh"}}) == {}
+
+
+def test_quality_summary_splits_core_optional_external_coverage() -> None:
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "unavailable"},  # optional internal
+            "toss_remote_debug": {"status": "unavailable"},  # external
+            "naver_remote_debug": {"status": "unavailable"},  # external
+        },
+        bundle_status="partial",
+    )
+    # All 4 core kinds fresh.
+    assert out["core_fresh_coverage_pct"] == 100
+    # 1 optional internal kind (news), 0 fresh.
+    assert out["optional_fresh_coverage_pct"] == 0
+    # External rollup excluded from core/optional coverage; surfaced separately.
+    assert out["external_cross_check_status"] == "unavailable"
+    # Grade unchanged: core fresh + partial bundle → high_confidence.
+    assert out["grade"] == "high_confidence"
+
+
+def test_quality_summary_external_status_none_when_absent() -> None:
+    out = build_report_quality_summary(
+        freshness_summary={"portfolio": {"status": "fresh"}},
+        bundle_status="complete",
+    )
+    assert out["external_cross_check_status"] is None
+    assert out["core_fresh_coverage_pct"] == 100
+
+
+def test_build_data_quality_audit_shape() -> None:
+    from app.services.action_report.common.diagnostics import build_data_quality_audit
+
+    audit = build_data_quality_audit(
+        freshness_summary={
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "toss_remote_debug": {
+                "status": "unavailable",
+                "reason_code": "unavailable",
+            },
+        },
+        bundle_status="partial",
+        snapshot_bundle_uuid="b-123",
+    )
+    assert audit["snapshot_bundle_uuid"] == "b-123"
+    assert audit["core"]["status"] == "usable"
+    assert audit["core"]["blocking_gaps"] == []
+    assert audit["core"]["fresh_coverage_pct"] == 100
+    assert (
+        audit["external_cross_checks"]["toss_remote_debug"]["affects_report_generation"]
+        is False
+    )
+    # An unavailable external probe is reported as an info-severity gap, never
+    # a blocker.
+    assert any(g["severity"] == "info" for g in audit["gaps"])
+    assert all(g["severity"] != "blocking" for g in audit["gaps"])
+
+
+def test_build_data_quality_audit_core_degraded_lists_blocking_gap() -> None:
+    from app.services.action_report.common.diagnostics import build_data_quality_audit
+
+    audit = build_data_quality_audit(
+        freshness_summary={"portfolio": {"status": "unavailable"}},
+        bundle_status="failed",
+        snapshot_bundle_uuid=None,
+    )
+    assert audit["core"]["status"] == "degraded"
+    assert "portfolio" in audit["core"]["blocking_gaps"]
+
+
+def test_report_diagnostics_includes_data_quality_audit() -> None:
+    from app.services.action_report.common.diagnostics import build_report_diagnostics
+
+    out = build_report_diagnostics(
+        freshness_summary={
+            "portfolio": {"status": "fresh"},
+            "toss_remote_debug": {"status": "unavailable"},
+        },
+        bundle_status="partial",
+        why_no_action=None,
+        snapshot_bundle_uuid="b-1",
+    )
+    assert "data_quality_audit" in out
+    assert out["data_quality_audit"]["snapshot_bundle_uuid"] == "b-1"
