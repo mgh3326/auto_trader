@@ -284,9 +284,7 @@ def _resolve_scalping_exit_context(
     if not scalping_exit:
         return None
     if not settings.kis_mock_scalping_enabled:
-        raise ValueError(
-            "scalping_exit requires KIS_MOCK_SCALPING_ENABLED=true"
-        )
+        raise ValueError("scalping_exit requires KIS_MOCK_SCALPING_ENABLED=true")
     if not is_mock:
         raise ValueError("scalping_exit is only available for kis_mock orders")
     if side != "sell":
