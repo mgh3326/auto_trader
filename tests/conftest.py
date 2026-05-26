@@ -551,6 +551,37 @@ async def db_session():
                         "))"
                     )
                 )
+                # ROB-329 — extend investment_snapshots.snapshot_kind CHECK to
+                # include 'validated_run_card' (and 'pending_orders' from
+                # ROB-274 P2). create_all is no-op on the persistent test
+                # table, so drop+recreate here; canonical schema lives in
+                # migration 20260527_rob329_extend_snapshot_kind_run_card.py.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_snapshots "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_snapshots_ck_investment_snapshots_snapshot_kind"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_snapshots "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_snapshots_snapshot_kind"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_snapshots "
+                        "ADD CONSTRAINT ck_investment_snapshots_snapshot_kind "
+                        "CHECK (snapshot_kind IN ("
+                        "'portfolio','market','news','symbol','candidate_universe',"
+                        "'browser_probe','invest_page','journal','watch_context',"
+                        "'naver_remote_debug','toss_remote_debug','llm_input_frozen',"
+                        "'pending_orders','validated_run_card'"
+                        "))"
+                    )
+                )
                 # ROB-274 — proposal-state columns + operation-aware CHECKs on
                 # investment_report_items. Mirrors the persistent-DB patch
                 # pattern above; the canonical schema lives in migration

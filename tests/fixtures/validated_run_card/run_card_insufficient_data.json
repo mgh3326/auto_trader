@@ -1,0 +1,164 @@
+{
+  "schema_version": "validated_run_card.v1",
+  "generated_at": "2026-05-26T22:44:13.244085+00:00",
+  "candidate": "meanrev_zscore_fade",
+  "hypothesis": "mean_reversion",
+  "verdict": "insufficient_data",
+  "verdict_reasons": [
+    "folds below min_trades=1: val=0",
+    "net edge statistically > 0 (bootstrap 95% CI lower 25.5812 > 0)"
+  ],
+  "net_after_cost": {
+    "fold": "net_after_cost",
+    "trades": 2,
+    "net_pnl": 0.27449256,
+    "win_rate_pct": 100.0,
+    "max_drawdown": 0.0,
+    "profit_factor": Infinity,
+    "expectancy": 0.13724628
+  },
+  "reproducibility": {
+    "config_hash": "870ff843a270742e7cae28eaca3cef369372451ee45107a7664007608bf759a6",
+    "strategy_hash": null,
+    "artifacts": []
+  },
+  "data_sources": [
+    "binance_demo_backtest:XRPUSDT"
+  ],
+  "validation": {
+    "bootstrap": {
+      "observed_sharpe": 25.581164471976745,
+      "ci_lower": 25.581164471976745,
+      "ci_upper": 1000000.0,
+      "median_sharpe": 1000000.0,
+      "prob_positive": 1.0,
+      "confidence": 0.95,
+      "n_bootstrap": 200,
+      "seed": 327
+    },
+    "monte_carlo": {
+      "error": "insufficient_data",
+      "n": 2,
+      "n_sim": 200,
+      "seed": 327
+    }
+  },
+  "warnings": [],
+  "framing": "net-after-fee is the only verdict basis. ROB-316/320 already proved the scalper is net-negative purely on fees; the bootstrap CI and Monte-Carlo permutation here test the statistical robustness of that net result, not a new edge. This run card is audit evidence, not a pass stamp.",
+  "gate_report": {
+    "schema_version": "validated_signal_gate.v1",
+    "candidate": "meanrev_zscore_fade",
+    "hypothesis": "mean_reversion",
+    "symbols": [
+      "XRPUSDT"
+    ],
+    "window": {
+      "from": "2026-05-01",
+      "to": "2026-05-03",
+      "folds": {
+        "train": 0.5,
+        "val": 0.25,
+        "oos": 0.25
+      }
+    },
+    "cost_model": {
+      "fee_bps_per_leg": 10.0,
+      "fee_grid_bps": [
+        10.0,
+        7.5,
+        5.0,
+        2.0,
+        0.0
+      ]
+    },
+    "results": {
+      "gross": {
+        "fold": "gross",
+        "trades": 2,
+        "net_pnl": 0.83256,
+        "win_rate_pct": 100.0,
+        "max_drawdown": 0.0,
+        "profit_factor": Infinity,
+        "expectancy": 0.41628
+      },
+      "zero_fee": {
+        "fold": "zero_fee",
+        "trades": 2,
+        "net_pnl": 0.83256,
+        "win_rate_pct": 100.0,
+        "max_drawdown": 0.0,
+        "profit_factor": Infinity,
+        "expectancy": 0.41628
+      },
+      "net_after_cost": {
+        "fold": "net_after_cost",
+        "trades": 2,
+        "net_pnl": 0.27449256,
+        "win_rate_pct": 100.0,
+        "max_drawdown": 0.0,
+        "profit_factor": Infinity,
+        "expectancy": 0.13724628
+      }
+    },
+    "per_fold": [
+      {
+        "fold": "train",
+        "trades": 1,
+        "net_pnl": 0.14104,
+        "win_rate_pct": 100.0,
+        "max_drawdown": 0.0,
+        "profit_factor": Infinity,
+        "expectancy": 0.14104
+      },
+      {
+        "fold": "val",
+        "trades": 0,
+        "net_pnl": 0.0,
+        "win_rate_pct": 0.0,
+        "max_drawdown": 0.0,
+        "profit_factor": 0.0,
+        "expectancy": 0.0
+      },
+      {
+        "fold": "oos",
+        "trades": 1,
+        "net_pnl": 0.13345256,
+        "win_rate_pct": 100.0,
+        "max_drawdown": 0.0,
+        "profit_factor": Infinity,
+        "expectancy": 0.13345256
+      }
+    ],
+    "baselines": {
+      "micro_breakout": {
+        "net_after_cost": -11.40527001,
+        "trades": 40
+      },
+      "random_entry": {
+        "net_after_cost": -2.7911066399999998,
+        "trades": 23
+      }
+    },
+    "param_stability": {
+      "grid": [
+        "z2.0/tp30/sl30",
+        "z2.5/tp40/sl40"
+      ],
+      "val_best_param": "z2.0/tp30/sl30",
+      "oos_rank_of_val_best": 1,
+      "single_fold_edge": false,
+      "param_island": false
+    },
+    "overfit_flags": {
+      "low_trades": true,
+      "single_fold_edge": false,
+      "param_island": false
+    },
+    "trade_count": 2,
+    "verdict": "insufficient_data",
+    "verdict_reasons": [
+      "folds below min_trades=1: val=0",
+      "net edge statistically > 0 (bootstrap 95% CI lower 25.5812 > 0)"
+    ]
+  }
+}
