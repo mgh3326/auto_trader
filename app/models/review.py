@@ -199,6 +199,7 @@ class KISMockOrderLedger(Base):
         Index("ix_kis_mock_ledger_trade_date", "trade_date"),
         Index("ix_kis_mock_ledger_symbol", "symbol"),
         Index("ix_kis_mock_ledger_lifecycle_state", "lifecycle_state"),
+        Index("ix_kis_mock_ledger_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -244,6 +245,17 @@ class KISMockOrderLedger(Base):
     )
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     last_reconcile_detail: Mapped[dict | None] = mapped_column(JSONB)
+
+    # ROB-321 round-trip scalping columns (additive, nullable). A buy/sell
+    # round trip shares one correlation_id; the exit leg carries exit_reason +
+    # gross/net PnL once paired from execution evidence.
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    scalping_role: Mapped[str | None] = mapped_column(Text)  # 'entry' | 'exit'
+    exit_reason: Mapped[str | None] = mapped_column(
+        Text
+    )  # stop_loss|take_profit|time_stop
+    gross_pnl: Mapped[float | None] = mapped_column(Numeric(20, 4))
+    net_pnl: Mapped[float | None] = mapped_column(Numeric(20, 4))
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
