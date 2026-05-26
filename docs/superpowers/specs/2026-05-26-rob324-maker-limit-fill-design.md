@@ -101,9 +101,12 @@ Add `execution_mode: str = "taker"` to `MeanRevScalperConfig`.
 ### 3.4 `validate_maker_fill.py` (new driver)
 - Runs the taker meanrev + baselines (existing runner) and the **maker** meanrev re-sim,
   across `XRPUSDT` + `BTCUSDT`, merged chronologically (mirrors `validate_candidate.py`).
+- **Reuses ROB-320's 2-config param grid** (`z2.0/tp30/sl30`, `z2.5/tp40/sl40`) for the
+  taker and maker candidate scenarios, so the gate's param-stability / `param_island`
+  overfit guard is preserved (a single config would make that check trivially pass).
 - Builds the three scenarios via `maker_fill.py`.
-- Calls the existing `evaluate_gate` once per scenario (candidate = that scenario's
-  trades; baselines at 4 bps). The headline verdict is taken from the **conservative**
+- Calls the existing `evaluate_gate` once per scenario (per-label `candidate_runs`;
+  baselines at 4 bps). The headline verdict is taken from the **conservative**
   scenario (the honest lower bound); the optimistic and taker results are reported for
   comparison.
 - Writes the artifact (§4). No execution side effects — public-data backtest only.
