@@ -1,6 +1,6 @@
 """ROB-321 PR3 — deterministic long-only trend micro-breakout scalping signal.
 
-Mirrors the Binance demo_scalping signal but for KR cash equities:
+Mirrors the demo_scalping signal pattern (ROB-307) but for KR cash equities:
 
 * **Long-only.** Enter when ``sma_fast > sma_slow`` (uptrend) AND the latest
   close breaks above the prior ``breakout_lookback``-bar high. There is no short

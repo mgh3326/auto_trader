@@ -1,7 +1,7 @@
 """ROB-321 PR3 — KIS mock scalping risk / order-intent contract.
 
-Deterministic and read-only, mirroring the Binance demo_scalping contract but
-KIS-specific:
+Deterministic and read-only, mirroring the demo_scalping risk contract pattern
+(ROB-307) but KIS-specific:
 
 * **Cash equities, long-only.** Entry signals are BUY-only; SELL exists only as
   a close/exit (handled by the exit manager in PR4), never as a short entry.
