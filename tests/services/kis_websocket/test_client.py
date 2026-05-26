@@ -231,7 +231,7 @@ class TestKISWebSocketClient:
         assert client.is_connected is True
         assert client.approval_key == "fresh-key"
         reissue_mock.assert_awaited_once()
-        cache_mock.assert_awaited_once_with("fresh-key")
+        cache_mock.assert_awaited_once_with("fresh-key", "kis_live")
         assert close_mock.await_count >= 1
 
     @pytest.mark.asyncio
