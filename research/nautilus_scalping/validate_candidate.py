@@ -23,7 +23,15 @@ from pathlib import Path
 
 from backtest_runner import run
 from candidates import get_candidate
-from validated_gate import Trade, evaluate_gate
+from validated_gate import (
+    Trade,
+    apply_statistical_evidence,
+    bootstrap_sharpe_ci,
+    evaluate_gate,
+    monte_carlo_permutation,
+    net_pnls_at_fee,
+    write_run_card,
+)
 
 # small, fixed param grid (param-stability check, not optimization)
 _GRID = {
@@ -49,6 +57,10 @@ def main() -> int:
     ap.add_argument("--window-from", default="")
     ap.add_argument("--window-to", default="")
     ap.add_argument("--export", type=Path, default="results/rob320/gate.json")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="seed for bootstrap / Monte-Carlo permutation")
+    ap.add_argument("--bootstrap-n", type=int, default=1000)
+    ap.add_argument("--mc-n", type=int, default=1000)
     args = ap.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
@@ -101,8 +113,34 @@ def main() -> int:
                 "folds": {"train": 0.5, "val": 0.25, "oos": 0.25}},
     )
 
+    # ROB-328 (ROB-327 F1) — statistical robustness of the net-after-fee result.
+    # Bootstrap CI + Monte-Carlo permutation on the val-best config's per-trade
+    # net PnLs. This tests whether the (known net-negative; ROB-316/320) result
+    # is statistically robust, and emits an audit run card. No new edge claim.
+    val_best = report.param_stability.get("val_best_param")
+    bootstrap = monte_carlo = None
+    if val_best in candidate_runs:
+        net_pnls = net_pnls_at_fee(candidate_runs[val_best], args.fee_bps)
+        bootstrap = bootstrap_sharpe_ci(net_pnls, n_bootstrap=args.bootstrap_n, seed=args.seed)
+        monte_carlo = monte_carlo_permutation(net_pnls, n_sim=args.mc_n, seed=args.seed)
+        apply_statistical_evidence(report, bootstrap)  # folds CI evidence into verdict
+
     args.export.parent.mkdir(parents=True, exist_ok=True)
     args.export.write_text(json.dumps(report.to_dict(), indent=2))
+
+    run_card_config = {
+        "candidate": args.candidate, "symbols": symbols, "fee_bps": args.fee_bps,
+        "min_trades": args.min_trades, "grid": dict(grid),
+        "window": {"from": args.window_from, "to": args.window_to},
+        "seed": args.seed, "bootstrap_n": args.bootstrap_n, "mc_n": args.mc_n,
+    }
+    card_paths = write_run_card(
+        report, args.export.parent,
+        config=run_card_config,
+        data_sources=[f"binance_demo_backtest:{','.join(symbols)}"],
+        bootstrap=bootstrap, monte_carlo=monte_carlo,
+    )
+
     print("\n=============================================================")
     print(f"VERDICT: {report.verdict.upper()}")
     print("Reasons:")
@@ -111,6 +149,7 @@ def main() -> int:
     print("=============================================================")
     print(f"Total trades of val-best config: {report.trade_count}")
     print(f"Report exported to: {args.export.resolve()}")
+    print(f"Run card: {card_paths['json'].resolve()} / {card_paths['md'].name}")
     return 0
 
 

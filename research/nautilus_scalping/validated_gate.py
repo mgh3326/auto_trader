@@ -8,7 +8,14 @@ reference-fee run (same method as fee_sweep / compare_strategies).
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+import random
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 REF_FEE_BPS = 10.0
@@ -58,6 +65,11 @@ class GateReport:
 def _net_at_fee(t: Trade, fee_bps: float) -> float:
     scale = 1.0 - fee_bps / REF_FEE_BPS
     return t.net_ref_pnl + t.commission_ref * scale
+
+
+def net_pnls_at_fee(trades: list[Trade], fee_bps: float) -> list[float]:
+    """Per-trade net-after-fee PnLs (chronological) for the statistical layer."""
+    return [_net_at_fee(t, fee_bps) for t in sorted(trades, key=lambda t: t.ts_opened)]
 
 
 def metrics_at_fee(trades: list[Trade], fee_bps: float, fold: str = "") -> FoldMetrics:
@@ -202,3 +214,323 @@ def evaluate_gate(
             reasons.append("oos positive, beats baselines, stable across params/folds")
     report.verdict_reasons = reasons
     return report
+
+
+# --------------------------------------------------------------------------- #
+# ROB-328 (ROB-327 F1) — statistical-significance + run-card additions.
+#
+# Additive only; the OOS/verdict/baseline/fee machinery above is unchanged.
+# Pure-stdlib (random/math/hashlib) so the gate stays importable without numpy.
+# Framing: ROB-316/320 already proved the scalper is net-negative on fees; these
+# tools test the *statistical robustness* of that net result, not a new edge.
+# --------------------------------------------------------------------------- #
+
+RUN_CARD_SCHEMA_VERSION = "validated_run_card.v1"
+
+_FEE_KILL_NOTE = (
+    "net-after-fee is the only verdict basis. ROB-316/320 already proved the "
+    "scalper is net-negative purely on fees; the bootstrap CI and Monte-Carlo "
+    "permutation here test the statistical robustness of that net result, not a "
+    "new edge. This run card is audit evidence, not a pass stamp."
+)
+
+
+def _mean(xs: Sequence[float]) -> float:
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def _sample_std(xs: Sequence[float]) -> float:
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    m = _mean(xs)
+    return math.sqrt(sum((x - m) ** 2 for x in xs) / (n - 1))
+
+
+_MAX_SHARPE = 1e6  # bound the degenerate zero-variance case (sign still preserved)
+
+
+def _sharpe(xs: Sequence[float]) -> float:
+    """Unitless edge-per-unit-risk: mean / sample-std (no annualization).
+
+    Zero variance (constant series) yields a sign-preserving bounded value rather
+    than an eps-division blowup, so run cards stay readable.
+    """
+    if not xs:
+        return 0.0
+    mean = _mean(xs)
+    std = _sample_std(xs)
+    if std == 0.0:
+        return 0.0 if mean == 0.0 else math.copysign(_MAX_SHARPE, mean)
+    return max(-_MAX_SHARPE, min(_MAX_SHARPE, mean / std))
+
+
+def _percentile(sorted_xs: list[float], q: float) -> float:
+    """Linear-interpolation percentile (q in [0, 1]); input must be sorted."""
+    if not sorted_xs:
+        return 0.0
+    n = len(sorted_xs)
+    if n == 1:
+        return sorted_xs[0]
+    pos = q * (n - 1)
+    lo = math.floor(pos)
+    hi = math.ceil(pos)
+    if lo == hi:
+        return sorted_xs[int(lo)]
+    frac = pos - lo
+    return sorted_xs[int(lo)] * (1.0 - frac) + sorted_xs[int(hi)] * frac
+
+
+def bootstrap_sharpe_ci(
+    net_pnls: Sequence[float],
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> dict:
+    """Percentile bootstrap CI for the per-trade Sharpe of net-after-fee PnLs.
+
+    ``ci_upper < 0`` => the net edge is statistically <= 0 at ``confidence``.
+    Seeded via ``random.Random`` for exact reproducibility.
+    """
+    n = len(net_pnls)
+    if n < 2:
+        return {"error": "insufficient_data", "n": n,
+                "n_bootstrap": n_bootstrap, "confidence": confidence, "seed": seed}
+    rng = random.Random(seed)
+    observed = _sharpe(net_pnls)
+    sharpes: list[float] = []
+    for _ in range(n_bootstrap):
+        sample = [net_pnls[rng.randrange(n)] for _ in range(n)]
+        sharpes.append(_sharpe(sample))
+    sharpes.sort()
+    alpha = (1.0 - confidence) / 2.0
+    return {
+        "observed_sharpe": observed,
+        "ci_lower": _percentile(sharpes, alpha),
+        "ci_upper": _percentile(sharpes, 1.0 - alpha),
+        "median_sharpe": _percentile(sharpes, 0.5),
+        "prob_positive": sum(1 for s in sharpes if s > 0) / n_bootstrap,
+        "confidence": confidence,
+        "n_bootstrap": n_bootstrap,
+        "seed": seed,
+    }
+
+
+def _equity_path_metrics(
+    net_pnls: Sequence[float], base_capital: float = 10_000.0
+) -> tuple[float, float]:
+    """Order-dependent path metrics: (returns-Sharpe, absolute max drawdown).
+
+    Max drawdown is absolute on the cumulative-PnL equity curve (starts at 0),
+    matching ``metrics_at_fee``. The returns-Sharpe is computed relative to the
+    running capital, so both are sensitive to trade ordering (the only thing a
+    permutation test can move — the PnL multiset and its sum are invariant).
+    """
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    running_capital = base_capital
+    returns: list[float] = []
+    for x in net_pnls:
+        returns.append(x / running_capital if running_capital else 0.0)
+        running_capital += x
+        equity += x
+        peak = max(peak, equity)
+        max_dd = min(max_dd, equity - peak)
+    sharpe = _sharpe(returns) if len(returns) >= 2 else 0.0
+    return sharpe, max_dd
+
+
+def monte_carlo_permutation(
+    net_pnls: Sequence[float],
+    n_sim: int = 1000,
+    seed: int = 42,
+    base_capital: float = 10_000.0,
+) -> dict:
+    """Permutation test on trade ordering (null: order carries no information).
+
+    Shuffles the PnL sequence ``n_sim`` times and recomputes the order-dependent
+    path metrics. ``p_value_*`` = fraction of permutations whose statistic is at
+    least as good as observed (one-tailed; max_dd is negative, so ``>=`` means a
+    less-severe drawdown).
+    """
+    n = len(net_pnls)
+    if n < 3:
+        return {"error": "insufficient_data", "n": n, "n_sim": n_sim, "seed": seed}
+    rng = random.Random(seed)
+    actual_sharpe, actual_max_dd = _equity_path_metrics(net_pnls, base_capital)
+    ge_sharpe = 0
+    ge_maxdd = 0
+    pool = list(net_pnls)
+    for _ in range(n_sim):
+        rng.shuffle(pool)
+        s, dd = _equity_path_metrics(pool, base_capital)
+        if s >= actual_sharpe:
+            ge_sharpe += 1
+        if dd >= actual_max_dd:
+            ge_maxdd += 1
+    return {
+        "actual_sharpe": actual_sharpe,
+        "actual_max_dd": actual_max_dd,
+        "p_value_sharpe": ge_sharpe / n_sim,
+        "p_value_maxdd": ge_maxdd / n_sim,
+        "n_sim": n_sim,
+        "seed": seed,
+    }
+
+
+def run_card_hashes(
+    config: dict,
+    strategy_path: str | Path | None = None,
+    artifact_paths: Sequence[str | Path] = (),
+) -> dict:
+    """SHA-256 reproducibility trio: config (sorted-key JSON) / strategy / artifacts."""
+    config_hash = hashlib.sha256(
+        json.dumps(config, sort_keys=True).encode()
+    ).hexdigest()
+    strategy_hash: str | None = None
+    if strategy_path is not None:
+        p = Path(strategy_path)
+        if p.exists():
+            strategy_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+    artifacts: list[dict] = []
+    for ap in artifact_paths:
+        p = Path(ap)
+        if p.exists():
+            artifacts.append(
+                {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+            )
+    return {"config_hash": config_hash, "strategy_hash": strategy_hash,
+            "artifacts": artifacts}
+
+
+def apply_statistical_evidence(report: GateReport, bootstrap: dict) -> GateReport:
+    """Fold bootstrap evidence into the verdict (mutates ``report``).
+
+    A negative CI upper bound is a statistical guard: it appends a reason and
+    downgrades a ``validated`` verdict to ``not_validated``. A positive CI lower
+    bound only appends corroborating evidence — it never upgrades, since the full
+    gate (OOS/baseline/overfit) owns the ``validated`` decision.
+    """
+    if not bootstrap or bootstrap.get("error") is not None:
+        return report
+    ci_lower = bootstrap.get("ci_lower")
+    ci_upper = bootstrap.get("ci_upper")
+    conf = bootstrap.get("confidence", 0.95)
+    if ci_upper is not None and ci_upper < 0:
+        report.verdict_reasons.append(
+            f"net edge statistically <= 0 (bootstrap {conf:.0%} CI upper {ci_upper:.4f} < 0)"
+        )
+        if report.verdict == "validated":
+            report.verdict = "not_validated"
+    elif ci_lower is not None and ci_lower > 0:
+        report.verdict_reasons.append(
+            f"net edge statistically > 0 (bootstrap {conf:.0%} CI lower {ci_lower:.4f} > 0)"
+        )
+    else:
+        report.verdict_reasons.append(
+            f"net edge not statistically distinguishable from 0 "
+            f"(bootstrap {conf:.0%} CI straddles 0)"
+        )
+    return report
+
+
+def _render_run_card_md(card: dict) -> str:
+    lines = [
+        f"# Validated Signal Gate — Run Card ({card['schema_version']})",
+        "",
+        f"- Generated: {card['generated_at']}",
+        f"- Candidate: {card['candidate']}",
+        f"- Hypothesis: {card['hypothesis']}",
+        f"- **Verdict: {card['verdict']}**",
+        "",
+        "## Framing",
+        card["framing"],
+        "",
+        "## Net-after-cost (verdict basis)",
+    ]
+    net = card.get("net_after_cost") or {}
+    if net:
+        for key in ("trades", "net_pnl", "profit_factor", "expectancy", "max_drawdown"):
+            if key in net:
+                lines.append(f"- {key}: {net[key]}")
+    else:
+        lines.append("- (no net_after_cost recorded)")
+
+    lines += ["", "## Verdict reasons"]
+    lines += [f"- {r}" for r in card["verdict_reasons"]] or ["- (none)"]
+
+    lines += ["", "## Reproducibility"]
+    repro = card["reproducibility"]
+    lines.append(f"- config_hash: `{repro['config_hash']}`")
+    lines.append(f"- strategy_hash: `{repro['strategy_hash']}`")
+    for art in repro.get("artifacts", []):
+        lines.append(f"- artifact {art['path']}: `{art['sha256']}`")
+
+    lines += ["", "## Statistical validation"]
+    val = card.get("validation") or {}
+    bs = val.get("bootstrap")
+    mc = val.get("monte_carlo")
+    if bs and bs.get("error") is None:
+        lines.append(
+            f"- bootstrap Sharpe: observed {bs['observed_sharpe']:.4f}, "
+            f"{bs['confidence']:.0%} CI [{bs['ci_lower']:.4f}, {bs['ci_upper']:.4f}], "
+            f"prob_positive {bs['prob_positive']:.3f} (n={bs['n_bootstrap']})"
+        )
+    if mc and mc.get("error") is None:
+        lines.append(
+            f"- Monte-Carlo permutation: p_value_sharpe {mc['p_value_sharpe']:.3f}, "
+            f"p_value_maxdd {mc['p_value_maxdd']:.3f} (n={mc['n_sim']})"
+        )
+    if not bs and not mc:
+        lines.append("- (no statistical validation recorded)")
+
+    lines += ["", "## Data sources"]
+    lines += [f"- {s}" for s in card["data_sources"]] or ["- (none recorded)"]
+
+    if card["warnings"]:
+        lines += ["", "## Warnings"]
+        lines += [f"- {w}" for w in card["warnings"]]
+
+    return "\n".join(lines) + "\n"
+
+
+def write_run_card(
+    report: GateReport,
+    out_dir: str | Path,
+    *,
+    config: dict | None = None,
+    strategy_path: str | Path | None = None,
+    artifact_paths: Sequence[str | Path] = (),
+    data_sources: Sequence[str] = (),
+    bootstrap: dict | None = None,
+    monte_carlo: dict | None = None,
+    warnings: Sequence[str] = (),
+) -> dict[str, Path]:
+    """Write ``run_card.json`` + ``run_card.md`` to ``out_dir`` and return paths."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    hashes = run_card_hashes(
+        config or {}, strategy_path=strategy_path, artifact_paths=artifact_paths
+    )
+    net = report.results.get("net_after_cost", {}) if report.results else {}
+    card = {
+        "schema_version": RUN_CARD_SCHEMA_VERSION,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "candidate": report.candidate,
+        "hypothesis": report.hypothesis,
+        "verdict": report.verdict,
+        "verdict_reasons": list(report.verdict_reasons),
+        "net_after_cost": net,
+        "reproducibility": hashes,
+        "data_sources": list(data_sources),
+        "validation": {"bootstrap": bootstrap, "monte_carlo": monte_carlo},
+        "warnings": list(warnings),
+        "framing": _FEE_KILL_NOTE,
+        "gate_report": report.to_dict(),
+    }
+    json_path = out / "run_card.json"
+    json_path.write_text(json.dumps(card, indent=2))
+    md_path = out / "run_card.md"
+    md_path.write_text(_render_run_card_md(card))
+    return {"json": json_path, "md": md_path}
