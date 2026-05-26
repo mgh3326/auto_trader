@@ -33,6 +33,17 @@ Before starting the daemon, ensure the following requirements are met:
    ```
    (Reuses the existing `binance_demo_order_ledger` and `scalp_trade_analytics` tables.)
 
+> **⚠️ Credential loading — do NOT blindly `source shared/.env.prod.native`.**
+> That file is the native production service's full env (it may carry mainnet/
+> testnet and unrelated secrets). Blindly `set -a; source ...` into an
+> interactive shell pollutes your session, can export mainnet/testnet vars, and
+> risks echoing secrets. Instead use **dotenv-aware / native-service env
+> loading**: let the launchd/native service load its own env file, or load only
+> the Demo-prefixed keys (`BINANCE_FUTURES_DEMO_*` / `BINANCE_DEMO_*`) into a
+> scoped subprocess — never `BINANCE_TESTNET_*` (which do nothing for Demo) —
+> and never print credential values. The daemon resolves Demo credentials via
+> `resolve_demo_credentials()`; only those keys are needed.
+
 ---
 
 ## 3. The Three Gates
@@ -52,7 +63,9 @@ The behavior of the WebSocket daemon is strictly gated by three environment vari
 | `false` / unset | (any) | (any) | **Disabled**. Exits instantly, prints JSON metadata, opens no connections. |
 | `true` | `false` / unset | (any) | **Disabled**. Exits instantly, prints JSON metadata, opens no connections. |
 | `true` | `true` | `false` / unset | **Dry-Run**. Subscribes to websocket streams, runs signal generation, but passes `confirm=False` to the executor (zero broker mutation). |
-| `true` | `true` | `true` | **Confirmed Demo Mode**. Real mock orders are placed on `demo-fapi.binance.com`. |
+| `true` | `true` | `true` | **Confirmed-eligible**. Real mock orders are placed on `demo-fapi.binance.com` **only if the CLI also passes `--confirm` and a trigger bound** (§4.3/§4.4). The env gate alone runs dry-run. |
+
+> The `--confirm` CLI flag is an **independent** second gate on top of the env var: the flag alone never enables mutation, and the env var alone never enables mutation. Confirmed runs additionally **must** be bounded (`--max-triggers` / `--exit-after-first-trigger`) or the daemon exits 2 without placing an order.
 
 ---
 
@@ -92,14 +105,15 @@ uv run python -m scripts.binance_demo_scalping_ws_daemon
 
 ### 4.3. Confirmed Demo Mode (Active Trading)
 
-To engage active trading on the Demo backend, add `BINANCE_DEMO_SCALPING_WS_CONFIRM=true`:
+Confirmed mode requires **all three**: the env gate `BINANCE_DEMO_SCALPING_WS_CONFIRM=true`, the explicit `--confirm` flag, **and** a trigger bound (`--max-triggers` / `--exit-after-first-trigger`). Missing the flag → dry-run; missing the bound → fail-closed (exit 2, no order). See §4.4 for the bounded first-live procedure.
 
 ```bash
 export BINANCE_DEMO_SCALPING_ENABLED=true
 export BINANCE_DEMO_SCALPING_WS_ENABLED=true
 export BINANCE_DEMO_SCALPING_WS_CONFIRM=true
 
-uv run python -m scripts.binance_demo_scalping_ws_daemon
+# --confirm AND a trigger bound are both mandatory for real orders.
+uv run python -m scripts.binance_demo_scalping_ws_daemon --confirm --max-triggers 1
 ```
 
 **Risk Safeguards:**
@@ -107,6 +121,38 @@ uv run python -m scripts.binance_demo_scalping_ws_daemon
 * Subject to **authoritative live-ledger risk checks** (`_preflight`) inside the executor.
 * Guided by an **in-process concurrency lock** (max `1` global position open at any time) to prevent race conditions or duplicate entries under fast websocket updates.
 * Writes full order histories to `binance_demo_order_ledger` and telemetry to `scalp_trade_analytics`.
+
+### 4.4. Bounded Operator Mode (First-Live Validation)
+
+The daemon is a long-running loop by default. For a **first-live validation of the plumbing/harness** (real `fstream` ingest → state → trigger → bridge), use the bounded flags so the run is small, observable, and self-terminating:
+
+| Flag | Effect |
+|---|---|
+| `--max-runtime-sec N` | Wall-clock cap — exits cleanly after N seconds (cancels even a quiet stream). |
+| `--max-triggers N` | Exits cleanly after N triggers (count survives reconnects). |
+| `--exit-after-first-trigger` | Shorthand for `--max-triggers 1`. |
+| `--confirm` | Required **in addition to** `BINANCE_DEMO_SCALPING_WS_CONFIRM=true` to place real Demo orders. Confirmed runs **must** also carry a trigger bound or the daemon **fails closed (exit 2, no order)**. |
+
+> **Scope reminder (ROB-316):** this validates *plumbing*, not alpha. The current micro-breakout signal has no backtested edge — keep first-live validation **dry-run**. Only do a confirmed bounded run if you specifically need to prove the order-placement path end-to-end against Demo, and keep it to a single trigger.
+
+**Step 1 — bounded dry-run (real fstream, no orders, time-boxed):**
+```bash
+# Load ONLY Demo creds into a scoped subprocess (see Preconditions caveat) —
+# do not blindly `source` the prod env file into your shell.
+BINANCE_DEMO_SCALPING_ENABLED=true \
+BINANCE_DEMO_SCALPING_WS_ENABLED=true \
+uv run python -m scripts.binance_demo_scalping_ws_daemon --max-runtime-sec 120
+```
+Subscribes to `wss://fstream.binance.com`, evaluates triggers, runs the executor with `confirm=False` (zero mutation), and exits after 120s. Confirm clean reconnect/freshness logs and no errors.
+
+**Step 2 — confirmed single-trigger plumbing check (real Demo order, bounded):**
+```bash
+BINANCE_DEMO_SCALPING_ENABLED=true \
+BINANCE_DEMO_SCALPING_WS_ENABLED=true \
+BINANCE_DEMO_SCALPING_WS_CONFIRM=true \
+uv run python -m scripts.binance_demo_scalping_ws_daemon --confirm --exit-after-first-trigger
+```
+Places at most **one** real Demo order on `demo-fapi.binance.com`, then exits. Omitting `--confirm` (or the env gate) → dry-run. Omitting a trigger bound while confirmed → **exit 2, no order placed**. Verify the resulting `binance_demo_order_ledger` lifecycle + `scalp_trade_analytics` row (§5) and confirm it reconciled (no `anomaly`).
 
 ---
 
