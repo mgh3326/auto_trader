@@ -25,7 +25,16 @@ def test_ensure_krx_rejects_non_krx_exchange():
 def test_build_parser_defaults_to_dry_run_and_no_confirm():
     parser = smoke.build_parser()
     args = parser.parse_args(
-        ["--mode", "preview", "--symbol", "005930", "--price", "1000", "--quantity", "1"]
+        [
+            "--mode",
+            "preview",
+            "--symbol",
+            "005930",
+            "--price",
+            "1000",
+            "--quantity",
+            "1",
+        ]
     )
     assert args.confirm is False
     assert args.exchange == "KRX"

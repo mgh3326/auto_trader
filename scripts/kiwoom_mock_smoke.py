@@ -250,7 +250,9 @@ async def _amain(args: argparse.Namespace) -> int:
         _emit(
             {
                 "step": "preview",
-                **await run_preview(args.symbol, tick_aligned_price(args.price), args.quantity),
+                **await run_preview(
+                    args.symbol, tick_aligned_price(args.price), args.quantity
+                ),
             }
         )
         return 0
