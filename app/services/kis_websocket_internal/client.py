@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.schemas.execution_contracts import AccountMode
 
 from . import approval_keys
-from .constants import RECOVERABLE_APPROVAL_MSG_CODES
+from .constants import RECOVERABLE_APPROVAL_MSG_CODES, WEBSOCKET_ENDPOINT_HOSTS
 from .parsers import ExecutionMessageParser
 from .protocol import (
     DOMESTIC_EXECUTION_TR_MOCK,
@@ -177,8 +177,12 @@ class KISExecutionWebSocket:
                     ):
                         # 동일한 ACK 오류가 연속으로 반복되면 최소 1초 대기 후 재발급합니다.
                         await asyncio.sleep(1)
-                    self.approval_key = await approval_keys._issue_approval_key()
-                    await approval_keys._cache_approval_key(self.approval_key)
+                    self.approval_key = await approval_keys._issue_approval_key(
+                        self.account_mode
+                    )
+                    await approval_keys._cache_approval_key(
+                        self.approval_key, self.account_mode
+                    )
                     self._last_reissue_msg_code = (
                         ack_error.msg_cd if ack_error else None
                     )
@@ -220,8 +224,8 @@ class KISExecutionWebSocket:
             raise RuntimeError("KIS WebSocket connection not established")
 
     async def _issue_approval_key_if_needed(self):
-        """Approval Key 발급 (캐시 미스 시)"""
-        self.approval_key = await approval_keys.get_approval_key()
+        """Approval Key 발급 (캐시 미스 시) — account_mode 별 endpoint/credential"""
+        self.approval_key = await approval_keys.get_approval_key(self.account_mode)
 
     async def _build_websocket_url(self) -> str:
         """
@@ -235,8 +239,20 @@ class KISExecutionWebSocket:
             if self.mock_mode
             else "ws://ops.koreainvestment.com:21000"
         )
+        self._assert_websocket_endpoint_host(base_url)
         path = "/tryitout"
         return f"{base_url}{path}"
+
+    def _assert_websocket_endpoint_host(self, base_url: str) -> None:
+        """Fail-closed: the WebSocket host:port must match the mode's allowlist."""
+        parsed = urlparse(base_url)
+        host_port = f"{parsed.hostname}:{parsed.port}"
+        allowed = WEBSOCKET_ENDPOINT_HOSTS[self.account_mode]
+        if host_port != allowed:
+            raise ValueError(
+                f"websocket endpoint {host_port!r} not allowed for "
+                f"{self.account_mode} (expected {allowed!r})"
+            )
 
     async def _connect_and_subscribe_internal(self):
         """

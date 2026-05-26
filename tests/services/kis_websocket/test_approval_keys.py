@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.services import kis_websocket as mod
 from app.services.kis_websocket_internal.constants import (
     APPROVAL_KEY_CACHE_KEY,
@@ -48,7 +49,7 @@ async def test_get_approval_key_miss_flow(mocker):
 
     assert result == "fresh"
     mock_issue.assert_awaited_once()
-    mock_cache.assert_awaited_once_with("fresh")
+    mock_cache.assert_awaited_once_with("fresh", "kis_live")
 
 
 @pytest.mark.asyncio
@@ -252,7 +253,7 @@ class TestApprovalKeyRedisCache:
                     result = await mod.get_approval_key()
 
                     assert result == "fresh_key_abc"
-                    cache_spy.assert_called_once_with("fresh_key_abc")
+                    cache_spy.assert_called_once_with("fresh_key_abc", "kis_live")
 
     @pytest.mark.asyncio
     async def test_cache_constants_are_correct(self):
@@ -320,7 +321,7 @@ class TestApprovalKeyEmptyCacheMiss:
                     result = await mod.get_approval_key()
 
                     assert result == "fresh_key_empty"
-                    cache_spy.assert_called_once_with("fresh_key_empty")
+                    cache_spy.assert_called_once_with("fresh_key_empty", "kis_live")
 
     @pytest.mark.asyncio
     async def test_whitespace_cache_treated_as_miss(self):
@@ -351,7 +352,7 @@ class TestApprovalKeyEmptyCacheMiss:
                     result = await mod.get_approval_key()
 
                     assert result == "fresh_key_ws"
-                    cache_spy.assert_called_once_with("fresh_key_ws")
+                    cache_spy.assert_called_once_with("fresh_key_ws", "kis_live")
 
 
 @pytest.mark.unit
@@ -430,3 +431,156 @@ class TestCloseApprovalKeyRedis:
         assert mock_redis.close.call_count == 1  # Not called again
 
         assert internal_mod._redis_client is None
+
+
+@pytest.mark.unit
+class TestAccountModeAwareApprovalKey:
+    """ROB-321: live/mock split for WebSocket approval-key issuance."""
+
+    def _mock_httpx(self, mocker, *, approval_key: str = "issued_key"):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"approval_key": approval_key}
+        mock_response.raise_for_status = MagicMock()
+        mock_client_instance = AsyncMock()
+        mock_client_instance.post = AsyncMock(return_value=mock_response)
+        mock_client = mocker.patch(f"{INTERNAL}.httpx.AsyncClient")
+        mock_client.return_value.__aenter__ = AsyncMock(
+            return_value=mock_client_instance
+        )
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        return mock_client_instance
+
+    @pytest.mark.asyncio
+    async def test_live_uses_live_endpoint_and_credentials(self, mocker):
+        mocker.patch.object(
+            settings, "kis_base_url", "https://openapi.koreainvestment.com:9443"
+        )
+        mocker.patch.object(settings, "kis_app_key", "LIVE_KEY")
+        mocker.patch.object(settings, "kis_app_secret", "LIVE_SECRET")
+        post = self._mock_httpx(mocker)
+
+        result = await mod._issue_approval_key("kis_live")
+
+        assert result == "issued_key"
+        call = post.post.call_args
+        assert (
+            call.args[0] == "https://openapi.koreainvestment.com:9443/oauth2/Approval"
+        )
+        assert call.kwargs["json"]["appkey"] == "LIVE_KEY"
+        assert call.kwargs["json"]["secretkey"] == "LIVE_SECRET"
+
+    @pytest.mark.asyncio
+    async def test_mock_uses_mock_endpoint_and_credentials(self, mocker):
+        mocker.patch.object(settings, "kis_mock_enabled", True)
+        mocker.patch.object(settings, "kis_mock_app_key", "MOCK_KEY")
+        mocker.patch.object(settings, "kis_mock_app_secret", "MOCK_SECRET")
+        mocker.patch.object(settings, "kis_mock_account_no", "50000000-01")
+        mocker.patch.object(
+            settings,
+            "kis_mock_base_url",
+            "https://openapivts.koreainvestment.com:29443",
+        )
+        post = self._mock_httpx(mocker)
+
+        result = await mod._issue_approval_key("kis_mock")
+
+        assert result == "issued_key"
+        call = post.post.call_args
+        assert (
+            call.args[0]
+            == "https://openapivts.koreainvestment.com:29443/oauth2/Approval"
+        )
+        assert call.kwargs["json"]["appkey"] == "MOCK_KEY"
+        assert call.kwargs["json"]["secretkey"] == "MOCK_SECRET"
+
+    @pytest.mark.asyncio
+    async def test_mock_fail_closed_when_config_missing(self, mocker):
+        mocker.patch.object(settings, "kis_mock_enabled", False)
+        mocker.patch.object(settings, "kis_mock_app_key", None)
+        mocker.patch.object(settings, "kis_mock_app_secret", None)
+        mocker.patch.object(settings, "kis_mock_account_no", None)
+        post = self._mock_httpx(mocker)
+
+        with pytest.raises(ValueError) as exc:
+            await mod._issue_approval_key("kis_mock")
+
+        msg = str(exc.value)
+        # Surfaces only the missing env var NAMES, never secret values.
+        assert "KIS_MOCK_ENABLED" in msg
+        assert "KIS_MOCK_APP_KEY" in msg
+        assert "KIS_MOCK_APP_SECRET" in msg
+        # Fail-closed: no HTTP request was ever issued.
+        post.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_namespace_live_vs_mock(self, mocker):
+        mock_redis = AsyncMock()
+        mocker.patch(f"{INTERNAL}._get_redis_client", return_value=mock_redis)
+
+        await mod._cache_approval_key("k", "kis_live")
+        await mod._cache_approval_key("k", "kis_mock")
+
+        set_keys = [c.args[0] for c in mock_redis.set.call_args_list]
+        assert set_keys == [
+            "kis:websocket:approval_key",
+            "kis_mock:websocket:approval_key",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_cached_namespace_mock(self, mocker):
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value="cached_mock")
+        mocker.patch(f"{INTERNAL}._get_redis_client", return_value=mock_redis)
+
+        result = await mod._get_cached_approval_key("kis_mock")
+
+        assert result == "cached_mock"
+        mock_redis.get.assert_called_once_with("kis_mock:websocket:approval_key")
+
+    @pytest.mark.asyncio
+    async def test_unknown_account_mode_rejected(self):
+        with pytest.raises(ValueError, match="account_mode"):
+            await mod._issue_approval_key("alpaca_paper")
+        with pytest.raises(ValueError, match="account_mode"):
+            await mod.get_approval_key("db_simulated")
+
+    @pytest.mark.asyncio
+    async def test_host_allowlist_rejects_tampered_base_url(self, mocker):
+        mocker.patch.object(settings, "kis_base_url", "https://evil.example.com:443")
+        post = self._mock_httpx(mocker)
+
+        with pytest.raises(ValueError, match="not allowed"):
+            await mod._issue_approval_key("kis_live")
+
+        post.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mock_reissue_path_uses_mock_endpoint_and_namespace(self, mocker):
+        # Mirrors the client recoverable-ACK reissue sequence:
+        # _issue_approval_key(account_mode) then _cache_approval_key(key, account_mode).
+        mocker.patch.object(settings, "kis_mock_enabled", True)
+        mocker.patch.object(settings, "kis_mock_app_key", "MOCK_KEY")
+        mocker.patch.object(settings, "kis_mock_app_secret", "MOCK_SECRET")
+        mocker.patch.object(settings, "kis_mock_account_no", "50000000-01")
+        mocker.patch.object(
+            settings,
+            "kis_mock_base_url",
+            "https://openapivts.koreainvestment.com:29443",
+        )
+        post = self._mock_httpx(mocker, approval_key="reissued_mock")
+        mock_redis = AsyncMock()
+        mocker.patch(f"{INTERNAL}._get_redis_client", return_value=mock_redis)
+
+        key = await mod._issue_approval_key("kis_mock")
+        await mod._cache_approval_key(key, "kis_mock")
+
+        assert key == "reissued_mock"
+        assert (
+            post.post.call_args.args[0]
+            == "https://openapivts.koreainvestment.com:29443/oauth2/Approval"
+        )
+        mock_redis.set.assert_called_once_with(
+            "kis_mock:websocket:approval_key",
+            "reissued_mock",
+            ex=APPROVAL_KEY_TTL_SECONDS,
+        )
