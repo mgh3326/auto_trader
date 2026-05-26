@@ -363,3 +363,49 @@ break-even frontier(net>0 최대 per-leg fee): 30/20·40/20·50/30 = **NEVER**(0
 
 **검증:** `PYTHONPATH=<root>:<R> .venv/bin/python fee_sweep.py --catalog catalog --symbol XRPUSDT --trade-size 100`
 (export: `results/fee_sweep.csv`, 42 rows). No broker/order/secret side effect.
+
+---
+
+## 14. ICT-like deterministic rule MVP (2026-05-26)
+
+**목표:** fee sweep가 "문제는 비용이 아니라 진입 selectivity"임을 보였으므로, ICT-flavored
+deterministic 필터(session/killzone, ATR vol floor, FVG, breakout confirmation, optional
+liquidity sweep)를 breakout에 **gate**로 얹어 edge/win-rate 개선을 동일 14일 XRPUSDT tick에서 검증.
+순수 함수 `ict_signal.py`(테스트 11/11), Nautilus `strategy_ict.py`, 비교 `compare_strategies.py`
+(combo당 subprocess). net-after-cost로 비교, **profit은 realistic fee에서만 판단**, 0fee는 gross 참고.
+
+**Ablation (100/100 base, 동일 tick; NET PnL USDT / win% / gross bps/trade):**
+```
+  strategy            trades   net@10  net@7.5  gross  win%  gross_bps
+  breakout 100/100        47    -4.2    -0.8    +9.4  57.4   +14.6
+  ict S+V+F (all)          3 ⚠   -2.3    -2.1    -1.4  33.3   -33.7
+  ict S+V (no FVG)         3 ⚠   -2.3    -2.1    -1.4  33.3   -33.7
+  ict V+F (no session)    15 ⚠   -3.0    -1.9    +1.5  53.3    +6.2
+  ict vol-only            15 ⚠   -3.0    -1.9    +1.5  53.3    +6.2
+  ict session-only        25 ⚠   -0.3    +1.5    +6.9  60.0   +19.6
+  (⚠ = trades < 30, overfit risk)
+```
+
+**발견:**
+1. **FVG 필터 = no-op.** S+V == S+V+F(둘 다 3), vol-only == V+F(둘 다 15) → breakout 자체가
+   displacement라 거의 항상 FVG 동반. 요구해도 아무것도 제거 안 함. **드롭.**
+2. **ATR vol floor = 해로움.** breakout 47→15로 줄이며 per-trade edge도 +14.6→+6.2bps로 낮춤
+   (고변동=좋은 트레이드를 제거). **드롭.**
+3. **session/killzone 필터 = 유일하게 도움.** 47→25 trades로 줄이되 per-trade edge **+14.6→+19.6bps**,
+   win **57.4→60%**, net@10bps **-0.3**(거의 break-even), **net@7.5bps +1.5(양수)**, net@5 +3.3.
+
+**결론 (success criteria 대비):**
+- realistic fee 생존 가능성: **session-only가 7.5bps에서 +1.5(양수), 10bps에서 -0.3(break-even)** → 생존 가능성 **marginal하게 보임**.
+- 완전 붕괴 안 하는 조합: **session-only** (taker 7.5~10bps에서 −0.3~+1.5).
+- ⚠️ **overfit 경고: 25 trades (<30) → under-powered.** suggestive이지 conclusive 아님.
+- ICT 요소 중 **시간대(killzone) 필터만 유효**; FVG·vol-floor는 무효/유해. (즉 "ICT 구조"가 아니라 **time-of-day effect**가 핵심.)
+
+**다음 (L2 확장 전에 표본 키우기 우선):**
+1. 데이터 기간 확장(14일→수개월)으로 trade 수 ≥수백 확보 → session 효과가 살아남나 재검증.
+2. 멀티심볼(DOGE/SOL)에서 동일 session 효과 재현되나.
+3. **session 시간대 자체를 데이터로 검증** — 고정 London/NY killzone이 아니라 어느 UTC 시간이 실제로 edge인지.
+4. 위가 통과하면 그때 L2 order book 녹화/실시간 paper. (지금은 marginal+under-powered라 L2 미진입.)
+- maker + 넓은 타깃(100/100)은 별도 baseline 후보로 유지.
+
+**검증:** `compare_strategies.py --catalog catalog --symbol XRPUSDT --trade-size 100`
+(export: `results/compare_ablation.csv`). No broker/order/secret side effect; 공개 데이터만.
