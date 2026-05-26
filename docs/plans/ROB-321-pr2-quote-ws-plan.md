@@ -299,13 +299,15 @@ Done ahead of the client (Task 3) so the quote client + mock execution WS both i
 - `KISExecutionWebSocket._issue_approval_key_if_needed()` + recoverable-ACK reissue pass `self.account_mode`; `_build_websocket_url` asserts the WS allowlist.
 - Result: **mock execution WS now auto-issues a MOCK approval key** (previously always live — latent bug). Live order/mutation paths untouched. Tests in `tests/services/kis_websocket/test_approval_keys.py` (+ updated `test_client.py`): live/mock endpoint+creds, cache namespace, fail-closed, host-allowlist rejection, reissue path. 88 green.
 
-## Task 3: `KISQuoteWebSocket` read-only client + host allowlist  *(outline)*
+## Task 3: `KISQuoteWebSocket` read-only client + host allowlist  *(DONE)*
 
-`market_stream.py`: connect to resolved quote host (using `get_approval_key(account_mode)` from Task 2b), subscribe to `QUOTE_TR_CODES` for given symbols (reuse subscription-request shape), `async listen(on_tick, on_book)`, reconnect/backoff/heartbeat copied from `KISExecutionWebSocket`. **No order method.** Reuse `WEBSOCKET_ENDPOINT_HOSTS` allowlist (Task 2b); constructor asserts the resolved `host:port` is in it (fail-closed). Tests: fake WS server feeds canned frames → `on_tick`/`on_book` called with parsed objects; host not in allowlist → raises; reconnect/heartbeat-timeout paths. Add `app/core/config.py` flag `kis_mock_scalping_ws_enabled` (default False) gating the daemon/smoke.
+`market_stream.py`: `get_approval_key(account_mode)` (Task 2b) → connect → subscribe `_SUBSCRIBE_TRS` (H0STCNT0/H0STASP0) per symbol → `listen()` dispatches `parse_quote_frame` results to `on_tick`/`on_book`. Bounded reconnect, pingpong echo. **No order method** (`test_has_no_order_surface`). `_build_url` built from + asserted against `WEBSOCKET_ENDPOINT_HOSTS[account_mode]` (fail-closed). 10 tests: unknown-mode reject, live/mock URL, sub-request shape, dispatch routing (tick/book/junk), fake-WS listen, pingpong echo, mock approval-key wiring.
 
-## Task 4: Read-only smoke script + import guard + host resolution  *(outline)*
+## Task 4: Read-only smoke script + import guard + flag  *(DONE)*
 
-`scripts/kis_mock_scalping_ws_smoke.py`: default-disabled (`KIS_MOCK_SCALPING_WS_ENABLED` required), connects, prints N parsed ticks/books, no orders. **Resolves the OPEN QUESTION**: confirm whether mock (`:31000`) or live (`:21000`) host serves quotes; record in `docs/runbooks/`. `test_import_guard.py`: AST-assert `mock_scalping_ws/` imports nothing from execution/order/ledger packages.
+`app/core/config.py` flag `kis_mock_scalping_ws_enabled` (default False, in the `kis_ws` block). `scripts/kis_mock_scalping_ws_smoke.py`: default-disabled (flag-off → no-op exit 0), bounded ticks/books print, no orders; exit 4 = no events on that host. **Resolves the OPEN QUESTION** via `--account-mode kis_mock|kis_live` (runbook records which serves quotes). `tests/brokers/kis/mock_scalping_ws/test_import_guard.py`: AST-asserts the package imports no order/ledger/execution-mutation module. `docs/runbooks/kis-mock-scalping-ws-smoke.md`. `test_smoke_cli.py`: default-disabled no-op + default account_mode.
+
+**PR2 status: implementation complete.** 104 tests green (incl. live-unaffected regressions), ruff check/format + ty clean. Branch `rob-321-pr2` (4 feature commits + docs); not yet pushed. Field indices + mock-vs-live host remain to be confirmed by the operator smoke (runbook table).
 
 ---
 
