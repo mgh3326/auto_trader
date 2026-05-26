@@ -170,6 +170,52 @@ async def test_happy_path_kr_published(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_why_no_action_data_insufficient_on_unavailable_portfolio() -> None:
+    """ROB-318 PR-A — unavailable required kind → why_no_action=data_insufficient."""
+    ensure = _FakeEnsureService(
+        _ensure_response(
+            status="partial",
+            freshness_summary={
+                "overall": "unavailable",
+                "portfolio": {
+                    "status": "unavailable",
+                    "reason_code": "user_id_missing",
+                },
+                "journal": {"status": "fresh"},
+                "watch_context": {"status": "fresh"},
+                "market": {"status": "fresh"},
+            },
+            missing_sources=["portfolio"],
+        )
+    )
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=_FakeIngestionService(),
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    # draft so the publish gate does not short-circuit before the response.
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.why_no_action is not None
+    assert response.why_no_action["kind"] == "data_insufficient"
+    assert response.why_no_action["blocking_sources"] == ["portfolio"]
+
+
+@pytest.mark.asyncio
+async def test_why_no_action_real_no_action_when_fresh_and_no_items() -> None:
+    """ROB-318 PR-A — all fresh, no action items → why_no_action=real_no_action."""
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=_FakeEnsureService(_ensure_response()),
+        ingestion_service=_FakeIngestionService(),
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request(status="draft"))
+    assert response.why_no_action is not None
+    assert response.why_no_action["kind"] == "real_no_action"
+
+
+@pytest.mark.asyncio
 async def test_happy_path_crypto_published() -> None:
     """Crypto/upbit_live pairing is also accepted."""
     ensure = _FakeEnsureService(_ensure_response())

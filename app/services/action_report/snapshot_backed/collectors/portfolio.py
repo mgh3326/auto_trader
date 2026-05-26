@@ -271,9 +271,10 @@ class PortfolioSnapshotCollector:
                     freshness_status="unavailable",
                     coverage={"holdings_count": 0},
                     errors={
+                        "reason_code": "user_id_missing",
                         "reason": (
                             "kis_live portfolio requires explicit user_id; none supplied"
-                        )
+                        ),
                     },
                 )
             ]
@@ -393,6 +394,7 @@ class PortfolioSnapshotCollector:
                     freshness_status="unavailable",
                     coverage=coverage,
                     errors={
+                        "reason_code": "kis_fetch_failed",
                         "reason": "KIS live portfolio fetch failed",
                         "warnings": fetch_warnings,
                         "errors": fetch_errors,

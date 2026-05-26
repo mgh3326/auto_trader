@@ -41,6 +41,7 @@ from app.services.action_report.common.critical_kinds import (
     CRITICAL_KIND_DEGRADING_STATUSES,
     CRITICAL_SNAPSHOT_KINDS,
 )
+from app.services.action_report.common.diagnostics import classify_why_no_action
 from app.services.action_report.common.jsonable import to_jsonable
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
@@ -285,6 +286,19 @@ class SnapshotBackedReportGenerator:
 
         report = await self._ingestion_service.ingest(ingest_request)
 
+        # ROB-318 Phase 3 (PR-A) — classify why the report is no-action so the
+        # operator can tell a genuine hold from a data-blocked / stale-gated one.
+        # Deterministic; Hermes composes the prose. Action items are item_kind
+        # 'action' (watch/risk are not buy/sell actions).
+        why_no_action = classify_why_no_action(
+            freshness_summary=freshness_summary,
+            bundle_status=ensure_response.status,
+            has_action_items=any(
+                getattr(it, "item_kind", None) == "action"
+                for it in ingest_request.items
+            ),
+        )
+
         return ReportGenerationResponse(
             report_uuid=report.report_uuid,
             snapshot_bundle_uuid=ensure_response.bundle_uuid,
@@ -298,6 +312,7 @@ class SnapshotBackedReportGenerator:
             bundle_status=ensure_response.status,
             bundle_reused=not ensure_response.created,
             stale_gate=gate_result.to_metadata_summary(),
+            why_no_action=why_no_action,
         )
 
     # ------------------------------------------------------------------
