@@ -18,9 +18,9 @@ from nautilus_trader.model.data import Bar, BarType, TradeTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.trading.strategy import Strategy, StrategyConfig
+from signal_bridge import SignalState, bar_to_candle
 
 from app.services.brokers.binance.demo_scalping.signal import SignalConfig
-from signal_bridge import SignalState, bar_to_candle
 
 
 class BreakoutScalperConfig(StrategyConfig, frozen=True):

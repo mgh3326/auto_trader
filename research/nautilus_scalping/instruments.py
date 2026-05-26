@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from nautilus_trader.model.currencies import USDT, XRP
+from nautilus_trader.model.currencies import BTC, USDT, XRP
 from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
 from nautilus_trader.model.instruments import CurrencyPair
 from nautilus_trader.model.objects import Money, Price, Quantity
@@ -38,6 +38,33 @@ def xrpusdt_binance() -> CurrencyPair:
         min_notional=Money(1.0, USDT),
         max_price=Price(1000, precision=4),
         min_price=Price(0.0001, precision=4),
+        margin_init=Decimal(0),
+        margin_maint=Decimal(0),
+        maker_fee=_FEE,
+        taker_fee=_FEE,
+        ts_event=0,
+        ts_init=0,
+    )
+
+
+def btcusdt_binance() -> CurrencyPair:
+    """Binance Spot BTC/USDT for backtesting (price 2dp, size 5dp)."""
+    return CurrencyPair(
+        instrument_id=InstrumentId(Symbol("BTCUSDT"), Venue("BINANCE")),
+        raw_symbol=Symbol("BTCUSDT"),
+        base_currency=BTC,
+        quote_currency=USDT,
+        price_precision=2,
+        size_precision=5,
+        price_increment=Price(0.01, precision=2),
+        size_increment=Quantity(0.00001, precision=5),
+        lot_size=Quantity(0.00001, precision=5),
+        max_quantity=Quantity(9000, precision=5),
+        min_quantity=Quantity(0.00001, precision=5),
+        max_notional=None,
+        min_notional=Money(5.0, USDT),
+        max_price=Price(1_000_000, precision=2),
+        min_price=Price(0.01, precision=2),
         margin_init=Decimal(0),
         margin_maint=Decimal(0),
         maker_fee=_FEE,

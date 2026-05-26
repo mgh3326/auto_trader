@@ -20,10 +20,9 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from instruments import btcusdt_binance, xrpusdt_binance
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
-
-from instruments import xrpusdt_binance
 
 _AGG_COLS = [
     "agg_id",
@@ -36,7 +35,7 @@ _AGG_COLS = [
     "best_match",
 ]
 
-_INSTRUMENTS = {"XRPUSDT": xrpusdt_binance}
+_INSTRUMENTS = {"XRPUSDT": xrpusdt_binance, "BTCUSDT": btcusdt_binance}
 
 
 def _load_csv(path: Path) -> pd.DataFrame:
