@@ -25,6 +25,7 @@ from app.mcp_server.tooling.order_journal import (
 )
 from app.mcp_server.tooling.order_validation import (
     DefensiveTrimContext,
+    ScalpingExitContext,
     _check_balance_and_warn,
     _check_daily_order_limit,
     _get_balance_for_order,
@@ -33,6 +34,7 @@ from app.mcp_server.tooling.order_validation import (
     _preview_order,
     _record_order_history,
     _resolve_buy_quantity,
+    _resolve_scalping_exit_context,
     _validate_defensive_trim_preconditions,
     _validate_sell_side,
 )
@@ -319,6 +321,7 @@ async def _build_preview(
     market_type: str,
     defensive_trim_ctx: DefensiveTrimContext | None,
     is_mock: bool = False,
+    scalping_exit_ctx: ScalpingExitContext | None = None,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
     dry_run_result = await _preview_order(
@@ -331,6 +334,7 @@ async def _build_preview(
         market_type=market_type,
         defensive_trim_ctx=defensive_trim_ctx,
         is_mock=is_mock,
+        scalping_exit_ctx=scalping_exit_ctx,
     )
     if not isinstance(dry_run_result, dict):
         raise ValueError("Order preview returned invalid result")
@@ -784,6 +788,9 @@ async def _place_order_impl(
     defensive_trim: bool = False,
     approval_issue_id: str | None = None,
     is_mock: bool = False,
+    scalping_exit: bool = False,
+    scalping_strategy_id: str | None = None,
+    scalping_exit_reason: str | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -832,6 +839,18 @@ async def _place_order_impl(
     except ValueError as e:
         return _order_error(str(e))
 
+    try:
+        scalping_exit_ctx = _resolve_scalping_exit_context(
+            scalping_exit=scalping_exit,
+            strategy_id=scalping_strategy_id,
+            reason=scalping_exit_reason,
+            side=side_lower,
+            order_type=order_type_lower,
+            is_mock=is_mock,
+        )
+    except ValueError as e:
+        return _order_error(str(e))
+
     # Check stop-loss cooldown for crypto buys
     if side_lower == "buy" and market_type == "crypto":
         cooldown_service = _get_crypto_trade_cooldown_service()
@@ -876,6 +895,7 @@ async def _place_order_impl(
                 defensive_trim_ctx=defensive_trim_ctx,
                 is_mock=is_mock,
                 dry_run=dry_run,
+                scalping_exit_ctx=scalping_exit_ctx,
             )
             if sell_error is not None:
                 return sell_error
@@ -892,6 +912,7 @@ async def _place_order_impl(
                 market_type=market_type,
                 defensive_trim_ctx=defensive_trim_ctx,
                 is_mock=is_mock,
+                scalping_exit_ctx=scalping_exit_ctx,
             )
         except ValueError as preview_exc:
             preview_error = str(preview_exc) or preview_exc.__class__.__name__
