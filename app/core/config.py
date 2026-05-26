@@ -631,6 +631,9 @@ class Settings(BaseSettings):
     RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED: bool = False
     RESEARCH_PIPELINE_DUAL_WRITE_ENABLED: bool = False
 
+    # Naver Remote-Debug Audit (ROB-323)
+    remote_debug_audit_enabled: bool = False
+
     model_config = SettingsConfigDict(
         env_file=os.getenv("ENV_FILE", ".env"),
         env_file_encoding="utf-8",
@@ -676,4 +679,17 @@ def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
         missing.append("KIWOOM_MOCK_ACCOUNT_NO")
+    return missing
+
+
+def validate_remote_debug_audit_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing env names for the remote-debug audit CLI (names only).
+
+    Default-disabled: only ``REMOTE_DEBUG_AUDIT_ENABLED=true`` is required. The
+    Chrome endpoint is fixed (127.0.0.1:9222) and carries no secret, so nothing
+    else is gated here.
+    """
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "remote_debug_audit_enabled", False)):
+        missing.append("REMOTE_DEBUG_AUDIT_ENABLED")
     return missing
