@@ -142,3 +142,39 @@ def test_spot_demo_does_not_import_futures_demo() -> None:
         "spot_demo must not import from futures_demo. Offenders:\n"
         + "\n".join(offenders)
     )
+
+
+def test_demo_scalping_ws_does_not_import_mutation_layers() -> None:
+    """ROB-317 — demo_scalping_ws/ is the read-only scalping hot path.
+
+    It computes triggers from public market data but must NOT import any
+    signed execution client, the demo_scalping_exec/ package, or the demo
+    ledger writer. Only the exec-side ws_bridge (slice 4) may reach those.
+    Keeps the read-only boundary AST-verifiable (cf. ROB-307 signal/exec
+    split).
+    """
+    ws_root = pathlib.Path("app/services/brokers/binance/demo_scalping_ws")
+    banned_substrings = (
+        "execution_client",
+        "binance.demo_scalping_exec",
+        "binance.demo.ledger",
+    )
+    offenders: list[str] = []
+    for py in ws_root.rglob("*.py"):
+        try:
+            tree = ast.parse(py.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if any(b in node.module for b in banned_substrings):
+                    offenders.append(f"{py}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if any(b in alias.name for b in banned_substrings):
+                        offenders.append(f"{py}: import {alias.name}")
+    assert not offenders, (
+        "demo_scalping_ws/ (read-only hot path) must not import mutation "
+        "layers (execution clients / demo_scalping_exec / demo.ledger). "
+        "Offenders:\n" + "\n".join(offenders)
+    )
