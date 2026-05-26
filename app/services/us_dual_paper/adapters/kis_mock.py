@@ -44,8 +44,12 @@ def _default_kis_client() -> Any:
 class KisMockUsAdapter(BrokerPreviewAdapter):
     account_scope = "kis_mock"
 
-    def __init__(self, *, kis_client: Any | None = None, enabled: bool | None = None) -> None:
-        self._kis_client = kis_client if kis_client is not None else _default_kis_client()
+    def __init__(
+        self, *, kis_client: Any | None = None, enabled: bool | None = None
+    ) -> None:
+        self._kis_client = (
+            kis_client if kis_client is not None else _default_kis_client()
+        )
         self._enabled_override = enabled
 
     def is_enabled(self) -> bool:
@@ -79,5 +83,7 @@ class KisMockUsAdapter(BrokerPreviewAdapter):
             open_order_count=None,
         )
 
-    async def preview(self, req: BrokerPreviewRequest) -> BrokerPreviewResult:  # PR2 Task 12
+    async def preview(
+        self, req: BrokerPreviewRequest
+    ) -> BrokerPreviewResult:  # PR2 Task 12
         raise NotImplementedError("preview() is implemented in PR2")

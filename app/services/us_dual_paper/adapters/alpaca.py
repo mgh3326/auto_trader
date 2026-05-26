@@ -53,5 +53,7 @@ class AlpacaPaperAdapter(BrokerPreviewAdapter):
             open_order_count=None,
         )
 
-    async def preview(self, req: BrokerPreviewRequest) -> BrokerPreviewResult:  # PR2 Task 11
+    async def preview(
+        self, req: BrokerPreviewRequest
+    ) -> BrokerPreviewResult:  # PR2 Task 11
         raise NotImplementedError("preview() is implemented in PR2")

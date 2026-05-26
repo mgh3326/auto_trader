@@ -38,25 +38,36 @@ async def _run_preflight() -> int:
         missing = adapter.missing_env_keys()
         enabled = adapter.is_enabled()
         any_missing = any_missing or not enabled
-        _emit({
-            "step": "broker_preflight",
-            "account_scope": adapter.account_scope,
-            "enabled": enabled,
-            "missing_env_keys": missing,  # NAMES only, never values
-        })
+        _emit(
+            {
+                "step": "broker_preflight",
+                "account_scope": adapter.account_scope,
+                "enabled": enabled,
+                "missing_env_keys": missing,  # NAMES only, never values
+            }
+        )
     return 1 if any_missing else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="US dual-paper premarket preview smoke")
-    parser.add_argument("--mode", required=True, choices=["preflight"])  # 'preview' added in PR2
+    parser = argparse.ArgumentParser(
+        description="US dual-paper premarket preview smoke"
+    )
+    parser.add_argument(
+        "--mode", required=True, choices=["preflight"]
+    )  # 'preview' added in PR2
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not _truthy(os.environ.get("US_DUAL_PAPER_PREVIEW_ENABLED")):
-        _emit({"step": "disabled", "hint": "set US_DUAL_PAPER_PREVIEW_ENABLED=true to opt in"})
+        _emit(
+            {
+                "step": "disabled",
+                "hint": "set US_DUAL_PAPER_PREVIEW_ENABLED=true to opt in",
+            }
+        )
         return 0
     try:
         if args.mode == "preflight":

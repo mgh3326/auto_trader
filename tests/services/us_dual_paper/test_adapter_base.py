@@ -1,6 +1,10 @@
 import pytest
 
-from app.schemas.us_dual_paper import AccountStateSummary, BrokerPreviewRequest, BrokerPreviewResult
+from app.schemas.us_dual_paper import (
+    AccountStateSummary,
+    BrokerPreviewRequest,
+    BrokerPreviewResult,
+)
 from app.services.us_dual_paper.adapters.base import BrokerPreviewAdapter
 
 
@@ -19,7 +23,9 @@ class _Fake(BrokerPreviewAdapter):
     async def preview(self, req: BrokerPreviewRequest) -> BrokerPreviewResult:
         from app.schemas.us_dual_paper import DualPaperBrokerStatus
 
-        return BrokerPreviewResult(account_scope=self.account_scope, status=DualPaperBrokerStatus.PREVIEWED)
+        return BrokerPreviewResult(
+            account_scope=self.account_scope, status=DualPaperBrokerStatus.PREVIEWED
+        )
 
 
 @pytest.mark.unit

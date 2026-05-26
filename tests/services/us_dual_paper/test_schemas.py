@@ -24,7 +24,9 @@ def test_packet_defaults_are_safe():
 
 @pytest.mark.unit
 def test_broker_result_independent_status():
-    ok = BrokerPreviewResult(account_scope="alpaca_paper", status=DualPaperBrokerStatus.PREVIEWED)
+    ok = BrokerPreviewResult(
+        account_scope="alpaca_paper", status=DualPaperBrokerStatus.PREVIEWED
+    )
     bad = BrokerPreviewResult(
         account_scope="kis_mock",
         status=DualPaperBrokerStatus.ERROR,
@@ -46,4 +48,9 @@ def test_account_state_summary_is_numbers_only():
         cash_usd=100.0, buying_power_usd=100.0, position_count=2, open_order_count=0
     )
     dumped = summary.model_dump()
-    assert set(dumped) == {"cash_usd", "buying_power_usd", "position_count", "open_order_count"}
+    assert set(dumped) == {
+        "cash_usd",
+        "buying_power_usd",
+        "position_count",
+        "open_order_count",
+    }

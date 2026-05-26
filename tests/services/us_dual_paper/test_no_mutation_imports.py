@@ -16,7 +16,13 @@ _BANNED_PREFIXES = (
     "app.mcp_server.tooling.alpaca_paper_orders",
 )
 # Symbols that must never appear as ImportFrom names.
-_BANNED_NAMES = {"submit_order", "place_order", "cancel_order", "modify_order", "_place_order_impl"}
+_BANNED_NAMES = {
+    "submit_order",
+    "place_order",
+    "cancel_order",
+    "modify_order",
+    "_place_order_impl",
+}
 
 
 def _is_banned_module(module: str) -> bool:
@@ -44,4 +50,6 @@ def test_no_banned_imports(path):
             if _is_banned_module(mod):
                 offenders.append(mod)
             offenders += [a.name for a in node.names if a.name in _BANNED_NAMES]
-    assert not offenders, f"{path} imports forbidden mutation/live surfaces: {offenders}"
+    assert not offenders, (
+        f"{path} imports forbidden mutation/live surfaces: {offenders}"
+    )

@@ -12,7 +12,12 @@ class _FakeKis:
         self.margin_calls.append(is_mock)
         return [
             {"crcy_cd": "KRW", "natn_name": "한국", "frcr_dncl_amt1": 0.0},
-            {"crcy_cd": "USD", "natn_name": "미국", "frcr_dncl_amt1": 500.0, "frcr_ord_psbl_amt1": 480.0},
+            {
+                "crcy_cd": "USD",
+                "natn_name": "미국",
+                "frcr_dncl_amt1": 500.0,
+                "frcr_ord_psbl_amt1": 480.0,
+            },
         ]
 
     async def fetch_my_us_stocks(self, is_mock=False):
