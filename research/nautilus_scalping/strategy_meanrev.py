@@ -1,8 +1,16 @@
-"""ROB-320 — z-score mean-reversion fade scalper as a Nautilus Strategy.
+"""ROB-320/324 — z-score mean-reversion fade scalper as a Nautilus Strategy.
 
-Wiring only: decide on each closed bar via the pure ``evaluate_meanrev``,
-enter on a market order (no-lookahead), exit on tick-level TP/SL (conservative
-SL-first). Spot long-only MVP, futures short mirror supported via allow_short.
+Taker mode (ROB-320, default, unchanged): market entry, tick-level TP/SL exit
+(conservative SL-first), spot long-only MVP / futures short mirror via allow_short.
+
+Maker mode (ROB-324): a PASSIVE limit entry posted ``entry_offset_bps`` below the
+signal close (BUY) / above (SELL), so an immediate reversion is MISSED (a real
+missed fill) while a continued move FILLS — capturing the entry-side adverse
+selection of resting orders. Exit is touch-based, identical to taker (so the
+maker trade set is comparable to taker, not collapsed by resting-limit
+under-fills); the maker/taker per-leg fees are NOT charged here — the re-sim runs
+on a ZERO-FEE instrument and ``maker_fill`` applies real fees to the gross P&L
+(maker on entry + the TP leg, taker on the SL leg) plus the conservative overlay.
 """
 from __future__ import annotations
 
@@ -30,7 +38,8 @@ class MeanRevScalperConfig(StrategyConfig, frozen=True):
     require_vol: bool = True
     allow_short: bool = False
     execution_mode: str = "taker"   # "taker" (default, unchanged) | "maker"
-    fill_timeout_bars: int = 1      # cancel an unfilled maker entry after N closed bars
+    entry_offset_bps: int = 5       # maker: passive entry distance below/above close
+    fill_timeout_bars: int = 1      # maker: cancel an unfilled entry after N closed bars
 
 
 class MeanRevScalper(Strategy):
@@ -57,10 +66,11 @@ class MeanRevScalper(Strategy):
         self._entry_order = None
         self._entry_submitted_bar: int | None = None
         self._bar_count = 0
-        self._tp_order = None
         self._entry_px: Decimal | None = None
-        self._adverse_px: Decimal | None = None   # worst price seen vs entry while in position
-        self.records: list[dict] = []             # maker: completed trade records
+        self._adverse_px: Decimal | None = None    # worst price vs entry while in position
+        self._exit_px: Decimal | None = None       # price that triggered the exit
+        self._tp_hit = False                       # last exit was the TP leg (vs SL)
+        self.records: list[dict] = []              # maker: completed trade records
         self.entries_attempted = 0
         self.entries_filled = 0
 
@@ -101,12 +111,15 @@ class MeanRevScalper(Strategy):
                 quantity=self._instrument.make_qty(Decimal(self.config.trade_size)))
             self.submit_order(order)
             return
-        # maker: passive limit entry at the signal close (fade entry rests at a local low)
+        # maker: passive limit OFFSET from the close (below for BUY, above for SELL) so
+        # immediate reversions are missed and continued moves fill (entry adverse selection).
         self.entries_attempted += 1
+        off = Decimal(self.config.entry_offset_bps) / Decimal("10000")
+        limit_px = entry * (Decimal("1") - off) if side == OrderSide.BUY else entry * (Decimal("1") + off)
         order = self.order_factory.limit(
             instrument_id=self.config.instrument_id, order_side=side,
             quantity=self._instrument.make_qty(Decimal(self.config.trade_size)),
-            price=self._instrument.make_price(entry))
+            price=self._instrument.make_price(limit_px))
         self._entry_order = order
         self._entry_submitted_bar = self._bar_count
         self.submit_order(order)
@@ -115,34 +128,32 @@ class MeanRevScalper(Strategy):
         if self.config.execution_mode != "maker":
             return
         if self._entry_order is not None and event.client_order_id == self._entry_order.client_order_id:
-            # entry filled -> post a resting maker-limit TP; SL handled on ticks
             self.entries_filled += 1
             self._entry_order = None
             self._entry_submitted_bar = None
             self._entry_px = event.last_px.as_decimal()
             self._adverse_px = self._entry_px
-            self._tp_order = self.order_factory.limit(
-                instrument_id=self.config.instrument_id,
-                order_side=(OrderSide.SELL if self._side == OrderSide.BUY else OrderSide.BUY),
-                quantity=event.last_qty,
-                price=self._instrument.make_price(self._tp))
-            self.submit_order(self._tp_order)
 
     def on_trade_tick(self, tick: TradeTick) -> None:
         if self.config.execution_mode == "taker":
             return self._taker_exit_check(tick)
-        # maker: track adverse excursion; trigger taker SL via market if breached
+        # maker: touch-based exit (same trigger prices as taker), SL-first conservative,
+        # tagging which leg exited so maker_fill can charge the right fee.
         if self.portfolio.is_flat(self.config.instrument_id) or self._entry_px is None:
             return
         price = tick.price.as_decimal()
         if self._side == OrderSide.BUY:
             self._adverse_px = min(self._adverse_px, price)
             if self._sl is not None and price <= self._sl:
-                self._maker_sl_exit()
+                self._maker_exit(tp_hit=False, exit_px=price)
+            elif self._tp is not None and price >= self._tp:
+                self._maker_exit(tp_hit=True, exit_px=price)
         else:
             self._adverse_px = max(self._adverse_px, price)
             if self._sl is not None and price >= self._sl:
-                self._maker_sl_exit()
+                self._maker_exit(tp_hit=False, exit_px=price)
+            elif self._tp is not None and price <= self._tp:
+                self._maker_exit(tp_hit=True, exit_px=price)
 
     def _taker_exit_check(self, tick: TradeTick) -> None:
         # unchanged taker logic
@@ -160,35 +171,35 @@ class MeanRevScalper(Strategy):
             elif self._tp is not None and price <= self._tp:
                 self._exit()
 
-    def _maker_sl_exit(self) -> None:
-        if self._tp_order is not None:
-            self.cancel_order(self._tp_order)
-            self._tp_order = None
-        self.close_all_positions(self.config.instrument_id)  # taker stop-out
+    def _maker_exit(self, tp_hit: bool, exit_px: Decimal) -> None:
+        self._tp_hit = tp_hit
+        self._exit_px = exit_px
+        self.close_all_positions(self.config.instrument_id)
 
     def on_position_closed(self, event) -> None:
         if self.config.execution_mode != "maker":
             return
         pos = self.cache.position(event.position_id)
         entry = self._entry_px if self._entry_px is not None else Decimal(str(pos.avg_px_open))
-        if self._side == OrderSide.BUY:
-            adverse = (entry - (self._adverse_px or entry)) / entry * Decimal("10000")
-        else:
+        exit_px = self._exit_px if self._exit_px is not None else Decimal(str(pos.avg_px_open))
+        qty = float(pos.peak_qty)
+        if self._side == OrderSide.SELL:
             adverse = ((self._adverse_px or entry) - entry) / entry * Decimal("10000")
-        tp_hit = self._tp_order is not None  # TP order existed and was not cancelled by SL
+        else:
+            adverse = (entry - (self._adverse_px or entry)) / entry * Decimal("10000")
         self.records.append({
-            "net": pos.realized_pnl.as_double(),
-            "comm": sum(c.as_double() for c in pos.commissions()),
-            "notional": float(pos.avg_px_open) * float(pos.peak_qty),
+            "gross": pos.realized_pnl.as_double(),       # zero-fee instrument => pure price P&L
+            "entry_notional": float(entry) * qty,
+            "exit_notional": float(exit_px) * qty,
             "ts": int(pos.ts_opened),
+            "ts_closed": int(pos.ts_closed),
             "filled": True,
-            "tp_hit": bool(tp_hit),
+            "tp_hit": bool(self._tp_hit),
             "adverse_bps": float(max(Decimal("0"), adverse)),
         })
-        self._tp_order = None
-        self._entry_px = None
-        self._adverse_px = None
+        self._entry_px = self._adverse_px = self._exit_px = None
         self._tp = self._sl = self._side = None
+        self._tp_hit = False
 
     def _exit(self) -> None:
         self._tp = self._sl = self._side = None

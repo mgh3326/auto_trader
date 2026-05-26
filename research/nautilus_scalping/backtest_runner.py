@@ -41,6 +41,10 @@ def _run_single(catalog: Path, symbol: str, strategy: str, params: dict, trade_s
 
     execution_mode = str(params.get("execution_mode", "taker"))
     if execution_mode == "maker":
+        # ZERO-fee instrument: realized_pnl is pure (fee-free) gross price P&L. maker_fill
+        # then applies the REAL Binance Demo per-leg fees analytically (maker 2bps on the
+        # entry + the TP leg, taker 4bps on the SL leg). Keeps the gate-feeding net exact
+        # without relying on a single Nautilus commission rate for the mixed maker/taker mix.
         instrument = CurrencyPair(
             instrument_id=instrument.id, raw_symbol=instrument.raw_symbol,
             base_currency=instrument.base_currency, quote_currency=instrument.quote_currency,
@@ -51,23 +55,19 @@ def _run_single(catalog: Path, symbol: str, strategy: str, params: dict, trade_s
             min_notional=instrument.min_notional, max_price=instrument.max_price,
             min_price=instrument.min_price, margin_init=instrument.margin_init,
             margin_maint=instrument.margin_maint,
-            maker_fee=Decimal("0.0002"), taker_fee=Decimal("0.0004"),   # real demo 2/4 bps
+            maker_fee=Decimal("0"), taker_fee=Decimal("0"),
             ts_event=0, ts_init=0)
 
     engine = BacktestEngine(config=BacktestEngineConfig(
         trader_id="ROB320-001", logging=LoggingConfig(log_level="ERROR")))
 
-    # Taker baseline keeps ROB-320's USDT-only funding (verified to reproduce it exactly:
-    # 789 trades, net@10bps -209.71). The maker re-sim ALSO seeds base currency so the
-    # resting maker-limit TP (a SELL of the just-opened long) settles in the CASH account
-    # without tripping AccountBalanceNegative on the fee leg. Scoped to maker so the taker
-    # baseline funding is byte-for-byte ROB-320.
-    starting_balances = [Money(10_000_000, USDT)]
-    if execution_mode == "maker":
-        starting_balances.append(Money(10_000_000, instrument.base_currency))
+    # Both modes use ROB-320's venue: HEDGING is fine because every exit is an explicit
+    # market close_all_positions (OMS-agnostic) — maker mode no longer rests a TP limit,
+    # so the earlier counter-position problem is gone. Taker reproduces ROB-320 exactly
+    # (789 trades, net@10bps -209.71).
     engine.add_venue(venue=Venue("BINANCE"), oms_type=OmsType.HEDGING,
                      account_type=AccountType.CASH, base_currency=None,
-                     starting_balances=starting_balances)
+                     starting_balances=[Money(10_000_000, USDT)])
     engine.add_instrument(instrument)
     engine.add_data(ticks)
     bar_type = BarType.from_str(f"{instrument.id.value}-1-MINUTE-LAST-INTERNAL")
@@ -159,9 +159,10 @@ def run_maker(catalog: Path, symbol: str, params: dict, trade_size: str = "100")
         if line.startswith(_SENTINEL):
             data = json.loads(line[len(_SENTINEL):])
             recs = [MakerTradeRecord(
-                net_at_real_fees=r["net"], commission_real=abs(r["comm"]),
-                notional=r["notional"], ts_opened=r["ts"], filled=r["filled"],
-                tp_hit=r["tp_hit"], adverse_excursion_bps=r["adverse_bps"])
+                gross=r["gross"], entry_notional=r["entry_notional"],
+                exit_notional=r["exit_notional"], ts_opened=r["ts"],
+                filled=r["filled"], tp_hit=r["tp_hit"],
+                adverse_excursion_bps=r["adverse_bps"])
                 for r in data["records"]]
             return recs, data["entries_attempted"], data["entries_filled"]
     raise RuntimeError(f"maker runner {symbol} failed:\n{proc.stderr[-800:]}")
