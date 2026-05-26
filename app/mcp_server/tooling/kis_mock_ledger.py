@@ -213,6 +213,12 @@ async def _save_kis_mock_order_ledger(
     notes: str | None,
     lifecycle_state: str | None = None,
     holdings_baseline_qty: Decimal | None = None,
+    fee: float = 0,
+    correlation_id: str | None = None,
+    scalping_role: str | None = None,
+    exit_reason: str | None = None,
+    gross_pnl: Decimal | None = None,
+    net_pnl: Decimal | None = None,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
 
@@ -232,7 +238,7 @@ async def _save_kis_mock_order_ledger(
                     quantity=quantity,
                     price=price,
                     amount=amount,
-                    fee=0,
+                    fee=fee,
                     currency=currency,
                     order_no=order_no,
                     order_time=order_time,
@@ -249,6 +255,11 @@ async def _save_kis_mock_order_ledger(
                     notes=notes,
                     lifecycle_state=resolved_lifecycle,
                     holdings_baseline_qty=holdings_baseline_qty,
+                    correlation_id=correlation_id,
+                    scalping_role=scalping_role,
+                    exit_reason=exit_reason,
+                    gross_pnl=gross_pnl,
+                    net_pnl=net_pnl,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_mock_ledger_order_no")
             )
