@@ -33,6 +33,7 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
 from app.mcp_server.tooling.alpaca_paper_preview import (
     register_alpaca_paper_preview_tools,
 )
+from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.execution_comment_registration import (
     register_execution_comment_tools,
@@ -110,6 +111,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_market_brief_tools(mcp)
     register_alpaca_paper_tools(mcp)
     register_alpaca_paper_preview_tools(mcp)
+    register_us_dual_paper_tools(mcp)
     register_alpaca_paper_orders_tools(mcp)
     register_alpaca_paper_ledger_read_tools(mcp)
 
