@@ -178,6 +178,7 @@ class Settings(BaseSettings):
     kis_mock_base_url: str = "https://openapivts.koreainvestment.com:29443"
     kis_mock_account_no: str | None = None
     kis_mock_access_token: str | None = None
+    kis_mock_scalping_enabled: bool = False
 
     # Kiwoom Securities mock account. Disabled by default; mock-only foundation
     # added in ROB-97. Live URL is recorded so the runtime can defensively

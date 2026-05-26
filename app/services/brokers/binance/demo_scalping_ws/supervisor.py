@@ -50,6 +50,7 @@ SourceFactory = Callable[[], AsyncIterator[FuturesWsEvent]]
 OnTrigger = Callable[["TriggerEvent"], Awaitable[None]]
 Clock = Callable[[], dt.datetime]
 Sleep = Callable[[float], Awaitable[None]]
+StopWhen = Callable[[], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,14 +104,22 @@ class ScalpingDaemonSupervisor:
         *,
         on_trigger: OnTrigger,
         stop_after: int | None = None,
+        stop_when: StopWhen | None = None,
     ) -> None:
-        """Consume one source to exhaustion (single pass; reconnect: Task 5)."""
+        """Consume one source to exhaustion (single connection pass).
+
+        ``stop_after`` bounds events consumed; ``stop_when`` is a predicate
+        checked after each emitted trigger — bounded operator mode (e.g. a
+        trigger-count cap) returns cleanly once it is true.
+        """
         consumed = 0
         source = source_factory()
         async for event in source:
             trigger = self._handle_event(event)
             if trigger is not None:
                 await on_trigger(trigger)
+                if stop_when is not None and stop_when():
+                    return
             consumed += 1
             if stop_after is not None and consumed >= stop_after:
                 return
@@ -193,6 +202,7 @@ class ScalpingDaemonSupervisor:
         *,
         on_trigger: OnTrigger,
         sleep: Sleep = asyncio.sleep,
+        stop_when: StopWhen | None = None,
     ) -> None:
         """Run with reconnect: back off on connection errors until unhealthy.
 
@@ -201,6 +211,10 @@ class ScalpingDaemonSupervisor:
         consecutive failures reach the unhealthy threshold the error is
         re-raised for the operator/supervisor above to handle.
 
+        ``stop_when`` (bounded operator mode) is checked both at the top of each
+        reconnect iteration and after each trigger inside ``run`` — so the count
+        survives reconnects and the loop exits cleanly once the bound is hit.
+
         ``websockets.exceptions.ConnectionClosed`` (incl. ConnectionClosedOK/
         ConnectionClosedError) is caught explicitly — it is NOT a subclass of
         ConnectionError/OSError, so a real socket close would otherwise crash
@@ -208,8 +222,12 @@ class ScalpingDaemonSupervisor:
         """
         consecutive_failures = 0
         while True:
+            if stop_when is not None and stop_when():
+                return
             try:
-                await self.run(source_factory, on_trigger=on_trigger)
+                await self.run(
+                    source_factory, on_trigger=on_trigger, stop_when=stop_when
+                )
                 return
             except (ConnectionError, OSError, ConnectionClosed) as exc:
                 consecutive_failures += 1

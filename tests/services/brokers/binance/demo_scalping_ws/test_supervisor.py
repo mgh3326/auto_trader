@@ -276,3 +276,25 @@ async def test_trigger_carries_source_candle_close_time() -> None:
     assert captured[0].source_candle_close_time_ms == int(
         expected_close.timestamp() * 1000
     )
+
+
+async def test_run_with_reconnect_stops_when_stop_when_true() -> None:
+    # Bounded operator mode: a stop_when predicate halts the loop cleanly after
+    # the Nth trigger (here 1), even though a second eligible breakout follows.
+    clock = _Clock(_T0 + dt.timedelta(seconds=5))
+    sup = ScalpingDaemonSupervisor(symbols=["XRPUSDT"], clock=clock, debounce_seconds=0)
+    count = 0
+
+    async def on_trig(_trigger: TriggerEvent) -> None:
+        nonlocal count
+        count += 1
+
+    def stop_when() -> bool:
+        return count >= 1
+
+    seq = _breakout_sequence()
+    seq.append(_kline("0.70", high="0.70", low="0.60", minute=26))  # 2nd breakout
+    await sup.run_with_reconnect(
+        lambda: _source_from(seq), on_trigger=on_trig, stop_when=stop_when
+    )
+    assert count == 1  # stopped after the first trigger; second not fired
