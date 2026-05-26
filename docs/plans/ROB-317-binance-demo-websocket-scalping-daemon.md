@@ -165,16 +165,21 @@ daemon does not introduce a second symbol source.
 
 **Streams per symbol:**
 
-* `@aggTrade` — trade prints for momentum and **trigger freshness** (the primary
-  scalping signal driver).
-* `@bookTicker` — best bid/ask for **spread guard** and freshness.
-* `@kline_1m` *(optional)* — closed-candle state, to reuse the existing
-  candle-based signal where safe.
+* `@kline_1m` — closed-candle state. **This is the signal driver:** the trigger
+  fires when a 1m candle closes, reusing the existing candle-based
+  `evaluate_signal` (SMA + breakout) verbatim. Reacting at candle close (vs. up
+  to 5 min later) is the improvement over polling — not sub-second ticks.
+* `@bookTicker` — best bid/ask. Feeds the **spread guard** and the **required
+  quote-freshness gate** (a trigger is emitted only with a fresh bid/ask).
+* `@aggTrade` — trade prints; **momentum/liveness context only**. It does NOT
+  drive the current signal and never substitutes for a bookTicker quote.
 
-> Note: the ROB-285 `BinancePublicWSClient` emits **closed** klines only
-> (`x: True`); in-progress candles are dropped. Tick-level scalping therefore
-> rides `aggTrade`/`bookTicker`, not 1m candle closes. A **futures aggTrade
-> parser** is added (the existing client parses kline + bookTicker only).
+> Note: the current signal is **closed-1m-kline based**, not tick-level. A true
+> tick-level signal would consume `aggTrade`/in-progress klines, but the
+> ROB-285 `BinancePublicWSClient` emits **closed** klines only (`x: True`), and
+> redefining the strategy is out of scope (issue: "reuse existing signal logic
+> where safe"). A **futures aggTrade parser** is added for freshness/liveness
+> (the existing client parses kline + bookTicker only).
 
 ---
 
