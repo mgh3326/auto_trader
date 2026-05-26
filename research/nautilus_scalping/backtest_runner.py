@@ -56,14 +56,18 @@ def _run_single(catalog: Path, symbol: str, strategy: str, params: dict, trade_s
 
     engine = BacktestEngine(config=BacktestEngineConfig(
         trader_id="ROB320-001", logging=LoggingConfig(log_level="ERROR")))
-    
-    # Dynamic starting balances: add base currency to starting_balances to avoid AccountBalanceNegative due to fees
+
+    # Taker baseline keeps ROB-320's USDT-only funding (verified to reproduce it exactly:
+    # 789 trades, net@10bps -209.71). The maker re-sim ALSO seeds base currency so the
+    # resting maker-limit TP (a SELL of the just-opened long) settles in the CASH account
+    # without tripping AccountBalanceNegative on the fee leg. Scoped to maker so the taker
+    # baseline funding is byte-for-byte ROB-320.
+    starting_balances = [Money(10_000_000, USDT)]
+    if execution_mode == "maker":
+        starting_balances.append(Money(10_000_000, instrument.base_currency))
     engine.add_venue(venue=Venue("BINANCE"), oms_type=OmsType.HEDGING,
                      account_type=AccountType.CASH, base_currency=None,
-                     starting_balances=[
-                         Money(10_000_000, USDT),
-                         Money(10_000_000, instrument.base_currency)
-                     ])
+                     starting_balances=starting_balances)
     engine.add_instrument(instrument)
     engine.add_data(ticks)
     bar_type = BarType.from_str(f"{instrument.id.value}-1-MINUTE-LAST-INTERNAL")
