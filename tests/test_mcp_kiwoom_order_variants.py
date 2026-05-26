@@ -734,3 +734,96 @@ async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch):
     assert response["success"] is False
     assert "RuntimeError" in response["error"]
     assert response["account_mode"] == "kiwoom_mock"
+
+
+@pytest.mark.asyncio
+async def test_get_positions_calls_balance_and_passes_through(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {
+                "return_code": 0,
+                "return_msg": "정상",
+                "acnt_evlt_remn_indv_tot": [{"stk_cd": "005930", "rmnd_qty": "3"}],
+            },
+            "order_status": {"return_code": 0},
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_positions"]()
+
+    assert response["success"] is True
+    assert response["source"] == "kiwoom"
+    assert (
+        response["broker_response"]["acnt_evlt_remn_indv_tot"][0]["stk_cd"] == "005930"
+    )
+    assert any(c.get("method") == "balance" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_calls_order_status_with_pagination(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {"return_code": 0},
+            "order_status": {
+                "return_code": 0,
+                "return_msg": "정상",
+                "continuation": {"cont_yn": "Y", "next_key": "page-2"},
+                "rows": [{"ord_no": "0000111222"}],
+            },
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_history"](
+        cont_yn="Y", next_key="page-1"
+    )
+
+    assert response["success"] is True
+    assert response["broker_response"]["rows"][0]["ord_no"] == "0000111222"
+    assert response["continuation"] == {"cont_yn": "Y", "next_key": "page-2"}
+    status_call = next(c for c in calls if c.get("method") == "order_status")
+    assert status_call["cont_yn"] == "Y"
+    assert status_call["next_key"] == "page-1"
+
+
+@pytest.mark.asyncio
+async def test_get_positions_broker_error_is_fail_closed(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeAccountClient:
+        def __init__(self, client):  # noqa: ARG002
+            pass
+
+        async def get_balance(self, **kwargs):  # noqa: ARG002
+            raise RuntimeError("balance boom")
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", FakeAccountClient, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_positions"]()
+
+    assert response["success"] is False
+    assert "RuntimeError" in response["error"]

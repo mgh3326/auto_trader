@@ -299,19 +299,47 @@ async def _kiwoom_mock_modify_impl(**kwargs: Any) -> dict[str, Any]:
 
 
 async def _kiwoom_mock_order_history_impl(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "success": True,
-        "rows": [],
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-    }
+    cont_yn = kwargs.get("cont_yn")
+    next_key = kwargs.get("next_key")
+    try:
+        client = KiwoomMockClient.from_app_settings()
+        account_client = KiwoomDomesticAccountClient(cast(Any, client))
+        broker_response = await account_client.get_order_status(
+            cont_yn=cont_yn, next_key=next_key
+        )
+    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
+        return {
+            "success": False,
+            "source": "kiwoom",
+            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+            "error": (
+                f"kiwoom_mock_get_order_history failed: {type(exc).__name__}: {exc}"
+            ),
+        }
+    return _finalize_broker_response(
+        {"source": "kiwoom", "account_mode": ACCOUNT_MODE_KIWOOM_MOCK}, broker_response
+    )
 
 
 async def _kiwoom_mock_positions_impl(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "success": True,
-        "positions": [],
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-    }
+    cont_yn = kwargs.get("cont_yn")
+    next_key = kwargs.get("next_key")
+    try:
+        client = KiwoomMockClient.from_app_settings()
+        account_client = KiwoomDomesticAccountClient(cast(Any, client))
+        broker_response = await account_client.get_balance(
+            cont_yn=cont_yn, next_key=next_key
+        )
+    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
+        return {
+            "success": False,
+            "source": "kiwoom",
+            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+            "error": f"kiwoom_mock_get_positions failed: {type(exc).__name__}: {exc}",
+        }
+    return _finalize_broker_response(
+        {"source": "kiwoom", "account_mode": ACCOUNT_MODE_KIWOOM_MOCK}, broker_response
+    )
 
 
 async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
