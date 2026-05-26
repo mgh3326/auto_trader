@@ -148,6 +148,32 @@ def _log_defensive_trim_bypass(
     )
 
 
+def _log_scalping_exit_bypass(
+    *,
+    symbol: str,
+    market_type: str,
+    price: float,
+    current_price: float,
+    avg_price: float,
+    scalping_exit_ctx: ScalpingExitContext,
+    phase: str,
+) -> None:
+    logger.warning(
+        "kis_mock_scalping_exit_bypass: sell guards bypassed",
+        extra={
+            "account_mode": "kis_mock",
+            "symbol": symbol,
+            "market_type": market_type,
+            "price": price,
+            "current_price": current_price,
+            "avg_price": avg_price,
+            "strategy_id": scalping_exit_ctx.strategy_id,
+            "reason": scalping_exit_ctx.reason,
+            "phase": phase,
+        },
+    )
+
+
 async def _fetch_approval_issue_status(approval_issue_id: str) -> str | None:
     api_url = getattr(settings, "paperclip_api_url", None)
     api_key = getattr(settings, "paperclip_api_key", None)
@@ -518,6 +544,7 @@ async def _preview_sell(
     market_type: str,
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
+    scalping_exit_ctx: ScalpingExitContext | None = None,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -541,27 +568,37 @@ async def _preview_sell(
         if price is None:
             result["error"] = "price is required for limit sell orders"
             return result
-        min_sell_price = avg_price * 1.01
-        if price < min_sell_price and defensive_trim_ctx is None:
-            result["error"] = (
-                f"Sell price {price} below minimum "
-                f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
-            )
+        guard_error = evaluate_sell_price_guards(
+            price=price,
+            current_price=current_price,
+            avg_price=avg_price,
+            defensive_trim_ctx=defensive_trim_ctx,
+            scalping_exit_ctx=scalping_exit_ctx,
+        )
+        if guard_error is not None:
+            result["error"] = guard_error
             return result
-        if price < min_sell_price and defensive_trim_ctx is not None:
+        if scalping_exit_ctx is not None and price < avg_price * 1.01:
+            _log_scalping_exit_bypass(
+                symbol=symbol,
+                market_type=market_type,
+                price=price,
+                current_price=current_price,
+                avg_price=avg_price,
+                scalping_exit_ctx=scalping_exit_ctx,
+                phase="preview",
+            )
+        elif price < avg_price * 1.01 and defensive_trim_ctx is not None:
             _log_defensive_trim_bypass(
                 symbol=symbol,
                 market_type=market_type,
                 price=price,
                 current_price=current_price,
                 avg_price=avg_price,
-                min_sell_price=min_sell_price,
+                min_sell_price=avg_price * 1.01,
                 defensive_trim_ctx=defensive_trim_ctx,
                 phase="preview",
             )
-        if price < current_price:
-            result["error"] = f"Sell price {price} below current price {current_price}"
-            return result
         order_quantity = holdings["quantity"] if quantity is None else quantity
         execution_price = price
         result["price"] = execution_price
@@ -591,6 +628,7 @@ async def _preview_order(
     market_type: str,
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
+    scalping_exit_ctx: ScalpingExitContext | None = None,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
 
@@ -614,6 +652,7 @@ async def _preview_order(
         market_type=market_type,
         defensive_trim_ctx=defensive_trim_ctx,
         is_mock=is_mock,
+        scalping_exit_ctx=scalping_exit_ctx,
     )
 
 
@@ -679,6 +718,7 @@ async def _validate_sell_side(
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
     dry_run: bool = False,
+    scalping_exit_ctx: ScalpingExitContext | None = None,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -729,34 +769,35 @@ async def _validate_sell_side(
     avg_price = _to_float(holdings.get("avg_price"), default=0.0)
 
     if order_type == "limit" and price is not None:
-        min_sell_price = avg_price * 1.01
-        if price < min_sell_price and defensive_trim_ctx is None:
-            return (
-                0.0,
-                0.0,
-                order_error_fn(
-                    f"Sell price {price} below minimum "
-                    f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
-                ),
+        guard_error = evaluate_sell_price_guards(
+            price=price,
+            current_price=current_price,
+            avg_price=avg_price,
+            defensive_trim_ctx=defensive_trim_ctx,
+            scalping_exit_ctx=scalping_exit_ctx,
+        )
+        if guard_error is not None:
+            return 0.0, 0.0, order_error_fn(guard_error)
+        if scalping_exit_ctx is not None and price < avg_price * 1.01:
+            _log_scalping_exit_bypass(
+                symbol=normalized_symbol,
+                market_type=market_type,
+                price=price,
+                current_price=current_price,
+                avg_price=avg_price,
+                scalping_exit_ctx=scalping_exit_ctx,
+                phase="execution",
             )
-        if price < min_sell_price and defensive_trim_ctx is not None:
+        elif price < avg_price * 1.01 and defensive_trim_ctx is not None:
             _log_defensive_trim_bypass(
                 symbol=normalized_symbol,
                 market_type=market_type,
                 price=price,
                 current_price=current_price,
                 avg_price=avg_price,
-                min_sell_price=min_sell_price,
+                min_sell_price=avg_price * 1.01,
                 defensive_trim_ctx=defensive_trim_ctx,
                 phase="execution",
-            )
-        if price < current_price:
-            return (
-                0.0,
-                0.0,
-                order_error_fn(
-                    f"Sell price {price} below current price {current_price}"
-                ),
             )
 
     return order_quantity, avg_price, None

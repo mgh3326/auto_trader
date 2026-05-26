@@ -145,3 +145,60 @@ def test_resolver_rejects_buy_and_market_and_bad_reason(monkeypatch) -> None:
         )
 
 
+from unittest.mock import AsyncMock
+from app.mcp_server.tooling import order_validation
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_sell_scalping_exit_allows_below_floor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        order_validation, "_get_holdings_for_order",
+        AsyncMock(return_value={"avg_price": 1000.0, "quantity": 10}),
+    )
+    result = await order_validation._preview_sell(
+        symbol="005930", order_type="limit", quantity=10,
+        price=950.0, current_price=980.0, market_type="kr",
+        scalping_exit_ctx=ScalpingExitContext(strategy_id="s", reason="stop_loss"),
+        is_mock=True,
+    )
+    assert "error" not in result
+    assert result["price"] == 950.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_sell_live_still_blocks_below_floor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        order_validation, "_get_holdings_for_order",
+        AsyncMock(return_value={"avg_price": 1000.0, "quantity": 10}),
+    )
+    # No scalping ctx, no trim ctx: live behavior preserved.
+    result = await order_validation._preview_sell(
+        symbol="005930", order_type="limit", quantity=10,
+        price=950.0, current_price=980.0, market_type="kr",
+        is_mock=False,
+    )
+    assert "error" in result and "below minimum" in result["error"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_validate_sell_side_scalping_exit_allows_below_floor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        order_validation, "_get_holdings_for_order",
+        AsyncMock(return_value={"avg_price": 1000.0, "quantity": 10}),
+    )
+    errors: list[str] = []
+    qty, avg, err = await order_validation._validate_sell_side(
+        symbol="005930", normalized_symbol="005930", market_type="kr",
+        quantity=10, order_type="limit", price=950.0, current_price=980.0,
+        order_error_fn=lambda m: errors.append(m) or {"error": m},
+        scalping_exit_ctx=ScalpingExitContext(strategy_id="s", reason="stop_loss"),
+        is_mock=True, dry_run=True,
+    )
+    assert err is None and errors == []
+    assert avg == 1000.0
+
+
+
