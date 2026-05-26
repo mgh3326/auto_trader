@@ -1,0 +1,16 @@
+# Isolated research venv — NOT part of auto_trader runtime deps (ROB-316 spike)
+.venv/
+
+# Downloaded public market data (data.binance.vision) — not committed
+data/
+*.zip
+*.csv
+
+# Nautilus ParquetDataCatalog output
+catalog/
+*.parquet
+
+# Backtest result exports
+results/
+__pycache__/
+.pytest_cache/
