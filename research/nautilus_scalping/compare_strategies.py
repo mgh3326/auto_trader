@@ -139,6 +139,8 @@ def main() -> int:
     ap.add_argument("--symbol", default="XRPUSDT")
     ap.add_argument("--trade-size", default="100")
     ap.add_argument("--export", default="results/compare.csv", type=Path)
+    ap.add_argument("--specs", default="",
+                    help="comma-sep label substrings to include (default: all)")
     ap.add_argument("--single", action="store_true")
     ap.add_argument("--strategy", choices=["breakout", "ict"])
     ap.add_argument("--tp", type=int)
@@ -154,8 +156,11 @@ def main() -> int:
     print(f"compare: {args.symbol}, size={args.trade_size}, fees={FEE_GRID_BPS}")
     print("profit judged at realistic fee (10/7.5 bps taker); 0bps = gross-edge reference only.\n")
 
+    specs = SPECS if not args.specs else [
+        s for s in SPECS if any(k.strip() in s[0] for k in args.specs.split(","))
+    ]
     out_rows = []
-    for label, strategy, tp, sl, flags in SPECS:
+    for label, strategy, tp, sl, flags in specs:
         trades = _worker(args.catalog, args.symbol, strategy, tp, sl, args.trade_size, flags)
         n_total = len(trades)
         flag = "  <-- LOW TRADES (overfit risk)" if n_total < OVERFIT_MIN_TRADES else ""
@@ -174,7 +179,7 @@ def main() -> int:
         print()
 
     print("verdict (realistic taker fees):")
-    for label, *_ in [(s[0],) for s in SPECS]:
+    for label, *_ in [(s[0],) for s in specs]:
         net10 = next(r["net_pnl_usdt"] for r in out_rows if r["strategy"] == label and r["fee_bps_per_leg"] == 10.0)
         net75 = next(r["net_pnl_usdt"] for r in out_rows if r["strategy"] == label and r["fee_bps_per_leg"] == 7.5)
         print(f"  {label:>22}: 10bps={net10:+.1f}  7.5bps={net75:+.1f}")
