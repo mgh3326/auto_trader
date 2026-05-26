@@ -40,6 +40,7 @@ from typing import Any, Literal
 from app.services.action_report.common.critical_kinds import (
     CRITICAL_KIND_DEGRADING_STATUSES,
     CRITICAL_SNAPSHOT_KINDS,
+    EXTERNAL_AUDIT_KINDS,
 )
 
 # Closed set of reason codes. Collectors emit the specific ones; the generic
@@ -233,6 +234,35 @@ def build_data_sufficiency_by_source(
     return out
 
 
+def build_external_cross_checks(
+    freshness_summary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """ROB-323 — per-source view of the external cross-check / audit kinds.
+
+    These are operator-driven reference probes, never report-generation
+    sources, so every entry carries ``affects_report_generation=False``. Only
+    external kinds present in the summary are included; the function is
+    fail-open (an unavailable probe is reported, not raised).
+    """
+    summary = freshness_summary or {}
+    out: dict[str, Any] = {}
+    for kind in sorted(EXTERNAL_AUDIT_KINDS):
+        info = summary.get(kind)
+        if not isinstance(info, Mapping):
+            continue
+        status = info.get("status")
+        entry: dict[str, Any] = {
+            "status": status,
+            "reason_code": reason_code_for(status, info),
+            "affects_report_generation": False,
+        }
+        for key in ("reason", "as_of"):
+            if key in info:
+                entry[key] = info[key]
+        out[kind] = entry
+    return out
+
+
 def build_report_quality_summary(
     *,
     freshness_summary: Mapping[str, Any] | None,
@@ -240,26 +270,49 @@ def build_report_quality_summary(
 ) -> dict[str, Any]:
     """Report-level quality rollup: a grade + per-status counts.
 
-    Grade:
+    ROB-323 — coverage is split three ways so optional/external sources never
+    distort the "is the report generatable" signal:
+    * ``core_fresh_coverage_pct`` — CRITICAL_SNAPSHOT_KINDS only.
+    * ``optional_fresh_coverage_pct`` — internal optional kinds (news, symbol,
+      candidate_universe, ...), excluding external audit kinds.
+    * ``external_cross_check_status`` — worst status across the external audit
+      kinds present, or ``None`` if none were attempted.
+
+    Grade (unchanged basis — critical kinds + bundle_status):
     * ``no_action`` — bundle failed or fell back to stale data.
-    * ``informational_only`` — a critical kind is degrading (the stale gate
-      forces advisory/no-action language).
+    * ``informational_only`` — a critical kind is degrading.
     * ``high_confidence`` — all critical kinds usable.
     """
     summary = freshness_summary or {}
     counts: dict[str, int] = {}
     critical_statuses: list[str | None] = []
+    core_fresh = core_total = 0
+    optional_fresh = optional_total = 0
     for kind, info in summary.items():
         if kind == "overall" or not isinstance(info, Mapping):
             continue
         status = info.get("status")
         counts[str(status)] = counts.get(str(status), 0) + 1
+        if kind in EXTERNAL_AUDIT_KINDS:
+            continue  # surfaced via external_cross_check_status, not coverage
         if kind in CRITICAL_SNAPSHOT_KINDS:
             critical_statuses.append(status)
+            core_total += 1
+            if status == "fresh":
+                core_fresh += 1
+        else:
+            optional_total += 1
+            if status == "fresh":
+                optional_fresh += 1
 
     total = sum(counts.values())
     fresh = counts.get("fresh", 0)
     fresh_pct = round(100 * fresh / total) if total else 0
+    core_pct = round(100 * core_fresh / core_total) if core_total else 0
+    optional_pct = round(100 * optional_fresh / optional_total) if optional_total else 0
+
+    external = build_external_cross_checks(freshness_summary)
+    external_status = _worst_external_status(external)
 
     grade: ReportQualityGrade
     if bundle_status in ("failed", "stale_fallback"):
@@ -275,6 +328,94 @@ def build_report_quality_summary(
         "freshness_overall": summary.get("overall"),
         "kind_status_counts": counts,
         "fresh_coverage_pct": fresh_pct,
+        "core_fresh_coverage_pct": core_pct,
+        "optional_fresh_coverage_pct": optional_pct,
+        "external_cross_check_status": external_status,
+    }
+
+
+_EXTERNAL_STATUS_RANK: dict[str, int] = {
+    "fresh": 0,
+    "soft_stale": 1,
+    "partial": 2,
+    "hard_stale": 3,
+    "failed": 4,
+    "unavailable": 5,
+}
+
+
+def _worst_external_status(external: Mapping[str, Any]) -> str | None:
+    worst: str | None = None
+    worst_rank = -1
+    for entry in external.values():
+        status = entry.get("status") if isinstance(entry, Mapping) else None
+        if not isinstance(status, str):
+            continue
+        rank = _EXTERNAL_STATUS_RANK.get(status, -1)
+        if rank > worst_rank:
+            worst_rank = rank
+            worst = status
+    return worst
+
+
+def build_data_quality_audit(
+    *,
+    freshness_summary: Mapping[str, Any] | None,
+    bundle_status: str | None,
+    snapshot_bundle_uuid: str | None = None,
+) -> dict[str, Any]:
+    """ROB-323 — the report's data-quality audit (embedded in
+    ``snapshot_report_diagnostics``).
+
+    Separates the "can we generate a report" core verdict from the external
+    cross-check / reference signal. External probes are fail-open: an
+    unavailable probe is an info-severity gap, never a blocker. Keyed by
+    ``snapshot_bundle_uuid`` so the audit is reproducible from the bundle.
+    """
+    summary = freshness_summary or {}
+    blocking_gaps = [
+        kind
+        for kind in CRITICAL_SNAPSHOT_KINDS
+        if isinstance(summary.get(kind), Mapping)
+        and summary[kind].get("status") in CRITICAL_KIND_DEGRADING_STATUSES
+    ]
+    quality = build_report_quality_summary(
+        freshness_summary=freshness_summary, bundle_status=bundle_status
+    )
+    core_usable = not blocking_gaps and bundle_status not in (
+        "failed",
+        "stale_fallback",
+    )
+    external = build_external_cross_checks(freshness_summary)
+
+    gaps: list[dict[str, Any]] = []
+    unavailable_external = sorted(
+        kind
+        for kind, entry in external.items()
+        if entry.get("status") in ("unavailable", "failed")
+    )
+    if unavailable_external:
+        gaps.append(
+            {
+                "severity": "info",
+                "kind": "external_cross_check_unavailable",
+                "sources": unavailable_external,
+                "message": (
+                    "외부 교차검증 소스 미수행 — 리포트 생성에는 영향 없음 "
+                    "(operator remote-debug smoke로만 확인)"
+                ),
+            }
+        )
+
+    return {
+        "snapshot_bundle_uuid": snapshot_bundle_uuid,
+        "core": {
+            "status": "usable" if core_usable else "degraded",
+            "blocking_gaps": blocking_gaps,
+            "fresh_coverage_pct": quality["core_fresh_coverage_pct"],
+        },
+        "external_cross_checks": external,
+        "gaps": gaps,
     }
 
 
@@ -283,12 +424,13 @@ def build_report_diagnostics(
     freshness_summary: Mapping[str, Any] | None,
     bundle_status: str | None,
     why_no_action: dict[str, Any] | None,
+    snapshot_bundle_uuid: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble the ``snapshot_report_diagnostics`` JSONB payload (PR-B).
+    """Assemble the ``snapshot_report_diagnostics`` JSONB payload.
 
-    Bundles the three deterministic rollups persisted on the report and exported
-    to Hermes. ``why_no_action`` is computed by the caller (it needs to know
-    whether action items were produced).
+    ROB-318 PR-B rollups + the ROB-323 ``data_quality_audit`` (core verdict vs
+    fail-open external cross-checks). ``why_no_action`` is computed by the
+    caller (it needs to know whether action items were produced).
     """
     return {
         "why_no_action": why_no_action,
@@ -298,5 +440,10 @@ def build_report_diagnostics(
         "report_quality_summary": build_report_quality_summary(
             freshness_summary=freshness_summary,
             bundle_status=bundle_status,
+        ),
+        "data_quality_audit": build_data_quality_audit(
+            freshness_summary=freshness_summary,
+            bundle_status=bundle_status,
+            snapshot_bundle_uuid=snapshot_bundle_uuid,
         ),
     }
