@@ -61,6 +61,48 @@ class DefensiveTrimContext:
     approval_verified_at: datetime.datetime
 
 
+@dataclass(frozen=True)
+class ScalpingExitContext:
+    """Mock-only authorization to sell a scalping position below both the
+    avg*1.01 floor and the current-price guard (stop-loss / take-profit /
+    time-stop). Only constructible for is_mock=True orders gated by
+    KIS_MOCK_SCALPING_ENABLED. Never threaded from any live/generic path.
+    """
+
+    strategy_id: str
+    reason: str  # "stop_loss" | "take_profit" | "time_stop"
+
+
+def evaluate_sell_price_guards(
+    *,
+    price: float,
+    current_price: float,
+    avg_price: float,
+    defensive_trim_ctx: DefensiveTrimContext | None,
+    scalping_exit_ctx: ScalpingExitContext | None,
+) -> str | None:
+    """Single source of truth for limit-sell price guards.
+
+    Returns an error message if the price violates a guard, else None.
+
+    Matrix:
+      - scalping_exit_ctx present  -> both guards bypassed (mock scalping exit).
+      - defensive_trim_ctx present -> floor bypassed, current-price guard enforced.
+      - neither                    -> both guards enforced.
+    """
+    if scalping_exit_ctx is not None:
+        return None
+    min_sell_price = avg_price * 1.01
+    if price < min_sell_price and defensive_trim_ctx is None:
+        return (
+            f"Sell price {price} below minimum "
+            f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
+        )
+    if price < current_price:
+        return f"Sell price {price} below current price {current_price}"
+    return None
+
+
 def _is_cached_approved(approval_issue_id: str) -> bool:
     expires_at = _defensive_trim_success_cache.get(approval_issue_id)
     if expires_at is None:
