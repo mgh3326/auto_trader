@@ -255,6 +255,8 @@ async def test_portfolio_v2_kr_kis_live_missing_user_id_is_fail_closed():
     assert results[0].snapshot_kind == "portfolio"
     assert results[0].freshness_status == "unavailable"
     assert "user_id" in results[0].errors_json["reason"]
+    # ROB-318 Slice 1 — collector emits the closed reason_code for the gate.
+    assert results[0].errors_json["reason_code"] == "user_id_missing"
     # primary_source label is present and explicitly "none" (manual NOT promoted).
     assert results[0].payload_json.get("primary_source") == "none"
     reader.fetch.assert_not_called()

@@ -110,3 +110,10 @@ class ReportGenerationResponse(BaseModel):
     bundle_status: str
     bundle_reused: bool
     stale_gate: dict[str, Any]
+
+    # ROB-318 Phase 3 (PR-A) — deterministic classification of why the report
+    # concludes no-action: data_insufficient | stale_gated | real_no_action,
+    # or ``None`` when an action is allowed. ``{kind, blocking_sources,
+    # reason_ko}``. Computed deterministically; Hermes owns the prose. In PR-A
+    # this is a response-only field (ephemeral); PR-B persists it.
+    why_no_action: dict[str, Any] | None = None

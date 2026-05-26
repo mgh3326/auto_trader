@@ -34,6 +34,10 @@ from app.schemas.investment_snapshots_mcp import (
     EnsureBundleRequest,
     EnsureBundleResponse,
 )
+from app.services.action_report.common.critical_kinds import (
+    CRITICAL_KIND_DEGRADING_STATUSES,
+)
+from app.services.action_report.common.diagnostics import build_kind_diagnostic
 from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectorRegistry,
@@ -178,13 +182,17 @@ class SnapshotBundleEnsureService:
                 #     fall here when callers don't supply manual data.
                 if kind_policy.required or attempted:
                     coverage[bucket][kind_policy.snapshot_kind] = "unavailable"
+                    # ROB-318 Slice 1 — no collector result means no reason_code
+                    # to carry; derive a generic 'unavailable' diagnostic.
                     freshness_summary[kind_policy.snapshot_kind] = {
-                        "status": "unavailable"
+                        "status": "unavailable",
+                        **build_kind_diagnostic("unavailable", None),
                     }
                     missing_sources.append(kind_policy.snapshot_kind)
                 continue
 
             kind_statuses: list[str] = []
+            status_errors: list[tuple[str, dict[str, Any]]] = []
             last_as_of: dt.datetime | None = None
             for result in results:
                 # Collectors run after ``now`` is captured for the reuse gate.
@@ -222,15 +230,27 @@ class SnapshotBundleEnsureService:
                 )
                 linked_items.append((snap.snapshot_uuid, role))
                 kind_statuses.append(effective_status)
+                status_errors.append((effective_status, result.errors_json or {}))
                 last_as_of = result.as_of
 
             worst_status = _worst_status(kind_statuses)
             coverage[bucket][kind_policy.snapshot_kind] = worst_status
-            freshness_summary[kind_policy.snapshot_kind] = {
+            summary_entry: dict[str, Any] = {
                 "status": worst_status,
                 "as_of": last_as_of.isoformat() if last_as_of else None,
                 "result_count": str(len(results)),
             }
+            # ROB-318 Slice 1 — when the worst status is degrading, surface the
+            # collector's reason_code (+ sanitized reason) so the operator sees
+            # WHY (e.g. portfolio user_id_missing) instead of a bare status.
+            if worst_status in CRITICAL_KIND_DEGRADING_STATUSES:
+                errors_for_worst = next(
+                    (e for s, e in status_errors if s == worst_status), None
+                )
+                summary_entry.update(
+                    build_kind_diagnostic(worst_status, errors_for_worst)
+                )
+            freshness_summary[kind_policy.snapshot_kind] = summary_entry
 
         bundle_status = _derive_bundle_status(coverage)
 
