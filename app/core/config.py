@@ -200,6 +200,9 @@ class Settings(BaseSettings):
     kis_ws_ping_timeout: int = 10  # Ping 응답 대기 시간 (초)
     # ROB-321: read-only quote WS daemon/smoke gate (default off).
     kis_mock_scalping_ws_enabled: bool = False
+    # ROB-321 PR4b: per-run order-mutation gate for the scalping daemon. Without
+    # it the daemon dry-runs (preview only, no mock order, no ledger write).
+    kis_mock_scalping_ws_confirm: bool = False
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)

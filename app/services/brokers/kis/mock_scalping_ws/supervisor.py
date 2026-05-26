@@ -90,6 +90,10 @@ class KisScalpingSupervisor:
         }
         self._last_trigger_at: dict[str, float] = {}
 
+    def market_state(self, symbol: str) -> MarketState | None:
+        """Current per-symbol state (the broker adapter reads bid/ask/last)."""
+        return self._state.get(symbol)
+
     async def run(
         self,
         source_factory: SourceFactory,
