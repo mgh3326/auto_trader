@@ -22,6 +22,7 @@ import type {
   ProposalTargetRef,
   ReportStatus,
   SnapshotFreshnessSummary,
+  SnapshotReportDiagnostics,
   ReportSnapshotBundle,
   ReportSnapshotBundleItem,
   ReportSnapshotBundleSummary,
@@ -116,6 +117,14 @@ function normalizeReport(raw: ApiReport): InvestmentReport {
       : (asRecord(raw.snapshot_freshness_summary) as SnapshotFreshnessSummary),
     sourceConflicts: asOptionalRecord(raw.source_conflicts),
     unavailableSources: asOptionalRecord(raw.unavailable_sources),
+    // ROB-318 Phase 3 — passed through (internal keys stay snake_case, same as
+    // snapshot_freshness_summary). Null on legacy reports.
+    snapshotReportDiagnostics:
+      raw.snapshot_report_diagnostics == null
+        ? null
+        : (asRecord(
+            raw.snapshot_report_diagnostics,
+          ) as SnapshotReportDiagnostics),
   };
 }
 

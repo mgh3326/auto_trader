@@ -41,6 +41,10 @@ from app.services.action_report.common.critical_kinds import (
     CRITICAL_KIND_DEGRADING_STATUSES,
     CRITICAL_SNAPSHOT_KINDS,
 )
+from app.services.action_report.common.diagnostics import (
+    build_report_diagnostics,
+    classify_why_no_action,
+)
 from app.services.action_report.common.jsonable import to_jsonable
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
@@ -255,6 +259,25 @@ class SnapshotBackedReportGenerator:
         )
         source_conflicts: dict[str, Any] = {}
 
+        # ROB-318 Phase 3 — deterministic report diagnostics, computed before the
+        # ingest request so they persist on the report row (PR-B). why_no_action
+        # tells a genuine hold from a data-blocked / stale-gated one; the bundle
+        # also carries data_sufficiency_by_source + report_quality_summary. All
+        # deterministic — Hermes composes the prose. Action items are item_kind
+        # 'action' (watch/risk are not buy/sell actions).
+        why_no_action = classify_why_no_action(
+            freshness_summary=freshness_summary,
+            bundle_status=ensure_response.status,
+            has_action_items=any(
+                getattr(it, "item_kind", None) == "action" for it in request.items
+            ),
+        )
+        report_diagnostics = build_report_diagnostics(
+            freshness_summary=freshness_summary,
+            bundle_status=ensure_response.status,
+            why_no_action=why_no_action,
+        )
+
         if request.status == "published":
             self._guard_published(
                 bundle_status=ensure_response.status,
@@ -268,6 +291,7 @@ class SnapshotBackedReportGenerator:
             freshness_summary=freshness_summary,
             unavailable_sources=unavailable_sources,
             source_conflicts=source_conflicts,
+            report_diagnostics=report_diagnostics,
             symbol_derivation=derivation,
         )
 
@@ -298,6 +322,7 @@ class SnapshotBackedReportGenerator:
             bundle_status=ensure_response.status,
             bundle_reused=not ensure_response.created,
             stale_gate=gate_result.to_metadata_summary(),
+            why_no_action=why_no_action,
         )
 
     # ------------------------------------------------------------------
@@ -488,6 +513,7 @@ class SnapshotBackedReportGenerator:
         freshness_summary: dict[str, Any],
         unavailable_sources: dict[str, Any],
         source_conflicts: dict[str, Any],
+        report_diagnostics: dict[str, Any] | None = None,
         symbol_derivation: SymbolDerivation | None = None,
     ) -> IngestReportRequest:
         # Normalise items — each evidence_snapshot / trigger_checklist /
@@ -555,4 +581,5 @@ class SnapshotBackedReportGenerator:
             snapshot_freshness_summary=freshness_summary,
             source_conflicts=source_conflicts,
             unavailable_sources=unavailable_sources,
+            snapshot_report_diagnostics=report_diagnostics,
         )

@@ -262,6 +262,9 @@ class IngestReportRequest(BaseModel):
     {fresh, soft_stale, partial}."""
     source_conflicts: dict[str, Any] | None = None
     unavailable_sources: dict[str, Any] | None = None
+    # ROB-318 Phase 3 (PR-B) — deterministic report diagnostics bundle:
+    # {why_no_action, data_sufficiency_by_source, report_quality_summary}.
+    snapshot_report_diagnostics: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _validate_advisory_only(self) -> IngestReportRequest:
@@ -358,6 +361,9 @@ class InvestmentReportResponse(BaseModel):
     snapshot_freshness_summary: dict[str, Any] | None = None
     source_conflicts: dict[str, Any] | None = None
     unavailable_sources: dict[str, Any] | None = None
+    # ROB-318 Phase 3 (PR-B) — {why_no_action, data_sufficiency_by_source,
+    # report_quality_summary}. Null on legacy reports.
+    snapshot_report_diagnostics: dict[str, Any] | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

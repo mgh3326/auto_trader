@@ -15,9 +15,11 @@ import type {
   InvestmentWatchAlert,
   InvestmentWatchEvent,
   SnapshotFreshnessSummary,
+  SnapshotReportDiagnostics,
 } from "../../types/investmentReports";
 import { IntermediateAnalysisPanel } from "./IntermediateAnalysisPanel";
 import { ProposalDiffPanel } from "./ProposalDiffPanel";
+import { ReportDiagnosticsPanel } from "./ReportDiagnosticsPanel";
 import { ReportSnapshotEvidencePanel } from "./ReportSnapshotEvidencePanel";
 import { SnapshotBundleFreshnessChip } from "./SnapshotBundleFreshnessChip";
 
@@ -91,6 +93,7 @@ function ReportHeader({
   noActionNote,
   createdAt,
   freshnessSummary,
+  reportDiagnostics,
 }: {
   title: string;
   market: string;
@@ -104,6 +107,7 @@ function ReportHeader({
   noActionNote?: string | null;
   createdAt: string;
   freshnessSummary?: SnapshotFreshnessSummary | null;
+  reportDiagnostics?: SnapshotReportDiagnostics | null;
 }) {
   return (
     <Card>
@@ -157,6 +161,9 @@ function ReportHeader({
             report has no snapshot metadata (legacy reports / Phase 3 flag
             off). Renders Korean-facing summary + degraded per-source chips. */}
         <SnapshotBundleFreshnessChip freshnessSummary={freshnessSummary ?? null} />
+        {/* ROB-318 Phase 3 (PR-C) — deterministic report diagnostics. Returns
+            null for legacy reports / when nothing degraded is worth showing. */}
+        <ReportDiagnosticsPanel diagnostics={reportDiagnostics ?? null} />
         <p style={{ margin: 0, fontSize: 14, lineHeight: 1.65 }}>{summary}</p>
         {thesisText ? (
           <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.6 }}>
@@ -472,6 +479,7 @@ export function InvestmentReportBundleContent({
         noActionNote={bundle.report.noActionNote}
         createdAt={bundle.report.createdAt}
         freshnessSummary={bundle.report.snapshotFreshnessSummary}
+        reportDiagnostics={bundle.report.snapshotReportDiagnostics}
       />
 
       <ReportSnapshotEvidencePanel reportUuid={bundle.report.reportUuid} />

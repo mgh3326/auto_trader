@@ -378,6 +378,59 @@ async def test_ensure_fresh_uses_collector_registry_when_no_manual(db_session):
 
 
 @pytest.mark.asyncio
+async def test_ensure_surfaces_collector_reason_code_in_freshness_summary(db_session):
+    """ROB-318 Slice 1 — a collector's reason_code/reason for a degraded kind is
+    surfaced in freshness_summary[kind] (previously only the bare status survived)."""
+
+    class _FailClosedPortfolioCollector:
+        snapshot_kind = "portfolio"
+
+        async def collect(self, request: CollectorRequest):
+            return [
+                SnapshotCollectResult(
+                    snapshot_kind="portfolio",
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    source_kind="manual",
+                    payload_json={},
+                    errors_json={
+                        "reason_code": "user_id_missing",
+                        "reason": (
+                            "kis_live portfolio requires explicit user_id; "
+                            "none supplied"
+                        ),
+                    },
+                    as_of=_FIXED_NOW,
+                    freshness_status="unavailable",
+                )
+            ]
+
+    registry = SnapshotCollectorRegistry()
+    registry.register(_FailClosedPortfolioCollector())
+    manual = _all_required_manual_snapshots()
+    del manual["portfolio"]
+
+    svc = SnapshotBundleEnsureService(
+        db_session, collectors=registry, clock=_frozen_clock()
+    )
+    response = await svc.ensure(
+        EnsureBundleRequest(
+            purpose=_unique_purpose("reason_code"),
+            market="kr",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            manual_snapshots=manual,
+        )
+    )
+    await db_session.commit()
+
+    pf = response.freshness_summary["portfolio"]
+    assert pf["status"] == "unavailable"
+    assert pf["reason_code"] == "user_id_missing"
+    assert "user_id" in pf["reason"]
+
+
+@pytest.mark.asyncio
 async def test_ensure_fresh_classifies_collector_results_against_post_collect_clock(
     db_session,
 ):
