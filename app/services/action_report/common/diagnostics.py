@@ -37,7 +37,10 @@ import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from app.services.action_report.common.critical_kinds import CRITICAL_SNAPSHOT_KINDS
+from app.services.action_report.common.critical_kinds import (
+    CRITICAL_KIND_DEGRADING_STATUSES,
+    CRITICAL_SNAPSHOT_KINDS,
+)
 
 # Closed set of reason codes. Collectors emit the specific ones; the generic
 # ones are derived from a freshness/bundle status. Unknown collector reasons
@@ -198,4 +201,102 @@ def _why(kind: WhyNoActionKind, blocking_sources: list[str]) -> dict[str, Any]:
         "kind": kind,
         "blocking_sources": blocking_sources,
         "reason_ko": _WHY_NO_ACTION_REASON_KO[kind].format(sources=sources_label),
+    }
+
+
+# Report-level rollups (PR-B). Both are derived deterministically from the
+# bundle's freshness/coverage state — no per-symbol or LLM reasoning.
+
+ReportQualityGrade = Literal["high_confidence", "informational_only", "no_action"]
+
+
+def build_data_sufficiency_by_source(
+    freshness_summary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Per-source data-sufficiency view: every known kind with its status and
+    (when degraded) the reason_code/reason already threaded by Slice 1.
+
+    This is the canonical "structured unavailable" feed (ROB-301 design-doc
+    constraint): the operator/Hermes can see exactly which source is missing or
+    stale and why, instead of inferring from a generic message.
+    """
+    summary = freshness_summary or {}
+    out: dict[str, Any] = {}
+    for kind, info in summary.items():
+        if kind == "overall" or not isinstance(info, Mapping):
+            continue
+        entry: dict[str, Any] = {"status": info.get("status")}
+        for key in ("reason_code", "reason", "as_of"):
+            if key in info:
+                entry[key] = info[key]
+        out[kind] = entry
+    return out
+
+
+def build_report_quality_summary(
+    *,
+    freshness_summary: Mapping[str, Any] | None,
+    bundle_status: str | None,
+) -> dict[str, Any]:
+    """Report-level quality rollup: a grade + per-status counts.
+
+    Grade:
+    * ``no_action`` — bundle failed or fell back to stale data.
+    * ``informational_only`` — a critical kind is degrading (the stale gate
+      forces advisory/no-action language).
+    * ``high_confidence`` — all critical kinds usable.
+    """
+    summary = freshness_summary or {}
+    counts: dict[str, int] = {}
+    critical_statuses: list[str | None] = []
+    for kind, info in summary.items():
+        if kind == "overall" or not isinstance(info, Mapping):
+            continue
+        status = info.get("status")
+        counts[str(status)] = counts.get(str(status), 0) + 1
+        if kind in CRITICAL_SNAPSHOT_KINDS:
+            critical_statuses.append(status)
+
+    total = sum(counts.values())
+    fresh = counts.get("fresh", 0)
+    fresh_pct = round(100 * fresh / total) if total else 0
+
+    grade: ReportQualityGrade
+    if bundle_status in ("failed", "stale_fallback"):
+        grade = "no_action"
+    elif any(s in CRITICAL_KIND_DEGRADING_STATUSES for s in critical_statuses):
+        grade = "informational_only"
+    else:
+        grade = "high_confidence"
+
+    return {
+        "grade": grade,
+        "bundle_status": bundle_status,
+        "freshness_overall": summary.get("overall"),
+        "kind_status_counts": counts,
+        "fresh_coverage_pct": fresh_pct,
+    }
+
+
+def build_report_diagnostics(
+    *,
+    freshness_summary: Mapping[str, Any] | None,
+    bundle_status: str | None,
+    why_no_action: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Assemble the ``snapshot_report_diagnostics`` JSONB payload (PR-B).
+
+    Bundles the three deterministic rollups persisted on the report and exported
+    to Hermes. ``why_no_action`` is computed by the caller (it needs to know
+    whether action items were produced).
+    """
+    return {
+        "why_no_action": why_no_action,
+        "data_sufficiency_by_source": build_data_sufficiency_by_source(
+            freshness_summary
+        ),
+        "report_quality_summary": build_report_quality_summary(
+            freshness_summary=freshness_summary,
+            bundle_status=bundle_status,
+        ),
     }

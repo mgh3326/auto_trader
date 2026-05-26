@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from app.services.action_report.common.diagnostics import (
+    build_data_sufficiency_by_source,
     build_kind_diagnostic,
+    build_report_diagnostics,
+    build_report_quality_summary,
     classify_why_no_action,
     reason_code_for,
     sanitize_reason,
@@ -160,3 +163,78 @@ def test_why_no_action_none_when_action_present_and_fresh() -> None:
         has_action_items=True,
     )
     assert out is None
+
+
+# --- build_data_sufficiency_by_source ---------------------------------------
+def test_data_sufficiency_carries_status_and_reason_code() -> None:
+    out = build_data_sufficiency_by_source(
+        {
+            "overall": "unavailable",
+            "portfolio": {
+                "status": "unavailable",
+                "reason_code": "user_id_missing",
+                "reason": "...",
+            },
+            "market": {"status": "fresh", "as_of": "2026-05-26T00:00:00"},
+        }
+    )
+    assert "overall" not in out
+    assert out["portfolio"]["status"] == "unavailable"
+    assert out["portfolio"]["reason_code"] == "user_id_missing"
+    assert out["market"]["status"] == "fresh"
+    assert out["market"]["as_of"] == "2026-05-26T00:00:00"
+
+
+# --- build_report_quality_summary -------------------------------------------
+def test_quality_grade_high_confidence_all_fresh() -> None:
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "fresh",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+        },
+        bundle_status="complete",
+    )
+    assert out["grade"] == "high_confidence"
+    assert out["fresh_coverage_pct"] == 100
+
+
+def test_quality_grade_informational_when_critical_degraded() -> None:
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "unavailable",
+            "portfolio": {"status": "unavailable"},
+            "market": {"status": "fresh"},
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "informational_only"
+    assert out["kind_status_counts"]["unavailable"] == 1
+
+
+def test_quality_grade_no_action_when_bundle_failed() -> None:
+    out = build_report_quality_summary(
+        freshness_summary={"overall": "failed"},
+        bundle_status="failed",
+    )
+    assert out["grade"] == "no_action"
+
+
+# --- build_report_diagnostics -----------------------------------------------
+def test_build_report_diagnostics_bundles_three_rollups() -> None:
+    why = {"kind": "data_insufficient", "blocking_sources": ["portfolio"]}
+    out = build_report_diagnostics(
+        freshness_summary={
+            "overall": "unavailable",
+            "portfolio": {"status": "unavailable", "reason_code": "user_id_missing"},
+        },
+        bundle_status="partial",
+        why_no_action=why,
+    )
+    assert out["why_no_action"] == why
+    assert out["data_sufficiency_by_source"]["portfolio"]["reason_code"] == (
+        "user_id_missing"
+    )
+    assert out["report_quality_summary"]["grade"] == "informational_only"

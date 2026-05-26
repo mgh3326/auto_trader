@@ -95,6 +95,8 @@ class InvestmentReportIngestionService:
             snapshot_freshness_summary=request.snapshot_freshness_summary,
             source_conflicts=request.source_conflicts,
             unavailable_sources=request.unavailable_sources,
+            # ROB-318 Phase 3 — deterministic report diagnostics bundle.
+            snapshot_report_diagnostics=request.snapshot_report_diagnostics,
         )
 
         for item_req in request.items:
