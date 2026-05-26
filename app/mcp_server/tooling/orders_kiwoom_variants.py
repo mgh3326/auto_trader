@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from app.core.config import validate_kiwoom_mock_config
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import KiwoomMockClient
+from app.services.brokers.kiwoom.domestic_account import KiwoomDomesticAccountClient
 from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClient
 
 if TYPE_CHECKING:
@@ -140,6 +141,49 @@ def _confirmed_not_implemented(tool_name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Shared broker-response shaping (ROB-319).
+
+_MUTATION_PASSTHROUGH_KEYS = (
+    "return_code",
+    "return_msg",
+    "continuation",
+    "ord_no",
+    "order_no",
+)
+
+
+def _derive_broker_success(broker_response: dict[str, Any]) -> bool:
+    """Success iff Kiwoom return_code equals the success code (default 0)."""
+
+    return_code = broker_response.get("return_code", constants.SUCCESS_RETURN_CODE)
+    try:
+        return int(return_code) == constants.SUCCESS_RETURN_CODE
+    except (TypeError, ValueError):
+        return return_code in (None, "", "0")
+
+
+def _finalize_broker_response(
+    base: dict[str, Any], broker_response: dict[str, Any]
+) -> dict[str, Any]:
+    """Shape a stable MCP envelope around a raw broker payload.
+
+    ``success`` is derived from the broker return_code (never hardcoded), the
+    raw payload is attached as ``broker_response``, and a few well-known fields
+    are surfaced at the top level for convenience.
+    """
+
+    response = {
+        "success": _derive_broker_success(broker_response),
+        **base,
+        "broker_response": broker_response,
+    }
+    for key in _MUTATION_PASSTHROUGH_KEYS:
+        if key in broker_response:
+            response[key] = broker_response[key]
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Implementation seams (overridable via monkeypatch in tests).
 
 
@@ -198,21 +242,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
             "error": f"kiwoom_mock_place_order failed: {type(exc).__name__}: {exc}",
         }
 
-    return_code = broker_response.get("return_code", constants.SUCCESS_RETURN_CODE)
-    try:
-        success = int(return_code) == constants.SUCCESS_RETURN_CODE
-    except (TypeError, ValueError):
-        success = return_code in (None, "", "0")
-
-    response = {
-        "success": success,
-        **base_response,
-        "broker_response": broker_response,
-    }
-    for key in ("return_code", "return_msg", "continuation", "ord_no", "order_no"):
-        if key in broker_response:
-            response[key] = broker_response[key]
-    return response
+    return _finalize_broker_response(base_response, broker_response)
 
 
 async def _kiwoom_mock_preview_impl(**kwargs: Any) -> dict[str, Any]:

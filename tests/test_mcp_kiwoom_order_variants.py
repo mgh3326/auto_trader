@@ -554,3 +554,26 @@ async def test_modify_order_allows_omitted_amounts(monkeypatch):
     assert response["success"] is True
     assert captured["new_price"] == 72000
     assert captured["new_quantity"] is None
+
+
+# ---------------------------------------------------------------------------
+# ROB-319: shared broker-response helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("broker_response", "expected"),
+    [
+        ({"return_code": 0}, True),
+        ({"return_code": "0"}, True),
+        ({}, True),  # absent return_code defaults to success code
+        ({"return_code": 1}, False),
+        ({"return_code": "40"}, False),
+        ({"return_code": None}, True),
+        ({"return_code": "RC9999"}, False),
+    ],
+)
+def test_derive_broker_success(broker_response, expected):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    assert mod._derive_broker_success(broker_response) is expected
