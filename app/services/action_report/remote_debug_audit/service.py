@@ -18,6 +18,7 @@ from app.services.action_report.remote_debug_audit.cross_check import (
 )
 from app.services.action_report.remote_debug_audit.naver_quote import (
     NAVER_EXTRACT_JS,
+    NAVER_READY_JS,
     naver_url,
     parse_naver_quote,
 )
@@ -98,7 +99,10 @@ class RemoteDebugAuditService:
     async def _fetch_naver(self, symbol: str):
         try:
             raw = await self._cdp.fetch_rendered(
-                naver_url(symbol), NAVER_EXTRACT_JS, timeout_s=_PER_SYMBOL_TIMEOUT_S
+                naver_url(symbol),
+                NAVER_EXTRACT_JS,
+                timeout_s=_PER_SYMBOL_TIMEOUT_S,
+                ready_js=NAVER_READY_JS,
             )
         except Exception:  # noqa: BLE001 — per-symbol fail-open
             return None
