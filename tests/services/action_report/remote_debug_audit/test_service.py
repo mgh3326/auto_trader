@@ -6,7 +6,10 @@ import pytest
 
 from app.services.action_report.remote_debug_audit.cdp_client import FakeCdpSession
 from app.services.action_report.remote_debug_audit.cross_check import SymbolQuote
-from app.services.action_report.remote_debug_audit.naver_quote import naver_url
+from app.services.action_report.remote_debug_audit.naver_quote import (
+    NAVER_READY_JS,
+    naver_url,
+)
 from app.services.action_report.remote_debug_audit.service import (
     RemoteDebugAuditService,
     extract_symbol_quotes,
@@ -152,6 +155,51 @@ async def test_audit_bundle_per_symbol_failopen() -> None:
     statuses = {f["symbol"]: f["status"] for f in audit["findings"]}
     assert statuses["005930"] == "ok"
     assert statuses["999999"] == "unavailable"
+
+
+class _RecordingCdp:
+    """Captures the kwargs each ``fetch_rendered`` call received."""
+
+    def __init__(self, value) -> None:
+        self._value = value
+        self.calls: list[dict] = []
+
+    async def fetch_rendered(self, url, js, *, timeout_s, ready_js=None):
+        self.calls.append(
+            {"url": url, "js": js, "timeout_s": timeout_s, "ready_js": ready_js}
+        )
+        return self._value
+
+
+@pytest.mark.asyncio
+async def test_audit_bundle_passes_naver_ready_js_to_cdp() -> None:
+    bundle = _FakeBundle()
+    pairs = [
+        (
+            object(),
+            _snap(
+                "symbol",
+                "005930",
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quote": {"status": "ok", "last_price": 81000.0},
+                },
+            ),
+        ),
+    ]
+    cdp = _RecordingCdp(
+        json.dumps({"code": "005930", "name": "삼성전자", "price_text": "81,100"})
+    )
+    svc = RemoteDebugAuditService(
+        snapshots_repo=_FakeSnapshotsRepo(bundle, pairs),
+        reports_repo=None,
+        cdp_session=cdp,
+    )
+    await svc.audit_bundle(bundle.bundle_uuid, max_symbols=10)
+    # The render gate must be threaded through so the CDP poll waits for it.
+    assert cdp.calls[0]["ready_js"] == NAVER_READY_JS
+    assert cdp.calls[0]["url"] == naver_url("005930")
 
 
 @pytest.mark.asyncio

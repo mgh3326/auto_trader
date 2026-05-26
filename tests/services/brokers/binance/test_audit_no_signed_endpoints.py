@@ -89,6 +89,13 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # imports + the BINANCE_DEMO_SCALPING_* env-flag names.
         "app/jobs/binance_demo_scalping_runner.py",
         "app/tasks/binance_demo_scalping_tasks.py",
+        # ROB-323 / ROB-325 — the operator Naver remote-debug audit's Chrome
+        # CDP host allowlist. Contains NO Binance HTTP/WS/signed surface; it is
+        # a strict 127.0.0.1:9222 allowlist and references "binance" only in a
+        # docstring naming binance/spot_demo/host_allowlist as the design
+        # precedent it mirrors (strict-equality, no wildcard). String reference
+        # only — same class as the other entries here.
+        "app/services/action_report/remote_debug_audit/host_allowlist.py",
     }
 )
 
