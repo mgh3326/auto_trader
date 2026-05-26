@@ -45,6 +45,34 @@ def require_target(args: argparse.Namespace) -> tuple[str, uuid.UUID]:
     raise ValueError("audit mode requires --bundle-uuid or --report-uuid")
 
 
+def build_smoke_output(
+    kind: str, target: uuid.UUID, bundle_uuid: uuid.UUID, audit: dict[str, Any]
+) -> dict[str, Any]:
+    """Operator envelope: surface the resolved target + key counts above the
+    full audit payload so the runbook acceptance check is readable at a glance.
+    """
+    return {
+        "step": "audit",
+        "target_kind": kind,
+        "report_uuid": str(target) if kind == "report" else None,
+        "bundle_uuid": str(bundle_uuid),
+        "checked_symbols": audit.get("checked_symbols", 0),
+        "symbols_resolved": audit.get("symbols_resolved", 0),
+        "audit": audit,
+    }
+
+
+def audit_exit_code(audit: dict[str, Any]) -> int:
+    """0 when at least one symbol resolved on Naver; 3 otherwise.
+
+    A non-zero audit exit is operator-actionable (env/config or external page
+    change), NOT a report-generation failure — generation never calls this.
+    """
+    checked = audit.get("checked_symbols", 0)
+    resolved = audit.get("symbols_resolved", 0)
+    return 0 if checked > 0 and resolved > 0 else 3
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Naver remote-debug data-quality audit (ROB-323, operator-only)"
@@ -78,8 +106,8 @@ async def _amain(args: argparse.Namespace) -> int:
             await svc.resolve_bundle_uuid(target) if kind == "report" else target
         )
         audit = await svc.audit_bundle(bundle_uuid, max_symbols=args.max_symbols)
-    _emit(audit)
-    return 0
+    _emit(build_smoke_output(kind, target, bundle_uuid, audit))
+    return audit_exit_code(audit)
 
 
 def main() -> None:

@@ -119,6 +119,10 @@ def build_audit(
         "as_of": dt.datetime.now(tz=dt.UTC).isoformat(),
         "affects_report_generation": False,
         "checked_symbols": len(findings),
+        # Live-smoke acceptance signal: how many symbols Naver actually resolved
+        # (``ok`` or ``mismatch``), independent of the auto_trader side. All
+        # results being ``unavailable`` means the CDP/Naver read never landed.
+        "symbols_resolved": sum(1 for f in findings if f.get("symbol_resolved")),
         "findings": findings,
         "gaps": gaps,
     }
