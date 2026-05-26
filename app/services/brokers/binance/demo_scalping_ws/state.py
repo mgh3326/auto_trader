@@ -36,3 +36,16 @@ class MarketState:
         if last is None:
             return True
         return (now - last).total_seconds() > max_age_seconds
+
+    def book_data_age_seconds(self, *, now: dt.datetime) -> float | None:
+        """Seconds since the last bookTicker quote, or ``None`` if none yet.
+
+        Execution gates on this — the spread guard needs a live best bid/ask.
+        aggTrade freshness is momentum context only and must NOT substitute for
+        a current quote, so it is deliberately excluded here (unlike
+        ``last_event_at``/``is_stale``, which span all streams). See ROB-317
+        design §5.
+        """
+        if self.book_ticker_at is None:
+            return None
+        return (now - self.book_ticker_at).total_seconds()

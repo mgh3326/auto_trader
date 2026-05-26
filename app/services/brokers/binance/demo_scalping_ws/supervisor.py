@@ -1,14 +1,16 @@
 """ROB-317 — asyncio scalping daemon supervisor.
 
 Consumes an injectable event source (real fstream client in production, a
-fake async iterator in tests). Routes closed klines to the per-symbol
-signal; on an entry, emits a TriggerEvent only when the symbol's quote/trade
-data is fresh and the per-symbol debounce window has elapsed. bookTicker/
-aggTrade events refresh state. Reconnect/backoff is added in Task 5.
+fake async iterator in tests). Routes closed klines to the per-symbol signal;
+on an entry, emits a TriggerEvent only when the symbol has a fresh bookTicker
+quote (best bid/ask present and within the freshness window) and the
+per-symbol debounce window has elapsed. bookTicker/aggTrade events refresh
+state; aggTrade is momentum context only and never substitutes for a live
+quote. ``run_with_reconnect`` backs off on stream drops.
 
-This slice performs NO risk re-check and NO broker mutation: ``on_trigger``
-is a caller-supplied coroutine (slice 4 wires it to the executor bridge;
-this slice logs structured JSON). See ROB-317 design §6.
+The supervisor performs NO risk re-check and NO broker mutation: ``on_trigger``
+is a caller-supplied coroutine (the WsExecutionBridge wires the confirm-gated
+executor; the executor owns the ledger risk re-check). See ROB-317 design §6.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
+
+from websockets.exceptions import ConnectionClosed
 
 from app.services.brokers.binance.demo_scalping.contract import (
     Product,
@@ -140,7 +144,18 @@ class ScalpingDaemonSupervisor:
         *,
         source_candle_close_time_ms: int,
     ) -> TriggerEvent | None:
-        if state.is_stale(now=now, max_age_seconds=self._limits.max_data_age_seconds):
+        # Execution requires a live quote: a fresh bookTicker with both sides
+        # present. A fresh aggTrade alone does NOT qualify — without a current
+        # best bid/ask the spread guard would receive spread=0 and pass, which
+        # could place a confirmed order with no valid spread check. aggTrade
+        # freshness stays momentum/trigger context only.
+        book_age = state.book_data_age_seconds(now=now)
+        if (
+            state.bid_price is None
+            or state.ask_price is None
+            or book_age is None
+            or book_age > self._limits.max_data_age_seconds
+        ):
             logger.info(
                 "trigger suppressed symbol=%s reason=%s",
                 symbol,
@@ -152,8 +167,6 @@ class ScalpingDaemonSupervisor:
             logger.info("trigger suppressed symbol=%s reason=debounce", symbol)
             return None
         self._last_trigger_at[symbol] = now
-        last_event = state.last_event_at()
-        age = None if last_event is None else (now - last_event).total_seconds()
         logger.info(
             "trigger symbol=%s side=%s reasons=%s",
             symbol,
@@ -168,7 +181,9 @@ class ScalpingDaemonSupervisor:
             source_candle_close_time_ms=source_candle_close_time_ms,
             bid_price=state.bid_price,
             ask_price=state.ask_price,
-            data_age_seconds=age,
+            # bookTicker age feeds the execution/spread guard, not the (possibly
+            # newer) aggTrade timestamp.
+            data_age_seconds=book_age,
             emitted_at=now,
         )
 
@@ -185,13 +200,18 @@ class ScalpingDaemonSupervisor:
         (ROB-285 jittered exponential) and re-invokes the factory; once
         consecutive failures reach the unhealthy threshold the error is
         re-raised for the operator/supervisor above to handle.
+
+        ``websockets.exceptions.ConnectionClosed`` (incl. ConnectionClosedOK/
+        ConnectionClosedError) is caught explicitly — it is NOT a subclass of
+        ConnectionError/OSError, so a real socket close would otherwise crash
+        the daemon instead of reconnecting.
         """
         consecutive_failures = 0
         while True:
             try:
                 await self.run(source_factory, on_trigger=on_trigger)
                 return
-            except (ConnectionError, OSError) as exc:
+            except (ConnectionError, OSError, ConnectionClosed) as exc:
                 consecutive_failures += 1
                 if is_unhealthy(consecutive_failures):
                     logger.error(

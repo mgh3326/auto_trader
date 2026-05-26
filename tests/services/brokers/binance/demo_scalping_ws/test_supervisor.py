@@ -7,8 +7,10 @@ from collections.abc import AsyncIterator
 from decimal import Decimal
 
 import pytest
+from websockets.exceptions import ConnectionClosedError
 
 from app.services.brokers.binance.demo_scalping_ws.market_stream import (
+    AggTradeEvent,
     FuturesWsEvent,
 )
 from app.services.brokers.binance.demo_scalping_ws.supervisor import (
@@ -31,6 +33,25 @@ def _book(now_offset: int = 0) -> BookTickerEvent:
         ask_qty=Decimal("1"),
         received_at=_T0 + dt.timedelta(seconds=now_offset),
     )
+
+
+def _agg(now_offset: int = 0) -> AggTradeEvent:
+    return AggTradeEvent(
+        symbol="XRPUSDT",
+        price=Decimal("0.50"),
+        qty=Decimal("1"),
+        trade_time=_T0 + dt.timedelta(seconds=now_offset),
+        is_buyer_maker=False,
+    )
+
+
+def _klines_then_breakout() -> list[FuturesWsEvent]:
+    """25 flat 1m candles then a breakout close (no quote events)."""
+    out: list[FuturesWsEvent] = []
+    for m in range(25):
+        out.append(_kline("0.50", high="0.51", low="0.49", minute=m))
+    out.append(_kline("0.60", high="0.60", low="0.50", minute=25))
+    return out
 
 
 def _kline(close: str, *, high: str, low: str, minute: int) -> KlineEvent:
@@ -97,6 +118,46 @@ async def test_stale_quote_blocks_trigger() -> None:
     assert captured == []
 
 
+async def test_fresh_aggtrade_without_bookticker_blocks_trigger() -> None:
+    # (a) A fresh aggTrade must NOT satisfy the quote-freshness gate: without a
+    # bookTicker there is no bid/ask, so the spread guard would be bypassed.
+    clock = _Clock(_T0 + dt.timedelta(seconds=5))
+    sup = ScalpingDaemonSupervisor(symbols=["XRPUSDT"], clock=clock)
+    captured: list[TriggerEvent] = []
+    events: list[FuturesWsEvent] = [_agg(now_offset=0), *_klines_then_breakout()]
+    await sup.run(lambda: _source_from(events), on_trigger=_async_appender(captured))
+    assert captured == []
+
+
+async def test_fresh_aggtrade_with_stale_bookticker_blocks_trigger() -> None:
+    # (b) A fresh aggTrade cannot rescue a stale bookTicker: the quote is what
+    # the spread guard depends on, so a stale quote blocks the trigger.
+    clock = _Clock(_T0 + dt.timedelta(seconds=300))  # book is 300s old (> 120)
+    sup = ScalpingDaemonSupervisor(symbols=["XRPUSDT"], clock=clock)
+    captured: list[TriggerEvent] = []
+    events: list[FuturesWsEvent] = [
+        _book(now_offset=0),  # stale quote at T0
+        _agg(now_offset=290),  # fresh trade at T0+290s
+        *_klines_then_breakout(),
+    ]
+    await sup.run(lambda: _source_from(events), on_trigger=_async_appender(captured))
+    assert captured == []
+
+
+async def test_fresh_bookticker_emits_trigger_with_book_age() -> None:
+    # (c) A fresh bookTicker carries bid/ask and a valid book age into the
+    # trigger, so the downstream spread/freshness guard gets real values.
+    clock = _Clock(_T0 + dt.timedelta(seconds=5))
+    sup = ScalpingDaemonSupervisor(symbols=["XRPUSDT"], clock=clock)
+    captured: list[TriggerEvent] = []
+    events: list[FuturesWsEvent] = [_book(now_offset=0), *_klines_then_breakout()]
+    await sup.run(lambda: _source_from(events), on_trigger=_async_appender(captured))
+    assert len(captured) == 1
+    assert captured[0].bid_price is not None
+    assert captured[0].ask_price is not None
+    assert captured[0].data_age_seconds == 5.0  # bookTicker age, not aggTrade
+
+
 async def test_debounce_suppresses_second_trigger() -> None:
     clock = _Clock(_T0 + dt.timedelta(seconds=5))
     sup = ScalpingDaemonSupervisor(
@@ -160,9 +221,40 @@ async def test_run_with_reconnect_raises_when_unhealthy() -> None:
     assert len(slept) == 2  # 2 backoffs before the 3rd failure trips unhealthy
 
 
+async def test_run_with_reconnect_recovers_after_websocket_close() -> None:
+    # websockets.exceptions.ConnectionClosed is NOT a ConnectionError/OSError
+    # subclass — the reconnect loop must catch it explicitly or a real socket
+    # close would crash the daemon instead of reconnecting.
+    clock = _Clock(_T0 + dt.timedelta(seconds=5))
+    sup = ScalpingDaemonSupervisor(symbols=["XRPUSDT"], clock=clock)
+    captured: list[TriggerEvent] = []
+    slept: list[float] = []
+    calls = {"n": 0}
+
+    def factory() -> AsyncIterator[FuturesWsEvent]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _raises_connection_closed()
+        return _source_from(_breakout_sequence())
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    await sup.run_with_reconnect(
+        factory, on_trigger=_async_appender(captured), sleep=fake_sleep
+    )
+    assert len(captured) == 1  # recovered on the 2nd connection after a WS close
+    assert len(slept) == 1
+
+
 async def _raises_after_book() -> AsyncIterator[FuturesWsEvent]:
     yield _book()
     raise ConnectionError("socket dropped")
+
+
+async def _raises_connection_closed() -> AsyncIterator[FuturesWsEvent]:
+    yield _book()
+    raise ConnectionClosedError(None, None)
 
 
 async def _raises_immediately() -> AsyncIterator[FuturesWsEvent]:

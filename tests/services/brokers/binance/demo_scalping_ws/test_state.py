@@ -33,3 +33,21 @@ def test_stale_beyond_max_age() -> None:
     state = MarketState(symbol="XRPUSDT")
     state.agg_trade_at = _NOW - dt.timedelta(seconds=200)
     assert state.is_stale(now=_NOW, max_age_seconds=120) is True
+
+
+def test_book_data_age_none_without_bookticker() -> None:
+    state = MarketState(symbol="XRPUSDT")
+    assert state.book_data_age_seconds(now=_NOW) is None
+
+
+def test_book_data_age_ignores_aggtrade() -> None:
+    # A fresh aggTrade must NOT make bookTicker look fresh.
+    state = MarketState(symbol="XRPUSDT")
+    state.agg_trade_at = _NOW - dt.timedelta(seconds=2)
+    assert state.book_data_age_seconds(now=_NOW) is None
+
+
+def test_book_data_age_from_bookticker() -> None:
+    state = MarketState(symbol="XRPUSDT")
+    state.book_ticker_at = _NOW - dt.timedelta(seconds=10)
+    assert state.book_data_age_seconds(now=_NOW) == 10.0
