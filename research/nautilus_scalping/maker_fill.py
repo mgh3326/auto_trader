@@ -33,3 +33,19 @@ class MakerTradeRecord:
     filled: bool                 # False = limit cancelled (missed fill)
     tp_hit: bool                 # exit was the maker-limit TP (vs taker-stop SL)
     adverse_excursion_bps: float # worst adverse move between fill and exit, bps
+
+
+from validated_gate import Trade  # pure import (stdlib-only module)
+
+
+def build_maker_optimistic(records: list[MakerTradeRecord]) -> list[Trade]:
+    """Filled maker trades at real fees; missed fills contribute nothing.
+
+    net_ref_pnl carries the true net (maker 2 / taker 4 bps already applied);
+    commission_ref carries the true commission magnitude so the gate's gross
+    column reconstructs correctly. Evaluate at REF_FEE_BPS for as-run net."""
+    return [
+        Trade(net_ref_pnl=r.net_at_real_fees, commission_ref=r.commission_real,
+              notional=r.notional, ts_opened=r.ts_opened)
+        for r in records if r.filled
+    ]
