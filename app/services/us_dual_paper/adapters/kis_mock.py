@@ -8,6 +8,7 @@ from app.schemas.us_dual_paper import (
     AccountStateSummary,
     BrokerPreviewRequest,
     BrokerPreviewResult,
+    DualPaperBrokerStatus,
 )
 from app.services.us_dual_paper.adapters.base import BrokerPreviewAdapter
 
@@ -18,6 +19,7 @@ _KIS_MOCK_ENV_KEYS = (
     "KIS_MOCK_APP_SECRET",
     "KIS_MOCK_ACCOUNT_NO",
 )
+_MAX_LIMIT_DEVIATION_PCT = 10.0
 
 
 def _to_float(value: Any) -> float | None:
@@ -83,7 +85,46 @@ class KisMockUsAdapter(BrokerPreviewAdapter):
             open_order_count=None,
         )
 
-    async def preview(
-        self, req: BrokerPreviewRequest
-    ) -> BrokerPreviewResult:  # PR2 Task 12
-        raise NotImplementedError("preview() is implemented in PR2")
+    async def preview(self, req: BrokerPreviewRequest) -> BrokerPreviewResult:
+        blocked: list[str] = []
+        warnings: list[str] = []
+        notional = req.quantity * req.limit_price_usd
+
+        if req.quantity <= 0:
+            blocked.append("quantity_must_be_positive")
+        if req.limit_price_usd <= 0:
+            blocked.append("limit_price_must_be_positive")
+        if notional > req.notional_cap_usd:
+            blocked.append("notional_exceeds_cap")
+
+        summary = await self.read_account_state()
+        if summary.buying_power_usd is None:
+            warnings.append("buying_power_unavailable")
+        elif notional > summary.buying_power_usd:
+            blocked.append("insufficient_buying_power")
+
+        if req.reference_price_usd is None or req.reference_price_usd <= 0:
+            warnings.append("reference_price_missing_for_limit_sanity")
+        else:
+            deviation = (
+                abs(req.limit_price_usd - req.reference_price_usd)
+                / req.reference_price_usd
+                * 100.0
+            )
+            if deviation > _MAX_LIMIT_DEVIATION_PCT:
+                blocked.append("limit_price_deviation_exceeds_bound")
+
+        status = (
+            DualPaperBrokerStatus.BLOCKED if blocked else DualPaperBrokerStatus.PREVIEWED
+        )
+        return BrokerPreviewResult(
+            account_scope=self.account_scope,
+            status=status,
+            blocked_reasons=blocked,
+            warnings=warnings,
+            quantity=req.quantity,
+            limit_price_usd=req.limit_price_usd,
+            notional_usd=round(notional, 2),
+            account_state=summary,
+            check_details={"account_mode": "kis_mock", "broker_mutation": "disabled"},
+        )
