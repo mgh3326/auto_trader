@@ -442,19 +442,71 @@ async def test_cancel_order_dry_run_false_without_confirm_blocked(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_modify_order_confirmed_returns_explicit_not_implemented_failure(
-    monkeypatch,
-):
+async def test_modify_order_confirmed_calls_broker_modify(monkeypatch):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
-    impl_calls = {"count": 0}
+    calls = _patch_fake_kiwoom_mutation_client(
+        monkeypatch,
+        mod,
+        modify={"return_code": 0, "return_msg": "정상", "ord_no": "0000777666"},
+    )
+    mcp = DummyMCP()
+    _register(mcp)
 
-    async def fake_impl(**kwargs):
-        impl_calls["count"] += 1
-        return {"success": True}
+    response = await mcp.tools["kiwoom_mock_modify_order"](
+        order_id="0000111222",
+        symbol="005930",
+        new_price=72000,
+        new_quantity=2,
+        dry_run=False,
+        confirm=True,
+    )
 
-    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
-    monkeypatch.setattr(mod, "_kiwoom_mock_modify_impl", fake_impl)
+    assert response["success"] is True
+    assert response["dry_run"] is False
+    assert response["broker_response"]["ord_no"] == "0000777666"
+    modify_call = next(c for c in calls if c.get("method") == "modify")
+    assert modify_call["original_order_no"] == "0000111222"
+    assert modify_call["symbol"] == "005930"
+    assert modify_call["new_price"] == 72000
+    assert modify_call["new_quantity"] == 2
+
+
+@pytest.mark.asyncio
+async def test_modify_order_confirmed_requires_both_amounts(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_mutation_client(
+        monkeypatch, mod, modify={"return_code": 0}
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_modify_order"](
+        order_id="0000111222",
+        symbol="005930",
+        new_price=72000,  # new_quantity omitted
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False
+    assert (
+        "new_quantity" in response["error"].lower()
+        or "new_price" in response["error"].lower()
+    )
+    assert all(c.get("method") != "modify" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_modify_order_unsupported_broker_response_is_fail_closed(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_fake_kiwoom_mutation_client(
+        monkeypatch,
+        mod,
+        modify={"return_code": 40, "return_msg": "정정불가"},
+    )
     mcp = DummyMCP()
     _register(mcp)
 
@@ -468,8 +520,7 @@ async def test_modify_order_confirmed_returns_explicit_not_implemented_failure(
     )
 
     assert response["success"] is False
-    assert "not implemented" in response["error"].lower()
-    assert impl_calls["count"] == 0
+    assert response["broker_response"]["return_code"] == 40
 
 
 @pytest.mark.asyncio

@@ -125,21 +125,6 @@ def _positive_amount_error(
     return None
 
 
-_CONFIRMED_NOT_IMPLEMENTED_ERROR = (
-    "kiwoom_mock confirmed execution is not implemented in this PR; "
-    "use dry_run=True to preview."
-)
-
-
-def _confirmed_not_implemented(tool_name: str) -> dict[str, Any]:
-    return {
-        "success": False,
-        "error": f"{tool_name}: {_CONFIRMED_NOT_IMPLEMENTED_ERROR}",
-        "source": "kiwoom",
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Shared broker-response shaping (ROB-319).
 
@@ -327,6 +312,40 @@ async def _kiwoom_mock_modify_impl(**kwargs: Any) -> dict[str, Any]:
         "new_quantity": kwargs.get("new_quantity"),
         "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
     }
+
+
+async def _kiwoom_mock_modify_confirmed_impl(**kwargs: Any) -> dict[str, Any]:
+    order_id = str(kwargs.get("order_id") or "").strip()
+    symbol = str(kwargs.get("symbol") or "").strip()
+    new_price = int(kwargs["new_price"])
+    new_quantity = int(kwargs["new_quantity"])
+    exchange = kwargs.get("exchange") or constants.MOCK_EXCHANGE_KRX
+    base = {
+        "source": "kiwoom",
+        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+        "dry_run": False,
+        "order_id": order_id,
+        "symbol": symbol,
+        "new_price": new_price,
+        "new_quantity": new_quantity,
+    }
+    try:
+        client = KiwoomMockClient.from_app_settings()
+        order_client = KiwoomDomesticOrderClient(cast(Any, client))
+        broker_response = await order_client.modify_order(
+            original_order_no=order_id,
+            symbol=symbol,
+            new_quantity=new_quantity,
+            new_price=new_price,
+            exchange=exchange,
+        )
+    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
+        return {
+            "success": False,
+            **base,
+            "error": f"kiwoom_mock_modify_order failed: {type(exc).__name__}: {exc}",
+        }
+    return _finalize_broker_response(base, broker_response)
 
 
 async def _kiwoom_mock_order_history_impl(**kwargs: Any) -> dict[str, Any]:
@@ -561,7 +580,22 @@ def register(mcp: FastMCP) -> None:
                     "source": "kiwoom",
                     "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
                 }
-            return _confirmed_not_implemented("kiwoom_mock_modify_order")
+            if new_price is None or new_quantity is None:
+                return {
+                    "success": False,
+                    "error": (
+                        "kiwoom_mock_modify_order confirmed execution requires both "
+                        "new_price and new_quantity."
+                    ),
+                    "source": "kiwoom",
+                    "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+                }
+            return await _kiwoom_mock_modify_confirmed_impl(
+                order_id=order_id,
+                symbol=symbol,
+                new_price=new_price,
+                new_quantity=new_quantity,
+            )
         return await _kiwoom_mock_modify_impl(
             order_id=order_id,
             symbol=symbol,
