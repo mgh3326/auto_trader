@@ -91,6 +91,50 @@ export interface InvestmentReport {
   snapshotFreshnessSummary?: SnapshotFreshnessSummary | null;
   sourceConflicts?: Record<string, unknown> | null;
   unavailableSources?: Record<string, unknown> | null;
+  // ROB-318 Phase 3 — deterministic report-level diagnostics. Null on legacy
+  // reports. Internal keys stay snake_case (the API passes the JSON through
+  // without deep-transforming nested objects, same as snapshotFreshnessSummary).
+  snapshotReportDiagnostics?: SnapshotReportDiagnostics | null;
+}
+
+// ROB-318 Phase 3 — typed shape of ``snapshot_report_diagnostics``. Mirrors the
+// backend ``app/services/action_report/common/diagnostics.py`` builders. Keys
+// are snake_case to match the wire format (no deep camelCase transform).
+export type WhyNoActionKind =
+  | "data_insufficient"
+  | "stale_gated"
+  | "real_no_action";
+
+export interface WhyNoAction {
+  kind: WhyNoActionKind;
+  blocking_sources: string[];
+  reason_ko: string;
+}
+
+export type ReportQualityGrade =
+  | "high_confidence"
+  | "informational_only"
+  | "no_action";
+
+export interface ReportQualitySummary {
+  grade: ReportQualityGrade;
+  bundle_status?: string | null;
+  freshness_overall?: SnapshotFreshnessStatus | string | null;
+  kind_status_counts?: Record<string, number>;
+  fresh_coverage_pct?: number;
+}
+
+export interface DataSufficiencySource {
+  status?: SnapshotFreshnessStatus | string | null;
+  reason_code?: string | null;
+  reason?: string | null;
+  as_of?: string | null;
+}
+
+export interface SnapshotReportDiagnostics {
+  why_no_action?: WhyNoAction | null;
+  data_sufficiency_by_source?: Record<string, DataSufficiencySource>;
+  report_quality_summary?: ReportQualitySummary | null;
 }
 
 // ROB-269 Phase 4 — typed shape of the snapshot freshness summary on the
