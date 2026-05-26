@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { Card } from "../../ds";
+import { Card, Pill } from "../../ds";
 import { useInvestmentReportBundle } from "../../hooks/useInvestmentReportBundle";
 import type {
   DeliveryStatus,
@@ -190,6 +190,17 @@ function ReportHeader({
   );
 }
 
+// ROB-322 — confidence is a 0-100 Decimal serialised as string/number; show a
+// rounded integer chip when present, otherwise nothing (never "확인 불가").
+function formatConfidence(
+  raw: number | string | null | undefined,
+): string | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (Number.isFinite(n)) return String(Math.round(n));
+  return typeof raw === "string" ? raw : null;
+}
+
 function ItemRow({
   item,
   decisions,
@@ -199,6 +210,10 @@ function ItemRow({
 }) {
   const kindLabel = ITEM_KIND_LABELS[item.itemKind] ?? item.itemKind;
   const statusLabel = ITEM_STATUS_LABELS[item.status] ?? item.status;
+  const confidenceLabel = formatConfidence(item.confidence);
+  const dimensionCitations = item.citedDimensionReportUuids?.length ?? 0;
+  const hasChips =
+    !!confidenceLabel || !!item.citedSymbolReportUuid || dimensionCitations > 0;
   return (
     <section
       style={{
@@ -233,6 +248,25 @@ function ItemRow({
         </div>
         <span style={{ fontSize: 12, fontWeight: 800 }}>{statusLabel}</span>
       </div>
+      {hasChips ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {confidenceLabel ? (
+            <Pill tone="accent" size="sm">
+              신뢰도 {confidenceLabel}
+            </Pill>
+          ) : null}
+          {item.citedSymbolReportUuid ? (
+            <Pill tone="paper" size="sm">
+              심볼 리포트
+            </Pill>
+          ) : null}
+          {dimensionCitations > 0 ? (
+            <Pill tone="paper" size="sm">
+              차원 리포트 {dimensionCitations}
+            </Pill>
+          ) : null}
+        </div>
+      ) : null}
       <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
         {item.rationale}
       </div>

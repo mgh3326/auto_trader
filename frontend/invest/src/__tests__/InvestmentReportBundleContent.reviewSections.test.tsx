@@ -235,3 +235,47 @@ describe("InvestmentReportBundleContent — ROB-322 review sections", () => {
     expect(fallback.textContent).toContain("068270");
   });
 });
+
+describe("InvestmentReportBundleContent — ROB-322 candidate card chips", () => {
+  function sectionsWithBuy(item: InvestmentReportItem): ReportReviewSections {
+    return {
+      sections: [
+        { key: "new_buy_candidate", labelKo: "신규매수 후보", items: [item] },
+      ],
+      noActionSummary: null,
+    };
+  }
+
+  it("renders a confidence chip when confidence is present", () => {
+    const item = makeItem({
+      symbol: "035720",
+      decisionBucket: "new_buy_candidate",
+      confidence: 78,
+    });
+    renderContent(makeBundle(sectionsWithBuy(item)));
+    expect(screen.getByText(/신뢰도\s*78/)).toBeInTheDocument();
+  });
+
+  it("omits the confidence chip when confidence is null", () => {
+    renderContent(makeBundle(fullReviewSections()));
+    expect(screen.queryByText(/신뢰도/)).toBeNull();
+  });
+
+  it("renders citation chips for cited symbol + dimension reports", () => {
+    const item = makeItem({
+      symbol: "035720",
+      decisionBucket: "new_buy_candidate",
+      citedSymbolReportUuid: "sym-1",
+      citedDimensionReportUuids: ["d1", "d2"],
+    });
+    renderContent(makeBundle(sectionsWithBuy(item)));
+    expect(screen.getByText(/심볼 리포트/)).toBeInTheDocument();
+    expect(screen.getByText(/차원 리포트\s*2/)).toBeInTheDocument();
+  });
+
+  it("omits citation chips when there are no citations", () => {
+    renderContent(makeBundle(fullReviewSections()));
+    expect(screen.queryByText(/심볼 리포트/)).toBeNull();
+    expect(screen.queryByText(/차원 리포트/)).toBeNull();
+  });
+});
