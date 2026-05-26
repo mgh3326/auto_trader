@@ -135,3 +135,56 @@ async def test_guard_released_on_runner_exception() -> None:
     with pytest.raises(RuntimeError):
         await bridge(_trigger("XRPUSDT"))  # guard not leaked
     assert runner.calls == 2
+
+
+async def test_make_demo_futures_trade_runner_calls_execute_monitored() -> None:
+    seen: dict[str, object] = {}
+
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *exc) -> None:
+            return None
+
+        async def commit(self) -> None:
+            seen["committed"] = True
+
+    class _FakeExecutor:
+        def __init__(self, **kwargs) -> None:
+            seen["product"] = kwargs["product"]
+            seen["now"] = kwargs["now"]
+
+        async def execute_monitored(self, intent, *, confirm, market) -> object:
+            seen["confirm"] = confirm
+            seen["symbol"] = intent.symbol
+            return SimpleNamespace(status="filled")
+
+    from app.services.brokers.binance.demo_scalping.order_intent import build_order_intent
+    from app.services.brokers.binance.demo_scalping_exec import ws_bridge as mod
+
+    runner = mod.make_demo_futures_trade_runner(
+        client=object(),
+        market_data=object(),
+        reference=object(),
+        session_factory=lambda: _FakeSession(),
+        limits=ScalpingRiskLimits(),
+        executor_cls=_FakeExecutor,
+    )
+    intent = build_order_intent(
+        _trigger().decision, product="usdm_futures", symbol="XRPUSDT",
+        limits=ScalpingRiskLimits(), source_candle_close_time_ms=1, evaluated_at_ms=2,
+    )
+    result = await runner(intent, _market(), True, _T0)
+    assert seen == {
+        "product": "usdm_futures", "now": _T0, "confirm": True,
+        "symbol": "XRPUSDT", "committed": True,
+    }
+    assert result.status == "filled"
+
+
+def _market() -> object:
+    from app.services.brokers.binance.demo_scalping.contract import MarketConditions
+    return MarketConditions(
+        spread_bps=Decimal("1"), data_age_seconds=2.0, spot_free_base_qty=Decimal("0")
+    )

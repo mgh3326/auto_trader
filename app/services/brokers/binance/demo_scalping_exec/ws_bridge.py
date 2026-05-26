@@ -43,6 +43,7 @@ TradeRunner = Callable[
     [OrderIntent, MarketConditions, bool, dt.datetime], Awaitable[Any]
 ]
 Clock = Callable[[], dt.datetime]
+SessionFactory = Callable[[], Any]
 
 
 def _default_clock() -> dt.datetime:
@@ -125,3 +126,97 @@ class WsExecutionBridge:
         finally:
             self._inflight.discard(symbol)
             self._global_inflight -= 1
+
+
+def make_demo_futures_trade_runner(
+    *,
+    client: Any,
+    market_data: Any,
+    reference: Any,
+    session_factory: SessionFactory,
+    limits: ScalpingRiskLimits,
+    executor_cls: Any | None = None,
+) -> TradeRunner:
+    """Build a TradeRunner that opens a per-trade session + executor.
+
+    ``executor_cls`` is injectable for tests; production uses the real
+    DemoScalpingExecutor (imported lazily so the disabled path never touches
+    broker/DB modules). Mirrors app/jobs/binance_demo_scalping_runner.py.
+    """
+    if executor_cls is None:
+        from app.services.brokers.binance.demo_scalping_exec.executor import (
+            DemoScalpingExecutor,
+        )
+
+        executor_cls = DemoScalpingExecutor
+
+    async def _run(
+        intent: OrderIntent,
+        market: MarketConditions,
+        confirm: bool,
+        now: dt.datetime,
+    ) -> Any:
+        async with session_factory() as session:
+            executor = executor_cls(
+                product="usdm_futures",
+                client=client,
+                session=session,
+                reference=reference,
+                now=now,
+                market_data=market_data,
+                limits=limits,
+            )
+            result = await executor.execute_monitored(
+                intent, confirm=confirm, market=market
+            )
+            await session.commit()
+            return result
+
+    return _run
+
+
+async def build_ws_execution_bridge_from_env(
+    *,
+    confirm: bool,
+    clock: Clock = _default_clock,
+    limits: ScalpingRiskLimits | None = None,
+) -> tuple[WsExecutionBridge, Callable[[], Awaitable[None]]]:
+    """Construct a futures Demo bridge from env + its async cleanup.
+
+    Lazy imports keep the disabled CLI path free of broker/DB setup. Futures
+    only; demo-fapi only (host-guarded at the client transport).
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.brokers.binance.demo_scalping.market_data import (
+        DemoScalpingMarketData,
+    )
+    from app.services.brokers.binance.demo_scalping_exec.reference import (
+        DemoReferenceData,
+    )
+    from app.services.brokers.binance.futures_demo.execution_client import (
+        BinanceFuturesDemoExecutionClient,
+    )
+
+    resolved_limits = limits or ScalpingRiskLimits()
+    client = BinanceFuturesDemoExecutionClient.from_env()
+    market_data = DemoScalpingMarketData()
+    reference = DemoReferenceData()
+    runner = make_demo_futures_trade_runner(
+        client=client,
+        market_data=market_data,
+        reference=reference,
+        session_factory=AsyncSessionLocal,
+        limits=resolved_limits,
+    )
+    bridge = WsExecutionBridge(
+        trade_runner=runner, limits=resolved_limits, confirm=confirm, clock=clock
+    )
+
+    async def _aclose() -> None:
+        await market_data.aclose()
+        await reference.aclose()
+        aclose = getattr(client, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+    return bridge, _aclose
