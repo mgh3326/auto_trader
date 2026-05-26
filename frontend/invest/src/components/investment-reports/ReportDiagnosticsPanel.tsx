@@ -20,6 +20,8 @@ import type {
 import { FRESHNESS_LABELS } from "./snapshotEvidenceLabels";
 import {
   DIAGNOSTIC_KIND_LABELS,
+  EXTERNAL_CROSS_CHECK_NOTE,
+  EXTERNAL_CROSS_CHECK_TITLE,
   QUALITY_GRADE_LABELS,
   REASON_CODE_LABELS,
   WHY_NO_ACTION_LABELS,
@@ -34,6 +36,12 @@ const GRADE_COLORS: Record<string, string> = {
 };
 
 const DEGRADED_STATUSES = new Set(["hard_stale", "unavailable", "failed"]);
+
+const EXTERNAL_AUDIT_KINDS = new Set([
+  "toss_remote_debug",
+  "naver_remote_debug",
+  "browser_probe",
+]);
 
 function statusLabel(status: string | null | undefined): string {
   if (status && status in FRESHNESS_LABELS) {
@@ -54,15 +62,30 @@ export function ReportDiagnosticsPanel({
   const quality = diagnostics.report_quality_summary ?? null;
   const why = diagnostics.why_no_action ?? null;
   const sufficiency = diagnostics.data_sufficiency_by_source ?? {};
+  const audit = diagnostics.data_quality_audit ?? null;
 
-  // Only surface degraded sources — fresh ones are noise on the chip row.
+  // Core degraded sources only — external cross-checks render in their own
+  // section so an unavailable probe never reads as a broken report.
   const degraded: [string, DataSufficiencySource][] = Object.entries(
     sufficiency,
-  ).filter(([, info]) => info?.status != null && DEGRADED_STATUSES.has(info.status));
+  ).filter(
+    ([kind, info]) =>
+      !EXTERNAL_AUDIT_KINDS.has(kind) &&
+      info?.status != null &&
+      DEGRADED_STATUSES.has(info.status),
+  );
+
+  const externalChecks = Object.entries(audit?.external_cross_checks ?? {});
 
   const hasQuality = quality?.grade != null;
   const hasWhy = why?.kind != null;
-  if (!hasQuality && !hasWhy && degraded.length === 0) return null;
+  if (
+    !hasQuality &&
+    !hasWhy &&
+    degraded.length === 0 &&
+    externalChecks.length === 0
+  )
+    return null;
 
   const chipStyle: CSSProperties = {
     fontSize: 12,
@@ -132,6 +155,42 @@ export function ReportDiagnosticsPanel({
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {externalChecks.length > 0 ? (
+        <div
+          data-testid="report-diagnostics-external"
+          style={{ display: "grid", gap: 4 }}
+        >
+          <span style={{ fontSize: 12, color: "var(--fg-3)" }}>
+            {EXTERNAL_CROSS_CHECK_TITLE} · {EXTERNAL_CROSS_CHECK_NOTE}
+          </span>
+          <ul
+            aria-label="외부 교차검증 상태"
+            style={{
+              listStyle: "none",
+              margin: 0,
+              padding: 0,
+              display: "flex",
+              gap: 6,
+              flexWrap: "wrap",
+            }}
+          >
+            {externalChecks.map(([kind, info]) => (
+              <li
+                key={kind}
+                data-testid={`report-diagnostics-external-${kind}`}
+                style={{ ...chipStyle, opacity: 0.7 }}
+              >
+                {DIAGNOSTIC_KIND_LABELS[kind] ?? kind} ·{" "}
+                {statusLabel(info.status)}
+                {info.reason_code
+                  ? ` (${REASON_CODE_LABELS[info.reason_code] ?? info.reason_code})`
+                  : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
     </div>
   );

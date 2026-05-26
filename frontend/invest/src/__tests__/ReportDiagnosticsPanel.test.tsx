@@ -80,4 +80,48 @@ describe("ReportDiagnosticsPanel", () => {
     const chip = screen.getByTestId("report-diagnostics-source-journal");
     expect(chip).toHaveTextContent("weird_code");
   });
+
+  it("renders external cross-checks in a separate 'no impact' section, not the core chip row", () => {
+    const diagnostics: SnapshotReportDiagnostics = {
+      data_sufficiency_by_source: {
+        portfolio: { status: "fresh" },
+        // External sources also appear here today; they must NOT show as core chips.
+        toss_remote_debug: { status: "unavailable", reason_code: "unavailable" },
+      },
+      data_quality_audit: {
+        core: { status: "usable", blocking_gaps: [], fresh_coverage_pct: 100 },
+        external_cross_checks: {
+          toss_remote_debug: {
+            status: "unavailable",
+            reason_code: "unavailable",
+            affects_report_generation: false,
+          },
+        },
+        gaps: [],
+      },
+    };
+    render(<ReportDiagnosticsPanel diagnostics={diagnostics} />);
+
+    // External source is NOT rendered as a core degraded chip.
+    expect(
+      screen.queryByTestId("report-diagnostics-source-toss_remote_debug"),
+    ).toBeNull();
+
+    // It appears in the dedicated external section, with the no-impact note.
+    const ext = screen.getByTestId("report-diagnostics-external");
+    expect(ext).toHaveTextContent("외부 교차검증");
+    expect(ext).toHaveTextContent("리포트 생성에는 영향 없음");
+    expect(
+      screen.getByTestId("report-diagnostics-external-toss_remote_debug"),
+    ).toHaveTextContent("토스증권 교차검증");
+  });
+
+  it("does not render the external section when no external cross-checks exist", () => {
+    const diagnostics: SnapshotReportDiagnostics = {
+      report_quality_summary: { grade: "high_confidence" },
+    };
+    render(<ReportDiagnosticsPanel diagnostics={diagnostics} />);
+    expect(screen.queryByTestId("report-diagnostics-external")).toBeNull();
+  });
 });
+

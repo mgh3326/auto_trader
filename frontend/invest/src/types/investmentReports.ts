@@ -122,6 +122,38 @@ export interface ReportQualitySummary {
   freshness_overall?: SnapshotFreshnessStatus | string | null;
   kind_status_counts?: Record<string, number>;
   fresh_coverage_pct?: number;
+  // ROB-323 — core vs optional vs external split.
+  core_fresh_coverage_pct?: number;
+  optional_fresh_coverage_pct?: number;
+  external_cross_check_status?: SnapshotFreshnessStatus | string | null;
+}
+
+// ROB-323 — external cross-check / data-quality audit (embedded in
+// snapshot_report_diagnostics). External probes never affect report generation.
+export interface ExternalCrossCheck {
+  status?: SnapshotFreshnessStatus | string | null;
+  reason_code?: string | null;
+  reason?: string | null;
+  as_of?: string | null;
+  affects_report_generation: false;
+}
+
+export interface DataQualityGap {
+  severity: "info" | "warning" | "blocking";
+  kind: string;
+  sources?: string[];
+  message: string;
+}
+
+export interface DataQualityAudit {
+  snapshot_bundle_uuid?: string | null;
+  core: {
+    status: "usable" | "degraded";
+    blocking_gaps: string[];
+    fresh_coverage_pct?: number;
+  };
+  external_cross_checks: Record<string, ExternalCrossCheck>;
+  gaps: DataQualityGap[];
 }
 
 export interface DataSufficiencySource {
@@ -135,6 +167,7 @@ export interface SnapshotReportDiagnostics {
   why_no_action?: WhyNoAction | null;
   data_sufficiency_by_source?: Record<string, DataSufficiencySource>;
   report_quality_summary?: ReportQualitySummary | null;
+  data_quality_audit?: DataQualityAudit | null;
 }
 
 // ROB-269 Phase 4 — typed shape of the snapshot freshness summary on the
