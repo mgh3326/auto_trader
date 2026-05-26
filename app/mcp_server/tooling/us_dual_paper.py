@@ -9,6 +9,7 @@ from app.services.us_dual_paper.adapters.alpaca import AlpacaPaperAdapter
 from app.services.us_dual_paper.adapters.base import BrokerPreviewAdapter
 from app.services.us_dual_paper.adapters.kis_mock import KisMockUsAdapter
 from app.services.us_dual_paper.capability_matrix import get_capability_matrix
+from app.services.us_dual_paper.packet import build_packet
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 US_DUAL_PAPER_TOOL_NAMES: set[str] = {
     "us_dual_paper_capability_matrix",
     "us_dual_paper_account_states",
+    "us_dual_paper_preview",
 }
 
 
@@ -53,6 +55,30 @@ async def us_dual_paper_account_states() -> dict[str, Any]:
     return out
 
 
+async def us_dual_paper_preview(
+    symbol: str,
+    quantity: float,
+    limit_price_usd: float,
+    notional_cap_usd: float = 50.0,
+    reference_price_usd: float | None = None,
+    limit_price_source: str = "operator_input",
+) -> dict[str, Any]:
+    """Generate a dual-broker (kis_mock + alpaca_paper) BUY/LIMIT preview packet.
+
+    Read-only. submit_enabled is always False. Each broker reported independently
+    as previewed/blocked/unsupported/error. Never submits, cancels, or modifies.
+    """
+    packet = await build_packet(
+        symbol=symbol,
+        quantity=quantity,
+        limit_price_usd=limit_price_usd,
+        notional_cap_usd=notional_cap_usd,
+        limit_price_source=limit_price_source,
+        reference_price_usd=reference_price_usd,
+    )
+    return packet.model_dump(mode="json")
+
+
 def register_us_dual_paper_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="us_dual_paper_capability_matrix",
@@ -65,6 +91,14 @@ def register_us_dual_paper_tools(mcp: FastMCP) -> None:
             "and Alpaca Paper. Counts/numbers only, no secrets. No submit/cancel/modify."
         ),
     )(us_dual_paper_account_states)
+    _ = mcp.tool(
+        name="us_dual_paper_preview",
+        description=(
+            "Dual-broker BUY/LIMIT preview packet for KIS mock US + Alpaca Paper. "
+            "Read-only, submit_enabled always False; each broker reported independently "
+            "(previewed/blocked/unsupported/error). No submit/cancel/modify."
+        ),
+    )(us_dual_paper_preview)
 
 
 __all__ = [
@@ -72,4 +106,6 @@ __all__ = [
     "register_us_dual_paper_tools",
     "us_dual_paper_account_states",
     "us_dual_paper_capability_matrix",
+    "us_dual_paper_preview",
 ]
+
