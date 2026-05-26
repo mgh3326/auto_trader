@@ -103,6 +103,41 @@ async def test_legacy_report_without_snapshot_fields_still_ingests(
     assert row.snapshot_freshness_summary is None
     assert row.source_conflicts is None
     assert row.unavailable_sources is None
+    # ROB-318 PR-B — legacy reports carry NULL diagnostics (regression).
+    assert row.snapshot_report_diagnostics is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_persists_report_diagnostics(session: AsyncSession) -> None:
+    """ROB-318 PR-B — snapshot_report_diagnostics round-trips to the DB row."""
+    diagnostics = {
+        "why_no_action": {
+            "kind": "data_insufficient",
+            "blocking_sources": ["portfolio"],
+            "reason_ko": "데이터 부족 — portfolio 확인 불가로 매수/매도 권고 보류",
+        },
+        "data_sufficiency_by_source": {
+            "portfolio": {"status": "unavailable", "reason_code": "user_id_missing"},
+        },
+        "report_quality_summary": {"grade": "informational_only"},
+    }
+    request = _base_request(snapshot_report_diagnostics=diagnostics)
+
+    svc = InvestmentReportIngestionService(session)
+    report = await svc.ingest(request)
+    await session.commit()
+
+    row = await session.scalar(
+        sa.select(InvestmentReport).where(InvestmentReport.id == report.id)
+    )
+    assert row is not None
+    diag = row.snapshot_report_diagnostics
+    assert diag["why_no_action"]["kind"] == "data_insufficient"
+    assert (
+        diag["data_sufficiency_by_source"]["portfolio"]["reason_code"]
+        == "user_id_missing"
+    )
+    assert diag["report_quality_summary"]["grade"] == "informational_only"
 
 
 @pytest.mark.asyncio
@@ -391,6 +426,17 @@ async def test_response_schema_exposes_snapshot_metadata_fields(
     assert response.source_conflicts == conflicts
     assert response.unavailable_sources == unavailable
 
+    # ROB-318 PR-B — diagnostics bundle also exposed when present.
+    diag_request = _base_request(
+        snapshot_report_diagnostics={"report_quality_summary": {"grade": "no_action"}}
+    )
+    diag_report = await svc.ingest(diag_request)
+    await session.commit()
+    diag_response = InvestmentReportResponse.model_validate(diag_report)
+    assert diag_response.snapshot_report_diagnostics == {
+        "report_quality_summary": {"grade": "no_action"}
+    }
+
 
 @pytest.mark.asyncio
 async def test_response_schema_legacy_report_renders_explicit_nulls(
@@ -416,6 +462,8 @@ async def test_response_schema_legacy_report_renders_explicit_nulls(
         "snapshot_freshness_summary",
         "source_conflicts",
         "unavailable_sources",
+        # ROB-318 PR-B CRITICAL — new field also serialises as explicit null.
+        "snapshot_report_diagnostics",
     ):
         assert field in payload, f"{field!r} missing from serialised response"
         assert payload[field] is None, f"{field!r} should serialise as null"

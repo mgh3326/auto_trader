@@ -510,6 +510,13 @@ async def db_session():
                         "ADD COLUMN IF NOT EXISTS unavailable_sources JSONB"
                     )
                 )
+                # ROB-318 Phase 3 (PR-B) — deterministic report diagnostics.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_report_diagnostics JSONB"
+                    )
+                )
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS "

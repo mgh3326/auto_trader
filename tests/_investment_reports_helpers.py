@@ -100,6 +100,9 @@ async def session() -> AsyncSession:
                         "ADD COLUMN IF NOT EXISTS source_conflicts JSONB",
                         "ALTER TABLE review.investment_reports "
                         "ADD COLUMN IF NOT EXISTS unavailable_sources JSONB",
+                        # ROB-318 Phase 3 (PR-B) — deterministic report diagnostics.
+                        "ALTER TABLE review.investment_reports "
+                        "ADD COLUMN IF NOT EXISTS snapshot_report_diagnostics JSONB",
                         "CREATE INDEX IF NOT EXISTS "
                         "ix_investment_reports_snapshot_bundle_uuid "
                         "ON review.investment_reports (snapshot_bundle_uuid)",

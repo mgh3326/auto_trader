@@ -188,6 +188,10 @@ class InvestmentReport(Base):
     snapshot_freshness_summary: Mapped[dict | None] = mapped_column(JSONB)
     source_conflicts: Mapped[dict | None] = mapped_column(JSONB)
     unavailable_sources: Mapped[dict | None] = mapped_column(JSONB)
+    # ROB-318 Phase 3 (PR-B) — deterministic report-level diagnostics bundle:
+    # {why_no_action, data_sufficiency_by_source, report_quality_summary}.
+    # Nullable so legacy reports stay readable.
+    snapshot_report_diagnostics: Mapped[dict | None] = mapped_column(JSONB)
 
 
 # ---------------------------------------------------------------------------
