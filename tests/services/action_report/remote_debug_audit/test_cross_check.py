@@ -66,6 +66,9 @@ def test_build_audit_assembles_gaps_and_never_blocks() -> None:
     assert audit["source"] == "naver_remote_debug"
     assert audit["affects_report_generation"] is False
     assert audit["checked_symbols"] == 3
+    # Two findings resolved on the Naver side (mismatch still counts as resolved),
+    # one unresolved. ``symbols_resolved`` is the live-smoke acceptance signal.
+    assert audit["symbols_resolved"] == 2
     assert audit["snapshot_bundle_uuid"] == "b-1"
     severities = {g["severity"] for g in audit["gaps"]}
     assert "blocking" not in severities

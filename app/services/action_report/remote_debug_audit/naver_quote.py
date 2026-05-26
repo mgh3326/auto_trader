@@ -23,19 +23,53 @@ def naver_url(code: str) -> str:
     return f"https://finance.naver.com/item/main.naver?code={code}"
 
 
+# Naver Finance item/main DOM has shifted over time, so the extraction tries a
+# small ordered list of selector variants and uses the first one with non-empty
+# text. ``.no_today .blind`` / ``.wrap_company h2`` are the long-standing
+# selectors and stay first; the rest are fallbacks for layout variants.
+NAVER_PRICE_SELECTORS: tuple[str, ...] = (
+    ".no_today .blind",
+    ".no_today em .blind",
+    "#_nowVal",
+    "#chart_area .rate_info .no_today .blind",
+)
+NAVER_NAME_SELECTORS: tuple[str, ...] = (
+    ".wrap_company h2 a",
+    ".wrap_company h2",
+    "#middle .h_company .wrap_company h2",
+)
+
+# In-page helper: first selector whose element has non-empty trimmed text.
+_PICK_FN: str = (
+    "function pick(sels){"
+    "for(var i=0;i<sels.length;i++){"
+    "var e=document.querySelector(sels[i]);"
+    "if(e&&e.textContent&&e.textContent.trim())return e.textContent.trim();"
+    "}return null;}"
+)
+
+
+def _selectors_json(selectors: tuple[str, ...]) -> str:
+    return json.dumps(list(selectors))
+
+
 # Returns a JSON string read back via Runtime.evaluate(returnByValue=true).
-# Selectors: current price lives in ``.no_today .blind``; company name in
-# ``.wrap_company h2``. Both are stable on the item/main page.
 NAVER_EXTRACT_JS: str = (
     "(function(){"
-    "function t(s){var e=document.querySelector(s);"
-    "return e?e.textContent.trim():null;}"
-    "return JSON.stringify({"
-    "code:(new URLSearchParams(location.search)).get('code'),"
-    "name:t('.wrap_company h2'),"
-    "price_text:t('.no_today .blind')"
-    "});"
-    "})()"
+    + _PICK_FN
+    + "return JSON.stringify({"
+    + "code:(new URLSearchParams(location.search)).get('code'),"
+    + f"name:pick({_selectors_json(NAVER_NAME_SELECTORS)}),"
+    + f"price_text:pick({_selectors_json(NAVER_PRICE_SELECTORS)})"
+    + "});})()"
+)
+
+# Render gate for the CDP poll loop: true once any price selector has text.
+NAVER_READY_JS: str = (
+    "(function(){"
+    + _PICK_FN
+    + f"return pick({_selectors_json(NAVER_PRICE_SELECTORS)})!==null;"
+    + "})()"
 )
 
 
