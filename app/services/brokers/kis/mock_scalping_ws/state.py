@@ -21,6 +21,7 @@ class MarketState:
     bid_qty: float | None = None
     ask_qty: float | None = None
     _updated_at: float | None = None
+    _book_updated_at: float | None = None
 
     def update_from_tick(self, tick: QuoteTick, *, now: float) -> None:
         self.last_price = tick.last_price
@@ -33,6 +34,7 @@ class MarketState:
         self.bid_qty = book.bid_qty
         self.ask_qty = book.ask_qty
         self._updated_at = now
+        self._book_updated_at = now
 
     def spread_bps(self) -> float | None:
         """(ask - bid) / mid in basis points. None until a valid book is seen."""
@@ -50,3 +52,14 @@ class MarketState:
         if self._updated_at is None:
             return None
         return now - self._updated_at
+
+    def book_age_seconds(self, *, now: float) -> float | None:
+        """Seconds since the last orderbook update. None until a book is seen.
+
+        The trigger gate uses this (not the combined ``age_seconds``) so a stale
+        bid/ask still trips the freshness guard even while trade ticks arrive —
+        otherwise the spread check could pass on a dead book.
+        """
+        if self._book_updated_at is None:
+            return None
+        return now - self._book_updated_at
