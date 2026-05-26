@@ -85,6 +85,13 @@ class HermesContextPayload(BaseModel):
     freshness_summary: dict[str, Any] = Field(default_factory=dict)
     unavailable_sources: dict[str, Any] = Field(default_factory=dict)
     source_conflicts: dict[str, Any] = Field(default_factory=dict)
+    # ROB-318 Phase 3 (PR-B) — deterministic data-sufficiency signals Hermes
+    # reads as input. Optional (default empty / None) so a lagging Hermes
+    # version degrades gracefully. ``why_no_action`` here reflects data/stale
+    # gating only (Hermes has not produced items yet).
+    data_sufficiency_by_source: dict[str, Any] = Field(default_factory=dict)
+    report_quality_summary: dict[str, Any] | None = None
+    why_no_action: dict[str, Any] | None = None
     dimension_evidence: dict[str, Any] = Field(default_factory=dict)
     dimension_reports: list[dict[str, Any]] = Field(default_factory=list)
     symbol_intermediate_reports: list[dict[str, Any]] = Field(default_factory=list)

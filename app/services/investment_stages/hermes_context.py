@@ -31,6 +31,11 @@ from app.schemas.hermes_composition import (
     HermesStageInput,
 )
 from app.schemas.investment_stages import StageArtifactPayload, StageVerdict
+from app.services.action_report.common.diagnostics import (
+    build_data_sufficiency_by_source,
+    build_report_quality_summary,
+    classify_why_no_action,
+)
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
 )
@@ -244,6 +249,18 @@ class HermesContextExporter:
                     }
                 )
 
+        # ROB-318 Phase 3 — deterministic data-sufficiency signals for Hermes,
+        # derived from the bundle's freshness/coverage. why_no_action here uses
+        # has_action_items=True so only data/stale gating surfaces (Hermes has
+        # not produced items yet — a 'real_no_action' verdict is its call, not
+        # ours).
+        freshness_summary = dict(bundle.freshness_summary or {})
+        why_no_action = classify_why_no_action(
+            freshness_summary=freshness_summary,
+            bundle_status=bundle.status,
+            has_action_items=True,
+        )
+
         return HermesContextPayload(
             snapshot_bundle_uuid=bundle.bundle_uuid,
             bundle_status=bundle.status,
@@ -252,9 +269,17 @@ class HermesContextExporter:
             account_scope=bundle.account_scope,
             policy_version=bundle.policy_version,
             coverage_summary=dict(bundle.coverage_summary or {}),
-            freshness_summary=dict(bundle.freshness_summary or {}),
+            freshness_summary=freshness_summary,
             unavailable_sources=self._derive_unavailable_sources(stage_inputs),
             source_conflicts={},
+            data_sufficiency_by_source=build_data_sufficiency_by_source(
+                freshness_summary
+            ),
+            report_quality_summary=build_report_quality_summary(
+                freshness_summary=freshness_summary,
+                bundle_status=bundle.status,
+            ),
+            why_no_action=why_no_action,
             dimension_evidence=dimension_evidence,
             dimension_reports=dimension_reports,
             symbol_intermediate_reports=symbol_intermediate_reports,

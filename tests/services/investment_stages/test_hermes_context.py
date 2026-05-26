@@ -116,6 +116,36 @@ async def test_exporter_builds_frozen_payload_with_stage_inputs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exporter_includes_report_diagnostics() -> None:
+    """ROB-318 PR-B — exporter surfaces deterministic data-sufficiency signals:
+    data_sufficiency_by_source + report_quality_summary + why_no_action (data
+    gating only at export time)."""
+    bundle = _make_bundle(status="partial")
+    bundle.freshness_summary = {
+        "overall": "unavailable",
+        "portfolio": {"status": "unavailable", "reason_code": "user_id_missing"},
+        "market": {"status": "fresh"},
+    }
+    repo = AsyncMock()
+    repo.get_bundle_by_uuid.return_value = bundle
+    repo.list_bundle_items_with_snapshots.return_value = []
+
+    exporter = HermesContextExporter(
+        session=AsyncMock(), snapshots_repository=repo, stages=[]
+    )
+    payload = await exporter.export(snapshot_bundle_uuid=bundle.bundle_uuid)
+
+    assert (
+        payload.data_sufficiency_by_source["portfolio"]["reason_code"]
+        == "user_id_missing"
+    )
+    assert payload.report_quality_summary["grade"] == "informational_only"
+    assert payload.why_no_action is not None
+    assert payload.why_no_action["kind"] == "data_insufficient"
+    assert payload.why_no_action["blocking_sources"] == ["portfolio"]
+
+
+@pytest.mark.asyncio
 async def test_exporter_raises_when_bundle_missing() -> None:
     repo = AsyncMock()
     repo.get_bundle_by_uuid.return_value = None
