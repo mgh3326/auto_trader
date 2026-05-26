@@ -7,6 +7,33 @@
   DB/env/secret changes, no runtime parameter application, no `/invest` surfacing.
 - **Location:** everything lives under `research/nautilus_scalping/` in its isolated venv.
 
+## 0. Design revision (2026-05-27, approved)
+
+The original §3 design rested the take-profit as a Nautilus LIMIT order. In testing,
+a resting TP limit **under-filled** vs the taker's touch-based exit (`tp_hit` ~17% vs
+the taker's ~51% win rate): positions rode to SL or end-of-data, collapsing maker
+trade count to `insufficient_data` — a backtest matching-engine artifact, not economics.
+Approved pivot to a cleaner, equivalent-fidelity model:
+
+- **Entry** stays a passive, data-derived Nautilus limit, now posted `entry_offset_bps`
+  (default 5) **below** the close (BUY) / above (SELL). Immediate reversions are **real
+  missed fills** (~45% observed); continued moves fill → genuine entry-side adverse
+  selection from real ticks.
+- **Exit** is **touch-based**, identical trigger logic to the taker (SL-first), so the
+  maker trade set is comparable to taker (~284 vs 466 for one symbol/config) instead of
+  collapsing. `tp_hit` returns to ~47%.
+- **Fees** are applied analytically, not by Nautilus: the maker re-sim runs on a
+  **zero-fee instrument** (so `realized_pnl` = pure gross price P&L) and `maker_fill`
+  charges the **real per-leg fees** — maker 2 bps on the entry + the TP leg, taker 4 bps
+  on the SL leg — plus the conservative overlay. This is still a re-sim with real fills,
+  not a fee-only rescale (it satisfies the commission-artifact note).
+- Because there is no longer a resting exit limit, the venue reverts to ROB-320's
+  `OmsType.HEDGING` + USDT-only funding for both modes (every exit is an explicit market
+  `close_all_positions`, OMS-agnostic; taker reproduces ROB-320 exactly).
+
+Sections below retain the original framing; where they describe a resting TP limit, read
+the touch-based + analytic-fee model above.
+
 ## 1. Problem
 
 ROB-320 produced an honest `not_validated` for the `meanrev_zscore_fade` candidate on
