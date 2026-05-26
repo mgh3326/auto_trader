@@ -286,9 +286,22 @@ git commit -m "feat(rob-321): KIS quote-frame pure parser (read-only, PR2 task 1
 
 `state.py`: `MarketState(symbol)` with `update_from_tick(QuoteTick, now)`, `update_from_book(OrderBookSnapshot, now)`, `spread_bps() -> float | None`, `age_seconds(now) -> float`, `last_price`/`bid`/`ask` accessors. Pure (clock injected). Tests: tick updates last_price+ts; book updates bid/ask+spread_bps; age increases with `now`; spread None until a book seen.
 
+## Task 2b: Account-mode aware WS approval key + two-layer host allowlist  *(DONE)*
+
+Done ahead of the client (Task 3) so the quote client + mock execution WS both issue the *correct* approval key. Extended `kis_websocket_internal/approval_keys.py` (no new client):
+
+- `get_approval_key/_issue_approval_key/_cache_approval_key/_get_cached_approval_key` take `account_mode="kis_live" | "kis_mock"` (default `kis_live` → backward compatible).
+- live: `settings.kis_base_url` + `kis_app_key`/`kis_app_secret`, cache `kis:websocket:approval_key`.
+- mock: `settings.kis_mock_base_url` + `kis_mock_app_key`/`kis_mock_app_secret`, cache `kis_mock:websocket:approval_key`; missing config → fail-closed via `validate_kis_mock_config()` (env var names only, never values).
+- **Two-layer fail-closed host allowlists** in `kis_websocket_internal/constants.py`:
+  1. `APPROVAL_ENDPOINT_HOSTS` — live `openapi.koreainvestment.com:9443`, mock `openapivts.koreainvestment.com:29443`
+  2. `WEBSOCKET_ENDPOINT_HOSTS` — live `ops.koreainvestment.com:21000`, mock `ops.koreainvestment.com:31000`
+- `KISExecutionWebSocket._issue_approval_key_if_needed()` + recoverable-ACK reissue pass `self.account_mode`; `_build_websocket_url` asserts the WS allowlist.
+- Result: **mock execution WS now auto-issues a MOCK approval key** (previously always live — latent bug). Live order/mutation paths untouched. Tests in `tests/services/kis_websocket/test_approval_keys.py` (+ updated `test_client.py`): live/mock endpoint+creds, cache namespace, fail-closed, host-allowlist rejection, reissue path. 88 green.
+
 ## Task 3: `KISQuoteWebSocket` read-only client + host allowlist  *(outline)*
 
-`market_stream.py`: connect to resolved quote host, subscribe to `QUOTE_TR_CODES` for given symbols (reuse approval-key + subscription-request shape), `async listen(on_tick, on_book)`, reconnect/backoff/heartbeat copied from `KISExecutionWebSocket`. **No order method.** Add `KIS_QUOTE_WS_HOSTS` allowlist; constructor asserts the resolved `host:port` is in it (fail-closed). Tests: fake WS server feeds canned frames → `on_tick`/`on_book` called with parsed objects; host not in allowlist → raises; reconnect/heartbeat-timeout paths. Add `app/core/config.py` flag `kis_mock_scalping_ws_enabled` (default False) gating the daemon/smoke.
+`market_stream.py`: connect to resolved quote host (using `get_approval_key(account_mode)` from Task 2b), subscribe to `QUOTE_TR_CODES` for given symbols (reuse subscription-request shape), `async listen(on_tick, on_book)`, reconnect/backoff/heartbeat copied from `KISExecutionWebSocket`. **No order method.** Reuse `WEBSOCKET_ENDPOINT_HOSTS` allowlist (Task 2b); constructor asserts the resolved `host:port` is in it (fail-closed). Tests: fake WS server feeds canned frames → `on_tick`/`on_book` called with parsed objects; host not in allowlist → raises; reconnect/heartbeat-timeout paths. Add `app/core/config.py` flag `kis_mock_scalping_ws_enabled` (default False) gating the daemon/smoke.
 
 ## Task 4: Read-only smoke script + import guard + host resolution  *(outline)*
 
