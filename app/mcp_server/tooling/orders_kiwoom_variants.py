@@ -183,6 +183,27 @@ def _finalize_broker_response(
     return response
 
 
+# Candidate Kiwoom cash fields, most specific first. Unknown shapes stay
+# unparsed (cash=None) rather than being faked (ROB-319 operator default).
+_ORDERABLE_CASH_KEYS = (
+    "ord_psbl_cash",
+    "ord_alowa",
+    "100stk_ord_alow_amt",
+    "ord_psbl_amt",
+    "entr",
+)
+
+
+def _extract_orderable_cash(broker_response: dict[str, Any]) -> int | None:
+    for key in _ORDERABLE_CASH_KEYS:
+        if key in broker_response and broker_response[key] not in (None, ""):
+            try:
+                return int(str(broker_response[key]).replace(",", "").strip())
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Implementation seams (overridable via monkeypatch in tests).
 
@@ -294,11 +315,44 @@ async def _kiwoom_mock_positions_impl(**kwargs: Any) -> dict[str, Any]:
 
 
 async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "success": True,
-        "cash": None,
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-    }
+    symbol_raw = kwargs.get("symbol")
+    symbol = str(symbol_raw).strip() if symbol_raw else None
+    cont_yn = kwargs.get("cont_yn")
+    next_key = kwargs.get("next_key")
+    base_source = "orderable_amount" if symbol else "balance"
+    try:
+        client = KiwoomMockClient.from_app_settings()
+        account_client = KiwoomDomesticAccountClient(cast(Any, client))
+        if symbol:
+            broker_response = await account_client.get_orderable_amount(
+                symbol=symbol, cont_yn=cont_yn, next_key=next_key
+            )
+        else:
+            broker_response = await account_client.get_balance(
+                cont_yn=cont_yn, next_key=next_key
+            )
+    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
+        return {
+            "success": False,
+            "source": "kiwoom",
+            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+            "error": (
+                f"kiwoom_mock_get_orderable_cash failed: {type(exc).__name__}: {exc}"
+            ),
+            **({"symbol": symbol} if symbol else {}),
+        }
+
+    cash = _extract_orderable_cash(broker_response)
+    response = _finalize_broker_response(
+        {"source": "kiwoom", "account_mode": ACCOUNT_MODE_KIWOOM_MOCK}, broker_response
+    )
+    response["cash"] = cash
+    response["cash_source"] = (
+        base_source if cash is not None else f"{base_source}_unparsed"
+    )
+    if symbol:
+        response["symbol"] = symbol
+    return response
 
 
 # ---------------------------------------------------------------------------

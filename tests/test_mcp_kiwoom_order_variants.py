@@ -577,3 +577,160 @@ def test_derive_broker_success(broker_response, expected):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     assert mod._derive_broker_success(broker_response) is expected
+
+
+# ---------------------------------------------------------------------------
+# ROB-319: account read tools call the broker client (no stub-success)
+# ---------------------------------------------------------------------------
+
+
+def _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads):
+    """payloads keyed by method name: 'orderable_amount' | 'balance' | 'order_status'."""
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls.append({"client": "from_app_settings"})
+            return cls()
+
+    class FakeAccountClient:
+        def __init__(self, client):
+            calls.append({"account_client": client.__class__.__name__})
+
+        async def get_orderable_amount(self, **kwargs):
+            calls.append({"method": "orderable_amount", **kwargs})
+            return payloads["orderable_amount"]
+
+        async def get_balance(self, **kwargs):
+            calls.append({"method": "balance", **kwargs})
+            return payloads["balance"]
+
+        async def get_order_status(self, **kwargs):
+            calls.append({"method": "order_status", **kwargs})
+            return payloads["order_status"]
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", FakeAccountClient, raising=False
+    )
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_orderable_cash_with_symbol_calls_orderable_amount(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {
+                "return_code": 0,
+                "return_msg": "정상",
+                "ord_psbl_cash": "1500000",
+            },
+            "balance": {"return_code": 0},
+            "order_status": {"return_code": 0},
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol="005930")
+
+    assert response["success"] is True
+    assert response["source"] == "kiwoom"
+    assert response["account_mode"] == "kiwoom_mock"
+    assert response["broker_response"]["ord_psbl_cash"] == "1500000"
+    assert response["cash"] == 1500000
+    assert response["cash_source"] == "orderable_amount"
+    assert response["symbol"] == "005930"
+    # balance must NOT have been called
+    assert all(c.get("method") != "balance" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_orderable_cash_without_symbol_calls_balance(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {"return_code": 0, "return_msg": "정상", "entr": "987654"},
+            "order_status": {"return_code": 0},
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"]()
+
+    assert response["success"] is True
+    assert response["broker_response"]["entr"] == "987654"
+    assert response["cash"] == 987654
+    assert response["cash_source"] == "balance"
+    assert any(c.get("method") == "balance" for c in calls)
+    assert all(c.get("method") != "orderable_amount" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_orderable_cash_unparseable_returns_null_cash_with_source(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0, "some_unknown_field": "x"},
+            "balance": {"return_code": 0},
+            "order_status": {"return_code": 0},
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol="005930")
+
+    assert response["success"] is True  # broker returned 0
+    assert response["cash"] is None
+    assert response["cash_source"] == "orderable_amount_unparsed"
+    assert response["broker_response"]["some_unknown_field"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeAccountClient:
+        def __init__(self, client):  # noqa: ARG002
+            pass
+
+        async def get_orderable_amount(self, **kwargs):  # noqa: ARG002
+            raise RuntimeError("boom")
+
+        async def get_balance(self, **kwargs):  # noqa: ARG002
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", FakeAccountClient, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol="005930")
+
+    assert response["success"] is False
+    assert "RuntimeError" in response["error"]
+    assert response["account_mode"] == "kiwoom_mock"
