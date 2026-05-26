@@ -19,6 +19,7 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_context_get_impl,
     investment_report_create_impl,
     investment_report_decide_item_impl,
+    investment_report_generate_from_bundle_impl,
     investment_report_get_impl,
     investment_report_list_impl,
 )
@@ -382,3 +383,99 @@ async def test_context_get_surfaces_pending_orders_unavailable_as_null(
     )
     assert ctx["success"] is True
     assert ctx["pending_orders"] is None
+
+
+# ---------------------------------------------------------------------------
+# ROB-318 — generate_from_bundle must forward user_id so the kis_live
+# portfolio collector is invoked instead of staying fail-closed
+# ('unavailable'), which otherwise stale-gates the report to advisory_only
+# with the generic "포지션 데이터 확인 불가" reason.
+# ---------------------------------------------------------------------------
+def _capture_generate(
+    monkeypatch: pytest.MonkeyPatch, captured: dict
+) -> None:
+    import uuid as _uuid
+
+    from app.services.action_report.snapshot_backed import generator as gen_mod
+    from app.services.action_report.snapshot_backed.request import (
+        ReportGenerationRequest,
+        ReportGenerationResponse,
+    )
+
+    async def _fake_generate(
+        _self: object, request: ReportGenerationRequest
+    ) -> ReportGenerationResponse:
+        captured["request"] = request
+        return ReportGenerationResponse(
+            report_uuid=_uuid.uuid4(),
+            snapshot_bundle_uuid=_uuid.uuid4(),
+            snapshot_policy_version=request.policy_version,
+            snapshot_coverage_summary={},
+            snapshot_freshness_summary={},
+            source_conflicts={},
+            unavailable_sources={},
+            items_count=0,
+            warnings=[],
+            bundle_status="ok",
+            bundle_reused=False,
+            stale_gate={},
+        )
+
+    monkeypatch.setattr(
+        gen_mod.SnapshotBackedReportGenerator, "generate", _fake_generate
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_from_bundle_threads_user_id_to_request(
+    monkeypatch: pytest.MonkeyPatch, session: AsyncSession
+) -> None:
+    """ROB-318 — explicit user_id reaches ReportGenerationRequest."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
+    )
+    captured: dict = {}
+    _capture_generate(monkeypatch, captured)
+
+    result = await investment_report_generate_from_bundle_impl(
+        market="kr",
+        account_scope="kis_live",
+        title="t",
+        summary="s",
+        kst_date="2026-05-26",
+        created_by_profile="test",
+        status="draft",
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert captured["request"].user_id == 42
+
+
+@pytest.mark.asyncio
+async def test_generate_from_bundle_user_id_defaults_to_none_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, session: AsyncSession
+) -> None:
+    """ROB-318/ROB-278 — omitting user_id keeps broker collectors fail-closed."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
+    )
+    captured: dict = {}
+    _capture_generate(monkeypatch, captured)
+
+    result = await investment_report_generate_from_bundle_impl(
+        market="kr",
+        account_scope="kis_live",
+        title="t",
+        summary="s",
+        kst_date="2026-05-26",
+        created_by_profile="test",
+        status="draft",
+    )
+
+    assert result["success"] is True
+    assert captured["request"].user_id is None

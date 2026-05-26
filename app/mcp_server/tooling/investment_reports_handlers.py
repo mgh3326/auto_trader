@@ -415,6 +415,7 @@ async def investment_report_generate_from_bundle_impl(
     symbols: list[str] | None = None,
     candidate_limit: int | None = None,
     requested_by: str = "claude_code",
+    user_id: int | None = None,
 ) -> dict:
     """Generate a snapshot-backed advisory report.
 
@@ -422,6 +423,13 @@ async def investment_report_generate_from_bundle_impl(
     ``success=False`` unless ``SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED``
     is set on the deployment. The generator never mutates broker /
     order / watch state — see docs for the read-only guarantees.
+
+    ROB-318 — ``user_id`` is forwarded to ``ReportGenerationRequest`` so the
+    ``kis_live`` portfolio collector can read live KIS holdings/cash. When
+    omitted it stays ``None`` (ROB-278 fail-closed): broker-backed collectors
+    surface ``portfolio`` as ``unavailable`` and the stale gate keeps the
+    report advisory-only. This mirrors the ``user_id`` already threaded
+    through ``investment_report_prepare_bundle`` (ROB-314).
     """
     from app.core.config import settings
     from app.services.action_report.snapshot_backed.generator import (
@@ -465,6 +473,7 @@ async def investment_report_generate_from_bundle_impl(
         "metadata": metadata or {},
         "symbols": symbols,
         "candidate_limit": candidate_limit,
+        "user_id": user_id,
     }
     request = ReportGenerationRequest.model_validate(payload)
 
@@ -547,6 +556,9 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
             "the report with snapshot metadata. Opt-in: returns "
             "{success:false, error:'snapshot_backed_report_generator_disabled'} "
             "unless SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED is true. "
+            "Pass user_id for kis_live/upbit_live markets so the portfolio "
+            "collector can read live holdings/cash; omitting it keeps "
+            "broker-backed sources fail-closed (portfolio 'unavailable'). "
             "No broker / order / watch mutation."
         ),
     )(investment_report_generate_from_bundle_impl)
