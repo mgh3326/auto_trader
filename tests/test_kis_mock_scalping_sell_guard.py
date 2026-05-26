@@ -80,3 +80,68 @@ def test_no_context_clean_price_passes() -> None:
     )
     assert err is None
 
+
+from app.mcp_server.tooling.order_validation import _resolve_scalping_exit_context
+
+
+@pytest.mark.unit
+def test_resolver_returns_none_when_not_requested(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "kis_mock_scalping_enabled", True, raising=False)
+    ctx = _resolve_scalping_exit_context(
+        scalping_exit=False, strategy_id="s", reason="stop_loss",
+        side="sell", order_type="limit", is_mock=True,
+    )
+    assert ctx is None
+
+
+@pytest.mark.unit
+def test_resolver_fail_closed_on_live(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "kis_mock_scalping_enabled", True, raising=False)
+    with pytest.raises(ValueError, match="kis_mock"):
+        _resolve_scalping_exit_context(
+            scalping_exit=True, strategy_id="s", reason="stop_loss",
+            side="sell", order_type="limit", is_mock=False,
+        )
+
+
+@pytest.mark.unit
+def test_resolver_fail_closed_when_flag_off(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "kis_mock_scalping_enabled", False, raising=False)
+    with pytest.raises(ValueError, match="KIS_MOCK_SCALPING_ENABLED"):
+        _resolve_scalping_exit_context(
+            scalping_exit=True, strategy_id="s", reason="stop_loss",
+            side="sell", order_type="limit", is_mock=True,
+        )
+
+
+@pytest.mark.unit
+def test_resolver_returns_context_when_authorized(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "kis_mock_scalping_enabled", True, raising=False)
+    ctx = _resolve_scalping_exit_context(
+        scalping_exit=True, strategy_id="kis-mock-v1", reason="stop_loss",
+        side="sell", order_type="limit", is_mock=True,
+    )
+    assert ctx is not None and ctx.strategy_id == "kis-mock-v1"
+    assert ctx.reason == "stop_loss"
+
+
+@pytest.mark.unit
+def test_resolver_rejects_buy_and_market_and_bad_reason(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "kis_mock_scalping_enabled", True, raising=False)
+    with pytest.raises(ValueError, match="side='sell'"):
+        _resolve_scalping_exit_context(
+            scalping_exit=True, strategy_id="s", reason="stop_loss",
+            side="buy", order_type="limit", is_mock=True,
+        )
+    with pytest.raises(ValueError, match="order_type='limit'"):
+        _resolve_scalping_exit_context(
+            scalping_exit=True, strategy_id="s", reason="stop_loss",
+            side="sell", order_type="market", is_mock=True,
+        )
+    with pytest.raises(ValueError, match="reason"):
+        _resolve_scalping_exit_context(
+            scalping_exit=True, strategy_id="s", reason="moon",
+            side="sell", order_type="limit", is_mock=True,
+        )
+
+

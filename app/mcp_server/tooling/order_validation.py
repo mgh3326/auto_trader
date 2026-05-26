@@ -238,6 +238,43 @@ async def _validate_defensive_trim_preconditions(
     )
 
 
+_SCALPING_EXIT_REASONS = frozenset({"stop_loss", "take_profit", "time_stop"})
+
+
+def _resolve_scalping_exit_context(
+    *,
+    scalping_exit: bool,
+    strategy_id: str | None,
+    reason: str | None,
+    side: str,
+    order_type: str,
+    is_mock: bool,
+) -> ScalpingExitContext | None:
+    """Fail-closed resolution of a mock scalping exit authorization.
+
+    Returns None when not requested. Raises ValueError on any condition that
+    would let a live/generic order acquire the bypass.
+    """
+    if not scalping_exit:
+        return None
+    if not settings.kis_mock_scalping_enabled:
+        raise ValueError(
+            "scalping_exit requires KIS_MOCK_SCALPING_ENABLED=true"
+        )
+    if not is_mock:
+        raise ValueError("scalping_exit is only available for kis_mock orders")
+    if side != "sell":
+        raise ValueError("scalping_exit requires side='sell'")
+    if order_type != "limit":
+        raise ValueError("scalping_exit requires order_type='limit'")
+    if not strategy_id:
+        raise ValueError("scalping_exit requires strategy_id")
+    resolved_reason = reason or "stop_loss"
+    if resolved_reason not in _SCALPING_EXIT_REASONS:
+        raise ValueError(f"invalid scalping_exit reason: {resolved_reason}")
+    return ScalpingExitContext(strategy_id=strategy_id, reason=resolved_reason)
+
+
 async def _get_current_price_for_order(symbol: str, market_type: str) -> float | None:
     if market_type == "crypto":
         prices = await upbit_service.fetch_multiple_current_prices(
