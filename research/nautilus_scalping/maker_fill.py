@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import blake2b
 
+from validated_gate import Trade  # pure import (stdlib-only module)
+
 REF_FEE_BPS = 10.0          # mirrors validated_gate.REF_FEE_BPS (as-run reference point)
 TAKER_BASELINE_BPS = 4.0    # real demo taker
 MAKER_FEE_BPS = 2.0         # real demo maker
@@ -33,9 +35,6 @@ class MakerTradeRecord:
     filled: bool                 # False = limit cancelled (missed fill)
     tp_hit: bool                 # exit was the maker-limit TP (vs taker-stop SL)
     adverse_excursion_bps: float # worst adverse move between fill and exit, bps
-
-
-from validated_gate import Trade  # pure import (stdlib-only module)
 
 
 def build_maker_optimistic(records: list[MakerTradeRecord]) -> list[Trade]:
