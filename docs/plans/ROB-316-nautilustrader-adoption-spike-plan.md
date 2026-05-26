@@ -323,3 +323,43 @@ uv pip install --python $R/.venv/bin/python \
 - GitHub-hosted 사용 시 `macos-latest`(arm64) 금지 → **Intel runner label 명시** 필요.
 - 권장 순서: (1차) 로컬 Intel MacBook build script — 재현성 최고. (2차) Intel MacBook **self-hosted**
   GitHub Actions runner + `workflow_dispatch` 수동 트리거.
+
+---
+
+## 13. Fee/target 민감도 sweep (2026-05-26)
+
+**질문:** 어떤 (fee, TP/SL) 조합에서 net 양수가 되나?
+**방법:** fee는 trade를 바꾸지 않으므로 (TP,SL)당 엔진 1회 실행 후 fee를 analytic 재계산
+(`net(fee)=realized_pnl + commission_ref*(1-fee/10)`, exact). NautilusTrader Rust logger가
+**process-global singleton**이라 한 프로세스에 BacktestEngine 2개면 panic →
+**combo당 subprocess** (`fee_sweep.py --single` worker + driver). 14일 XRPUSDT spot tick.
+
+**NET PnL (USDT):**
+```
+    TP/SL  trades   10bps   7.5     5.0     2.0     1.0     0.0
+    30/20     344   -99.6   -74.9   -50.3   -20.7   -10.9    -1.0
+    40/20     301   -87.3   -65.8   -44.2   -18.4    -9.8    -1.1
+    50/30     218   -65.2   -49.6   -34.0   -15.2    -9.0    -2.7
+    60/40     163   -41.2   -29.5   -17.8    -3.7    +1.0    +5.7
+    80/40     130   -30.4   -21.1   -11.7    -0.5    +3.2    +6.9
+   100/60      85   -20.7   -14.6    -8.5    -1.1    +1.3    +3.8
+  100/100      47    -4.2    -0.8    +2.6    +6.7    +8.0    +9.4
+```
+break-even frontier(net>0 최대 per-leg fee): 30/20·40/20·50/30 = **NEVER**(0 fee에서도 음수),
+60/40·80/40·100/60 = **fee ≤ 1bps**, 100/100 = **fee ≤ 5bps**(break-even 5~7.5 사이).
+
+**해석:**
+1. 현실 fee(spot taker 10bps, BNB 7.5bps)에선 **모든 조합 손실**.
+2. tight scalp 타깃(30/20·40/20·50/30)은 **0 fee에서도 음수 → gross edge 자체가 없음**
+   (1m tight 구간에서 신호는 노이즈+비용). 손절/타깃을 키워도 이 셋은 안 됨.
+3. **gross edge는 타깃을 넓혀야 나타남**(100/100 @0fee = +9.4). 단 trade수 344→47로 급감.
+4. 현실 cost 근처에서 유일하게 사는 건 **100/100 @ fee ≤5bps**(VIP/maker 영역).
+
+**결론:**
+- 원래 30/20 micro-breakout 스캘핑은 **구조적으로 비viable**(gross edge 없음) — fee 문제 이전에 **신호 edge 문제**.
+- 살길 후보: (a) **진입 selectivity↑로 win rate 향상** — 여기서 호가/ICT fidelity가 의미를 가짐;
+  (b) **maker 실행 + 넓은 타깃(100bps급) + 낮은 fee**; (c) tight-scalp 전제 폐기.
+- 다음 우선순위: 신호 개선(ICT/호가 기반) 또는 100/100+maker 시나리오 심화. (fee만으로는 못 살림.)
+
+**검증:** `PYTHONPATH=<root>:<R> .venv/bin/python fee_sweep.py --catalog catalog --symbol XRPUSDT --trade-size 100`
+(export: `results/fee_sweep.csv`, 42 rows). No broker/order/secret side effect.
