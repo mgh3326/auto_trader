@@ -313,33 +313,132 @@ async def test_place_order_confirmed_rejects_unexpected_side_without_broker_call
     assert calls == {"client": 0, "order_client": 0}
 
 
-@pytest.mark.asyncio
-async def test_cancel_order_confirmed_returns_explicit_not_implemented_failure(
-    monkeypatch,
-):
-    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+def _patch_fake_kiwoom_mutation_client(monkeypatch, mod, *, modify=None, cancel=None):
+    calls: list[dict[str, Any]] = []
 
-    impl_calls = {"count": 0}
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls.append({"client": "from_app_settings"})
+            return cls()
 
-    async def fake_impl(**kwargs):
-        impl_calls["count"] += 1
-        return {"success": True}
+    class FakeOrderClient:
+        def __init__(self, client):
+            calls.append({"order_client": client.__class__.__name__})
+
+        async def modify_order(self, **kwargs):
+            calls.append({"method": "modify", **kwargs})
+            return modify
+
+        async def cancel_order(self, **kwargs):
+            calls.append({"method": "cancel", **kwargs})
+            return cancel
 
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
-    monkeypatch.setattr(mod, "_kiwoom_mock_cancel_impl", fake_impl)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", FakeOrderClient, raising=False
+    )
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_confirmed_calls_broker_cancel(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_mutation_client(
+        monkeypatch,
+        mod,
+        cancel={"return_code": 0, "return_msg": "정상", "ord_no": "0000999888"},
+    )
     mcp = DummyMCP()
     _register(mcp)
 
     response = await mcp.tools["kiwoom_mock_cancel_order"](
         order_id="0000111222",
         symbol="005930",
+        cancel_quantity=1,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is True
+    assert response["source"] == "kiwoom"
+    assert response["account_mode"] == "kiwoom_mock"
+    assert response["dry_run"] is False
+    assert response["broker_response"]["ord_no"] == "0000999888"
+    cancel_call = next(c for c in calls if c.get("method") == "cancel")
+    assert cancel_call["original_order_no"] == "0000111222"
+    assert cancel_call["symbol"] == "005930"
+    assert cancel_call["cancel_quantity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_confirmed_requires_symbol_and_quantity(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_mutation_client(
+        monkeypatch, mod, cancel={"return_code": 0}
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_cancel_order"](
+        order_id="0000111222",
         dry_run=False,
         confirm=True,
     )
 
     assert response["success"] is False
-    assert "not implemented" in response["error"].lower()
-    assert impl_calls["count"] == 0
+    assert (
+        "symbol" in response["error"].lower()
+        or "cancel_quantity" in response["error"].lower()
+    )
+    assert all(c.get("method") != "cancel" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_unsupported_broker_response_is_fail_closed(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_fake_kiwoom_mutation_client(
+        monkeypatch,
+        mod,
+        cancel={"return_code": 40, "return_msg": "취소불가"},
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_cancel_order"](
+        order_id="0000111222",
+        symbol="005930",
+        cancel_quantity=1,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False  # non-zero return_code -> not faked
+    assert response["broker_response"]["return_code"] == 40
+    assert response["return_msg"] == "취소불가"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_dry_run_false_without_confirm_blocked(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_cancel_order"](
+        order_id="0000111222",
+        symbol="005930",
+        cancel_quantity=1,
+        dry_run=False,
+        confirm=False,
+    )
+    assert response["success"] is False
+    assert "confirm=true" in response["error"].lower()
 
 
 @pytest.mark.asyncio

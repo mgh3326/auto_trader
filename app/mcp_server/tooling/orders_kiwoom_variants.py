@@ -287,6 +287,37 @@ async def _kiwoom_mock_cancel_impl(**kwargs: Any) -> dict[str, Any]:
     }
 
 
+async def _kiwoom_mock_cancel_confirmed_impl(**kwargs: Any) -> dict[str, Any]:
+    order_id = str(kwargs.get("order_id") or "").strip()
+    symbol = str(kwargs.get("symbol") or "").strip()
+    cancel_quantity = int(kwargs["cancel_quantity"])
+    exchange = kwargs.get("exchange") or constants.MOCK_EXCHANGE_KRX
+    base = {
+        "source": "kiwoom",
+        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+        "dry_run": False,
+        "order_id": order_id,
+        "symbol": symbol,
+        "cancel_quantity": cancel_quantity,
+    }
+    try:
+        client = KiwoomMockClient.from_app_settings()
+        order_client = KiwoomDomesticOrderClient(cast(Any, client))
+        broker_response = await order_client.cancel_order(
+            original_order_no=order_id,
+            symbol=symbol,
+            cancel_quantity=cancel_quantity,
+            exchange=exchange,
+        )
+    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
+        return {
+            "success": False,
+            **base,
+            "error": f"kiwoom_mock_cancel_order failed: {type(exc).__name__}: {exc}",
+        }
+    return _finalize_broker_response(base, broker_response)
+
+
 async def _kiwoom_mock_modify_impl(**kwargs: Any) -> dict[str, Any]:
     return {
         "success": True,
@@ -478,7 +509,21 @@ def register(mcp: FastMCP) -> None:
                     "source": "kiwoom",
                     "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
                 }
-            return _confirmed_not_implemented("kiwoom_mock_cancel_order")
+            if not symbol or cancel_quantity is None:
+                return {
+                    "success": False,
+                    "error": (
+                        "kiwoom_mock_cancel_order confirmed execution requires symbol "
+                        "and cancel_quantity."
+                    ),
+                    "source": "kiwoom",
+                    "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+                }
+            return await _kiwoom_mock_cancel_confirmed_impl(
+                order_id=order_id,
+                symbol=symbol,
+                cancel_quantity=cancel_quantity,
+            )
         return await _kiwoom_mock_cancel_impl(
             order_id=order_id,
             symbol=symbol,
