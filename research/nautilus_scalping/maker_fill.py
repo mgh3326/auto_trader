@@ -49,3 +49,44 @@ def build_maker_optimistic(records: list[MakerTradeRecord]) -> list[Trade]:
               notional=r.notional, ts_opened=r.ts_opened)
         for r in records if r.filled
     ]
+
+
+def classify_easy_tp(record: MakerTradeRecord, excursion_eps_bps: float = 2.0) -> bool:
+    """A TP fill that barely moved against us before reaching target — i.e. a
+    front-of-queue fill we would not realistically win against real queue priority."""
+    return record.tp_hit and record.adverse_excursion_bps <= excursion_eps_bps
+
+
+def _uniform_from_ts(ts_opened: int) -> float:
+    """Deterministic uniform [0,1) from the trade timestamp (reproducible, no RNG)."""
+    digest = blake2b(str(ts_opened).encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") / 2.0 ** 64
+
+
+def build_maker_conservative(
+    records: list[MakerTradeRecord],
+    *,
+    queue_loss_pct: float = 0.25,
+    adverse_bps: float = 1.0,
+    excursion_eps_bps: float = 2.0,
+) -> list[Trade]:
+    """Conservative maker scenario: an honest lower bound on the re-sim.
+
+    Two haircuts on top of the data-derived fills:
+      1. Queue loss — deterministically drop ``queue_loss_pct`` of the easy-TP fills
+         (Nautilus has no order-queue model, so it over-fills passive limits).
+      2. Adverse selection — charge ``adverse_bps`` on every surviving maker entry.
+    Missed fills are excluded (they earn nothing)."""
+    out: list[Trade] = []
+    for r in records:
+        if not r.filled:
+            continue
+        if classify_easy_tp(r, excursion_eps_bps) and _uniform_from_ts(r.ts_opened) < queue_loss_pct:
+            continue  # queue loss
+        adverse_cost = adverse_bps * r.notional / 10_000.0
+        out.append(Trade(
+            net_ref_pnl=r.net_at_real_fees - adverse_cost,
+            commission_ref=r.commission_real,
+            notional=r.notional, ts_opened=r.ts_opened,
+        ))
+    return out
