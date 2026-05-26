@@ -53,6 +53,28 @@ Each broker (`alpaca_paper` and `kis_mock`) is evaluated independently and repor
 3. `unsupported`: The broker is not configured due to missing environment variables.
 4. `error`: A runtime exception occurred (e.g. connection error) while checking the broker. **Failure at one broker never disrupts or crashes the check for the other broker.**
 
+### Known KIS mock limitations (verified by live smoke 2026-05-27)
+
+한국투자증권 **모의투자(mock)** does not expose the full overseas account surface. These are
+broker-side limits, not defects, and the preview handles them gracefully:
+
+- **USD cash / buying-power is unavailable.** The overseas foreign-margin service returns
+  `OPSQ0002 없는 서비스 코드` in mock. `kis_mock` therefore reports `cash_usd: null`,
+  `buying_power_usd: null`, and a `buying_power_unavailable` warning. The KIS-side
+  buying-power check is **skipped** (the local `--notional-cap` still applies), so a
+  `kis_mock` `previewed` status means caps + parameter checks passed, **not** that funds
+  were confirmed. Confirm KIS funds manually before any (separate, confirm-gated) submit.
+- **Overseas holdings/positions DO read** on the mock host (`openapivts`), so
+  `position_count` is populated.
+- **Overseas pending-orders inquiry is blocked** in mock (`TTTS3018R` not available), so
+  `open_order_count` is `null` for `kis_mock`.
+- **Client host matters:** mock reads only succeed through a `KISClient(is_mock=True)`
+  instance (mock host). Sending a mock TR through the live-host singleton returns
+  `EGW02005 실전투자 TR 이 아닙니다`. The adapter constructs the mock-host client correctly;
+  do not route `kis_mock` reads through the live `kis` singleton.
+
+`alpaca_paper` has no such limits — cash, buying-power, positions, and open orders all read.
+
 ---
 
 ## 5. Model Context Protocol (MCP) Equivalent
@@ -67,7 +89,7 @@ For AI or agentic workers, three read-only tools are exposed on the MCP server:
 When inspecting preview packets, confirm the following:
 1. `limit_price_source`: Verify the source of the limit price (e.g., `operator_input`).
 2. `notional_cap_usd`: Confirm that the cap matches your intended max exposure per trade.
-3. `account_state.buying_power_usd`: Verify that both brokers have sufficient buying power to support a real order.
+3. `account_state.buying_power_usd`: Verify buying power where available. **`alpaca_paper`** reports a number; **`kis_mock`** reports `null` (overseas margin unsupported, see §4) — confirm KIS funds manually before any submit.
 
 ---
 
