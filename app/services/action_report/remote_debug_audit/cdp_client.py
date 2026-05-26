@@ -25,9 +25,7 @@ class CdpUnavailableError(RuntimeError):
 
 
 class CdpSession(Protocol):
-    async def fetch_rendered(
-        self, url: str, js: str, *, timeout_s: float
-    ) -> Any: ...
+    async def fetch_rendered(self, url: str, js: str, *, timeout_s: float) -> Any: ...
 
 
 class FakeCdpSession:
@@ -74,10 +72,16 @@ class CdpClient:
         async with ws_connect(ws_url, open_timeout=timeout_s) as ws:
             _msg_id = 0
 
-            async def cmd(method: str, params: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
+            async def cmd(
+                method: str, params: dict[str, Any], session_id: str | None = None
+            ) -> dict[str, Any]:
                 nonlocal _msg_id
                 _msg_id += 1
-                payload: dict[str, Any] = {"id": _msg_id, "method": method, "params": params}
+                payload: dict[str, Any] = {
+                    "id": _msg_id,
+                    "method": method,
+                    "params": params,
+                }
                 if session_id is not None:
                     payload["sessionId"] = session_id
                 await ws.send(json.dumps(payload))

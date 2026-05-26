@@ -12,7 +12,14 @@ def test_allows_only_localhost_9222() -> None:
 
 @pytest.mark.parametrize(
     "bad",
-    ["localhost:9222", "127.0.0.1:9223", "0.0.0.0:9222", "10.0.0.5:9222", "127.0.0.1", ""],
+    [
+        "localhost:9222",
+        "127.0.0.1:9223",
+        "0.0.0.0:9222",
+        "10.0.0.5:9222",
+        "127.0.0.1",
+        "",
+    ],
 )
 def test_rejects_everything_else(bad: str) -> None:
     with pytest.raises(CdpDebugHostBlocked):

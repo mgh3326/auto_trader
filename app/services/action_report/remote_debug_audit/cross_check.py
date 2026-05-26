@@ -32,7 +32,9 @@ def cross_check_symbol(
     tolerance_pct: float,
 ) -> dict[str, Any]:
     symbol_resolved = naver is not None and naver.price is not None
-    at_quote_present = at.quote_status == "ok" and isinstance(at.last_price, (int, float))
+    at_quote_present = at.quote_status == "ok" and isinstance(
+        at.last_price, (int, float)
+    )
 
     name_match: bool | None = None
     if naver is not None and naver.name and at.name:
@@ -80,28 +82,36 @@ def build_audit(
     gaps: list[dict[str, Any]] = []
     mismatched = sorted(f["symbol"] for f in findings if f["status"] == "mismatch")
     unresolved = sorted(f["symbol"] for f in findings if f["status"] == "unavailable")
-    at_missing = sorted(f["symbol"] for f in findings if f["status"] == "at_quote_missing")
+    at_missing = sorted(
+        f["symbol"] for f in findings if f["status"] == "at_quote_missing"
+    )
     if mismatched:
-        gaps.append({
-            "severity": "warning",
-            "kind": "naver_price_mismatch",
-            "sources": mismatched,
-            "message": "Naver와 auto_trader 가격 차이가 허용범위 초과 — 후속 데이터 점검 검토",
-        })
+        gaps.append(
+            {
+                "severity": "warning",
+                "kind": "naver_price_mismatch",
+                "sources": mismatched,
+                "message": "Naver와 auto_trader 가격 차이가 허용범위 초과 — 후속 데이터 점검 검토",
+            }
+        )
     if unresolved:
-        gaps.append({
-            "severity": "warning",
-            "kind": "naver_symbol_unresolved",
-            "sources": unresolved,
-            "message": "Naver에서 심볼을 해석하지 못함 — 심볼 매핑/커버리지 점검 검토",
-        })
+        gaps.append(
+            {
+                "severity": "warning",
+                "kind": "naver_symbol_unresolved",
+                "sources": unresolved,
+                "message": "Naver에서 심볼을 해석하지 못함 — 심볼 매핑/커버리지 점검 검토",
+            }
+        )
     if at_missing:
-        gaps.append({
-            "severity": "info",
-            "kind": "at_quote_missing",
-            "sources": at_missing,
-            "message": "auto_trader가 해당 심볼 quote를 못 가짐(Naver는 있음) — 수집 점검 검토",
-        })
+        gaps.append(
+            {
+                "severity": "info",
+                "kind": "at_quote_missing",
+                "sources": at_missing,
+                "message": "auto_trader가 해당 심볼 quote를 못 가짐(Naver는 있음) — 수집 점검 검토",
+            }
+        )
     return {
         "source": "naver_remote_debug",
         "snapshot_bundle_uuid": snapshot_bundle_uuid,

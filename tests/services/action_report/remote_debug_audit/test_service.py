@@ -21,15 +21,31 @@ def _snap(kind, symbol=None, payload=None):
 
 def test_extract_symbol_quotes_reads_quote_payload() -> None:
     pairs = [
-        (object(), _snap("symbol", "005930", {
-            "symbol": "005930", "name": "삼성전자",
-            "quote": {"status": "ok", "last_price": 81000.0},
-        })),
+        (
+            object(),
+            _snap(
+                "symbol",
+                "005930",
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quote": {"status": "ok", "last_price": 81000.0},
+                },
+            ),
+        ),
         (object(), _snap("market", None, {"foo": "bar"})),  # non-symbol ignored
-        (object(), _snap("symbol", "000660", {
-            "symbol": "000660", "name": "SK하이닉스",
-            "quote": {"status": "unavailable"},
-        })),
+        (
+            object(),
+            _snap(
+                "symbol",
+                "000660",
+                {
+                    "symbol": "000660",
+                    "name": "SK하이닉스",
+                    "quote": {"status": "unavailable"},
+                },
+            ),
+        ),
     ]
     quotes = extract_symbol_quotes(pairs)
     assert quotes == [
@@ -59,16 +75,26 @@ class _FakeSnapshotsRepo:
 async def test_audit_bundle_produces_findings_with_fake_cdp() -> None:
     bundle = _FakeBundle()
     pairs = [
-        (object(), _snap("symbol", "005930", {
-            "symbol": "005930", "name": "삼성전자",
-            "quote": {"status": "ok", "last_price": 81000.0},
-        })),
-    ]
-    cdp = FakeCdpSession(results={
-        naver_url("005930"): json.dumps(
-            {"code": "005930", "name": "삼성전자", "price_text": "81,300"}
+        (
+            object(),
+            _snap(
+                "symbol",
+                "005930",
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quote": {"status": "ok", "last_price": 81000.0},
+                },
+            ),
         ),
-    })
+    ]
+    cdp = FakeCdpSession(
+        results={
+            naver_url("005930"): json.dumps(
+                {"code": "005930", "name": "삼성전자", "price_text": "81,300"}
+            ),
+        }
+    )
     svc = RemoteDebugAuditService(
         snapshots_repo=_FakeSnapshotsRepo(bundle, pairs),
         reports_repo=None,
@@ -84,22 +110,42 @@ async def test_audit_bundle_produces_findings_with_fake_cdp() -> None:
 async def test_audit_bundle_per_symbol_failopen() -> None:
     bundle = _FakeBundle()
     pairs = [
-        (object(), _snap("symbol", "005930", {
-            "symbol": "005930", "name": "삼성전자",
-            "quote": {"status": "ok", "last_price": 81000.0},
-        })),
-        (object(), _snap("symbol", "999999", {
-            "symbol": "999999", "quote": {"status": "ok", "last_price": 100.0},
-        })),
+        (
+            object(),
+            _snap(
+                "symbol",
+                "005930",
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quote": {"status": "ok", "last_price": 81000.0},
+                },
+            ),
+        ),
+        (
+            object(),
+            _snap(
+                "symbol",
+                "999999",
+                {
+                    "symbol": "999999",
+                    "quote": {"status": "ok", "last_price": 100.0},
+                },
+            ),
+        ),
     ]
     # 999999 has no canned CDP result -> fetch raises -> finding unavailable, run continues.
-    cdp = FakeCdpSession(results={
-        naver_url("005930"): json.dumps(
-            {"code": "005930", "name": "삼성전자", "price_text": "81,000"}
-        ),
-    })
+    cdp = FakeCdpSession(
+        results={
+            naver_url("005930"): json.dumps(
+                {"code": "005930", "name": "삼성전자", "price_text": "81,000"}
+            ),
+        }
+    )
     svc = RemoteDebugAuditService(
-        snapshots_repo=_FakeSnapshotsRepo(bundle, pairs), reports_repo=None, cdp_session=cdp
+        snapshots_repo=_FakeSnapshotsRepo(bundle, pairs),
+        reports_repo=None,
+        cdp_session=cdp,
     )
     audit = await svc.audit_bundle(bundle.bundle_uuid, max_symbols=10)
     assert audit["checked_symbols"] == 2

@@ -9,8 +9,7 @@ from app.services.action_report.remote_debug_audit.naver_quote import (
 
 def test_naver_url_uses_item_main_with_code() -> None:
     assert (
-        naver_url("005930")
-        == "https://finance.naver.com/item/main.naver?code=005930"
+        naver_url("005930") == "https://finance.naver.com/item/main.naver?code=005930"
     )
 
 

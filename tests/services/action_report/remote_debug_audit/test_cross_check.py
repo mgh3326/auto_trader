@@ -11,7 +11,9 @@ def _at(symbol="005930", name="삼성전자", price=81000.0, status="ok"):
 
 
 def test_ok_when_resolved_name_matches_price_within_band() -> None:
-    f = cross_check_symbol(_at(), NaverQuote("005930", "삼성전자", 81500.0), tolerance_pct=5.0)
+    f = cross_check_symbol(
+        _at(), NaverQuote("005930", "삼성전자", 81500.0), tolerance_pct=5.0
+    )
     assert f["status"] == "ok"
     assert f["symbol_resolved"] is True
     assert f["name_match"] is True
@@ -20,7 +22,11 @@ def test_ok_when_resolved_name_matches_price_within_band() -> None:
 
 
 def test_price_mismatch_flags_warning() -> None:
-    f = cross_check_symbol(_at(price=80000.0), NaverQuote("005930", "삼성전자", 120000.0), tolerance_pct=5.0)
+    f = cross_check_symbol(
+        _at(price=80000.0),
+        NaverQuote("005930", "삼성전자", 120000.0),
+        tolerance_pct=5.0,
+    )
     assert f["price_within_tolerance"] is False
     assert f["status"] == "mismatch"
 
@@ -44,9 +50,14 @@ def test_at_quote_missing_when_status_not_ok() -> None:
 
 def test_build_audit_assembles_gaps_and_never_blocks() -> None:
     findings = [
-        cross_check_symbol(_at(), NaverQuote("005930", "삼성전자", 81200.0), tolerance_pct=5.0),
-        cross_check_symbol(_at(symbol="000660", name="SK하이닉스", price=100000.0),
-                           NaverQuote("000660", "SK하이닉스", 200000.0), tolerance_pct=5.0),
+        cross_check_symbol(
+            _at(), NaverQuote("005930", "삼성전자", 81200.0), tolerance_pct=5.0
+        ),
+        cross_check_symbol(
+            _at(symbol="000660", name="SK하이닉스", price=100000.0),
+            NaverQuote("000660", "SK하이닉스", 200000.0),
+            tolerance_pct=5.0,
+        ),
         cross_check_symbol(_at(symbol="999999", name=None), None, tolerance_pct=5.0),
     ]
     audit = build_audit(
