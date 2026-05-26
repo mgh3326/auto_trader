@@ -6,6 +6,12 @@ ledger-backed durable state. **It never places, previews, or tests an
 order.** Later PRs add execution (PR2), TP/SL (PR3), and the default-OFF
 scheduler scaffold (PR4).
 
+> **⚠️ ROB-316 finding (2026-05-26) — the scalping signal here has no validated backtest edge.**
+>
+> ROB-316 backtested the deterministic trend micro-breakout signal (`demo_scalping/signal.py`) on ~60 days of XRPUSDT tick data (NautilusTrader): **net-negative at realistic fees and gross-negative out-of-sample** (232 trades); a 14-day apparent edge was overfit. See [ROB-316](https://linear.app/mgh3326/issue/ROB-316) and `docs/plans/ROB-316-*`.
+>
+> **Posture:** the whole demo scalping pipeline — the observe-only runner, execution (PR2+), the **5-min Prefect tick**, and the **WS daemon** (`binance-demo-ws-scalping.md`) — is **plumbing / harness for a future validated signal**, not a strategy-alpha runner. Keep the signal **disabled or observe/dry-run only**; `confirm=true` and recurring activation require a **separate validated-signal gate**.
+
 ## What PR1 ships
 
 | Module | Responsibility |
