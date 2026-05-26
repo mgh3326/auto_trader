@@ -138,13 +138,22 @@ _MUTATION_PASSTHROUGH_KEYS = (
 
 
 def _derive_broker_success(broker_response: dict[str, Any]) -> bool:
-    """Success iff Kiwoom return_code equals the success code (default 0)."""
+    """Success ONLY when return_code is explicitly the success code.
 
-    return_code = broker_response.get("return_code", constants.SUCCESS_RETURN_CODE)
+    Fail-closed: a missing key, ``None``, ``""``, or any non-numeric / non-zero
+    value is treated as failure. The raw ``broker_response`` is preserved by the
+    caller so the evidence remains, but we never infer success from absence.
+    """
+
+    if "return_code" not in broker_response:
+        return False
+    return_code = broker_response["return_code"]
+    if return_code is None:
+        return False
     try:
         return int(return_code) == constants.SUCCESS_RETURN_CODE
     except (TypeError, ValueError):
-        return return_code in (None, "", "0")
+        return False
 
 
 def _finalize_broker_response(
@@ -455,6 +464,8 @@ def register(mcp: FastMCP) -> None:
             _mock_config_error(),
             _market_error(market),
             _exchange_error(exchange),
+            _positive_amount_error("quantity", quantity),
+            _positive_amount_error("price", price),
         ):
             if guard:
                 return guard

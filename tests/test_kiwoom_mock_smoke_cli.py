@@ -64,3 +64,44 @@ def test_extract_order_id_prefers_ord_no():
     assert smoke.extract_order_id({"ord_no": "0000111222"}) == "0000111222"
     assert smoke.extract_order_id({"order_no": "0000333444"}) == "0000333444"
     assert smoke.extract_order_id({"return_code": 0}) is None
+
+
+@pytest.mark.asyncio
+async def test_full_aborts_when_dry_run_fails_before_confirmed_place(monkeypatch):
+    place_calls: list[dict] = []
+
+    async def fake_preview(**kwargs):
+        return {"success": True, "preview": True}
+
+    async def fake_place(**kwargs):
+        place_calls.append(kwargs)
+        if kwargs.get("dry_run", True):
+            return {"success": False, "error": "dry-run rejected by guard"}
+        # A confirmed (dry_run=False) place must never be reached.
+        return {"success": True, "ord_no": "SHOULD_NOT_HAPPEN"}
+
+    fake_tools = {
+        "kiwoom_mock_preview_order": fake_preview,
+        "kiwoom_mock_place_order": fake_place,
+    }
+    monkeypatch.setattr(smoke, "_tools", lambda: fake_tools)
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "full",
+            "--symbol",
+            "005930",
+            "--price",
+            "50000",
+            "--quantity",
+            "1",
+            "--confirm",
+        ]
+    )
+    rc = await smoke.run_full(args)
+
+    assert rc == 2
+    # Only the dry-run place was attempted; no confirmed broker mutation.
+    assert len(place_calls) == 1
+    assert place_calls[0]["dry_run"] is True

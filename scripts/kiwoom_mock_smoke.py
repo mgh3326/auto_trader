@@ -127,6 +127,16 @@ async def run_full(args: argparse.Namespace) -> int:
     )
     _emit({"step": "place_dry_run", **dry})
 
+    if not dry.get("success"):
+        _emit(
+            {
+                "step": "abort",
+                "reason": "place_order dry-run failed; not proceeding to confirmed "
+                "broker mutation",
+            }
+        )
+        return 2
+
     if not args.confirm:
         _emit({"step": "stop", "reason": "no --confirm; stopped after dry-run"})
         return 0

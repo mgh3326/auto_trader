@@ -716,10 +716,11 @@ async def test_modify_order_allows_omitted_amounts(monkeypatch):
     [
         ({"return_code": 0}, True),
         ({"return_code": "0"}, True),
-        ({}, True),  # absent return_code defaults to success code
+        ({}, False),  # fail-closed: missing return_code is NOT success
         ({"return_code": 1}, False),
         ({"return_code": "40"}, False),
-        ({"return_code": None}, True),
+        ({"return_code": None}, False),  # fail-closed: None is NOT success
+        ({"return_code": ""}, False),
         ({"return_code": "RC9999"}, False),
     ],
 )
@@ -727,6 +728,68 @@ def test_derive_broker_success(broker_response, expected):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     assert mod._derive_broker_success(broker_response) is expected
+
+
+# ---------------------------------------------------------------------------
+# ROB-319 Hermes review: preview_order positive-amount guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_field", "quantity", "price"),
+    [
+        ("quantity", 0, 70000),
+        ("quantity", -1, 70000),
+        ("price", 1, 0),
+        ("price", 1, -100),
+    ],
+)
+async def test_preview_order_rejects_non_positive_amounts(
+    monkeypatch, bad_field, quantity, price
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    impl_calls = {"count": 0}
+
+    async def fake_impl(**kwargs):
+        impl_calls["count"] += 1
+        return {"success": True}
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "_kiwoom_mock_preview_impl", fake_impl)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_preview_order"](
+        symbol="005930",
+        side="buy",
+        quantity=quantity,
+        price=price,
+    )
+
+    assert response["success"] is False
+    assert bad_field in response["error"].lower()
+    assert impl_calls["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_preview_order_allows_positive_amounts(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_preview_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+    )
+
+    assert response["success"] is True
+    assert response["preview"] is True
 
 
 # ---------------------------------------------------------------------------
