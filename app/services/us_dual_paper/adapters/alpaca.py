@@ -48,11 +48,17 @@ class AlpacaPaperAdapter(BrokerPreviewAdapter):
         service = self._service_factory()
         cash = await service.get_cash()
         positions = await service.list_positions()
+        open_order_count: int | None = None
+        try:
+            open_orders = await service.list_orders(status="open")
+            open_order_count = len(open_orders or [])
+        except Exception:  # best-effort: missing/failed reader must not break read
+            open_order_count = None
         return AccountStateSummary(
             cash_usd=float(cash.cash),
             buying_power_usd=float(cash.buying_power),
             position_count=len(positions),
-            open_order_count=None,
+            open_order_count=open_order_count,
         )
 
     async def preview(self, req: BrokerPreviewRequest) -> BrokerPreviewResult:

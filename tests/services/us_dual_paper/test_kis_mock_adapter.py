@@ -42,3 +42,44 @@ async def test_read_account_state_pins_is_mock_true():
 def test_account_scope_is_canonical_kis_mock():
     adapter = KisMockUsAdapter(kis_client=_FakeKis(), enabled=True)
     assert adapter.account_scope == "kis_mock"  # NOT kis_mock_us
+
+
+class _FakeKisWithOrders(_FakeKis):
+    def __init__(self):
+        super().__init__()
+        self.order_calls = []
+
+    async def inquire_overseas_orders(self, exchange_code="NASD", is_mock=False):
+        self.order_calls.append((exchange_code, is_mock))
+        # one pending order on NASD, one on NYSE, none on AMEX
+        if exchange_code == "NASD":
+            return [{"odno": "1001"}]
+        if exchange_code == "NYSE":
+            return [{"odno": "2002"}]
+        return []
+
+
+class _FakeKisOrdersFail(_FakeKis):
+    async def inquire_overseas_orders(self, exchange_code="NASD", is_mock=False):
+        raise RuntimeError("overseas orders endpoint unsupported in mock")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_order_count_summed_across_exchanges_is_mock_pinned():
+    fake = _FakeKisWithOrders()
+    adapter = KisMockUsAdapter(kis_client=fake, enabled=True)
+    summary = await adapter.read_account_state()
+    assert summary.open_order_count == 2  # NASD(1) + NYSE(1) + AMEX(0)
+    # every overseas-orders read must be is_mock=True
+    assert all(is_mock is True for _exch, is_mock in fake.order_calls)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_order_count_none_when_reader_fails():
+    adapter = KisMockUsAdapter(kis_client=_FakeKisOrdersFail(), enabled=True)
+    summary = await adapter.read_account_state()
+    # best-effort: mock may not support overseas open-order reads
+    assert summary.open_order_count is None
+    assert summary.cash_usd == pytest.approx(500.0)

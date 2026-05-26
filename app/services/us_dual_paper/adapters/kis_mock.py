@@ -13,6 +13,7 @@ from app.schemas.us_dual_paper import (
 from app.services.us_dual_paper.adapters.base import BrokerPreviewAdapter
 
 _USD_NATIONS = {"미국", "US", "USA"}
+_US_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 _KIS_MOCK_ENV_KEYS = (
     "KIS_MOCK_ENABLED",
     "KIS_MOCK_APP_KEY",
@@ -78,12 +79,33 @@ class KisMockUsAdapter(BrokerPreviewAdapter):
                 buying_power_usd = _to_float(row.get("frcr_ord_psbl_amt1"))
                 break
         holdings = await self._kis_client.fetch_my_us_stocks(is_mock=True)
+        open_order_count = await self._read_open_order_count()
         return AccountStateSummary(
             cash_usd=cash_usd,
             buying_power_usd=buying_power_usd,
             position_count=len(holdings or []),
-            open_order_count=None,
+            open_order_count=open_order_count,
         )
+
+    async def _read_open_order_count(self) -> int | None:
+        """Best-effort open-order count across US exchanges (is_mock pinned).
+
+        KIS mock overseas open-order reads are not guaranteed; on any failure
+        return None ("where available") rather than breaking account-state read.
+        """
+        reader = getattr(self._kis_client, "inquire_overseas_orders", None)
+        if not callable(reader):
+            return None
+        total = 0
+        saw_any = False
+        for exchange_code in _US_EXCHANGE_CODES:
+            try:
+                rows = await reader(exchange_code=exchange_code, is_mock=True)
+            except Exception:  # best-effort per exchange
+                continue
+            saw_any = True
+            total += len(rows or [])
+        return total if saw_any else None
 
     async def preview(self, req: BrokerPreviewRequest) -> BrokerPreviewResult:
         blocked: list[str] = []
