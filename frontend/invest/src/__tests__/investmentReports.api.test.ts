@@ -211,6 +211,70 @@ describe("fetchInvestmentReportBundle", () => {
       expect.objectContaining({ credentials: "include" }),
     );
   });
+
+  // ROB-322 — five-section review projection normalization.
+  it("normalises review_sections + no_action_summary to camelCase", async () => {
+    mockFetchOnce({
+      report: {},
+      items: [],
+      decisions_by_item_uuid: {},
+      alerts: [],
+      events: [],
+      review_sections: {
+        sections: [
+          {
+            key: "new_buy_candidate",
+            label_ko: "신규매수 후보",
+            items: [
+              {
+                item_uuid: "item-1",
+                item_kind: "action",
+                symbol: "035720",
+                decision_bucket: "new_buy_candidate",
+                cited_symbol_report_uuid: "sym-1",
+                cited_dimension_report_uuids: ["dim-1", "dim-2"],
+              },
+            ],
+          },
+          { key: "held_strategy_review", label_ko: "보유종목 전략 변경 후보", items: [] },
+        ],
+        no_action_summary: {
+          kind: "stale_gated",
+          reason_ko: "스냅샷 stale",
+          blocking_sources: ["market"],
+          excluded_count: 3,
+        },
+      },
+    });
+
+    const bundle = await fetchInvestmentReportBundle("uuid-1");
+    const review = bundle.reviewSections!;
+    expect(review.sections).toHaveLength(2);
+    expect(review.sections[0]!.key).toBe("new_buy_candidate");
+    expect(review.sections[0]!.labelKo).toBe("신규매수 후보");
+    const item = review.sections[0]!.items[0]!;
+    expect(item.symbol).toBe("035720");
+    expect(item.decisionBucket).toBe("new_buy_candidate");
+    expect(item.citedSymbolReportUuid).toBe("sym-1");
+    expect(item.citedDimensionReportUuids).toEqual(["dim-1", "dim-2"]);
+    const summary = review.noActionSummary!;
+    expect(summary.kind).toBe("stale_gated");
+    expect(summary.reasonKo).toBe("스냅샷 stale");
+    expect(summary.blockingSources).toEqual(["market"]);
+    expect(summary.excludedCount).toBe(3);
+  });
+
+  it("returns null reviewSections when the field is absent (legacy)", async () => {
+    mockFetchOnce({
+      report: {},
+      items: [],
+      decisions_by_item_uuid: {},
+      alerts: [],
+      events: [],
+    });
+    const bundle = await fetchInvestmentReportBundle("uuid-1");
+    expect(bundle.reviewSections).toBeNull();
+  });
 });
 
 describe("fetchReportSnapshotBundle", () => {
