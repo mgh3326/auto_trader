@@ -391,9 +391,7 @@ async def test_context_get_surfaces_pending_orders_unavailable_as_null(
 # ('unavailable'), which otherwise stale-gates the report to advisory_only
 # with the generic "포지션 데이터 확인 불가" reason.
 # ---------------------------------------------------------------------------
-def _capture_generate(
-    monkeypatch: pytest.MonkeyPatch, captured: dict
-) -> None:
+def _capture_generate(monkeypatch: pytest.MonkeyPatch, captured: dict) -> None:
     import uuid as _uuid
 
     from app.services.action_report.snapshot_backed import generator as gen_mod
