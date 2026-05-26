@@ -80,3 +80,22 @@ def test_malformed_frame_returns_none() -> None:
     assert parse_quote_frame("garbage") is None
     assert parse_quote_frame("") is None
     assert parse_quote_frame("0|H0STCNT0") is None
+
+
+@pytest.mark.unit
+def test_parses_bytes_frame() -> None:
+    result = parse_quote_frame(_trade_frame(price="70500").encode("utf-8"))
+    assert isinstance(result, QuoteTick)
+    assert result.last_price == 70500.0
+
+
+@pytest.mark.unit
+def test_invalid_bytes_returns_none() -> None:
+    assert parse_quote_frame(b"\xff\xfe\x00bad") is None
+
+
+@pytest.mark.unit
+def test_empty_symbol_returns_none() -> None:
+    fields = [""] * 20
+    fields[2] = "70500"  # price set but symbol (idx 0) blank
+    assert parse_quote_frame(f"0|{DOMESTIC_TRADE_TR}|001|" + "^".join(fields)) is None
