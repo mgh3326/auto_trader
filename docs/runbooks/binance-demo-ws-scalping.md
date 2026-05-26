@@ -2,6 +2,15 @@
 
 **Scope.** Operator runbook for the Binance Demo WebSocket Scalping Daemon (`scripts/binance_demo_scalping_ws_daemon.py`). This daemon consumes real-time market data to identify breakout scalping opportunities on Binance USD-M Perpetual Futures, and places confirm-gated, concurrency-guarded mock orders on the USD-M Futures Demo lane (`demo-fapi.binance.com`).
 
+> **⚠️ ROB-316 finding (2026-05-26) — this daemon is plumbing/harness, NOT a validated-alpha runner.**
+>
+> The trend micro-breakout signal this daemon executes has **no durable backtested edge**. Backtested on ~60 days of XRPUSDT spot tick data (232 trades, NautilusTrader, conservative fills) it is net-negative at realistic fees and **gross-negative even before fees**; widening targets (100/100) and adding an ICT session/killzone filter did not help — a 14-day apparent edge **vanished out-of-sample**. See [ROB-316](https://linear.app/mgh3326/issue/ROB-316) and `docs/plans/ROB-316-*`.
+>
+> **Operating posture until a validated signal exists:**
+> - Treat this daemon (and the 5-min Prefect tick in `binance-demo-scalping.md`) as **plumbing / observe / a harness for a future validated signal** — not a strategy-alpha runner.
+> - The current micro-breakout signal must remain **disabled or observe/dry-run only**.
+> - `confirm=true` and any recurring activation (Prefect / scheduler / launchd / TaskIQ) require a **separate validated-signal gate**. Do not enable live Demo order confirmation on this signal.
+
 ---
 
 ## 1. Lane boundaries and Scope
