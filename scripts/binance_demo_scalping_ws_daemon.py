@@ -37,7 +37,6 @@ from app.services.brokers.binance.demo_scalping_ws.supervisor import (
     TriggerEvent,
 )
 
-
 OnTrigger = Callable[[TriggerEvent], Awaitable[None]]
 
 

@@ -11,8 +11,8 @@ import pytest
 
 from app.services.brokers.binance.demo_scalping.contract import ScalpingRiskLimits
 from app.services.brokers.binance.demo_scalping.signal import SignalDecision
-from app.services.brokers.binance.demo_scalping_ws.supervisor import TriggerEvent
 from app.services.brokers.binance.demo_scalping_exec.ws_bridge import WsExecutionBridge
+from app.services.brokers.binance.demo_scalping_ws.supervisor import TriggerEvent
 
 pytestmark = pytest.mark.asyncio
 
@@ -21,15 +21,24 @@ _T0 = dt.datetime(2026, 5, 26, 10, 0, tzinfo=dt.UTC)
 
 def _trigger(symbol: str = "XRPUSDT", side: str = "BUY") -> TriggerEvent:
     decision = SignalDecision(
-        has_entry=True, side=side, entry_price=Decimal("0.60"),
-        tp_price=Decimal("0.62"), sl_price=Decimal("0.59"),
-        confidence=Decimal("0.8"), reason_codes=("enter_long_breakout",),
+        has_entry=True,
+        side=side,
+        entry_price=Decimal("0.60"),
+        tp_price=Decimal("0.62"),
+        sl_price=Decimal("0.59"),
+        confidence=Decimal("0.8"),
+        reason_codes=("enter_long_breakout",),
     )
     return TriggerEvent(
-        product="usdm_futures", symbol=symbol, side=side, decision=decision,
+        product="usdm_futures",
+        symbol=symbol,
+        side=side,
+        decision=decision,
         source_candle_close_time_ms=1716724799999,
-        bid_price=Decimal("0.5999"), ask_price=Decimal("0.6001"),
-        data_age_seconds=3.0, emitted_at=_T0,
+        bid_price=Decimal("0.5999"),
+        ask_price=Decimal("0.6001"),
+        data_age_seconds=3.0,
+        emitted_at=_T0,
     )
 
 
@@ -141,7 +150,7 @@ async def test_make_demo_futures_trade_runner_calls_execute_monitored() -> None:
     seen: dict[str, object] = {}
 
     class _FakeSession:
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *exc) -> None:
@@ -160,7 +169,9 @@ async def test_make_demo_futures_trade_runner_calls_execute_monitored() -> None:
             seen["symbol"] = intent.symbol
             return SimpleNamespace(status="filled")
 
-    from app.services.brokers.binance.demo_scalping.order_intent import build_order_intent
+    from app.services.brokers.binance.demo_scalping.order_intent import (
+        build_order_intent,
+    )
     from app.services.brokers.binance.demo_scalping_exec import ws_bridge as mod
 
     runner = mod.make_demo_futures_trade_runner(
@@ -172,19 +183,27 @@ async def test_make_demo_futures_trade_runner_calls_execute_monitored() -> None:
         executor_cls=_FakeExecutor,
     )
     intent = build_order_intent(
-        _trigger().decision, product="usdm_futures", symbol="XRPUSDT",
-        limits=ScalpingRiskLimits(), source_candle_close_time_ms=1, evaluated_at_ms=2,
+        _trigger().decision,
+        product="usdm_futures",
+        symbol="XRPUSDT",
+        limits=ScalpingRiskLimits(),
+        source_candle_close_time_ms=1,
+        evaluated_at_ms=2,
     )
     result = await runner(intent, _market(), True, _T0)
     assert seen == {
-        "product": "usdm_futures", "now": _T0, "confirm": True,
-        "symbol": "XRPUSDT", "committed": True,
+        "product": "usdm_futures",
+        "now": _T0,
+        "confirm": True,
+        "symbol": "XRPUSDT",
+        "committed": True,
     }
     assert result.status == "filled"
 
 
 def _market() -> object:
     from app.services.brokers.binance.demo_scalping.contract import MarketConditions
+
     return MarketConditions(
         spread_bps=Decimal("1"), data_age_seconds=2.0, spot_free_base_qty=Decimal("0")
     )
