@@ -1,7 +1,10 @@
 import pytest
 
 from app.mcp_server.tooling import us_dual_paper as tool_mod
-from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES, us_dual_paper_preview
+from app.mcp_server.tooling.us_dual_paper import (
+    US_DUAL_PAPER_TOOL_NAMES,
+    us_dual_paper_preview,
+)
 
 
 @pytest.mark.unit
@@ -34,7 +37,9 @@ async def test_preview_tool_returns_per_broker_packet(monkeypatch):
         )
 
     monkeypatch.setattr(tool_mod, "build_packet", _fake_build)
-    out = await us_dual_paper_preview(symbol="NVDA", quantity=1, limit_price_usd=10.0, notional_cap_usd=50.0)
+    out = await us_dual_paper_preview(
+        symbol="NVDA", quantity=1, limit_price_usd=10.0, notional_cap_usd=50.0
+    )
     assert out["submit_enabled"] is False
     assert out["brokers"]["alpaca_paper"]["status"] == "previewed"
     assert out["brokers"]["kis_mock"]["status"] == "blocked"

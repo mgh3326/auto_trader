@@ -17,7 +17,9 @@ def default_adapters() -> list[BrokerPreviewAdapter]:
     return [KisMockUsAdapter(), AlpacaPaperAdapter()]
 
 
-async def _preview_one(adapter: BrokerPreviewAdapter, req: BrokerPreviewRequest) -> BrokerPreviewResult:
+async def _preview_one(
+    adapter: BrokerPreviewAdapter, req: BrokerPreviewRequest
+) -> BrokerPreviewResult:
     if not adapter.is_enabled():
         return BrokerPreviewResult(
             account_scope=adapter.account_scope,

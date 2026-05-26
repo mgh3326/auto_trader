@@ -115,7 +115,9 @@ class KisMockUsAdapter(BrokerPreviewAdapter):
                 blocked.append("limit_price_deviation_exceeds_bound")
 
         status = (
-            DualPaperBrokerStatus.BLOCKED if blocked else DualPaperBrokerStatus.PREVIEWED
+            DualPaperBrokerStatus.BLOCKED
+            if blocked
+            else DualPaperBrokerStatus.PREVIEWED
         )
         return BrokerPreviewResult(
             account_scope=self.account_scope,

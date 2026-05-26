@@ -2,7 +2,6 @@ import pytest
 
 from app.schemas.us_dual_paper import (
     AccountStateSummary,
-    BrokerPreviewRequest,
     BrokerPreviewResult,
     DualPaperBrokerStatus,
 )
@@ -23,7 +22,9 @@ class _Ok(BrokerPreviewAdapter):
         return AccountStateSummary(buying_power_usd=1000.0)
 
     async def preview(self, req):
-        return BrokerPreviewResult(account_scope=self.account_scope, status=DualPaperBrokerStatus.PREVIEWED)
+        return BrokerPreviewResult(
+            account_scope=self.account_scope, status=DualPaperBrokerStatus.PREVIEWED
+        )
 
 
 class _Boom(BrokerPreviewAdapter):

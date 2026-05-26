@@ -108,4 +108,3 @@ __all__ = [
     "us_dual_paper_capability_matrix",
     "us_dual_paper_preview",
 ]
-

@@ -86,7 +86,11 @@ class AlpacaPaperAdapter(BrokerPreviewAdapter):
             except Exception as exc:  # surfaced to orchestrator as error
                 raise exc
 
-        status = DualPaperBrokerStatus.BLOCKED if blocked else DualPaperBrokerStatus.PREVIEWED
+        status = (
+            DualPaperBrokerStatus.BLOCKED
+            if blocked
+            else DualPaperBrokerStatus.PREVIEWED
+        )
         return BrokerPreviewResult(
             account_scope=self.account_scope,
             status=status,
@@ -97,4 +101,3 @@ class AlpacaPaperAdapter(BrokerPreviewAdapter):
             notional_usd=round(notional, 2),
             account_state=AccountStateSummary(buying_power_usd=buying_power),
         )
-

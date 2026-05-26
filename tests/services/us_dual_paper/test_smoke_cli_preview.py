@@ -26,7 +26,19 @@ def test_preview_mode_emits_packet(monkeypatch, capsys):
         )
 
     monkeypatch.setattr(smoke, "build_packet", _fake_build)
-    rc = smoke.main(["--mode", "preview", "--symbol", "NVDA", "--quantity", "1",
-                     "--limit-price", "10.0", "--notional-cap", "50"])
+    rc = smoke.main(
+        [
+            "--mode",
+            "preview",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--limit-price",
+            "10.0",
+            "--notional-cap",
+            "50",
+        ]
+    )
     assert rc == 0
     assert '"submit_enabled": false' in capsys.readouterr().out.lower()
