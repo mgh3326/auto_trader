@@ -31,7 +31,9 @@ class BrokerPreviewRequest(BaseModel):
     quantity: float
     limit_price_usd: float
     notional_cap_usd: float
-    reference_price_usd: float | None = None  # operator/report-supplied; quote fallback later
+    reference_price_usd: float | None = (
+        None  # operator/report-supplied; quote fallback later
+    )
 
 
 class BrokerPreviewResult(BaseModel):
