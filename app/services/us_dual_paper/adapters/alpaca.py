@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from app.mcp_server.tooling.alpaca_paper_preview import alpaca_paper_preview_order
 from app.schemas.us_dual_paper import (
     AccountStateSummary,
     BrokerPreviewRequest,
     BrokerPreviewResult,
+    DualPaperBrokerStatus,
 )
 from app.services.brokers.alpaca.config import AlpacaPaperSettings
 from app.services.brokers.alpaca.exceptions import AlpacaPaperConfigurationError
@@ -53,7 +55,46 @@ class AlpacaPaperAdapter(BrokerPreviewAdapter):
             open_order_count=None,
         )
 
-    async def preview(
-        self, req: BrokerPreviewRequest
-    ) -> BrokerPreviewResult:  # PR2 Task 11
-        raise NotImplementedError("preview() is implemented in PR2")
+    async def preview(self, req: BrokerPreviewRequest) -> BrokerPreviewResult:
+        notional = req.quantity * req.limit_price_usd
+        blocked: list[str] = []
+        warnings: list[str] = []
+        if req.quantity <= 0:
+            blocked.append("quantity_must_be_positive")
+        if req.limit_price_usd <= 0:
+            blocked.append("limit_price_must_be_positive")
+        if notional > req.notional_cap_usd:
+            blocked.append("notional_exceeds_cap")
+
+        buying_power: float | None = None
+        if not blocked:
+            try:
+                echo = await alpaca_paper_preview_order(
+                    symbol=req.symbol,
+                    side="buy",
+                    type="limit",
+                    qty=req.quantity,
+                    limit_price=req.limit_price_usd,
+                    asset_class="us_equity",
+                )
+                ctx = echo.get("account_context") or {}
+                if ctx.get("buying_power") is not None:
+                    buying_power = float(ctx["buying_power"])
+                if echo.get("would_exceed_buying_power") is True:
+                    blocked.append("would_exceed_buying_power")
+                warnings.extend(echo.get("warnings") or [])
+            except Exception as exc:  # surfaced to orchestrator as error
+                raise exc
+
+        status = DualPaperBrokerStatus.BLOCKED if blocked else DualPaperBrokerStatus.PREVIEWED
+        return BrokerPreviewResult(
+            account_scope=self.account_scope,
+            status=status,
+            blocked_reasons=blocked,
+            warnings=warnings,
+            quantity=req.quantity,
+            limit_price_usd=req.limit_price_usd,
+            notional_usd=round(notional, 2),
+            account_state=AccountStateSummary(buying_power_usd=buying_power),
+        )
+
