@@ -550,6 +550,58 @@ class ReportReviewSections(BaseModel):
     no_action_summary: NoActionSummary | None = None
 
 
+# ROB-335 — intraday ActionPacket. A read-time *view-layer projection* over
+# the same persisted items (sub-verdict in evidence_snapshot["action_verdict"])
+# + ROB-318 diagnostics. No new persisted classification / DB CHECK / migration.
+ActionVerdictLiteral = Literal[
+    "buy_review",
+    "limit_wait",
+    "no_new_buy_candidates",
+    "sell_review",
+    "trim_review",
+    "add_review",
+    "keep",
+    "no_add",
+    "watch_only",
+    "rejected",
+    "data_gap",
+]
+
+
+class ActionPacketEntry(BaseModel):
+    """One symbol-level entry in an ActionPacket group."""
+
+    verdict: ActionVerdictLiteral
+    symbol: str | None = None
+    side: ItemSideLiteral | None = None
+    rationale: str
+    item_uuid: UUID | None = None
+    evidence_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class DataGapEntry(BaseModel):
+    """One data-gap surfaced for the next cycle."""
+
+    source: str
+    status: str | None = None
+    reason: str | None = None
+
+
+class ActionPacket(BaseModel):
+    """ROB-335 four-question intraday surface (held / new / risk / data-gap).
+
+    Always-explicit: ``no_new_buy_reason`` and ``no_action_reason`` answer the
+    "why nothing" questions even when the corresponding groups are empty.
+    """
+
+    held_actions: list[ActionPacketEntry] = Field(default_factory=list)
+    new_buy_candidates: list[ActionPacketEntry] = Field(default_factory=list)
+    no_new_buy_reason: str | None = None
+    risk_reviews: list[ActionPacketEntry] = Field(default_factory=list)
+    no_action_reason: NoActionSummary | None = None
+    data_gaps_for_next_cycle: list[DataGapEntry] = Field(default_factory=list)
+
+
 class InvestmentReportBundle(BaseModel):
     """``investment_report_get`` / ``GET /.../investment-reports/{uuid}``.
 
@@ -572,6 +624,10 @@ class InvestmentReportBundle(BaseModel):
     # ROB-322 — additive five-section review projection. Null/empty for legacy
     # reports; existing ``items`` / ``item_groups`` remain the fallback.
     review_sections: ReportReviewSections | None = None
+    # ROB-335 — additive intraday ActionPacket projection. Null for legacy /
+    # non-intraday reports; existing items / review_sections remain the fallback.
+    action_packet: ActionPacket | None = None
+
 
 
 class InvestmentReportListResponse(BaseModel):
