@@ -347,6 +347,44 @@ export interface ReportReviewSections {
   noActionSummary?: NoActionSummary | null;
 }
 
+// ROB-335 — intraday ActionPacket (mirrors backend ActionPacket schema).
+export type ActionVerdict =
+  | "buy_review"
+  | "limit_wait"
+  | "no_new_buy_candidates"
+  | "sell_review"
+  | "trim_review"
+  | "add_review"
+  | "keep"
+  | "no_add"
+  | "watch_only"
+  | "rejected"
+  | "data_gap";
+
+export interface ActionPacketEntry {
+  verdict: ActionVerdict;
+  symbol?: string | null;
+  side?: "buy" | "sell" | null;
+  rationale: string;
+  itemUuid?: string | null;
+  evidenceSnapshot: Record<string, unknown>;
+}
+
+export interface DataGapEntry {
+  source: string;
+  status?: string | null;
+  reason?: string | null;
+}
+
+export interface ActionPacket {
+  heldActions: ActionPacketEntry[];
+  newBuyCandidates: ActionPacketEntry[];
+  noNewBuyReason?: string | null;
+  riskReviews: ActionPacketEntry[];
+  noActionReason?: NoActionSummary | null;
+  dataGapsForNextCycle: DataGapEntry[];
+}
+
 export interface InvestmentReportBundle {
   report: InvestmentReport;
   items: InvestmentReportItem[];
@@ -356,6 +394,9 @@ export interface InvestmentReportBundle {
   // ROB-322 — additive five-section projection. Null on legacy reports or
   // older backend; `items` remains the fallback rendering source.
   reviewSections?: ReportReviewSections | null;
+  // ROB-335 — additive intraday ActionPacket projection. Null for legacy /
+  // non-intraday reports.
+  actionPacket?: ActionPacket | null;
 }
 
 export interface InvestmentReportListResponse {

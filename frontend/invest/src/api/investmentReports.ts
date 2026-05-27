@@ -7,6 +7,10 @@
 // ``../types/investmentReports``.
 
 import type {
+  ActionPacket,
+  ActionPacketEntry,
+  ActionVerdict,
+  DataGapEntry,
   InvestmentReport,
   InvestmentReportBundle,
   InvestmentReportItem,
@@ -211,6 +215,51 @@ function normalizeReviewSections(raw: unknown): ReportReviewSections | null {
   return { sections, noActionSummary };
 }
 
+// ROB-335 — normalize the additive intraday ActionPacket. Null when the
+// backend omits it (legacy / non-intraday reports).
+function normalizeActionPacketEntry(raw: unknown): ActionPacketEntry {
+  const obj = asRecord(raw);
+  return {
+    verdict: asString(obj.verdict, "data_gap") as ActionVerdict,
+    symbol: asOptionalString(obj.symbol),
+    side: asOptionalString(obj.side) as "buy" | "sell" | null,
+    rationale: asString(obj.rationale, ""),
+    itemUuid: asOptionalString(obj.item_uuid),
+    evidenceSnapshot: asRecord(obj.evidence_snapshot),
+  };
+}
+
+export function normalizeActionPacket(raw: unknown): ActionPacket | null {
+  if (raw === null || raw === undefined) return null;
+  const obj = asRecord(raw);
+
+  let noActionReason: NoActionSummary | null = null;
+  if (obj.no_action_reason !== null && obj.no_action_reason !== undefined) {
+    const s = asRecord(obj.no_action_reason);
+    noActionReason = {
+      kind: asOptionalString(s.kind) as WhyNoActionKind | null,
+      reasonKo: asOptionalString(s.reason_ko),
+      blockingSources: asArray<string>(s.blocking_sources),
+      excludedCount: asNumber(s.excluded_count, 0),
+    };
+  }
+
+  return {
+    heldActions: asArray(obj.held_actions).map(normalizeActionPacketEntry),
+    newBuyCandidates: asArray(obj.new_buy_candidates).map(normalizeActionPacketEntry),
+    noNewBuyReason: asOptionalString(obj.no_new_buy_reason),
+    riskReviews: asArray(obj.risk_reviews).map(normalizeActionPacketEntry),
+    noActionReason,
+    dataGapsForNextCycle: asArray<Record<string, unknown>>(
+      obj.data_gaps_for_next_cycle,
+    ).map((g) => ({
+      source: asString(g.source, ""),
+      status: asOptionalString(g.status),
+      reason: asOptionalString(g.reason),
+    })),
+  };
+}
+
 function normalizeDecision(raw: ApiDecision): InvestmentReportItemDecision {
   return {
     decisionUuid: asString(raw.decision_uuid),
@@ -320,6 +369,7 @@ export async function fetchInvestmentReportBundle(
     alerts?: ApiAlert[];
     events?: ApiEvent[];
     review_sections?: unknown;
+    action_packet?: unknown;
   }>(BUNDLE_ENDPOINT(reportUuid), signal);
 
   const decisionsRaw = raw.decisions_by_item_uuid ?? {};
@@ -337,6 +387,7 @@ export async function fetchInvestmentReportBundle(
     alerts: asArray<ApiAlert>(raw.alerts).map(normalizeAlert),
     events: asArray<ApiEvent>(raw.events).map(normalizeEvent),
     reviewSections: normalizeReviewSections(raw.review_sections),
+    actionPacket: normalizeActionPacket(raw.action_packet),
   };
 }
 
