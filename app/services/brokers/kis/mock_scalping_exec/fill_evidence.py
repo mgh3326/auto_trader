@@ -15,11 +15,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class FillVerdict(str, Enum):
+class FillVerdict(StrEnum):
     FILLED = "filled"
     PARTIAL = "partial"
     PENDING = "pending"
@@ -27,7 +27,7 @@ class FillVerdict(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
-class EvidenceCategory(str, Enum):
+class EvidenceCategory(StrEnum):
     """Issue ROB-334 fail-closed failure categories."""
 
     CODE = "code"
@@ -100,8 +100,12 @@ def classify_fill_evidence(
     target = (order_no or "").strip()
     if not target:
         return FillEvidence(
-            FillVerdict.NONE, None, None, EvidenceCategory.DATA_PRECONDITION,
-            "order_no_missing", "no order number to match",
+            FillVerdict.NONE,
+            None,
+            None,
+            EvidenceCategory.DATA_PRECONDITION,
+            "order_no_missing",
+            "no order number to match",
         )
 
     matched = [
@@ -111,39 +115,63 @@ def classify_fill_evidence(
     ]
     if not matched:
         return FillEvidence(
-            FillVerdict.NONE, None, None, EvidenceCategory.DATA_PRECONDITION,
-            "no_matching_order", f"no daily-execution row for odno={target}",
+            FillVerdict.NONE,
+            None,
+            None,
+            EvidenceCategory.DATA_PRECONDITION,
+            "no_matching_order",
+            f"no daily-execution row for odno={target}",
         )
 
     ord_qty = _to_decimal(_get_field(matched[0], _ORD_QTY_KEYS))
     filled_qty = _sum_decimals(_get_field(m, _FILLED_QTY_KEYS) for m in matched)
     if ord_qty is None or filled_qty is None:
         return FillEvidence(
-            FillVerdict.NONE, None, None, EvidenceCategory.CODE,
-            "unparseable_qty", "could not parse ord_qty / filled_qty",
+            FillVerdict.NONE,
+            None,
+            None,
+            EvidenceCategory.CODE,
+            "unparseable_qty",
+            "could not parse ord_qty / filled_qty",
         )
 
     if filled_qty <= 0:
         return FillEvidence(
-            FillVerdict.PENDING, Decimal("0"), None, None,
-            "pending", f"order {target} accepted, no fill yet",
+            FillVerdict.PENDING,
+            Decimal("0"),
+            None,
+            None,
+            "pending",
+            f"order {target} accepted, no fill yet",
         )
 
     avg_price = _resolve_avg_price(matched, filled_qty)
     if avg_price is None or avg_price <= 0:
         return FillEvidence(
-            FillVerdict.NONE, filled_qty, None, EvidenceCategory.CODE,
-            "missing_fill_price", "filled qty present but no usable fill price",
+            FillVerdict.NONE,
+            filled_qty,
+            None,
+            EvidenceCategory.CODE,
+            "missing_fill_price",
+            "filled qty present but no usable fill price",
         )
 
     if ord_qty > 0 and filled_qty >= ord_qty:
         return FillEvidence(
-            FillVerdict.FILLED, filled_qty, avg_price, None,
-            "filled", f"order {target} filled {filled_qty}@{avg_price}",
+            FillVerdict.FILLED,
+            filled_qty,
+            avg_price,
+            None,
+            "filled",
+            f"order {target} filled {filled_qty}@{avg_price}",
         )
     return FillEvidence(
-        FillVerdict.PARTIAL, filled_qty, avg_price, None,
-        "partial_fill", f"order {target} partial {filled_qty}/{ord_qty}",
+        FillVerdict.PARTIAL,
+        filled_qty,
+        avg_price,
+        None,
+        "partial_fill",
+        f"order {target} partial {filled_qty}/{ord_qty}",
     )
 
 

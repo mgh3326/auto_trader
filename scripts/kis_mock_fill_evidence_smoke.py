@@ -39,12 +39,18 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="KIS mock fill-evidence read-only smoke")
+    parser = argparse.ArgumentParser(
+        description="KIS mock fill-evidence read-only smoke"
+    )
     today = datetime.datetime.now().strftime("%Y%m%d")
     parser.add_argument("--from-date", default=today, help="YYYYMMDD (default: today)")
     parser.add_argument("--to-date", default=today, help="YYYYMMDD (default: today)")
-    parser.add_argument("--symbol", default=None, help="KR stock code filter (optional)")
-    parser.add_argument("--order-no", default=None, help="Order number to classify (optional)")
+    parser.add_argument(
+        "--symbol", default=None, help="KR stock code filter (optional)"
+    )
+    parser.add_argument(
+        "--order-no", default=None, help="Order number to classify (optional)"
+    )
     parser.add_argument("--max-rows", type=int, default=20)
     return parser.parse_args(argv)
 
@@ -55,8 +61,11 @@ async def run_smoke(args: argparse.Namespace) -> int:
             "KIS_MOCK_SCALPING_WS_ENABLED is not set; fill-evidence smoke disabled (no-op)."
         )
         return 4
-    if not (settings.kis_mock_app_key and settings.kis_mock_app_secret
-            and settings.kis_mock_account_no):
+    if not (
+        settings.kis_mock_app_key
+        and settings.kis_mock_app_secret
+        and settings.kis_mock_account_no
+    ):
         logger.error(
             "KIS mock not configured. Set: KIS_MOCK_APP_KEY, KIS_MOCK_APP_SECRET, "
             "KIS_MOCK_ACCOUNT_NO (names only — values not read here)."

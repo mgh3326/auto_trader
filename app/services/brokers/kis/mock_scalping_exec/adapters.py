@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
-from app.mcp_server.tooling.order_execution import _place_order_impl, _create_kis_client
+from app.mcp_server.tooling.order_execution import _create_kis_client, _place_order_impl
 from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.mock_scalping_exec.executor import Fill, Quote
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
@@ -144,15 +144,16 @@ class KisMockBroker:
         )
         return None
 
-    async def _poll_fill_evidence(
-        self, submit_result: dict[str, Any]
-    ) -> FillEvidence:
+    async def _poll_fill_evidence(self, submit_result: dict[str, Any]) -> FillEvidence:
         order_no = submit_result.get("odno") or submit_result.get("order_no")
         if not order_no:
             return FillEvidence(
-                FillVerdict.NONE, None, None,
+                FillVerdict.NONE,
+                None,
+                None,
                 EvidenceCategory.DATA_PRECONDITION,
-                "order_no_missing", "submit response carried no odno",
+                "order_no_missing",
+                "submit response carried no odno",
             )
         today = datetime.datetime.now().strftime("%Y%m%d")
         try:
@@ -168,18 +169,29 @@ class KisMockBroker:
             msg = str(exc)
             if _is_mock_unsupported(msg):
                 return FillEvidence(
-                    FillVerdict.UNSUPPORTED, None, None,
+                    FillVerdict.UNSUPPORTED,
+                    None,
+                    None,
                     EvidenceCategory.UNSUPPORTED_MOCK_API,
-                    "inquiry_unsupported", msg[:200],
+                    "inquiry_unsupported",
+                    msg[:200],
                 )
             return FillEvidence(
-                FillVerdict.NONE, None, None, EvidenceCategory.CODE,
-                "inquiry_error", msg[:200],
+                FillVerdict.NONE,
+                None,
+                None,
+                EvidenceCategory.CODE,
+                "inquiry_error",
+                msg[:200],
             )
         except Exception as exc:  # noqa: BLE001 - fail closed on any inquiry fault
             return FillEvidence(
-                FillVerdict.NONE, None, None, EvidenceCategory.CODE,
-                "inquiry_exception", str(exc)[:200],
+                FillVerdict.NONE,
+                None,
+                None,
+                EvidenceCategory.CODE,
+                "inquiry_exception",
+                str(exc)[:200],
             )
         return classify_fill_evidence(order_no=str(order_no), rows=rows)
 

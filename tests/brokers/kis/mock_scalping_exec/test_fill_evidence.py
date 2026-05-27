@@ -97,6 +97,8 @@ def test_split_fill_rows_aggregate() -> None:
 
 @pytest.mark.unit
 def test_uppercase_keys_resolved() -> None:
-    rows = [{"ODNO": "123456", "ORD_QTY": "1", "TOT_CCLD_QTY": "1", "AVG_PRVS": "70000"}]
+    rows = [
+        {"ODNO": "123456", "ORD_QTY": "1", "TOT_CCLD_QTY": "1", "AVG_PRVS": "70000"}
+    ]
     ev = classify_fill_evidence(order_no="123456", rows=rows)
     assert ev.verdict is FillVerdict.FILLED

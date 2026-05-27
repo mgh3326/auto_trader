@@ -33,8 +33,9 @@ async def test_classifies_when_order_no_given(mocker) -> None:
     mocker.patch.object(smoke.settings, "kis_mock_account_no", "fake")
     fake_client = mocker.MagicMock()
     fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
-        return_value=[{"odno": "123456", "ord_qty": "1", "tot_ccld_qty": "1",
-                       "avg_prvs": "70000"}]
+        return_value=[
+            {"odno": "123456", "ord_qty": "1", "tot_ccld_qty": "1", "avg_prvs": "70000"}
+        ]
     )
     mocker.patch.object(smoke, "_create_kis_client", return_value=fake_client)
     rc = await smoke.run_smoke(smoke._parse_args(["--order-no", "123456"]))
@@ -55,4 +56,3 @@ async def test_inquiry_error_returns_2(mocker) -> None:
     mocker.patch.object(smoke, "_create_kis_client", return_value=fake_client)
     rc = await smoke.run_smoke(smoke._parse_args(["--order-no", "123456"]))
     assert rc == 2
-
