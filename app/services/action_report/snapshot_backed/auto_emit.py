@@ -37,6 +37,21 @@ from typing import Any
 from uuid import UUID
 
 from app.schemas.investment_reports import IngestReportItem
+from app.schemas.validated_run_card import (
+    build_run_card_citation,
+    build_run_card_evidence,
+)
+from app.services.action_report.snapshot_backed.action_verdict import (
+    VERDICT_TO_BUCKET,
+    classify_held_symbol,
+)
+
+
+def _stamp(item: IngestReportItem, verdict: str) -> IngestReportItem:
+    """Attach the ActionPacket sub-verdict + its locked decision_bucket."""
+    item.evidence_snapshot["action_verdict"] = verdict
+    item.decision_bucket = VERDICT_TO_BUCKET[verdict]
+    return item
 
 
 def _snapshot_payload(snapshot: Any) -> dict[str, Any]:
@@ -102,8 +117,11 @@ class EvidenceAutoEmitter:
     """Deterministic proposer that surfaces review-only candidates from the
     persisted snapshot bundle."""
 
-    def __init__(self, *, max_buy_candidates: int = 10) -> None:
+    def __init__(
+        self, *, max_buy_candidates: int = 10, intraday_floor: bool = False
+    ) -> None:
         self._max_buy_candidates = max_buy_candidates
+        self._intraday_floor = intraday_floor
 
     def propose(
         self,
@@ -123,6 +141,7 @@ class EvidenceAutoEmitter:
         portfolio_snapshot: Any | None = None
         candidate_snapshot: Any | None = None
         news_snapshot: Any | None = None
+        run_card_evidence_by_symbol: dict[str, dict[str, Any]] = {}
 
         for snapshot in snapshots:
             kind = getattr(snapshot, "snapshot_kind", None)
@@ -153,6 +172,15 @@ class EvidenceAutoEmitter:
                     for sym, count in matches.items():
                         if isinstance(sym, str) and isinstance(count, int):
                             news_matches[sym] = count
+            elif kind == "validated_run_card":
+                snap_uuid = _snapshot_uuid(snapshot)
+                citation = build_run_card_citation(payload)
+                if snap_uuid is not None and citation.symbols:
+                    evidence = build_run_card_evidence(
+                        snapshot_uuid=snap_uuid, citation=citation
+                    )
+                    for sym in citation.symbols:
+                        run_card_evidence_by_symbol.setdefault(sym, evidence)
 
         held = _held_kis_symbols(portfolio_payload)
         candidate_actionable = candidate_usefulness == "useful"
@@ -183,20 +211,23 @@ class EvidenceAutoEmitter:
                 },
             )
             items.append(
-                IngestReportItem(
-                    client_item_key=f"auto-sell-{ticker}",
-                    item_kind="action",
-                    symbol=ticker,
-                    side="sell",
-                    intent="sell_review",
-                    rationale=(
-                        f"보유 종목 {ticker} sell 검토 — sellable {sellable}, "
-                        f"best_bid {quote.get('best_bid')}, "
-                        f"spread_bps {quote.get('spread_bps')}"
+                _stamp(
+                    IngestReportItem(
+                        client_item_key=f"auto-sell-{ticker}",
+                        item_kind="action",
+                        symbol=ticker,
+                        side="sell",
+                        intent="sell_review",
+                        rationale=(
+                            f"보유 종목 {ticker} sell 검토 — sellable {sellable}, "
+                            f"best_bid {quote.get('best_bid')}, "
+                            f"spread_bps {quote.get('spread_bps')}"
+                        ),
+                        operation="review",
+                        apply_policy="requires_user_approval",
+                        evidence_snapshot=evidence,
                     ),
-                    operation="review",
-                    apply_policy="requires_user_approval",
-                    evidence_snapshot=evidence,
+                    "sell_review",
                 )
             )
 
@@ -229,20 +260,23 @@ class EvidenceAutoEmitter:
                     },
                 )
                 items.append(
-                    IngestReportItem(
-                        client_item_key=f"auto-buy-{sym}",
-                        item_kind="action",
-                        symbol=sym,
-                        side="buy",
-                        intent="buy_review",
-                        rationale=(
-                            f"신규 매수 검토 — {sym} (candidate {candidate_usefulness}"
-                            f", quote best_bid {quote.get('best_bid')}, "
-                            f"spread_bps {quote.get('spread_bps')})"
+                    _stamp(
+                        IngestReportItem(
+                            client_item_key=f"auto-buy-{sym}",
+                            item_kind="action",
+                            symbol=sym,
+                            side="buy",
+                            intent="buy_review",
+                            rationale=(
+                                f"신규 매수 검토 — {sym} (candidate {candidate_usefulness}"
+                                f", quote best_bid {quote.get('best_bid')}, "
+                                f"spread_bps {quote.get('spread_bps')})"
+                            ),
+                            operation="review",
+                            apply_policy="requires_user_approval",
+                            evidence_snapshot=evidence,
                         ),
-                        operation="review",
-                        apply_policy="requires_user_approval",
-                        evidence_snapshot=evidence,
+                        "buy_review",
                     )
                 )
                 buy_emitted += 1
@@ -275,18 +309,21 @@ class EvidenceAutoEmitter:
                 },
             )
             items.append(
-                IngestReportItem(
-                    client_item_key=f"auto-watch-{sym}",
-                    item_kind="watch",
-                    symbol=sym,
-                    intent="trend_recovery_review",
-                    rationale=(
-                        f"뉴스 관심 종목 watch 검토 — {sym} "
-                        f"(news_matches {count}, quote_status {quote_status})"
+                _stamp(
+                    IngestReportItem(
+                        client_item_key=f"auto-watch-{sym}",
+                        item_kind="watch",
+                        symbol=sym,
+                        intent="trend_recovery_review",
+                        rationale=(
+                            f"뉴스 관심 종목 watch 검토 — {sym} "
+                            f"(news_matches {count}, quote_status {quote_status})"
+                        ),
+                        operation="review",
+                        apply_policy="requires_user_approval",
+                        evidence_snapshot=evidence,
                     ),
-                    operation="review",
-                    apply_policy="requires_user_approval",
-                    evidence_snapshot=evidence,
+                    "watch_only",
                 )
             )
 
@@ -299,31 +336,131 @@ class EvidenceAutoEmitter:
                 continue
             reasons = cand.get("reasons") or []
             items.append(
-                IngestReportItem(
-                    client_item_key=f"auto-hold-trend-{sym}",
-                    item_kind="watch",
-                    symbol=sym,
-                    intent="trend_recovery_review",
-                    rationale=(
-                        f"보유 종목 {sym}가 스크리너 추세 상위에 등장 — 관망/추가검토 "
-                        f"(score {cand.get('score')}, {', '.join(reasons)})"
+                _stamp(
+                    IngestReportItem(
+                        client_item_key=f"auto-hold-trend-{sym}",
+                        item_kind="watch",
+                        symbol=sym,
+                        intent="trend_recovery_review",
+                        rationale=(
+                            f"보유 종목 {sym}가 스크리너 추세 상위에 등장 — 관망/추가검토 "
+                            f"(score {cand.get('score')}, {', '.join(reasons)})"
+                        ),
+                        operation="review",
+                        apply_policy="requires_user_approval",
+                        evidence_snapshot=_make_evidence(
+                            candidate_snapshot,
+                            extra={
+                                "candidate_snapshot_uuid": _snapshot_uuid(
+                                    candidate_snapshot
+                                ),
+                                "candidate_score": cand.get("score"),
+                                "candidate_reasons": reasons,
+                                "candidate_source": cand.get("source"),
+                                "held": True,
+                                "proposer": "auto_emit/held_and_trending",
+                            },
+                        ),
                     ),
-                    operation="review",
-                    apply_policy="requires_user_approval",
-                    evidence_snapshot=_make_evidence(
-                        candidate_snapshot,
-                        extra={
-                            "candidate_snapshot_uuid": _snapshot_uuid(
-                                candidate_snapshot
-                            ),
-                            "candidate_score": cand.get("score"),
-                            "candidate_reasons": reasons,
-                            "candidate_source": cand.get("source"),
-                            "held": True,
-                            "proposer": "auto_emit/held_and_trending",
-                        },
-                    ),
+                    "watch_only",
                 )
             )
+
+        # ROB-335 — intraday floor: classify EVERY held KIS symbol (not just
+        # sellable+actionable) so held_actions is never empty, and surface an
+        # explicit no-new-buy reason when the screener universe is not useful.
+        if self._intraday_floor:
+            already = {i.symbol for i in items if i.symbol}
+            for ticker, holding in held.items():
+                if ticker in already:
+                    continue
+                quote_pair = symbol_quotes.get(ticker)
+                quote = quote_pair[1] if quote_pair else None
+                verdict = classify_held_symbol(
+                    holding, quote, in_candidate_universe=ticker in candidate_by_symbol
+                )
+                items.append(
+                    _stamp(
+                        IngestReportItem(
+                            client_item_key=f"auto-held-{ticker}",
+                            item_kind="risk" if verdict == "data_gap" else "action",
+                            symbol=ticker,
+                            side="sell" if verdict == "sell_review" else None,
+                            intent=(
+                                "sell_review"
+                                if verdict == "sell_review"
+                                else "risk_review"
+                                if verdict == "data_gap"
+                                else "rebalance_review"
+                            ),
+                            rationale=(
+                                f"보유 종목 {ticker} {verdict} — sellable "
+                                f"{holding.get('sellable_quantity')}, "
+                                f"quote {quote.get('status') if quote else 'none'}"
+                            ),
+                            operation="review",
+                            apply_policy="requires_user_approval",
+                            evidence_snapshot=_make_evidence(
+                                quote_pair[0] if quote_pair else portfolio_snapshot,
+                                extra={
+                                    "portfolio_snapshot_uuid": _snapshot_uuid(
+                                        portfolio_snapshot
+                                    ),
+                                    "sellable_quantity": holding.get(
+                                        "sellable_quantity"
+                                    ),
+                                    "quote_status": quote.get("status")
+                                    if quote
+                                    else "no_snapshot",
+                                    "proposer": "auto_emit/intraday_held_floor",
+                                },
+                            ),
+                        ),
+                        verdict,
+                    )
+                )
+
+            if candidate_usefulness != "useful":
+                missing = (
+                    candidate_snapshot is not None
+                    and _snapshot_payload(candidate_snapshot).get("missing_data")
+                ) or {}
+                reason = (
+                    f"{missing.get('what', '신규 매수 후보 없음')} "
+                    f"{missing.get('next', '')}".strip()
+                    if isinstance(missing, dict)
+                    else "신규 매수 후보 없음"
+                )
+                items.append(
+                    _stamp(
+                        IngestReportItem(
+                            client_item_key="auto-no-new-buy",
+                            item_kind="risk",
+                            symbol=None,
+                            intent="risk_review",
+                            rationale=reason,
+                            operation="review",
+                            apply_policy="requires_user_approval",
+                            evidence_snapshot=_make_evidence(
+                                candidate_snapshot,
+                                extra={
+                                    "candidate_usefulness": candidate_usefulness,
+                                    "proposer": "auto_emit/no_new_buy_floor",
+                                },
+                            ),
+                        ),
+                        "no_new_buy_candidates",
+                    )
+                )
+
+        # ROB-332 — cite a bundle-resident validated_run_card on items whose
+        # symbol matches the run card's symbols (consume-when-present; no-op
+        # when no run card is in the bundle or no symbol overlaps).
+        if run_card_evidence_by_symbol:
+            for item in items:
+                if item.symbol and item.symbol in run_card_evidence_by_symbol:
+                    item.evidence_snapshot["run_card"] = run_card_evidence_by_symbol[
+                        item.symbol
+                    ]
 
         return items

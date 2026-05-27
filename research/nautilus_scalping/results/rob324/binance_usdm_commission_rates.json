@@ -1,0 +1,56 @@
+{
+  "artifact_type": "binance_usdm_futures_commission_rates",
+  "purpose": "ROB-324 maker/limit-fill scalping research fee input",
+  "captured_at": "2026-05-26T07:54:38Z",
+  "source": "binance_signed_readonly_api",
+  "api": {
+    "venue": "binance_usdm_futures_demo",
+    "base_url": "https://demo-fapi.binance.com",
+    "endpoint_path": "/fapi/v1/commissionRate",
+    "method": "GET",
+    "mutation": false,
+    "credential_source": "shared_demo_env",
+    "symbols": [
+      "BTCUSDT",
+      "XRPUSDT"
+    ],
+    "time_endpoint_status": 200,
+    "clock_offset_ms": 164
+  },
+  "safety": {
+    "order_mutation": false,
+    "broker_order_submission": false,
+    "scheduler_or_prefect_activation": false,
+    "secret_values_written": false,
+    "signed_query_or_signature_written": false
+  },
+  "rates": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "ok",
+      "http_status": 200,
+      "maker_commission_rate_decimal": "0.000200",
+      "taker_commission_rate_decimal": "0.000400",
+      "maker_fee_pct": 0.02,
+      "taker_fee_pct": 0.04,
+      "maker_fee_bps": 2.0,
+      "taker_fee_bps": 4.0
+    },
+    {
+      "symbol": "XRPUSDT",
+      "status": "ok",
+      "http_status": 200,
+      "maker_commission_rate_decimal": "0.000200",
+      "taker_commission_rate_decimal": "0.000400",
+      "maker_fee_pct": 0.02,
+      "taker_fee_pct": 0.04,
+      "maker_fee_bps": 2.0,
+      "taker_fee_bps": 4.0
+    }
+  ],
+  "notes": [
+    "Rates are returned by Binance as decimal commission rates; bps = decimal_rate * 10000.",
+    "Use maker_fee_bps only with a real maker/limit-fill model; fee-only rescale is not sufficient evidence for maker execution.",
+    "Artifact intentionally omits API key, API secret, query signature, balances, positions, and account identifiers."
+  ]
+}

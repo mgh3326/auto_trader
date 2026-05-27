@@ -1,0 +1,455 @@
+{
+  "schema_version": "validated_signal_gate.v2",
+  "candidate": "meanrev_zscore_fade",
+  "hypothesis": "mean_reversion",
+  "symbols": [
+    "XRPUSDT",
+    "BTCUSDT"
+  ],
+  "window": {
+    "from": "2026-03-01",
+    "to": "2026-05-14",
+    "folds": {
+      "train": 0.5,
+      "val": 0.25,
+      "oos": 0.25
+    }
+  },
+  "cost_model": {
+    "maker_fee_bps": 2.0,
+    "taker_fee_bps": 4.0,
+    "commission_source": "results/rob324/binance_usdm_commission_rates.json",
+    "note": "maker scenarios bake real per-leg fees into net; gate evaluated at its reference point (as-run). taker baseline uses the gate's native single-rate rescale to 4.0 bps."
+  },
+  "fill_model": {
+    "entry_rule": "passive limit @ signal-bar close",
+    "fill_timeout_bars": 1,
+    "tp_execution": "maker limit",
+    "sl_execution": "taker stop (market)",
+    "queue_loss_pct": 0.25,
+    "adverse_bps": 1.0,
+    "excursion_eps_bps": 2.0
+  },
+  "fill_stats": {
+    "entries_attempted": 2318,
+    "entries_filled": 1168,
+    "missed_fills": 1150
+  },
+  "scenarios": {
+    "taker_baseline": {
+      "schema_version": "validated_signal_gate.v1",
+      "candidate": "meanrev_taker_baseline",
+      "hypothesis": "mean_reversion",
+      "symbols": [
+        "XRPUSDT",
+        "BTCUSDT"
+      ],
+      "window": {
+        "from": "2026-03-01",
+        "to": "2026-05-14",
+        "folds": {
+          "train": 0.5,
+          "val": 0.25,
+          "oos": 0.25
+        }
+      },
+      "cost_model": {
+        "fee_bps_per_leg": 4.0,
+        "fee_grid_bps": [
+          10.0,
+          7.5,
+          5.0,
+          2.0,
+          0.0
+        ]
+      },
+      "results": {
+        "gross": {
+          "fold": "gross",
+          "trades": 789,
+          "net_pnl": 12.49863233,
+          "win_rate_pct": 51.71102661596958,
+          "max_drawdown": -12.088404520000001,
+          "profit_factor": 1.057673604357708,
+          "expectancy": 0.015841105614702155
+        },
+        "zero_fee": {
+          "fold": "zero_fee",
+          "trades": 789,
+          "net_pnl": 12.49863233,
+          "win_rate_pct": 51.71102661596958,
+          "max_drawdown": -12.088404520000001,
+          "profit_factor": 1.057673604357708,
+          "expectancy": 0.015841105614702155
+        },
+        "net_after_cost": {
+          "fold": "net_after_cost",
+          "trades": 789,
+          "net_pnl": -76.38333652600001,
+          "win_rate_pct": 51.71102661596958,
+          "max_drawdown": -78.69952133799997,
+          "profit_factor": 0.7057599545350742,
+          "expectancy": -0.09681031245373892
+        }
+      },
+      "per_fold": [
+        {
+          "fold": "train",
+          "trades": 394,
+          "net_pnl": -39.966424394,
+          "win_rate_pct": 51.26903553299493,
+          "max_drawdown": -40.61261761399999,
+          "profit_factor": 0.6922680505778294,
+          "expectancy": -0.10143762536548223
+        },
+        {
+          "fold": "val",
+          "trades": 197,
+          "net_pnl": -19.938214558000002,
+          "win_rate_pct": 51.26903553299493,
+          "max_drawdown": -24.56567964,
+          "profit_factor": 0.6880022582457112,
+          "expectancy": -0.10120921095431473
+        },
+        {
+          "fold": "oos",
+          "trades": 198,
+          "net_pnl": -16.478697574,
+          "win_rate_pct": 53.03030303030303,
+          "max_drawdown": -19.97338527,
+          "profit_factor": 0.7496253917036927,
+          "expectancy": -0.08322574532323233
+        }
+      ],
+      "baselines": {
+        "micro_breakout": {
+          "net_after_cost": -475.653735542,
+          "trades": 4025
+        },
+        "random_entry": {
+          "net_after_cost": -286.86553483,
+          "trades": 2350
+        }
+      },
+      "param_stability": {
+        "grid": [
+          "z2.0/tp30/sl30",
+          "z2.5/tp40/sl40"
+        ],
+        "val_best_param": "z2.5/tp40/sl40",
+        "oos_rank_of_val_best": 1,
+        "single_fold_edge": false,
+        "param_island": false
+      },
+      "overfit_flags": {
+        "low_trades": false,
+        "single_fold_edge": false,
+        "param_island": false
+      },
+      "trade_count": 789,
+      "verdict": "not_validated",
+      "verdict_reasons": [
+        "oos net-after-cost -16.48 <= 0",
+        "oos profit_factor 0.75 <= 1.0",
+        "net edge statistically <= 0 (bootstrap 95% CI upper -0.1029 < 0)"
+      ],
+      "bootstrap_sharpe_ci": {
+        "observed_sharpe": -0.17101733050888313,
+        "ci_lower": -0.24404344100241346,
+        "ci_upper": -0.10293243600437266,
+        "median_sharpe": -0.1725669067140685,
+        "prob_positive": 0.0,
+        "confidence": 0.95,
+        "n_bootstrap": 1000,
+        "seed": 42
+      },
+      "monte_carlo_permutation": {
+        "actual_sharpe": -0.17095616088765767,
+        "actual_max_dd": -78.69952133799997,
+        "p_value_sharpe": 0.347,
+        "p_value_maxdd": 0.51,
+        "n_sim": 1000,
+        "seed": 42
+      }
+    },
+    "maker_optimistic": {
+      "schema_version": "validated_signal_gate.v1",
+      "candidate": "meanrev_maker_optimistic",
+      "hypothesis": "mean_reversion",
+      "symbols": [
+        "XRPUSDT",
+        "BTCUSDT"
+      ],
+      "window": {
+        "from": "2026-03-01",
+        "to": "2026-05-14",
+        "folds": {
+          "train": 0.5,
+          "val": 0.25,
+          "oos": 0.25
+        }
+      },
+      "cost_model": {
+        "fee_bps_per_leg": 10.0,
+        "fee_grid_bps": [
+          10.0,
+          7.5,
+          5.0,
+          2.0,
+          0.0
+        ]
+      },
+      "results": {
+        "gross": {
+          "fold": "gross",
+          "trades": 474,
+          "net_pnl": 12.307463400000001,
+          "win_rate_pct": 46.20253164556962,
+          "max_drawdown": -11.456891399999996,
+          "profit_factor": 1.0975523975578538,
+          "expectancy": 0.025965112658227853
+        },
+        "zero_fee": {
+          "fold": "zero_fee",
+          "trades": 474,
+          "net_pnl": 12.307463400000001,
+          "win_rate_pct": 46.20253164556962,
+          "max_drawdown": -11.456891399999996,
+          "profit_factor": 1.0975523975578538,
+          "expectancy": 0.025965112658227853
+        },
+        "net_after_cost": {
+          "fold": "net_after_cost",
+          "trades": 474,
+          "net_pnl": -21.442250736,
+          "win_rate_pct": 46.20253164556962,
+          "max_drawdown": -27.417330687999996,
+          "profit_factor": 0.8547443866864247,
+          "expectancy": -0.04523681589873418
+        }
+      },
+      "per_fold": [
+        {
+          "fold": "train",
+          "trades": 237,
+          "net_pnl": -11.377236724,
+          "win_rate_pct": 45.9915611814346,
+          "max_drawdown": -14.195092552000002,
+          "profit_factor": 0.8456244071564271,
+          "expectancy": -0.048005218244725735
+        },
+        {
+          "fold": "val",
+          "trades": 118,
+          "net_pnl": -8.115918584,
+          "win_rate_pct": 44.067796610169495,
+          "max_drawdown": -15.49542008,
+          "profit_factor": 0.7803753151218822,
+          "expectancy": -0.06877897105084745
+        },
+        {
+          "fold": "oos",
+          "trades": 119,
+          "net_pnl": -1.949095428,
+          "win_rate_pct": 48.739495798319325,
+          "max_drawdown": -5.665382816000001,
+          "profit_factor": 0.9472723900599821,
+          "expectancy": -0.016378953176470586
+        }
+      ],
+      "baselines": {
+        "micro_breakout": {
+          "net_after_cost": -1163.85537806,
+          "trades": 4025
+        },
+        "random_entry": {
+          "net_after_cost": -688.64263018,
+          "trades": 2350
+        }
+      },
+      "param_stability": {
+        "grid": [
+          "z2.0/tp30/sl30",
+          "z2.5/tp40/sl40"
+        ],
+        "val_best_param": "z2.5/tp40/sl40",
+        "oos_rank_of_val_best": 1,
+        "single_fold_edge": false,
+        "param_island": false
+      },
+      "overfit_flags": {
+        "low_trades": false,
+        "single_fold_edge": false,
+        "param_island": false
+      },
+      "trade_count": 474,
+      "verdict": "not_validated",
+      "verdict_reasons": [
+        "oos net-after-cost -1.95 <= 0",
+        "oos profit_factor 0.95 <= 1.0",
+        "net edge not statistically distinguishable from 0 (bootstrap 95% CI straddles 0)"
+      ],
+      "bootstrap_sharpe_ci": {
+        "observed_sharpe": -0.07828011141749915,
+        "ci_lower": -0.16839069341534962,
+        "ci_upper": 0.014879593916047497,
+        "median_sharpe": -0.07695166283026685,
+        "prob_positive": 0.046,
+        "confidence": 0.95,
+        "n_bootstrap": 1000,
+        "seed": 42
+      },
+      "monte_carlo_permutation": {
+        "actual_sharpe": -0.07823564083815798,
+        "actual_max_dd": -27.417330687999996,
+        "p_value_sharpe": 0.277,
+        "p_value_maxdd": 0.615,
+        "n_sim": 1000,
+        "seed": 42
+      }
+    },
+    "maker_conservative": {
+      "schema_version": "validated_signal_gate.v1",
+      "candidate": "meanrev_maker_conservative",
+      "hypothesis": "mean_reversion",
+      "symbols": [
+        "XRPUSDT",
+        "BTCUSDT"
+      ],
+      "window": {
+        "from": "2026-03-01",
+        "to": "2026-05-14",
+        "folds": {
+          "train": 0.5,
+          "val": 0.25,
+          "oos": 0.25
+        }
+      },
+      "cost_model": {
+        "fee_bps_per_leg": 10.0,
+        "fee_grid_bps": [
+          10.0,
+          7.5,
+          5.0,
+          2.0,
+          0.0
+        ]
+      },
+      "results": {
+        "gross": {
+          "fold": "gross",
+          "trades": 473,
+          "net_pnl": 5.021401592000002,
+          "win_rate_pct": 46.088794926004226,
+          "max_drawdown": -14.105328054000001,
+          "profit_factor": 1.0387015597172065,
+          "expectancy": 0.010616071019027487
+        },
+        "zero_fee": {
+          "fold": "zero_fee",
+          "trades": 473,
+          "net_pnl": 5.021401592000002,
+          "win_rate_pct": 46.088794926004226,
+          "max_drawdown": -14.105328054000001,
+          "profit_factor": 1.0387015597172065,
+          "expectancy": 0.010616071019027487
+        },
+        "net_after_cost": {
+          "fold": "net_after_cost",
+          "trades": 473,
+          "net_pnl": -28.670526668,
+          "win_rate_pct": 46.088794926004226,
+          "max_drawdown": -31.733599473999984,
+          "profit_factor": 0.8103820223670731,
+          "expectancy": -0.060614221285412266
+        }
+      },
+      "per_fold": [
+        {
+          "fold": "train",
+          "trades": 236,
+          "net_pnl": -15.241313587999999,
+          "win_rate_pct": 45.76271186440678,
+          "max_drawdown": -17.28622237,
+          "profit_factor": 0.7980876813156198,
+          "expectancy": -0.06458183723728814
+        },
+        {
+          "fold": "val",
+          "trades": 118,
+          "net_pnl": -9.734362876,
+          "win_rate_pct": 44.067796610169495,
+          "max_drawdown": -16.579253656,
+          "profit_factor": 0.7428744073491546,
+          "expectancy": -0.0824946006440678
+        },
+        {
+          "fold": "oos",
+          "trades": 119,
+          "net_pnl": -3.6948502039999997,
+          "win_rate_pct": 48.739495798319325,
+          "max_drawdown": -6.669474636,
+          "profit_factor": 0.9024031946315251,
+          "expectancy": -0.03104916137815126
+        }
+      ],
+      "baselines": {
+        "micro_breakout": {
+          "net_after_cost": -1163.85537806,
+          "trades": 4025
+        },
+        "random_entry": {
+          "net_after_cost": -688.64263018,
+          "trades": 2350
+        }
+      },
+      "param_stability": {
+        "grid": [
+          "z2.0/tp30/sl30",
+          "z2.5/tp40/sl40"
+        ],
+        "val_best_param": "z2.5/tp40/sl40",
+        "oos_rank_of_val_best": 1,
+        "single_fold_edge": false,
+        "param_island": false
+      },
+      "overfit_flags": {
+        "low_trades": false,
+        "single_fold_edge": false,
+        "param_island": false
+      },
+      "trade_count": 473,
+      "verdict": "not_validated",
+      "verdict_reasons": [
+        "oos net-after-cost -3.69 <= 0",
+        "oos profit_factor 0.90 <= 1.0",
+        "net edge statistically <= 0 (bootstrap 95% CI upper -0.0174 < 0)"
+      ],
+      "bootstrap_sharpe_ci": {
+        "observed_sharpe": -0.10491151297976853,
+        "ci_lower": -0.19290018845208304,
+        "ci_upper": -0.017443839999901258,
+        "median_sharpe": -0.10405335159457815,
+        "prob_positive": 0.01,
+        "confidence": 0.95,
+        "n_bootstrap": 1000,
+        "seed": 42
+      },
+      "monte_carlo_permutation": {
+        "actual_sharpe": -0.1048627084202146,
+        "actual_max_dd": -31.733599473999984,
+        "p_value_sharpe": 0.317,
+        "p_value_maxdd": 0.404,
+        "n_sim": 1000,
+        "seed": 42
+      }
+    }
+  },
+  "verdict": "not_validated",
+  "verdict_reasons": [
+    "oos net-after-cost -3.69 <= 0",
+    "oos profit_factor 0.90 <= 1.0",
+    "net edge statistically <= 0 (bootstrap 95% CI upper -0.0174 < 0)"
+  ],
+  "verdict_source": "maker_conservative"
+}

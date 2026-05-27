@@ -58,13 +58,9 @@ trigger, **zero rows** written to `review.kis_mock_order_ledger`.
 
 ## Step 2 — small confirm mock run (operator-gated)
 
-> **OPEN ITEM — validate before trusting confirm mode.** KIS mock does not return
-> an immediate fill price on submit, so `KisMockBroker.confirm_fill` currently
-> returns `None` (fail-safe). With `WS_CONFIRM=true` an entry therefore records an
-> `entry_unfilled` anomaly rather than a fabricated round trip. **Do not treat
-> confirm mode as functional until fill evidence is wired and validated here**
-> (candidate sources: KIS mock execution WS `H0STCNI9`, or a bounded mock
-> order-status / holdings poll). Record the validated mechanism in this section.
+> **Fill Evidence Gate wired (ROB-334).** `KisMockBroker.confirm_fill` is now driven by
+> KIS daily order-execution inquiry, fail-closed. Run the preflight smoke below before
+> trusting confirm mode.
 
 ```bash
 KIS_MOCK_SCALPING_ENABLED=true \
@@ -99,3 +95,57 @@ from **live** (`:21000`)? Resolved by the read-only quote smoke
 regular session, so the domestic mock scalping loop can use `--account-mode
 kis_mock` for quote smoke. Keep live quote WS as a fallback only if a future
 mock-session smoke returns exit 4 during market hours.
+
+---
+
+## Execution-evidence gate (ROB-334)
+
+Before any confirmed mock scalping run (`KIS_MOCK_SCALPING_WS_CONFIRM=true`), the
+fill-evidence path below must be available; otherwise the executor fails closed
+(no fabricated fill) and records an `entry_unfilled` / `exit_unconfirmed` anomaly.
+
+**Authoritative source:** KIS daily order-execution inquiry
+`inquire_daily_order_domestic(is_mock=True)`. Holdings/cash delta (ROB-102)
+remains secondary. `inquire_korea_orders` (TTTC8036R, pending inquiry) is
+**live-only** and is never used in mock.
+
+**Deferred gap:** the execution-notice WebSocket `H0STCNI9` (실시간 체결통보) is
+NOT implemented (requires an AES-CBC-decrypted, HTS-ID handshake frame path). It
+is a fail-closed, documented gap and a candidate follow-up issue.
+
+### Read-only preflight (no order submission)
+
+```bash
+KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_fill_evidence_smoke \
+    --order-no <ODNO> --symbol <KR_CODE>
+```
+
+Required env (names only — never echo values): `KIS_MOCK_APP_KEY`,
+`KIS_MOCK_APP_SECRET`, `KIS_MOCK_ACCOUNT_NO`.
+
+Expected success signal: exit `0`, a printed `verdict=...` line, and the
+observed `row keys: [...]` (use these to confirm/tighten the classifier's
+candidate field names).
+
+### Failure categories
+
+| category | meaning | operator action |
+|---|---|---|
+| `code` | parse/classifier fault, unexpected response | file a bug with the redacted detail |
+| `env/config` | mock creds/account missing or gate off | set the named env vars; do not commit secrets |
+| `data-precondition` | not regular session / no matching order / no odno | run during KRX session after a real mock order |
+| `unsupported mock API` | the daily-execution inquiry is rejected in mock | stop; the authoritative path is unavailable |
+| `operator approval needed` | confirmed run attempted without approval | obtain explicit operator approval first |
+
+Exit codes: `0` ok · `2` inquiry error / unsupported · `4` disabled or not
+configured · `1` unexpected.
+
+### Confirmed one-off mock smoke (operator-gated, NOT run by this change)
+
+The operator-approved bounded confirmed mock smoke (one minimal KRX limit order
+round-trip) is a **separate, operator-gated step**. It is deferred here:
+this change ships code + runbook + tests + the read-only preflight only.
+
+Rollback / no-op: all additions are read-only or fail-closed. Reverting the PR
+restores the prior `confirm_fill` stub (always-unfilled). No migration, no
+scheduler, no env mutation.

@@ -154,7 +154,7 @@ async def test_happy_path_kr_published(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.report_uuid == ingest.report_uuid
     assert response.bundle_status == "complete"
     assert response.snapshot_freshness_summary["overall"] == "fresh"
-    assert response.items_count == 0
+    assert response.items_count == 1
     assert response.warnings == []
     assert response.bundle_reused is False
     assert response.unavailable_sources == {}

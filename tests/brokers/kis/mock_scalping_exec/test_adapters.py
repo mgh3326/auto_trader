@@ -78,11 +78,78 @@ def test_quote_none_when_no_state() -> None:
     assert broker.quote("005930") is None
 
 
+def _daily_rows(**kw):
+    base = {"odno": "0000123456", "pdno": "005930", "ord_qty": "1"}
+    base.update(kw)
+    return [base]
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_confirm_fill_returns_none_pending_validation() -> None:
+async def test_confirm_fill_returns_none_when_no_odno() -> None:
+    # No odno in the submit response -> data-precondition, no network call.
     broker = KisMockBroker(get_state=lambda s: None)
     assert await broker.confirm_fill({"any": "result"}) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_fill_returns_fill_when_filled(mocker) -> None:
+    broker = KisMockBroker(get_state=lambda s: None)
+    fake_client = mocker.MagicMock()
+    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+        return_value=_daily_rows(tot_ccld_qty="1", avg_prvs="70000")
+    )
+    mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
+    fill = await broker.confirm_fill({"odno": "0000123456"})
+    assert fill == Fill(price=Decimal("70000"), quantity=Decimal("1"))
+    # Bounded read-only inquiry: is_mock pinned True, filtered by order number.
+    kw = fake_client.domestic_orders.inquire_daily_order_domestic.await_args.kwargs
+    assert kw["is_mock"] is True
+    assert kw["order_number"] == "0000123456"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_fill_none_when_pending(mocker) -> None:
+    broker = KisMockBroker(get_state=lambda s: None)
+    fake_client = mocker.MagicMock()
+    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+        return_value=_daily_rows(tot_ccld_qty="0")
+    )
+    mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
+    assert await broker.confirm_fill({"odno": "0000123456"}) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_fill_none_on_unsupported_mock_api(mocker) -> None:
+    broker = KisMockBroker(get_state=lambda s: None)
+    fake_client = mocker.MagicMock()
+    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+        side_effect=RuntimeError("TR is not available in mock mode.")
+    )
+    mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
+    assert await broker.confirm_fill({"odno": "0000123456"}) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_poll_fill_evidence_maps_unsupported_category(mocker) -> None:
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        EvidenceCategory,
+        FillVerdict,
+    )
+
+    broker = KisMockBroker(get_state=lambda s: None)
+    fake_client = mocker.MagicMock()
+    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+        side_effect=RuntimeError("VTTC8001R not available in mock")
+    )
+    mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
+    ev = await broker._poll_fill_evidence({"odno": "123456"})
+    assert ev.verdict is FillVerdict.UNSUPPORTED
+    assert ev.category is EvidenceCategory.UNSUPPORTED_MOCK_API
 
 
 @pytest.mark.unit

@@ -20,14 +20,22 @@ gross_pnl / net_pnl). Used only on the confirm path.
 
 from __future__ import annotations
 
+import datetime
 import logging
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
 from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
-from app.mcp_server.tooling.order_execution import _place_order_impl
+from app.mcp_server.tooling.order_execution import _create_kis_client, _place_order_impl
+from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.mock_scalping_exec.executor import Fill, Quote
+from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+    EvidenceCategory,
+    FillEvidence,
+    FillVerdict,
+    classify_fill_evidence,
+)
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 
 logger = logging.getLogger("rob321.kis_mock_scalping_exec")
@@ -44,12 +52,20 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _is_mock_unsupported(message: str) -> bool:
+    low = message.lower()
+    return "mock" in low and (
+        "unsupported" in low or "not available" in low or "아닙니다" in message
+    )
+
+
 class KisMockBroker:
     """BrokerPort over the KIS mock order path. Mock-only; confirm-gated HTTP."""
 
     def __init__(self, *, get_state: StateProvider, strategy_id: str = "kis-mock-v1"):
         self._get_state = get_state
         self._strategy_id = strategy_id
+        self._mock_client: KISClient | None = None
 
     async def submit_buy(
         self,
@@ -101,15 +117,83 @@ class KisMockBroker:
             scalping_exit_reason=exit_reason,
         )
 
+    def _get_mock_client(self) -> KISClient:
+        # Mock-host client (live singleton would 401/EGW02005); cached so the
+        # executor's bounded _await_fill loop does not re-construct per poll.
+        if self._mock_client is None:
+            self._mock_client = _create_kis_client(is_mock=True)
+        return self._mock_client
+
     async def confirm_fill(self, submit_result: dict[str, Any]) -> Fill | None:
-        # OPEN ITEM (ROB-321 §2-4): KIS mock gives no immediate fill price on
-        # submit. Real fill evidence (execution WS / holdings poll) is validated
-        # by operator smoke; until then we never fabricate a fill.
-        logger.warning(
-            "confirm_fill unavailable for KIS mock submit (fill evidence pending "
-            "operator validation); treating as unfilled"
+        # ROB-334: authoritative fill evidence from the KIS daily order-execution
+        # inquiry. Returns a Fill only when fully filled; every other outcome is
+        # fail-closed (None -> executor records entry_unfilled/exit_unconfirmed
+        # anomaly). Never fabricates a fill.
+        evidence = await self._poll_fill_evidence(submit_result)
+        if (
+            evidence.verdict is FillVerdict.FILLED
+            and evidence.avg_price is not None
+            and evidence.filled_qty is not None
+        ):
+            return Fill(price=evidence.avg_price, quantity=evidence.filled_qty)
+        logger.info(
+            "kis-mock fill unconfirmed verdict=%s category=%s reason=%s",
+            evidence.verdict.value,
+            evidence.category.value if evidence.category else "-",
+            evidence.reason_code,
         )
         return None
+
+    async def _poll_fill_evidence(self, submit_result: dict[str, Any]) -> FillEvidence:
+        order_no = submit_result.get("odno") or submit_result.get("order_no")
+        if not order_no:
+            return FillEvidence(
+                FillVerdict.NONE,
+                None,
+                None,
+                EvidenceCategory.DATA_PRECONDITION,
+                "order_no_missing",
+                "submit response carried no odno",
+            )
+        today = datetime.datetime.now().strftime("%Y%m%d")
+        try:
+            client = self._get_mock_client()
+            rows = await client.domestic_orders.inquire_daily_order_domestic(
+                start_date=today,
+                end_date=today,
+                stock_code="",
+                order_number=str(order_no),
+                is_mock=True,
+            )
+        except RuntimeError as exc:
+            msg = str(exc)
+            if _is_mock_unsupported(msg):
+                return FillEvidence(
+                    FillVerdict.UNSUPPORTED,
+                    None,
+                    None,
+                    EvidenceCategory.UNSUPPORTED_MOCK_API,
+                    "inquiry_unsupported",
+                    msg[:200],
+                )
+            return FillEvidence(
+                FillVerdict.NONE,
+                None,
+                None,
+                EvidenceCategory.CODE,
+                "inquiry_error",
+                msg[:200],
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed on any inquiry fault
+            return FillEvidence(
+                FillVerdict.NONE,
+                None,
+                None,
+                EvidenceCategory.CODE,
+                "inquiry_exception",
+                str(exc)[:200],
+            )
+        return classify_fill_evidence(order_no=str(order_no), rows=rows)
 
     def quote(self, symbol: str) -> Quote | None:
         state = self._get_state(symbol)
