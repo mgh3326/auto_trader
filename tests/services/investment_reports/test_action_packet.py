@@ -3,38 +3,20 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
 import pytest
 
 from app.schemas.investment_reports import (
     ActionPacket,
     InvestmentReportBundle,
+    InvestmentReportItemResponse,
 )
+from app.services.investment_reports.action_packet import build_action_packet
 
 pytestmark = pytest.mark.unit
-
-
-def test_action_packet_defaults_are_empty() -> None:
-    packet = ActionPacket()
-    assert packet.held_actions == []
-    assert packet.new_buy_candidates == []
-    assert packet.no_new_buy_reason is None
-    assert packet.risk_reviews == []
-    assert packet.no_action_reason is None
-    assert packet.data_gaps_for_next_cycle == []
-
-
-def test_bundle_action_packet_field_is_optional() -> None:
-    # Additive, null for legacy reports (mirrors review_sections).
-    assert "action_packet" in InvestmentReportBundle.model_fields
-    assert InvestmentReportBundle.model_fields["action_packet"].default is None
-
-
-from datetime import UTC, datetime
-from decimal import Decimal
-from uuid import uuid4
-
-from app.schemas.investment_reports import InvestmentReportItemResponse
-from app.services.investment_reports.action_packet import build_action_packet
 
 _NOW = datetime(2026, 5, 27, tzinfo=UTC)
 
@@ -70,6 +52,22 @@ def _item(
         updated_at=_NOW,
         decision_bucket=decision_bucket,
     )
+
+
+def test_action_packet_defaults_are_empty() -> None:
+    packet = ActionPacket()
+    assert packet.held_actions == []
+    assert packet.new_buy_candidates == []
+    assert packet.no_new_buy_reason is None
+    assert packet.risk_reviews == []
+    assert packet.no_action_reason is None
+    assert packet.data_gaps_for_next_cycle == []
+
+
+def test_bundle_action_packet_field_is_optional() -> None:
+    # Additive, null for legacy reports (mirrors review_sections).
+    assert "action_packet" in InvestmentReportBundle.model_fields
+    assert InvestmentReportBundle.model_fields["action_packet"].default is None
 
 
 def test_held_and_new_and_risk_are_grouped_by_verdict() -> None:
@@ -139,5 +137,3 @@ def test_serialise_attaches_action_packet(monkeypatch) -> None:
     assert packet.held_actions  # sanity: projection works on these items
     # The router import wires build_action_packet:
     assert hasattr(mod, "build_action_packet")
-
-

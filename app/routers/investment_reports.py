@@ -37,11 +37,11 @@ from app.schemas.investment_reports import (
     ReportSnapshotDetailResponse,
     ReportStatusLiteral,
 )
+from app.services.investment_reports.action_packet import build_action_packet
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
 )
 from app.services.investment_reports.review_sections import build_review_sections
-from app.services.investment_reports.action_packet import build_action_packet
 
 router = APIRouter(tags=["investment-reports"])
 

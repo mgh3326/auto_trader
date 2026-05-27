@@ -61,7 +61,6 @@ from app.services.action_report.snapshot_backed.proposal_classifier import (
     ClassifierContext,
     classify_items,
 )
-
 from app.services.action_report.snapshot_backed.request import (
     ReportGenerationRequest,
     ReportGenerationResponse,

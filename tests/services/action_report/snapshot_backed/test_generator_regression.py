@@ -1,18 +1,28 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.services.action_report.snapshot_backed.generator import (
     SnapshotBackedReportGenerator,
+    SnapshotBackedReportGeneratorError,
 )
 from app.services.action_report.snapshot_backed.request import ReportGenerationRequest
+from tests.services.action_report.snapshot_backed.test_generator import (
+    _ensure_response,
+    _FakeEnsureService,
+    _FakeIngestionService,
+    _FakeSnapshotsRepository,
+    _make_request,
+)
 
 
 @pytest.mark.asyncio
 async def test_generator_uses_legacy_path_by_default(db_session):
     # Ensure the ensure_service returns a simulated bundle response
     ensure_mock = AsyncMock()
-    from types import SimpleNamespace
 
     ensure_mock.ensure.return_value = SimpleNamespace(
         bundle_uuid=None,  # Will raise early, proving it hit the main generate path before stage runner
@@ -39,24 +49,11 @@ async def test_generator_uses_legacy_path_by_default(db_session):
         auto_compose=False,  # default
     )
 
-    from app.services.action_report.snapshot_backed.generator import (
-        SnapshotBackedReportGeneratorError,
-    )
-
     with pytest.raises(SnapshotBackedReportGeneratorError) as exc:
         await generator.generate(request)
 
     assert "bundle ensure returned no bundle_uuid" in str(exc.value)
     ensure_mock.ensure.assert_called_once()
-
-
-from tests.services.action_report.snapshot_backed.test_generator import (
-    _FakeEnsureService,
-    _FakeIngestionService,
-    _FakeSnapshotsRepository,
-    _ensure_response,
-    _make_request,
-)
 
 
 @pytest.mark.asyncio
@@ -97,4 +94,3 @@ async def test_intraday_report_never_empty_items() -> None:
     item = sent.items[0]
     assert item.decision_bucket == "deferred_no_action"
     assert item.evidence_snapshot["action_verdict"] == "data_gap"
-
