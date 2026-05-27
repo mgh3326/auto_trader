@@ -53,10 +53,15 @@ from app.services.action_report.common.snapshot_bundle import (
 from app.services.action_report.snapshot_backed.collectors.registry import (
     production_collector_registry,
 )
+from app.services.action_report.snapshot_backed.intraday_floor import (
+    ensure_action_floor,
+    is_intraday_action,
+)
 from app.services.action_report.snapshot_backed.proposal_classifier import (
     ClassifierContext,
     classify_items,
 )
+
 from app.services.action_report.snapshot_backed.request import (
     ReportGenerationRequest,
     ReportGenerationResponse,
@@ -297,6 +302,19 @@ class SnapshotBackedReportGenerator:
                 getattr(it, "item_kind", None) == "action" for it in request.items
             ),
         )
+
+        # ROB-335 — intraday non-empty floor: never let an intraday_action
+        # report succeed with items=[]; synthesize an explicit no-action /
+        # data-gap item from the deterministic why_no_action verdict.
+        if is_intraday_action(request.policy_version):
+            request = request.model_copy(
+                update={
+                    "items": ensure_action_floor(
+                        list(request.items), why_no_action=why_no_action
+                    )
+                }
+            )
+
         report_diagnostics = build_report_diagnostics(
             freshness_summary=freshness_summary,
             bundle_status=ensure_response.status,
@@ -389,7 +407,9 @@ class SnapshotBackedReportGenerator:
         item_snapshot_pairs = (
             await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
         )
-        emitter = EvidenceAutoEmitter()
+        emitter = EvidenceAutoEmitter(
+            intraday_floor=is_intraday_action(request.policy_version)
+        )
         return emitter.propose(
             snapshots=[s for _i, s in item_snapshot_pairs],
             request_market=request.market,
