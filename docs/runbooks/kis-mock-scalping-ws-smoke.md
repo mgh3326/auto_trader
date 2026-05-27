@@ -59,8 +59,8 @@ KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_scalping_ws_
 
 | account_mode | ticks | books | verdict |
 |--------------|-------|-------|---------|
-| kis_mock     | _TBD_ | _TBD_ | _TBD_   |
-| kis_live     | _TBD_ | _TBD_ | _TBD_   |
+| kis_mock     | 2     | 2     | **OK** — 2026-05-27 10:44 KST, KRX regular session, `005930,000660`; mock WS (`:31000`) delivered both orderbook and trade frames. |
+| kis_live     | _not run_ | _not run_ | Not required for ROB-321 domestic mock smoke once `kis_mock` quote host was confirmed. |
 
 > Note: also confirm the parsed `last_price`/`bid`/`ask` look sane against a known
 > quote. If a field is consistently wrong, the documented `H0STCNT0`/`H0STASP0`

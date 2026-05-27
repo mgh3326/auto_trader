@@ -93,6 +93,9 @@ Verify:
 ## Open question this loop still carries
 
 Does the KIS **mock** WS (`:31000`) serve real-time quotes, or must quotes come
-from **live** (`:21000`)? Resolve via the read-only quote smoke
-(`scripts/kis_mock_scalping_ws_smoke.py`, see `kis-mock-scalping-ws-smoke.md`)
-and set `--account-mode` accordingly.
+from **live** (`:21000`)? Resolved by the read-only quote smoke
+(`scripts/kis_mock_scalping_ws_smoke.py`, see `kis-mock-scalping-ws-smoke.md`):
+`kis_mock` delivered both orderbook and trade frames during the 2026-05-27 KRX
+regular session, so the domestic mock scalping loop can use `--account-mode
+kis_mock` for quote smoke. Keep live quote WS as a fallback only if a future
+mock-session smoke returns exit 4 during market hours.
