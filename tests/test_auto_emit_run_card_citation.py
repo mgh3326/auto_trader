@@ -43,7 +43,12 @@ def _buy_universe(symbol):
             {
                 "usefulness": "useful",
                 "candidates": [
-                    {"symbol": symbol, "score": 8.0, "reasons": ["momentum"], "source": "kis"}
+                    {
+                        "symbol": symbol,
+                        "score": 8.0,
+                        "reasons": ["momentum"],
+                        "source": "kis",
+                    }
                 ],
             },
         ),

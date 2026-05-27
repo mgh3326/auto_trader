@@ -45,7 +45,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market", required=True, choices=_MARKETS)
     parser.add_argument("--account-scope", choices=_ACCOUNT_SCOPES, default=None)
     parser.add_argument(
-        "--as-of", default=None, help="ISO-8601 as_of; defaults to run-card generated_at."
+        "--as-of",
+        default=None,
+        help="ISO-8601 as_of; defaults to run-card generated_at.",
     )
     parser.add_argument(
         "--commit", action="store_true", help="Persist; default is dry-run only."

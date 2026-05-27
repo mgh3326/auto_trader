@@ -101,12 +101,22 @@ async def test_run_ingest_commit_persists_sanitized_snapshot(db_session):
 async def test_run_ingest_is_idempotent_reuses_snapshot(db_session):
     payload = _load()
     _c1, s1 = await cli.run_ingest(
-        db=db_session, raw_payload=payload, market="crypto",
-        account_scope=None, as_of=None, commit=True, confirm=True,
+        db=db_session,
+        raw_payload=payload,
+        market="crypto",
+        account_scope=None,
+        as_of=None,
+        commit=True,
+        confirm=True,
     )
     _c2, s2 = await cli.run_ingest(
-        db=db_session, raw_payload=payload, market="crypto",
-        account_scope=None, as_of=None, commit=True, confirm=True,
+        db=db_session,
+        raw_payload=payload,
+        market="crypto",
+        account_scope=None,
+        as_of=None,
+        commit=True,
+        confirm=True,
     )
     # Same canonical payload dedups to the same snapshot row.
     assert s1["snapshot_uuid"] == s2["snapshot_uuid"]
@@ -125,4 +135,3 @@ async def test_run_ingest_commit_without_confirm_is_gated(db_session):
     )
     assert code == 4
     assert "snapshot_uuid" not in summary
-
