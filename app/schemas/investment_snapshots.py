@@ -30,6 +30,7 @@ SnapshotKind = Literal[
     "toss_remote_debug",
     "llm_input_frozen",
     "pending_orders",
+    "validated_run_card",
 ]
 SourceKind = Literal[
     "kis_mcp",
