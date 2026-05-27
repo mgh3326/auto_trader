@@ -12,6 +12,12 @@ broker mutation, so --commit --confirm is the only operator gate (no env flag).
 Boundary (ROB-332): reuses RunCardSnapshotIngestor from PR #979. The local
 run-card file path is never recorded as a source_uri (the ingestor sets
 source_kind="manual"). No broker/order/watch mutation, no scheduler.
+
+Import boundary: only the pure ``validated_run_card`` schema helper is imported
+at module top. Settings-loading modules (``app.core.cli``/``app.core.db``/
+``app.monitoring.sentry``) and the DB repository/ingestor are imported lazily
+inside the commit path, so ``--help``, dry-run, and file-parse work in a clean
+env without KIS/Upbit/DATABASE_URL/SECRET_KEY (no Settings validation).
 """
 
 from __future__ import annotations
@@ -24,12 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from app.core.cli import setup_logging_and_sentry
-from app.core.db import AsyncSessionLocal
-from app.monitoring.sentry import capture_exception
 from app.schemas.validated_run_card import RunCardCitation, build_run_card_citation
-from app.services.investment_snapshots.repository import InvestmentSnapshotsRepository
-from app.services.investment_snapshots.run_card_ingest import RunCardSnapshotIngestor
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,14 @@ async def run_ingest(
     if not confirm:
         return 4, {"error": "commit mode requires --confirm"}
 
+    # Lazy: these pull in app.core.db (Settings). Only the commit path needs them.
+    from app.services.investment_snapshots.repository import (
+        InvestmentSnapshotsRepository,
+    )
+    from app.services.investment_snapshots.run_card_ingest import (
+        RunCardSnapshotIngestor,
+    )
+
     ingestor = RunCardSnapshotIngestor(InvestmentSnapshotsRepository(db))
     snapshot, citation = await ingestor.ingest(
         run_card_payload=raw_payload,
@@ -115,7 +124,9 @@ async def run_ingest(
 
 
 async def main_async(argv: list[str] | None = None) -> int:
-    setup_logging_and_sentry(service_name="ingest-validated-run-card")
+    # Parse + file read + dry-run happen BEFORE any settings-loading import so
+    # --help / dry-run / file-parse work without DB/broker secrets. Logging is
+    # left at the stdlib default for these paths (no Sentry init needed locally).
     ns = parse_args(argv)
 
     if not ns.file.is_file():
@@ -127,7 +138,6 @@ async def main_async(argv: list[str] | None = None) -> int:
         as_of = _parse_as_of(ns.as_of)
     except (json.JSONDecodeError, ValueError) as exc:
         logger.error("payload/as-of parse failed: %s", exc)
-        capture_exception(exc, process="ingest_validated_run_card")
         return 2
 
     if not ns.commit:
@@ -142,6 +152,13 @@ async def main_async(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(summary, allow_nan=False, ensure_ascii=False))
         return 0
+
+    # Commit path only — now it is safe to load Settings-backed modules.
+    from app.core.cli import setup_logging_and_sentry
+    from app.core.db import AsyncSessionLocal
+    from app.monitoring.sentry import capture_exception
+
+    setup_logging_and_sentry(service_name="ingest-validated-run-card")
 
     async with AsyncSessionLocal() as db:
         try:

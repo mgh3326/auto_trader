@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from scripts import ingest_validated_run_card as cli
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 _FIXTURE = (
     Path(__file__).parent
     / "fixtures"
@@ -20,6 +24,17 @@ _FIXTURE = (
 def _load() -> dict:
     with _FIXTURE.open() as fh:
         return json.load(fh)  # default json.loads accepts bare Infinity tokens
+
+
+def _settings_free_env() -> dict[str, str]:
+    """Env that cannot satisfy pydantic Settings: only neutral keys kept, no
+    KIS/Upbit/DATABASE_URL/SECRET_KEY. Combined with running from a cwd that has
+    no ``.env`` file, Settings would have no source — so the CLI must NOT load
+    Settings for the --help / dry-run / file-parse paths."""
+    keep = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SystemRoot"}
+    env = {k: v for k, v in os.environ.items() if k in keep}
+    env["PYTHONPATH"] = str(_REPO_ROOT)
+    return env
 
 
 def test_parse_args_requires_file_and_market():
@@ -135,3 +150,45 @@ async def test_run_ingest_commit_without_confirm_is_gated(db_session):
     )
     assert code == 4
     assert "snapshot_uuid" not in summary
+
+
+# --- Settings-free entry paths (ROB-332 follow-up) -------------------------
+# --help / dry-run / file-parse must work with no DB/broker secrets. Run from
+# tmp_path (no .env) with a settings-free env so Settings has no source; the
+# CLI must reach these paths without ever instantiating Settings.
+
+
+def test_help_runs_without_settings_secrets(tmp_path):
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.ingest_validated_run_card", "--help"],
+        cwd=tmp_path,
+        env=_settings_free_env(),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "usage" in proc.stdout.lower()
+    assert "ValidationError" not in proc.stderr
+
+
+def test_dry_run_runs_without_settings_secrets(tmp_path):
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.ingest_validated_run_card",
+            "--file",
+            str(_FIXTURE),
+            "--market",
+            "crypto",
+        ],
+        cwd=tmp_path,
+        env=_settings_free_env(),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "ValidationError" not in proc.stderr
+    summary = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert summary["dry_run"] is True
+    assert summary["verdict"] == "insufficient_data"
