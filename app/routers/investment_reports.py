@@ -37,6 +37,7 @@ from app.schemas.investment_reports import (
     ReportSnapshotDetailResponse,
     ReportStatusLiteral,
 )
+from app.services.investment_reports.action_packet import build_action_packet
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
 )
@@ -80,6 +81,11 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         item_responses, report_response.snapshot_report_diagnostics
     )
 
+    # ROB-335 — additive intraday ActionPacket projection (view-layer only).
+    action_packet = build_action_packet(
+        item_responses, report_response.snapshot_report_diagnostics
+    )
+
     return InvestmentReportBundle(
         report=report_response,
         items=item_responses,
@@ -93,6 +99,7 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         item_groups=item_groups,
         decision_rollup=rollup,
         review_sections=review_sections,
+        action_packet=action_packet,
     )
 
 
