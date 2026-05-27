@@ -19,6 +19,7 @@ import type {
   SnapshotFreshnessSummary,
   SnapshotReportDiagnostics,
 } from "../../types/investmentReports";
+import { ActionPacketView } from "./ActionPacketView";
 import { IntermediateAnalysisPanel } from "./IntermediateAnalysisPanel";
 import { ProposalDiffPanel } from "./ProposalDiffPanel";
 import { ReportDiagnosticsPanel } from "./ReportDiagnosticsPanel";
@@ -669,6 +670,10 @@ export function InvestmentReportBundleContent({
           ) : null,
         )
       )}
+
+      {bundle.actionPacket ? (
+        <ActionPacketView packet={bundle.actionPacket} />
+      ) : null}
 
       {bundle.alerts.length > 0 ? (
         <section style={{ display: "grid", gap: 10 }}>
