@@ -37,6 +37,10 @@ from typing import Any
 from uuid import UUID
 
 from app.schemas.investment_reports import IngestReportItem
+from app.schemas.validated_run_card import (
+    build_run_card_citation,
+    build_run_card_evidence,
+)
 
 
 def _snapshot_payload(snapshot: Any) -> dict[str, Any]:
@@ -123,6 +127,7 @@ class EvidenceAutoEmitter:
         portfolio_snapshot: Any | None = None
         candidate_snapshot: Any | None = None
         news_snapshot: Any | None = None
+        run_card_evidence_by_symbol: dict[str, dict[str, Any]] = {}
 
         for snapshot in snapshots:
             kind = getattr(snapshot, "snapshot_kind", None)
@@ -153,6 +158,15 @@ class EvidenceAutoEmitter:
                     for sym, count in matches.items():
                         if isinstance(sym, str) and isinstance(count, int):
                             news_matches[sym] = count
+            elif kind == "validated_run_card":
+                snap_uuid = _snapshot_uuid(snapshot)
+                citation = build_run_card_citation(payload)
+                if snap_uuid is not None and citation.symbols:
+                    evidence = build_run_card_evidence(
+                        snapshot_uuid=snap_uuid, citation=citation
+                    )
+                    for sym in citation.symbols:
+                        run_card_evidence_by_symbol.setdefault(sym, evidence)
 
         held = _held_kis_symbols(portfolio_payload)
         candidate_actionable = candidate_usefulness == "useful"
@@ -325,5 +339,15 @@ class EvidenceAutoEmitter:
                     ),
                 )
             )
+
+        # ROB-332 — cite a bundle-resident validated_run_card on items whose
+        # symbol matches the run card's symbols (consume-when-present; no-op
+        # when no run card is in the bundle or no symbol overlaps).
+        if run_card_evidence_by_symbol:
+            for item in items:
+                if item.symbol and item.symbol in run_card_evidence_by_symbol:
+                    item.evidence_snapshot["run_card"] = run_card_evidence_by_symbol[
+                        item.symbol
+                    ]
 
         return items
