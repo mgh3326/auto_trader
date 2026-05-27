@@ -29,7 +29,15 @@ from maker_fill import (
     build_maker_conservative,
     build_maker_optimistic,
 )
-from validated_gate import REF_FEE_BPS, Trade, evaluate_gate
+from validated_gate import (
+    REF_FEE_BPS,
+    Trade,
+    apply_statistical_evidence,
+    bootstrap_sharpe_ci,
+    evaluate_gate,
+    monte_carlo_permutation,
+    net_pnls_at_fee,
+)
 
 _GRID = [
     ("z2.0/tp30/sl30", {"lookback": 20, "z_entry": "2.0", "tp_bps": 30, "sl_bps": 30}),
@@ -55,14 +63,28 @@ def _merge_recs(runs):
     return sorted((rec for r in runs for rec in r), key=lambda rec: rec.ts_opened)
 
 
-def _gate(candidate_runs, breakout, random_ctrl, fee_bps, symbols, window, name):
-    return evaluate_gate(
+def _gate(candidate_runs, breakout, random_ctrl, fee_bps, symbols, window, name, seed=42):
+    report = evaluate_gate(
         candidate_runs=candidate_runs,
         baseline_breakout=breakout, baseline_random=random_ctrl,
         fee_bps=fee_bps, min_trades=100,
         candidate_name=name, hypothesis="mean_reversion",
         symbols=symbols, window=window,
-    ).to_dict()
+    )
+    # ROB-328 statistical robustness on the val-best config's net-after-fee per-trade PnL:
+    # bootstrap Sharpe CI + Monte-Carlo permutation. apply_statistical_evidence only
+    # downgrades a validated verdict (CI upper < 0); it never upgrades. No new edge claim.
+    val_best = report.param_stability.get("val_best_param")
+    stats: dict = {}
+    if val_best and val_best in candidate_runs:
+        net_pnls = net_pnls_at_fee(candidate_runs[val_best], fee_bps)
+        bootstrap = bootstrap_sharpe_ci(net_pnls, n_bootstrap=1000, seed=seed)
+        monte_carlo = monte_carlo_permutation(net_pnls, n_sim=1000, seed=seed)
+        apply_statistical_evidence(report, bootstrap)
+        stats = {"bootstrap_sharpe_ci": bootstrap, "monte_carlo_permutation": monte_carlo}
+    out = report.to_dict()
+    out.update(stats)
+    return out
 
 
 def main() -> int:

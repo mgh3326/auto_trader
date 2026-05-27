@@ -150,8 +150,27 @@
       "verdict": "not_validated",
       "verdict_reasons": [
         "oos net-after-cost -16.48 <= 0",
-        "oos profit_factor 0.75 <= 1.0"
-      ]
+        "oos profit_factor 0.75 <= 1.0",
+        "net edge statistically <= 0 (bootstrap 95% CI upper -0.1029 < 0)"
+      ],
+      "bootstrap_sharpe_ci": {
+        "observed_sharpe": -0.17101733050888313,
+        "ci_lower": -0.24404344100241346,
+        "ci_upper": -0.10293243600437266,
+        "median_sharpe": -0.1725669067140685,
+        "prob_positive": 0.0,
+        "confidence": 0.95,
+        "n_bootstrap": 1000,
+        "seed": 42
+      },
+      "monte_carlo_permutation": {
+        "actual_sharpe": -0.17095616088765767,
+        "actual_max_dd": -78.69952133799997,
+        "p_value_sharpe": 0.347,
+        "p_value_maxdd": 0.51,
+        "n_sim": 1000,
+        "seed": 42
+      }
     },
     "maker_optimistic": {
       "schema_version": "validated_signal_gate.v1",
@@ -267,8 +286,27 @@
       "verdict": "not_validated",
       "verdict_reasons": [
         "oos net-after-cost -1.95 <= 0",
-        "oos profit_factor 0.95 <= 1.0"
-      ]
+        "oos profit_factor 0.95 <= 1.0",
+        "net edge not statistically distinguishable from 0 (bootstrap 95% CI straddles 0)"
+      ],
+      "bootstrap_sharpe_ci": {
+        "observed_sharpe": -0.07828035614737876,
+        "ci_lower": -0.16839093643052883,
+        "ci_upper": 0.014879112106786689,
+        "median_sharpe": -0.07695202985510026,
+        "prob_positive": 0.046,
+        "confidence": 0.95,
+        "n_bootstrap": 1000,
+        "seed": 42
+      },
+      "monte_carlo_permutation": {
+        "actual_sharpe": -0.07823588558375752,
+        "actual_max_dd": -27.417398187999996,
+        "p_value_sharpe": 0.277,
+        "p_value_maxdd": 0.615,
+        "n_sim": 1000,
+        "seed": 42
+      }
     },
     "maker_conservative": {
       "schema_version": "validated_signal_gate.v1",
@@ -384,14 +422,34 @@
       "verdict": "not_validated",
       "verdict_reasons": [
         "oos net-after-cost -3.69 <= 0",
-        "oos profit_factor 0.90 <= 1.0"
-      ]
+        "oos profit_factor 0.90 <= 1.0",
+        "net edge statistically <= 0 (bootstrap 95% CI upper -0.0174 < 0)"
+      ],
+      "bootstrap_sharpe_ci": {
+        "observed_sharpe": -0.10491188039886097,
+        "ci_lower": -0.1929001978389124,
+        "ci_upper": -0.017445294330228577,
+        "median_sharpe": -0.10405353479761338,
+        "prob_positive": 0.01,
+        "confidence": 0.95,
+        "n_bootstrap": 1000,
+        "seed": 42
+      },
+      "monte_carlo_permutation": {
+        "actual_sharpe": -0.10486307590049901,
+        "actual_max_dd": -31.733700723999984,
+        "p_value_sharpe": 0.317,
+        "p_value_maxdd": 0.404,
+        "n_sim": 1000,
+        "seed": 42
+      }
     }
   },
   "verdict": "not_validated",
   "verdict_reasons": [
     "oos net-after-cost -3.69 <= 0",
-    "oos profit_factor 0.90 <= 1.0"
+    "oos profit_factor 0.90 <= 1.0",
+    "net edge statistically <= 0 (bootstrap 95% CI upper -0.0174 < 0)"
   ],
   "verdict_source": "maker_conservative"
 }
