@@ -176,7 +176,9 @@ explicitly. Final `validated` stays owned by the unchanged
 - **PR2:** `backtest_runner` real window constraint (catalog start/end query if the
   API supports it, else post-load `ts_event` filter + documented limitation with a
   test), baseline run caching keyed by catalog/window/symbol/params/code-version,
-  optional precise maker-viability re-sim borrowing ROB-324's `maker_fill` model.
+  vectorized fixed-point decode (PR1 uses a per-row Python decode — ~50s for a
+  15-day 2-symbol window; numpy/int128 vectorization makes the full 75-day window
+  "fast"), optional precise maker-viability re-sim borrowing ROB-324's `maker_fill`.
 
 ## 9. Tests (no full 75-day data; CI-safe)
 
@@ -192,14 +194,33 @@ explicitly. Final `validated` stays owned by the unchanged
 - Existing `test_validated_gate*.py`, `test_meanrev_*`, `test_signal_parity.py`
   remain green (discovery adds no import into the gate or strategies).
 
-## 10. Execution prerequisites
+## 10. Execution prerequisites + catalog encoding (verified at smoke)
 
 - catalog/data/.venv are gitignored and **absent in a fresh worktree**. The
   **rob-320 worktree** has a built `ParquetDataCatalog` with trade ticks for both
-  symbols across the window (ROB-324 reused it read-only). PR1 smoke, if run, points
-  `--catalog` at that catalog read-only; if the venv is broken, rebuilding the
-  Intel-mac Rust nautilus is the costly fallback — surface before spending time.
+  symbols. The discovery harness reads it via pandas/pyarrow with **no Nautilus
+  import**, so it runs in the repo's own uv venv (pandas/pyarrow present) — no Rust
+  nautilus rebuild needed for discovery.
+- **Catalog encoding (verified):** this is a **128-bit high-precision** Nautilus
+  catalog — `price`/`size` are `fixed_size_binary[16]` int128 little-endian, raw =
+  `value * 10**16` (fixed by the build), and `ts_event` is `uint64` ns. The display
+  precision in schema metadata (`price_precision`/`size_precision`) only rounds the
+  decoded float; it is NOT the raw scale. `data._decode_int128_le` + `_decode_if_binary`
+  handle this; plain-float parquet (the unit fixtures) is passed through unchanged.
 - **CI requires none of this** — the unit tests use synthetic fixtures.
+
+### Smoke results (XRPUSDT + BTCUSDT, 2026-03-01..03-15, ~50s, fee budget 8 bps)
+All 10 (2 symbols × 5 families) → **`screened_out`**. In-sample gross expectancy
+spans **−0.58 .. +0.44 bps** — none clears the 8 bps round-trip fee budget; OOS-tail
+fee-adjusted is also negative throughout. This reproduces the dominant
+ROB-316/320/324 finding: the gross edge does not survive fees.
+
+**Recommended next family:** none of the five clears fees on this data, so **no
+family is promoted to full validation** as-is. The least-negative gross was
+**BTCUSDT/sweep_reversal (+0.44 bps)** and **XRPUSDT sweep/time-of-day (+0.28 bps)** —
+if any direction is worth a deeper look it is **liquidity-sweep reversal**, but only
+after a maker/limit cost model (entry ~2 bps) and tighter regime/time segmentation
+materially lift gross expectancy; at taker fees it is a clear reject.
 
 ## 11. Acceptance criteria (from the issue) — how this design meets each
 
