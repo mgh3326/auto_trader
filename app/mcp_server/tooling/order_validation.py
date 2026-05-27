@@ -819,13 +819,31 @@ async def _check_balance_and_warn(
     try:
         balance = await _get_balance_for_order(market_type, is_mock=is_mock)
     except Exception as balance_exc:
+        error_detail = str(balance_exc) or balance_exc.__class__.__name__
         logger.error(
             "balance_precheck 조회 실패: stage=balance_query, market_type=%s, symbol=%s, side=%s, error=%s",
             market_type,
             normalized_symbol,
             side,
-            balance_exc,
+            error_detail,
         )
+        if is_mock and market_type in ("equity_kr", "equity_us"):
+            message = (
+                "KIS mock balance precheck unavailable for "
+                f"{normalized_symbol}: {error_detail}"
+            )
+            if dry_run:
+                return (
+                    "Preview warning: "
+                    f"{message}; dry_run=True so no order was submitted.",
+                    None,
+                )
+            return (
+                None,
+                order_error_fn(
+                    f"{message}; refusing to submit without verified orderable cash."
+                ),
+            )
         raise
 
     if is_mock and market_type in ("equity_kr", "equity_us"):
