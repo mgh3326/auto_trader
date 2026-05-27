@@ -198,6 +198,11 @@ class Settings(BaseSettings):
     kis_ws_max_reconnect_attempts: int = 10  # 최대 재연결 시도 횟수
     kis_ws_ping_interval: int = 30  # Ping 전송 간격 (초)
     kis_ws_ping_timeout: int = 10  # Ping 응답 대기 시간 (초)
+    # ROB-321: read-only quote WS daemon/smoke gate (default off).
+    kis_mock_scalping_ws_enabled: bool = False
+    # ROB-321 PR4b: per-run order-mutation gate for the scalping daemon. Without
+    # it the daemon dry-runs (preview only, no mock order, no ledger write).
+    kis_mock_scalping_ws_confirm: bool = False
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)
@@ -505,6 +510,9 @@ class Settings(BaseSettings):
     alpaca_paper_base_url: str = "https://paper-api.alpaca.markets"
     alpaca_paper_data_base_url: str = "https://data.alpaca.markets"
 
+    # ROB-326 — US dual-paper premarket preview/preflight path (read-only, default off)
+    us_dual_paper_preview_enabled: bool = False
+
     @field_validator("alpaca_paper_base_url", mode="before")
     @classmethod
     def validate_alpaca_paper_base_url(cls, v: Any) -> str:
@@ -629,6 +637,9 @@ class Settings(BaseSettings):
     RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED: bool = False
     RESEARCH_PIPELINE_DUAL_WRITE_ENABLED: bool = False
 
+    # Naver Remote-Debug Audit (ROB-323)
+    remote_debug_audit_enabled: bool = False
+
     model_config = SettingsConfigDict(
         env_file=os.getenv("ENV_FILE", ".env"),
         env_file_encoding="utf-8",
@@ -674,4 +685,17 @@ def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
         missing.append("KIWOOM_MOCK_ACCOUNT_NO")
+    return missing
+
+
+def validate_remote_debug_audit_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing env names for the remote-debug audit CLI (names only).
+
+    Default-disabled: only ``REMOTE_DEBUG_AUDIT_ENABLED=true`` is required. The
+    Chrome endpoint is fixed (127.0.0.1:9222) and carries no secret, so nothing
+    else is gated here.
+    """
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "remote_debug_audit_enabled", False)):
+        missing.append("REMOTE_DEBUG_AUDIT_ENABLED")
     return missing

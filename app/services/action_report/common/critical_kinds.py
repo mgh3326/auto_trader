@@ -38,3 +38,21 @@ CRITICAL_SNAPSHOT_KINDS: tuple[str, ...] = (
 CRITICAL_KIND_DEGRADING_STATUSES: frozenset[str] = frozenset(
     {"hard_stale", "unavailable", "failed"}
 )
+
+
+# ROB-323 — External cross-check / data-quality audit kinds.
+#
+# These are operator-driven reference probes (Toss/Naver/browser remote-debug),
+# NOT report-generation sources. Their unavailability must never escalate
+# ``freshness_summary['overall']``, the gate-relevant bundle status, the stale
+# gate, or the action-language lint. They surface only in the data-quality
+# audit diagnostics with ``affects_report_generation=False``. Kept here, next to
+# CRITICAL_SNAPSHOT_KINDS, because "what gates" and "what never gates" are two
+# halves of the same contract.
+EXTERNAL_AUDIT_KINDS: frozenset[str] = frozenset(
+    {
+        "toss_remote_debug",
+        "naver_remote_debug",
+        "browser_probe",
+    }
+)

@@ -11,12 +11,11 @@ from __future__ import annotations
 from collections import deque
 from decimal import Decimal
 
+from ict_signal import IctConfig, evaluate_ict, required_bars
 from nautilus_trader.model.data import Bar, BarType, TradeTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.trading.strategy import Strategy, StrategyConfig
-
-from ict_signal import IctConfig, evaluate_ict, required_bars
 from signal_bridge import bar_to_candle
 
 

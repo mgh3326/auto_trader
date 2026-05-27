@@ -12,7 +12,11 @@ import pytest
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
-from app.mcp_server.tooling import order_execution, orders_registration
+from app.mcp_server.tooling import (
+    order_execution,
+    orders_kis_variants,
+    orders_registration,
+)
 from tests._mcp_tooling_support import (
     _patch_runtime_attr,
     build_tools,
@@ -1352,6 +1356,101 @@ async def test_place_order_kis_mock_sell_preview_uses_mock_holdings(monkeypatch)
     assert result["realized_pnl"] == pytest.approx(2500.0)
     assert kis_calls
     assert all(kis_calls)
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_place_order_dry_run_warns_when_cash_lookup_unavailable(
+    monkeypatch,
+):
+    """KIS mock dry-run preview should not fail solely because cash read is flaky."""
+    tools = build_tools()
+
+    class MockKISClient:
+        def __init__(self, is_mock: bool = False):
+            self.is_mock = is_mock
+
+        async def inquire_domestic_cash_balance(self, *, is_mock: bool = False):
+            assert self.is_mock is True
+            assert is_mock is True
+            raise TimeoutError()
+
+    async def fetch_quote(symbol):
+        assert symbol == "005930"
+        return {"price": 318500.0}
+
+    monkeypatch.setattr(orders_registration, "validate_kis_mock_config", lambda: [])
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["kis_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=318500.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["account_mode"] == "kis_mock"
+    assert result["estimated_value"] == pytest.approx(318500.0)
+    assert "balance precheck unavailable" in result["warning"]
+    assert "dry_run=True" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_place_order_real_order_blocks_when_cash_lookup_unavailable(
+    monkeypatch,
+):
+    """KIS mock confirmed submit remains fail-closed if cash cannot be verified."""
+    tools = build_tools()
+    order_calls: list[dict[str, object]] = []
+
+    class MockKISClient:
+        def __init__(self, is_mock: bool = False):
+            self.is_mock = is_mock
+
+        async def inquire_domestic_cash_balance(self, *, is_mock: bool = False):
+            assert self.is_mock is True
+            assert is_mock is True
+            raise TimeoutError()
+
+        async def order_korea_stock(self, stock_code, order_type, quantity, price):
+            order_calls.append(
+                {
+                    "stock_code": stock_code,
+                    "order_type": order_type,
+                    "quantity": quantity,
+                    "price": price,
+                }
+            )
+            return {"odno": "mock-should-not-submit"}
+
+    async def fetch_quote(symbol):
+        assert symbol == "005930"
+        return {"price": 318500.0}
+
+    monkeypatch.setattr(orders_registration, "validate_kis_mock_config", lambda: [])
+    monkeypatch.setattr(orders_kis_variants, "validate_kis_mock_config", lambda: [])
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["kis_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=318500.0,
+        dry_run=False,
+    )
+
+    assert result["success"] is False
+    assert result["account_mode"] == "kis_mock"
+    assert "balance precheck unavailable" in result["error"]
+    assert "refusing to submit" in result["error"]
+    assert order_calls == []
 
 
 # ----------------------------------------------------------------------

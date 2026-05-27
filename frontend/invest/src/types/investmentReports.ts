@@ -122,6 +122,38 @@ export interface ReportQualitySummary {
   freshness_overall?: SnapshotFreshnessStatus | string | null;
   kind_status_counts?: Record<string, number>;
   fresh_coverage_pct?: number;
+  // ROB-323 — core vs optional vs external split.
+  core_fresh_coverage_pct?: number;
+  optional_fresh_coverage_pct?: number;
+  external_cross_check_status?: SnapshotFreshnessStatus | string | null;
+}
+
+// ROB-323 — external cross-check / data-quality audit (embedded in
+// snapshot_report_diagnostics). External probes never affect report generation.
+export interface ExternalCrossCheck {
+  status?: SnapshotFreshnessStatus | string | null;
+  reason_code?: string | null;
+  reason?: string | null;
+  as_of?: string | null;
+  affects_report_generation: false;
+}
+
+export interface DataQualityGap {
+  severity: "info" | "warning" | "blocking";
+  kind: string;
+  sources?: string[];
+  message: string;
+}
+
+export interface DataQualityAudit {
+  snapshot_bundle_uuid?: string | null;
+  core: {
+    status: "usable" | "degraded";
+    blocking_gaps: string[];
+    fresh_coverage_pct?: number;
+  };
+  external_cross_checks: Record<string, ExternalCrossCheck>;
+  gaps: DataQualityGap[];
 }
 
 export interface DataSufficiencySource {
@@ -135,6 +167,7 @@ export interface SnapshotReportDiagnostics {
   why_no_action?: WhyNoAction | null;
   data_sufficiency_by_source?: Record<string, DataSufficiencySource>;
   report_quality_summary?: ReportQualitySummary | null;
+  data_quality_audit?: DataQualityAudit | null;
 }
 
 // ROB-269 Phase 4 — typed shape of the snapshot freshness summary on the
@@ -217,6 +250,11 @@ export interface InvestmentReportItem {
   proposedState?: Record<string, unknown> | null;
   diff?: ProposalDiffEntry[] | null;
   applyPolicy?: "requires_user_approval" | null;
+  // ROB-308 / ROB-322 — final-item classification + source citations.
+  // Optional/nullable so legacy items remain valid.
+  decisionBucket?: string | null;
+  citedSymbolReportUuid?: string | null;
+  citedDimensionReportUuids?: string[];
 }
 
 export interface InvestmentReportItemDecision {
@@ -280,12 +318,44 @@ export interface InvestmentWatchEvent {
   createdAt: string;
 }
 
+// ROB-322 — KR /invest/reports five-section review surface. A read-time
+// view-layer projection over the locked decision_bucket vocab + report
+// diagnostics; no new persisted classification.
+export type ReviewSectionKey =
+  | "new_buy_candidate"
+  | "held_strategy_review"
+  | "watch_only"
+  | "excluded_or_unavailable";
+
+// ``WhyNoActionKind`` is defined above (ROB-318 diagnostics) and reused here.
+
+export interface ReviewSection {
+  key: ReviewSectionKey;
+  labelKo: string;
+  items: InvestmentReportItem[];
+}
+
+export interface NoActionSummary {
+  kind?: WhyNoActionKind | null;
+  reasonKo?: string | null;
+  blockingSources: string[];
+  excludedCount: number;
+}
+
+export interface ReportReviewSections {
+  sections: ReviewSection[];
+  noActionSummary?: NoActionSummary | null;
+}
+
 export interface InvestmentReportBundle {
   report: InvestmentReport;
   items: InvestmentReportItem[];
   decisionsByItemUuid: Record<string, InvestmentReportItemDecision[]>;
   alerts: InvestmentWatchAlert[];
   events: InvestmentWatchEvent[];
+  // ROB-322 — additive five-section projection. Null on legacy reports or
+  // older backend; `items` remains the fallback rendering source.
+  reviewSections?: ReportReviewSections | null;
 }
 
 export interface InvestmentReportListResponse {

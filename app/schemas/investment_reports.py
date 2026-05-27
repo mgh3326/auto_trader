@@ -498,6 +498,58 @@ class InvestmentWatchEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# ROB-322 — KR /invest/reports five-section review surface. These are a
+# *view-layer projection* over the locked ROB-301 ``decision_bucket`` vocab +
+# ROB-318 report diagnostics; they introduce NO new persisted classification,
+# DB CHECK, or ``decision_bucket`` enum value.
+ReviewSectionKeyLiteral = Literal[
+    "new_buy_candidate",
+    "held_strategy_review",
+    "watch_only",
+    "excluded_or_unavailable",
+]
+# Mirrors WhyNoActionKind in app/services/action_report/common/diagnostics.py
+# (kept local to avoid a schema -> service import, matching this file's pattern
+# of mirroring DB/service enums as Literals).
+WhyNoActionKindLiteral = Literal["data_insufficient", "stale_gated", "real_no_action"]
+
+
+class ReviewSection(BaseModel):
+    """One ordered review queue (sections 1-4 of ROB-322)."""
+
+    key: ReviewSectionKeyLiteral
+    label_ko: str
+    items: list[InvestmentReportItemResponse] = Field(default_factory=list)
+
+
+class NoActionSummary(BaseModel):
+    """Section 5 — report-level no-action summary.
+
+    Distinguishes genuine no-action (``real_no_action``) from
+    ``stale_gated`` / ``data_insufficient`` no-action, derived from the
+    ROB-318 ``snapshot_report_diagnostics.why_no_action`` block. ``kind`` is
+    null on legacy reports that lack diagnostics.
+    """
+
+    kind: WhyNoActionKindLiteral | None = None
+    reason_ko: str | None = None
+    blocking_sources: list[str] = Field(default_factory=list)
+    excluded_count: int = 0
+
+
+class ReportReviewSections(BaseModel):
+    """ROB-322 five-section actionable review projection.
+
+    ``sections`` always carries the four queues in fixed display order (each
+    may be empty); ``no_action_summary`` is null when there is nothing to
+    summarise. Legacy items with ``decision_bucket=None`` are intentionally
+    not projected here and remain available via ``items`` / ``item_groups``.
+    """
+
+    sections: list[ReviewSection] = Field(default_factory=list)
+    no_action_summary: NoActionSummary | None = None
+
+
 class InvestmentReportBundle(BaseModel):
     """``investment_report_get`` / ``GET /.../investment-reports/{uuid}``.
 
@@ -517,6 +569,9 @@ class InvestmentReportBundle(BaseModel):
     decision_rollup: dict[str, list[InvestmentReportItemResponse]] = Field(
         default_factory=dict
     )
+    # ROB-322 — additive five-section review projection. Null/empty for legacy
+    # reports; existing ``items`` / ``item_groups`` remain the fallback.
+    review_sections: ReportReviewSections | None = None
 
 
 class InvestmentReportListResponse(BaseModel):

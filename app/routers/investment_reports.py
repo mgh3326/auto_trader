@@ -40,6 +40,7 @@ from app.schemas.investment_reports import (
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
 )
+from app.services.investment_reports.review_sections import build_review_sections
 
 router = APIRouter(tags=["investment-reports"])
 
@@ -73,8 +74,14 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         ],
     }
 
+    report_response = InvestmentReportResponse.model_validate(bundle["report"])
+    # ROB-322 — additive five-section review projection (view-layer only).
+    review_sections = build_review_sections(
+        item_responses, report_response.snapshot_report_diagnostics
+    )
+
     return InvestmentReportBundle(
-        report=InvestmentReportResponse.model_validate(bundle["report"]),
+        report=report_response,
         items=item_responses,
         decisions_by_item_uuid=decisions_by_item_uuid,
         alerts=[
@@ -85,6 +92,7 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         ],
         item_groups=item_groups,
         decision_rollup=rollup,
+        review_sections=review_sections,
     )
 
 

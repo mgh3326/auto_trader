@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { Card } from "../../ds";
+import { Card, Pill } from "../../ds";
 import { useInvestmentReportBundle } from "../../hooks/useInvestmentReportBundle";
 import type {
   DeliveryStatus,
@@ -14,6 +14,8 @@ import type {
   InvestmentReportItemDecision,
   InvestmentWatchAlert,
   InvestmentWatchEvent,
+  NoActionSummary,
+  ReportReviewSections,
   SnapshotFreshnessSummary,
   SnapshotReportDiagnostics,
 } from "../../types/investmentReports";
@@ -188,6 +190,17 @@ function ReportHeader({
   );
 }
 
+// ROB-322 — confidence is a 0-100 Decimal serialised as string/number; show a
+// rounded integer chip when present, otherwise nothing (never "확인 불가").
+function formatConfidence(
+  raw: number | string | null | undefined,
+): string | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (Number.isFinite(n)) return String(Math.round(n));
+  return typeof raw === "string" ? raw : null;
+}
+
 function ItemRow({
   item,
   decisions,
@@ -197,6 +210,10 @@ function ItemRow({
 }) {
   const kindLabel = ITEM_KIND_LABELS[item.itemKind] ?? item.itemKind;
   const statusLabel = ITEM_STATUS_LABELS[item.status] ?? item.status;
+  const confidenceLabel = formatConfidence(item.confidence);
+  const dimensionCitations = item.citedDimensionReportUuids?.length ?? 0;
+  const hasChips =
+    !!confidenceLabel || !!item.citedSymbolReportUuid || dimensionCitations > 0;
   return (
     <section
       style={{
@@ -231,6 +248,25 @@ function ItemRow({
         </div>
         <span style={{ fontSize: 12, fontWeight: 800 }}>{statusLabel}</span>
       </div>
+      {hasChips ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {confidenceLabel ? (
+            <Pill tone="accent" size="sm">
+              신뢰도 {confidenceLabel}
+            </Pill>
+          ) : null}
+          {item.citedSymbolReportUuid ? (
+            <Pill tone="paper" size="sm">
+              심볼 리포트
+            </Pill>
+          ) : null}
+          {dimensionCitations > 0 ? (
+            <Pill tone="paper" size="sm">
+              차원 리포트 {dimensionCitations}
+            </Pill>
+          ) : null}
+        </div>
+      ) : null}
       <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
         {item.rationale}
       </div>
@@ -393,6 +429,121 @@ function groupItems(items: InvestmentReportItem[]) {
   return buckets;
 }
 
+// ROB-322 — Korean labels for the five-section review surface. The backend
+// also ships ``label_ko`` per section; we prefer our own copy for
+// presentation stability and fall back to the payload label.
+const REVIEW_SECTION_LABELS: Record<string, string> = {
+  new_buy_candidate: "신규매수 후보",
+  held_strategy_review: "보유종목 전략 변경 후보",
+  watch_only: "watch-only",
+  excluded_or_unavailable: "제외 / 확인 불가",
+};
+
+const NO_ACTION_KIND_LABELS: Record<string, string> = {
+  real_no_action: "관망 — 데이터 충분, 신규 액션 없음",
+  stale_gated: "보류 — 스냅샷 신선도 부족",
+  data_insufficient: "보류 — 데이터 부족",
+};
+
+function NoActionSummaryCard({ summary }: { summary: NoActionSummary }) {
+  const kindLabel = summary.kind
+    ? (NO_ACTION_KIND_LABELS[summary.kind] ?? summary.kind)
+    : "무액션";
+  return (
+    <section style={{ display: "grid", gap: 10 }}>
+      <h2 style={{ margin: 0, fontSize: 18 }}>no-action 요약</h2>
+      <div
+        style={{
+          display: "grid",
+          gap: 6,
+          padding: 12,
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          background: "rgba(255,255,255,0.015)",
+        }}
+      >
+        <strong style={{ fontSize: 14 }}>{kindLabel}</strong>
+        {summary.reasonKo ? (
+          <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
+            {summary.reasonKo}
+          </div>
+        ) : null}
+        {summary.blockingSources.length > 0 ? (
+          <div style={{ color: "var(--fg-3)", fontSize: 12 }}>
+            차단 소스: {summary.blockingSources.join(", ")}
+          </div>
+        ) : null}
+        {summary.excludedCount > 0 ? (
+          <div style={{ color: "var(--fg-3)", fontSize: 12 }}>
+            제외 / 확인 불가 {summary.excludedCount}건
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function ReviewSectionsView({
+  review,
+  items,
+  decisionsByItemUuid,
+}: {
+  review: ReportReviewSections;
+  items: InvestmentReportItem[];
+  decisionsByItemUuid: Record<string, InvestmentReportItemDecision[]>;
+}) {
+  const projectedUuids = new Set(
+    review.sections.flatMap((section) => section.items.map((it) => it.itemUuid)),
+  );
+  // Defensive: never hide items the projection didn't classify (legacy items
+  // mixed into a new report). They stay visible under a neutral section.
+  const unprojected = items.filter((it) => !projectedUuids.has(it.itemUuid));
+
+  return (
+    <>
+      {review.sections.map((section) => {
+        const label =
+          REVIEW_SECTION_LABELS[section.key] ?? section.labelKo ?? section.key;
+        return (
+          <section key={section.key} style={{ display: "grid", gap: 10 }}>
+            <h2 style={{ margin: 0, fontSize: 18 }}>
+              {label} ({section.items.length})
+            </h2>
+            {section.items.length > 0 ? (
+              section.items.map((item) => (
+                <ItemRow
+                  key={item.itemUuid}
+                  item={item}
+                  decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+                />
+              ))
+            ) : (
+              <div style={{ color: "var(--fg-3)", fontSize: 13 }}>
+                현재 해당 종목 없음
+              </div>
+            )}
+          </section>
+        );
+      })}
+      {unprojected.length > 0 ? (
+        <section style={{ display: "grid", gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>분류 없음 ({unprojected.length})</h2>
+          {unprojected.map((item) => (
+            <ItemRow
+              key={item.itemUuid}
+              item={item}
+              decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+            />
+          ))}
+        </section>
+      ) : null}
+      {review.noActionSummary ? (
+        <NoActionSummaryCard summary={review.noActionSummary} />
+      ) : null}
+    </>
+  );
+}
+
 export function InvestmentReportBundleContent({
   compact = false,
 }: {
@@ -452,6 +603,14 @@ export function InvestmentReportBundleContent({
   }
 
   const buckets = groupItems(bundle.items);
+  // ROB-322 — when the backend ships the five-section projection (and it has
+  // content), render the report-scoped review surface instead of the flat
+  // itemKind queue. Legacy reports / older backend keep the flat grouping.
+  const review = bundle.reviewSections;
+  const hasReview =
+    !!review &&
+    (review.sections.some((section) => section.items.length > 0) ||
+      !!review.noActionSummary);
 
   return (
     <div
@@ -486,23 +645,29 @@ export function InvestmentReportBundleContent({
 
       <IntermediateAnalysisPanel reportUuid={bundle.report.reportUuid} />
 
-      {(
-        ["action", "watch", "risk"] as const
-      ).map((kind) =>
-        buckets[kind].length > 0 ? (
-          <section key={kind} style={{ display: "grid", gap: 10 }}>
-            <h2 style={{ margin: 0, fontSize: 18 }}>
-              {ITEM_KIND_LABELS[kind]} ({buckets[kind].length})
-            </h2>
-            {buckets[kind].map((item) => (
-              <ItemRow
-                key={item.itemUuid}
-                item={item}
-                decisions={bundle.decisionsByItemUuid[item.itemUuid] ?? []}
-              />
-            ))}
-          </section>
-        ) : null,
+      {hasReview && review ? (
+        <ReviewSectionsView
+          review={review}
+          items={bundle.items}
+          decisionsByItemUuid={bundle.decisionsByItemUuid}
+        />
+      ) : (
+        (["action", "watch", "risk"] as const).map((kind) =>
+          buckets[kind].length > 0 ? (
+            <section key={kind} style={{ display: "grid", gap: 10 }}>
+              <h2 style={{ margin: 0, fontSize: 18 }}>
+                {ITEM_KIND_LABELS[kind]} ({buckets[kind].length})
+              </h2>
+              {buckets[kind].map((item) => (
+                <ItemRow
+                  key={item.itemUuid}
+                  item={item}
+                  decisions={bundle.decisionsByItemUuid[item.itemUuid] ?? []}
+                />
+              ))}
+            </section>
+          ) : null,
+        )
       )}
 
       {bundle.alerts.length > 0 ? (

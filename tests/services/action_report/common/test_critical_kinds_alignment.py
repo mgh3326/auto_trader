@@ -193,3 +193,17 @@ def test_layer_ii_and_iii_agree_on_legacy_bundle_status_none_bypass():
     )
     assert constraints.allow_action_language is True
     assert lint.ok is True
+
+
+def test_external_audit_kinds_are_disjoint_from_critical_kinds() -> None:
+    """ROB-323 — the external cross-check kinds must never overlap the
+    critical/core gating kinds, or an external probe could block generation."""
+    from app.services.action_report.common.critical_kinds import (
+        CRITICAL_SNAPSHOT_KINDS,
+        EXTERNAL_AUDIT_KINDS,
+    )
+
+    assert EXTERNAL_AUDIT_KINDS == frozenset(
+        {"toss_remote_debug", "naver_remote_debug", "browser_probe"}
+    )
+    assert EXTERNAL_AUDIT_KINDS.isdisjoint(set(CRITICAL_SNAPSHOT_KINDS))

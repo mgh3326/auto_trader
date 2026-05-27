@@ -234,3 +234,20 @@ async def test_get_bundle_groups_items(session: AsyncSession) -> None:
 
     assert len(bundle.decision_rollup["new_candidate"]) == 1
     assert len(bundle.decision_rollup["held_action"]) == 1
+
+    # ROB-322 — additive five-section review projection is wired end-to-end.
+    review = bundle.review_sections
+    assert review is not None
+    by_key = {s.key: s for s in review.sections}
+    assert [s.key for s in review.sections] == [
+        "new_buy_candidate",
+        "held_strategy_review",
+        "watch_only",
+        "excluded_or_unavailable",
+    ]
+    assert len(by_key["new_buy_candidate"].items) == 1
+    assert len(by_key["held_strategy_review"].items) == 1  # open_action
+    assert by_key["watch_only"].items == []
+    assert by_key["excluded_or_unavailable"].items == []
+    # No diagnostics + nothing excluded -> no summary.
+    assert review.no_action_summary is None

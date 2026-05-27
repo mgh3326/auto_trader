@@ -40,6 +40,7 @@ from app.services.action_report.common.bundle_aware_publishing import (
 from app.services.action_report.common.critical_kinds import (
     CRITICAL_KIND_DEGRADING_STATUSES,
     CRITICAL_SNAPSHOT_KINDS,
+    EXTERNAL_AUDIT_KINDS,
 )
 from app.services.action_report.common.diagnostics import (
     build_report_diagnostics,
@@ -106,12 +107,20 @@ _KIND_STATUS_RANK: dict[str, int] = {
 _RANK_TO_KIND_STATUS: dict[int, str] = {v: k for k, v in _KIND_STATUS_RANK.items()}
 
 
-def _derive_overall_from_kind_statuses(summary: Mapping[str, Any]) -> str | None:
+def _derive_overall_from_kind_statuses(
+    summary: Mapping[str, Any],
+    *,
+    exclude_kinds: frozenset[str] = frozenset(),
+) -> str | None:
     """Return the worst per-kind status in ``summary``, or ``None`` if the
-    summary carries no recognisable per-kind status entries."""
+    summary carries no recognisable per-kind status entries.
+
+    ``exclude_kinds`` (ROB-323) drops optional/external kinds so an
+    operator-driven stub's ``unavailable`` cannot pollute the core overall.
+    """
     worst_rank = -1
     for kind, info in summary.items():
-        if kind == "overall" or not isinstance(info, Mapping):
+        if kind == "overall" or kind in exclude_kinds or not isinstance(info, Mapping):
             continue
         status = info.get("status")
         if not isinstance(status, str):
@@ -124,6 +133,22 @@ def _derive_overall_from_kind_statuses(summary: Mapping[str, Any]) -> str | None
     if worst_rank < 0:
         return None
     return _RANK_TO_KIND_STATUS[worst_rank]
+
+
+def _optional_kind_names(coverage_summary: Any) -> frozenset[str]:
+    """Kinds that must not pollute the derived core ``overall`` (ROB-323).
+
+    Union of the coverage summary's ``optional`` bucket and the always-external
+    audit kinds. Used only on the ``reused`` fallback path, where there is no
+    direct bundle-status → overall mapping.
+    """
+    coverage = to_jsonable(coverage_summary) or {}
+    names: set[str] = set(EXTERNAL_AUDIT_KINDS)
+    if isinstance(coverage, Mapping):
+        optional = coverage.get("optional")
+        if isinstance(optional, Mapping):
+            names.update(str(k) for k in optional)
+    return frozenset(names)
 
 
 class SnapshotBackedReportGeneratorError(RuntimeError):
@@ -276,6 +301,7 @@ class SnapshotBackedReportGenerator:
             freshness_summary=freshness_summary,
             bundle_status=ensure_response.status,
             why_no_action=why_no_action,
+            snapshot_bundle_uuid=str(ensure_response.bundle_uuid),
         )
 
         if request.status == "published":
@@ -443,16 +469,29 @@ class SnapshotBackedReportGenerator:
             summary = {"raw": summary}
         overall = summary.get("overall")
         if not isinstance(overall, str):
-            # ROB-278 Phase 2 — prefer per-kind statuses over the
-            # bundle-status fallback. A reused bundle whose stored summary
-            # only carries per-kind entries must not silently downgrade to
-            # 'unavailable'; compute the worst per-kind status instead.
-            derived = _derive_overall_from_kind_statuses(summary)
-            if derived is not None:
-                overall = derived
+            # ROB-323 — prefer the authoritative, already core-aware bundle
+            # status. snapshot_bundle._derive_bundle_status escalates only from
+            # the 'required' coverage bucket, so optional/external kinds never
+            # push it to stale_fallback/failed. Only fall back to a per-kind
+            # scan when the status has no direct overall mapping (e.g.
+            # 'reused'), and even then exclude optional/external kinds so an
+            # operator-driven stub's 'unavailable' cannot pollute core overall.
+            mapped = _BUNDLE_STATUS_TO_OVERALL.get(ensure_response.status)
+            if mapped is not None:
+                overall = mapped
             else:
-                overall = _BUNDLE_STATUS_TO_OVERALL.get(
-                    ensure_response.status, "unavailable"
+                derived = _derive_overall_from_kind_statuses(
+                    summary,
+                    exclude_kinds=_optional_kind_names(
+                        getattr(ensure_response, "coverage_summary", None)
+                    ),
+                )
+                overall = (
+                    derived
+                    if derived is not None
+                    else _BUNDLE_STATUS_TO_OVERALL.get(
+                        ensure_response.status, "unavailable"
+                    )
                 )
             summary["overall"] = overall
         return summary
