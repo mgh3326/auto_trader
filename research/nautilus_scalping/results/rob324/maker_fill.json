@@ -32,8 +32,8 @@
   },
   "fill_stats": {
     "entries_attempted": 2318,
-    "entries_filled": 1166,
-    "missed_fills": 1152
+    "entries_filled": 1168,
+    "missed_fills": 1150
   },
   "scenarios": {
     "taker_baseline": {
@@ -221,11 +221,11 @@
         "net_after_cost": {
           "fold": "net_after_cost",
           "trades": 474,
-          "net_pnl": -21.442318236,
+          "net_pnl": -21.442250736,
           "win_rate_pct": 46.20253164556962,
-          "max_drawdown": -27.417398187999996,
-          "profit_factor": 0.8547439958433818,
-          "expectancy": -0.04523695830379747
+          "max_drawdown": -27.417330687999996,
+          "profit_factor": 0.8547443866864247,
+          "expectancy": -0.04523681589873418
         }
       },
       "per_fold": [
@@ -241,11 +241,11 @@
         {
           "fold": "val",
           "trades": 118,
-          "net_pnl": -8.115986084,
+          "net_pnl": -8.115918584,
           "win_rate_pct": 44.067796610169495,
-          "max_drawdown": -15.49548758,
-          "profit_factor": 0.7803738896784984,
-          "expectancy": -0.06877954308474575
+          "max_drawdown": -15.49542008,
+          "profit_factor": 0.7803753151218822,
+          "expectancy": -0.06877897105084745
         },
         {
           "fold": "oos",
@@ -290,18 +290,18 @@
         "net edge not statistically distinguishable from 0 (bootstrap 95% CI straddles 0)"
       ],
       "bootstrap_sharpe_ci": {
-        "observed_sharpe": -0.07828035614737876,
-        "ci_lower": -0.16839093643052883,
-        "ci_upper": 0.014879112106786689,
-        "median_sharpe": -0.07695202985510026,
+        "observed_sharpe": -0.07828011141749915,
+        "ci_lower": -0.16839069341534962,
+        "ci_upper": 0.014879593916047497,
+        "median_sharpe": -0.07695166283026685,
         "prob_positive": 0.046,
         "confidence": 0.95,
         "n_bootstrap": 1000,
         "seed": 42
       },
       "monte_carlo_permutation": {
-        "actual_sharpe": -0.07823588558375752,
-        "actual_max_dd": -27.417398187999996,
+        "actual_sharpe": -0.07823564083815798,
+        "actual_max_dd": -27.417330687999996,
         "p_value_sharpe": 0.277,
         "p_value_maxdd": 0.615,
         "n_sim": 1000,
@@ -339,29 +339,29 @@
         "gross": {
           "fold": "gross",
           "trades": 473,
-          "net_pnl": 5.021367842000002,
+          "net_pnl": 5.021401592000002,
           "win_rate_pct": 46.088794926004226,
-          "max_drawdown": -14.105361804000001,
-          "profit_factor": 1.0387012895280223,
-          "expectancy": 0.01061599966596195
+          "max_drawdown": -14.105328054000001,
+          "profit_factor": 1.0387015597172065,
+          "expectancy": 0.010616071019027487
         },
         "zero_fee": {
           "fold": "zero_fee",
           "trades": 473,
-          "net_pnl": 5.021367842000002,
+          "net_pnl": 5.021401592000002,
           "win_rate_pct": 46.088794926004226,
-          "max_drawdown": -14.105361804000001,
-          "profit_factor": 1.0387012895280223,
-          "expectancy": 0.01061599966596195
+          "max_drawdown": -14.105328054000001,
+          "profit_factor": 1.0387015597172065,
+          "expectancy": 0.010616071019027487
         },
         "net_after_cost": {
           "fold": "net_after_cost",
           "trades": 473,
-          "net_pnl": -28.670627917999997,
+          "net_pnl": -28.670526668,
           "win_rate_pct": 46.088794926004226,
-          "max_drawdown": -31.733700723999984,
-          "profit_factor": 0.8103814797063633,
-          "expectancy": -0.06061443534460888
+          "max_drawdown": -31.733599473999984,
+          "profit_factor": 0.8103820223670731,
+          "expectancy": -0.060614221285412266
         }
       },
       "per_fold": [
@@ -377,11 +377,11 @@
         {
           "fold": "val",
           "trades": 118,
-          "net_pnl": -9.734464126,
+          "net_pnl": -9.734362876,
           "win_rate_pct": 44.067796610169495,
-          "max_drawdown": -16.579354906,
-          "profit_factor": 0.7428724205816818,
-          "expectancy": -0.08249545869491526
+          "max_drawdown": -16.579253656,
+          "profit_factor": 0.7428744073491546,
+          "expectancy": -0.0824946006440678
         },
         {
           "fold": "oos",
@@ -426,18 +426,18 @@
         "net edge statistically <= 0 (bootstrap 95% CI upper -0.0174 < 0)"
       ],
       "bootstrap_sharpe_ci": {
-        "observed_sharpe": -0.10491188039886097,
-        "ci_lower": -0.1929001978389124,
-        "ci_upper": -0.017445294330228577,
-        "median_sharpe": -0.10405353479761338,
+        "observed_sharpe": -0.10491151297976853,
+        "ci_lower": -0.19290018845208304,
+        "ci_upper": -0.017443839999901258,
+        "median_sharpe": -0.10405335159457815,
         "prob_positive": 0.01,
         "confidence": 0.95,
         "n_bootstrap": 1000,
         "seed": 42
       },
       "monte_carlo_permutation": {
-        "actual_sharpe": -0.10486307590049901,
-        "actual_max_dd": -31.733700723999984,
+        "actual_sharpe": -0.1048627084202146,
+        "actual_max_dd": -31.733599473999984,
         "p_value_sharpe": 0.317,
         "p_value_maxdd": 0.404,
         "n_sim": 1000,

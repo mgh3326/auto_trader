@@ -124,15 +124,18 @@ class MeanRevScalper(Strategy):
         self._entry_submitted_bar = self._bar_count
         self.submit_order(order)
 
-    def on_order_filled(self, event) -> None:
+    def on_position_opened(self, event) -> None:
+        # maker entry capture keyed on the POSITION lifecycle (robust to a fill that lands
+        # in the same bar the timeout-cancel fired: the fill wins and the position opens,
+        # so we must track it rather than leave _entry_px None and ride to on_stop).
         if self.config.execution_mode != "maker":
             return
-        if self._entry_order is not None and event.client_order_id == self._entry_order.client_order_id:
-            self.entries_filled += 1
-            self._entry_order = None
-            self._entry_submitted_bar = None
-            self._entry_px = event.last_px.as_decimal()
-            self._adverse_px = self._entry_px
+        pos = self.cache.position(event.position_id)
+        self.entries_filled += 1
+        self._entry_order = None
+        self._entry_submitted_bar = None
+        self._entry_px = Decimal(str(pos.avg_px_open))
+        self._adverse_px = self._entry_px
 
     def on_trade_tick(self, tick: TradeTick) -> None:
         if self.config.execution_mode == "taker":
