@@ -17,10 +17,15 @@ import type {
   Market,
   MarketSession,
   AccountScope,
+  NoActionSummary,
   ProposalDiffEntry,
   ProposalOperation,
   ProposalTargetRef,
+  ReportReviewSections,
   ReportStatus,
+  ReviewSection,
+  ReviewSectionKey,
+  WhyNoActionKind,
   SnapshotFreshnessSummary,
   SnapshotReportDiagnostics,
   ReportSnapshotBundle,
@@ -173,7 +178,37 @@ function normalizeItem(raw: ApiItem): InvestmentReportItem {
     applyPolicy: asOptionalString(raw.apply_policy) as
       | "requires_user_approval"
       | null,
+    // ROB-308 / ROB-322 — classification + citations. Optional on legacy.
+    decisionBucket: asOptionalString(raw.decision_bucket),
+    citedSymbolReportUuid: asOptionalString(raw.cited_symbol_report_uuid),
+    citedDimensionReportUuids: asArray<string>(raw.cited_dimension_report_uuids),
   };
+}
+
+// ROB-322 — normalize the additive five-section review projection. Returns
+// null when the backend omits it (legacy reports / older backend).
+function normalizeReviewSections(raw: unknown): ReportReviewSections | null {
+  if (raw === null || raw === undefined) return null;
+  const obj = asRecord(raw);
+  const sections: ReviewSection[] = asArray<Record<string, unknown>>(
+    obj.sections,
+  ).map((section) => ({
+    key: asString(section.key, "") as ReviewSectionKey,
+    labelKo: asString(section.label_ko, ""),
+    items: asArray<ApiItem>(section.items).map(normalizeItem),
+  }));
+
+  let noActionSummary: NoActionSummary | null = null;
+  if (obj.no_action_summary !== null && obj.no_action_summary !== undefined) {
+    const summary = asRecord(obj.no_action_summary);
+    noActionSummary = {
+      kind: asOptionalString(summary.kind) as WhyNoActionKind | null,
+      reasonKo: asOptionalString(summary.reason_ko),
+      blockingSources: asArray<string>(summary.blocking_sources),
+      excludedCount: asNumber(summary.excluded_count, 0),
+    };
+  }
+  return { sections, noActionSummary };
 }
 
 function normalizeDecision(raw: ApiDecision): InvestmentReportItemDecision {
@@ -284,6 +319,7 @@ export async function fetchInvestmentReportBundle(
     decisions_by_item_uuid?: Record<string, ApiDecision[]>;
     alerts?: ApiAlert[];
     events?: ApiEvent[];
+    review_sections?: unknown;
   }>(BUNDLE_ENDPOINT(reportUuid), signal);
 
   const decisionsRaw = raw.decisions_by_item_uuid ?? {};
@@ -300,6 +336,7 @@ export async function fetchInvestmentReportBundle(
     decisionsByItemUuid,
     alerts: asArray<ApiAlert>(raw.alerts).map(normalizeAlert),
     events: asArray<ApiEvent>(raw.events).map(normalizeEvent),
+    reviewSections: normalizeReviewSections(raw.review_sections),
   };
 }
 
