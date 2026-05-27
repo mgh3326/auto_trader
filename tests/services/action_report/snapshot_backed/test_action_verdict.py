@@ -26,18 +26,25 @@ def test_every_verdict_maps_to_a_locked_decision_bucket() -> None:
 def test_held_unactionable_quote_is_data_gap() -> None:
     holding = {"ticker": "005930", "sellable_quantity": 10}
     quote = {"status": "unavailable"}
-    assert classify_held_symbol(holding, quote, in_candidate_universe=False) == "data_gap"
+    assert (
+        classify_held_symbol(holding, quote, in_candidate_universe=False) == "data_gap"
+    )
 
 
 def test_held_missing_quote_is_data_gap() -> None:
     holding = {"ticker": "005930", "sellable_quantity": 10}
-    assert classify_held_symbol(holding, None, in_candidate_universe=False) == "data_gap"
+    assert (
+        classify_held_symbol(holding, None, in_candidate_universe=False) == "data_gap"
+    )
 
 
 def test_held_sellable_with_actionable_quote_is_sell_review() -> None:
     holding = {"ticker": "005930", "sellable_quantity": 10}
     quote = {"status": "ok", "best_bid": 1.0, "best_ask": 2.0, "bid_depth": 5.0}
-    assert classify_held_symbol(holding, quote, in_candidate_universe=False) == "sell_review"
+    assert (
+        classify_held_symbol(holding, quote, in_candidate_universe=False)
+        == "sell_review"
+    )
 
 
 def test_held_not_sellable_but_trending_is_no_add() -> None:

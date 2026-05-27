@@ -74,10 +74,21 @@ def test_held_and_new_and_risk_are_grouped_by_verdict() -> None:
     items = [
         _item(verdict="sell_review", decision_bucket="open_action"),
         _item(verdict="keep", decision_bucket="completed_or_existing", side=None),
-        _item(verdict="buy_review", decision_bucket="new_buy_candidate", side="buy",
-              intent="buy_review", symbol="000660"),
-        _item(verdict="watch_only", decision_bucket="risk_watch", item_kind="watch",
-              side=None, intent="trend_recovery_review", symbol="035720"),
+        _item(
+            verdict="buy_review",
+            decision_bucket="new_buy_candidate",
+            side="buy",
+            intent="buy_review",
+            symbol="000660",
+        ),
+        _item(
+            verdict="watch_only",
+            decision_bucket="risk_watch",
+            item_kind="watch",
+            side=None,
+            intent="trend_recovery_review",
+            symbol="035720",
+        ),
     ]
     packet = build_action_packet(items, diagnostics=None)
     assert {e.verdict for e in packet.held_actions} == {"sell_review", "keep"}
@@ -101,11 +112,22 @@ def test_no_new_buy_marker_sets_reason_not_a_candidate_row() -> None:
 
 
 def test_data_gaps_from_items_and_diagnostics() -> None:
-    items = [_item(verdict="data_gap", decision_bucket="deferred_no_action",
-                   symbol="005930", side=None, intent="risk_review", item_kind="risk")]
+    items = [
+        _item(
+            verdict="data_gap",
+            decision_bucket="deferred_no_action",
+            symbol="005930",
+            side=None,
+            intent="risk_review",
+            item_kind="risk",
+        )
+    ]
     diagnostics = {
-        "why_no_action": {"kind": "data_insufficient", "reason_ko": "데이터 부족",
-                          "blocking_sources": ["portfolio"]},
+        "why_no_action": {
+            "kind": "data_insufficient",
+            "reason_ko": "데이터 부족",
+            "blocking_sources": ["portfolio"],
+        },
         "data_sufficiency_by_source": {
             "portfolio": {"status": "unavailable", "reason_code": "user_id_missing"},
             "symbol": {"status": "fresh"},

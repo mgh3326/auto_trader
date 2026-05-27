@@ -21,8 +21,11 @@ def test_is_intraday_action_matches_policy_version() -> None:
 
 
 def test_floor_synthesizes_one_item_when_empty() -> None:
-    why = {"kind": "data_insufficient", "reason_ko": "데이터 부족 — portfolio 확인 불가",
-           "blocking_sources": ["portfolio"]}
+    why = {
+        "kind": "data_insufficient",
+        "reason_ko": "데이터 부족 — portfolio 확인 불가",
+        "blocking_sources": ["portfolio"],
+    }
     out = ensure_action_floor([], why_no_action=why)
     assert len(out) == 1
     item = out[0]
@@ -32,8 +35,11 @@ def test_floor_synthesizes_one_item_when_empty() -> None:
 
 
 def test_floor_real_no_action_uses_no_action_verdict() -> None:
-    why = {"kind": "real_no_action", "reason_ko": "데이터 충분 — 현 시점 신규 액션 없음(관망)",
-           "blocking_sources": []}
+    why = {
+        "kind": "real_no_action",
+        "reason_ko": "데이터 충분 — 현 시점 신규 액션 없음(관망)",
+        "blocking_sources": [],
+    }
     out = ensure_action_floor([], why_no_action=why)
     assert out[0].evidence_snapshot["action_verdict"] == "keep"
     assert out[0].decision_bucket == "completed_or_existing"
@@ -42,8 +48,13 @@ def test_floor_real_no_action_uses_no_action_verdict() -> None:
 def test_floor_is_noop_when_items_present() -> None:
     existing = [
         IngestReportItem(
-            client_item_key="x", item_kind="action", symbol="005930", side="sell",
-            intent="sell_review", rationale="r", operation="review",
+            client_item_key="x",
+            item_kind="action",
+            symbol="005930",
+            side="sell",
+            intent="sell_review",
+            rationale="r",
+            operation="review",
             apply_policy="requires_user_approval",
             evidence_snapshot={"action_verdict": "sell_review"},
             decision_bucket="open_action",

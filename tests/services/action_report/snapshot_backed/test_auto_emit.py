@@ -457,10 +457,13 @@ def test_existing_sell_item_is_stamped_with_verdict_and_bucket() -> None:
     # Default mode (no intraday_floor): existing sell candidate now carries the
     # ActionPacket sub-verdict + decision_bucket so it projects.
     snapshots = [
-        _make_snapshot(kind="portfolio",
-                       payload=_kis_portfolio_payload(ticker="005930", sellable=5.0)),
-        _make_snapshot(kind="symbol", symbol="005930",
-                       payload=_ok_quote_payload("005930")),
+        _make_snapshot(
+            kind="portfolio",
+            payload=_kis_portfolio_payload(ticker="005930", sellable=5.0),
+        ),
+        _make_snapshot(
+            kind="symbol", symbol="005930", payload=_ok_quote_payload("005930")
+        ),
     ]
     items = EvidenceAutoEmitter().propose(
         snapshots=snapshots, request_market="kr", account_scope="kis_live"
@@ -474,8 +477,10 @@ def test_intraday_floor_classifies_every_held_symbol() -> None:
     # Held symbol with NO actionable quote -> data_gap item (would be skipped
     # entirely in default mode).
     snapshots = [
-        _make_snapshot(kind="portfolio",
-                       payload=_kis_portfolio_payload(ticker="005930", sellable=0.0)),
+        _make_snapshot(
+            kind="portfolio",
+            payload=_kis_portfolio_payload(ticker="005930", sellable=0.0),
+        ),
     ]
     items = EvidenceAutoEmitter(intraday_floor=True).propose(
         snapshots=snapshots, request_market="kr", account_scope="kis_live"
@@ -487,16 +492,20 @@ def test_intraday_floor_classifies_every_held_symbol() -> None:
 
 def test_intraday_floor_emits_no_new_buy_marker_when_stale_only() -> None:
     snapshots = [
-        _make_snapshot(kind="portfolio",
-                       payload=_kis_portfolio_payload(ticker="005930", sellable=0.0)),
-        _make_snapshot(kind="candidate_universe",
-                       payload=_candidate_payload("stale_only")),
+        _make_snapshot(
+            kind="portfolio",
+            payload=_kis_portfolio_payload(ticker="005930", sellable=0.0),
+        ),
+        _make_snapshot(
+            kind="candidate_universe", payload=_candidate_payload("stale_only")
+        ),
     ]
     items = EvidenceAutoEmitter(intraday_floor=True).propose(
         snapshots=snapshots, request_market="kr", account_scope="kis_live"
     )
     marker = next(
-        i for i in items
+        i
+        for i in items
         if i.evidence_snapshot.get("action_verdict") == "no_new_buy_candidates"
     )
     assert marker.symbol is None
@@ -507,10 +516,13 @@ def test_intraday_floor_emits_no_new_buy_marker_when_stale_only() -> None:
 def test_default_mode_emits_no_marker_and_no_keep_items() -> None:
     # Backwards-compat: without intraday_floor, behaviour is unchanged.
     snapshots = [
-        _make_snapshot(kind="portfolio",
-                       payload=_kis_portfolio_payload(ticker="005930", sellable=0.0)),
-        _make_snapshot(kind="candidate_universe",
-                       payload=_candidate_payload("stale_only")),
+        _make_snapshot(
+            kind="portfolio",
+            payload=_kis_portfolio_payload(ticker="005930", sellable=0.0),
+        ),
+        _make_snapshot(
+            kind="candidate_universe", payload=_candidate_payload("stale_only")
+        ),
     ]
     items = EvidenceAutoEmitter().propose(
         snapshots=snapshots, request_market="kr", account_scope="kis_live"
@@ -527,28 +539,38 @@ def test_intraday_floor_never_classifies_reference_holdings() -> None:
         "primary_source": "manual",
         "holdings": [{"ticker": "AAPL", "sellable_quantity": 3, "source": "manual"}],
         "reference_holdings": [{"ticker": "AAPL", "source": "toss"}],
-        "count": 1, "market": "us",
+        "count": 1,
+        "market": "us",
     }
     snapshots = [_make_snapshot(kind="portfolio", payload=payload)]
     items = EvidenceAutoEmitter(intraday_floor=True).propose(
         snapshots=snapshots, request_market="us", account_scope="kis_live"
     )
-    assert all(i.symbol != "AAPL" for i in items if i.evidence_snapshot.get("action_verdict") in
-               {"sell_review", "keep", "no_add"})
+    assert all(
+        i.symbol != "AAPL"
+        for i in items
+        if i.evidence_snapshot.get("action_verdict")
+        in {"sell_review", "keep", "no_add"}
+    )
 
 
 def test_intraday_floor_user_id_missing_portfolio_yields_no_held_items() -> None:
     # primary_source='none' (user_id missing path) -> no holdings to classify;
     # the generator-level floor (Task 5) supplies the data_gap item instead.
     payload = {
-        "primary_source": "none", "holdings": [], "reference_holdings": [],
-        "count": 0, "market": "kr",
+        "primary_source": "none",
+        "holdings": [],
+        "reference_holdings": [],
+        "count": 0,
+        "market": "kr",
     }
     snapshots = [_make_snapshot(kind="portfolio", payload=payload)]
     items = EvidenceAutoEmitter(intraday_floor=True).propose(
         snapshots=snapshots, request_market="kr", account_scope="kis_live"
     )
     held_verdicts = {"sell_review", "keep", "no_add", "data_gap"}
-    assert not [i for i in items if i.symbol and
-                i.evidence_snapshot.get("action_verdict") in held_verdicts]
-
+    assert not [
+        i
+        for i in items
+        if i.symbol and i.evidence_snapshot.get("action_verdict") in held_verdicts
+    ]

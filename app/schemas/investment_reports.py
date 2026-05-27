@@ -629,7 +629,6 @@ class InvestmentReportBundle(BaseModel):
     action_packet: ActionPacket | None = None
 
 
-
 class InvestmentReportListResponse(BaseModel):
     """``investment_report_list`` / ``GET /.../investment-reports``."""
 

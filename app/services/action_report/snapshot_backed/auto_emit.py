@@ -123,7 +123,6 @@ class EvidenceAutoEmitter:
         self._max_buy_candidates = max_buy_candidates
         self._intraday_floor = intraday_floor
 
-
     def propose(
         self,
         *,
@@ -388,8 +387,10 @@ class EvidenceAutoEmitter:
                             symbol=ticker,
                             side="sell" if verdict == "sell_review" else None,
                             intent=(
-                                "sell_review" if verdict == "sell_review"
-                                else "risk_review" if verdict == "data_gap"
+                                "sell_review"
+                                if verdict == "sell_review"
+                                else "risk_review"
+                                if verdict == "data_gap"
                                 else "rebalance_review"
                             ),
                             rationale=(
@@ -409,7 +410,8 @@ class EvidenceAutoEmitter:
                                         "sellable_quantity"
                                     ),
                                     "quote_status": quote.get("status")
-                                    if quote else "no_snapshot",
+                                    if quote
+                                    else "no_snapshot",
                                     "proposer": "auto_emit/intraday_held_floor",
                                 },
                             ),
@@ -462,4 +464,3 @@ class EvidenceAutoEmitter:
                     ]
 
         return items
-
