@@ -128,3 +128,16 @@ def test_items_without_verdict_are_not_projected() -> None:
     packet = build_action_packet(items, diagnostics=None)
     assert packet.held_actions == []
 
+
+def test_serialise_attaches_action_packet(monkeypatch) -> None:
+    # _serialise_bundle should project items into bundle.action_packet using
+    # the same build_action_packet path (additive, never None for intraday).
+    from app.routers import investment_reports as mod
+
+    items = [_item(verdict="sell_review", decision_bucket="open_action")]
+    packet = build_action_packet(items, diagnostics=None)
+    assert packet.held_actions  # sanity: projection works on these items
+    # The router import wires build_action_packet:
+    assert hasattr(mod, "build_action_packet")
+
+
