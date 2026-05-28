@@ -61,6 +61,10 @@ def _entry_rank(item: InvestmentReportItemResponse) -> int | None:
 
 def _entry(item: InvestmentReportItemResponse, verdict: str) -> ActionPacketEntry:
     rank = _entry_rank(item)
+    evidence = item.evidence_snapshot or {}
+    reason = (
+        evidence.get("reject_or_wait_reason") if isinstance(evidence, Mapping) else None
+    )
     return ActionPacketEntry(
         verdict=verdict,  # type: ignore[arg-type]
         symbol=item.symbol,
@@ -69,6 +73,7 @@ def _entry(item: InvestmentReportItemResponse, verdict: str) -> ActionPacketEntr
         item_uuid=item.item_uuid,
         priority=item.priority if item.priority > 0 else None,
         rank=rank,
+        reject_or_wait_reason=str(reason) if isinstance(reason, str) else None,
         evidence_snapshot=dict(item.evidence_snapshot or {}),
     )
 
@@ -103,6 +108,7 @@ def build_action_packet(
 
     no_action_reason = _no_action_summary(diagnostics)
     new_buy.sort(key=lambda entry: entry.rank or entry.priority or 1_000_000)
+    risk.sort(key=lambda entry: entry.rank or entry.priority or 1_000_000)
     data_gaps.extend(_diagnostics_gaps(diagnostics))
 
     return ActionPacket(

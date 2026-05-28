@@ -369,6 +369,7 @@ export interface ActionPacketEntry {
   itemUuid?: string | null;
   priority?: number | null;
   rank?: number | null;
+  rejectOrWaitReason?: string | null;
   evidenceSnapshot: Record<string, unknown>;
 }
 

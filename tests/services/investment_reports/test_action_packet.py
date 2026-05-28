@@ -192,3 +192,42 @@ def test_serialise_attaches_action_packet(monkeypatch) -> None:
     assert packet.held_actions  # sanity: projection works on these items
     # The router import wires build_action_packet:
     assert hasattr(mod, "build_action_packet")
+
+
+def test_data_gap_candidate_becomes_data_gap_entry_with_symbol() -> None:
+    gap = _item(
+        verdict="data_gap",
+        decision_bucket="deferred_no_action",
+        side=None,
+        intent="risk_review",
+        symbol="000660",
+        evidence_extra={"reject_or_wait_reason": "quote_missing"},
+    )
+    packet = build_action_packet([gap], diagnostics=None)
+    sources = [g.source for g in packet.data_gaps_for_next_cycle]
+    assert "000660" in sources
+
+
+def test_watch_only_candidate_exposes_reject_reason_and_rank_sort() -> None:
+    low = _item(
+        verdict="watch_only",
+        decision_bucket="risk_watch",
+        side=None,
+        intent="trend_recovery_review",
+        symbol="005930",
+        priority=2,
+        evidence_extra={"candidate_rank": 2, "reject_or_wait_reason": "low_liquidity"},
+    )
+    high = _item(
+        verdict="watch_only",
+        decision_bucket="risk_watch",
+        side=None,
+        intent="trend_recovery_review",
+        symbol="000660",
+        priority=1,
+        evidence_extra={"candidate_rank": 1, "reject_or_wait_reason": "screener_stale"},
+    )
+    packet = build_action_packet([low, high], diagnostics=None)
+    assert [e.symbol for e in packet.risk_reviews] == ["000660", "005930"]
+    assert packet.risk_reviews[0].reject_or_wait_reason == "screener_stale"
+    assert packet.risk_reviews[1].reject_or_wait_reason == "low_liquidity"

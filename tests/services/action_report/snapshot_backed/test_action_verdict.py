@@ -9,6 +9,7 @@ from app.models.investment_symbol_intermediate_reports import DECISION_BUCKETS
 from app.services.action_report.snapshot_backed.action_verdict import (
     ACTION_VERDICTS,
     VERDICT_TO_BUCKET,
+    classify_candidate_symbol,
     classify_held_symbol,
 )
 
@@ -57,3 +58,48 @@ def test_held_not_sellable_not_trending_is_keep() -> None:
     holding = {"ticker": "005930", "sellable_quantity": 0}
     quote = {"status": "ok", "best_bid": 1.0, "best_ask": 2.0, "ask_depth": 5.0}
     assert classify_held_symbol(holding, quote, in_candidate_universe=False) == "keep"
+
+
+_OK_QUOTE = {
+    "status": "ok",
+    "best_bid": 100,
+    "best_ask": 101,
+    "bid_depth": 5,
+    "ask_depth": 5,
+    "spread_bps": 10,
+}
+_DEAD_QUOTE = {
+    "status": "ok",
+    "best_bid": 0,
+    "best_ask": 0,
+    "bid_depth": 0,
+    "ask_depth": 0,
+}
+
+
+@pytest.mark.parametrize(
+    "quote, present, useful, expected",
+    [
+        (None, False, True, "data_gap"),  # no snapshot at all
+        (_DEAD_QUOTE, True, True, "watch_only"),  # 저유동성
+        (_OK_QUOTE, True, False, "watch_only"),  # screener stale
+        (_OK_QUOTE, True, True, "buy_review"),  # actionable + useful
+    ],
+)
+def test_classify_candidate_symbol(quote, present, useful, expected):
+    assert (
+        classify_candidate_symbol(
+            quote, universe_useful=useful, quote_snapshot_present=present
+        )
+        == expected
+    )
+
+
+def test_classify_candidate_symbol_never_rejects():
+    # Honest-verdict only: rejected / limit_wait are Hermes-only.
+    for present in (True, False):
+        for useful in (True, False):
+            v = classify_candidate_symbol(
+                _DEAD_QUOTE, universe_useful=useful, quote_snapshot_present=present
+            )
+            assert v in {"data_gap", "watch_only", "buy_review"}

@@ -227,6 +227,7 @@ function normalizeActionPacketEntry(raw: unknown): ActionPacketEntry {
     itemUuid: asOptionalString(obj.item_uuid),
     priority: asOptionalNumber(obj.priority),
     rank: asOptionalNumber(obj.rank),
+    rejectOrWaitReason: asOptionalString(obj.reject_or_wait_reason),
     evidenceSnapshot: asRecord(obj.evidence_snapshot),
   };
 }
