@@ -56,6 +56,9 @@ function EntryRow({ entry }: { entry: ActionPacketEntry }) {
         {typeof entry.priority === "number" ? (
           <Pill tone="accent" size="sm">P{entry.priority}</Pill>
         ) : null}
+        {entry.rejectOrWaitReason ? (
+          <Pill tone="paper" size="sm">{entry.rejectOrWaitReason}</Pill>
+        ) : null}
       </div>
       <p style={{ margin: 0, fontSize: 13 }}>{entry.rationale}</p>
     </div>

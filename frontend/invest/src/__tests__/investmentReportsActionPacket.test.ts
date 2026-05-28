@@ -23,7 +23,8 @@ describe("normalizeActionPacket", () => {
       ],
       no_new_buy_reason: "스크리너 stale",
       risk_reviews: [{ verdict: "watch_only", symbol: "035720", rationale: "관망",
-                       item_uuid: "i3", evidence_snapshot: {} }],
+                       item_uuid: "i3", reject_or_wait_reason: "low_liquidity",
+                       evidence_snapshot: {} }],
       no_action_reason: { kind: "data_insufficient", reason_ko: "데이터 부족",
                           blocking_sources: ["portfolio"], excluded_count: 2 },
       data_gaps_for_next_cycle: [
@@ -37,6 +38,7 @@ describe("normalizeActionPacket", () => {
     expect(packet!.newBuyCandidates[0]!.rank).toBe(1);
     expect(packet!.noNewBuyReason).toBe("스크리너 stale");
     expect(packet!.riskReviews[0]!.verdict).toBe("watch_only");
+    expect(packet!.riskReviews[0]!.rejectOrWaitReason).toBe("low_liquidity");
     expect(packet!.noActionReason!.kind).toBe("data_insufficient");
     expect(packet!.noActionReason!.blockingSources).toEqual(["portfolio"]);
     expect(packet!.dataGapsForNextCycle[0]).toEqual({

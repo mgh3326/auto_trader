@@ -74,4 +74,15 @@ describe("ActionPacketView", () => {
     })} />);
     expect(screen.getAllByText("해당 없음").length).toBeGreaterThanOrEqual(3);
   });
+
+  it("renders the reject/wait reason on risk rows", () => {
+    render(<ActionPacketView packet={makePacket({
+      riskReviews: [
+        { verdict: "watch_only", symbol: "035720", side: null, rationale: "관망",
+          itemUuid: "r1", evidenceSnapshot: {}, rejectOrWaitReason: "low_liquidity" },
+      ],
+    })} />);
+    expect(screen.getByText("low_liquidity")).toBeInTheDocument();
+  });
 });
+
