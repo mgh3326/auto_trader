@@ -453,11 +453,17 @@ async def test_generate_from_bundle_threads_user_id_to_request(
 
 
 @pytest.mark.asyncio
-async def test_generate_from_bundle_user_id_defaults_to_none_fail_closed(
+async def test_generate_from_bundle_user_id_defaults_to_mcp_user(
     monkeypatch: pytest.MonkeyPatch, session: AsyncSession
 ) -> None:
-    """ROB-318/ROB-278 — omitting user_id keeps broker collectors fail-closed."""
+    """ROB-352 — omitting user_id now resolves the MCP default (like get_holdings)
+    so kis_live portfolios are readable, instead of staying fail-closed. The
+    resolved id is surfaced in the response and reaches the request.
+    """
     from app.core.config import settings
+    from app.mcp_server.tooling.investment_reports_handlers import (
+        _default_generator_user_id,
+    )
 
     monkeypatch.setattr(
         settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
@@ -475,5 +481,7 @@ async def test_generate_from_bundle_user_id_defaults_to_none_fail_closed(
         status="draft",
     )
 
+    expected = _default_generator_user_id()
     assert result["success"] is True
-    assert captured["request"].user_id is None
+    assert result["resolved_user_id"] == expected
+    assert captured["request"].user_id == expected

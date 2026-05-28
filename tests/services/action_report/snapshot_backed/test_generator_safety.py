@@ -165,6 +165,10 @@ def _build_generator() -> tuple[
 
     fake_ingest = AsyncMock()
     fake_ingest.ingest = AsyncMock(return_value=MagicMock(report_uuid=uuid.uuid4()))
+    # ROB-352 — generate() now consults the ingestion service for an existing
+    # report before recomputing; return None so the safety tests exercise the
+    # full (non-reuse) generation path.
+    fake_ingest.get_existing_with_item_count = AsyncMock(return_value=None)
 
     generator = SnapshotBackedReportGenerator(
         session=MagicMock(),
