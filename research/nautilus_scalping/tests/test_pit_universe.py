@@ -10,8 +10,14 @@ ts/listed_from/delisted_at/min_seasoning are all integers in the SAME unit
 (caller-defined, e.g. epoch ms); delisted_at is exclusive, None = still live.
 """
 
+import json
+from pathlib import Path
+
 import pit_universe
 from pit_universe import PITManifest, SymbolListing
+
+_MANIFEST = Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.json"
+_META = Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.meta.json"
 
 
 def _manifest():
@@ -151,3 +157,17 @@ def test_snapshot_hash_is_stable_and_order_independent():
     ])
     assert a.snapshot_hash() == b.snapshot_hash()
     assert len(a.snapshot_hash()) == 64
+
+
+def test_committed_manifest_loads_and_hash_matches_meta():
+    m = pit_universe.PITManifest.load(_MANIFEST)
+    meta = json.loads(_META.read_text())
+    assert len(m.listings) == meta["symbol_count"]
+    assert m.snapshot_hash() == meta["snapshot_hash"]
+
+
+def test_committed_manifest_has_a_usable_perp_universe():
+    m = pit_universe.PITManifest.load(_MANIFEST).strict_usdt_perp()
+    assert len(m.listings) > 100
+    syms = {x.symbol for x in m.listings}
+    assert {"EOSUSDT", "GALUSDT", "HNTUSDT"}.issubset(syms)

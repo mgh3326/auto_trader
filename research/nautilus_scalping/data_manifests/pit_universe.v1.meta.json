@@ -1,0 +1,9 @@
+{
+  "schema_version": "pit_universe.v1",
+  "snapshot_hash": "e715de33042e9b897ecc43e016ad4b651bbbf58c522fa8e14f1c762593a16cf6",
+  "symbol_count": 843,
+  "source": "data.binance.vision/futures/um (ROB-349 build_pit_universe.py)",
+  "source_records": 843,
+  "build_window": "2020-01..2026-05 (archived monthly klines coverage)",
+  "note": "Metadata only \u2014 no raw OHLCV. Day-precise active_from/active_to mapped to epoch-ms listed_from/delisted_at (exclusive). strict_usdt_perp() applied at use."
+}
