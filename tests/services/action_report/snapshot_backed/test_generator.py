@@ -44,13 +44,51 @@ class _FakeReport:
         self.report_uuid = report_uuid
 
 
+class _StoredReport:
+    """ROB-352 — minimal stand-in for a persisted InvestmentReport row."""
+
+    def __init__(self, *, report_uuid: uuid.UUID, bundle_uuid: uuid.UUID) -> None:
+        self.id = 42
+        self.report_uuid = report_uuid
+        self.snapshot_bundle_uuid = bundle_uuid
+        self.snapshot_policy_version = "intraday_action_report_v1"
+        self.snapshot_coverage_summary = {"required": {"portfolio": "fresh"}}
+        self.snapshot_freshness_summary = {"overall": "fresh"}
+        self.source_conflicts = {}
+        self.unavailable_sources = {}
+        self.report_metadata = {"stale_gate": {"reject": False}}
+        self.snapshot_report_diagnostics = {"why_no_action": None}
+
+
 class _FakeIngestionService:
-    def __init__(self, *, report_uuid: uuid.UUID | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        report_uuid: uuid.UUID | None = None,
+        existing: _StoredReport | None = None,
+        existing_item_count: int = 0,
+    ) -> None:
         self.report_uuid = report_uuid or uuid.uuid4()
         self.calls: list[IngestReportRequest] = []
+        self.overwrite_calls: list[tuple[str | None, bool]] = []
+        self._existing = existing
+        self._existing_item_count = existing_item_count
 
-    async def ingest(self, request: IngestReportRequest):
+    async def get_existing_with_item_count(self, request: IngestReportRequest):
+        if self._existing is None:
+            return None
+        return self._existing, self._existing_item_count
+
+    async def ingest(
+        self,
+        request: IngestReportRequest,
+        *,
+        overwrite: bool = False,
+        overwrite_reason: str | None = None,
+    ):
         self.calls.append(request)
+        if overwrite:
+            self.overwrite_calls.append((overwrite_reason, overwrite))
         return _FakeReport(self.report_uuid)
 
 
@@ -1260,3 +1298,63 @@ async def test_rob323_critical_unavailable_still_blocks_published() -> None:
     )
     with pytest.raises(PublishBlockedByStaleGateError):
         await gen.generate(_make_request(status="published"))
+
+
+@pytest.mark.asyncio
+async def test_reuse_returns_stored_without_ensuring_bundle() -> None:
+    """ROB-352 — existing key + default path returns stored report, skips ensure()."""
+    stored = _StoredReport(report_uuid=uuid.uuid4(), bundle_uuid=uuid.uuid4())
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService(existing=stored, existing_item_count=3)
+
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(_make_request())
+
+    assert response.reused_existing is True
+    assert response.report_uuid == stored.report_uuid
+    assert response.items_count == 3
+    assert response.bundle_reused is True
+    assert ensure.calls == []  # never ensured a bundle
+    assert ingest.calls == []  # never re-ingested
+
+
+@pytest.mark.asyncio
+async def test_overwrite_recomputes_and_forwards_overwrite_flag() -> None:
+    """ROB-352 — overwrite_existing=True recomputes and ingests with overwrite."""
+    stored = _StoredReport(report_uuid=uuid.uuid4(), bundle_uuid=uuid.uuid4())
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService(existing=stored, existing_item_count=3)
+
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    response = await gen.generate(
+        _make_request(overwrite_existing=True, overwrite_reason="redo")
+    )
+
+    assert response.reused_existing is False
+    assert len(ensure.calls) == 1  # recomputed
+    assert ingest.overwrite_calls == [("redo", True)]  # forwarded
+
+
+@pytest.mark.asyncio
+async def test_market_session_threads_into_ingest_request() -> None:
+    """ROB-352 — market_session reaches the IngestReportRequest (idempotency key)."""
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request(market_session="pre"))
+    assert ingest.calls[0].market_session == "pre"

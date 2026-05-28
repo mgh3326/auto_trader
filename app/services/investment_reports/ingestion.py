@@ -14,6 +14,8 @@ but never commits).
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -36,6 +38,33 @@ class InvestmentReportIngestionService:
     ) -> None:
         self._session = session
         self._repo = repository or InvestmentReportsRepository(session)
+
+    async def get_existing_with_item_count(
+        self, request: Any
+    ) -> tuple[InvestmentReport, int] | None:
+        """ROB-352 — return ``(stored report, item_count)`` for this request's
+        idempotency key, or ``None`` when no report exists yet.
+
+        Used by the generator's default-reuse short-circuit so it can build a
+        response from the STORED row instead of recomputing a divergent,
+        unstored payload. ``request`` is duck-typed: any object carrying the
+        seven idempotency-key fields works (both ``IngestReportRequest`` and
+        the generator's ``ReportGenerationRequest`` qualify).
+        """
+        idempotency_key = report_key(
+            report_type=request.report_type,
+            market=request.market,
+            market_session=request.market_session,
+            account_scope=request.account_scope,
+            execution_mode=request.execution_mode,
+            kst_date=request.kst_date,
+            generator_version=request.generator_version,
+        )
+        existing = await self._repo.get_report_by_idempotency_key(idempotency_key)
+        if existing is None:
+            return None
+        items = await self._repo.list_items_for_report(existing.id)
+        return existing, len(items)
 
     async def ingest(
         self,

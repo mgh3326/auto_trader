@@ -213,6 +213,18 @@ class SnapshotBackedReportGenerator:
     ) -> ReportGenerationResponse:
         self._validate_pair(request)
 
+        # ROB-352 — deterministic regeneration: by default, an existing report
+        # for this idempotency key is returned FROM THE STORED ROW. We never
+        # recompute a divergent, unstored payload on the default path (the old
+        # behaviour built the response from a fresh computation while ingest()
+        # silently returned the stale stored row). Only an explicit overwrite
+        # recomputes and transactionally replaces.
+        if not request.overwrite_existing:
+            found = await self._ingestion_service.get_existing_with_item_count(request)
+            if found is not None:
+                existing, item_count = found
+                return self._response_from_stored(existing, item_count, request)
+
         # ROB-278 — derive symbol scope (seed + portfolio/journal/watch/candidate)
         # before ensuring the bundle so the symbol collector sees the union.
         derivation = await self._symbol_derivation.derive(
@@ -350,7 +362,11 @@ class SnapshotBackedReportGenerator:
                 stale_gate=gate_result,
             )
 
-        report = await self._ingestion_service.ingest(ingest_request)
+        report = await self._ingestion_service.ingest(
+            ingest_request,
+            overwrite=request.overwrite_existing,
+            overwrite_reason=request.overwrite_reason,
+        )
 
         return ReportGenerationResponse(
             report_uuid=report.report_uuid,
@@ -378,6 +394,51 @@ class SnapshotBackedReportGenerator:
                 f"unsupported market/account_scope pair: "
                 f"{request.market!r}/{request.account_scope!r}"
             )
+
+    def _response_from_stored(
+        self,
+        report: Any,
+        item_count: int,
+        request: ReportGenerationRequest,
+    ) -> ReportGenerationResponse:
+        """ROB-352 — build a response that mirrors the persisted row.
+
+        The default (non-overwrite) path returns this instead of recomputing,
+        so the stored row and the returned payload can never disagree on the
+        actionable/deferred/risk item set.
+        """
+        if report.snapshot_bundle_uuid is None:
+            # Only this generator's rows share the key (report_type +
+            # generator_version are in the key) and they always set a bundle
+            # uuid. A None here means a foreign row collided — fail loudly
+            # rather than fabricate a response.
+            raise SnapshotBackedReportGeneratorError(
+                "cannot reuse stored report: snapshot_bundle_uuid is missing; "
+                "pass overwrite_existing=true with overwrite_reason to regenerate"
+            )
+        freshness = report.snapshot_freshness_summary or {}
+        metadata = report.report_metadata or {}
+        diagnostics = report.snapshot_report_diagnostics or {}
+        return ReportGenerationResponse(
+            report_uuid=report.report_uuid,
+            snapshot_bundle_uuid=report.snapshot_bundle_uuid,
+            snapshot_policy_version=report.snapshot_policy_version
+            or request.policy_version,
+            snapshot_coverage_summary=report.snapshot_coverage_summary or {},
+            snapshot_freshness_summary=freshness,
+            source_conflicts=report.source_conflicts or {},
+            unavailable_sources=report.unavailable_sources or {},
+            items_count=item_count,
+            warnings=[
+                "reused_existing_report: pass overwrite_existing=true with "
+                "overwrite_reason to regenerate"
+            ],
+            bundle_status=freshness.get("overall", "reused"),
+            bundle_reused=True,
+            stale_gate=metadata.get("stale_gate", {}),
+            why_no_action=diagnostics.get("why_no_action"),
+            reused_existing=True,
+        )
 
     async def _auto_emit_items_from_bundle(
         self,
@@ -619,6 +680,7 @@ class SnapshotBackedReportGenerator:
         return IngestReportRequest(
             report_type=request.report_type,
             market=request.market,
+            market_session=request.market_session,
             account_scope=request.account_scope,
             execution_mode=request.execution_mode,
             created_by_profile=request.created_by_profile,

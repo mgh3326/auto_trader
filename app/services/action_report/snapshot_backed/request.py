@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.investment_reports import IngestReportItem
+from app.schemas.investment_reports import IngestReportItem, MarketSessionLiteral
 from app.schemas.investment_snapshots import SnapshotRequestedBy
 
 GeneratorMarketLiteral = Literal["kr", "us", "crypto"]
@@ -34,7 +34,10 @@ class ReportGenerationRequest(BaseModel):
 
     market: GeneratorMarketLiteral
     account_scope: GeneratorAccountScopeLiteral
-    market_session: str | None = None
+    # ROB-352 — constrained to the same vocabulary as the persisted layer
+    # (IngestReportRequest) so an invalid session fails fast at request
+    # validation instead of deep inside the ingest-request build.
+    market_session: MarketSessionLiteral | None = None
     policy_version: str = "intraday_action_report_v1"
     execution_mode: Literal["advisory_only"] = "advisory_only"
     status: GeneratorStatusLiteral = "published"
