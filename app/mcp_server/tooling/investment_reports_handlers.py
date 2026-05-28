@@ -592,9 +592,7 @@ async def investment_report_generate_from_bundle_impl(
     # ROB-352 — resolve a default user_id for live account scopes so the
     # portfolio collector can read live holdings/cash (was a hidden required
     # dependency that degraded the bundle to failed → forced no_action).
-    resolved_user_id = (
-        user_id if user_id is not None else _default_generator_user_id()
-    )
+    resolved_user_id = user_id if user_id is not None else _default_generator_user_id()
 
     payload: dict[str, Any] = {
         "market": market,
