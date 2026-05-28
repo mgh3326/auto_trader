@@ -15,7 +15,7 @@
 
 "순차 활용"은 auto_trader가 MCP를 명령형으로 줄세워 호출하는 게 아니다. 결정적 prepare → Hermes pull/compose/push의 비대칭 흐름이다. auto_trader는 compose를 오케스트레이션하지 않는다(in-process LLM import guard 유지).
 
-```
+```text
 Phase 0  축적 (생성 경로 밖, 평소 pre-collect)
   news-ingestor → news_articles / *_related_symbols / *_analysis_results
   screener job  → invest_screener_snapshots / investor_flow_snapshots / invest_crypto_screener_snapshots
@@ -59,8 +59,8 @@ Phase 4  push (ingest)
 | my | kis_live | primary | — | report_time_on_demand | — | no | 확인 불가 | pending_orders |
 | my | kis_live | primary | — | report_time_on_demand | — | yes | 확인 불가 | portfolio |
 | my | toss_screen | low_trust_attention | — | report_time_on_demand | — | no | 확인 불가 | toss_remote_debug |
-| my | trade_journal_db | primary | trade_journal | pre_collected | — | no | unavailable | journal |
-| my | watchlist_db | primary | watch_context | pre_collected | — | no | unavailable | watch_context |
+| my | trade_journal_db | primary | review.trade_journals | pre_collected | — | no | unavailable | journal |
+| my | watchlist_db | primary | investment_watch_alerts | pre_collected | — | no | unavailable | watch_context |
 | news | naver_finance | supplementary | news_articles | pre_collected | — | no | 확인 불가 | — |
 | news | news_ingestor | primary | news_articles | pre_collected | — | yes | unavailable | news |
 | reports | browser_probe | low_trust_attention | — | report_time_on_demand | — | no | 확인 불가 | browser_probe |

@@ -119,9 +119,7 @@ class TestContractValidity:
     def test_crypto_screener_entry_present(self):
         """crypto screener(upbit_live)가 screener surface에 존재 (review fix)."""
         crypto = [
-            e
-            for e in entries_for_surface("screener")
-            if e.source_name == "upbit_live"
+            e for e in entries_for_surface("screener") if e.source_name == "upbit_live"
         ]
         assert len(crypto) == 1
         assert crypto[0].reusable_table == "invest_crypto_screener_snapshots"
