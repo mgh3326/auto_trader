@@ -112,6 +112,21 @@ class InvestmentReportsRepository:
         )
         return await self._session.scalar(stmt.limit(1))
 
+    async def update_report(self, report_id: int, **fields: Any) -> None:
+        """ROB-352 — update an existing report row in place (overwrite path).
+
+        Keeps ``report_uuid`` / ``idempotency_key`` stable. The caller owns the
+        transaction; this flushes but never commits.
+        """
+        if not fields:
+            return
+        await self._session.execute(
+            sa.update(InvestmentReport)
+            .where(InvestmentReport.id == report_id)
+            .values(**fields)
+        )
+        await self._session.flush()
+
     @staticmethod
     def _apply_report_filters(
         stmt: sa.Select,
@@ -165,6 +180,19 @@ class InvestmentReportsRepository:
             .where(InvestmentReportItem.id == item_id)
             .values(status=status)
         )
+
+    async def delete_items_for_report(self, report_id: int) -> None:
+        """ROB-352 — remove every item of one report (overwrite path).
+
+        Used only by the ingestion service's explicit-overwrite branch. The
+        caller owns the transaction; this flushes but never commits.
+        """
+        await self._session.execute(
+            sa.delete(InvestmentReportItem).where(
+                InvestmentReportItem.report_id == report_id
+            )
+        )
+        await self._session.flush()
 
     # ------------------------------------------------------------------
     # Decisions
