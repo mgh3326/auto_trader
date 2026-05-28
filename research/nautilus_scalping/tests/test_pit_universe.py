@@ -120,3 +120,34 @@ def test_from_pit_index_records_skips_rows_without_dates():
              "active_from": None, "active_to": None}]
     m = pit_universe.PITManifest.from_pit_index_records(rows)
     assert m.listings == ()
+
+
+def _row(sym, status):
+    return {"symbol": sym, "status": status, "active_from": "2023-01-01", "active_to": "2024-01-01"}
+
+
+def test_strict_usdt_perp_keeps_live_and_dead_plain_usdt():
+    rows = [
+        _row("BTCUSDT", "live"), _row("EOSUSDT", "dead"),
+        _row("ETHUSDC", "live"),
+        _row("BTCBUSD", "dead"),
+        _row("BTCUSDT_230331", "settling"),
+        _row("XRPUSDT", "settling"),
+        _row("FOOUSDT-SETTLED", "dead"),
+    ]
+    m = pit_universe.PITManifest.from_pit_index_records(rows).strict_usdt_perp()
+    kept = {x.symbol for x in m.listings}
+    assert kept == {"BTCUSDT", "EOSUSDT"}
+
+
+def test_snapshot_hash_is_stable_and_order_independent():
+    a = pit_universe.PITManifest.from_records([
+        {"symbol": "A", "listed_from": 1, "delisted_at": None},
+        {"symbol": "B", "listed_from": 2, "delisted_at": 3},
+    ])
+    b = pit_universe.PITManifest.from_records([
+        {"symbol": "B", "listed_from": 2, "delisted_at": 3},
+        {"symbol": "A", "listed_from": 1, "delisted_at": None},
+    ])
+    assert a.snapshot_hash() == b.snapshot_hash()
+    assert len(a.snapshot_hash()) == 64

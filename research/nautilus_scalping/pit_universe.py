@@ -18,6 +18,7 @@ delisted_at``).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -141,6 +142,26 @@ class PITManifest:
         return frozenset(
             x.symbol for x in self.listings if x.tradeable_at(ts, min_seasoning)
         )
+
+    def strict_usdt_perp(self) -> PITManifest:
+        """Perp-only honest universe: live/dead plain *USDT, excl. settling/BUSD/USDC/dated/SETTLED."""
+        kept = tuple(
+            x for x in self.listings
+            if x.status in ("live", "dead")
+            and x.symbol.endswith("USDT")
+            and "_" not in x.symbol
+            and "SETTLED" not in x.symbol
+        )
+        return PITManifest(listings=kept)
+
+    def snapshot_hash(self) -> str:
+        """Stable sha256 over canonical (order-independent) records — pins a committed manifest."""
+        canon = json.dumps(
+            sorted(self.to_records(), key=lambda r: r["symbol"]),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canon.encode()).hexdigest()
 
     @classmethod
     def load(cls, path: str | Path) -> PITManifest:
