@@ -28,14 +28,14 @@ def _enabled(monkeypatch: pytest.MonkeyPatch):
 
 
 def _kwargs(**overrides):
-    base = dict(
-        market="us",
-        account_scope="kis_live",
-        title="t",
-        summary="s",
-        kst_date="2026-05-29",
-        created_by_profile="claude_code",
-    )
+    base = {
+        "market": "us",
+        "account_scope": "kis_live",
+        "title": "t",
+        "summary": "s",
+        "kst_date": "2026-05-29",
+        "created_by_profile": "claude_code",
+    }
     base.update(overrides)
     return base
 
