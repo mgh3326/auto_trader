@@ -58,7 +58,8 @@ Discovery's job is to *reject cheaply* and *nominate*, never to bless.
 - **D3** — discovery reads the same Nautilus `ParquetDataCatalog` parquet via
   pandas/pyarrow directly (no engine boot); not raw aggTrades.
 - **D4** — discovery's `--window-from/--window-to` is a **real** constraint via
-  pyarrow predicate pushdown. The Nautilus `backtest_runner` window is PR2.
+  pyarrow predicate pushdown. The Nautilus `backtest_runner` window lands in PR3
+  (pre-`add_data` tick filter; verified end-to-end).
 - **D5** — multiple-hypothesis defense: record `hypotheses_tested`; label promote
   candidates `in_sample_only: true`; time-ordered OOS holdout inside discovery.
 - **D6** — PR slicing (this doc is PR1's design note); see §8.
@@ -179,12 +180,18 @@ explicitly. Final `validated` stays owned by the unchanged
   (skip the `to_pandas` bytes-object materialization). Verified on the same 15-day
   2-symbol smoke: **~50s → ~7s** with identical verdicts/prices. Unit-tested for
   scalar parity (incl. negative two's-complement) and arrow-slice offsets.
-- **PR3 (deferred):** `backtest_runner` real window constraint (catalog start/end
-  query if the API supports it, else post-load `ts_event` filter + documented
-  limitation with a test), baseline run caching keyed by
-  catalog/window/symbol/params/code-version, optional precise maker-viability re-sim
-  borrowing ROB-324's `maker_fill`. These touch the Nautilus subprocess path, which
-  needs the research venv (not the repo uv venv), so they are sliced separately.
+- **PR3 (this PR — Nautilus-path window constraint):** `backtest_runner` now applies
+  a real `[from, to)` filter (`_filter_ticks_window`) to the loaded ticks BEFORE
+  `engine.add_data`, so `--window-from/--window-to` bound *processed data*, not just
+  report metadata. Stdlib `_window_bounds_ns` keeps the module venv-free at import and
+  is unit-tested for parity with `discovery.data.window_bounds_ns` (one window meaning
+  across both paths). Window threaded through `run`/`run_maker`/CLI and into
+  `validate_candidate.py` + `validate_maker_fill.py`. **Verified end-to-end** with the
+  rob-320 research venv (nautilus 1.227.0): XRPUSDT 1-day window = 94 trades, 3-day =
+  160 (scales with the window; both far below the 789 of the unbounded ROB-320 run).
+- **PR4 (deferred):** baseline run caching keyed by
+  catalog/window/symbol/params/code-version, and optional precise maker-viability
+  re-sim borrowing ROB-324's `maker_fill`.
 
 ## 9. Tests (no full 75-day data; CI-safe)
 
@@ -234,8 +241,9 @@ materially lift gross expectancy; at taker fees it is a clear reject.
 - Fast screening command emits a structured artifact → `discover.py` + §7.
 - Output distinguishes `screened_out` / `needs_more_data` /
   `promote_to_full_validation` → §6 classifier.
-- `--window-from/--window-to` is a real data constraint with tests → §5.2 + §9
-  `test_discovery_window.py` (Nautilus-path window documented as PR2).
+- `--window-from/--window-to` is a real data constraint with tests → discovery path
+  §5.2 + §9 `test_discovery_window.py`; Nautilus path implemented + verified
+  end-to-end in PR3 (`test_backtest_runner_window.py` + the 94/160-trade scaling run).
 - No full-validation result marketed as `validated` unless it passes the gate →
   discovery is non-canonical by construction (§6, §7 note); gate unchanged.
 - PR description carries the safety boundary → §12, restated at PR time.
