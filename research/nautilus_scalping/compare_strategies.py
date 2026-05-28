@@ -29,7 +29,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-REF_FEE_BPS = 10.0
+import cost_model
+
+REF_FEE_BPS = cost_model.REF_FEE_BPS
 FEE_GRID_BPS = [10.0, 7.5, 5.0, 2.0, 0.0]
 OVERFIT_MIN_TRADES = 30
 _SENTINEL = "RESULT_JSON "
@@ -102,11 +104,10 @@ def _run_single(catalog_path, symbol, strategy, tp, sl, trade_size, flags):
 
 def _metrics(trades, fee_bps):
     """Return (n, net_pnl, win_rate_pct, avg_bps, mdd) at a per-leg fee."""
-    scale = 1.0 - fee_bps / REF_FEE_BPS
     rows = sorted(trades, key=lambda t: t[3])  # chronological for MDD
     nets, bps = [], []
     for net_ref, comm_ref, notional, _ in rows:
-        net = net_ref + comm_ref * scale
+        net = cost_model.net_at_fee(net_ref, comm_ref, fee_bps, REF_FEE_BPS)
         nets.append(net)
         bps.append(net / notional * 1e4 if notional else 0.0)
     n = len(nets)
