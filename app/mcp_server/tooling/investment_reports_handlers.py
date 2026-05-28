@@ -73,6 +73,30 @@ _SUPPORTED_MARKET_ACCOUNT_PAIRS: dict[str, str] = {
 # uncaught ValidationError from ReportGenerationRequest.
 _ALLOWED_MARKET_SESSIONS: tuple[str, ...] = ("regular", "nxt", "pre", "post", "24x7")
 
+GENERATE_FROM_BUNDLE_DESCRIPTION = (
+    "ROB-273/ROB-352 — generate a snapshot-backed advisory investment_report "
+    "end-to-end. Ensures (or reuses) a snapshot bundle, runs the read-only "
+    "collector registry, normalises payloads, and persists the report with "
+    "snapshot metadata. Opt-in: returns {success:false, "
+    "error:'snapshot_backed_report_generator_disabled'} unless "
+    "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED is true. "
+    "Supported market/account_scope pairs ONLY: kr/kis_live, us/kis_live, "
+    "crypto/upbit_live — any other pair fails closed with "
+    "error:'unsupported_account_scope' (use the Hermes composition path for "
+    "alpaca_paper). user_id is auto-resolved from MCP_USER_ID when omitted so "
+    "kis_live/upbit_live portfolios are readable; pass user_id to override. "
+    "Optional market_session (regular|nxt|pre|post|24x7) refines US/KR session "
+    "reporting and is part of the idempotency key. items[] each require: "
+    "client_item_key, item_kind (action|watch|risk), intent (buy_review|"
+    "sell_review|risk_review|trend_recovery_review|rebalance_review), rationale; "
+    "watch items also need watch_condition+valid_until unless operation='review'. "
+    "Invalid items return error:'invalid_items' naming the offending index/field. "
+    "Deterministic regeneration: by default an existing report for the same key "
+    "is RETURNED FROM THE STORED ROW (reused_existing=true); pass "
+    "overwrite_existing=true with overwrite_reason to transactionally replace it. "
+    "No broker / order / watch mutation."
+)
+
 
 def _default_generator_user_id() -> int:
     """ROB-352 — resolve the default operator user_id the same way the
@@ -677,18 +701,7 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
     )(investment_report_context_get_impl)
     mcp.tool(
         name="investment_report_generate_from_bundle",
-        description=(
-            "ROB-273 — generate a snapshot-backed advisory investment_report "
-            "end-to-end. Ensures (or reuses) a snapshot bundle, runs the "
-            "read-only collector registry, normalises payloads, and persists "
-            "the report with snapshot metadata. Opt-in: returns "
-            "{success:false, error:'snapshot_backed_report_generator_disabled'} "
-            "unless SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED is true. "
-            "Pass user_id for kis_live/upbit_live markets so the portfolio "
-            "collector can read live holdings/cash; omitting it keeps "
-            "broker-backed sources fail-closed (portfolio 'unavailable'). "
-            "No broker / order / watch mutation."
-        ),
+        description=GENERATE_FROM_BUNDLE_DESCRIPTION,
     )(investment_report_generate_from_bundle_impl)
 
 

@@ -151,3 +151,17 @@ async def test_user_id_defaults_for_live_scope(_enabled, monkeypatch):
 def test_handler_supported_pairs_match_generator():
     """Drift-guard: the handler's allow-list must equal the generator's."""
     assert h._SUPPORTED_MARKET_ACCOUNT_PAIRS == _MARKET_ACCOUNT_PAIRS
+
+
+def test_tool_description_documents_contract():
+    """ROB-352 — the registered tool description must surface the real
+    constraints (supported scopes, required item fields, idempotency)."""
+    from app.mcp_server.tooling.investment_reports_handlers import (
+        GENERATE_FROM_BUNDLE_DESCRIPTION,
+    )
+
+    desc = GENERATE_FROM_BUNDLE_DESCRIPTION
+    assert "kis_live" in desc
+    assert "client_item_key" in desc
+    assert "overwrite_existing" in desc
+    assert "market_session" in desc
