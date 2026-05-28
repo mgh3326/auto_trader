@@ -171,3 +171,12 @@ def test_committed_manifest_has_a_usable_perp_universe():
     assert len(m.listings) > 100
     syms = {x.symbol for x in m.listings}
     assert {"EOSUSDT", "GALUSDT", "HNTUSDT"}.issubset(syms)
+
+
+def test_expected_months_inclusive_span():
+    import build_pit_universe as b
+
+    assert b.expected_months("2023-01", "2023-01") == 1
+    assert b.expected_months("2023-01", "2023-12") == 12
+    assert b.expected_months("2023-11", "2024-02") == 4
+    assert b.expected_months(None, "2024-02") == 0
