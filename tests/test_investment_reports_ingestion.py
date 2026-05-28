@@ -227,3 +227,46 @@ async def test_multiple_risk_items_without_symbol_no_longer_collide(
     items = await repo.list_items_for_report(report.id)
     assert len(items) == 2
     assert {it.idempotency_key for it in items} != {None}
+
+
+@pytest.mark.asyncio
+async def test_overwrite_replaces_items_and_keeps_uuid(session: AsyncSession) -> None:
+    """ROB-352 — overwrite=True replaces items in place, report_uuid stable."""
+    service = InvestmentReportIngestionService(session)
+    first = await service.ingest(_base_request(title="v1", items=[_action_item("a1")]))
+    repo = InvestmentReportsRepository(session)
+    assert len(await repo.list_items_for_report(first.id)) == 1
+
+    second = await service.ingest(
+        _base_request(
+            title="v2",
+            items=[_action_item("a1"), _action_item("a2", symbol="000660")],
+        ),
+        overwrite=True,
+        overwrite_reason="restated",
+    )
+    assert second.report_uuid == first.report_uuid
+    assert second.id == first.id
+    assert second.title == "v2"
+    assert second.report_metadata.get("overwrite_reason") == "restated"
+
+    items = await repo.list_items_for_report(first.id)
+    assert len(items) == 2
+
+
+@pytest.mark.asyncio
+async def test_default_reuse_does_not_replace_items(session: AsyncSession) -> None:
+    """ROB-352 — without overwrite, a second ingest leaves the stored row intact."""
+    service = InvestmentReportIngestionService(session)
+    first = await service.ingest(_base_request(title="v1", items=[_action_item("a1")]))
+    second = await service.ingest(
+        _base_request(
+            title="v2-ignored", items=[_action_item("a1"), _action_item("a2")]
+        )
+    )
+    assert second.id == first.id
+    assert second.title == "v1"  # stored row unchanged
+
+    repo = InvestmentReportsRepository(session)
+    items = await repo.list_items_for_report(first.id)
+    assert len(items) == 1
