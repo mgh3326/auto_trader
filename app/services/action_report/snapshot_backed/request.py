@@ -72,6 +72,15 @@ class ReportGenerationRequest(BaseModel):
     # holdings/cash). ``None`` keeps broker-backed collectors fail-closed.
     user_id: int | None = None
 
+    # ROB-352 — deterministic regeneration semantics. Default is REUSE: when a
+    # report already exists for this deterministic idempotency key, the stored
+    # row is returned unchanged (the generator never emits a freshly-computed,
+    # unstored payload). Set ``overwrite_existing=True`` (with a reason) to
+    # transactionally replace the stored report + items in place. Mutating
+    # report_type/created_by_profile to force a new row is NOT supported.
+    overwrite_existing: bool = False
+    overwrite_reason: str | None = None
+
     # ROB-278 Phase 2 — when True, populate ``items`` from a deterministic
     # evidence-driven auto-emitter (portfolio + symbol quote + candidate +
     # news + journal/watch). Items emit with operation="review" +
@@ -110,6 +119,11 @@ class ReportGenerationResponse(BaseModel):
     bundle_status: str
     bundle_reused: bool
     stale_gate: dict[str, Any]
+
+    # ROB-352 — True when the response reflects an existing stored report that
+    # was returned unchanged (default reuse path). When True, callers should
+    # pass overwrite_existing=True + overwrite_reason to regenerate.
+    reused_existing: bool = False
 
     # ROB-318 Phase 3 (PR-A) — deterministic classification of why the report
     # concludes no-action: data_insufficient | stale_gated | real_no_action,
