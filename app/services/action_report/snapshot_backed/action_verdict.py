@@ -69,3 +69,30 @@ def classify_held_symbol(
     if in_candidate_universe:
         return "no_add"
     return "keep"
+
+
+def classify_candidate_symbol(
+    quote: dict[str, Any] | None,
+    *,
+    universe_useful: bool,
+    quote_snapshot_present: bool,
+) -> str:
+    """Deterministic verdict for ONE non-held screener candidate.
+
+    Honest-verdict only (mirrors ``classify_held_symbol``): never returns the
+    directional ``rejected`` / ``limit_wait`` — those are Hermes-only.
+
+    Order:
+      1. no symbol/quote snapshot at all   -> ``data_gap``   (호가 근거 부족)
+      2. quote present but not actionable  -> ``watch_only`` (저유동성)
+      3. quote actionable, universe stale  -> ``watch_only`` (스크리너 stale)
+      4. quote actionable, universe useful -> ``buy_review``
+    """
+    if not quote_snapshot_present:
+        return "data_gap"
+    if not _quote_is_actionable(quote):
+        return "watch_only"
+    if not universe_useful:
+        return "watch_only"
+    return "buy_review"
+
