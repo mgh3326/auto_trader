@@ -132,3 +132,138 @@ def test_held_symbol_in_screener_surfaces_watch():
     assert item.evidence_snapshot["candidate_score"] == 8.0
     # Held symbol must NOT also be proposed as a buy.
     assert not [i for i in items if i.side == "buy" and i.symbol == "005930"]
+
+
+_DEAD_QUOTE = {
+    "status": "ok",
+    "best_bid": 0,
+    "best_ask": 0,
+    "bid_depth": 0,
+    "ask_depth": 0,
+    "spread_bps": 0,
+}
+
+
+def _verdict_of(item):
+    return item.evidence_snapshot.get("action_verdict")
+
+
+def test_candidate_without_quote_snapshot_is_data_gap_not_dropped():
+    snaps = [
+        _Snap("portfolio", {"primary_source": "kis", "holdings": []}),
+        # No symbol snapshot for 000660 at all.
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "useful",
+                "candidates": [{"symbol": "000660", "score": 9.0, "rank": 1}],
+            },
+        ),
+    ]
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps, request_market="kr", account_scope=None
+    )
+    cand = [i for i in items if i.symbol == "000660"]
+    assert len(cand) == 1
+    assert _verdict_of(cand[0]) == "data_gap"
+    assert cand[0].evidence_snapshot["reject_or_wait_reason"] == "quote_missing"
+    assert cand[0].operation == "review"
+    assert cand[0].apply_policy == "requires_user_approval"
+
+
+def test_low_liquidity_candidate_is_watch_only():
+    snaps = [
+        _Snap("portfolio", {"primary_source": "kis", "holdings": []}),
+        _Snap("symbol", {"symbol": "000660", "quote": _DEAD_QUOTE}, symbol="000660"),
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "useful",
+                "candidates": [{"symbol": "000660", "score": 9.0, "rank": 1}],
+            },
+        ),
+    ]
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps, request_market="kr", account_scope=None
+    )
+    cand = [i for i in items if i.symbol == "000660"]
+    assert len(cand) == 1
+    assert _verdict_of(cand[0]) == "watch_only"
+    assert cand[0].evidence_snapshot["reject_or_wait_reason"] == "low_liquidity"
+
+
+def test_stale_universe_candidates_are_watch_only_not_buy():
+    snaps = [
+        _Snap("portfolio", {"primary_source": "kis", "holdings": []}),
+        _Snap("symbol", {"symbol": "000660", "quote": _OK_QUOTE}, symbol="000660"),
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "stale",  # not "useful"
+                "candidates": [{"symbol": "000660", "score": 9.0, "rank": 1}],
+            },
+        ),
+    ]
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps, request_market="kr", account_scope=None
+    )
+    assert [i for i in items if i.side == "buy"] == []
+    cand = [i for i in items if i.symbol == "000660"]
+    assert len(cand) == 1
+    assert _verdict_of(cand[0]) == "watch_only"
+    assert cand[0].evidence_snapshot["reject_or_wait_reason"] == "screener_stale"
+
+
+def test_overflow_beyond_cap_downgrades_to_watch_only():
+    snaps = [
+        _Snap("portfolio", {"primary_source": "kis", "holdings": []}),
+        _Snap("symbol", {"symbol": "000660", "quote": _OK_QUOTE}, symbol="000660"),
+        _Snap("symbol", {"symbol": "005930", "quote": _OK_QUOTE}, symbol="005930"),
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "useful",
+                "candidates": [
+                    {"symbol": "000660", "score": 9.0, "rank": 1},
+                    {"symbol": "005930", "score": 8.0, "rank": 2},
+                ],
+            },
+        ),
+    ]
+    items = EvidenceAutoEmitter(max_buy_candidates=1).propose(
+        snapshots=snaps, request_market="kr", account_scope=None
+    )
+    buys = [i for i in items if i.side == "buy"]
+    assert [i.symbol for i in buys] == ["000660"]
+    overflow = [i for i in items if i.symbol == "005930"]
+    assert len(overflow) == 1
+    assert _verdict_of(overflow[0]) == "watch_only"
+    assert overflow[0].evidence_snapshot["reject_or_wait_reason"] == "beyond_candidate_budget"
+
+
+def test_held_candidate_not_double_emitted():
+    snaps = [
+        _Snap(
+            "portfolio",
+            {
+                "primary_source": "kis",
+                "holdings": [{"ticker": "000660", "sellable_quantity": 0}],
+            },
+        ),
+        _Snap("symbol", {"symbol": "000660", "quote": _OK_QUOTE}, symbol="000660"),
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "useful",
+                "candidates": [{"symbol": "000660", "score": 9.0, "rank": 1}],
+            },
+        ),
+    ]
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps, request_market="kr", account_scope=None
+    )
+    keys = [i.client_item_key for i in items if i.symbol == "000660"]
+    # Held name routes through held_and_trending only — no candidate buy/watch row.
+    assert all(not k.startswith("auto-cand-") for k in keys)
+    assert all(not k.startswith("auto-buy-") for k in keys)
+
