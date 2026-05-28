@@ -48,6 +48,19 @@ describe("ActionPacketView", () => {
     expect(screen.getByText(/국내 스크리너 스냅샷이 stale/)).toBeInTheDocument();
   });
 
+  it("renders new-buy candidate priority and rank", () => {
+    render(<ActionPacketView packet={makePacket({
+      newBuyCandidates: [
+        { verdict: "buy_review", symbol: "035420", side: "buy", rationale: "신규 후보 1순위",
+          itemUuid: "i4", evidenceSnapshot: {}, priority: 1, rank: 1 },
+      ],
+      noNewBuyReason: null,
+    })} />);
+    expect(screen.getByText("1순위")).toBeInTheDocument();
+    expect(screen.getByText("P1")).toBeInTheDocument();
+    expect(screen.getByText("035420")).toBeInTheDocument();
+  });
+
   it("lists data gaps with their source", () => {
     render(<ActionPacketView packet={makePacket()} />);
     expect(screen.getByText(/portfolio/)).toBeInTheDocument();
@@ -61,4 +74,15 @@ describe("ActionPacketView", () => {
     })} />);
     expect(screen.getAllByText("해당 없음").length).toBeGreaterThanOrEqual(3);
   });
+
+  it("renders the reject/wait reason on risk rows", () => {
+    render(<ActionPacketView packet={makePacket({
+      riskReviews: [
+        { verdict: "watch_only", symbol: "035720", side: null, rationale: "관망",
+          itemUuid: "r1", evidenceSnapshot: {}, rejectOrWaitReason: "low_liquidity" },
+      ],
+    })} />);
+    expect(screen.getByText("low_liquidity")).toBeInTheDocument();
+  });
 });
+

@@ -1,4 +1,5 @@
 import datetime as dt
+from dataclasses import dataclass
 from decimal import Decimal
 
 import pytest
@@ -7,7 +8,70 @@ from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnaps
 from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
     CandidateUniverseSnapshotCollector,
 )
+from app.services.invest_screener_snapshots.repository import CoverageCounts
 from app.services.investment_snapshots.collectors import CollectorRequest
+
+
+@dataclass
+class _EquityRow:
+    symbol: str
+    change_rate: Decimal
+    latest_close: Decimal = Decimal("1000")
+    source: str = "kis"
+    daily_volume: int = 100_000
+    consecutive_up_days: int | None = None
+
+
+class _FakeEquityRepository:
+    def __init__(self) -> None:
+        self.rows = [
+            _EquityRow(symbol="000660", change_rate=Decimal("9.0")),
+            _EquityRow(symbol="005930", change_rate=Decimal("8.0")),
+            _EquityRow(symbol="035720", change_rate=Decimal("7.0")),
+        ]
+        self.requested_limits: list[int] = []
+
+    async def coverage(
+        self, *, market: str, today_trading_date: dt.date
+    ) -> CoverageCounts:
+        return CoverageCounts(
+            market=market,
+            today_trading_date=today_trading_date,
+            fresh_count=len(self.rows),
+            stale_count=0,
+            last_computed_at=None,
+        )
+
+    async def list_top_candidates(
+        self, *, market: str, limit: int = 10
+    ) -> list[_EquityRow]:
+        self.requested_limits.append(limit)
+        return self.rows[:limit]
+
+
+@pytest.mark.asyncio
+async def test_equity_collector_respects_candidate_limit(db_session):
+    repo = _FakeEquityRepository()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+
+    assert repo.requested_limits == [2]
+    payload = results[0].payload_json
+    assert payload["candidate_limit"] == 2
+    assert [candidate["symbol"] for candidate in payload["candidates"]] == [
+        "000660",
+        "005930",
+    ]
+    assert results[0].coverage_json["candidate_count"] == 2
 
 
 @pytest.mark.asyncio

@@ -576,6 +576,9 @@ class ActionPacketEntry(BaseModel):
     side: ItemSideLiteral | None = None
     rationale: str
     item_uuid: UUID | None = None
+    priority: int | None = None
+    rank: int | None = None
+    reject_or_wait_reason: str | None = None
     evidence_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 

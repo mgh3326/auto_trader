@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -24,7 +25,34 @@ from validated_gate import Trade
 _SENTINEL = "RESULT_JSON "
 
 
-def _run_single(catalog: Path, symbol: str, strategy: str, params: dict, trade_size: str) -> None:
+def _window_bounds_ns(window_from: str, window_to: str) -> tuple[int | None, int | None]:
+    """Parse YYYY-MM-DD window edges to epoch-ns; 'to' date inclusive ([lo, hi)).
+
+    Stdlib-only (keeps this module venv-free at import) and integer-exact; matches
+    discovery.data.window_bounds_ns so the Nautilus path and the discovery path
+    interpret --window-from/--window-to identically.
+    """
+    def _to_ns(s: str, *, plus_one_day: bool = False) -> int:
+        dt = datetime.strptime(s.strip(), "%Y-%m-%d").replace(tzinfo=UTC)
+        return int((dt + timedelta(days=1) if plus_one_day else dt).timestamp()) * 1_000_000_000
+
+    lo = _to_ns(window_from) if window_from and window_from.strip() else None
+    hi = _to_ns(window_to, plus_one_day=True) if window_to and window_to.strip() else None
+    return lo, hi
+
+
+def _filter_ticks_window(ticks, ts_from: int | None, ts_to: int | None):
+    """Keep ticks with ts_event in [ts_from, ts_to); None = unbounded. Applied BEFORE
+    engine.add_data so the window constrains processed data, not just metadata."""
+    if ts_from is None and ts_to is None:
+        return ticks
+    return [t for t in ticks
+            if (ts_from is None or t.ts_event >= ts_from)
+            and (ts_to is None or t.ts_event < ts_to)]
+
+
+def _run_single(catalog: Path, symbol: str, strategy: str, params: dict, trade_size: str,
+                window_from: str = "", window_to: str = "") -> None:
     from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
     from nautilus_trader.config import LoggingConfig
     from nautilus_trader.model.currencies import USDT
@@ -38,6 +66,8 @@ def _run_single(catalog: Path, symbol: str, strategy: str, params: dict, trade_s
     catalog_obj = ParquetDataCatalog(str(catalog))
     instrument = next(i for i in catalog_obj.instruments() if i.id.value.startswith(symbol))
     ticks = catalog_obj.trade_ticks(instrument_ids=[instrument.id.value])
+    lo, hi = _window_bounds_ns(window_from, window_to)
+    ticks = _filter_ticks_window(ticks, lo, hi)  # real window constraint (pre-add_data)
 
     execution_mode = str(params.get("execution_mode", "taker"))
     if execution_mode == "maker":
@@ -118,12 +148,14 @@ def _run_single(catalog: Path, symbol: str, strategy: str, params: dict, trade_s
     print(_SENTINEL + json.dumps({"trades": trades}))
 
 
-def run(catalog: Path, symbol: str, strategy: str, params: dict, trade_size: str = "100") -> list[Trade]:
+def run(catalog: Path, symbol: str, strategy: str, params: dict, trade_size: str = "100",
+        window_from: str = "", window_to: str = "") -> list[Trade]:
     # We must explicitly use the python interpreter inside our research .venv and pass PYTHONPATH
     venv_python = sys.executable
     cmd = [venv_python, os.path.abspath(__file__), "--single",
            "--catalog", str(catalog), "--symbol", symbol, "--strategy", strategy,
-           "--params", json.dumps(params), "--trade-size", trade_size]
+           "--params", json.dumps(params), "--trade-size", trade_size,
+           "--window-from", window_from, "--window-to", window_to]
 
     # Propagate the current PYTHONPATH so we can resolve the app package inside the child process
     env = dict(os.environ)
@@ -141,7 +173,8 @@ def run(catalog: Path, symbol: str, strategy: str, params: dict, trade_size: str
     raise RuntimeError(f"runner {strategy} on {symbol} failed:\n{proc.stderr[-800:]}")
 
 
-def run_maker(catalog: Path, symbol: str, params: dict, trade_size: str = "100"):
+def run_maker(catalog: Path, symbol: str, params: dict, trade_size: str = "100",
+              window_from: str = "", window_to: str = ""):
     """Run the maker re-sim; return (records, attempted, filled).
 
     records are maker_fill.MakerTradeRecord; attempted-filled = missed fills."""
@@ -151,7 +184,8 @@ def run_maker(catalog: Path, symbol: str, params: dict, trade_size: str = "100")
     venv_python = sys.executable
     cmd = [venv_python, os.path.abspath(__file__), "--single", "--catalog", str(catalog),
            "--symbol", symbol, "--strategy", "meanrev_zscore_fade",
-           "--params", json.dumps(p), "--trade-size", trade_size]
+           "--params", json.dumps(p), "--trade-size", trade_size,
+           "--window-from", window_from, "--window-to", window_to]
     env = dict(os.environ)
     env["PYTHONPATH"] = env.get("PYTHONPATH", "") + os.pathsep + "../.."
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -176,9 +210,12 @@ def main() -> int:
     ap.add_argument("--strategy", required=True)
     ap.add_argument("--params", default="{}")
     ap.add_argument("--trade-size", default="100")
+    ap.add_argument("--window-from", default="")
+    ap.add_argument("--window-to", default="")
     args = ap.parse_args()
     if args.single:
-        _run_single(args.catalog, args.symbol, args.strategy, json.loads(args.params), args.trade_size)
+        _run_single(args.catalog, args.symbol, args.strategy, json.loads(args.params),
+                    args.trade_size, args.window_from, args.window_to)
         return 0
     raise SystemExit("backtest_runner is a library; use run() or --single")
 

@@ -78,13 +78,22 @@ def _kis_portfolio_payload(*, ticker: str, sellable: float) -> dict:
     }
 
 
-def _candidate_payload(usefulness: str, actionable_count: int = 5) -> dict:
+def _candidate_payload(
+    usefulness: str,
+    actionable_count: int = 5,
+    candidates: list[dict] | None = None,
+) -> dict:
+    # Production candidate_universe snapshots always carry a ranked
+    # ``candidates`` list (the collector stamps rank/candidate_rank). Buy
+    # candidates are sourced from it (ROB-350 / 73bd9f1d), so tests expecting
+    # buys must populate it.
     return {
         "market": "kr",
         "actionable_count": actionable_count,
         "stale_count": 0,
         "usefulness": usefulness,
         "no_data_reason": None if usefulness == "useful" else "no fresh candidates",
+        "candidates": candidates or [],
     }
 
 
@@ -249,7 +258,11 @@ def test_buy_emitted_when_candidate_useful_and_quote_ok_and_not_held():
         ),
         _make_snapshot(
             kind="candidate_universe",
-            payload=_candidate_payload("useful", actionable_count=5),
+            payload=_candidate_payload(
+                "useful",
+                actionable_count=5,
+                candidates=[{"symbol": "000660", "score": 9.0, "rank": 1}],
+            ),
         ),
     ]
     items = emitter.propose(
@@ -316,7 +329,13 @@ def test_buy_respects_cap():
     snapshots = [
         _make_snapshot(
             kind="candidate_universe",
-            payload=_candidate_payload("useful"),
+            payload=_candidate_payload(
+                "useful",
+                candidates=[
+                    {"symbol": f"00500{i}", "score": 9.0 - i, "rank": i + 1}
+                    for i in range(5)
+                ],
+            ),
         ),
     ]
     for i in range(5):
@@ -372,7 +391,10 @@ def test_no_duplicate_watch_when_already_proposed_as_buy():
         ),
         _make_snapshot(
             kind="candidate_universe",
-            payload=_candidate_payload("useful"),
+            payload=_candidate_payload(
+                "useful",
+                candidates=[{"symbol": "000660", "score": 9.0, "rank": 1}],
+            ),
         ),
         _make_snapshot(
             kind="news",

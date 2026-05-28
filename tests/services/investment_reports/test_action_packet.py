@@ -29,8 +29,14 @@ def _item(
     item_kind: str = "action",
     side: str | None = "sell",
     intent: str = "sell_review",
+    priority: int = 0,
+    evidence_extra: dict[str, object] | None = None,
 ) -> InvestmentReportItemResponse:
-    evidence = {"action_verdict": verdict} if verdict is not None else {}
+    evidence: dict[str, object] = (
+        {"action_verdict": verdict} if verdict is not None else {}
+    )
+    if evidence_extra:
+        evidence.update(evidence_extra)
     return InvestmentReportItemResponse(
         item_uuid=uuid4(),
         item_kind=item_kind,  # type: ignore[arg-type]
@@ -38,7 +44,7 @@ def _item(
         side=side,  # type: ignore[arg-type]
         intent=intent,  # type: ignore[arg-type]
         target_kind="asset",
-        priority=0,
+        priority=priority,
         confidence=Decimal("80"),
         rationale="r",
         evidence_snapshot=evidence,
@@ -94,6 +100,33 @@ def test_held_and_new_and_risk_are_grouped_by_verdict() -> None:
     assert {e.verdict for e in packet.held_actions} == {"sell_review", "keep"}
     assert [e.verdict for e in packet.new_buy_candidates] == ["buy_review"]
     assert [e.verdict for e in packet.risk_reviews] == ["watch_only"]
+
+
+def test_new_buy_candidates_are_sorted_and_expose_rank_priority() -> None:
+    low = _item(
+        verdict="buy_review",
+        decision_bucket="new_buy_candidate",
+        side="buy",
+        intent="buy_review",
+        symbol="005930",
+        priority=2,
+        evidence_extra={"candidate_rank": 2},
+    )
+    high = _item(
+        verdict="buy_review",
+        decision_bucket="new_buy_candidate",
+        side="buy",
+        intent="buy_review",
+        symbol="000660",
+        priority=1,
+        evidence_extra={"candidate_rank": 1},
+    )
+
+    packet = build_action_packet([low, high], diagnostics=None)
+
+    assert [entry.symbol for entry in packet.new_buy_candidates] == ["000660", "005930"]
+    assert [entry.priority for entry in packet.new_buy_candidates] == [1, 2]
+    assert [entry.rank for entry in packet.new_buy_candidates] == [1, 2]
 
 
 def test_no_new_buy_marker_sets_reason_not_a_candidate_row() -> None:
@@ -159,3 +192,42 @@ def test_serialise_attaches_action_packet(monkeypatch) -> None:
     assert packet.held_actions  # sanity: projection works on these items
     # The router import wires build_action_packet:
     assert hasattr(mod, "build_action_packet")
+
+
+def test_data_gap_candidate_becomes_data_gap_entry_with_symbol() -> None:
+    gap = _item(
+        verdict="data_gap",
+        decision_bucket="deferred_no_action",
+        side=None,
+        intent="risk_review",
+        symbol="000660",
+        evidence_extra={"reject_or_wait_reason": "quote_missing"},
+    )
+    packet = build_action_packet([gap], diagnostics=None)
+    sources = [g.source for g in packet.data_gaps_for_next_cycle]
+    assert "000660" in sources
+
+
+def test_watch_only_candidate_exposes_reject_reason_and_rank_sort() -> None:
+    low = _item(
+        verdict="watch_only",
+        decision_bucket="risk_watch",
+        side=None,
+        intent="trend_recovery_review",
+        symbol="005930",
+        priority=2,
+        evidence_extra={"candidate_rank": 2, "reject_or_wait_reason": "low_liquidity"},
+    )
+    high = _item(
+        verdict="watch_only",
+        decision_bucket="risk_watch",
+        side=None,
+        intent="trend_recovery_review",
+        symbol="000660",
+        priority=1,
+        evidence_extra={"candidate_rank": 1, "reject_or_wait_reason": "screener_stale"},
+    )
+    packet = build_action_packet([low, high], diagnostics=None)
+    assert [e.symbol for e in packet.risk_reviews] == ["000660", "005930"]
+    assert packet.risk_reviews[0].reject_or_wait_reason == "screener_stale"
+    assert packet.risk_reviews[1].reject_or_wait_reason == "low_liquidity"

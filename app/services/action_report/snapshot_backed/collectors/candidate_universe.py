@@ -58,6 +58,12 @@ def _classify_usefulness(*, actionable: int, stale: int) -> str:
     return "empty"
 
 
+def _candidate_limit(request: CollectorRequest) -> int:
+    if request.candidate_limit is None:
+        return TOP_N
+    return max(0, request.candidate_limit)
+
+
 def _equity_row_to_input(row: InvestScreenerSnapshot) -> dict[str, Any]:
     return {
         "symbol": row.symbol,
@@ -172,8 +178,9 @@ class CandidateUniverseSnapshotCollector:
         usefulness = _classify_usefulness(
             actionable=coverage.fresh_count, stale=coverage.stale_count
         )
+        limit = _candidate_limit(request)
         rows = await self._equity_repo.list_top_candidates(
-            market=request.market, limit=TOP_N
+            market=request.market, limit=limit
         )
         evidence = build_candidate_evidence(
             market=request.market,
@@ -187,6 +194,7 @@ class CandidateUniverseSnapshotCollector:
                 market=request.market,
                 preset="top_gainers",
                 evidence=evidence,
+                candidate_limit=limit,
                 fresh_count=coverage.fresh_count,
                 stale_count=coverage.stale_count,
                 last_computed_at=coverage.last_computed_at,
@@ -201,8 +209,9 @@ class CandidateUniverseSnapshotCollector:
         usefulness = _classify_usefulness(
             actionable=cov.latest_partition_count, stale=cov.stale_count
         )
+        limit = _candidate_limit(request)
         rows = await self._crypto_repo.list_latest(
-            preset_id="crypto_momentum", limit=TOP_N
+            preset_id="crypto_momentum", limit=limit
         )
         evidence = build_candidate_evidence(
             market="crypto",
@@ -216,6 +225,7 @@ class CandidateUniverseSnapshotCollector:
                 market="crypto",
                 preset="crypto_momentum",
                 evidence=evidence,
+                candidate_limit=limit,
                 fresh_count=cov.latest_partition_count,
                 stale_count=cov.stale_count,
                 last_computed_at=cov.last_computed_at,
@@ -231,19 +241,24 @@ class CandidateUniverseSnapshotCollector:
         market: str,
         preset: str,
         evidence: list[CandidateEvidence],
+        candidate_limit: int,
         fresh_count: int,
         stale_count: int,
         last_computed_at: dt.datetime | None,
         usefulness: str,
     ) -> SnapshotCollectResult:
         freshness_status = _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial")
-        candidates = [e.to_payload_dict() for e in evidence]
+        candidates = [
+            {**e.to_payload_dict(), "rank": rank, "candidate_rank": rank}
+            for rank, e in enumerate(evidence, start=1)
+        ]
         payload: dict[str, Any] = {
             "market": market,
             "preset": preset,
             "as_of": now.isoformat(),
             "freshness_status": freshness_status,
             "source_coverage": _source_coverage(evidence),
+            "candidate_limit": candidate_limit,
             "candidates": candidates,
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,
@@ -269,5 +284,6 @@ class CandidateUniverseSnapshotCollector:
                 "stale_count": stale_count,
                 "usefulness": usefulness,
                 "candidate_count": len(candidates),
+                "candidate_limit": candidate_limit,
             },
         )

@@ -43,6 +43,7 @@ from app.schemas.validated_run_card import (
 )
 from app.services.action_report.snapshot_backed.action_verdict import (
     VERDICT_TO_BUCKET,
+    classify_candidate_symbol,
     classify_held_symbol,
 )
 
@@ -113,6 +114,106 @@ def _held_kis_symbols(
     return out
 
 
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_rank(candidate: dict[str, Any]) -> int | None:
+    return _to_int(candidate.get("candidate_rank") or candidate.get("rank"))
+
+
+def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, float, str]:
+    rank = _candidate_rank(candidate)
+    score = _to_float(candidate.get("score"))
+    symbol = str(candidate.get("symbol") or "")
+    return (rank if rank is not None else 1_000_000, -(score or 0.0), symbol)
+
+
+def _candidate_item(
+    *,
+    symbol_snapshot: Any,
+    candidate_snapshot: Any,
+    sym: str,
+    cand: dict[str, Any],
+    quote: dict[str, Any] | None,
+    verdict: str,
+    priority: int,
+    reject_or_wait_reason: str | None,
+    candidate_usefulness: str | None,
+    news_match_count: int,
+) -> IngestReportItem:
+    is_buy = verdict == "buy_review"
+    is_gap = verdict == "data_gap"
+    q = quote if isinstance(quote, dict) else {}
+    extra: dict[str, Any] = {
+        "candidate_snapshot_uuid": _snapshot_uuid(candidate_snapshot),
+        "candidate_usefulness": candidate_usefulness,
+        "candidate_rank": priority,
+        "candidate_score": cand.get("score"),
+        "candidate_reasons": cand.get("reasons"),
+        "candidate_source": cand.get("source"),
+        "news_matches": news_match_count,
+        "quote_status": q.get("status") if quote is not None else "no_snapshot",
+        "best_bid": q.get("best_bid"),
+        "best_ask": q.get("best_ask"),
+        "spread_bps": q.get("spread_bps"),
+        "proposer": (
+            "auto_emit/buy_from_candidate"
+            if is_buy
+            else f"auto_emit/candidate_{verdict}"
+        ),
+    }
+    if reject_or_wait_reason is not None:
+        extra["reject_or_wait_reason"] = reject_or_wait_reason
+
+    if is_buy:
+        rationale = (
+            f"신규 매수 검토 {priority}순위 — {sym} "
+            f"(candidate {candidate_usefulness}, score {cand.get('score')}, "
+            f"quote best_bid {q.get('best_bid')}, spread_bps {q.get('spread_bps')})"
+        )
+    elif is_gap:
+        rationale = f"신규 후보 판단 보류 — {sym} (호가 스냅샷 없음)"
+    elif reject_or_wait_reason == "low_liquidity":
+        rationale = (
+            f"신규 후보 관망 {priority}순위 — {sym} "
+            f"(저유동성: spread_bps {q.get('spread_bps')})"
+        )
+    elif reject_or_wait_reason == "beyond_candidate_budget":
+        rationale = f"신규 후보 관망 {priority}순위 — {sym} (후보 예산 초과)"
+    else:  # screener_stale
+        rationale = f"신규 후보 관망 {priority}순위 — {sym} (스크리너 stale)"
+
+    return IngestReportItem(
+        client_item_key=(f"auto-buy-{sym}" if is_buy else f"auto-cand-{verdict}-{sym}"),
+        item_kind="action" if is_buy else "risk",
+        symbol=sym,
+        side="buy" if is_buy else None,
+        intent=(
+            "buy_review"
+            if is_buy
+            else "risk_review"
+            if is_gap
+            else "trend_recovery_review"
+        ),
+        priority=priority,
+        rationale=rationale,
+        operation="review",
+        apply_policy="requires_user_approval",
+        evidence_snapshot=_make_evidence(symbol_snapshot, extra=extra),
+    )
+
+
 class EvidenceAutoEmitter:
     """Deterministic proposer that surfaces review-only candidates from the
     persisted snapshot bundle."""
@@ -120,7 +221,7 @@ class EvidenceAutoEmitter:
     def __init__(
         self, *, max_buy_candidates: int = 10, intraday_floor: bool = False
     ) -> None:
-        self._max_buy_candidates = max_buy_candidates
+        self._max_buy_candidates = max(0, max_buy_candidates)
         self._intraday_floor = intraday_floor
 
     def propose(
@@ -138,6 +239,7 @@ class EvidenceAutoEmitter:
         news_matches: dict[str, int] = {}
         candidate_usefulness: str | None = None
         candidate_by_symbol: dict[str, dict[str, Any]] = {}
+        candidate_order: list[dict[str, Any]] = []
         portfolio_snapshot: Any | None = None
         candidate_snapshot: Any | None = None
         news_snapshot: Any | None = None
@@ -162,9 +264,15 @@ class EvidenceAutoEmitter:
                 raw_candidates = (
                     payload.get("candidates", []) if isinstance(payload, dict) else []
                 )
-                for cand in raw_candidates:
+                for idx, cand in enumerate(raw_candidates, start=1):
                     if isinstance(cand, dict) and isinstance(cand.get("symbol"), str):
-                        candidate_by_symbol[cand["symbol"]] = cand
+                        ranked_cand = dict(cand)
+                        ranked_cand.setdefault("rank", idx)
+                        ranked_cand.setdefault(
+                            "candidate_rank", ranked_cand.get("rank")
+                        )
+                        candidate_by_symbol[ranked_cand["symbol"]] = ranked_cand
+                        candidate_order.append(ranked_cand)
             elif kind == "news":
                 news_snapshot = snapshot
                 matches = payload.get("symbol_matches") or {}
@@ -231,55 +339,59 @@ class EvidenceAutoEmitter:
                 )
             )
 
-        # Buy candidates — symbols with actionable quote + a usefulness
-        # signal from candidate_universe and not currently held.
-        if candidate_actionable:
-            buy_emitted = 0
-            for sym, (symbol_snapshot, quote) in symbol_quotes.items():
+        # Candidate classification — every non-held screener candidate gets
+        # exactly ONE honest verdict (buy_review / watch_only / data_gap). No
+        # candidate is silently dropped (ROB-350). Always-on whenever a
+        # candidate_universe snapshot is present, independent of intraday_floor.
+        buy_emitted = 0
+        for cand in sorted(candidate_order, key=_candidate_sort_key):
+            sym = cand.get("symbol")
+            if not isinstance(sym, str) or sym in held:
+                continue  # held names handled by held_and_trending below
+            symbol_pair = symbol_quotes.get(sym)
+            quote = symbol_pair[1] if symbol_pair else None
+            verdict = classify_candidate_symbol(
+                quote,
+                universe_useful=candidate_actionable,
+                quote_snapshot_present=symbol_pair is not None,
+            )
+            reject_or_wait_reason: str | None = None
+            if verdict == "data_gap":
+                reject_or_wait_reason = "quote_missing"
+            elif verdict == "watch_only":
+                reject_or_wait_reason = (
+                    "low_liquidity"
+                    if symbol_pair is not None and not _quote_is_actionable(quote)
+                    else "screener_stale"
+                )
+            elif verdict == "buy_review":
                 if buy_emitted >= self._max_buy_candidates:
-                    break
-                if sym in held:
-                    continue
-                if not _quote_is_actionable(quote):
-                    continue
-                cand = candidate_by_symbol.get(sym, {})
-                evidence = _make_evidence(
-                    symbol_snapshot,
-                    extra={
-                        "candidate_snapshot_uuid": _snapshot_uuid(candidate_snapshot),
-                        "candidate_usefulness": candidate_usefulness,
-                        "candidate_score": cand.get("score"),
-                        "candidate_reasons": cand.get("reasons"),
-                        "candidate_source": cand.get("source"),
-                        "news_matches": news_matches.get(sym, 0),
-                        "quote_status": quote.get("status"),
-                        "best_bid": quote.get("best_bid"),
-                        "best_ask": quote.get("best_ask"),
-                        "spread_bps": quote.get("spread_bps"),
-                        "proposer": "auto_emit/buy_from_candidate",
-                    },
-                )
-                items.append(
-                    _stamp(
-                        IngestReportItem(
-                            client_item_key=f"auto-buy-{sym}",
-                            item_kind="action",
-                            symbol=sym,
-                            side="buy",
-                            intent="buy_review",
-                            rationale=(
-                                f"신규 매수 검토 — {sym} (candidate {candidate_usefulness}"
-                                f", quote best_bid {quote.get('best_bid')}, "
-                                f"spread_bps {quote.get('spread_bps')})"
-                            ),
-                            operation="review",
-                            apply_policy="requires_user_approval",
-                            evidence_snapshot=evidence,
+                    verdict = "watch_only"
+                    reject_or_wait_reason = "beyond_candidate_budget"
+                else:
+                    buy_emitted += 1
+
+            candidate_rank = _candidate_rank(cand)
+            priority = candidate_rank if candidate_rank is not None else buy_emitted
+            items.append(
+                _stamp(
+                    _candidate_item(
+                        symbol_snapshot=(
+                            symbol_pair[0] if symbol_pair else candidate_snapshot
                         ),
-                        "buy_review",
-                    )
+                        candidate_snapshot=candidate_snapshot,
+                        sym=sym,
+                        cand=cand,
+                        quote=quote,
+                        verdict=verdict,
+                        priority=priority,
+                        reject_or_wait_reason=reject_or_wait_reason,
+                        candidate_usefulness=candidate_usefulness,
+                        news_match_count=news_matches.get(sym, 0),
+                    ),
+                    verdict,
                 )
-                buy_emitted += 1
+            )
 
         # Watch candidates — news-active symbols whose quote evidence is
         # missing or whose candidate evidence is stale/empty (action
@@ -335,6 +447,8 @@ class EvidenceAutoEmitter:
             if sym not in held or sym in already_proposed:
                 continue
             reasons = cand.get("reasons") or []
+            candidate_rank = _candidate_rank(cand)
+            priority = candidate_rank if candidate_rank is not None else 0
             items.append(
                 _stamp(
                     IngestReportItem(
@@ -342,9 +456,10 @@ class EvidenceAutoEmitter:
                         item_kind="watch",
                         symbol=sym,
                         intent="trend_recovery_review",
+                        priority=priority,
                         rationale=(
                             f"보유 종목 {sym}가 스크리너 추세 상위에 등장 — 관망/추가검토 "
-                            f"(score {cand.get('score')}, {', '.join(reasons)})"
+                            f"(rank {priority}, score {cand.get('score')}, {', '.join(reasons)})"
                         ),
                         operation="review",
                         apply_policy="requires_user_approval",
@@ -354,6 +469,7 @@ class EvidenceAutoEmitter:
                                 "candidate_snapshot_uuid": _snapshot_uuid(
                                     candidate_snapshot
                                 ),
+                                "candidate_rank": priority,
                                 "candidate_score": cand.get("score"),
                                 "candidate_reasons": reasons,
                                 "candidate_source": cand.get("source"),

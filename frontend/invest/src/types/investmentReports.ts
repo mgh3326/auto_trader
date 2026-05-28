@@ -367,6 +367,9 @@ export interface ActionPacketEntry {
   side?: "buy" | "sell" | null;
   rationale: string;
   itemUuid?: string | null;
+  priority?: number | null;
+  rank?: number | null;
+  rejectOrWaitReason?: string | null;
   evidenceSnapshot: Record<string, unknown>;
 }
 

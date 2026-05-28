@@ -103,15 +103,18 @@ def main() -> int:
     print("Running taker baselines (breakout, random)...")
     breakout = _merge([run(args.catalog, s, "micro_breakout",
                            get_candidate("micro_breakout").default_params,
-                           _SIZE.get(s, "100")) for s in symbols])
+                           _SIZE.get(s, "100"), args.window_from, args.window_to)
+                       for s in symbols])
     random_ctrl = _merge([run(args.catalog, s, "random_entry",
                               get_candidate("random_entry").default_params,
-                              _SIZE.get(s, "100")) for s in symbols])
+                              _SIZE.get(s, "100"), args.window_from, args.window_to)
+                          for s in symbols])
 
     # --- scenario 1: taker baseline candidate over the param grid (grid rescales 10->4) ---
     print("Scenario 1: taker baseline @ 4 bps (grid)...")
     taker_runs = {label: _merge([run(args.catalog, s, "meanrev_zscore_fade",
-                                     dict(params), _SIZE.get(s, "100")) for s in symbols])
+                                     dict(params), _SIZE.get(s, "100"),
+                                     args.window_from, args.window_to) for s in symbols])
                   for label, params in _GRID}
     taker_report = _gate(taker_runs, breakout, random_ctrl, TAKER_BASELINE_BPS,
                          symbols, window, "meanrev_taker_baseline")
@@ -123,7 +126,8 @@ def main() -> int:
     for label, params in _GRID:
         per_symbol = []
         for s in symbols:
-            recs, att, fil = run_maker(args.catalog, s, dict(params), _SIZE.get(s, "100"))
+            recs, att, fil = run_maker(args.catalog, s, dict(params), _SIZE.get(s, "100"),
+                                       args.window_from, args.window_to)
             per_symbol.append(recs)
             attempted += att
             filled += fil
