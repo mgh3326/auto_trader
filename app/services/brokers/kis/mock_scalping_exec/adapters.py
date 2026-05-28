@@ -158,7 +158,7 @@ class KisMockBroker:
         today = datetime.datetime.now().strftime("%Y%m%d")
         try:
             client = self._get_mock_client()
-            rows = await client.domestic_orders.inquire_daily_order_domestic(
+            rows = await client.inquire_daily_order_domestic(
                 start_date=today,
                 end_date=today,
                 stock_code="",
