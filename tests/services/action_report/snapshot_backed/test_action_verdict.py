@@ -68,16 +68,22 @@ _OK_QUOTE = {
     "ask_depth": 5,
     "spread_bps": 10,
 }
-_DEAD_QUOTE = {"status": "ok", "best_bid": 0, "best_ask": 0, "bid_depth": 0, "ask_depth": 0}
+_DEAD_QUOTE = {
+    "status": "ok",
+    "best_bid": 0,
+    "best_ask": 0,
+    "bid_depth": 0,
+    "ask_depth": 0,
+}
 
 
 @pytest.mark.parametrize(
     "quote, present, useful, expected",
     [
-        (None, False, True, "data_gap"),            # no snapshot at all
-        (_DEAD_QUOTE, True, True, "watch_only"),     # 저유동성
-        (_OK_QUOTE, True, False, "watch_only"),      # screener stale
-        (_OK_QUOTE, True, True, "buy_review"),       # actionable + useful
+        (None, False, True, "data_gap"),  # no snapshot at all
+        (_DEAD_QUOTE, True, True, "watch_only"),  # 저유동성
+        (_OK_QUOTE, True, False, "watch_only"),  # screener stale
+        (_OK_QUOTE, True, True, "buy_review"),  # actionable + useful
     ],
 )
 def test_classify_candidate_symbol(quote, present, useful, expected):
@@ -97,4 +103,3 @@ def test_classify_candidate_symbol_never_rejects():
                 _DEAD_QUOTE, universe_useful=useful, quote_snapshot_present=present
             )
             assert v in {"data_gap", "watch_only", "buy_review"}
-

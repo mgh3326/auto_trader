@@ -63,9 +63,7 @@ def _entry(item: InvestmentReportItemResponse, verdict: str) -> ActionPacketEntr
     rank = _entry_rank(item)
     evidence = item.evidence_snapshot or {}
     reason = (
-        evidence.get("reject_or_wait_reason")
-        if isinstance(evidence, Mapping)
-        else None
+        evidence.get("reject_or_wait_reason") if isinstance(evidence, Mapping) else None
     )
     return ActionPacketEntry(
         verdict=verdict,  # type: ignore[arg-type]

@@ -167,7 +167,11 @@ def _candidate_item(
         "best_bid": q.get("best_bid"),
         "best_ask": q.get("best_ask"),
         "spread_bps": q.get("spread_bps"),
-        "proposer": f"auto_emit/candidate_{verdict}",
+        "proposer": (
+            "auto_emit/buy_from_candidate"
+            if is_buy
+            else f"auto_emit/candidate_{verdict}"
+        ),
     }
     if reject_or_wait_reason is not None:
         extra["reject_or_wait_reason"] = reject_or_wait_reason

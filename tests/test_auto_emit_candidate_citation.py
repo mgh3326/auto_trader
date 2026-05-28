@@ -238,7 +238,10 @@ def test_overflow_beyond_cap_downgrades_to_watch_only():
     overflow = [i for i in items if i.symbol == "005930"]
     assert len(overflow) == 1
     assert _verdict_of(overflow[0]) == "watch_only"
-    assert overflow[0].evidence_snapshot["reject_or_wait_reason"] == "beyond_candidate_budget"
+    assert (
+        overflow[0].evidence_snapshot["reject_or_wait_reason"]
+        == "beyond_candidate_budget"
+    )
 
 
 def test_held_candidate_not_double_emitted():
@@ -266,4 +269,3 @@ def test_held_candidate_not_double_emitted():
     # Held name routes through held_and_trending only — no candidate buy/watch row.
     assert all(not k.startswith("auto-cand-") for k in keys)
     assert all(not k.startswith("auto-buy-") for k in keys)
-

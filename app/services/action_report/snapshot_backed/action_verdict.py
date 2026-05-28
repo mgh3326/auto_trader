@@ -95,4 +95,3 @@ def classify_candidate_symbol(
     if not universe_useful:
         return "watch_only"
     return "buy_review"
-

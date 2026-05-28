@@ -231,4 +231,3 @@ def test_watch_only_candidate_exposes_reject_reason_and_rank_sort() -> None:
     assert [e.symbol for e in packet.risk_reviews] == ["000660", "005930"]
     assert packet.risk_reviews[0].reject_or_wait_reason == "screener_stale"
     assert packet.risk_reviews[1].reject_or_wait_reason == "low_liquidity"
-
