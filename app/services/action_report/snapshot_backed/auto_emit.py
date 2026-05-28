@@ -113,6 +113,31 @@ def _held_kis_symbols(
     return out
 
 
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_rank(candidate: dict[str, Any]) -> int | None:
+    return _to_int(candidate.get("candidate_rank") or candidate.get("rank"))
+
+
+def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, float, str]:
+    rank = _candidate_rank(candidate)
+    score = _to_float(candidate.get("score"))
+    symbol = str(candidate.get("symbol") or "")
+    return (rank if rank is not None else 1_000_000, -(score or 0.0), symbol)
+
+
 class EvidenceAutoEmitter:
     """Deterministic proposer that surfaces review-only candidates from the
     persisted snapshot bundle."""
@@ -120,7 +145,7 @@ class EvidenceAutoEmitter:
     def __init__(
         self, *, max_buy_candidates: int = 10, intraday_floor: bool = False
     ) -> None:
-        self._max_buy_candidates = max_buy_candidates
+        self._max_buy_candidates = max(0, max_buy_candidates)
         self._intraday_floor = intraday_floor
 
     def propose(
@@ -138,6 +163,7 @@ class EvidenceAutoEmitter:
         news_matches: dict[str, int] = {}
         candidate_usefulness: str | None = None
         candidate_by_symbol: dict[str, dict[str, Any]] = {}
+        candidate_order: list[dict[str, Any]] = []
         portfolio_snapshot: Any | None = None
         candidate_snapshot: Any | None = None
         news_snapshot: Any | None = None
@@ -162,9 +188,15 @@ class EvidenceAutoEmitter:
                 raw_candidates = (
                     payload.get("candidates", []) if isinstance(payload, dict) else []
                 )
-                for cand in raw_candidates:
+                for idx, cand in enumerate(raw_candidates, start=1):
                     if isinstance(cand, dict) and isinstance(cand.get("symbol"), str):
-                        candidate_by_symbol[cand["symbol"]] = cand
+                        ranked_cand = dict(cand)
+                        ranked_cand.setdefault("rank", idx)
+                        ranked_cand.setdefault(
+                            "candidate_rank", ranked_cand.get("rank")
+                        )
+                        candidate_by_symbol[ranked_cand["symbol"]] = ranked_cand
+                        candidate_order.append(ranked_cand)
             elif kind == "news":
                 news_snapshot = snapshot
                 matches = payload.get("symbol_matches") or {}
@@ -232,22 +264,34 @@ class EvidenceAutoEmitter:
             )
 
         # Buy candidates — symbols with actionable quote + a usefulness
-        # signal from candidate_universe and not currently held.
+        # signal from candidate_universe and not currently held. Iterate by
+        # candidate rank/score, not incidental symbol-snapshot insertion order.
         if candidate_actionable:
             buy_emitted = 0
-            for sym, (symbol_snapshot, quote) in symbol_quotes.items():
+            for cand in sorted(candidate_order, key=_candidate_sort_key):
                 if buy_emitted >= self._max_buy_candidates:
                     break
+                sym = cand.get("symbol")
+                if not isinstance(sym, str):
+                    continue
                 if sym in held:
                     continue
+                symbol_pair = symbol_quotes.get(sym)
+                if symbol_pair is None:
+                    continue
+                symbol_snapshot, quote = symbol_pair
                 if not _quote_is_actionable(quote):
                     continue
-                cand = candidate_by_symbol.get(sym, {})
+                candidate_rank = _candidate_rank(cand)
+                priority = (
+                    candidate_rank if candidate_rank is not None else buy_emitted + 1
+                )
                 evidence = _make_evidence(
                     symbol_snapshot,
                     extra={
                         "candidate_snapshot_uuid": _snapshot_uuid(candidate_snapshot),
                         "candidate_usefulness": candidate_usefulness,
+                        "candidate_rank": priority,
                         "candidate_score": cand.get("score"),
                         "candidate_reasons": cand.get("reasons"),
                         "candidate_source": cand.get("source"),
@@ -267,9 +311,12 @@ class EvidenceAutoEmitter:
                             symbol=sym,
                             side="buy",
                             intent="buy_review",
+                            priority=priority,
                             rationale=(
-                                f"신규 매수 검토 — {sym} (candidate {candidate_usefulness}"
-                                f", quote best_bid {quote.get('best_bid')}, "
+                                f"신규 매수 검토 {priority}순위 — {sym} "
+                                f"(candidate {candidate_usefulness}, "
+                                f"score {cand.get('score')}, "
+                                f"quote best_bid {quote.get('best_bid')}, "
                                 f"spread_bps {quote.get('spread_bps')})"
                             ),
                             operation="review",
@@ -335,6 +382,8 @@ class EvidenceAutoEmitter:
             if sym not in held or sym in already_proposed:
                 continue
             reasons = cand.get("reasons") or []
+            candidate_rank = _candidate_rank(cand)
+            priority = candidate_rank if candidate_rank is not None else 0
             items.append(
                 _stamp(
                     IngestReportItem(
@@ -342,9 +391,10 @@ class EvidenceAutoEmitter:
                         item_kind="watch",
                         symbol=sym,
                         intent="trend_recovery_review",
+                        priority=priority,
                         rationale=(
                             f"보유 종목 {sym}가 스크리너 추세 상위에 등장 — 관망/추가검토 "
-                            f"(score {cand.get('score')}, {', '.join(reasons)})"
+                            f"(rank {priority}, score {cand.get('score')}, {', '.join(reasons)})"
                         ),
                         operation="review",
                         apply_policy="requires_user_approval",
@@ -354,6 +404,7 @@ class EvidenceAutoEmitter:
                                 "candidate_snapshot_uuid": _snapshot_uuid(
                                     candidate_snapshot
                                 ),
+                                "candidate_rank": priority,
                                 "candidate_score": cand.get("score"),
                                 "candidate_reasons": reasons,
                                 "candidate_source": cand.get("source"),

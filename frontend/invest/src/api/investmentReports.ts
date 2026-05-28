@@ -225,6 +225,8 @@ function normalizeActionPacketEntry(raw: unknown): ActionPacketEntry {
     side: asOptionalString(obj.side) as "buy" | "sell" | null,
     rationale: asString(obj.rationale, ""),
     itemUuid: asOptionalString(obj.item_uuid),
+    priority: asOptionalNumber(obj.priority),
+    rank: asOptionalNumber(obj.rank),
     evidenceSnapshot: asRecord(obj.evidence_snapshot),
   };
 }

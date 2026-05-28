@@ -49,6 +49,52 @@ def test_buy_item_cites_candidate_evidence():
     assert ev["candidate_reasons"] == ["단기 상승 모멘텀 후보"]
 
 
+def test_buy_candidates_follow_candidate_rank_and_limit():
+    snaps = [
+        _Snap("portfolio", {"primary_source": "kis", "holdings": []}),
+        # Symbol snapshots arrive in a different order from the screener rank.
+        _Snap("symbol", {"symbol": "005930", "quote": _OK_QUOTE}, symbol="005930"),
+        _Snap("symbol", {"symbol": "035720", "quote": _OK_QUOTE}, symbol="035720"),
+        _Snap("symbol", {"symbol": "000660", "quote": _OK_QUOTE}, symbol="000660"),
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "useful",
+                "candidate_limit": 2,
+                "candidates": [
+                    {
+                        "symbol": "000660",
+                        "score": 9.0,
+                        "reasons": ["1순위"],
+                        "source": "kis",
+                    },
+                    {
+                        "symbol": "005930",
+                        "score": 8.0,
+                        "reasons": ["2순위"],
+                        "source": "kis",
+                    },
+                    {
+                        "symbol": "035720",
+                        "score": 7.0,
+                        "reasons": ["3순위"],
+                        "source": "kis",
+                    },
+                ],
+            },
+        ),
+    ]
+
+    items = EvidenceAutoEmitter(max_buy_candidates=2).propose(
+        snapshots=snaps, request_market="kr", account_scope=None
+    )
+
+    buys = [i for i in items if i.side == "buy"]
+    assert [buy.symbol for buy in buys] == ["000660", "005930"]
+    assert [buy.priority for buy in buys] == [1, 2]
+    assert [buy.evidence_snapshot["candidate_rank"] for buy in buys] == [1, 2]
+
+
 def test_held_symbol_in_screener_surfaces_watch():
     snaps = [
         _Snap(

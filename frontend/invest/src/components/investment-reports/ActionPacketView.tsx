@@ -48,6 +48,14 @@ function EntryRow({ entry }: { entry: ActionPacketEntry }) {
         {entry.symbol ? (
           <strong style={{ fontSize: 14 }}>{entry.symbol}</strong>
         ) : null}
+        {typeof entry.rank === "number" ? (
+          <span style={{ fontSize: 12, color: "var(--invest-muted, #8a93a6)" }}>
+            {entry.rank}순위
+          </span>
+        ) : null}
+        {typeof entry.priority === "number" ? (
+          <Pill tone="accent" size="sm">P{entry.priority}</Pill>
+        ) : null}
       </div>
       <p style={{ margin: 0, fontSize: 13 }}>{entry.rationale}</p>
     </div>

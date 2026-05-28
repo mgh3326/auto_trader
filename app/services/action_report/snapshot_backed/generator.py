@@ -406,8 +406,12 @@ class SnapshotBackedReportGenerator:
         item_snapshot_pairs = (
             await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
         )
+        max_buy_candidates = (
+            request.candidate_limit if request.candidate_limit is not None else 10
+        )
         emitter = EvidenceAutoEmitter(
-            intraday_floor=is_intraday_action(request.policy_version)
+            max_buy_candidates=max_buy_candidates,
+            intraday_floor=is_intraday_action(request.policy_version),
         )
         return emitter.propose(
             snapshots=[s for _i, s in item_snapshot_pairs],

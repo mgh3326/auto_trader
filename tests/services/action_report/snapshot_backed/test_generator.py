@@ -1042,6 +1042,100 @@ async def test_auto_emit_from_evidence_appends_review_items_from_bundle() -> Non
 
 
 @pytest.mark.asyncio
+async def test_auto_emit_from_evidence_respects_request_candidate_limit() -> None:
+    """ROB-340 — generator forwards candidate_limit to the auto-emitter.
+
+    This catches the partial-implementation regression where bundle collection
+    honours candidate_limit but EvidenceAutoEmitter still emits its constructor
+    default number of buy candidates.
+    """
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    fake_bundle = SimpleNamespace(id=8888)
+    portfolio_snapshot = SimpleNamespace(
+        snapshot_kind="portfolio",
+        symbol=None,
+        snapshot_uuid=uuid4(),
+        payload_json={
+            "primary_source": "kis",
+            "holdings": [],
+            "reference_holdings": [],
+            "count": 0,
+            "market": "kr",
+        },
+    )
+    candidate_snapshot = SimpleNamespace(
+        snapshot_kind="candidate_universe",
+        symbol=None,
+        snapshot_uuid=uuid4(),
+        payload_json={
+            "usefulness": "useful",
+            "candidates": [
+                {"symbol": "000660", "rank": 1, "score": 0.91},
+                {"symbol": "035420", "rank": 2, "score": 0.82},
+                {"symbol": "051910", "rank": 3, "score": 0.77},
+            ],
+        },
+    )
+
+    def _symbol_snapshot(symbol: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            snapshot_kind="symbol",
+            symbol=symbol,
+            snapshot_uuid=uuid4(),
+            payload_json={
+                "symbol": symbol,
+                "quote": {
+                    "status": "ok",
+                    "last_price": 100_000.0,
+                    "best_bid": 99_900.0,
+                    "best_ask": 100_100.0,
+                    "spread_bps": 20.0,
+                    "bid_depth": 100.0,
+                    "ask_depth": 100.0,
+                },
+            },
+        )
+
+    fake_repo = _FakeSnapshotsRepository(
+        bundle=fake_bundle,
+        items=[
+            (SimpleNamespace(id=1, snapshot_id=1), portfolio_snapshot),
+            (SimpleNamespace(id=2, snapshot_id=2), candidate_snapshot),
+            (SimpleNamespace(id=3, snapshot_id=3), _symbol_snapshot("000660")),
+            (SimpleNamespace(id=4, snapshot_id=4), _symbol_snapshot("035420")),
+            (SimpleNamespace(id=5, snapshot_id=5), _symbol_snapshot("051910")),
+        ],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=fake_repo,
+    )
+
+    await gen.generate(
+        _make_request(
+            status="draft",
+            auto_emit_from_evidence=True,
+            candidate_limit=2,
+            user_id=42,
+        )
+    )
+
+    assert ensure.calls[0].candidate_limit == 2
+    sent = ingest.calls[0]
+    buy_items = [
+        i for i in sent.items if (i.client_item_key or "").startswith("auto-buy-")
+    ]
+    assert [item.symbol for item in buy_items] == ["000660", "035420"]
+    assert [item.priority for item in buy_items] == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_action_item_unchanged_when_quote_evidence_ok() -> None:
     """ROB-278 Phase 2 — when symbol snapshot reports quote.status='ok',
     the classifier does not downgrade the action item on quote grounds.
