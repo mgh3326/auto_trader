@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+import cost_model
+
 REF_FEE_BPS = 10.0
 Verdict = Literal["validated", "not_validated", "insufficient_data"]
 
@@ -28,6 +30,24 @@ class Trade:
     commission_ref: float   # commission paid at REF_FEE_BPS (negative)
     notional: float
     ts_opened: int
+
+
+@dataclass(frozen=True)
+class PortfolioPeriod:
+    """One period's PORTFOLIO-AGGREGATED PnL for a basket / cross-sectional run.
+
+    Unlike ``Trade`` (per-position, keyed by open time), a period already nets all
+    concurrent positions' mark-to-market into a single increment. Drawdown on the
+    series of these is the honest portfolio drawdown (ROB-351 Issue 1).
+
+    ``gross_ref_pnl`` = portfolio PnL in the period at REF_FEE_BPS;
+    ``commission_ref`` = period commission magnitude at REF_FEE_BPS (>= 0); the
+    shared ``cost_model.net_at_fee`` rescales to any taker fee.
+    """
+
+    ts: int
+    gross_ref_pnl: float
+    commission_ref: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -63,8 +83,8 @@ class GateReport:
 
 
 def _net_at_fee(t: Trade, fee_bps: float) -> float:
-    scale = 1.0 - fee_bps / REF_FEE_BPS
-    return t.net_ref_pnl + t.commission_ref * scale
+    # Delegates to the shared primitive (ROB-351 Issue 4, 3->1 dedup).
+    return cost_model.net_at_fee(t.net_ref_pnl, t.commission_ref, fee_bps, REF_FEE_BPS)
 
 
 def net_pnls_at_fee(trades: list[Trade], fee_bps: float) -> list[float]:
@@ -72,9 +92,24 @@ def net_pnls_at_fee(trades: list[Trade], fee_bps: float) -> list[float]:
     return [_net_at_fee(t, fee_bps) for t in sorted(trades, key=lambda t: t.ts_opened)]
 
 
-def metrics_at_fee(trades: list[Trade], fee_bps: float, fold: str = "") -> FoldMetrics:
-    rows = sorted(trades, key=lambda t: t.ts_opened)
-    nets = [_net_at_fee(t, fee_bps) for t in rows]
+def _equity_drawdown(pnls: Sequence[float]) -> float:
+    """Absolute max drawdown on the cumulative-PnL equity curve (starts at 0).
+
+    Caller is responsible for ordering ``pnls`` chronologically. For a basket the
+    ``pnls`` must be PERIOD-AGGREGATED portfolio increments (concurrent positions
+    netted into each period) — see ``portfolio_metrics_at_fee``. Feeding a flat
+    per-position list keyed by open-time understates drawdown (ROB-351 Issue 1).
+    """
+    equity = peak = mdd = 0.0
+    for x in pnls:
+        equity += x
+        peak = max(peak, equity)
+        mdd = min(mdd, equity - peak)
+    return mdd
+
+
+def _fold_metrics_from_nets(nets: list[float], fold: str) -> FoldMetrics:
+    """Build FoldMetrics from an already-ordered net-PnL series."""
     n = len(nets)
     if n == 0:
         return FoldMetrics(fold, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -83,22 +118,39 @@ def metrics_at_fee(trades: list[Trade], fee_bps: float, fold: str = "") -> FoldM
     gross_win = sum(wins)
     gross_loss = abs(sum(losses))
     pf = gross_win / gross_loss if gross_loss else (float("inf") if gross_win else 0.0)
-    equity = peak = mdd = 0.0
-    for x in nets:
-        equity += x
-        peak = max(peak, equity)
-        mdd = min(mdd, equity - peak)
     return FoldMetrics(
         fold=fold, trades=n, net_pnl=sum(nets),
         win_rate_pct=100.0 * len(wins) / n,
-        max_drawdown=mdd, profit_factor=pf, expectancy=sum(nets) / n,
+        max_drawdown=_equity_drawdown(nets), profit_factor=pf, expectancy=sum(nets) / n,
     )
 
 
-def walk_forward_split(
-    trades: list[Trade], fractions: tuple[float, float, float] = (0.5, 0.25, 0.25)
-) -> dict[str, list[Trade]]:
+def metrics_at_fee(trades: list[Trade], fee_bps: float, fold: str = "") -> FoldMetrics:
     rows = sorted(trades, key=lambda t: t.ts_opened)
+    nets = [_net_at_fee(t, fee_bps) for t in rows]
+    return _fold_metrics_from_nets(nets, fold)
+
+
+def portfolio_net_pnls_at_fee(
+    periods: Sequence[PortfolioPeriod], fee_bps: float
+) -> list[float]:
+    """Per-period net portfolio PnLs (chronological) at ``fee_bps`` per leg."""
+    rows = sorted(periods, key=lambda p: p.ts)
+    return [cost_model.net_at_fee(p.gross_ref_pnl, p.commission_ref, fee_bps, REF_FEE_BPS)
+            for p in rows]
+
+
+def portfolio_metrics_at_fee(
+    periods: Sequence[PortfolioPeriod], fee_bps: float, fold: str = ""
+) -> FoldMetrics:
+    """FoldMetrics on the PERIOD-return equity curve (honest basket drawdown).
+
+    ``trades`` in the returned FoldMetrics counts PERIODS, not positions.
+    """
+    return _fold_metrics_from_nets(portfolio_net_pnls_at_fee(periods, fee_bps), fold)
+
+
+def _chrono_split(rows: list, fractions: tuple[float, float, float]) -> dict[str, list]:
     n = len(rows)
     n_train = int(n * fractions[0])
     n_val = int(n * fractions[1])
@@ -107,6 +159,18 @@ def walk_forward_split(
         "val": rows[n_train:n_train + n_val],
         "oos": rows[n_train + n_val:],
     }
+
+
+def walk_forward_split(
+    trades: list[Trade], fractions: tuple[float, float, float] = (0.5, 0.25, 0.25)
+) -> dict[str, list[Trade]]:
+    return _chrono_split(sorted(trades, key=lambda t: t.ts_opened), fractions)
+
+
+def walk_forward_split_periods(
+    periods: list[PortfolioPeriod], fractions: tuple[float, float, float] = (0.5, 0.25, 0.25)
+) -> dict[str, list[PortfolioPeriod]]:
+    return _chrono_split(sorted(periods, key=lambda p: p.ts), fractions)
 
 
 def evaluate_gate(
@@ -212,6 +276,106 @@ def evaluate_gate(
                 reasons.append("val-best param is an overfit island (poor oos rank)")
         else:
             reasons.append("oos positive, beats baselines, stable across params/folds")
+    report.verdict_reasons = reasons
+    return report
+
+
+def evaluate_gate_portfolio(
+    *,
+    candidate_runs: dict[str, list[PortfolioPeriod]],   # param_label -> period series
+    baseline_periods: list[PortfolioPeriod],
+    fee_bps: float,
+    min_periods: int = 30,
+    fractions: tuple[float, float, float] = (0.5, 0.25, 0.25),
+    candidate_name: str = "",
+    hypothesis: str = "",
+    symbols: list[str] | None = None,
+    window: dict | None = None,
+) -> GateReport:
+    """Walk-forward gate for basket / cross-sectional strategies (ROB-351 Issue 1).
+
+    Identical contract to ``evaluate_gate`` but every metric is computed on the
+    PERIOD-return equity curve (concurrent positions netted per period), so the
+    drawdown that ``promote_to_pilot`` / the 343 criterion gate on is the honest
+    portfolio drawdown, not a per-trade serial sum.
+    """
+    report = GateReport(
+        candidate=candidate_name, hypothesis=hypothesis, symbols=symbols or [],
+        window=window or {},
+        cost_model={"fee_bps_per_leg": fee_bps, "fee_grid_bps": [10.0, 7.5, 5.0, 2.0, 0.0],
+                    "unit": "portfolio_period"},
+    )
+    if not candidate_runs:
+        report.verdict = "insufficient_data"
+        report.verdict_reasons = ["no candidate runs provided"]
+        return report
+
+    by_param_val: dict[str, float] = {}
+    by_param_oos: dict[str, float] = {}
+    folds_by_param: dict[str, dict[str, list[PortfolioPeriod]]] = {}
+    for label, periods in candidate_runs.items():
+        folds = walk_forward_split_periods(periods, fractions)
+        folds_by_param[label] = folds
+        by_param_val[label] = portfolio_metrics_at_fee(folds["val"], fee_bps, "val").net_pnl
+        by_param_oos[label] = portfolio_metrics_at_fee(folds["oos"], fee_bps, "oos").net_pnl
+
+    val_best = max(by_param_val, key=by_param_val.get)
+    folds = folds_by_param[val_best]
+    fold_metrics = {name: portfolio_metrics_at_fee(folds[name], fee_bps, name)
+                    for name in ("train", "val", "oos")}
+    report.per_fold = [asdict(fold_metrics[n]) for n in ("train", "val", "oos")]
+
+    all_best = candidate_runs[val_best]
+    report.results = {
+        "gross": asdict(portfolio_metrics_at_fee(all_best, 0.0, "gross")),
+        "zero_fee": asdict(portfolio_metrics_at_fee(all_best, 0.0, "zero_fee")),
+        "net_after_cost": asdict(portfolio_metrics_at_fee(all_best, fee_bps, "net_after_cost")),
+    }
+    report.trade_count = len(all_best)
+
+    base = portfolio_metrics_at_fee(baseline_periods, fee_bps, "baseline")
+    report.baselines = {"baseline": {"net_after_cost": base.net_pnl, "trades": base.trades}}
+
+    oos_rank = sorted(by_param_oos, key=by_param_oos.get, reverse=True).index(val_best) + 1
+    half = max(1, (len(by_param_oos) + 1) // 2)
+    param_island = oos_rank > half
+    fold_nets = [fold_metrics[n].net_pnl for n in ("train", "val", "oos")]
+    single_fold_edge = sum(1 for x in fold_nets if x > 0) == 1
+    low_periods = any(fold_metrics[n].trades < min_periods for n in ("train", "val", "oos"))
+    report.param_stability = {
+        "grid": list(candidate_runs), "val_best_param": val_best,
+        "oos_rank_of_val_best": oos_rank,
+        "single_fold_edge": single_fold_edge, "param_island": param_island,
+        "unit": "portfolio_period",
+    }
+    report.overfit_flags = {"low_trades": low_periods, "single_fold_edge": single_fold_edge,
+                            "param_island": param_island}
+
+    oos = fold_metrics["oos"]
+    reasons: list[str] = []
+    if low_periods:
+        report.verdict = "insufficient_data"
+        thin = [f"{n}={fold_metrics[n].trades}" for n in ("train", "val", "oos")
+                if fold_metrics[n].trades < min_periods]
+        reasons.append(f"folds below min_periods={min_periods}: {', '.join(thin)}")
+    else:
+        beats_baseline = oos.net_pnl > base.net_pnl
+        ok = (oos.net_pnl > 0 and oos.profit_factor > 1.0 and beats_baseline
+              and not single_fold_edge and not param_island)
+        report.verdict = "validated" if ok else "not_validated"
+        if not ok:
+            if oos.net_pnl <= 0:
+                reasons.append(f"oos net-after-cost {oos.net_pnl:.2f} <= 0")
+            if oos.profit_factor <= 1.0:
+                reasons.append(f"oos profit_factor {oos.profit_factor:.2f} <= 1.0")
+            if not beats_baseline:
+                reasons.append("oos does not beat the baseline")
+            if single_fold_edge:
+                reasons.append("edge appears in only one fold")
+            if param_island:
+                reasons.append("val-best param is an overfit island (poor oos rank)")
+        else:
+            reasons.append("oos positive, beats baseline, stable across params/folds")
     report.verdict_reasons = reasons
     return report
 
@@ -377,6 +541,109 @@ def monte_carlo_permutation(
         "n_sim": n_sim,
         "seed": seed,
     }
+
+
+# --------------------------------------------------------------------------- #
+# ROB-351 (Codex outside-voice) — statistical-honesty hardening (pure-stdlib).
+#
+# iid trade bootstrap is too optimistic for time-clustered crypto trades; the
+# many shots (3 families + meanrev seed + parameter grids) invite data snooping;
+# and a fixed n>=263 is cargo-culted. These additive helpers address each.
+# --------------------------------------------------------------------------- #
+def block_bootstrap_sharpe_ci(
+    net_pnls: Sequence[float],
+    block_size: int = 10,
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> dict:
+    """Moving-block bootstrap CI for per-trade Sharpe (preserves autocorrelation).
+
+    Resamples contiguous blocks of length ``block_size`` so time-clustered edge
+    is not artificially de-correlated the way an iid bootstrap would. ``ci_upper
+    < 0`` => net edge statistically <= 0 at ``confidence``.
+    """
+    n = len(net_pnls)
+    if n < 2:
+        return {"error": "insufficient_data", "n": n, "block_size": block_size,
+                "n_bootstrap": n_bootstrap, "confidence": confidence, "seed": seed}
+    block_size = max(1, min(block_size, n))
+    n_blocks = math.ceil(n / block_size)
+    max_start = n - block_size
+    rng = random.Random(seed)
+    observed = _sharpe(net_pnls)
+    sharpes: list[float] = []
+    for _ in range(n_bootstrap):
+        sample: list[float] = []
+        for _ in range(n_blocks):
+            start = rng.randint(0, max_start) if max_start > 0 else 0
+            sample.extend(net_pnls[start:start + block_size])
+        sharpes.append(_sharpe(sample[:n]))
+    sharpes.sort()
+    alpha = (1.0 - confidence) / 2.0
+    return {
+        "observed_sharpe": observed,
+        "ci_lower": _percentile(sharpes, alpha),
+        "ci_upper": _percentile(sharpes, 1.0 - alpha),
+        "median_sharpe": _percentile(sharpes, 0.5),
+        "prob_positive": sum(1 for s in sharpes if s > 0) / n_bootstrap,
+        "confidence": confidence, "n_bootstrap": n_bootstrap, "seed": seed,
+        "block_size": block_size, "method": "moving_block",
+    }
+
+
+def benjamini_hochberg(pvalues: Sequence[float], alpha: float = 0.05) -> dict:
+    """Benjamini-Hochberg FDR control across many tested hypotheses.
+
+    Returns the set of rejected (significant) hypothesis indices and the largest
+    p-value threshold that survives FDR at ``alpha``. Use this so screening three
+    broad families + seed + parameter neighborhoods does not silently snoop.
+    """
+    m = len(pvalues)
+    if m == 0:
+        return {"rejected": [], "threshold": None, "n": 0, "alpha": alpha}
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    max_k = 0
+    threshold: float | None = None
+    for rank, idx in enumerate(order, start=1):
+        if pvalues[idx] <= (rank / m) * alpha:
+            max_k = rank
+            threshold = pvalues[idx]
+    rejected = sorted(order[:max_k]) if max_k else []
+    return {"rejected": rejected, "threshold": threshold, "n": m, "alpha": alpha}
+
+
+def effect_size_aware_min_trades(
+    observed_sharpe: float, n_configs_tried: int = 1, target_t: float = 2.0
+) -> float:
+    """Minimum trade count to clear a t-stat target, inflated for multiple tests.
+
+    Replaces the cargo-culted fixed ``n>=263``: required ``n`` depends on the
+    effect size (per-trade Sharpe) and how many configs were tried. The target
+    t is inflated by a maximal-inequality term ``sqrt(2*ln m)`` so more shots
+    demand more evidence. Zero effect => ``inf`` (no sample size rescues it).
+    """
+    s = abs(observed_sharpe)
+    if s == 0.0:
+        return math.inf
+    target_t_adj = target_t + math.sqrt(2.0 * math.log(max(1, n_configs_tried)))
+    return math.ceil((target_t_adj / s) ** 2)
+
+
+def turnover_matched_random_baseline(
+    pnl_pool: Sequence[float], n_trades: int, seed: int = 42
+) -> list[float]:
+    """Random-entry baseline with the SAME trade count as the real strategy.
+
+    Samples ``n_trades`` PnLs (with replacement) from the realized-return pool so
+    a candidate's gross edge must beat dumb turnover-matched activity, not just
+    cash (guards against volatility harvesting / beta / selection noise).
+    """
+    if not pnl_pool or n_trades <= 0:
+        return []
+    rng = random.Random(seed)
+    pool = list(pnl_pool)
+    return [pool[rng.randrange(len(pool))] for _ in range(n_trades)]
 
 
 def run_card_hashes(

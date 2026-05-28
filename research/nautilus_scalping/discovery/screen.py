@@ -41,6 +41,7 @@ class HypothesisSummary:
     gross_expectancy_bps: float
     fee_adjusted_bps: float
     oos_fee_adjusted_bps: float | None = None
+    oos_gross_bps: float | None = None
     missed_fill_ratio: float | None = None
     regime: str | None = None
     time_bucket: str | None = None
@@ -53,6 +54,7 @@ class ClassifiedHypothesis:
     recommendation: Recommendation
     reason: str
     in_sample_only: bool = False
+    cost_binding: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self.summary)
@@ -60,8 +62,48 @@ class ClassifiedHypothesis:
             recommendation=self.recommendation,
             reason=self.reason,
             in_sample_only=self.in_sample_only,
+            cost_binding=self.cost_binding,
         )
         return d
+
+
+def _classify_cost_blind(
+    s: HypothesisSummary, *, min_samples: int, min_gross_bps: float
+) -> ClassifiedHypothesis:
+    """ROB-351 cost-blind mode: screen on GROSS sign (fees=0) with a triviality
+    floor; flag ``cost_binding`` when positive-gross but cost-killed.
+
+    The deeper "is the cost gap closable by maker execution" test is NOT done
+    here — that lives in the maker_fill pure path (ROB-351 Issue 3 / Stage 2).
+    This is the cheap screen-level 343 signal only.
+    """
+    if s.sample_count < min_samples:
+        return ClassifiedHypothesis(
+            s, "needs_more_data",
+            f"sample_count {s.sample_count} < min_samples {min_samples}",
+        )
+    if s.gross_expectancy_bps <= min_gross_bps:
+        return ClassifiedHypothesis(
+            s, "screened_out",
+            f"gross expectancy {s.gross_expectancy_bps:.2f}bps <= triviality floor "
+            f"{min_gross_bps:.2f}bps (no economically meaningful gross edge)",
+        )
+    if s.oos_gross_bps is not None and s.oos_gross_bps <= 0:
+        return ClassifiedHypothesis(
+            s, "screened_out",
+            f"OOS gross expectancy {s.oos_gross_bps:.2f}bps <= 0 "
+            "(in-sample gross edge does not hold out of sample)",
+        )
+    cost_binding = s.fee_adjusted_bps <= 0
+    note = ("positive gross, killed by fees -> cost_binding 343 signal"
+            if cost_binding else "positive gross AND net-viable after fees")
+    return ClassifiedHypothesis(
+        s, "promote_to_full_validation",
+        f"cost-blind: gross {s.gross_expectancy_bps:.2f}bps > floor "
+        f"{min_gross_bps:.2f}bps with {s.sample_count} samples; {note}",
+        in_sample_only=True,
+        cost_binding=cost_binding,
+    )
 
 
 def classify(
@@ -69,9 +111,18 @@ def classify(
     *,
     min_samples: int = 200,
     missed_fill_max: float = 0.6,
+    cost_blind: bool = False,
+    min_gross_bps: float = 0.0,
 ) -> ClassifiedHypothesis:
-    """Apply the fast-fail rules in priority order (see design §6)."""
+    """Apply the fast-fail rules in priority order (see design §6).
+
+    ``cost_blind=True`` (ROB-351) screens on gross sign with ``min_gross_bps`` as
+    an economic-triviality floor and flags ``cost_binding``; default mode is the
+    unchanged ROB-339 fee-adjusted screen.
+    """
     s = summary
+    if cost_blind:
+        return _classify_cost_blind(s, min_samples=min_samples, min_gross_bps=min_gross_bps)
     if s.sample_count < min_samples:
         return ClassifiedHypothesis(
             s,
