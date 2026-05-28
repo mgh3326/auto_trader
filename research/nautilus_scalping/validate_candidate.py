@@ -81,7 +81,8 @@ def main() -> int:
         per_symbol = []
         for sym in symbols:
             size = "0.002" if sym == "BTCUSDT" else args.trade_size
-            per_symbol.append(run(args.catalog, sym, args.candidate, params, size))
+            per_symbol.append(run(args.catalog, sym, args.candidate, params, size,
+                                   args.window_from, args.window_to))
         candidate_runs[label] = _merge(per_symbol)
         print(f"  -> Total trades across all symbols: {len(candidate_runs[label])}")
 
@@ -91,7 +92,8 @@ def main() -> int:
     for sym in symbols:
         size = "0.002" if sym == "BTCUSDT" else args.trade_size
         breakout_runs.append(run(args.catalog, sym, "micro_breakout",
-                                 get_candidate("micro_breakout").default_params, size))
+                                 get_candidate("micro_breakout").default_params, size,
+                                 args.window_from, args.window_to))
     breakout = _merge(breakout_runs)
     print(f"  -> Total trades: {len(breakout)}")
 
@@ -100,7 +102,8 @@ def main() -> int:
     for sym in symbols:
         size = "0.002" if sym == "BTCUSDT" else args.trade_size
         random_runs.append(run(args.catalog, sym, "random_entry",
-                               get_candidate("random_entry").default_params, size))
+                               get_candidate("random_entry").default_params, size,
+                               args.window_from, args.window_to))
     random_ctrl = _merge(random_runs)
     print(f"  -> Total trades: {len(random_ctrl)}")
 
