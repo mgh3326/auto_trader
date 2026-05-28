@@ -20,10 +20,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
 _META_FIELDS = ("status", "kline_coverage", "funding_coverage", "confidence", "missing_data_reason")
+
+
+def _date_to_epoch_ms(date_str: str) -> int:
+    """Midnight-UTC epoch ms for ``YYYY-MM-DD``."""
+    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1000)
+
+
+def _month_first_day(month_str: str) -> str:
+    """``YYYY-MM`` -> ``YYYY-MM-01``."""
+    return f"{month_str}-01"
 
 
 @dataclass(frozen=True)
@@ -78,6 +90,36 @@ class PITManifest:
                 raise ValueError(f"duplicate symbol in manifest: {listing.symbol}")
             seen.add(listing.symbol)
         return cls(listings=listings)
+
+    @classmethod
+    def from_pit_index_records(cls, rows: list[dict]) -> PITManifest:
+        """Build from ROB-349 index rows (day-precise active_from/active_to)."""
+        recs: list[dict] = []
+        for r in rows:
+            af = r.get("active_from") or (
+                _month_first_day(r["first_seen"]) if r.get("first_seen") else None
+            )
+            if not af:
+                continue
+            listed_from = _date_to_epoch_ms(af)
+            at = r.get("active_to")
+            if at in (None, "ongoing"):
+                delisted_at = None
+            else:
+                delisted_at = _date_to_epoch_ms(
+                    (datetime.strptime(at, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                )
+            recs.append({
+                "symbol": r["symbol"],
+                "listed_from": listed_from,
+                "delisted_at": delisted_at,
+                "status": r.get("status"),
+                "kline_coverage": r.get("kline_coverage"),
+                "funding_coverage": r.get("funding_coverage"),
+                "confidence": r.get("confidence"),
+                "missing_data_reason": r.get("missing_data_reason") or None,
+            })
+        return cls.from_records(recs)
 
     def to_records(self) -> list[dict]:
         out = []

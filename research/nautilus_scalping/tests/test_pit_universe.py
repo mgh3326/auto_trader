@@ -92,3 +92,31 @@ def test_symbollisting_metadata_defaults_none():
     only = m.listings[0]
     assert only.status is None and only.confidence is None
     assert pit_universe.PITManifest.from_records(m.to_records()).listings[0].symbol == "BTCUSDT"
+
+
+def test_from_pit_index_records_maps_dates_to_epoch_ms():
+    rows = [
+        {"symbol": "EOSUSDT", "status": "dead", "first_seen": "2023-01", "last_seen": "2024-01",
+         "active_from": "2023-01-26", "active_to": "2024-01-11",
+         "kline_coverage": 1.0, "funding_coverage": 1.0, "confidence": "high",
+         "missing_data_reason": "delisted"},
+        {"symbol": "BTCUSDT", "status": "live", "first_seen": "2020-01", "last_seen": "2026-05",
+         "active_from": "2020-01-01", "active_to": "ongoing",
+         "kline_coverage": 1.0, "funding_coverage": 1.0, "confidence": "high",
+         "missing_data_reason": ""},
+    ]
+    m = pit_universe.PITManifest.from_pit_index_records(rows)
+    eos = next(x for x in m.listings if x.symbol == "EOSUSDT")
+    btc = next(x for x in m.listings if x.symbol == "BTCUSDT")
+    assert eos.listed_from == pit_universe._date_to_epoch_ms("2023-01-26")
+    assert eos.delisted_at == pit_universe._date_to_epoch_ms("2024-01-12")
+    assert btc.delisted_at is None
+    assert eos.tradeable_at(pit_universe._date_to_epoch_ms("2024-01-11"))
+    assert not eos.tradeable_at(pit_universe._date_to_epoch_ms("2024-01-12"))
+
+
+def test_from_pit_index_records_skips_rows_without_dates():
+    rows = [{"symbol": "GHOSTUSDT", "status": "dead", "first_seen": None, "last_seen": None,
+             "active_from": None, "active_to": None}]
+    m = pit_universe.PITManifest.from_pit_index_records(rows)
+    assert m.listings == ()
