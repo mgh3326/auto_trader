@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import pyarrow.types as patypes
@@ -49,25 +51,70 @@ def _decode_int128_le(raw: bytes, precision: int) -> float:
 _RAW_PRECISION_BY_WIDTH = {16: 16, 8: 9}
 
 
-def _decode_if_binary(
-    df: pd.DataFrame, schema, col: str, display_precision: int | None, meta_key: bytes
-) -> None:
-    """Decode ``col`` in-place if it's fixed-point binary; leave plain numerics alone.
+def _decode_fixed_binary_array(arrow_col, raw_precision: int) -> np.ndarray:
+    """Vectorized decode of a fixed_size_binary column to ``int_LE / 10**raw_precision``.
 
-    The decode divisor is the fixed raw scale (by byte width); ``display_precision``
-    (arg or schema metadata) only rounds the decoded float for presentation.
+    Reads the contiguous data buffer as ``(n, width)`` uint8 and reinterprets it with
+    integer views (low 64 bits unsigned + high 64 bits signed for the 128-bit case),
+    which is exact and far faster than a per-row ``int.from_bytes`` map; the float64
+    conversion error is well below display precision.
     """
-    ftype = schema.field(col).type
-    if not (patypes.is_fixed_size_binary(ftype) or patypes.is_binary(ftype)):
-        return
-    width = ftype.byte_width if patypes.is_fixed_size_binary(ftype) else 16
-    raw_precision = _RAW_PRECISION_BY_WIDTH.get(width, 16)
-    df[col] = df[col].map(lambda b: _decode_int128_le(bytes(b), raw_precision))
+    arr = (
+        arrow_col.combine_chunks()
+        if isinstance(arrow_col, pa.ChunkedArray)
+        else arrow_col
+    )
+    width = arr.type.byte_width
+    n = len(arr)
+    raw = np.frombuffer(
+        arr.buffers()[1], dtype=np.uint8, count=n * width, offset=arr.offset * width
+    ).reshape(n, width)
+    # Decode via integer views (exact, little-endian x86): low 64 bits unsigned + high
+    # 64 bits SIGNED carries two's complement, avoiding the float64 rounding that a
+    # magnitude-then-subtract-2**128 approach hits at the int128 scale.
+    if width == 16:
+        lo = (
+            np.ascontiguousarray(raw[:, :8])
+            .view(np.uint64)
+            .reshape(n)
+            .astype(np.float64)
+        )
+        hi = (
+            np.ascontiguousarray(raw[:, 8:])
+            .view(np.int64)
+            .reshape(n)
+            .astype(np.float64)
+        )
+        val = hi * (2.0**64) + lo
+    elif width == 8:
+        val = np.ascontiguousarray(raw).view(np.int64).reshape(n).astype(np.float64)
+    else:  # uncommon width: exact per-row fallback
+        val = np.array(
+            [int.from_bytes(raw[i].tobytes(), "little", signed=True) for i in range(n)],
+            dtype=np.float64,
+        )
+    return val / (10.0**raw_precision)
+
+
+def _decode_or_passthrough(
+    table, col: str, display_precision: int | None, meta_key: bytes
+) -> np.ndarray:
+    """Decode a fixed-point binary column (by byte-width raw scale) else pass numerics through.
+
+    ``display_precision`` (arg or schema metadata) only rounds the decoded float.
+    """
+    ftype = table.schema.field(col).type
+    arr = table.column(col)
+    if not patypes.is_fixed_size_binary(ftype):
+        return arr.to_numpy(zero_copy_only=False)
+    raw_precision = _RAW_PRECISION_BY_WIDTH.get(ftype.byte_width, 16)
+    vals = _decode_fixed_binary_array(arr, raw_precision)
     if display_precision is None:
-        md = schema.metadata or {}
+        md = table.schema.metadata or {}
         display_precision = int(md[meta_key]) if meta_key in md else None
     if display_precision is not None:
-        df[col] = df[col].round(display_precision)
+        vals = np.round(vals, display_precision)
+    return vals
 
 
 def read_ticks(
@@ -94,10 +141,19 @@ def read_ticks(
         upper = ds.field("ts_event") < ts_to
         expr = upper if expr is None else (expr & upper)
     table = dataset.to_table(filter=expr)
-    df = table.to_pandas()
-    _decode_if_binary(df, table.schema, "price", price_precision, b"price_precision")
-    _decode_if_binary(df, table.schema, "size", size_precision, b"size_precision")
-    return df
+    # Build only the columns discovery needs; decode fixed-point binary vectorized
+    # (avoids materializing bytes objects via to_pandas on multi-million-row columns).
+    return pd.DataFrame(
+        {
+            "ts_event": table.column("ts_event").to_numpy(),
+            "price": _decode_or_passthrough(
+                table, "price", price_precision, b"price_precision"
+            ),
+            "size": _decode_or_passthrough(
+                table, "size", size_precision, b"size_precision"
+            ),
+        }
+    )
 
 
 def aggregate_to_bars(ticks: pd.DataFrame, freq: str = "1min") -> pd.DataFrame:

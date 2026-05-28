@@ -173,12 +173,18 @@ explicitly. Final `validated` stays owned by the unchanged
   `discover.py` driver, artifact schema + fast-fail classifier, discovery-path real
   window filter, unit tests (no 75-day tick data in CI). Optional: one bounded smoke
   run against the rob-320 catalog with elapsed time + artifact path in PR notes.
-- **PR2:** `backtest_runner` real window constraint (catalog start/end query if the
-  API supports it, else post-load `ts_event` filter + documented limitation with a
-  test), baseline run caching keyed by catalog/window/symbol/params/code-version,
-  vectorized fixed-point decode (PR1 uses a per-row Python decode — ~50s for a
-  15-day 2-symbol window; numpy/int128 vectorization makes the full 75-day window
-  "fast"), optional precise maker-viability re-sim borrowing ROB-324's `maker_fill`.
+- **PR2 (this PR — vectorized decode):** replace the per-row `int.from_bytes` map
+  with a vectorized integer-view decode of the fixed_size_binary columns (low 64
+  bits unsigned + high 64 bits signed), and build only the columns discovery needs
+  (skip the `to_pandas` bytes-object materialization). Verified on the same 15-day
+  2-symbol smoke: **~50s → ~7s** with identical verdicts/prices. Unit-tested for
+  scalar parity (incl. negative two's-complement) and arrow-slice offsets.
+- **PR3 (deferred):** `backtest_runner` real window constraint (catalog start/end
+  query if the API supports it, else post-load `ts_event` filter + documented
+  limitation with a test), baseline run caching keyed by
+  catalog/window/symbol/params/code-version, optional precise maker-viability re-sim
+  borrowing ROB-324's `maker_fill`. These touch the Nautilus subprocess path, which
+  needs the research venv (not the repo uv venv), so they are sliced separately.
 
 ## 9. Tests (no full 75-day data; CI-safe)
 

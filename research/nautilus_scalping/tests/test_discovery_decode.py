@@ -8,10 +8,15 @@ metadata. read_ticks must decode these to floats while leaving plain-float parqu
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from discovery.data import _decode_int128_le, read_ticks
+from discovery.data import (
+    _decode_fixed_binary_array,
+    _decode_int128_le,
+    read_ticks,
+)
 
 
 def test_decode_int128_le_fixed_point() -> None:
@@ -21,6 +26,27 @@ def test_decode_int128_le_fixed_point() -> None:
 
 def test_decode_int128_le_negative_and_zero_precision() -> None:
     assert _decode_int128_le((-5).to_bytes(16, "little", signed=True), 0) == -5.0
+
+
+def test_decode_fixed_binary_array_matches_scalar(tmp_path) -> None:
+    # PR2: the vectorized array decoder must match the per-value reference,
+    # including the 128-bit raw scale (10**16) and negative two's-complement.
+    raws = [int(1.3761 * 10**16), int(0.5 * 10**16), -3 * 10**16, 0]
+    arr = pa.array([v.to_bytes(16, "little", signed=True) for v in raws], pa.binary(16))
+    got = _decode_fixed_binary_array(arr, 16)
+    expected = [
+        _decode_int128_le(v.to_bytes(16, "little", signed=True), 16) for v in raws
+    ]
+    assert isinstance(got, np.ndarray)
+    assert np.allclose(got, expected, rtol=0, atol=1e-9)
+
+
+def test_decode_fixed_binary_array_respects_arrow_slice() -> None:
+    # a sliced (offset != 0) arrow array must decode only its own window
+    raws = [10**16, 2 * 10**16, 3 * 10**16]
+    arr = pa.array([v.to_bytes(16, "little", signed=True) for v in raws], pa.binary(16))
+    got = _decode_fixed_binary_array(arr.slice(1, 2), 16)
+    assert np.allclose(got, [2.0, 3.0], rtol=0, atol=1e-9)
 
 
 def test_read_ticks_decodes_binary_price_size(tmp_path) -> None:
