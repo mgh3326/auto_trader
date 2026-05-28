@@ -101,8 +101,7 @@ class ReportGenerationRequest(BaseModel):
             self.overwrite_reason and self.overwrite_reason.strip()
         ):
             raise ValueError(
-                "overwrite_reason is required (non-empty) when "
-                "overwrite_existing=True"
+                "overwrite_reason is required (non-empty) when overwrite_existing=True"
             )
         return self
 
