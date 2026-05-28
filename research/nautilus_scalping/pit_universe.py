@@ -21,6 +21,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+_META_FIELDS = ("status", "kline_coverage", "funding_coverage", "confidence", "missing_data_reason")
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,11 @@ class SymbolListing:
     symbol: str
     listed_from: int
     delisted_at: int | None = None
+    status: Literal["live", "settling", "dead"] | None = None
+    kline_coverage: float | None = None
+    funding_coverage: float | None = None
+    confidence: Literal["high", "medium", "low"] | None = None
+    missing_data_reason: str | None = None
 
     def validate(self) -> SymbolListing:
         if self.delisted_at is not None and self.delisted_at < self.listed_from:
@@ -56,6 +64,11 @@ class PITManifest:
                 symbol=r["symbol"],
                 listed_from=int(r["listed_from"]),
                 delisted_at=None if r.get("delisted_at") is None else int(r["delisted_at"]),
+                status=r.get("status"),
+                kline_coverage=r.get("kline_coverage"),
+                funding_coverage=r.get("funding_coverage"),
+                confidence=r.get("confidence"),
+                missing_data_reason=r.get("missing_data_reason"),
             ).validate()
             for r in records
         )
@@ -67,10 +80,19 @@ class PITManifest:
         return cls(listings=listings)
 
     def to_records(self) -> list[dict]:
-        return [
-            {"symbol": x.symbol, "listed_from": x.listed_from, "delisted_at": x.delisted_at}
-            for x in self.listings
-        ]
+        out = []
+        for x in self.listings:
+            rec: dict = {
+                "symbol": x.symbol,
+                "listed_from": x.listed_from,
+                "delisted_at": x.delisted_at,
+            }
+            for f in _META_FIELDS:
+                v = getattr(x, f)
+                if v is not None:
+                    rec[f] = v
+            out.append(rec)
+        return out
 
     def universe_as_of(self, ts: int, min_seasoning: int = 0) -> frozenset[str]:
         """Symbols tradeable at ``ts`` (survivorship-safe). Call per rebalance."""

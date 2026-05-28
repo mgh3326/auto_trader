@@ -10,6 +10,7 @@ ts/listed_from/delisted_at/min_seasoning are all integers in the SAME unit
 (caller-defined, e.g. epoch ms); delisted_at is exclusive, None = still live.
 """
 
+import pit_universe
 from pit_universe import PITManifest, SymbolListing
 
 
@@ -67,3 +68,27 @@ def test_rejects_delist_before_list():
     except ValueError:
         return
     raise AssertionError("expected ValueError for delisted_at < listed_from")
+
+
+def test_symbollisting_optional_metadata_roundtrips():
+    rec = {
+        "symbol": "EOSUSDT", "listed_from": 1672531200000, "delisted_at": 1700000000000,
+        "status": "dead", "kline_coverage": 1.0, "funding_coverage": 1.0,
+        "confidence": "high", "missing_data_reason": "delisted",
+    }
+    m = pit_universe.PITManifest.from_records([rec])
+    (only,) = m.listings
+    assert only.status == "dead"
+    assert only.kline_coverage == 1.0
+    assert only.confidence == "high"
+    back = pit_universe.PITManifest.from_records(m.to_records())
+    assert back.listings[0].missing_data_reason == "delisted"
+
+
+def test_symbollisting_metadata_defaults_none():
+    m = pit_universe.PITManifest.from_records(
+        [{"symbol": "BTCUSDT", "listed_from": 0, "delisted_at": None}]
+    )
+    only = m.listings[0]
+    assert only.status is None and only.confidence is None
+    assert pit_universe.PITManifest.from_records(m.to_records()).listings[0].symbol == "BTCUSDT"
