@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.mock_scalping_exec import adapters as mod
 from app.services.brokers.kis.mock_scalping_exec.adapters import (
     KisMockBroker,
@@ -93,18 +94,30 @@ async def test_confirm_fill_returns_none_when_no_odno() -> None:
 
 
 @pytest.mark.unit
+def test_kis_client_exposes_public_fill_inquiry_facade_only() -> None:
+    # ROB-338 regression: the daily order-execution inquiry must be reached via
+    # the public KISClient facade. `domestic_orders` is a private impl detail
+    # (`_domestic_orders`); a public `.domestic_orders` attribute never existed,
+    # so the smoke/adapter must not depend on one.
+    assert hasattr(KISClient, "inquire_daily_order_domestic")
+    assert not hasattr(KISClient, "domestic_orders")
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_confirm_fill_returns_fill_when_filled(mocker) -> None:
     broker = KisMockBroker(get_state=lambda s: None)
-    fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    # spec=KISClient (ROB-338): regressing to `client.domestic_orders` would
+    # raise AttributeError here instead of silently auto-vivifying a mock.
+    fake_client = mocker.MagicMock(spec=KISClient)
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         return_value=_daily_rows(tot_ccld_qty="1", avg_prvs="70000")
     )
     mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
     fill = await broker.confirm_fill({"odno": "0000123456"})
     assert fill == Fill(price=Decimal("70000"), quantity=Decimal("1"))
     # Bounded read-only inquiry: is_mock pinned True, filtered by order number.
-    kw = fake_client.domestic_orders.inquire_daily_order_domestic.await_args.kwargs
+    kw = fake_client.inquire_daily_order_domestic.await_args.kwargs
     assert kw["is_mock"] is True
     assert kw["order_number"] == "0000123456"
 
@@ -113,8 +126,8 @@ async def test_confirm_fill_returns_fill_when_filled(mocker) -> None:
 @pytest.mark.asyncio
 async def test_confirm_fill_none_when_pending(mocker) -> None:
     broker = KisMockBroker(get_state=lambda s: None)
-    fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    fake_client = mocker.MagicMock(spec=KISClient)
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         return_value=_daily_rows(tot_ccld_qty="0")
     )
     mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
@@ -125,8 +138,8 @@ async def test_confirm_fill_none_when_pending(mocker) -> None:
 @pytest.mark.asyncio
 async def test_confirm_fill_none_on_unsupported_mock_api(mocker) -> None:
     broker = KisMockBroker(get_state=lambda s: None)
-    fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    fake_client = mocker.MagicMock(spec=KISClient)
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         side_effect=RuntimeError("TR is not available in mock mode.")
     )
     mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
@@ -142,8 +155,8 @@ async def test_poll_fill_evidence_maps_unsupported_category(mocker) -> None:
     )
 
     broker = KisMockBroker(get_state=lambda s: None)
-    fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    fake_client = mocker.MagicMock(spec=KISClient)
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         side_effect=RuntimeError("VTTC8001R not available in mock")
     )
     mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
