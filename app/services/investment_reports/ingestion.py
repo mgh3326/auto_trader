@@ -73,6 +73,27 @@ class InvestmentReportIngestionService:
         overwrite: bool = False,
         overwrite_reason: str | None = None,
     ) -> InvestmentReport:
+        """Thin wrapper returning only the report (backward-compatible)."""
+        report, _reused, _count = await self.ingest_with_outcome(
+            request, overwrite=overwrite, overwrite_reason=overwrite_reason
+        )
+        return report
+
+    async def ingest_with_outcome(
+        self,
+        request: IngestReportRequest,
+        *,
+        overwrite: bool = False,
+        overwrite_reason: str | None = None,
+    ) -> tuple[InvestmentReport, bool, int]:
+        """ROB-352 — ingest and report ``(report, reused, item_count)``.
+
+        ``reused`` is True only when an existing row was returned unchanged
+        (default path, no overwrite). The generator uses this to rebuild its
+        response from the stored row even when a concurrent insert lands
+        between its existence precheck and this call — eliminating any
+        stored-row/response mismatch on the reuse path.
+        """
         idempotency_key = report_key(
             report_type=request.report_type,
             market=request.market,
@@ -89,7 +110,8 @@ class InvestmentReportIngestionService:
         # fields) while keeping report_uuid / idempotency_key stable. Mutating
         # report_type/created_by_profile to force a new row is NOT supported.
         if existing is not None and not overwrite:
-            return existing
+            items = await self._repo.list_items_for_report(existing.id)
+            return existing, True, len(items)
 
         # ROB-269 Phase 3 layer (ii) + (iii) — evaluate gate before insert.
         # When ACTION_REPORT_BUNDLE_BASED_GENERATION_ENABLED is True and the
@@ -144,7 +166,7 @@ class InvestmentReportIngestionService:
                 await self._insert_item(existing, item_req)
             await self._session.flush()
             await self._session.refresh(existing)
-            return existing
+            return existing, False, len(request.items)
 
         report = await self._repo.insert_report(
             idempotency_key=idempotency_key,
@@ -183,7 +205,7 @@ class InvestmentReportIngestionService:
             await self._insert_item(report, item_req)
 
         await self._session.flush()
-        return report
+        return report, False, len(request.items)
 
     async def _insert_item(
         self, report: InvestmentReport, item_req: IngestReportItem

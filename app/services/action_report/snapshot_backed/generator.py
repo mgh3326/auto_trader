@@ -362,11 +362,18 @@ class SnapshotBackedReportGenerator:
                 stale_gate=gate_result,
             )
 
-        report = await self._ingestion_service.ingest(
+        report, reused, item_count = await self._ingestion_service.ingest_with_outcome(
             ingest_request,
             overwrite=request.overwrite_existing,
             overwrite_reason=request.overwrite_reason,
         )
+
+        # ROB-352 — race guard: if a concurrent insert landed between the
+        # precheck above and ingest(), ingest() returns the stored row
+        # unchanged (reused=True). Reflect the STORED row so the response can
+        # never disagree with what's persisted.
+        if reused:
+            return self._response_from_stored(report, item_count, request)
 
         return ReportGenerationResponse(
             report_uuid=report.report_uuid,
@@ -376,7 +383,7 @@ class SnapshotBackedReportGenerator:
             snapshot_freshness_summary=freshness_summary,
             source_conflicts=source_conflicts,
             unavailable_sources=unavailable_sources,
-            items_count=len(ingest_request.items),
+            items_count=item_count,
             warnings=list(ensure_response.warnings),
             bundle_status=ensure_response.status,
             bundle_reused=not ensure_response.created,
