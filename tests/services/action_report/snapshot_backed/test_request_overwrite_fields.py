@@ -51,3 +51,12 @@ def test_response_reused_existing_defaults_false():
         stale_gate={},
     )
     assert resp.reused_existing is False
+
+
+def test_overwrite_requires_non_empty_reason():
+    import pytest
+
+    with pytest.raises(Exception):
+        _req(overwrite_existing=True)
+    with pytest.raises(Exception):
+        _req(overwrite_existing=True, overwrite_reason="   ")

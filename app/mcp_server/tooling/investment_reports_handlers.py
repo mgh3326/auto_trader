@@ -592,6 +592,19 @@ async def investment_report_generate_from_bundle_impl(
             ),
         }
 
+    # ROB-352 — a destructive overwrite must carry a non-empty reason (audit).
+    # Pre-validate here so the caller gets a structured error rather than an
+    # uncaught ValidationError from ReportGenerationRequest.
+    if overwrite_existing and not (overwrite_reason and overwrite_reason.strip()):
+        return {
+            "success": False,
+            "error": "overwrite_reason_required",
+            "hint": (
+                "Pass a non-empty overwrite_reason when overwrite_existing=true "
+                "so the in-place regeneration is auditable."
+            ),
+        }
+
     # ROB-352 — resolve a default user_id for live account scopes so the
     # portfolio collector can read live holdings/cash (was a hidden required
     # dependency that degraded the bundle to failed → forced no_action).

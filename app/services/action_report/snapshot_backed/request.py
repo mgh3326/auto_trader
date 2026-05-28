@@ -6,7 +6,7 @@ import datetime as dt
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.investment_reports import IngestReportItem, MarketSessionLiteral
 from app.schemas.investment_snapshots import SnapshotRequestedBy
@@ -92,6 +92,19 @@ class ReportGenerationRequest(BaseModel):
     # explicit-flag-only path and never co-runs with Hermes composition
     # against the same bundle.
     auto_emit_from_evidence: bool = False
+
+    @model_validator(mode="after")
+    def _require_overwrite_reason(self) -> ReportGenerationRequest:
+        # ROB-352 — a destructive in-place overwrite must carry a non-empty
+        # reason for the audit trail; it is recorded in report_metadata.
+        if self.overwrite_existing and not (
+            self.overwrite_reason and self.overwrite_reason.strip()
+        ):
+            raise ValueError(
+                "overwrite_reason is required (non-empty) when "
+                "overwrite_existing=True"
+            )
+        return self
 
     @field_validator("auto_compose")
     @classmethod

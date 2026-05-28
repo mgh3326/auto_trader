@@ -192,3 +192,13 @@ async def test_overwrite_blocked_returns_structured_error(_enabled, monkeypatch)
     assert res["decision_count"] == 2
     assert res["active_alert_count"] == 1
     assert "supersede" in res["hint"].lower() or "revise" in res["hint"].lower()
+
+
+@pytest.mark.asyncio
+async def test_overwrite_without_reason_fails_closed(_enabled):
+    """ROB-352 — overwrite_existing=True without a reason is rejected up front."""
+    res = await h.investment_report_generate_from_bundle_impl(
+        **_kwargs(overwrite_existing=True)
+    )
+    assert res["success"] is False
+    assert res["error"] == "overwrite_reason_required"
