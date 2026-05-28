@@ -28,6 +28,33 @@ from app.services.investment_reports.idempotency import item_key, report_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
 
 
+class ReportOverwriteBlockedError(RuntimeError):
+    """ROB-352 — raised when an overwrite would destroy operator audit.
+
+    Deleting a report's items cascades to
+    ``investment_report_item_decisions`` (ON DELETE CASCADE) and orphans
+    activated ``investment_watch_alerts`` (source ref set NULL). When such
+    audit exists, overwrite is refused; the caller must supersede/revise via
+    a separate path instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        report_uuid: object,
+        decision_count: int,
+        active_alert_count: int,
+    ) -> None:
+        super().__init__(
+            f"overwrite blocked: report {report_uuid} has {decision_count} "
+            f"operator decision(s) and {active_alert_count} active watch "
+            "alert(s); regenerating would destroy that audit trail"
+        )
+        self.report_uuid = report_uuid
+        self.decision_count = decision_count
+        self.active_alert_count = active_alert_count
+
+
 class InvestmentReportIngestionService:
     """Atomic, idempotent report-bundle creation."""
 
@@ -133,6 +160,24 @@ class InvestmentReportIngestionService:
         # ROB-352 — explicit overwrite: update the existing row in place and
         # replace its items, keeping report_uuid stable.
         if existing is not None:
+            # Refuse to clobber operator audit. Deleting items would cascade to
+            # decisions and orphan activated watch alerts — block instead.
+            existing_items = await self._repo.list_items_for_report(existing.id)
+            existing_item_ids = [it.id for it in existing_items]
+            decisions = (
+                await self._repo.list_decisions_for_items(existing_item_ids)
+                if existing_item_ids
+                else []
+            )
+            active_alerts = await self._repo.list_alerts_for_source_reports(
+                [existing.report_uuid], status="active"
+            )
+            if decisions or active_alerts:
+                raise ReportOverwriteBlockedError(
+                    report_uuid=existing.report_uuid,
+                    decision_count=len(decisions),
+                    active_alert_count=len(active_alerts),
+                )
             await self._repo.update_report(
                 existing.id,
                 report_type=request.report_type,

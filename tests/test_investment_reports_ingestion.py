@@ -270,3 +270,40 @@ async def test_default_reuse_does_not_replace_items(session: AsyncSession) -> No
     repo = InvestmentReportsRepository(session)
     items = await repo.list_items_for_report(first.id)
     assert len(items) == 1
+
+
+@pytest.mark.asyncio
+async def test_overwrite_blocked_when_item_has_operator_decision(
+    session: AsyncSession,
+) -> None:
+    """ROB-352 — overwrite must not clobber operator decision audit.
+
+    investment_report_item_decisions.item_id is ON DELETE CASCADE, so a
+    delete+reinsert would erase the audit trail. Refuse instead.
+    """
+    from app.services.investment_reports.ingestion import (
+        ReportOverwriteBlockedError,
+    )
+
+    service = InvestmentReportIngestionService(session)
+    first = await service.ingest(_base_request(items=[_action_item("a1")]))
+    repo = InvestmentReportsRepository(session)
+    items = await repo.list_items_for_report(first.id)
+    await repo.insert_decision(
+        item_id=items[0].id,
+        idempotency_key="dec:1",
+        decision="approve",
+        actor="operator",
+    )
+
+    with pytest.raises(ReportOverwriteBlockedError):
+        await service.ingest(
+            _base_request(title="v2", items=[_action_item("a1")]),
+            overwrite=True,
+            overwrite_reason="redo",
+        )
+
+    # Audit + items left intact (no partial mutation).
+    still = await repo.list_items_for_report(first.id)
+    assert len(still) == 1
+    assert len(await repo.list_decisions_for_items([items[0].id])) == 1

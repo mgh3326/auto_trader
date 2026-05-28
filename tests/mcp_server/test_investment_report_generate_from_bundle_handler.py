@@ -165,3 +165,30 @@ def test_tool_description_documents_contract():
     assert "client_item_key" in desc
     assert "overwrite_existing" in desc
     assert "market_session" in desc
+
+
+@pytest.mark.asyncio
+async def test_overwrite_blocked_returns_structured_error(_enabled, monkeypatch):
+    """ROB-352 — ReportOverwriteBlockedError maps to a structured response."""
+    from app.services.action_report.snapshot_backed import generator as gen_mod
+    from app.services.investment_reports.ingestion import (
+        ReportOverwriteBlockedError,
+    )
+
+    async def _raise(self, request):
+        raise ReportOverwriteBlockedError(
+            report_uuid="11111111-1111-1111-1111-111111111111",
+            decision_count=2,
+            active_alert_count=1,
+        )
+
+    monkeypatch.setattr(gen_mod.SnapshotBackedReportGenerator, "generate", _raise)
+
+    res = await h.investment_report_generate_from_bundle_impl(
+        **_kwargs(overwrite_existing=True, overwrite_reason="redo")
+    )
+    assert res["success"] is False
+    assert res["error"] == "overwrite_blocked_has_audit"
+    assert res["decision_count"] == 2
+    assert res["active_alert_count"] == 1
+    assert "supersede" in res["hint"].lower() or "revise" in res["hint"].lower()

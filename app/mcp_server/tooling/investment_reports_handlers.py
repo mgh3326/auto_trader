@@ -496,6 +496,9 @@ async def investment_report_generate_from_bundle_impl(
     from app.services.action_report.snapshot_backed.request import (
         ReportGenerationRequest,
     )
+    from app.services.investment_reports.ingestion import (
+        ReportOverwriteBlockedError,
+    )
 
     if not settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED:
         return {
@@ -634,6 +637,20 @@ async def investment_report_generate_from_bundle_impl(
                 "reason": str(exc),
                 "bundle_status": exc.bundle_status,
                 "freshness_summary": exc.freshness_summary,
+            }
+        except ReportOverwriteBlockedError as exc:
+            return {
+                "success": False,
+                "error": "overwrite_blocked_has_audit",
+                "reason": str(exc),
+                "report_uuid": str(exc.report_uuid),
+                "decision_count": exc.decision_count,
+                "active_alert_count": exc.active_alert_count,
+                "hint": (
+                    "This report has operator decisions or active watch alerts; "
+                    "overwriting would destroy that audit. Supersede/revise via a "
+                    "new report instead of regenerating in place."
+                ),
             }
         except SnapshotBackedReportGeneratorError as exc:
             return {"success": False, "error": str(exc)}
