@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from app.core.db import AsyncSessionLocal
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
@@ -54,6 +56,33 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_context_get",
     "investment_report_generate_from_bundle",
 }
+
+# ROB-352 — mirror of the generator's canonical market/account_scope pairs.
+# A drift-guard test asserts this equals ``generator._MARKET_ACCOUNT_PAIRS``.
+# Kept here as a literal so the handler can fail closed BEFORE importing or
+# constructing the generator.
+_SUPPORTED_MARKET_ACCOUNT_PAIRS: dict[str, str] = {
+    "kr": "kis_live",
+    "us": "kis_live",
+    "crypto": "upbit_live",
+}
+
+# ROB-352 — persisted-layer market_session vocabulary (mirrors
+# ``MarketSessionLiteral`` in app/schemas/investment_reports.py). Validated in
+# the handler so an invalid session returns a structured error instead of an
+# uncaught ValidationError from ReportGenerationRequest.
+_ALLOWED_MARKET_SESSIONS: tuple[str, ...] = ("regular", "nxt", "pre", "post", "24x7")
+
+
+def _default_generator_user_id() -> int:
+    """ROB-352 — resolve the default operator user_id the same way the
+    portfolio/holdings tools do (``MCP_USER_ID`` env, default 1), so a
+    kis_live/upbit_live report no longer silently degrades to
+    portfolio=unavailable when the caller omits user_id.
+    """
+    from app.mcp_server.tooling.shared import MCP_USER_ID
+
+    return MCP_USER_ID
 
 
 # ---------------------------------------------------------------------------
@@ -412,10 +441,13 @@ async def investment_report_generate_from_bundle_impl(
     policy_version: str = "intraday_action_report_v1",
     generator_version: str = "v2-snapshot-backed",
     report_type: str = "snapshot_backed_advisory_v1",
+    market_session: str | None = None,
     symbols: list[str] | None = None,
     candidate_limit: int | None = None,
     requested_by: str = "claude_code",
     user_id: int | None = None,
+    overwrite_existing: bool = False,
+    overwrite_reason: str | None = None,
 ) -> dict:
     """Generate a snapshot-backed advisory report.
 
@@ -451,9 +483,99 @@ async def investment_report_generate_from_bundle_impl(
             ),
         }
 
+    # ROB-352 — fail closed on unsupported account scopes BEFORE building the
+    # request, with an actionable error that names the supported pairs and
+    # routes paper accounts to the Hermes composition path.
+    expected_scope = _SUPPORTED_MARKET_ACCOUNT_PAIRS.get(market)
+    if expected_scope is None or account_scope != expected_scope:
+        return {
+            "success": False,
+            "error": "unsupported_account_scope",
+            "market": market,
+            "account_scope": account_scope,
+            "supported_pairs": _SUPPORTED_MARKET_ACCOUNT_PAIRS,
+            "hint": (
+                "This snapshot-backed generator only collects live KIS/Upbit "
+                "data. For alpaca_paper / paper:<name> reports use the Hermes "
+                "composition path (investment_report_create_from_hermes_"
+                "composition)."
+            ),
+        }
+
+    # ROB-352 — validate market_session against the persisted vocabulary so an
+    # invalid session returns a structured error instead of an uncaught
+    # ValidationError deep in request construction.
+    if market_session is not None and market_session not in _ALLOWED_MARKET_SESSIONS:
+        return {
+            "success": False,
+            "error": "invalid_market_session",
+            "market_session": market_session,
+            "allowed": list(_ALLOWED_MARKET_SESSIONS),
+        }
+
+    # ROB-352 — validate items with per-item, per-field errors instead of a raw
+    # ValidationError. Names the offending item index/client_item_key and the
+    # failing field so callers fix it without reading backend code.
+    validated_items: list[IngestReportItem] = []
+    item_errors: list[dict[str, Any]] = []
+    for index, raw in enumerate(items or []):
+        try:
+            validated_items.append(IngestReportItem.model_validate(raw))
+        except ValidationError as exc:
+            item_errors.append(
+                {
+                    "index": index,
+                    "client_item_key": (raw or {}).get("client_item_key"),
+                    "errors": [
+                        {
+                            "field": ".".join(str(p) for p in err["loc"]),
+                            "message": err["msg"],
+                        }
+                        for err in exc.errors()
+                    ],
+                }
+            )
+    if item_errors:
+        return {
+            "success": False,
+            "error": "invalid_items",
+            "item_errors": item_errors,
+            "required_fields": [
+                "client_item_key",
+                "item_kind",
+                "intent",
+                "rationale",
+            ],
+            "enums": {
+                "item_kind": ["action", "watch", "risk"],
+                "intent": [
+                    "buy_review",
+                    "sell_review",
+                    "risk_review",
+                    "trend_recovery_review",
+                    "rebalance_review",
+                ],
+                "target_kind": ["asset", "index", "fx"],
+                "side": ["buy", "sell"],
+            },
+            "notes": (
+                "watch items require watch_condition + valid_until unless "
+                "operation is 'review'; decision_bucket must be one of the "
+                "DECISION_BUCKETS vocabulary."
+            ),
+        }
+
+    # ROB-352 — resolve a default user_id for live account scopes so the
+    # portfolio collector can read live holdings/cash (was a hidden required
+    # dependency that degraded the bundle to failed → forced no_action).
+    resolved_user_id = (
+        user_id if user_id is not None else _default_generator_user_id()
+    )
+
     payload: dict[str, Any] = {
         "market": market,
         "account_scope": account_scope,
+        "market_session": market_session,
         "policy_version": policy_version,
         "status": status,
         "requested_by": requested_by,
@@ -466,14 +588,16 @@ async def investment_report_generate_from_bundle_impl(
         "risk_summary": risk_summary,
         "thesis_text": thesis_text,
         "no_action_note": no_action_note,
-        "items": [IngestReportItem.model_validate(it) for it in (items or [])],
+        "items": validated_items,
         "previous_report_uuid": previous_report_uuid,
         "valid_until": valid_until,
         "published_at": published_at,
         "metadata": metadata or {},
         "symbols": symbols,
         "candidate_limit": candidate_limit,
-        "user_id": user_id,
+        "user_id": resolved_user_id,
+        "overwrite_existing": overwrite_existing,
+        "overwrite_reason": overwrite_reason,
     }
     request = ReportGenerationRequest.model_validate(payload)
 
@@ -493,7 +617,11 @@ async def investment_report_generate_from_bundle_impl(
             return {"success": False, "error": str(exc)}
         await db.commit()
 
-    return {"success": True, **response.model_dump(mode="json")}
+    return {
+        "success": True,
+        "resolved_user_id": resolved_user_id,
+        **response.model_dump(mode="json"),
+    }
 
 
 # ---------------------------------------------------------------------------
