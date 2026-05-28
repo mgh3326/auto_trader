@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from app.core.db import AsyncSessionLocal
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
@@ -54,6 +56,57 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_context_get",
     "investment_report_generate_from_bundle",
 }
+
+# ROB-352 — mirror of the generator's canonical market/account_scope pairs.
+# A drift-guard test asserts this equals ``generator._MARKET_ACCOUNT_PAIRS``.
+# Kept here as a literal so the handler can fail closed BEFORE importing or
+# constructing the generator.
+_SUPPORTED_MARKET_ACCOUNT_PAIRS: dict[str, str] = {
+    "kr": "kis_live",
+    "us": "kis_live",
+    "crypto": "upbit_live",
+}
+
+# ROB-352 — persisted-layer market_session vocabulary (mirrors
+# ``MarketSessionLiteral`` in app/schemas/investment_reports.py). Validated in
+# the handler so an invalid session returns a structured error instead of an
+# uncaught ValidationError from ReportGenerationRequest.
+_ALLOWED_MARKET_SESSIONS: tuple[str, ...] = ("regular", "nxt", "pre", "post", "24x7")
+
+GENERATE_FROM_BUNDLE_DESCRIPTION = (
+    "ROB-273/ROB-352 — generate a snapshot-backed advisory investment_report "
+    "end-to-end. Ensures (or reuses) a snapshot bundle, runs the read-only "
+    "collector registry, normalises payloads, and persists the report with "
+    "snapshot metadata. Opt-in: returns {success:false, "
+    "error:'snapshot_backed_report_generator_disabled'} unless "
+    "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED is true. "
+    "Supported market/account_scope pairs ONLY: kr/kis_live, us/kis_live, "
+    "crypto/upbit_live — any other pair fails closed with "
+    "error:'unsupported_account_scope' (use the Hermes composition path for "
+    "alpaca_paper). user_id is auto-resolved from MCP_USER_ID when omitted so "
+    "kis_live/upbit_live portfolios are readable; pass user_id to override. "
+    "Optional market_session (regular|nxt|pre|post|24x7) refines US/KR session "
+    "reporting and is part of the idempotency key. items[] each require: "
+    "client_item_key, item_kind (action|watch|risk), intent (buy_review|"
+    "sell_review|risk_review|trend_recovery_review|rebalance_review), rationale; "
+    "watch items also need watch_condition+valid_until unless operation='review'. "
+    "Invalid items return error:'invalid_items' naming the offending index/field. "
+    "Deterministic regeneration: by default an existing report for the same key "
+    "is RETURNED FROM THE STORED ROW (reused_existing=true); pass "
+    "overwrite_existing=true with overwrite_reason to transactionally replace it. "
+    "No broker / order / watch mutation."
+)
+
+
+def _default_generator_user_id() -> int:
+    """ROB-352 — resolve the default operator user_id the same way the
+    portfolio/holdings tools do (``MCP_USER_ID`` env, default 1), so a
+    kis_live/upbit_live report no longer silently degrades to
+    portfolio=unavailable when the caller omits user_id.
+    """
+    from app.mcp_server.tooling.shared import MCP_USER_ID
+
+    return MCP_USER_ID
 
 
 # ---------------------------------------------------------------------------
@@ -412,10 +465,13 @@ async def investment_report_generate_from_bundle_impl(
     policy_version: str = "intraday_action_report_v1",
     generator_version: str = "v2-snapshot-backed",
     report_type: str = "snapshot_backed_advisory_v1",
+    market_session: str | None = None,
     symbols: list[str] | None = None,
     candidate_limit: int | None = None,
     requested_by: str = "claude_code",
     user_id: int | None = None,
+    overwrite_existing: bool = False,
+    overwrite_reason: str | None = None,
 ) -> dict:
     """Generate a snapshot-backed advisory report.
 
@@ -424,12 +480,13 @@ async def investment_report_generate_from_bundle_impl(
     is set on the deployment. The generator never mutates broker /
     order / watch state — see docs for the read-only guarantees.
 
-    ROB-318 — ``user_id`` is forwarded to ``ReportGenerationRequest`` so the
-    ``kis_live`` portfolio collector can read live KIS holdings/cash. When
-    omitted it stays ``None`` (ROB-278 fail-closed): broker-backed collectors
-    surface ``portfolio`` as ``unavailable`` and the stale gate keeps the
-    report advisory-only. This mirrors the ``user_id`` already threaded
-    through ``investment_report_prepare_bundle`` (ROB-314).
+    ROB-318/ROB-352 — ``user_id`` is forwarded to ``ReportGenerationRequest``
+    so the ``kis_live`` portfolio collector can read live KIS holdings/cash.
+    When omitted it is now resolved to the MCP default (``MCP_USER_ID``, like
+    ``get_holdings``) for the supported live scopes, and the resolved id is
+    returned as ``resolved_user_id`` — pass an explicit ``user_id`` to override.
+    (Previously, omitting it stayed ``None`` and fail-closed the portfolio to
+    ``unavailable``, forcing a misleading no_action.)
     """
     from app.core.config import settings
     from app.services.action_report.snapshot_backed.generator import (
@@ -439,6 +496,9 @@ async def investment_report_generate_from_bundle_impl(
     )
     from app.services.action_report.snapshot_backed.request import (
         ReportGenerationRequest,
+    )
+    from app.services.investment_reports.ingestion import (
+        ReportOverwriteBlockedError,
     )
 
     if not settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED:
@@ -451,9 +511,128 @@ async def investment_report_generate_from_bundle_impl(
             ),
         }
 
+    # ROB-352 — fail closed on unsupported account scopes BEFORE building the
+    # request, with an actionable error that names the supported pairs and
+    # routes paper accounts to the Hermes composition path.
+    expected_scope = _SUPPORTED_MARKET_ACCOUNT_PAIRS.get(market)
+    if expected_scope is None or account_scope != expected_scope:
+        return {
+            "success": False,
+            "error": "unsupported_account_scope",
+            "market": market,
+            "account_scope": account_scope,
+            "supported_pairs": _SUPPORTED_MARKET_ACCOUNT_PAIRS,
+            "hint": (
+                "This snapshot-backed generator only collects live KIS/Upbit "
+                "data. For alpaca_paper / paper:<name> reports use the Hermes "
+                "composition path (investment_report_create_from_hermes_"
+                "composition)."
+            ),
+        }
+
+    # ROB-352 — validate market_session against the persisted vocabulary so an
+    # invalid session returns a structured error instead of an uncaught
+    # ValidationError deep in request construction.
+    if market_session is not None and market_session not in _ALLOWED_MARKET_SESSIONS:
+        return {
+            "success": False,
+            "error": "invalid_market_session",
+            "market_session": market_session,
+            "allowed": list(_ALLOWED_MARKET_SESSIONS),
+        }
+
+    # ROB-352 — validate items with per-item, per-field errors instead of a raw
+    # ValidationError. Names the offending item index/client_item_key and the
+    # failing field so callers fix it without reading backend code.
+    validated_items: list[IngestReportItem] = []
+    item_errors: list[dict[str, Any]] = []
+    for index, raw in enumerate(items or []):
+        # Guard non-dict entries (e.g. a bare string/list) so building the
+        # error report itself never crashes on ``.get``.
+        if not isinstance(raw, dict):
+            item_errors.append(
+                {
+                    "index": index,
+                    "client_item_key": None,
+                    "errors": [
+                        {
+                            "field": "",
+                            "message": (
+                                f"item must be an object, got {type(raw).__name__}"
+                            ),
+                        }
+                    ],
+                }
+            )
+            continue
+        try:
+            validated_items.append(IngestReportItem.model_validate(raw))
+        except ValidationError as exc:
+            item_errors.append(
+                {
+                    "index": index,
+                    "client_item_key": raw.get("client_item_key"),
+                    "errors": [
+                        {
+                            "field": ".".join(str(p) for p in err["loc"]),
+                            "message": err["msg"],
+                        }
+                        for err in exc.errors()
+                    ],
+                }
+            )
+    if item_errors:
+        return {
+            "success": False,
+            "error": "invalid_items",
+            "item_errors": item_errors,
+            "required_fields": [
+                "client_item_key",
+                "item_kind",
+                "intent",
+                "rationale",
+            ],
+            "enums": {
+                "item_kind": ["action", "watch", "risk"],
+                "intent": [
+                    "buy_review",
+                    "sell_review",
+                    "risk_review",
+                    "trend_recovery_review",
+                    "rebalance_review",
+                ],
+                "target_kind": ["asset", "index", "fx"],
+                "side": ["buy", "sell"],
+            },
+            "notes": (
+                "watch items require watch_condition + valid_until unless "
+                "operation is 'review'; decision_bucket must be one of the "
+                "DECISION_BUCKETS vocabulary."
+            ),
+        }
+
+    # ROB-352 — a destructive overwrite must carry a non-empty reason (audit).
+    # Pre-validate here so the caller gets a structured error rather than an
+    # uncaught ValidationError from ReportGenerationRequest.
+    if overwrite_existing and not (overwrite_reason and overwrite_reason.strip()):
+        return {
+            "success": False,
+            "error": "overwrite_reason_required",
+            "hint": (
+                "Pass a non-empty overwrite_reason when overwrite_existing=true "
+                "so the in-place regeneration is auditable."
+            ),
+        }
+
+    # ROB-352 — resolve a default user_id for live account scopes so the
+    # portfolio collector can read live holdings/cash (was a hidden required
+    # dependency that degraded the bundle to failed → forced no_action).
+    resolved_user_id = user_id if user_id is not None else _default_generator_user_id()
+
     payload: dict[str, Any] = {
         "market": market,
         "account_scope": account_scope,
+        "market_session": market_session,
         "policy_version": policy_version,
         "status": status,
         "requested_by": requested_by,
@@ -466,14 +645,16 @@ async def investment_report_generate_from_bundle_impl(
         "risk_summary": risk_summary,
         "thesis_text": thesis_text,
         "no_action_note": no_action_note,
-        "items": [IngestReportItem.model_validate(it) for it in (items or [])],
+        "items": validated_items,
         "previous_report_uuid": previous_report_uuid,
         "valid_until": valid_until,
         "published_at": published_at,
         "metadata": metadata or {},
         "symbols": symbols,
         "candidate_limit": candidate_limit,
-        "user_id": user_id,
+        "user_id": resolved_user_id,
+        "overwrite_existing": overwrite_existing,
+        "overwrite_reason": overwrite_reason,
     }
     request = ReportGenerationRequest.model_validate(payload)
 
@@ -489,11 +670,29 @@ async def investment_report_generate_from_bundle_impl(
                 "bundle_status": exc.bundle_status,
                 "freshness_summary": exc.freshness_summary,
             }
+        except ReportOverwriteBlockedError as exc:
+            return {
+                "success": False,
+                "error": "overwrite_blocked_has_audit",
+                "reason": str(exc),
+                "report_uuid": str(exc.report_uuid),
+                "decision_count": exc.decision_count,
+                "active_alert_count": exc.active_alert_count,
+                "hint": (
+                    "This report has operator decisions or active watch alerts; "
+                    "overwriting would destroy that audit. Supersede/revise via a "
+                    "new report instead of regenerating in place."
+                ),
+            }
         except SnapshotBackedReportGeneratorError as exc:
             return {"success": False, "error": str(exc)}
         await db.commit()
 
-    return {"success": True, **response.model_dump(mode="json")}
+    return {
+        "success": True,
+        "resolved_user_id": resolved_user_id,
+        **response.model_dump(mode="json"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -549,18 +748,7 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
     )(investment_report_context_get_impl)
     mcp.tool(
         name="investment_report_generate_from_bundle",
-        description=(
-            "ROB-273 — generate a snapshot-backed advisory investment_report "
-            "end-to-end. Ensures (or reuses) a snapshot bundle, runs the "
-            "read-only collector registry, normalises payloads, and persists "
-            "the report with snapshot metadata. Opt-in: returns "
-            "{success:false, error:'snapshot_backed_report_generator_disabled'} "
-            "unless SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED is true. "
-            "Pass user_id for kis_live/upbit_live markets so the portfolio "
-            "collector can read live holdings/cash; omitting it keeps "
-            "broker-backed sources fail-closed (portfolio 'unavailable'). "
-            "No broker / order / watch mutation."
-        ),
+        description=GENERATE_FROM_BUNDLE_DESCRIPTION,
     )(investment_report_generate_from_bundle_impl)
 
 

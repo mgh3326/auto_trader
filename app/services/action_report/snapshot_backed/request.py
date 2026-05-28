@@ -6,9 +6,9 @@ import datetime as dt
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.investment_reports import IngestReportItem
+from app.schemas.investment_reports import IngestReportItem, MarketSessionLiteral
 from app.schemas.investment_snapshots import SnapshotRequestedBy
 
 GeneratorMarketLiteral = Literal["kr", "us", "crypto"]
@@ -34,7 +34,10 @@ class ReportGenerationRequest(BaseModel):
 
     market: GeneratorMarketLiteral
     account_scope: GeneratorAccountScopeLiteral
-    market_session: str | None = None
+    # ROB-352 — constrained to the same vocabulary as the persisted layer
+    # (IngestReportRequest) so an invalid session fails fast at request
+    # validation instead of deep inside the ingest-request build.
+    market_session: MarketSessionLiteral | None = None
     policy_version: str = "intraday_action_report_v1"
     execution_mode: Literal["advisory_only"] = "advisory_only"
     status: GeneratorStatusLiteral = "published"
@@ -72,6 +75,15 @@ class ReportGenerationRequest(BaseModel):
     # holdings/cash). ``None`` keeps broker-backed collectors fail-closed.
     user_id: int | None = None
 
+    # ROB-352 — deterministic regeneration semantics. Default is REUSE: when a
+    # report already exists for this deterministic idempotency key, the stored
+    # row is returned unchanged (the generator never emits a freshly-computed,
+    # unstored payload). Set ``overwrite_existing=True`` (with a reason) to
+    # transactionally replace the stored report + items in place. Mutating
+    # report_type/created_by_profile to force a new row is NOT supported.
+    overwrite_existing: bool = False
+    overwrite_reason: str | None = None
+
     # ROB-278 Phase 2 — when True, populate ``items`` from a deterministic
     # evidence-driven auto-emitter (portfolio + symbol quote + candidate +
     # news + journal/watch). Items emit with operation="review" +
@@ -80,6 +92,18 @@ class ReportGenerationRequest(BaseModel):
     # explicit-flag-only path and never co-runs with Hermes composition
     # against the same bundle.
     auto_emit_from_evidence: bool = False
+
+    @model_validator(mode="after")
+    def _require_overwrite_reason(self) -> ReportGenerationRequest:
+        # ROB-352 — a destructive in-place overwrite must carry a non-empty
+        # reason for the audit trail; it is recorded in report_metadata.
+        if self.overwrite_existing and not (
+            self.overwrite_reason and self.overwrite_reason.strip()
+        ):
+            raise ValueError(
+                "overwrite_reason is required (non-empty) when overwrite_existing=True"
+            )
+        return self
 
     @field_validator("auto_compose")
     @classmethod
@@ -110,6 +134,11 @@ class ReportGenerationResponse(BaseModel):
     bundle_status: str
     bundle_reused: bool
     stale_gate: dict[str, Any]
+
+    # ROB-352 — True when the response reflects an existing stored report that
+    # was returned unchanged (default reuse path). When True, callers should
+    # pass overwrite_existing=True + overwrite_reason to regenerate.
+    reused_existing: bool = False
 
     # ROB-318 Phase 3 (PR-A) — deterministic classification of why the report
     # concludes no-action: data_insufficient | stale_gated | real_no_action,
