@@ -1329,6 +1329,7 @@ async def test_reuse_returns_stored_without_ensuring_bundle() -> None:
     assert response.report_uuid == stored.report_uuid
     assert response.items_count == 3
     assert response.bundle_reused is True
+    assert response.bundle_status == "reused"
     assert ensure.calls == []  # never ensured a bundle
     assert ingest.calls == []  # never re-ingested
 

@@ -17,6 +17,8 @@ from app.services.action_report.snapshot_backed.generator import (
     _MARKET_ACCOUNT_PAIRS,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def _enabled(monkeypatch: pytest.MonkeyPatch):
@@ -202,3 +204,15 @@ async def test_overwrite_without_reason_fails_closed(_enabled):
     )
     assert res["success"] is False
     assert res["error"] == "overwrite_reason_required"
+
+
+@pytest.mark.asyncio
+async def test_non_dict_item_does_not_crash(_enabled):
+    """ROB-352 — a non-object item yields a structured error, never a crash."""
+    res = await h.investment_report_generate_from_bundle_impl(
+        **_kwargs(items=["not-an-object"])
+    )
+    assert res["success"] is False
+    assert res["error"] == "invalid_items"
+    assert res["item_errors"][0]["index"] == 0
+    assert "object" in str(res["item_errors"][0]["errors"])

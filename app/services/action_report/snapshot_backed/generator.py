@@ -440,7 +440,12 @@ class SnapshotBackedReportGenerator:
                 "reused_existing_report: pass overwrite_existing=true with "
                 "overwrite_reason to regenerate"
             ],
-            bundle_status=freshness.get("overall", "reused"),
+            # ROB-352 — distinct token: don't mix the bundle-ensure status
+            # vocabulary (complete/partial/...) with the freshness ``overall``
+            # token (fresh/partial/...). On reuse we didn't run ensure, so the
+            # honest status is "reused"; freshness detail lives in
+            # snapshot_freshness_summary.
+            bundle_status="reused",
             bundle_reused=True,
             stale_gate=metadata.get("stale_gate", {}),
             why_no_action=diagnostics.get("why_no_action"),

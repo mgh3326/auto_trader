@@ -480,12 +480,13 @@ async def investment_report_generate_from_bundle_impl(
     is set on the deployment. The generator never mutates broker /
     order / watch state — see docs for the read-only guarantees.
 
-    ROB-318 — ``user_id`` is forwarded to ``ReportGenerationRequest`` so the
-    ``kis_live`` portfolio collector can read live KIS holdings/cash. When
-    omitted it stays ``None`` (ROB-278 fail-closed): broker-backed collectors
-    surface ``portfolio`` as ``unavailable`` and the stale gate keeps the
-    report advisory-only. This mirrors the ``user_id`` already threaded
-    through ``investment_report_prepare_bundle`` (ROB-314).
+    ROB-318/ROB-352 — ``user_id`` is forwarded to ``ReportGenerationRequest``
+    so the ``kis_live`` portfolio collector can read live KIS holdings/cash.
+    When omitted it is now resolved to the MCP default (``MCP_USER_ID``, like
+    ``get_holdings``) for the supported live scopes, and the resolved id is
+    returned as ``resolved_user_id`` — pass an explicit ``user_id`` to override.
+    (Previously, omitting it stayed ``None`` and fail-closed the portfolio to
+    ``unavailable``, forcing a misleading no_action.)
     """
     from app.core.config import settings
     from app.services.action_report.snapshot_backed.generator import (
@@ -546,13 +547,31 @@ async def investment_report_generate_from_bundle_impl(
     validated_items: list[IngestReportItem] = []
     item_errors: list[dict[str, Any]] = []
     for index, raw in enumerate(items or []):
+        # Guard non-dict entries (e.g. a bare string/list) so building the
+        # error report itself never crashes on ``.get``.
+        if not isinstance(raw, dict):
+            item_errors.append(
+                {
+                    "index": index,
+                    "client_item_key": None,
+                    "errors": [
+                        {
+                            "field": "",
+                            "message": (
+                                f"item must be an object, got {type(raw).__name__}"
+                            ),
+                        }
+                    ],
+                }
+            )
+            continue
         try:
             validated_items.append(IngestReportItem.model_validate(raw))
         except ValidationError as exc:
             item_errors.append(
                 {
                     "index": index,
-                    "client_item_key": (raw or {}).get("client_item_key"),
+                    "client_item_key": raw.get("client_item_key"),
                     "errors": [
                         {
                             "field": ".".join(str(p) for p in err["loc"]),
