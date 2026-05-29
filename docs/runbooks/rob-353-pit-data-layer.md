@@ -28,5 +28,12 @@ Research/backtest only. Read-only public data. No live/Demo/broker/scheduler/DB 
     uv run --no-project python build_pit_universe.py --exchange-info /tmp/pit_audit_exchangeinfo.json \
         --out data_manifests/pit_universe.v1.json
 
+> Caveat: `write_outputs` emits a minimal `.meta.json` (schema_version, snapshot_hash,
+> symbol_count, source, source_records). The committed v1 `.meta.json` carries two extra
+> hand annotations (`build_window`, `note`); regeneration overwrites them. Re-add those by
+> hand, or fold richer-meta emission into PR2 (tracked there).
+
 ## Not in this PR
 - The `specs → campaign.run_campaign` bridge and families 1–3 RUN/verdict are PR2.
+- `build_pit_universe.write_outputs` should emit `build_window`/`note` so regeneration is
+  faithful to the committed sidecar (Minor; from PR1 final review).
