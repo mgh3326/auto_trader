@@ -1468,7 +1468,7 @@ class _FakeSnap:
         self.snapshot_uuid = uuid.uuid4()
         self.snapshot_kind = kind
         self.symbol = symbol
-        self.as_of = dt.datetime(2026, 5, 29, 12, 0, tzinfo=dt.timezone.utc)
+        self.as_of = dt.datetime(2026, 5, 29, 12, 0, tzinfo=dt.UTC)
         self.freshness_status = "fresh"
         self.coverage_json = {"rows": 3}
         self.payload_json = {"x": 1}

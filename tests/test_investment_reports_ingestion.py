@@ -317,9 +317,7 @@ async def test_cited_snapshot_uuids_round_trip(session: AsyncSession) -> None:
     u1, u2 = _uuid.uuid4(), _uuid.uuid4()
     service = InvestmentReportIngestionService(session)
     report = await service.ingest(
-        _base_request(
-            items=[_action_item("a1", cited_snapshot_uuids=[u1, u2])]
-        )
+        _base_request(items=[_action_item("a1", cited_snapshot_uuids=[u1, u2])])
     )
     repo = InvestmentReportsRepository(session)
     items = await repo.list_items_for_report(report.id)

@@ -37,8 +37,10 @@ async def test_prior_reports_excludes_drafts(session: AsyncSession) -> None:
 
     svc = InvestmentReportQueryService(session)
     ctx = await svc.previous_report_context(
-        market="us", account_scope="kis_live",
-        report_type="snapshot_backed_advisory_v1", n_prior=3,
+        market="us",
+        account_scope="kis_live",
+        report_type="snapshot_backed_advisory_v1",
+        n_prior=3,
     )
     titles = {r.title for r in ctx["prior_reports"]}
     assert titles == {"real-1", "real-2"}

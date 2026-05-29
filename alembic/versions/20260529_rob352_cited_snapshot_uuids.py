@@ -31,6 +31,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column(
-        "investment_report_items", "cited_snapshot_uuids", schema="review"
-    )
+    op.drop_column("investment_report_items", "cited_snapshot_uuids", schema="review")
