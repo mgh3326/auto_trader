@@ -82,3 +82,17 @@ def test_trading_sessions_in_range_out_of_bounds_is_empty():
 @pytest.mark.unit
 def test_trading_sessions_in_range_reversed_is_empty():
     assert trading_sessions_in_range("us", date(2025, 7, 8), date(2025, 7, 1)) == []
+
+
+@pytest.mark.unit
+def test_unexpected_calendar_error_fails_closed(monkeypatch):
+    # The fail-closed contract must hold for ANY calendar/library error, not
+    # just ValueError/KeyError — including the get_calendar() load path.
+    import app.services.market_events.session_calendar as sc
+
+    def _boom(_market):
+        raise RuntimeError("calendar load blew up")
+
+    monkeypatch.setattr(sc, "_calendar", _boom)
+    assert sc.is_trading_session("us", date(2025, 7, 7)) is False
+    assert sc.trading_sessions_in_range("us", date(2025, 7, 1), date(2025, 7, 8)) == []

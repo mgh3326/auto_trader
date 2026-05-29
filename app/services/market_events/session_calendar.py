@@ -14,8 +14,11 @@ labeling must never leak across a session it could not confirm is open.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 Market = Literal["us", "kr"]
 
@@ -41,16 +44,27 @@ def _calendar(market: Market):
 def is_trading_session(market: Market, day: date) -> bool:
     """True iff ``day`` is a trading session on the market's exchange.
 
-    Fail-closed: out-of-range dates and any ``ValueError``/``KeyError`` from the
-    calendar/pandas layer return ``False`` (never raise).
+    Fail-closed: ANY error from the calendar load or query path returns
+    ``False`` (never raises). Expected out-of-range / unrepresentable-date
+    errors (``ValueError``/``KeyError``) are swallowed silently; genuinely
+    unexpected errors are logged (so library/data bugs aren't hidden) but still
+    fail closed — the contract is that we never claim a session we can't confirm.
     """
     import pandas as pd
 
-    cal = _calendar(market)
     try:
+        cal = _calendar(market)
         return bool(cal.is_session(pd.Timestamp(day)))
     except (ValueError, KeyError):
-        # Out of the calendar's range or unrepresentable timestamp -> closed.
+        return False
+    except Exception:  # noqa: BLE001 - fail-closed on any calendar/library error
+        logger.warning(
+            "session_calendar: unexpected error classifying %s %s; treating as "
+            "closed (fail-closed)",
+            market,
+            day,
+            exc_info=True,
+        )
         return False
 
 
@@ -85,9 +99,19 @@ def trading_sessions_in_range(market: Market, start: date, end: date) -> list[da
 
     if end < start:
         return []
-    cal = _calendar(market)
     try:
+        cal = _calendar(market)
         sessions = cal.sessions_in_range(pd.Timestamp(start), pd.Timestamp(end))
     except (ValueError, KeyError):
+        return []
+    except Exception:  # noqa: BLE001 - fail-closed on any calendar/library error
+        logger.warning(
+            "session_calendar: unexpected error enumerating %s %s..%s; treating "
+            "as no sessions (fail-closed)",
+            market,
+            start,
+            end,
+            exc_info=True,
+        )
         return []
     return [ts.date() for ts in sessions]
