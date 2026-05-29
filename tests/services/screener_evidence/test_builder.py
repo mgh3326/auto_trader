@@ -117,3 +117,29 @@ def test_builder_empty_rows_returns_empty():
         build_candidate_evidence(market="crypto", preset="crypto_momentum", rows=[])
         == []
     )
+
+
+def test_consecutive_gainers_preset_reasons_and_score():
+    from app.services.screener_evidence.builder import build_candidate_evidence
+
+    rows = [
+        {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "source": "kis",
+            "change_rate": 2.0,
+            "close": 70000,
+            "week_change_rate": 8.0,
+            "consecutive_up_days": 6,
+            "volume": 1_000_000,
+        }
+    ]
+    out = build_candidate_evidence(
+        market="kr", preset="consecutive_gainers", rows=rows
+    )
+    assert len(out) == 1
+    ev = out[0]
+    assert ev.source_preset == "consecutive_gainers"
+    assert ev.price == 70000.0  # reads `close` when `price` absent
+    assert any("연속 상승" in r for r in ev.reasons)
+    assert ev.score > 5.0  # +2.0% momentum -> above neutral
