@@ -113,6 +113,44 @@ def _crypto_row_to_input(row: InvestCryptoScreenerSnapshot) -> dict[str, Any]:
     }
 
 
+def _gainers_row_to_input(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a consecutive_gainers loader row into builder input.
+
+    The loader emits ``close``/``week_change_rate``/``consecutive_up_days``/
+    ``volume`` plus ``_screener_snapshot_state`` (ROB-363). The builder's
+    momentum branch reads these via the close/volume fallbacks and appends the
+    연속 상승 reason.
+    """
+    return {
+        "symbol": row.get("symbol"),
+        "name": row.get("name") or row.get("symbol"),
+        "source": row.get("source") or "kis",
+        "change_rate": row.get("change_rate"),
+        "close": row.get("close"),
+        "volume": row.get("volume"),
+        "consecutive_up_days": row.get("consecutive_up_days"),
+    }
+
+
+def _dedupe_evidence(
+    evidence: list[CandidateEvidence], *, key: Callable[[CandidateEvidence], Hashable]
+) -> list[CandidateEvidence]:
+    """Order-preserving dedupe of CandidateEvidence by ``key`` (ROB-363).
+
+    PR1 keeps the first occurrence (highest-ranked from a single preset). PR2
+    replaces this with a reason-merging variant once multiple presets feed the
+    pool."""
+    seen: set[Any] = set()
+    out: list[CandidateEvidence] = []
+    for ev in evidence:
+        k = key(ev)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(ev)
+    return out
+
+
 def _toss_parity_status(preset: str, market: str) -> str:
     """ROB-359 Scope E — map the candidate ranking/preset to its Toss-parity
     status so the report can state honestly where a candidate came from.
@@ -120,7 +158,7 @@ def _toss_parity_status(preset: str, market: str) -> str:
     The current collector sources candidates from a top-movers ranking
     (``top_gainers`` / ``crypto_momentum``), which is NOT a Toss-parity preset,
     so this returns ``not_toss_parity``. When candidate sourcing is wired to the
-    actual Toss-parity catalog presets (candidate strategy — ROB-346), a real
+    actual Toss-parity catalog presets (candidate strategy — ROB-363; US universe is ROB-346), a real
     ``full``/``partial``/``mismatch`` status flows through automatically.
     """
     from app.services.invest_view_model.screener_presets import get_preset
@@ -211,13 +249,23 @@ class CandidateUniverseSnapshotCollector:
     async def _collect_equity(
         self, request: CollectorRequest, now: dt.datetime
     ) -> list[SnapshotCollectResult]:
+        limit = _candidate_limit(request)
+        if request.market == "kr":
+            preset_result = await self._collect_kr_presets(request, now, limit)
+            if preset_result is not None:
+                return preset_result
+        # US, or KR with no preset rows -> top_gainers momentum fallback.
+        return await self._collect_top_gainers(request, now, limit)
+
+    async def _collect_top_gainers(
+        self, request: CollectorRequest, now: dt.datetime, limit: int
+    ) -> list[SnapshotCollectResult]:
         coverage = await self._equity_repo.coverage(
             market=request.market, today_trading_date=now.date()
         )
         usefulness = _classify_usefulness(
             actionable=coverage.fresh_count, stale=coverage.stale_count
         )
-        limit = _candidate_limit(request)
         rows = await self._equity_repo.list_top_candidates(
             market=request.market, limit=limit
         )
@@ -239,6 +287,61 @@ class CandidateUniverseSnapshotCollector:
                 stale_count=coverage.stale_count,
                 last_computed_at=coverage.last_computed_at,
                 usefulness=usefulness,
+            )
+        ]
+
+    async def _collect_kr_presets(
+        self, request: CollectorRequest, now: dt.datetime, limit: int
+    ) -> list[SnapshotCollectResult] | None:
+        """KR Toss-parity preset sourcing (ROB-363). Returns None when no preset
+        produced any rows, so the caller falls back to top_gainers."""
+        from app.services.invest_view_model.screener_service import (
+            load_consecutive_gainers_from_snapshots,
+        )
+
+        # (preset_id, loader) — PR2 adds double_buy + high_yield_value here.
+        pool_limit = max(limit * 3, limit + 20)
+        loaders = [
+            ("consecutive_gainers", load_consecutive_gainers_from_snapshots),
+        ]
+        evidence: list[CandidateEvidence] = []
+        per_state: dict[str, str] = {}  # db_symbol -> fresh|stale
+        any_rows = False
+        for preset_id, loader in loaders:
+            rows = await loader(self._session, market="kr", limit=pool_limit)
+            if not rows:  # None (missing) or [] (stale-empty)
+                continue
+            any_rows = True
+            built = build_candidate_evidence(
+                market="kr",
+                preset=preset_id,
+                rows=[_gainers_row_to_input(r) for r in rows],
+            )
+            # Map freshness by symbol from the raw loader rows — NOT by zipping
+            # against ``built``, which build_candidate_evidence re-sorts by score
+            # (the positions no longer line up). Keyed by db symbol so it stays
+            # correct once PR2 fans in multiple presets.
+            for src_row in rows:
+                per_state[to_db_symbol(str(src_row.get("symbol")))] = (
+                    src_row.get("_screener_snapshot_state") or "fresh"
+                )
+            evidence.extend(built)
+        if not any_rows:
+            return None
+
+        evidence = _dedupe_evidence(evidence, key=lambda e: to_db_symbol(e.symbol))
+        # Distinct evaluated symbols (pre-slice) = the candidate universe size,
+        # so ``capped`` reflects a pool wider than the displayed limit.
+        universe_count = len(per_state)
+        evidence = evidence[:limit]
+        return [
+            self._build_preset_candidate_result(
+                request=request,
+                now=now,
+                evidence=evidence,
+                per_state=per_state,
+                candidate_limit=limit,
+                universe_count=universe_count,
             )
         ]
 
@@ -335,6 +438,71 @@ class CandidateUniverseSnapshotCollector:
             as_of=now,
             # Optional kind: non-useful degrades the bundle to ``partial``,
             # never fails it.
+            freshness_status="fresh" if usefulness == "useful" else "partial",
+            coverage={
+                "actionable_count": fresh_count,
+                "stale_count": stale_count,
+                "usefulness": usefulness,
+                "candidate_count": len(candidates),
+                "candidate_limit": candidate_limit,
+                "universe_count": universe_count,
+                "capped": capped,
+            },
+        )
+
+    def _build_preset_candidate_result(
+        self,
+        *,
+        request: CollectorRequest,
+        now: dt.datetime,
+        evidence: list[CandidateEvidence],
+        per_state: dict[str, str],
+        candidate_limit: int,
+        universe_count: int,
+    ) -> SnapshotCollectResult:
+        fresh_count = sum(1 for v in per_state.values() if v == "fresh")
+        stale_count = sum(1 for v in per_state.values() if v == "stale")
+        usefulness = _classify_usefulness(actionable=fresh_count, stale=stale_count)
+        candidates: list[dict[str, Any]] = []
+        for rank, e in enumerate(evidence, start=1):
+            db_sym = to_db_symbol(e.symbol)
+            candidates.append(
+                {
+                    **e.to_payload_dict(),
+                    "rank": rank,
+                    "candidate_rank": rank,
+                    "data_state": per_state.get(db_sym, "fresh"),
+                    "toss_parity_status": _toss_parity_status(
+                        e.source_preset or "top_gainers", "kr"
+                    ),
+                }
+            )
+        capped = universe_count > candidate_limit
+        source_coverage = _source_coverage(evidence)
+        payload: dict[str, Any] = {
+            "market": "kr",
+            "preset": "toss_parity_multi",
+            "as_of": now.isoformat(),
+            "freshness_status": _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial"),
+            "source_coverage": source_coverage,
+            "candidate_limit": candidate_limit,
+            "universe_count": universe_count,
+            "capped": capped,
+            "candidates": candidates,
+            "fresh_count": fresh_count,
+            "actionable_count": fresh_count,
+            "stale_count": stale_count,
+            "last_computed_at": None,
+            "usefulness": usefulness,
+            "missing_data": _missing_data("kr", usefulness),
+        }
+        return build_result(
+            snapshot_kind=self.snapshot_kind,
+            market=request.market,
+            account_scope=request.account_scope,
+            payload=payload,
+            origin="auto_trader_db",
+            as_of=now,
             freshness_status="fresh" if usefulness == "useful" else "partial",
             coverage={
                 "actionable_count": fresh_count,

@@ -65,7 +65,9 @@ def build_candidate_evidence(
     for idx, row in enumerate(rows):
         change_rate = _to_float(row.get("change_rate"))
         rsi = _to_float(row.get("rsi"))
-        price = _to_float(row.get("price") or row.get("latest_close"))
+        price = _to_float(
+            row.get("price") or row.get("latest_close") or row.get("close")
+        )
 
         if preset == "crypto_oversold":
             score = scoring.oversold_score(rsi)
@@ -84,7 +86,9 @@ def build_candidate_evidence(
             score_label = f"{change_rate:+.2f}%" if change_rate is not None else "-"
             reasons = [_MOMENTUM_REASON]
             volume_value = _to_float(
-                row.get("trade_amount_24h") or row.get("daily_volume")
+                row.get("trade_amount_24h")
+                or row.get("daily_volume")
+                or row.get("volume")
             )
             up_days = row.get("consecutive_up_days")
             if isinstance(up_days, int) and up_days >= 2:
