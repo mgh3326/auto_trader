@@ -16,8 +16,6 @@ import families
 from artifact_paths import pit_data_root
 from pit_universe import PITManifest
 
-_KCOLS = ("open_time", "open", "high", "low", "close", "volume")
-
 
 def _read_rows(symbol: str, interval: str, root: Path) -> list[tuple[int, float, float, float, float]]:
     """Return sorted, de-duplicated (ts, high, low, close, volume) for a symbol."""
@@ -29,6 +27,7 @@ def _read_rows(symbol: str, interval: str, root: Path) -> list[tuple[int, float,
             for row in reader:
                 if not row or row[0].lower().startswith("open_time"):
                     continue
+                # Binance kline columns: 0=open_time(ms) 2=high 3=low 4=close 5=volume
                 try:
                     ts = int(row[0])
                     seen[ts] = (ts, float(row[2]), float(row[3]), float(row[4]), float(row[5]))
