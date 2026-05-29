@@ -426,9 +426,12 @@ async def test_kr_priority_full_fresh_outranks_partial_and_stale(db_session):
         (ev("A", "consecutive_gainers", 6.0), "stale"),  # full but stale
         (ev("B", "high_yield_value", 5.0), "fresh"),  # full + fresh, lower score
         (ev("C", "high_yield_value", 9.0), "fresh"),  # full + fresh, top score
+        # partial parity + fresh + top score must still rank BELOW any full-parity
+        # candidate (parity dominates freshness and score in the sort key).
+        (ev("D", "cheap_value", 10.0), "fresh"),  # partial parity
     ]
     ordered = sorted(rows, key=lambda pair: _priority_sort_key(pair[0], pair[1]))
-    assert [p[0].symbol for p in ordered] == ["C", "B", "A"]
+    assert [p[0].symbol for p in ordered] == ["C", "B", "A", "D"]
 
 
 @pytest.mark.asyncio

@@ -185,6 +185,8 @@ def _toss_parity_status(preset: str, market: str) -> str:
 
 
 _PARITY_RANK = {"full": 0, "partial": 1, "mismatch": 2, "not_toss_parity": 3}
+# Comparator over the freshness labels that ``_FRESHNESS_BY_USEFULNESS`` emits
+# (fresh/stale/missing) — used only for priority ordering, not value lookup.
 _FRESHNESS_RANK = {"fresh": 0, "stale": 1, "missing": 2}
 
 
