@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 import pytest
-import pytest_asyncio
 
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
@@ -12,34 +11,6 @@ from app.services.action_report.snapshot_backed.collectors.candidate_universe im
 )
 from app.services.invest_screener_snapshots.repository import CoverageCounts
 from app.services.investment_snapshots.collectors import CollectorRequest
-
-
-@pytest_asyncio.fixture(autouse=True, scope="module")
-async def _clean_kr_screener_rows():
-    """ROB-363 — delete qualifying KR screener rows left by previous test runs.
-
-    ``test_db`` is a shared persistent database (no per-test rollback). The
-    ``test_kr_collector_sources_consecutive_gainers_preset`` test commits KR
-    rows that qualify for the consecutive_gainers filter; if a previous run
-    failed after the INSERT but before the end-of-test cleanup DELETE, those
-    rows persist and cause unrelated KR tests to hit the preset path instead of
-    the fallback. This module-scoped autouse fixture runs once before any test
-    in this file to ensure a clean baseline.
-    """
-    from sqlalchemy import text
-
-    from app.core.db import AsyncSessionLocal
-
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            text(
-                "DELETE FROM invest_screener_snapshots"
-                " WHERE consecutive_up_days >= 5 AND week_change_rate >= 0"
-                " AND snapshot_date >= '2026-05-25'"
-            )
-        )
-        await session.commit()
-    yield
 
 
 @dataclass
@@ -86,7 +57,7 @@ async def test_equity_collector_respects_candidate_limit(db_session):
 
     results = await collector.collect(
         CollectorRequest(
-            market="kr",
+            market="us",
             account_scope=None,
             symbols=[],
             candidate_limit=2,
@@ -206,7 +177,7 @@ async def test_cap_surfaced_when_universe_exceeds_limit(db_session):
     collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
     results = await collector.collect(
         CollectorRequest(
-            market="kr",
+            market="us",
             account_scope=None,
             symbols=[],
             candidate_limit=2,
@@ -227,7 +198,7 @@ async def test_cap_not_flagged_when_universe_within_limit(db_session):
     collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
     results = await collector.collect(
         CollectorRequest(
-            market="kr",
+            market="us",
             account_scope=None,
             symbols=[],
             candidate_limit=10,
@@ -283,3 +254,35 @@ async def test_kr_collector_sources_consecutive_gainers_preset(db_session):
     # Cleanup: remove test rows so subsequent runs don't see qualifying KR data.
     await db_session.execute(text("DELETE FROM invest_screener_snapshots"))
     await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_kr_collector_falls_back_to_top_gainers_when_no_preset_rows(
+    db_session, monkeypatch
+):
+    """ROB-363 — when KR Toss-parity presets yield no rows, the collector falls
+    back to the top_gainers momentum ranking (not_toss_parity), deterministically
+    (loader stubbed to None, so this does not depend on DB contents)."""
+    import app.services.invest_view_model.screener_service as ss
+
+    async def _no_rows(session, *, market, limit):
+        return None
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _no_rows)
+
+    repo = _FakeEquityRepository()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["preset"] == "top_gainers"
+    top = payload["candidates"][0]
+    assert top["source_preset"] == "top_gainers"
+    assert top["toss_parity_status"] == "not_toss_parity"
