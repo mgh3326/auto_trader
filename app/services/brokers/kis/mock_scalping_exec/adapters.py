@@ -26,6 +26,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
+from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
 from app.mcp_server.tooling.order_execution import _create_kis_client, _place_order_impl
 from app.services.brokers.kis import KISClient
@@ -35,6 +36,10 @@ from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillEvidence,
     FillVerdict,
     classify_fill_evidence,
+)
+from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
+    BaselineSnapshot,
+    confirm_fill_from_holdings_delta,
 )
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 
@@ -76,7 +81,10 @@ class KisMockBroker:
         correlation_id: str,
         confirm: bool,
     ) -> dict[str, Any]:
-        return await _place_order_impl(
+        baseline = await self._capture_baseline(
+            symbol=symbol, side="buy", qty=quantity, limit_price=price
+        )
+        result = await _place_order_impl(
             symbol=symbol,
             side="buy",
             market="kr",
@@ -88,6 +96,9 @@ class KisMockBroker:
             reason=f"scalp_entry:{correlation_id}",
             strategy=self._strategy_id,
         )
+        if isinstance(result, dict):
+            result["_baseline"] = baseline
+        return result
 
     async def submit_exit_sell(
         self,
@@ -100,7 +111,10 @@ class KisMockBroker:
         correlation_id: str,
         confirm: bool,
     ) -> dict[str, Any]:
-        return await _place_order_impl(
+        baseline = await self._capture_baseline(
+            symbol=symbol, side="sell", qty=quantity, limit_price=price
+        )
+        result = await _place_order_impl(
             symbol=symbol,
             side="sell",
             market="kr",
@@ -116,6 +130,9 @@ class KisMockBroker:
             scalping_strategy_id=strategy_id,
             scalping_exit_reason=exit_reason,
         )
+        if isinstance(result, dict):
+            result["_baseline"] = baseline
+        return result
 
     def _get_mock_client(self) -> KISClient:
         # Mock-host client (live singleton would 401/EGW02005); cached so the
@@ -124,27 +141,82 @@ class KisMockBroker:
             self._mock_client = _create_kis_client(is_mock=True)
         return self._mock_client
 
-    async def confirm_fill(self, submit_result: dict[str, Any]) -> Fill | None:
-        # ROB-334: authoritative fill evidence from the KIS daily order-execution
-        # inquiry. Returns a Fill only when fully filled; every other outcome is
-        # fail-closed (None -> executor records entry_unfilled/exit_unconfirmed
-        # anomaly). Never fabricates a fill.
-        evidence = await self._poll_fill_evidence(submit_result)
-        if (
-            evidence.verdict is FillVerdict.FILLED
-            and evidence.avg_price is not None
-            and evidence.filled_qty is not None
-        ):
-            return Fill(price=evidence.avg_price, quantity=evidence.filled_qty)
-        logger.info(
-            "kis-mock fill unconfirmed verdict=%s category=%s reason=%s",
-            evidence.verdict.value,
-            evidence.category.value if evidence.category else "-",
-            evidence.reason_code,
-        )
-        return None
+    async def _read_snapshot(self, symbol: str) -> tuple[Decimal, Decimal | None]:
+        """Read-only mock domestic balance snapshot -> (holdings_qty, cash).
 
-    async def _poll_fill_evidence(self, submit_result: dict[str, Any]) -> FillEvidence:
+        Holdings qty is the per-symbol position from output1; cash is
+        ``dnca_tot_amt`` from output2. Mock host only (VTTC8434R).
+        """
+        client = self._get_mock_client()
+        snap = await client.account.fetch_domestic_balance_snapshot(is_mock=True)
+        target = to_db_symbol(symbol)
+        qty = Decimal("0")
+        for holding in snap.get("holdings") or []:
+            if to_db_symbol(str(holding.get("pdno") or "")) == target:
+                qty = _to_decimal(holding.get("hldg_qty")) or Decimal("0")
+                break
+        cash = _to_decimal((snap.get("cash") or {}).get("dnca_tot_amt"))
+        return qty, cash
+
+    async def _capture_baseline(
+        self, *, symbol: str, side: str, qty: Decimal, limit_price: Decimal
+    ) -> dict[str, str | None]:
+        """Snapshot holdings + cash immediately before a submit.
+
+        A read failure leaves ``holdings_qty=None`` so confirm_fill fails closed
+        (we cannot prove a delta against an unknown baseline).
+        """
+        try:
+            holdings_qty, cash = await self._read_snapshot(symbol)
+            hq: str | None = str(holdings_qty)
+        except Exception as exc:  # noqa: BLE001 - baseline read failure fails closed
+            logger.info("kis-mock baseline snapshot failed sym=%s: %s", symbol, exc)
+            hq, cash = None, None
+        return {
+            "symbol": symbol,
+            "side": side,
+            "ordered_qty": str(qty),
+            "limit_price": str(limit_price),
+            "holdings_qty": hq,
+            "cash": (str(cash) if cash is not None else None),
+        }
+
+    async def confirm_fill(self, submit_result: dict[str, Any]) -> Fill | None:
+        # ROB-341: same-day fill confirmation from the baseline-vs-post holdings
+        # delta (primary) + cash delta (price). daily-ccld is NOT consulted here
+        # (it can return empty rows for same-day mock fills); it remains
+        # supplementary/post-settlement evidence only. Every ambiguous outcome
+        # is fail-closed (None -> executor records entry_unfilled/exit_unconfirmed
+        # anomaly). Never fabricates a fill.
+        raw = submit_result.get("_baseline")
+        if not isinstance(raw, dict):
+            logger.info("kis-mock confirm: no baseline snapshot -> fail closed")
+            return None
+        baseline = BaselineSnapshot(
+            symbol=str(raw["symbol"]),
+            side=raw["side"],
+            ordered_qty=Decimal(str(raw["ordered_qty"])),
+            limit_price=Decimal(str(raw["limit_price"])),
+            holdings_qty=(
+                Decimal(str(raw["holdings_qty"]))
+                if raw.get("holdings_qty") is not None
+                else None
+            ),
+            cash=(Decimal(str(raw["cash"])) if raw.get("cash") is not None else None),
+        )
+        return await confirm_fill_from_holdings_delta(
+            baseline, fetch_post=self._read_snapshot
+        )
+
+    async def poll_daily_ccld_diagnostic(
+        self, submit_result: dict[str, Any]
+    ) -> FillEvidence:
+        """Supplementary, NON-GATING daily-ccld read (ROB-341).
+
+        Retained for post-settlement evidence / the smoke packet only. Its empty
+        same-day result is classified clearly but never gates or overrides the
+        holdings-delta verdict in :meth:`confirm_fill`.
+        """
         order_no = submit_result.get("odno") or submit_result.get("order_no")
         if not order_no:
             return FillEvidence(
