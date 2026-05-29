@@ -116,7 +116,8 @@ OVERSEAS_ORDER_URL = "/uapi/overseas-stock/v1/trading/order"
 OVERSEAS_ORDER_BUY_TR = "TTTT1002U"  # 실전투자 해외주식 매수주문
 OVERSEAS_ORDER_BUY_TR_MOCK = "VTTT1002U"  # 모의투자 해외주식 매수주문
 OVERSEAS_ORDER_SELL_TR = "TTTT1006U"  # 실전투자 해외주식 매도주문
-OVERSEAS_ORDER_SELL_TR_MOCK = "VTTT1006U"  # 모의투자 해외주식 매도주문
+OVERSEAS_ORDER_SELL_TR_MOCK = "VTTT1006U"  # 모의투자 해외주식 매도주문(US 제외)
+OVERSEAS_ORDER_SELL_TR_MOCK_US = "VTTT1001U"  # 모의투자 미국 해외주식 매도주문
 
 OVERSEAS_ORDER_INQUIRY_URL = "/uapi/overseas-stock/v1/trading/inquire-nccs"
 OVERSEAS_ORDER_INQUIRY_TR = "TTTS3018R"  # 해외주식 미체결내역 조회
@@ -143,6 +144,8 @@ INTEGRATED_MARGIN_TR_MOCK = "VTTC0869R"  # 모의투자 통합증거금 조회
 # ============================================================================
 
 # Overseas exchange codes (for API calls)
+OVERSEAS_US_EXCHANGE_CODES = frozenset({"NASD", "NYSE", "AMEX"})
+
 OVERSEAS_EXCHANGE_MAP = {
     "NASD": "NAS",  # 나스닥
     "NYSE": "NYS",  # 뉴욕

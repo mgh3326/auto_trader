@@ -25,7 +25,7 @@ Script: `scripts/kis_mock_overseas_holdings_delta_smoke.py`
 | Account holdings | `KISClient.fetch_my_us_stocks(exchange=…)` | rows keyed `ovrs_pdno` / `ovrs_cblc_qty`; pre-filtered to nonzero |
 | USD cash / margin | `KISClient.inquire_overseas_margin()` | **OPSQ0002** in mock → treated as unavailable (best-effort only) |
 | Quote (sizing) | `KISClient.inquire_overseas_minute_chart(symbol, exchange, n=1)` | latest candle = **last** row (`close`, `datetime`); accepts the 4-digit order code |
-| BUY / SELL | `KISClient.buy_overseas_stock` / `sell_overseas_stock` | limit order when `price>0` (`ORD_DVSN=00`); TRs `VTTT1002U` / `VTTT1006U`; order id at `result["odno"]` |
+| BUY / SELL | `KISClient.buy_overseas_stock` / `sell_overseas_stock` | limit order when `price>0` (`ORD_DVSN=00`); US mock TRs `VTTT1002U` / `VTTT1001U`; order id at `result["odno"]` |
 | CANCEL | `KISClient.cancel_overseas_order(order_number, symbol, exchange, qty)` | `order_number` = prior BUY `odno`; TR `VTTT1004U` |
 | Pending orders | `inquire_overseas_orders` | **RuntimeError in mock** — not used here |
 | Filled history | `inquire_daily_order_overseas` | supplementary / non-gating (may be empty same-day) |
