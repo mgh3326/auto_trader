@@ -31,7 +31,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-REF_FEE_BPS = 10.0  # catalog instrument was built with 10 bps maker/taker
+import cost_model
+
+REF_FEE_BPS = cost_model.REF_FEE_BPS  # catalog instrument built with 10 bps maker/taker
 TP_SL_GRID = [(30, 20), (40, 20), (50, 30), (60, 40), (80, 40), (100, 60), (100, 100)]
 FEE_GRID_BPS = [10.0, 7.5, 5.0, 2.0, 1.0, 0.0]
 _SENTINEL = "RESULT_JSON "
@@ -94,10 +96,9 @@ def _run_single(catalog_path: Path, symbol: str, tp: int, sl: int, trade_size: s
 # driver helpers
 # --------------------------------------------------------------------------
 def _net_at_fee(trades, fee_bps: float) -> tuple[float, int, int]:
-    scale = 1.0 - fee_bps / REF_FEE_BPS
     total, wins = 0.0, 0
     for net_ref, comm_ref in trades:
-        net = net_ref + comm_ref * scale
+        net = cost_model.net_at_fee(net_ref, comm_ref, fee_bps, REF_FEE_BPS)
         total += net
         if net > 0:
             wins += 1

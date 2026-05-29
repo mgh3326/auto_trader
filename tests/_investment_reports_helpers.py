@@ -146,6 +146,9 @@ async def session() -> AsyncSession:
                         "ALTER TABLE review.investment_report_items "
                         "ADD COLUMN IF NOT EXISTS cited_dimension_report_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
                         "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS cited_snapshot_uuids "
+                        "UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
+                        "ALTER TABLE review.investment_report_items "
                         "DROP CONSTRAINT IF EXISTS ck_investment_report_items_ck_investment_report_items_decision_bucket",
                         "ALTER TABLE review.investment_report_items "
                         "DROP CONSTRAINT IF EXISTS ck_investment_report_items_decision_bucket",
@@ -236,6 +239,27 @@ async def session() -> AsyncSession:
 def future_datetime(days: int = 7) -> datetime:
     """Return a TZ-aware datetime ``days`` in the future (default 7)."""
     return datetime.now(UTC) + timedelta(days=days)
+
+
+async def publish_report(session: AsyncSession, report: InvestmentReport) -> None:
+    """ROB-352: flip a report to ``status='published'`` for prior-context tests.
+
+    Clears ``snapshot_freshness_summary`` to SQL NULL so the DB CHECK constraint
+    ``ck_investment_reports_no_published_on_hard_stale`` is satisfied. Direct SQL
+    avoids asyncpg serialising Python ``None`` → JSON ``null`` (which the
+    constraint would reject). Reports default to ``draft`` on ingest, and Slice B
+    excludes drafts from ``previous_report_context`` — so tests that expect a
+    report to appear as prior context must publish it first.
+    """
+    await session.execute(
+        sa.text(
+            "UPDATE review.investment_reports"
+            " SET status = 'published', snapshot_freshness_summary = NULL"
+            " WHERE id = :id"
+        ).bindparams(id=report.id)
+    )
+    await session.flush()
+    await session.refresh(report)
 
 
 async def assert_integrity_error(session: AsyncSession, *rows: object) -> None:

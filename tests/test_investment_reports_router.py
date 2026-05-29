@@ -36,7 +36,7 @@ from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
-from tests._investment_reports_helpers import future_datetime
+from tests._investment_reports_helpers import future_datetime, publish_report
 
 _USER = SimpleNamespace(username="operator-test", id=1)
 
@@ -190,6 +190,9 @@ async def test_previous_context_with_prior_reports(session: AsyncSession) -> Non
     r1 = await ingest.ingest(_request(kst_date="2026-05-16"))
     r2 = await ingest.ingest(_request(kst_date="2026-05-17"))
     r3 = await ingest.ingest(_request(kst_date="2026-05-18"))
+    # ROB-352 Slice B — prior context excludes drafts; publish so r1/r2 appear.
+    await publish_report(session, r1)
+    await publish_report(session, r2)
     await session.commit()
 
     service = InvestmentReportQueryService(session)

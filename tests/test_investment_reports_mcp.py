@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp_server.tooling.investment_reports_handlers import (
@@ -24,6 +25,25 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_list_impl,
 )
 from tests._investment_reports_helpers import future_datetime
+
+
+async def _publish_by_uuid(report_uuid: str) -> None:
+    """ROB-352: set status='published', clearing snapshot_freshness_summary to SQL
+    NULL so the DB CHECK constraint is satisfied. Opens and commits its own session
+    so the change is visible to subsequent MCP handler sessions.
+    Direct SQL avoids asyncpg serialising Python None → JSON null for JSONB columns.
+    """
+    from app.core.db import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            sa.text(
+                "UPDATE review.investment_reports"
+                " SET status = 'published', snapshot_freshness_summary = NULL"
+                " WHERE report_uuid = :uuid"
+            ).bindparams(uuid=uuid.UUID(report_uuid))
+        )
+        await db.commit()
 
 
 def _create_kwargs(
@@ -230,6 +250,9 @@ async def test_context_get_aggregates_across_prior_reports(
     r3 = await investment_report_create_impl(
         items=[_action_item_dict()], **_create_kwargs(kst_date="2026-05-18")
     )
+    # ROB-352: publish r1 and r2 so they appear in prior context (drafts excluded).
+    await _publish_by_uuid(r1["report"]["report_uuid"])
+    await _publish_by_uuid(r2["report"]["report_uuid"])
     bundle_r1 = await investment_report_get_impl(r1["report"]["report_uuid"])
     await investment_report_decide_item_impl(
         item_uuid=bundle_r1["items"][0]["item_uuid"],
@@ -251,10 +274,12 @@ async def test_context_get_aggregates_across_prior_reports(
 async def test_context_get_n_prior_clamped_to_ten(session: AsyncSession) -> None:
     # 15 reports, asking for 50 prior — should be clamped to 10.
     for i in range(15):
-        await investment_report_create_impl(
+        r = await investment_report_create_impl(
             items=[_action_item_dict()],
             **_create_kwargs(kst_date=f"2026-05-{i + 1:02d}"),
         )
+        # ROB-352: publish each report so it appears in prior context (drafts excluded).
+        await _publish_by_uuid(r["report"]["report_uuid"])
     ctx = await investment_report_context_get_impl(market="kr", n_prior=50)
     assert len(ctx["prior_reports"]) == 10
 
@@ -453,11 +478,17 @@ async def test_generate_from_bundle_threads_user_id_to_request(
 
 
 @pytest.mark.asyncio
-async def test_generate_from_bundle_user_id_defaults_to_none_fail_closed(
+async def test_generate_from_bundle_user_id_defaults_to_mcp_user(
     monkeypatch: pytest.MonkeyPatch, session: AsyncSession
 ) -> None:
-    """ROB-318/ROB-278 — omitting user_id keeps broker collectors fail-closed."""
+    """ROB-352 — omitting user_id now resolves the MCP default (like get_holdings)
+    so kis_live portfolios are readable, instead of staying fail-closed. The
+    resolved id is surfaced in the response and reaches the request.
+    """
     from app.core.config import settings
+    from app.mcp_server.tooling.investment_reports_handlers import (
+        _default_generator_user_id,
+    )
 
     monkeypatch.setattr(
         settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
@@ -475,5 +506,7 @@ async def test_generate_from_bundle_user_id_defaults_to_none_fail_closed(
         status="draft",
     )
 
+    expected = _default_generator_user_id()
     assert result["success"] is True
-    assert captured["request"].user_id is None
+    assert result["resolved_user_id"] == expected
+    assert captured["request"].user_id == expected

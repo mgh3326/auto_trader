@@ -361,6 +361,14 @@ class InvestmentReportItem(Base):
         nullable=False,
         server_default=text("ARRAY[]::uuid[]"),
     )
+    # ROB-352 Slice B — per-item snapshot provenance citations. Mirrors
+    # cited_dimension_report_uuids; derived from the item's evidence_snapshot
+    # by the generator unless the caller supplies them explicitly.
+    cited_snapshot_uuids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)),
+        nullable=False,
+        server_default=text("ARRAY[]::uuid[]"),
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False

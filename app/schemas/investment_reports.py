@@ -162,6 +162,7 @@ class IngestReportItem(BaseModel):
     decision_bucket: str | None = None
     cited_symbol_report_uuid: UUID | None = None
     cited_dimension_report_uuids: list[UUID] = Field(default_factory=list)
+    cited_snapshot_uuids: list[UUID] = Field(default_factory=list)
 
     @field_validator("decision_bucket")
     @classmethod
@@ -404,6 +405,7 @@ class InvestmentReportItemResponse(BaseModel):
     decision_bucket: str | None = None
     cited_symbol_report_uuid: UUID | None = None
     cited_dimension_report_uuids: list[UUID] = Field(default_factory=list)
+    cited_snapshot_uuids: list[UUID] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

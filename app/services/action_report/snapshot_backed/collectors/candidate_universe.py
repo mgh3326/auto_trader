@@ -12,10 +12,12 @@ read-only and degrades to ``unavailable`` on exception.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable, Hashable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_db_symbol
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.services.action_report.snapshot_backed.collectors._base import (
@@ -62,6 +64,25 @@ def _candidate_limit(request: CollectorRequest) -> int:
     if request.candidate_limit is None:
         return TOP_N
     return max(0, request.candidate_limit)
+
+
+def _dedupe_rows(rows: list[Any], *, key: Callable[[Any], Hashable]) -> list[Any]:
+    """Order-preserving dedupe on ``key(row)``.
+
+    ROB-352 Slice C — screener rows can repeat one instrument under symbol
+    format variants (BRK.B / BRK-B / BRK/B). Rows arrive ordered by
+    ``change_rate DESC``, so keeping the first occurrence keeps the
+    highest-ranked one. Hygiene only — no ranking/filter changes.
+    """
+    seen: set[Any] = set()
+    out: list[Any] = []
+    for row in rows:
+        k = key(row)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(row)
+    return out
 
 
 def _equity_row_to_input(row: InvestScreenerSnapshot) -> dict[str, Any]:
@@ -182,6 +203,7 @@ class CandidateUniverseSnapshotCollector:
         rows = await self._equity_repo.list_top_candidates(
             market=request.market, limit=limit
         )
+        rows = _dedupe_rows(rows, key=lambda r: to_db_symbol(r.symbol))
         evidence = build_candidate_evidence(
             market=request.market,
             preset="top_gainers",
@@ -213,6 +235,9 @@ class CandidateUniverseSnapshotCollector:
         rows = await self._crypto_repo.list_latest(
             preset_id="crypto_momentum", limit=limit
         )
+        # Upbit market codes (KRW-BTC, …) are canonical from a single source;
+        # no symbol-format normalization needed (unlike equity tickers).
+        rows = _dedupe_rows(rows, key=lambda r: r.symbol)
         evidence = build_candidate_evidence(
             market="crypto",
             preset="crypto_momentum",
@@ -252,6 +277,8 @@ class CandidateUniverseSnapshotCollector:
             {**e.to_payload_dict(), "rank": rank, "candidate_rank": rank}
             for rank, e in enumerate(evidence, start=1)
         ]
+        universe_count = fresh_count + stale_count
+        capped = universe_count > candidate_limit
         payload: dict[str, Any] = {
             "market": market,
             "preset": preset,
@@ -259,6 +286,8 @@ class CandidateUniverseSnapshotCollector:
             "freshness_status": freshness_status,
             "source_coverage": _source_coverage(evidence),
             "candidate_limit": candidate_limit,
+            "universe_count": universe_count,
+            "capped": capped,
             "candidates": candidates,
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,
@@ -285,5 +314,7 @@ class CandidateUniverseSnapshotCollector:
                 "usefulness": usefulness,
                 "candidate_count": len(candidates),
                 "candidate_limit": candidate_limit,
+                "universe_count": universe_count,
+                "capped": capped,
             },
         )
