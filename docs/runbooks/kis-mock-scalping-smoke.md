@@ -98,34 +98,71 @@ mock-session smoke returns exit 4 during market hours.
 
 ---
 
-## Execution-evidence gate (ROB-334)
+## Execution-evidence gate (ROB-334, revised by ROB-341)
 
 Before any confirmed mock scalping run (`KIS_MOCK_SCALPING_WS_CONFIRM=true`), the
 fill-evidence path below must be available; otherwise the executor fails closed
 (no fabricated fill) and records an `entry_unfilled` / `exit_unconfirmed` anomaly.
 
-**Authoritative source:** KIS daily order-execution inquiry
-`inquire_daily_order_domestic(is_mock=True)`. Holdings/cash delta (ROB-102)
-remains secondary. `inquire_korea_orders` (TTTC8036R, pending inquiry) is
-**live-only** and is never used in mock.
+**Primary same-day source (ROB-341):** the baseline-vs-post **holdings delta**
+read from `account.fetch_domestic_balance_snapshot(is_mock=True)` (load-bearing),
+corroborated by the **cash delta** (`dnca_tot_amt`), which also derives the fill
+price (`|Δcash| / qty`, falling back to the submitted limit price). The baseline
+holdings+cash snapshot is captured immediately before each submit and stamped
+into the submit result; `confirm_fill` then polls a post-submit snapshot and
+classifies the delta via the shared `classify_fill_by_delta` kernel (the same
+kernel the ROB-102 reconciler uses). Ambiguous, zero, or wrong-direction deltas,
+a missing baseline, or a snapshot read failure all fail closed.
 
-**Deferred gap:** the execution-notice WebSocket `H0STCNI9` (실시간 체결통보) is
-NOT implemented (requires an AES-CBC-decrypted, HTS-ID handshake frame path). It
-is a fail-closed, documented gap and a candidate follow-up issue.
+**daily-ccld is NOT the primary same-day signal (ROB-341).** KIS official mock
+`inquire_daily_order_domestic` / daily-ccld can return `rt_cd=0` with **empty
+rows even after same-day mock order activity**, so an empty same-day daily-ccld
+result must never be read as "no fill" and can neither gate nor override the
+holdings verdict. daily-ccld is retained only as a **supplementary,
+post-settlement diagnostic** (`KisMockBroker.poll_daily_ccld_diagnostic`), whose
+empty same-day result is classified clearly (`pending` / `no_matching_order`).
+`inquire_korea_orders` (TTTC8036R, pending inquiry) is **live-only**, never mock.
 
-### Read-only preflight (no order submission)
+**Deferred gap (follow-up):** the execution-notice WebSocket `H0STCNI9`
+(실시간 체결통보) is NOT implemented (requires an AES-CBC-decrypted, HTS-ID
+handshake frame path). It is a fail-closed, documented gap and remains an
+explicit follow-up — out of ROB-341 scope.
+
+### Read-only preflight (no order submission, ROB-341)
 
 ```bash
-KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_fill_evidence_smoke \
-    --order-no <ODNO> --symbol <KR_CODE>
+KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_holdings_delta_smoke \
+    --preflight --symbol <KR_CODE>
 ```
 
 Required env (names only — never echo values): `KIS_MOCK_APP_KEY`,
-`KIS_MOCK_APP_SECRET`, `KIS_MOCK_ACCOUNT_NO`.
+`KIS_MOCK_APP_SECRET`, `KIS_MOCK_ACCOUNT_NO`. Expected success signal: exit `0`
+and a printed JSON line with `holdings_qty` + `cash_dnca_tot_amt` for the symbol.
+If the snapshot read fails (exit `2`), stop — the primary same-day path is
+unavailable.
 
-Expected success signal: exit `0`, a printed `verdict=...` line, and the
-observed `row keys: [...]` (use these to confirm/tighten the classifier's
-candidate field names).
+The legacy daily-ccld field-name probe
+(`scripts/kis_mock_fill_evidence_smoke.py --order-no <ODNO>`) is still available
+for **post-settlement** diagnostics only; it is no longer the same-day gate.
+
+### Bounded confirmed smoke (operator-gated, ROB-341)
+
+Run ONLY after the read-only preflight passes and operator approval boundaries
+are satisfied, during a KRX regular session:
+
+```bash
+KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_holdings_delta_smoke \
+    --confirm --symbol <KR_CODE> --notional-krw 10000
+```
+
+Places one small marketable limit BUY (at best ask), confirms the fill via the
+holdings/cash delta, then flattens with a cleanup SELL (at best bid) back to
+baseline. Prints a JSON evidence packet: symbol, side(s), order id(s), baseline
+holdings/cash, post-submit holdings/cash, confirmation signal + price source,
+cleanup result, and final position delta vs baseline. Exit `0` clean, `2` if the
+fill could not be confirmed in the poll window (ROB-341 STOP condition — capture
+the packet and report; do not force), `3` if a residual position/pending order
+could not be cleaned up, `4` disabled/not configured.
 
 ### Failure categories
 
@@ -140,12 +177,7 @@ candidate field names).
 Exit codes: `0` ok · `2` inquiry error / unsupported · `4` disabled or not
 configured · `1` unexpected.
 
-### Confirmed one-off mock smoke (operator-gated, NOT run by this change)
-
-The operator-approved bounded confirmed mock smoke (one minimal KRX limit order
-round-trip) is a **separate, operator-gated step**. It is deferred here:
-this change ships code + runbook + tests + the read-only preflight only.
-
-Rollback / no-op: all additions are read-only or fail-closed. Reverting the PR
-restores the prior `confirm_fill` stub (always-unfilled). No migration, no
+Rollback / no-op: all additions are read-only or fail-closed. Reverting the
+ROB-341 PR restores the prior daily-ccld-based `confirm_fill` (which fails closed
+on the empty same-day mock rows this change works around). No migration, no
 scheduler, no env mutation.

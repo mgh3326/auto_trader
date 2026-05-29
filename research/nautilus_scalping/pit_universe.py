@@ -25,7 +25,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
-_META_FIELDS = ("status", "kline_coverage", "funding_coverage", "confidence", "missing_data_reason")
+_META_FIELDS = (
+    "status",
+    "kline_coverage",
+    "funding_coverage",
+    "oi_coverage",
+    "confidence",
+    "missing_data_reason",
+)
 
 
 def _date_to_epoch_ms(date_str: str) -> int:
@@ -47,6 +54,7 @@ class SymbolListing:
     status: Literal["live", "settling", "dead"] | None = None
     kline_coverage: float | None = None
     funding_coverage: float | None = None
+    oi_coverage: float | None = None
     confidence: Literal["high", "medium", "low"] | None = None
     missing_data_reason: str | None = None
 
@@ -76,10 +84,13 @@ class PITManifest:
             SymbolListing(
                 symbol=r["symbol"],
                 listed_from=int(r["listed_from"]),
-                delisted_at=None if r.get("delisted_at") is None else int(r["delisted_at"]),
+                delisted_at=None
+                if r.get("delisted_at") is None
+                else int(r["delisted_at"]),
                 status=r.get("status"),
                 kline_coverage=r.get("kline_coverage"),
                 funding_coverage=r.get("funding_coverage"),
+                oi_coverage=r.get("oi_coverage"),
                 confidence=r.get("confidence"),
                 missing_data_reason=r.get("missing_data_reason"),
             ).validate()
@@ -108,18 +119,23 @@ class PITManifest:
                 delisted_at = None
             else:
                 delisted_at = _date_to_epoch_ms(
-                    (datetime.strptime(at, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                    (datetime.strptime(at, "%Y-%m-%d") + timedelta(days=1)).strftime(
+                        "%Y-%m-%d"
+                    )
                 )
-            recs.append({
-                "symbol": r["symbol"],
-                "listed_from": listed_from,
-                "delisted_at": delisted_at,
-                "status": r.get("status"),
-                "kline_coverage": r.get("kline_coverage"),
-                "funding_coverage": r.get("funding_coverage"),
-                "confidence": r.get("confidence"),
-                "missing_data_reason": r.get("missing_data_reason") or None,
-            })
+            recs.append(
+                {
+                    "symbol": r["symbol"],
+                    "listed_from": listed_from,
+                    "delisted_at": delisted_at,
+                    "status": r.get("status"),
+                    "kline_coverage": r.get("kline_coverage"),
+                    "funding_coverage": r.get("funding_coverage"),
+                    "oi_coverage": r.get("oi_coverage"),
+                    "confidence": r.get("confidence"),
+                    "missing_data_reason": r.get("missing_data_reason") or None,
+                }
+            )
         return cls.from_records(recs)
 
     def to_records(self) -> list[dict]:
@@ -146,7 +162,8 @@ class PITManifest:
     def strict_usdt_perp(self) -> PITManifest:
         """Perp-only honest universe: live/dead plain *USDT, excl. settling/BUSD/USDC/dated/SETTLED."""
         kept = tuple(
-            x for x in self.listings
+            x
+            for x in self.listings
             if x.status in ("live", "dead")
             and x.symbol.endswith("USDT")
             and "_" not in x.symbol
