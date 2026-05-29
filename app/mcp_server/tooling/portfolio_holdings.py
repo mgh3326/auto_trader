@@ -10,6 +10,7 @@ import pandas as pd
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
+from app.core.symbol import to_kis_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
@@ -589,23 +590,54 @@ async def _fetch_price_map_for_positions(
 
     async def fetch_equity_price(
         instrument_type: str, symbol: str
-    ) -> tuple[str, str, float | None, str | None]:
-        try:
-            if instrument_type == "equity_kr":
+    ) -> tuple[str, str, float | None, str | None, str | None]:
+        if instrument_type == "equity_kr":
+            try:
                 quote = await _fetch_quote_equity_kr(symbol)
-            else:
-                quote = await _fetch_quote_equity_us(symbol)
-            price = quote.get("price")
-            return (
-                instrument_type,
-                symbol,
-                float(price) if price is not None else None,
-                None,
-            )
+                price = quote.get("price")
+                return (
+                    instrument_type,
+                    symbol,
+                    float(price) if price is not None else None,
+                    None,
+                    "kis",
+                )
+            except Exception as exc:
+                error_msg = str(exc)
+                logger.debug(
+                    "Failed to fetch equity price for %s: %s", symbol, error_msg
+                )
+                return instrument_type, symbol, None, error_msg, "kis"
+
+        # equity_us (ROB-365 bug 2): KIS overseas daily close is the PRIMARY refresh
+        # source (reliable, no Yahoo fast_info session flakiness); Yahoo fast_info is
+        # the secondary live source; fail-closed (no fabricated price) if both miss.
+        kis_error: str | None = None
+        try:
+            kis = KISClient()
+            frame = await kis.inquire_overseas_daily_price(to_kis_symbol(symbol), n=2)
+            if frame is not None and not frame.empty and "close" in frame.columns:
+                last_close = float(frame["close"].iloc[-1])
+                if last_close > 0:
+                    return (instrument_type, symbol, last_close, None, "kis")
+            kis_error = "KIS overseas daily price unavailable"
         except Exception as exc:
-            error_msg = str(exc)
-            logger.debug("Failed to fetch equity price for %s: %s", symbol, error_msg)
-            return instrument_type, symbol, None, error_msg
+            kis_error = str(exc)
+            logger.debug("KIS US daily price failed for %s: %s", symbol, kis_error)
+
+        yahoo_error: str
+        try:
+            quote = await _fetch_quote_equity_us(symbol)
+            price = quote.get("price")
+            if price is not None:
+                return (instrument_type, symbol, float(price), None, "yahoo")
+            yahoo_error = "Yahoo quote returned no price"
+        except Exception as exc:
+            yahoo_error = str(exc)
+            logger.debug("Failed to fetch equity price for %s: %s", symbol, yahoo_error)
+
+        combined = "; ".join(part for part in (kis_error, yahoo_error) if part)
+        return instrument_type, symbol, None, combined, "kis+yahoo"
 
     equity_tasks = [
         fetch_equity_price(instrument_type, symbol)
@@ -621,14 +653,15 @@ async def _fetch_price_map_for_positions(
 
     if equity_tasks:
         results = await asyncio.gather(*equity_tasks)
-        for instrument_type, symbol, price, error in results:
+        for instrument_type, symbol, price, error, source in results:
             if price is not None:
                 price_map[(instrument_type, symbol)] = price
             elif error is not None:
                 error_map[(instrument_type, symbol)] = error
                 price_errors.append(
                     {
-                        "source": "yahoo" if instrument_type == "equity_us" else "kis",
+                        "source": source
+                        or ("yahoo" if instrument_type == "equity_us" else "kis"),
                         "market": "us" if instrument_type == "equity_us" else "kr",
                         "symbol": symbol,
                         "stage": "current_price",
