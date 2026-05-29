@@ -11,7 +11,10 @@ from decimal import Decimal
 
 import pytest
 
+from app.services.brokers.kis.mock_scalping_exec.executor import Fill
 from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
+    BaselineSnapshot,
+    confirm_fill_from_holdings_delta,
     derive_fill_price,
 )
 from app.services.kis_mock_holdings_reconciler import classify_fill_by_delta
@@ -82,3 +85,68 @@ def test_price_falls_back_when_cash_unavailable():
     )
     assert price == Decimal("8888")
     assert source == "limit_fallback"
+
+
+def _baseline(qty: str | None = "0", cash: str | None = "1000000") -> BaselineSnapshot:
+    return BaselineSnapshot(
+        symbol="005930",
+        side="buy",
+        ordered_qty=Decimal("10"),
+        limit_price=Decimal("70000"),
+        holdings_qty=(Decimal(qty) if qty is not None else None),
+        cash=(Decimal(cash) if cash is not None else None),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_filled_returns_fill():
+    async def post(symbol):  # observed holdings + cash: bought 10, cash dropped 700000
+        return Decimal("10"), Decimal("300000")
+
+    fill = await confirm_fill_from_holdings_delta(_baseline(), fetch_post=post)
+    assert isinstance(fill, Fill)
+    assert fill.quantity == Decimal("10")
+    assert fill.price == Decimal("70000")  # 700000 / 10 cash-delta
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_no_delta_fails_closed():
+    async def post(symbol):
+        return Decimal("0"), Decimal("1000000")
+
+    assert await confirm_fill_from_holdings_delta(_baseline(), fetch_post=post) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_baseline_missing_fails_closed():
+    async def post(symbol):
+        return Decimal("10"), Decimal("300000")
+
+    result = await confirm_fill_from_holdings_delta(
+        _baseline(qty=None), fetch_post=post
+    )
+    assert result is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_snapshot_error_fails_closed():
+    async def post(symbol):
+        raise RuntimeError("VTS read failed")
+
+    assert await confirm_fill_from_holdings_delta(_baseline(), fetch_post=post) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_partial_returns_partial_fill():
+    async def post(symbol):
+        return Decimal("4"), Decimal("720000")  # 4 of 10 filled, cash dropped 280000
+
+    fill = await confirm_fill_from_holdings_delta(_baseline(), fetch_post=post)
+    assert isinstance(fill, Fill)
+    assert fill.quantity == Decimal("4")
+    assert fill.price == Decimal("70000")  # 280000 / 4
