@@ -137,7 +137,7 @@ async def test_poll_daily_ccld_diagnostic_maps_unsupported_category(mocker) -> N
 
     broker = KisMockBroker(get_state=lambda s: None)
     fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         side_effect=RuntimeError("VTTC8001R not available in mock")
     )
     mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
@@ -155,7 +155,7 @@ async def test_poll_daily_ccld_diagnostic_classifies_filled_rows(mocker) -> None
 
     broker = KisMockBroker(get_state=lambda s: None)
     fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         return_value=_daily_rows(tot_ccld_qty="1", avg_prvs="70000")
     )
     mocker.patch.object(broker, "_get_mock_client", return_value=fake_client)
