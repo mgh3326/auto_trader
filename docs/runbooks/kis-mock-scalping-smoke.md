@@ -151,9 +151,23 @@ Run ONLY after the read-only preflight passes and operator approval boundaries
 are satisfied, during a KRX regular session:
 
 ```bash
-KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_holdings_delta_smoke \
+KIS_MOCK_SCALPING_ENABLED=true KIS_MOCK_SCALPING_WS_ENABLED=true \
+    uv run python -m scripts.kis_mock_holdings_delta_smoke \
     --confirm --symbol <KR_CODE> --notional-krw 10000
 ```
+
+The cleanup SELL flattens through the mock scalping-exit bypass, so `--confirm`
+requires **both** `KIS_MOCK_SCALPING_ENABLED=true` (the sell-guard bypass) and
+`KIS_MOCK_SCALPING_WS_ENABLED=true`. **Set both ephemerally for this run only —
+never as persistent env/shell exports.** The cleanup exit reason defaults to
+`stop_loss` (an existing allowed `ScalpingExitContext` reason — ROB-358 does not
+add a smoke-only reason); override with `--cleanup-reason {stop_loss,take_profit,time_stop}`
+only if deliberately needed.
+
+Both gates (plus the cleanup reason) are **preflighted before any BUY** (ROB-358):
+if `KIS_MOCK_SCALPING_ENABLED` is unset or the cleanup reason is not an allowed
+`ScalpingExitContext` reason, the run stops with exit `4` and **no position is
+acquired** — it never buys something it cannot flatten.
 
 Places one small marketable limit BUY (at best ask), confirms the fill via the
 holdings/cash delta, then flattens with a cleanup SELL (at best bid) back to
@@ -162,7 +176,10 @@ holdings/cash, post-submit holdings/cash, confirmation signal + price source,
 cleanup result, and final position delta vs baseline. Exit `0` clean, `2` if the
 fill could not be confirmed in the poll window (ROB-341 STOP condition — capture
 the packet and report; do not force), `3` if a residual position/pending order
-could not be cleaned up, `4` disabled/not configured.
+could not be cleaned up (including a cleanup SELL the broker **rejected** or one
+that returned no `odno`/`order_no` — surfaced as `cleanup_error` + non-zero
+`final_position_delta_vs_baseline`, not a silent exit 1), `4` disabled/not
+configured **or a cleanup preflight gate failure (no order placed)**.
 
 ### Failure categories
 

@@ -27,10 +27,17 @@ Exit codes:
     3  - anomaly: residual position/pending order could not be cleaned up
     4  - disabled or KIS mock not configured (env/config no-op)
 
+The cleanup SELL goes through the mock scalping-exit bypass, so ``--confirm``
+also requires KIS_MOCK_SCALPING_ENABLED=true and an allowed cleanup exit reason
+(default ``stop_loss`` — no smoke-only reason is added to the validator). Both
+gates are preflighted BEFORE any BUY, so a missing/invalid gate stops the run
+with no position acquired (exit 4). Set the gate flags ephemerally only.
+
 Usage:
     KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_holdings_delta_smoke \
         --preflight --symbol 005930
-    KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_holdings_delta_smoke \
+    KIS_MOCK_SCALPING_ENABLED=true KIS_MOCK_SCALPING_WS_ENABLED=true \
+        uv run python -m scripts.kis_mock_holdings_delta_smoke \
         --confirm --symbol 005930 --notional-krw 10000
 """
 
@@ -44,6 +51,11 @@ import sys
 from decimal import ROUND_DOWN, Decimal
 
 logger = logging.getLogger(__name__)
+
+# Cleanup SELL reuses an existing allowed ScalpingExitContext reason. We do NOT
+# add a smoke-only synthetic reason to the validator surface (ROB-358), so no
+# synthetic reason ever lands in the ledger.exit_reason column.
+_DEFAULT_CLEANUP_EXIT_REASON = "stop_loss"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -71,6 +83,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-poll", type=int, default=10)
     parser.add_argument("--poll-interval", type=float, default=1.0)
+    parser.add_argument(
+        "--cleanup-reason",
+        default=_DEFAULT_CLEANUP_EXIT_REASON,
+        help=(
+            "scalping exit reason for the cleanup SELL "
+            f"(default {_DEFAULT_CLEANUP_EXIT_REASON!r}; must be an allowed "
+            "ScalpingExitContext reason — no smoke-only reason is introduced)"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -94,6 +115,31 @@ def _gate_or_exit() -> object | None:
         logger.error("KIS mock not configured. Missing (names only): %s", missing)
         return None
     return settings
+
+
+def _confirm_cleanup_preflight_error(
+    settings_obj: object, cleanup_reason: str
+) -> str | None:
+    """Fail-fast check that the cleanup SELL is submittable, run BEFORE any BUY.
+
+    Returns an error string when a required cleanup gate is missing/invalid,
+    else None. ``KIS_MOCK_SCALPING_ENABLED`` gates the mock scalping-exit sell
+    bypass; the cleanup reason must be an allowed ``ScalpingExitContext`` reason
+    (we reuse ``stop_loss`` — no smoke-only synthetic reason is introduced).
+    """
+    if not getattr(settings_obj, "kis_mock_scalping_enabled", False):
+        return (
+            "KIS_MOCK_SCALPING_ENABLED=true is required for the cleanup SELL; "
+            "set it ephemerally for this run only (no persistent flag)"
+        )
+    from app.mcp_server.tooling.order_validation import _SCALPING_EXIT_REASONS
+
+    if cleanup_reason not in _SCALPING_EXIT_REASONS:
+        return (
+            f"invalid cleanup exit reason {cleanup_reason!r}; must be one of "
+            f"{sorted(_SCALPING_EXIT_REASONS)}"
+        )
+    return None
 
 
 def _best_ask_bid(orderbook: dict) -> tuple[Decimal | None, Decimal | None]:
@@ -145,7 +191,26 @@ async def _await_fill(broker, submit_result, *, max_poll: int, interval: float):
 
 
 async def run_confirm(args: argparse.Namespace) -> int:
-    if _gate_or_exit() is None:
+    settings_obj = _gate_or_exit()
+    if settings_obj is None:
+        return 4
+    # Fail-fast BEFORE any BUY: if the cleanup SELL cannot be safely executed,
+    # never acquire a position we cannot flatten (ROB-358).
+    preflight_error = _confirm_cleanup_preflight_error(
+        settings_obj, args.cleanup_reason
+    )
+    if preflight_error is not None:
+        logger.error("cleanup preflight failed; no order placed: %s", preflight_error)
+        logger.info(
+            json.dumps(
+                {
+                    "mode": "confirm",
+                    "symbol": args.symbol,
+                    "preflight": "cleanup_gate_failed",
+                    "error": preflight_error,
+                }
+            )
+        )
         return 4
     import uuid
 
@@ -238,16 +303,32 @@ async def _cleanup_and_verify(
     if bid is None:
         evidence["cleanup"] = "no_bid_for_exit"
         return 3
-    sell = await broker.submit_exit_sell(
-        symbol=args.symbol,
-        price=bid,
-        quantity=delta,
-        exit_reason="smoke_cleanup",
-        strategy_id="kis-mock-v1",
-        correlation_id=cid,
-        confirm=True,
-    )
-    evidence["cleanup_sell_order_id"] = sell.get("odno") or sell.get("order_no")
+    try:
+        sell = await broker.submit_exit_sell(
+            symbol=args.symbol,
+            price=bid,
+            quantity=delta,
+            exit_reason=args.cleanup_reason,
+            strategy_id="kis-mock-v1",
+            correlation_id=cid,
+            confirm=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - submit rejection is a cleanup anomaly, not unexpected
+        # A rejected cleanup SELL leaves a residual position; classify it as an
+        # explicit anomaly (exit 3) instead of leaking out as exit 1 (ROB-358).
+        evidence["cleanup_sell_order_id"] = None
+        evidence["cleanup_error"] = str(exc)[:200]
+        evidence["cleanup"] = "SELL_submit_rejected"
+        evidence["final_position_delta_vs_baseline"] = str(cur_qty - base_qty)
+        return 3
+    order_id = sell.get("odno") or sell.get("order_no")
+    evidence["cleanup_sell_order_id"] = order_id
+    if not order_id:
+        # Missing odno/order_no -> explicit failure with reason; residual stays.
+        evidence["cleanup_error"] = "cleanup SELL response missing odno/order_no"
+        evidence["cleanup"] = "SELL_no_order_id"
+        evidence["final_position_delta_vs_baseline"] = str(cur_qty - base_qty)
+        return 3
     exit_fill = await _await_fill(
         broker, sell, max_poll=args.max_poll, interval=args.poll_interval
     )
