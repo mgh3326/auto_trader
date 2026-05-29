@@ -180,16 +180,13 @@ def load_progress(path) -> list[dict]:
 
 
 def append_progress(path, record: dict) -> None:
-    """Atomically append one completed symbol's stats as a JSON line (resume checkpoint)."""
+    """Append one completed symbol's stats as a JSON line (resume checkpoint). A hard
+    kill mid-write can leave a torn final line; ``load_progress`` skips it and that one
+    symbol is simply re-built on the next resume."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a") as fh:
         fh.write(json.dumps(record) + "\n")
-
-
-def completed_symbols(records: list[dict]) -> set:
-    """Symbols already built (skip their network fetch on resume)."""
-    return {r["symbol"] for r in records if "symbol" in r}
 
 
 # --------------------------------------------------------------------------- #
@@ -372,6 +369,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if args.resume and not args.out:
+        parser.error(
+            "--resume requires --out (it reads the on-disk progress checkpoint)"
+        )
+    if args.checkpoint_every < 0:
+        parser.error("--checkpoint-every must be >= 0")
 
     manifest = pu.PITManifest.load(args.manifest).strict_usdt_perp()
     syms = list(manifest.listings)
@@ -396,13 +399,19 @@ def main(argv: list[str] | None = None) -> int:
     summary_path = resolve_artifact_path(
         "discovery", "rob356", "funding_oi_coverage.v1.json"
     )
+    partial_path = resolve_artifact_path(
+        "discovery", "rob356", "_partial_coverage.json"
+    )
     progress_path = resolve_artifact_path("discovery", "rob356", "_progress.jsonl")
 
-    def _write_summary(s: dict) -> None:
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        summary_path.write_text(json.dumps(s, indent=2))
+    def _write_json(path, s: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(s, indent=2))
 
-    # Resume: skip symbols a prior RUN already built; otherwise start a fresh slate.
+    # Resume: seed the verdict with EVERY symbol a prior RUN already built (not only those
+    # in the current selection) so resuming with a different --stratified/--limit can never
+    # drop on-disk coverage and flip a true `ready` to `needs_more_data`. Fresh (no
+    # --resume) starts a clean slate, clearing stale progress + partial artifacts.
     done: dict[str, dict] = {}
     if args.out and args.resume:
         done = {r["symbol"]: r for r in load_progress(progress_path)}
@@ -410,11 +419,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"resume: {len(done)} symbols already built; skipping their fetch")
     elif args.out:
         Path(progress_path).unlink(missing_ok=True)
+        Path(partial_path).unlink(missing_ok=True)
 
-    stats: list[dict] = []
+    stats: list[dict] = list(
+        done.values()
+    )  # all prior-built coverage counts in the verdict
     for i, listing in enumerate(syms, 1):
         if listing.symbol in done:
-            stats.append(done[listing.symbol])
             print(f"  [{i}/{len(syms)}] {listing.symbol:14} resumed (cached)")
             continue
         try:
@@ -432,8 +443,10 @@ def main(argv: list[str] | None = None) -> int:
             f"oi={s['oi_first_day']}..{s['oi_last_day']} cov={s['oi_coverage']} "
             f"surv={int(s['survivorship_ok'])}"
         )
+        # Interim verdict goes to a clearly-partial sidecar — NEVER the canonical file,
+        # so `funding_oi_coverage.v1.json` existing always means a COMPLETE RUN.
         if args.out and args.checkpoint_every > 0 and i % args.checkpoint_every == 0:
-            _write_summary(summarize(stats, thr))  # partial verdict survives a crash
+            _write_json(partial_path, summarize(stats, thr))
 
     summary = summarize(stats, thr)
     print("\nverdict:", summary["verdict"])
@@ -441,7 +454,8 @@ def main(argv: list[str] | None = None) -> int:
         print("  -", r)
 
     if args.out:
-        _write_summary(summary)
+        _write_json(summary_path, summary)  # canonical artifact = full completion only
+        Path(partial_path).unlink(missing_ok=True)  # drop the now-superseded partial
         print(
             "\nsummary + per-symbol feature CSVs written (gitignored): "
             f"{summary_path.parent}"
