@@ -275,6 +275,21 @@ class KISClient(BaseKISClient):
             symbol, exchange_code, n, keyb
         )
 
+    async def fetch_domestic_balance_snapshot(
+        self,
+        *,
+        is_mock: bool = False,
+        timeout: float = 5.0,
+        retry_request_errors: bool = True,
+        max_pages: int = 10,
+    ) -> dict[str, Any]:
+        return await self._account.fetch_domestic_balance_snapshot(
+            is_mock=is_mock,
+            timeout=timeout,
+            retry_request_errors=retry_request_errors,
+            max_pages=max_pages,
+        )
+
     async def fetch_my_stocks(
         self,
         is_mock: bool = False,

@@ -51,6 +51,29 @@ async def test_confirm_fill_no_baseline_fails_closed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_read_snapshot_uses_kis_client_balance_facade(monkeypatch):
+    # ROB-341 operator smoke uses the KISClient facade object. The facade has no
+    # public .account child, so _read_snapshot must call a public facade method.
+    broker = KisMockBroker(get_state=lambda s: None)
+
+    class FakeClient:
+        async def fetch_domestic_balance_snapshot(self, *, is_mock: bool):
+            assert is_mock is True
+            return {
+                "holdings": [{"pdno": "005930", "hldg_qty": "2"}],
+                "cash": {"dnca_tot_amt": "12345"},
+            }
+
+    monkeypatch.setattr(broker, "_get_mock_client", lambda: FakeClient())
+
+    qty, cash = await broker._read_snapshot("005930")
+
+    assert qty == Decimal("2")
+    assert cash == Decimal("12345")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_dry_run_buy_skips_baseline_snapshot(monkeypatch):
     # ROB-341 review #6: a dry-run (confirm=False) submit never reaches
     # confirm_fill, so it must not pay for a baseline balance snapshot.

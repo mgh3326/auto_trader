@@ -158,7 +158,7 @@ class KisMockBroker:
         ``dnca_tot_amt`` from output2. Mock host only (VTTC8434R).
         """
         client = self._get_mock_client()
-        snap = await client.account.fetch_domestic_balance_snapshot(is_mock=True)
+        snap = await client.fetch_domestic_balance_snapshot(is_mock=True)
         target = to_db_symbol(symbol)
         qty = Decimal("0")
         for holding in snap.get("holdings") or []:
@@ -240,7 +240,7 @@ class KisMockBroker:
         today = datetime.datetime.now().strftime("%Y%m%d")
         try:
             client = self._get_mock_client()
-            rows = await client.domestic_orders.inquire_daily_order_domestic(
+            rows = await client.inquire_daily_order_domestic(
                 start_date=today,
                 end_date=today,
                 stock_code="",
