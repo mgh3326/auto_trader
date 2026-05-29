@@ -141,17 +141,117 @@ def test_build_specs_emits_both_directions_pooled_across_symbols():
         "AAA": [{"ts": D1, "oi_zscore": 3.0}],
         "BBB": [{"ts": D1, "oi_zscore": 3.0}],
     }
-    specs = t.build_specs(feats, closes, t.TriageConfig(min_samples=1))
+    specs, contributing = t.build_specs(feats, closes, t.TriageConfig(min_samples=1))
     assert [s["name"] for s in specs] == ["oi_crowding_fade", "oi_crowding_ride"]
     assert all(s["summary"].sample_count == 2 for s in specs)  # pooled across symbols
+    assert contributing == ["AAA", "BBB"]  # both produced trades (review B1 provenance)
 
 
 def test_triage_screens_out_trivial_gross():
     closes = {"AAA": _closes([100] * 10)}  # flat -> zero gross
     feats = {"AAA": [{"ts": D1 + i * DAY, "oi_zscore": 3.0} for i in range(3)]}
     cfg = t.TriageConfig(min_samples=1)
-    res = t.triage(t.build_specs(feats, closes, cfg), cfg)
+    specs, _ = t.build_specs(feats, closes, cfg)
+    res = t.triage(specs, cfg)
     assert t.overall_verdict(res) == "screened_out"
+
+
+def test_build_specs_symbols_filter_and_seasoning():
+    # symbols= restricts the panel (cohort split); seasoning drops post-listing signals.
+    closes = {
+        "AAA": _closes([100, 102, 104, 106, 108, 110, 110]),
+        "BBB": _closes([100, 102, 104, 106, 108, 110, 110]),
+    }
+    feats = {
+        "AAA": [{"ts": D1, "oi_zscore": 3.0}],
+        "BBB": [{"ts": D1, "oi_zscore": 3.0}],
+    }
+    specs, contributing = t.build_specs(
+        feats, closes, t.TriageConfig(min_samples=1), symbols=["AAA"]
+    )
+    assert contributing == ["AAA"]  # BBB excluded by the symbols filter
+    assert specs[0]["summary"].sample_count == 1
+    # seasoning 10d with listed_from=D1 drops the D1 signal (inside the window)
+    _, seasoned = t.build_specs(
+        feats,
+        closes,
+        t.TriageConfig(min_samples=1),
+        listed_from_by_symbol={"AAA": D1, "BBB": D1},
+        seasoning_days=10,
+    )
+    assert seasoned == []
+
+
+def test_missing_forward_bar_skips_no_zero_injection():
+    # a hole at the forward day must SKIP the trade, not fall back to an earlier close
+    # (which would inject a spurious ~0% return) — review A2.
+    closes = [
+        (D1 + i * DAY, 100.0 + i) for i in range(8) if i != 5
+    ]  # day+5 bar missing
+    kw = {"threshold": 2.0, "horizon_days": 5, "notional": 1000.0, "ref_fee_bps": 10.0}
+    assert t.crowding_trades([(D1, 3.0)], closes, direction="ride", **kw) == []
+
+
+def test_triage_promote_without_oos_downgrades_to_needs_more_data():
+    # review A1: in-sample gross above floor but ZERO out-of-sample trades is NOT an edge
+    s = HypothesisSummary(
+        name="oi_crowding_fade",
+        conditions="c",
+        sample_count=300,
+        gross_expectancy_bps=50.0,
+        fee_adjusted_bps=40.0,
+        oos_fee_adjusted_bps=None,
+        oos_gross_bps=None,  # no OOS evidence
+    )
+    res = t.triage(
+        [{"name": s.name, "summary": s, "direction": "fade"}],
+        t.TriageConfig(min_samples=1),
+    )
+    assert res[0]["classified"].recommendation == "needs_more_data"
+    assert t.overall_verdict(res) == "needs_more_data"  # not edge_found
+
+
+def _block(promoting_directions):
+    return {
+        "overall_verdict": "edge_found" if promoting_directions else "screened_out",
+        "directions": [
+            {
+                "direction": d,
+                "recommendation": (
+                    "promote_to_full_validation"
+                    if d in promoting_directions
+                    else "screened_out"
+                ),
+            }
+            for d in ("fade", "ride")
+        ],
+    }
+
+
+def test_book_close_verdict_requires_direction_consistency():
+    # same promoting direction in both -> survives
+    v, _ = t.book_close_verdict(_block({"ride"}), _block({"ride"}))
+    assert v == "edge_survives_controls"
+    # sign flip (fade pre-registered, ride after controls) -> artifact (the ROB-362 result)
+    v, reason = t.book_close_verdict(_block({"fade"}), _block({"ride"}))
+    assert v == "artifact_confirmed_screened_out"
+    assert "flip" in reason
+    # nothing survives controls -> artifact
+    v, _ = t.book_close_verdict(_block({"fade"}), _block(set()))
+    assert v == "artifact_confirmed_screened_out"
+
+
+def test_cohort_of_classifies_panel():
+    from types import SimpleNamespace as NS
+
+    delisted = NS(symbol="D", listed_from=0, delisted_at=123)
+    recent = NS(symbol="R", listed_from=t._RECENT_CUTOFF_TS + DAY, delisted_at=None)
+    established = NS(
+        symbol="E", listed_from=t._RECENT_CUTOFF_TS - DAY, delisted_at=None
+    )
+    assert t.cohort_of(delisted) == "delisted"
+    assert t.cohort_of(recent) == "recent"
+    assert t.cohort_of(established) == "established"
 
 
 def _ch(rec):

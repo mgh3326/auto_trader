@@ -49,9 +49,18 @@ from pathlib import Path
 
 import campaign_specs as cs
 import families
-from discovery.screen import classify
+from discovery.screen import ClassifiedHypothesis, classify
 
 _DAY_MS = 86_400_000
+# Falsification controls (POST-HOC robustness, NOT part of the pre-registered FROZEN test):
+# a positive crowding result on the dense subset is suspected to be a new-listing /
+# survivorship microstructure artifact, so we re-measure with a listing seasoning window
+# and split the panel into cohorts. These are deliberately outside TriageConfig so the
+# pre-registered config_hash is unchanged.
+_SEASONING_DAYS = 30
+_RECENT_CUTOFF_TS = (
+    1_704_067_200_000  # 2024-01-01T00:00:00Z: listed on/after == "recent"
+)
 
 # --------------------------------------------------------------------------- #
 # Pre-registered config (FROZEN before the OOS read; recorded as a hash)
@@ -100,17 +109,6 @@ FROZEN = TriageConfig()
 # --------------------------------------------------------------------------- #
 # Pure signal/return machinery (unit-tested; no network)
 # --------------------------------------------------------------------------- #
-def _close_asof(series: Sequence[tuple[int, float]], ts: int) -> float | None:
-    """Most recent close at or before ``ts`` (mirrors ``panel._close_at_or_before``;
-    kept local to avoid importing a private name)."""
-    found: float | None = None
-    for s_ts, close in series:
-        if s_ts > ts:
-            break
-        found = close
-    return found
-
-
 def _utc_day(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).date().isoformat()
 
@@ -139,64 +137,106 @@ def crowding_trades(
     horizon_days: int,
     notional: float,
     ref_fee_bps: float,
+    listed_from: int | None = None,
+    seasoning_days: int = 0,
 ) -> list[families.Trade]:
     """Non-overlapping close-to-close trades from a daily crowding signal.
 
     direction ``fade`` trades AGAINST the crowd (position = -sign(z)); ``ride`` trades
     WITH it (position = +sign(z)). A trade opens only when ``|z| >= threshold`` and no
-    prior trade is still held; it requires a genuine forward bar (full horizon realized)."""
+    prior trade is still held.
+
+    Entry and forward prices are matched to the EXACT daily bar (entry day and
+    entry-day + ``horizon_days``); a missing bar at either end skips the trade rather
+    than falling back to an earlier close (which would silently shorten the horizon or
+    inject a spurious 0% return — ROB-362 PR3 review A2).
+
+    ``seasoning_days`` (with ``listed_from``) drops signals inside the post-listing
+    window — a falsification control for the new-listing pump/decay artifact."""
     if direction not in ("fade", "ride"):
         raise ValueError(f"direction must be 'fade' or 'ride', got {direction!r}")
     if not closes:
         return []
     sign_mult = -1.0 if direction == "fade" else 1.0
-    last_close_ts = closes[-1][0]
+    close_by_day = {_utc_day(ts): c for ts, c in closes}  # daily bar by UTC date
+    season_cutoff = (
+        listed_from + seasoning_days * _DAY_MS
+        if (listed_from is not None and seasoning_days > 0)
+        else None
+    )
     horizon_ms = horizon_days * _DAY_MS
     trades: list[families.Trade] = []
     next_free_ts = -1
     for ts, z in daily_signal:
         if ts < next_free_ts or abs(z) < threshold:
             continue
-        forward_ts = ts + horizon_ms
-        if last_close_ts < forward_ts:  # full horizon not realizable -> drop
+        if season_cutoff is not None and ts < season_cutoff:
             continue
-        entry = _close_asof(closes, ts)
-        fwd = _close_asof(closes, forward_ts)
+        entry = close_by_day.get(_utc_day(ts))
+        fwd = close_by_day.get(_utc_day(ts + horizon_ms))  # exact forward daily bar
         if entry is None or fwd is None or entry == 0.0:
             continue
         raw_ret = (fwd - entry) / entry
         position = sign_mult * (1.0 if z > 0 else -1.0)
         gross_pnl = position * raw_ret * notional
         trades.append(families.make_taker_trade(gross_pnl, ts, notional, ref_fee_bps))
-        next_free_ts = forward_ts  # non-overlapping hold
+        next_free_ts = ts + horizon_ms  # non-overlapping hold
     return trades
+
+
+def cohort_of(listing, recent_cutoff_ts: int = _RECENT_CUTOFF_TS) -> str:
+    """Panel cohort for the falsification split: ``delisted`` (survivorship-suspect),
+    ``recent`` (listed on/after the cutoff -> new-listing-microstructure-suspect), or
+    ``established`` (the only cohort a robust crowding edge should survive in)."""
+    if listing.delisted_at is not None:
+        return "delisted"
+    if listing.listed_from >= recent_cutoff_ts:
+        return "recent"
+    return "established"
 
 
 def build_specs(
     oi_features_by_symbol: dict[str, Sequence[dict]],
     closes_by_symbol: dict[str, Sequence[tuple[int, float]]],
     cfg: TriageConfig = FROZEN,
-) -> list[dict]:
-    """One spec per direction: pool non-overlapping trades across symbols, summarize."""
+    *,
+    listed_from_by_symbol: dict[str, int] | None = None,
+    seasoning_days: int = 0,
+    symbols: Sequence[str] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """One spec per direction: pool non-overlapping trades across symbols, summarize.
+    Returns ``(specs, contributing_symbols)`` — the symbols that produced >=1 trade, so a
+    collapsed panel can't masquerade as the full subset (review B1). ``symbols`` restricts
+    the panel (cohort splits); ``seasoning_days``/``listed_from_by_symbol`` apply the
+    post-listing falsification filter."""
+    listed_from_by_symbol = listed_from_by_symbol or {}
+    candidates = (
+        sorted(symbols) if symbols is not None else sorted(oi_features_by_symbol)
+    )
+    contributing: set[str] = set()
     specs: list[dict] = []
     for direction in cfg.directions:
         pooled: list[families.Trade] = []
-        for symbol in sorted(oi_features_by_symbol):
+        for symbol in candidates:
+            feats = oi_features_by_symbol.get(symbol)
             closes = closes_by_symbol.get(symbol)
-            if not closes:
+            if not feats or not closes:
                 continue
-            daily = daily_oi_zscore(oi_features_by_symbol[symbol])
-            pooled.extend(
-                crowding_trades(
-                    daily,
-                    closes,
-                    direction=direction,
-                    threshold=cfg.oi_zscore_threshold,
-                    horizon_days=cfg.horizon_days,
-                    notional=cfg.notional,
-                    ref_fee_bps=cfg.ref_fee_bps,
-                )
+            daily = daily_oi_zscore(feats)
+            tr = crowding_trades(
+                daily,
+                closes,
+                direction=direction,
+                threshold=cfg.oi_zscore_threshold,
+                horizon_days=cfg.horizon_days,
+                notional=cfg.notional,
+                ref_fee_bps=cfg.ref_fee_bps,
+                listed_from=listed_from_by_symbol.get(symbol),
+                seasoning_days=seasoning_days,
             )
+            if tr:
+                contributing.add(symbol)
+            pooled.extend(tr)
         pooled.sort(key=lambda t: t.ts_opened)
         name = f"oi_crowding_{direction}"
         specs.append(
@@ -206,7 +246,7 @@ def build_specs(
                 "direction": direction,
             }
         )
-    return specs
+    return specs, sorted(contributing)
 
 
 def triage(specs: Sequence[dict], cfg: TriageConfig = FROZEN) -> list[dict]:
@@ -220,6 +260,19 @@ def triage(specs: Sequence[dict], cfg: TriageConfig = FROZEN) -> list[dict]:
             min_samples=cfg.min_samples,
             min_gross_bps=cfg.economic_triviality_floor_bps,
         )
+        # Review A1: the cost-blind screen promotes on in-sample gross when there are
+        # ZERO out-of-sample trades (oos_gross_bps is None). An edge with no OOS evidence
+        # is not an edge -> downgrade to needs_more_data (no false `edge_found`).
+        if (
+            c.recommendation == "promote_to_full_validation"
+            and spec["summary"].oos_gross_bps is None
+        ):
+            c = ClassifiedHypothesis(
+                spec["summary"],
+                "needs_more_data",
+                "in-sample gross above floor but ZERO out-of-sample trades "
+                "(no OOS evidence — not an edge)",
+            )
         out.append({"direction": spec["direction"], "classified": c})
     return out
 
@@ -234,6 +287,37 @@ def overall_verdict(triaged: Sequence[dict]) -> str:
     if "needs_more_data" in recs:
         return "needs_more_data"
     return "screened_out"
+
+
+def _promoting_directions(block: dict) -> set[str]:
+    """Directions that promoted (gross > floor AND OOS gross > 0) in a measurement block."""
+    return {
+        d["direction"]
+        for d in block["directions"]
+        if d["recommendation"] == "promote_to_full_validation"
+    }
+
+
+def book_close_verdict(pre: dict, established_seasoned: dict) -> tuple[str, str]:
+    """A robust edge must promote the SAME direction in both the pre-registered subset
+    and the established+seasoned control. A profitable sign that flips across
+    seasoning/cohort is listing/survivorship microstructure, not an edge.
+
+    Returns ``(verdict, reason)``."""
+    pre_dirs = _promoting_directions(pre)
+    es_dirs = _promoting_directions(established_seasoned)
+    consistent = pre_dirs & es_dirs
+    if consistent:
+        return "edge_survives_controls", (
+            f"direction(s) {sorted(consistent)} promote in BOTH the pre-registered subset "
+            "and the established+seasoned control (stable sign)"
+        )
+    return "artifact_confirmed_screened_out", (
+        f"pre-registered promoting direction(s) {sorted(pre_dirs)} do NOT survive the "
+        f"controls (established+seasoned promotes {sorted(es_dirs)}); the profitable sign "
+        "flips across seasoning/cohort -> listing/survivorship microstructure artifact, "
+        "not a robust edge"
+    )
 
 
 def _direction_row(direction: str, c) -> dict:
@@ -274,16 +358,47 @@ def load_oi_features(path) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Operator RUN (network: price klines + on-disk OI feature CSVs)
 # --------------------------------------------------------------------------- #
-def _summary_payload(triaged: Sequence[dict], cfg: TriageConfig) -> dict:
+def _run_block(
+    oi_by: dict[str, Sequence[dict]],
+    closes_by: dict[str, Sequence[tuple[int, float]]],
+    cfg: TriageConfig,
+    *,
+    listed_from_by_symbol: dict[str, int] | None = None,
+    seasoning_days: int = 0,
+    symbols: Sequence[str] | None = None,
+) -> dict:
+    """Build -> triage -> flatten one measurement block (reused for the pre-registered
+    pass and every falsification pass)."""
+    specs, contributing = build_specs(
+        oi_by,
+        closes_by,
+        cfg,
+        listed_from_by_symbol=listed_from_by_symbol,
+        seasoning_days=seasoning_days,
+        symbols=symbols,
+    )
+    triaged = triage(specs, cfg)
     return {
-        "schema_version": "oi_crowding_triage.v1",
-        "config_hash": cfg.config_hash(),
-        "config": cfg.to_dict(),
         "overall_verdict": overall_verdict(triaged),
+        "contributing_symbols": contributing,
         "directions": [
             _direction_row(t["direction"], t["classified"]) for t in triaged
         ],
     }
+
+
+def _print_block(label: str, block: dict) -> None:
+    print(
+        f"\n[{label}] verdict={block['overall_verdict']} "
+        f"contributing={len(block['contributing_symbols'])}"
+    )
+    for d in block["directions"]:
+        oos = d["oos_gross_bps"]
+        oos_s = f"{oos:.2f}" if oos is not None else "None"
+        print(
+            f"    {d['direction']:4} {d['recommendation']:26} "
+            f"gross={d['gross_expectancy_bps']:.2f}bps oos={oos_s} n={d['sample_count']}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -342,10 +457,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"frozen config hash: {FROZEN.config_hash()}")
 
     manifest = pu.PITManifest.load(args.manifest).strict_usdt_perp()
+    listings = {x.symbol: x for x in manifest.listings}
     feat_dir = resolve_artifact_path("discovery", "rob356", "features")
 
     # Ensure price klines on disk (operator network); then load PIT-trimmed closes.
-    _ensure_klines(subset, manifest, args.interval)
+    klines_fetch = _ensure_klines(subset, manifest, args.interval)
     closes_by_symbol = pit_bars.load_panel(subset, args.interval, manifest)
     oi_features_by_symbol: dict[str, list[dict]] = {}
     for sym in subset:
@@ -353,20 +469,72 @@ def main(argv: list[str] | None = None) -> int:
         if csv_path.exists():
             oi_features_by_symbol[sym] = load_oi_features(csv_path)
 
-    specs = build_specs(oi_features_by_symbol, closes_by_symbol, FROZEN)
-    triaged = triage(specs, FROZEN)
-    payload = _summary_payload(triaged, FROZEN)
+    listed_from = {s: listings[s].listed_from for s in subset if s in listings}
+    cohorts: dict[str, list[str]] = {"established": [], "recent": [], "delisted": []}
+    for s in subset:
+        if s in listings:
+            cohorts[cohort_of(listings[s])].append(s)
 
-    print(f"\noverall_verdict: {payload['overall_verdict']}")
-    for d in payload["directions"]:
-        oos = d["oos_gross_bps"]
-        oos_s = f"{oos:.3f}" if oos is not None else "None"
-        print(
-            f"  [{d['direction']:4}] {d['recommendation']:26} "
-            f"gross={d['gross_expectancy_bps']:.3f}bps oos_gross={oos_s} "
-            f"n={d['sample_count']}"
-        )
-        print(f"          {d['reason']}")
+    # Pre-registered measurement (FROZEN config, full dense subset, no seasoning).
+    pre = _run_block(oi_features_by_symbol, closes_by_symbol, FROZEN)
+    _print_block("pre-registered (full dense subset)", pre)
+
+    # Falsification: a robust crowding edge must survive listing-seasoning AND show up in
+    # the established cohort — not just in new-listing / delisted survivorship microstructure.
+    seasoned_full = _run_block(
+        oi_features_by_symbol,
+        closes_by_symbol,
+        FROZEN,
+        listed_from_by_symbol=listed_from,
+        seasoning_days=_SEASONING_DAYS,
+    )
+    _print_block(f"seasoned full ({_SEASONING_DAYS}d)", seasoned_full)
+    by_cohort = {
+        name: _run_block(oi_features_by_symbol, closes_by_symbol, FROZEN, symbols=syms)
+        for name, syms in cohorts.items()
+    }
+    for name, blk in by_cohort.items():
+        _print_block(f"cohort:{name} ({len(cohorts[name])} symbols)", blk)
+    established_seasoned = _run_block(
+        oi_features_by_symbol,
+        closes_by_symbol,
+        FROZEN,
+        listed_from_by_symbol=listed_from,
+        seasoning_days=_SEASONING_DAYS,
+        symbols=cohorts["established"],
+    )
+    _print_block("DECISIVE: established + seasoned", established_seasoned)
+
+    # The edge only "survives controls" if the SAME direction promotes in both the
+    # pre-registered subset and the established+seasoned control. A sign that flips across
+    # seasoning/cohort is a listing/survivorship microstructure artifact, not an edge.
+    book_close, book_close_reason = book_close_verdict(pre, established_seasoned)
+
+    payload = {
+        "schema_version": "oi_crowding_triage.v1",
+        "config_hash": FROZEN.config_hash(),
+        "config": FROZEN.to_dict(),
+        "pre_registered": pre,
+        "coverage_provenance": {
+            "subset_size": len(subset),
+            "symbols_with_features": sorted(oi_features_by_symbol),
+            "symbols_with_closes": sorted(closes_by_symbol),
+            "cohorts": cohorts,
+        },
+        "falsification": {
+            "seasoning_days": _SEASONING_DAYS,
+            "recent_cutoff_ts": _RECENT_CUTOFF_TS,
+            "seasoned_full": seasoned_full,
+            "established_seasoned": established_seasoned,
+            "by_cohort": by_cohort,
+        },
+        "book_close_verdict": book_close,
+        "book_close_reason": book_close_reason,
+        "klines_fetch": klines_fetch,
+    }
+
+    print(f"\n=== BOOK-CLOSE VERDICT: {book_close} ===")
+    print(f"{book_close_reason}")
 
     if args.out:
         out = resolve_artifact_path("discovery", "rob362", "oi_crowding_triage.v1.json")
@@ -378,27 +546,35 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _ensure_klines(symbols: Sequence[str], manifest, interval: str) -> None:
-    """Fetch monthly price klines for any subset symbol not yet on disk (public archive)."""
+def _ensure_klines(symbols: Sequence[str], manifest, interval: str) -> dict:
+    """Fetch monthly price klines (public archive) for the panel; always call
+    ``fetch_months`` (present months no-op as ``skipped``) and aggregate its
+    ``{downloaded, skipped, missing}`` so a partial/interrupted fetch is auditable in
+    the verdict rather than silently truncating a symbol's window (review B2)."""
     import pit_klines_fetcher as kf
     from artifact_paths import pit_data_root
 
     root = pit_data_root()
     listings = {x.symbol: x for x in manifest.listings}
+    agg = {"downloaded": 0, "skipped": 0, "missing": 0, "errors": []}
     for sym in symbols:
-        sym_dir = Path(root) / "klines" / interval / sym
-        if sym_dir.is_dir() and any(sym_dir.iterdir()):
-            continue
         listing = listings.get(sym)
         if listing is None:
             continue
         from_month = _month(listing.listed_from)
         to_month = _month(listing.delisted_at) if listing.delisted_at else _now_month()
-        print(f"  fetch klines {sym} {interval} {from_month}..{to_month}")
         try:
-            kf.fetch_months(sym, interval, from_month, to_month, out_root=root)
+            res = kf.fetch_months(sym, interval, from_month, to_month, out_root=root)
+            for k in ("downloaded", "skipped", "missing"):
+                v = res.get(k)
+                agg[k] += len(v) if isinstance(v, (list, tuple, set)) else (v or 0)
         except Exception as exc:  # noqa: BLE001 — a missing month must not abort the panel
-            print(f"    klines fetch partial for {sym}: {type(exc).__name__}")
+            agg["errors"].append(f"{sym}:{type(exc).__name__}")
+    print(
+        f"klines fetch: downloaded={agg['downloaded']} skipped={agg['skipped']} "
+        f"missing={agg['missing']} errors={len(agg['errors'])}"
+    )
+    return agg
 
 
 def _month(ms: int) -> str:
