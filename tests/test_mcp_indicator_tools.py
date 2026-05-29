@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
+import app.services.brokers.yahoo.client as yahoo_service
 from app.mcp_server.tooling import (
     market_data_indicators,
     portfolio_holdings,
@@ -837,3 +838,157 @@ async def test_fetch_ohlcv_for_volume_profile_kr_warm_cache_avoids_kis_call(
 
     assert len(result) == 1
     assert not kis_called, "KIS should not be called when cache is warm"
+
+
+# ---------------------------------------------------------------------------
+# ROB-365 bug 1: US live-price convergence (get_indicators / get_support_resistance)
+# ---------------------------------------------------------------------------
+
+
+def _flat_us_ohlcv(close_value: float, rows: int = 80) -> pd.DataFrame:
+    close = pd.Series([close_value] * rows)
+    return pd.DataFrame(
+        {
+            "close": close,
+            "high": close + 1.5,
+            "low": close - 1.5,
+            "volume": pd.Series([1000.0] * rows),
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_us_uses_live_price_not_prev_close(monkeypatch):
+    """US get_indicators must report the live last price, not the OHLCV prev close (ROB-365 bug 1)."""
+    tools = build_tools()
+
+    # OHLCV last close = 143.31 (yesterday's close, the stale value the bug returns)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=_flat_us_ohlcv(143.31)),
+    )
+    # Live intraday last price = 157.24 (Naver/KIS live at observation time)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(
+            return_value={
+                "symbol": "PLTR",
+                "close": 157.24,
+                "previous_close": 143.34,
+                "open": 144.0,
+                "high": 158.0,
+                "low": 143.0,
+                "volume": 123,
+            }
+        ),
+    )
+
+    result = await tools["get_indicators"]("PLTR", indicators=["rsi"], market="us")
+
+    assert "error" not in result
+    assert result["price"] == pytest.approx(157.24)
+    assert result["current_price_source"] == "yahoo_live"
+    assert result["current_price_stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_us_degrades_to_close_with_stale_flag(monkeypatch):
+    """When the live US source is unreachable, fall back to the OHLCV close with a stale flag (ROB-365 bug 1)."""
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=_flat_us_ohlcv(143.31)),
+    )
+    # Mirror the observed bug-2 failure: Yahoo raises 'NoneType' object is not subscriptable
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(side_effect=RuntimeError("'NoneType' object is not subscriptable")),
+    )
+
+    result = await tools["get_indicators"]("PLTR", indicators=["rsi"], market="us")
+
+    assert "error" not in result  # graceful degradation, never crash
+    assert result["price"] == pytest.approx(143.31)
+    assert result["current_price_source"] == "ohlcv_close"
+    assert result["current_price_stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_support_resistance_us_positions_levels_against_live_price(monkeypatch):
+    """US get_support_resistance must position levels against the live price, not the OHLCV close (ROB-365 bug 1)."""
+    from app.mcp_server.tooling.fundamentals import _support_resistance
+
+    tools = build_tools()
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=60, freq="D"),
+                "open": [100.0] * 60,
+                "high": [105.0] * 60,
+                "low": [95.0] * 60,
+                "close": [102.0] * 60,
+                "volume": [1000] * 60,
+            }
+        )
+
+    monkeypatch.setattr(
+        _support_resistance, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+    )
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(
+            return_value={
+                "symbol": "AAPL",
+                "close": 150.0,
+                "previous_close": 102.0,
+                "open": 101.0,
+                "high": 151.0,
+                "low": 100.0,
+                "volume": 1,
+            }
+        ),
+    )
+
+    result = await tools["get_support_resistance"]("AAPL", market="us")
+
+    assert result["current_price"] == pytest.approx(150.0)
+    assert result["current_price_source"] == "yahoo_live"
+
+
+@pytest.mark.asyncio
+async def test_portfolio_get_indicators_impl_us_uses_live_price(monkeypatch):
+    """The analyze-path indicators impl (portfolio_holdings) must report the live US price (ROB-365 bug 1)."""
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=_flat_us_ohlcv(143.31)),
+    )
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(
+            return_value={
+                "symbol": "PLTR",
+                "close": 157.24,
+                "previous_close": 143.34,
+                "open": 144.0,
+                "high": 158.0,
+                "low": 143.0,
+                "volume": 1,
+            }
+        ),
+    )
+
+    result = await portfolio_holdings._get_indicators_impl("PLTR", ["rsi"], market="us")
+
+    assert "error" not in result
+    assert result["price"] == pytest.approx(157.24)
+    assert result["current_price_source"] == "yahoo_live"
+    assert result["current_price_stale"] is False

@@ -23,6 +23,7 @@ from app.mcp_server.tooling.market_data_indicators import (
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
+    fetch_us_live_last_price,
 )
 from app.mcp_server.tooling.portfolio_avg_cost import (
     simulate_avg_cost_impl,
@@ -810,6 +811,7 @@ async def _get_indicators_impl(
             float(df["close"].iloc[-1]) if "close" in df.columns else None
         )
         current_price = close_fallback_price
+        current_price_source = "ohlcv_close"
         if market_type == "crypto":
             try:
                 prices = await upbit_service.fetch_multiple_current_prices([symbol])
@@ -818,6 +820,11 @@ async def _get_indicators_impl(
                     current_price = float(ticker_price)
             except Exception:
                 current_price = close_fallback_price
+        elif market_type == "equity_us":
+            live = await fetch_us_live_last_price(symbol)
+            if live is not None:
+                current_price = live
+                current_price_source = "yahoo_live"
 
         indicator_results = _compute_indicators(df, indicators)
 
@@ -828,13 +835,17 @@ async def _get_indicators_impl(
             if realtime_rsi is not None:
                 indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
 
-        return {
+        result = {
             "symbol": symbol,
             "price": current_price,
             "instrument_type": market_type,
             "source": source,
             "indicators": indicator_results,
         }
+        if market_type == "equity_us":
+            result["current_price_source"] = current_price_source
+            result["current_price_stale"] = current_price_source != "yahoo_live"
+        return result
     except Exception as exc:
         return {
             "error": str(exc),

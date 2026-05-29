@@ -497,6 +497,32 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     }
 
 
+async def fetch_us_live_last_price(symbol: str) -> float | None:
+    """Live US last-price scalar (15-min delayed). Never raises.
+
+    Returns the live intraday last-price for a US equity (from Yahoo fast_info
+    last_price/regularMarketPrice), or ``None`` when no live source is reachable
+    (delisted/after-hours/Yahoo failure). Callers overlay this onto the OHLCV
+    close so the reported ``current_price`` is live during regular trading,
+    falling back to the OHLCV close when ``None`` (ROB-365 bug 1).
+    """
+    try:
+        quote = await _fetch_quote_equity_us(symbol)
+    except Exception:
+        # ValueError (missing/zero price) or RuntimeError (Yahoo fetch failed,
+        # incl. the 'NoneType' object is not subscriptable yfinance flake).
+        return None
+
+    price = quote.get("price")
+    if price is None:
+        return None
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 # ---------------------------------------------------------------------------
 # OHLCV Fetching
 # ---------------------------------------------------------------------------
@@ -836,6 +862,7 @@ async def _get_indicators_impl(
             float(df["close"].iloc[-1]) if "close" in df.columns else None
         )
         current_price = close_fallback_price
+        current_price_source = "ohlcv_close"
         if market_type == "crypto":
             try:
                 prices = await upbit_service.fetch_multiple_current_prices([symbol])
@@ -844,6 +871,11 @@ async def _get_indicators_impl(
                     current_price = float(ticker_price)
             except Exception:
                 current_price = close_fallback_price
+        elif market_type == "equity_us":
+            live = await fetch_us_live_last_price(symbol)
+            if live is not None:
+                current_price = live
+                current_price_source = "yahoo_live"
 
         indicator_results = _compute_indicators(df, normalized_indicators)
 
@@ -852,13 +884,17 @@ async def _get_indicators_impl(
             if realtime_rsi is not None:
                 indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
 
-        return {
+        result = {
             "symbol": symbol,
             "price": current_price,
             "instrument_type": market_type,
             "source": source,
             "indicators": indicator_results,
         }
+        if market_type == "equity_us":
+            result["current_price_source"] = current_price_source
+            result["current_price_stale"] = current_price_source != "yahoo_live"
+        return result
 
     except Exception as exc:
         return _error_payload_from_exception(

@@ -9,6 +9,7 @@ from app.mcp_server.tooling.market_data_indicators import (
     _calculate_sma,
     _fetch_ohlcv_for_indicators,
 )
+from app.mcp_server.tooling.market_data_quotes import fetch_us_live_last_price
 from app.schemas.research_pipeline import (
     MarketSignals,
     SourceFreshness,
@@ -33,6 +34,14 @@ async def _fetch_market_snapshot(symbol: str, instrument_type: str) -> dict[str,
 
     # Latest values
     last_close = close.iloc[-1]
+    last_close_source = "ohlcv_close"
+    if instrument_type == "equity_us":
+        # ROB-365 bug 1: use the live intraday last price (not the previous daily
+        # close) for the reported price/change/trend; indicators stay historical.
+        live = await fetch_us_live_last_price(symbol)
+        if live is not None:
+            last_close = live
+            last_close_source = "yahoo_live"
     prev_close = close.iloc[-2]
     change_pct = (last_close - prev_close) / prev_close * 100
 
@@ -61,6 +70,7 @@ async def _fetch_market_snapshot(symbol: str, instrument_type: str) -> dict[str,
 
     return {
         "last_close": float(last_close),
+        "last_close_source": last_close_source,
         "change_pct": round(float(change_pct), 2),
         "rsi_14": rsi_14 if rsi_14 is not None else 50.0,
         "atr_14": atr_14 if atr_14 is not None else 0.0,
