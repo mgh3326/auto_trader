@@ -616,8 +616,13 @@ async def test_generator_classifies_items_against_active_watches_and_pending_ord
     assert response.items_count == 1
 
     # Verify the generator actually queried the bundle back from the repo.
-    assert fake_repo.get_bundle_calls == [ensure.response.bundle_uuid]
-    assert fake_repo.list_items_calls == [fake_bundle.id]
+    # ROB-352 Slice B — _build_classifier_context + _section_snapshot_descriptors
+    # both call get_bundle_by_uuid; two calls expected, both for the same UUID.
+    assert fake_repo.get_bundle_calls == [
+        ensure.response.bundle_uuid,
+        ensure.response.bundle_uuid,
+    ]
+    assert fake_repo.list_items_calls == [fake_bundle.id, fake_bundle.id]
 
     # The classifier should have rewritten the watch item to operation='keep'
     # because the bundle's active_alerts has a matching alert at the same
@@ -1395,3 +1400,122 @@ async def test_reuse_via_ingest_race_rebuilds_from_stored() -> None:
     assert response.report_uuid == stored.report_uuid
     assert response.items_count == 4
     assert response.bundle_reused is True
+
+
+@pytest.mark.asyncio
+async def test_cited_snapshot_uuids_derived_from_evidence() -> None:
+    """ROB-352 Slice B — citations derived from evidence_snapshot UUIDs."""
+    snap_a = str(uuid.uuid4())
+    snap_b = str(uuid.uuid4())
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="risk",
+        intent="risk_review",
+        rationale="r",
+        evidence_snapshot={
+            "snapshot_uuid": snap_a,
+            "candidate_snapshot_uuid": snap_b,
+            "snapshot_kind": "symbol",
+            "not_a_uuid": "hello",
+        },
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request(items=[item]))
+
+    sent_items = ingest.calls[0].items
+    cited = sent_items[0].cited_snapshot_uuids
+    assert {str(u) for u in cited} == {snap_a, snap_b}
+
+
+@pytest.mark.asyncio
+async def test_cited_snapshot_uuids_caller_supplied_wins() -> None:
+    """ROB-352 Slice B — explicit caller citations are not overwritten."""
+    explicit = uuid.uuid4()
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="risk",
+        intent="risk_review",
+        rationale="r",
+        evidence_snapshot={"snapshot_uuid": str(uuid.uuid4())},
+        cited_snapshot_uuids=[explicit],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request(items=[item]))
+    assert ingest.calls[0].items[0].cited_snapshot_uuids == [explicit]
+
+
+# ---------------------------------------------------------------------------
+# ROB-352 Slice B — market / portfolio provenance descriptors from bundle.
+# ---------------------------------------------------------------------------
+
+
+class _FakeSnap:
+    def __init__(self, *, kind, symbol=None):
+        self.snapshot_uuid = uuid.uuid4()
+        self.snapshot_kind = kind
+        self.symbol = symbol
+        self.as_of = dt.datetime(2026, 5, 29, 12, 0, tzinfo=dt.UTC)
+        self.freshness_status = "fresh"
+        self.coverage_json = {"rows": 3}
+        self.payload_json = {"x": 1}
+
+
+@pytest.mark.asyncio
+async def test_market_portfolio_descriptors_from_bundle() -> None:
+    """ROB-352 Slice B — present kinds -> provenance descriptor (pointer)."""
+    market = _FakeSnap(kind="market")
+    portfolio = _FakeSnap(kind="portfolio")
+    repo = _FakeSnapshotsRepository(
+        bundle=type("B", (), {"id": 7})(),
+        items=[(object(), market), (object(), portfolio)],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=repo,
+    )
+    await gen.generate(_make_request())
+    sent = ingest.calls[0]
+    assert sent.market_snapshot["snapshot_uuid"] == str(market.snapshot_uuid)
+    assert sent.market_snapshot["freshness_status"] == "fresh"
+    assert sent.portfolio_snapshot["snapshot_kind"] == "portfolio"
+    assert "payload_json" not in sent.market_snapshot
+
+
+@pytest.mark.asyncio
+async def test_missing_portfolio_descriptor_is_unavailable() -> None:
+    """ROB-352 Slice B — absent kind -> explicit unavailable reason."""
+    market = _FakeSnap(kind="market")
+    repo = _FakeSnapshotsRepository(
+        bundle=type("B", (), {"id": 7})(),
+        items=[(object(), market)],
+    )
+    ensure = _FakeEnsureService(_ensure_response(missing_sources=["portfolio"]))
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=repo,
+    )
+    await gen.generate(_make_request())
+    sent = ingest.calls[0]
+    assert sent.portfolio_snapshot["status"] == "unavailable"
+    assert "reason" in sent.portfolio_snapshot

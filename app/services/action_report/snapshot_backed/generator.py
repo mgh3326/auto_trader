@@ -139,6 +139,32 @@ def _derive_overall_from_kind_statuses(
     return _RANK_TO_KIND_STATUS[worst_rank]
 
 
+def _extract_cited_snapshot_uuids(evidence_snapshot: Any) -> list[UUID]:
+    """ROB-352 Slice B — collect snapshot UUIDs cited by an item's evidence.
+
+    Picks the ``snapshot_uuid`` key plus any ``*_snapshot_uuid`` extra
+    (candidate/portfolio/news). Skips non-UUID values; dedupes preserving
+    first-seen order.
+    """
+    if not isinstance(evidence_snapshot, Mapping):
+        return []
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for key, value in evidence_snapshot.items():
+        if key != "snapshot_uuid" and not str(key).endswith("_snapshot_uuid"):
+            continue
+        if not isinstance(value, (str, UUID)):
+            continue
+        try:
+            parsed = value if isinstance(value, UUID) else UUID(str(value))
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if parsed not in seen:
+            seen.add(parsed)
+            out.append(parsed)
+    return out
+
+
 def _optional_kind_names(coverage_summary: Any) -> frozenset[str]:
     """Kinds that must not pollute the derived core ``overall`` (ROB-323).
 
@@ -300,6 +326,11 @@ class SnapshotBackedReportGenerator:
         )
         source_conflicts: dict[str, Any] = {}
 
+        market_snapshot, portfolio_snapshot = await self._section_snapshot_descriptors(
+            bundle_uuid=ensure_response.bundle_uuid,
+            unavailable_sources=unavailable_sources,
+        )
+
         # ROB-318 Phase 3 — deterministic report diagnostics, computed before the
         # ingest request so they persist on the report row (PR-B). why_no_action
         # tells a genuine hold from a data-blocked / stale-gated one; the bundle
@@ -348,6 +379,8 @@ class SnapshotBackedReportGenerator:
             source_conflicts=source_conflicts,
             report_diagnostics=report_diagnostics,
             symbol_derivation=derivation,
+            market_snapshot=market_snapshot,
+            portfolio_snapshot=portfolio_snapshot,
         )
 
         # Authoritative gate runs inside ingest(); this pre-flight is a
@@ -491,6 +524,49 @@ class SnapshotBackedReportGenerator:
             request_market=request.market,
             account_scope=request.account_scope,
         )
+
+    async def _section_snapshot_descriptors(
+        self,
+        *,
+        bundle_uuid: UUID,
+        unavailable_sources: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """ROB-352 Slice B — compact provenance descriptors for the report's
+        market / portfolio sections.
+
+        Pointer + freshness into ``investment_snapshots`` (never a full
+        payload copy). Absent kinds get an explicit unavailable reason.
+        """
+
+        def _unavailable(kind: str) -> dict[str, Any]:
+            info = unavailable_sources.get(kind)
+            reason = "not_collected"
+            if isinstance(info, Mapping):
+                reason = str(info.get("reason") or info.get("status") or reason)
+            return {"status": "unavailable", "reason": reason}
+
+        def _descriptor(snapshot: Any) -> dict[str, Any]:
+            as_of = getattr(snapshot, "as_of", None)
+            return {
+                "snapshot_uuid": str(snapshot.snapshot_uuid),
+                "snapshot_kind": snapshot.snapshot_kind,
+                "as_of": as_of.isoformat() if as_of is not None else None,
+                "freshness_status": getattr(snapshot, "freshness_status", None),
+                "coverage": getattr(snapshot, "coverage_json", None) or {},
+            }
+
+        market = _unavailable("market")
+        portfolio = _unavailable("portfolio")
+        bundle = await self._snapshots_repo.get_bundle_by_uuid(bundle_uuid)
+        if bundle is None:
+            return market, portfolio
+        pairs = await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
+        for _item, snapshot in pairs:
+            if snapshot.snapshot_kind == "market":
+                market = _descriptor(snapshot)
+            elif snapshot.snapshot_kind == "portfolio":
+                portfolio = _descriptor(snapshot)
+        return market, portfolio
 
     async def _build_classifier_context(
         self,
@@ -650,6 +726,8 @@ class SnapshotBackedReportGenerator:
         source_conflicts: dict[str, Any],
         report_diagnostics: dict[str, Any] | None = None,
         symbol_derivation: SymbolDerivation | None = None,
+        market_snapshot: dict[str, Any] | None = None,
+        portfolio_snapshot: dict[str, Any] | None = None,
     ) -> IngestReportRequest:
         # Normalise items — each evidence_snapshot / trigger_checklist /
         # max_action / metadata is a free-form dict the caller filled in,
@@ -669,6 +747,12 @@ class SnapshotBackedReportGenerator:
             ):
                 if key in item_dict and item_dict[key] is not None:
                     item_dict[key] = to_jsonable(item_dict[key])
+            # ROB-352 Slice B — derive snapshot citations from evidence unless
+            # the caller supplied them explicitly.
+            if not item_dict.get("cited_snapshot_uuids"):
+                item_dict["cited_snapshot_uuids"] = _extract_cited_snapshot_uuids(
+                    item_dict.get("evidence_snapshot") or {}
+                )
             normalized_items.append(item_dict)
 
         metadata = to_jsonable(dict(request.metadata) or {})
@@ -701,8 +785,8 @@ class SnapshotBackedReportGenerator:
             risk_summary=request.risk_summary,
             thesis_text=request.thesis_text,
             no_action_note=request.no_action_note,
-            market_snapshot={},
-            portfolio_snapshot={},
+            market_snapshot=market_snapshot or {},
+            portfolio_snapshot=portfolio_snapshot or {},
             previous_report_uuid=request.previous_report_uuid,
             status=request.status,
             metadata=metadata,

@@ -247,10 +247,12 @@ def test_item_accepts_decision_bucket_and_citations():
         decision_bucket="new_buy_candidate",
         cited_symbol_report_uuid=su,
         cited_dimension_report_uuids=[du],
+        cited_snapshot_uuids=[su, du],
     )
     assert item.decision_bucket == "new_buy_candidate"
     assert item.cited_symbol_report_uuid == su
     assert item.cited_dimension_report_uuids == [du]
+    assert item.cited_snapshot_uuids == [su, du]
 
 
 def test_item_rejects_unknown_decision_bucket():
@@ -277,3 +279,4 @@ def test_item_decision_bucket_optional():
     )
     assert item.decision_bucket is None
     assert item.cited_dimension_report_uuids == []
+    assert item.cited_snapshot_uuids == []

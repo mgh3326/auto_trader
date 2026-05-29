@@ -255,17 +255,24 @@ class InvestmentReportQueryService:
         the unresolved/deferred items, active watches, triggered watch
         events, and recent decisions that span those reports.
         """
+        # ROB-352 Slice B — fetch a buffer so dropping drafts (smoke
+        # boilerplate ships as draft) + the excluded uuid still yields up to
+        # n_prior published rows. NOTE: silently under-fills (returns < n_prior)
+        # if more than _DRAFT_FETCH_BUFFER consecutive drafts precede the last
+        # wanted published row; raise the buffer if smoke density grows.
+        _DRAFT_FETCH_BUFFER = 5
         prior_reports: list[InvestmentReport] = await self._repo.list_reports(
             market=market,
             market_session=market_session,
             account_scope=account_scope,
             report_type=report_type,
-            limit=n_prior + 1,  # +1 so we can drop the excluded one cleanly
+            limit=n_prior + 1 + _DRAFT_FETCH_BUFFER,
         )
         if exclude_report_uuid is not None:
             prior_reports = [
                 r for r in prior_reports if r.report_uuid != exclude_report_uuid
             ]
+        prior_reports = [r for r in prior_reports if r.status != "draft"]
         prior_reports = prior_reports[:n_prior]
 
         prior_report_uuids = [r.report_uuid for r in prior_reports]
