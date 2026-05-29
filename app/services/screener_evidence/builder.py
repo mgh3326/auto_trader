@@ -12,6 +12,8 @@ _MOMENTUM_REASON = "단기 상승 모멘텀 후보"
 _OVERSOLD_REASON = "RSI 저점권 후보"
 _HIGH_VOLUME_REASON = "24시간 KRW 거래대금 상위"
 _WARNING_FLAG = "Upbit 유의 종목"
+_DOUBLE_BUY_REASON = "외국인·기관 쌍끌이 매수"
+_HIGH_YIELD_VALUE_REASON = "고수익 저평가 (ROE 15%↑·PER 0~10)"
 
 
 def _to_float(value: Any) -> float | None:
@@ -81,6 +83,23 @@ def build_candidate_evidence(
                 f"거래대금 {int(volume_value):,}" if volume_value is not None else "-"
             )
             reasons = [_HIGH_VOLUME_REASON]
+        elif preset == "double_buy":
+            score = scoring.momentum_score(change_rate)
+            score_label = f"{change_rate:+.2f}%" if change_rate is not None else "-"
+            reasons = [_DOUBLE_BUY_REASON]
+            fcd = row.get("foreign_consecutive_buy_days")
+            if isinstance(fcd, int) and fcd >= 2:
+                reasons.append(f"외국인 {fcd}일 연속 순매수")
+            volume_value = _to_float(row.get("daily_volume") or row.get("volume"))
+        elif preset == "high_yield_value":
+            roe = _to_float(row.get("roe"))
+            per = _to_float(row.get("per"))
+            score = scoring.high_yield_value_score(roe, per)
+            roe_part = f"ROE {roe:.1f}%" if roe is not None else "ROE -"
+            per_part = f"PER {per:.1f}" if per is not None else "PER -"
+            score_label = f"{roe_part} · {per_part}"
+            reasons = [_HIGH_YIELD_VALUE_REASON]
+            volume_value = _to_float(row.get("daily_volume") or row.get("volume"))
         else:  # crypto_momentum + equity top_gainers
             score = scoring.momentum_score(change_rate)
             score_label = f"{change_rate:+.2f}%" if change_rate is not None else "-"
