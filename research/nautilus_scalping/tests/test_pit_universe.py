@@ -16,16 +16,22 @@ from pathlib import Path
 import pit_universe
 from pit_universe import PITManifest, SymbolListing
 
-_MANIFEST = Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.json"
-_META = Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.meta.json"
+_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.json"
+)
+_META = (
+    Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.meta.json"
+)
 
 
 def _manifest():
-    return PITManifest.from_records([
-        {"symbol": "AAA", "listed_from": 100, "delisted_at": None},
-        {"symbol": "BBB", "listed_from": 150, "delisted_at": 400},
-        {"symbol": "CCC", "listed_from": 500, "delisted_at": None},
-    ])
+    return PITManifest.from_records(
+        [
+            {"symbol": "AAA", "listed_from": 100, "delisted_at": None},
+            {"symbol": "BBB", "listed_from": 150, "delisted_at": 400},
+            {"symbol": "CCC", "listed_from": 500, "delisted_at": None},
+        ]
+    )
 
 
 def test_includes_listed_and_not_delisted():
@@ -78,9 +84,14 @@ def test_rejects_delist_before_list():
 
 def test_symbollisting_optional_metadata_roundtrips():
     rec = {
-        "symbol": "EOSUSDT", "listed_from": 1672531200000, "delisted_at": 1700000000000,
-        "status": "dead", "kline_coverage": 1.0, "funding_coverage": 1.0,
-        "confidence": "high", "missing_data_reason": "delisted",
+        "symbol": "EOSUSDT",
+        "listed_from": 1672531200000,
+        "delisted_at": 1700000000000,
+        "status": "dead",
+        "kline_coverage": 1.0,
+        "funding_coverage": 1.0,
+        "confidence": "high",
+        "missing_data_reason": "delisted",
     }
     m = pit_universe.PITManifest.from_records([rec])
     (only,) = m.listings
@@ -91,25 +102,83 @@ def test_symbollisting_optional_metadata_roundtrips():
     assert back.listings[0].missing_data_reason == "delisted"
 
 
+def test_oi_coverage_is_additive_and_preserves_existing_coverage():
+    # ROB-356: oi_coverage added alongside funding_coverage/kline_coverage without
+    # disturbing the existing fields on round-trip.
+    rec = {
+        "symbol": "EOSUSDT",
+        "listed_from": 1672531200000,
+        "delisted_at": 1700000000000,
+        "status": "dead",
+        "kline_coverage": 1.0,
+        "funding_coverage": 0.97,
+        "oi_coverage": 0.83,
+        "confidence": "high",
+        "missing_data_reason": "delisted",
+    }
+    m = pit_universe.PITManifest.from_records([rec])
+    (only,) = m.listings
+    assert only.oi_coverage == 0.83
+    assert only.kline_coverage == 1.0
+    assert only.funding_coverage == 0.97
+    back = pit_universe.PITManifest.from_records(m.to_records())
+    b = back.listings[0]
+    assert (b.oi_coverage, b.kline_coverage, b.funding_coverage) == (0.83, 1.0, 0.97)
+
+
+def test_oi_coverage_absent_is_not_emitted_so_committed_hash_is_stable():
+    # additive guarantee: a record without oi_coverage must serialize identically
+    # to before (None field is dropped by to_records), so the committed manifest
+    # snapshot_hash does not change.
+    rec = {
+        "symbol": "BTCUSDT",
+        "listed_from": 0,
+        "delisted_at": None,
+        "kline_coverage": 1.0,
+        "funding_coverage": 1.0,
+    }
+    out = pit_universe.PITManifest.from_records([rec]).to_records()[0]
+    assert "oi_coverage" not in out
+
+
 def test_symbollisting_metadata_defaults_none():
     m = pit_universe.PITManifest.from_records(
         [{"symbol": "BTCUSDT", "listed_from": 0, "delisted_at": None}]
     )
     only = m.listings[0]
     assert only.status is None and only.confidence is None
-    assert pit_universe.PITManifest.from_records(m.to_records()).listings[0].symbol == "BTCUSDT"
+    assert (
+        pit_universe.PITManifest.from_records(m.to_records()).listings[0].symbol
+        == "BTCUSDT"
+    )
 
 
 def test_from_pit_index_records_maps_dates_to_epoch_ms():
     rows = [
-        {"symbol": "EOSUSDT", "status": "dead", "first_seen": "2023-01", "last_seen": "2024-01",
-         "active_from": "2023-01-26", "active_to": "2024-01-11",
-         "kline_coverage": 1.0, "funding_coverage": 1.0, "confidence": "high",
-         "missing_data_reason": "delisted"},
-        {"symbol": "BTCUSDT", "status": "live", "first_seen": "2020-01", "last_seen": "2026-05",
-         "active_from": "2020-01-01", "active_to": "ongoing",
-         "kline_coverage": 1.0, "funding_coverage": 1.0, "confidence": "high",
-         "missing_data_reason": ""},
+        {
+            "symbol": "EOSUSDT",
+            "status": "dead",
+            "first_seen": "2023-01",
+            "last_seen": "2024-01",
+            "active_from": "2023-01-26",
+            "active_to": "2024-01-11",
+            "kline_coverage": 1.0,
+            "funding_coverage": 1.0,
+            "confidence": "high",
+            "missing_data_reason": "delisted",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "status": "live",
+            "first_seen": "2020-01",
+            "last_seen": "2026-05",
+            "active_from": "2020-01-01",
+            "active_to": "ongoing",
+            "kline_coverage": 1.0,
+            "funding_coverage": 1.0,
+            "confidence": "high",
+            "missing_data_reason": "",
+        },
     ]
     m = pit_universe.PITManifest.from_pit_index_records(rows)
     eos = next(x for x in m.listings if x.symbol == "EOSUSDT")
@@ -122,19 +191,33 @@ def test_from_pit_index_records_maps_dates_to_epoch_ms():
 
 
 def test_from_pit_index_records_skips_rows_without_dates():
-    rows = [{"symbol": "GHOSTUSDT", "status": "dead", "first_seen": None, "last_seen": None,
-             "active_from": None, "active_to": None}]
+    rows = [
+        {
+            "symbol": "GHOSTUSDT",
+            "status": "dead",
+            "first_seen": None,
+            "last_seen": None,
+            "active_from": None,
+            "active_to": None,
+        }
+    ]
     m = pit_universe.PITManifest.from_pit_index_records(rows)
     assert m.listings == ()
 
 
 def _row(sym, status):
-    return {"symbol": sym, "status": status, "active_from": "2023-01-01", "active_to": "2024-01-01"}
+    return {
+        "symbol": sym,
+        "status": status,
+        "active_from": "2023-01-01",
+        "active_to": "2024-01-01",
+    }
 
 
 def test_strict_usdt_perp_keeps_live_and_dead_plain_usdt():
     rows = [
-        _row("BTCUSDT", "live"), _row("EOSUSDT", "dead"),
+        _row("BTCUSDT", "live"),
+        _row("EOSUSDT", "dead"),
         _row("ETHUSDC", "live"),
         _row("BTCBUSD", "dead"),
         _row("BTCUSDT_230331", "settling"),
@@ -147,14 +230,18 @@ def test_strict_usdt_perp_keeps_live_and_dead_plain_usdt():
 
 
 def test_snapshot_hash_is_stable_and_order_independent():
-    a = pit_universe.PITManifest.from_records([
-        {"symbol": "A", "listed_from": 1, "delisted_at": None},
-        {"symbol": "B", "listed_from": 2, "delisted_at": 3},
-    ])
-    b = pit_universe.PITManifest.from_records([
-        {"symbol": "B", "listed_from": 2, "delisted_at": 3},
-        {"symbol": "A", "listed_from": 1, "delisted_at": None},
-    ])
+    a = pit_universe.PITManifest.from_records(
+        [
+            {"symbol": "A", "listed_from": 1, "delisted_at": None},
+            {"symbol": "B", "listed_from": 2, "delisted_at": 3},
+        ]
+    )
+    b = pit_universe.PITManifest.from_records(
+        [
+            {"symbol": "B", "listed_from": 2, "delisted_at": 3},
+            {"symbol": "A", "listed_from": 1, "delisted_at": None},
+        ]
+    )
     assert a.snapshot_hash() == b.snapshot_hash()
     assert len(a.snapshot_hash()) == 64
 
