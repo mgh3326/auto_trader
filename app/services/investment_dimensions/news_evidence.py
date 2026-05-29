@@ -24,11 +24,10 @@ async def build_news_evidence(
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     now_dt = now or dt.datetime.now(tz=dt.UTC)
-    # research_reports rows are multi-symbol mentions, not market-scoped, and the
-    # query surface has no market filter — take the most recent reports and pass
-    # symbol_candidates through so Hermes can scope per market. No ``since`` so
-    # freshness (fresh vs stale) is meaningful rather than always-fresh.
-    response = await query_service.find_relevant(limit=CITATION_LIMIT)
+    # ROB-366 B8 — scope to the bundle market via the per-candidate market tag so
+    # KR research does not bleed into a US bundle. No ``since`` so freshness
+    # (fresh vs stale) is meaningful rather than always-fresh.
+    response = await query_service.find_relevant(limit=CITATION_LIMIT, market=market)
 
     citations: list[dict[str, Any]] = []
     latest_published: dt.datetime | None = None
