@@ -66,6 +66,36 @@ class LifecycleTransitionProposal:
     observed_delta: Decimal | None
 
 
+@dataclass(frozen=True, slots=True)
+class DeltaFillResult:
+    verdict: Literal["filled", "partial", "none"]
+    filled_qty: Decimal  # magnitude in the order's direction, clamped to ordered_qty
+    delta: Decimal
+
+
+def classify_fill_by_delta(
+    *,
+    side: Literal["buy", "sell"],
+    ordered_qty: Decimal,
+    baseline_qty: Decimal,
+    observed_qty: Decimal,
+) -> DeltaFillResult:
+    """Pure delta -> fill decision shared by the periodic reconciler and the
+    synchronous confirm path (ROB-341).
+
+    ``filled_qty`` is the magnitude of the position change in the order's
+    direction, clamped to ``ordered_qty``. A delta in the wrong direction
+    (holdings dropped on a buy / rose on a sell) yields ``none`` — never a fill.
+    """
+    delta = observed_qty - baseline_qty
+    directional = delta if side == "buy" else -delta
+    if directional <= 0:
+        return DeltaFillResult("none", Decimal("0"), delta)
+    filled = directional if directional < ordered_qty else ordered_qty
+    verdict = "filled" if directional >= ordered_qty else "partial"
+    return DeltaFillResult(verdict, filled, delta)
+
+
 _TERMINAL: frozenset[str] = frozenset({"reconciled", "failed", "stale"})
 _RECONCILABLE_INPUTS: frozenset[str] = frozenset({"accepted", "pending", "fill"})
 
@@ -146,21 +176,19 @@ def classify_orders(
                 )
             continue
 
-        # accepted / pending paths
-        if order.side == "buy":
-            if delta >= order.ordered_qty:
-                next_state, reason = "fill", "fill_detected"
-            elif delta > 0:
-                next_state, reason = "fill", "partial_fill_detected"
-            else:
-                next_state, reason = _pending_or_stale(order, now, thresholds)
-        else:  # sell
-            if delta <= -order.ordered_qty:
-                next_state, reason = "fill", "fill_detected"
-            elif delta < 0:
-                next_state, reason = "fill", "partial_fill_detected"
-            else:
-                next_state, reason = _pending_or_stale(order, now, thresholds)
+        # accepted / pending paths — delegate the delta decision to the kernel.
+        decision = classify_fill_by_delta(
+            side=order.side,
+            ordered_qty=order.ordered_qty,
+            baseline_qty=order.holdings_baseline_qty,
+            observed_qty=snapshot.quantity,
+        )
+        if decision.verdict == "filled":
+            next_state, reason = "fill", "fill_detected"
+        elif decision.verdict == "partial":
+            next_state, reason = "fill", "partial_fill_detected"
+        else:
+            next_state, reason = _pending_or_stale(order, now, thresholds)
 
         proposals.append(
             LifecycleTransitionProposal(
@@ -188,10 +216,12 @@ def _pending_or_stale(
 
 
 __all__ = [
+    "DeltaFillResult",
     "HoldingsSnapshot",
     "LedgerOrderInput",
     "LifecycleTransitionProposal",
     "ReasonCode",
     "ReconcilerThresholds",
+    "classify_fill_by_delta",
     "classify_orders",
 ]
