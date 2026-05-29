@@ -41,6 +41,12 @@ ScreenerSourceState = Literal[
     "fallback",
 ]
 ScreenerRiskSeverity = Literal["info", "warning", "danger"]
+# ROB-359 Scope B — catalog provenance + Toss parity honesty.
+# presetOrigin distinguishes a Toss 골라보기 baseline preset from an
+# auto_trader-original preset; parityStatus marks how closely a toss_parity
+# preset matches Toss semantics (auto_trader_original presets leave it None).
+ScreenerPresetOrigin = Literal["toss_parity", "auto_trader_original"]
+ScreenerParityStatus = Literal["full", "partial", "mismatch"]
 
 
 class ScreenerInvestorFlowChip(BaseModel):
@@ -66,6 +72,13 @@ class ScreenerPreset(BaseModel):
     filterChips: list[ScreenerFilterChip] = Field(default_factory=list)
     metricLabel: str
     market: ScreenerMarket = "kr"
+    # ROB-359 Scope B (additive, optional). presetOrigin lets the catalog
+    # separate Toss-parity presets from auto_trader-original ones; parityStatus
+    # + parityNote surface honest divergence (partial/mismatch) without
+    # fabricating results. None defaults keep existing constructions valid.
+    presetOrigin: ScreenerPresetOrigin | None = None
+    parityStatus: ScreenerParityStatus | None = None
+    parityNote: str | None = None
 
 
 class ScreenerSourceContext(BaseModel):

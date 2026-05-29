@@ -100,6 +100,60 @@ def test_crypto_preset_definitions_are_crypto_scoped() -> None:
 
 
 @pytest.mark.unit
+def test_every_kr_preset_declares_origin() -> None:
+    # ROB-359 Scope B: the catalog must separate Toss-parity presets from
+    # auto_trader-original ones; no KR preset may leave presetOrigin unset.
+    for p in preset_definitions("kr"):
+        assert p.presetOrigin in {"toss_parity", "auto_trader_original"}, p.id
+
+
+@pytest.mark.unit
+def test_auto_trader_original_presets_are_flagged() -> None:
+    by_id = {p.id: p for p in preset_definitions("kr")}
+    for pid in ("kr_high_volume_surge", "investor_flow_momentum"):
+        assert by_id[pid].presetOrigin == "auto_trader_original", pid
+        # Parity status is meaningless for auto_trader-original presets.
+        assert by_id[pid].parityStatus is None, pid
+
+
+@pytest.mark.unit
+def test_toss_parity_presets_have_a_parity_status() -> None:
+    for p in preset_definitions("kr"):
+        if p.presetOrigin == "toss_parity":
+            assert p.parityStatus in {"full", "partial", "mismatch"}, p.id
+
+
+@pytest.mark.unit
+def test_already_implemented_presets_marked_full() -> None:
+    by_id = {p.id: p for p in preset_definitions("kr")}
+    # ROB-170 / ROB-276 shipped real Toss parity for these.
+    assert by_id["consecutive_gainers"].parityStatus == "full"
+    assert by_id["double_buy"].parityStatus == "full"
+
+
+@pytest.mark.unit
+def test_partial_and_mismatch_presets_explain_the_gap() -> None:
+    by_id = {p.id: p for p in preset_definitions("kr")}
+    assert by_id["cheap_value"].parityStatus == "partial"
+    assert by_id["steady_dividend"].parityStatus == "partial"
+    assert by_id["oversold_recovery"].parityStatus == "mismatch"
+    assert by_id["growth_expectation"].parityStatus == "mismatch"
+    # Honest divergence must be explained, not silently approximated.
+    for pid in ("cheap_value", "steady_dividend", "oversold_recovery", "growth_expectation"):
+        assert by_id[pid].parityNote, pid
+    # partial presets specifically flag the un-implementable conditions.
+    for pid in ("cheap_value", "steady_dividend"):
+        assert "확인 불가" in (by_id[pid].parityNote or ""), pid
+
+
+@pytest.mark.unit
+def test_crypto_presets_are_auto_trader_original() -> None:
+    for p in preset_definitions("crypto"):
+        assert p.presetOrigin == "auto_trader_original", p.id
+        assert p.parityStatus is None, p.id
+
+
+@pytest.mark.unit
 def test_crypto_screening_filters_are_read_only_market_filters() -> None:
     high_volume = screening_filters_for("crypto_high_volume", "crypto")
     oversold = screening_filters_for("crypto_oversold", "crypto")
