@@ -277,6 +277,8 @@ class CandidateUniverseSnapshotCollector:
             {**e.to_payload_dict(), "rank": rank, "candidate_rank": rank}
             for rank, e in enumerate(evidence, start=1)
         ]
+        universe_count = fresh_count + stale_count
+        capped = universe_count > candidate_limit
         payload: dict[str, Any] = {
             "market": market,
             "preset": preset,
@@ -284,6 +286,8 @@ class CandidateUniverseSnapshotCollector:
             "freshness_status": freshness_status,
             "source_coverage": _source_coverage(evidence),
             "candidate_limit": candidate_limit,
+            "universe_count": universe_count,
+            "capped": capped,
             "candidates": candidates,
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,
@@ -310,5 +314,7 @@ class CandidateUniverseSnapshotCollector:
                 "usefulness": usefulness,
                 "candidate_count": len(candidates),
                 "candidate_limit": candidate_limit,
+                "universe_count": universe_count,
+                "capped": capped,
             },
         )
