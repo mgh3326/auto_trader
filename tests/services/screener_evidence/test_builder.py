@@ -15,6 +15,7 @@ def test_candidate_evidence_to_payload_dict_round_trips():
         reasons=["단기 상승 모멘텀 후보"],
         source="tvscreener_upbit",
         risk_flags=[],
+        source_preset="crypto_momentum",
     )
     payload = ev.to_payload_dict()
     assert payload == {
@@ -29,6 +30,7 @@ def test_candidate_evidence_to_payload_dict_round_trips():
         "reasons": ["단기 상승 모멘텀 후보"],
         "source": "tvscreener_upbit",
         "risk_flags": [],
+        "source_preset": "crypto_momentum",
     }
 
 
@@ -106,6 +108,8 @@ def test_builder_equity_top_gainers_uses_change_rate_and_source():
     assert out[0].score_label == "+3.00%"
     assert out[0].reasons == ["단기 상승 모멘텀 후보", "3일 연속 상승"]
     assert out[0].volume_value == 14_000_000.0
+    # ROB-359 Scope E — provenance lineage records which ranking surfaced it.
+    assert out[0].source_preset == "top_gainers"
 
 
 def test_builder_empty_rows_returns_empty():

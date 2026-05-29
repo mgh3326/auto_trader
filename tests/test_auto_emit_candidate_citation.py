@@ -33,6 +33,9 @@ def test_buy_item_cites_candidate_evidence():
                         "score": 8.0,
                         "reasons": ["단기 상승 모멘텀 후보"],
                         "source": "kis",
+                        "source_preset": "top_gainers",
+                        "data_state": "fresh",
+                        "toss_parity_status": "not_toss_parity",
                     },
                 ],
             },
@@ -47,6 +50,10 @@ def test_buy_item_cites_candidate_evidence():
     assert ev["candidate_score"] == 8.0
     assert ev["candidate_source"] == "kis"
     assert ev["candidate_reasons"] == ["단기 상승 모멘텀 후보"]
+    # ROB-359 Scope E — screener evidence lineage on the new-buy item.
+    assert ev["candidate_source_preset"] == "top_gainers"
+    assert ev["candidate_data_state"] == "fresh"
+    assert ev["candidate_toss_parity_status"] == "not_toss_parity"
 
 
 def test_buy_candidates_follow_candidate_rank_and_limit():

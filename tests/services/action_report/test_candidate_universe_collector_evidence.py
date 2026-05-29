@@ -109,6 +109,11 @@ async def test_crypto_collector_emits_candidate_evidence(db_session):
     assert top["reasons"] == ["단기 상승 모멘텀 후보"]
     assert payload["source_coverage"] == {"tvscreener_upbit": 1}
     assert payload["usefulness"] == "useful"
+    # ROB-359 Scope E — per-candidate lineage so a new-buy item is self-describing.
+    assert top["source_preset"] == "crypto_momentum"
+    assert top["data_state"] == "fresh"  # usefulness "useful" → fresh
+    # crypto_momentum is an auto_trader-original preset, not a Toss-parity one.
+    assert top["toss_parity_status"] == "not_toss_parity"
 
 
 @pytest.mark.asyncio

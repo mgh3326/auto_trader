@@ -162,6 +162,11 @@ def _candidate_item(
         "candidate_score": cand.get("score"),
         "candidate_reasons": cand.get("reasons"),
         "candidate_source": cand.get("source"),
+        # ROB-359 Scope E — screener evidence lineage so the report can show why
+        # a new-buy candidate surfaced (preset hit / freshness / Toss parity).
+        "candidate_source_preset": cand.get("source_preset"),
+        "candidate_data_state": cand.get("data_state"),
+        "candidate_toss_parity_status": cand.get("toss_parity_status"),
         "news_matches": news_match_count,
         "quote_status": q.get("status") if quote is not None else "no_snapshot",
         "best_bid": q.get("best_bid"),
