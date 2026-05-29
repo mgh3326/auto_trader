@@ -292,9 +292,18 @@ async def _cleanup_and_verify(
         evidence["cleanup_error"] = str(exc)[:200]
         return 3
     delta = cur_qty - base_qty
-    if delta <= 0:
+    if delta < 0:
+        # Holdings dropped BELOW baseline before we sold (over-flatten / external
+        # mutation). A non-zero negative delta is never a clean exit (ROB-358).
+        evidence["final_position_delta_vs_baseline"] = str(delta)
+        evidence["cleanup"] = "below_baseline_anomaly"
+        evidence["cleanup_error"] = (
+            f"holdings {cur_qty} below baseline {base_qty} before cleanup SELL"
+        )
+        return 3
+    if delta == 0:
         evidence["cleanup"] = "nothing_to_flatten"
-        evidence["final_position_delta_vs_baseline"] = str(cur_qty - base_qty)
+        evidence["final_position_delta_vs_baseline"] = str(delta)
         # If the entry never filled, propagate the fill-unconfirmed code.
         return 0 if entry_fill is not None else 2
 
@@ -333,12 +342,21 @@ async def _cleanup_and_verify(
         broker, sell, max_poll=args.max_poll, interval=args.poll_interval
     )
     final_qty, final_cash = await broker._read_snapshot(args.symbol)
+    final_delta = final_qty - base_qty
     evidence["post_holdings_qty"] = str(final_qty)
     evidence["post_cash"] = str(final_cash) if final_cash is not None else None
-    evidence["final_position_delta_vs_baseline"] = str(final_qty - base_qty)
-    if exit_fill is None or final_qty > base_qty:
+    evidence["final_position_delta_vs_baseline"] = str(final_delta)
+    if exit_fill is None or final_delta > 0:
         evidence["cleanup"] = "UNCONFIRMED_residual_position"
         return 3
+    if final_delta < 0:
+        # Over-flatten: sold past baseline. A clean exit requires delta == 0.
+        evidence["cleanup"] = "over_flattened_anomaly"
+        evidence["cleanup_error"] = (
+            f"final holdings {final_qty} below baseline {base_qty} after cleanup SELL"
+        )
+        return 3
+    # Clean exit only when holdings are back to EXACTLY the baseline.
     evidence["cleanup"] = "flattened"
     return 0
 

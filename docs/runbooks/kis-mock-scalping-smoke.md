@@ -173,12 +173,19 @@ Places one small marketable limit BUY (at best ask), confirms the fill via the
 holdings/cash delta, then flattens with a cleanup SELL (at best bid) back to
 baseline. Prints a JSON evidence packet: symbol, side(s), order id(s), baseline
 holdings/cash, post-submit holdings/cash, confirmation signal + price source,
-cleanup result, and final position delta vs baseline. Exit `0` clean, `2` if the
-fill could not be confirmed in the poll window (ROB-341 STOP condition — capture
-the packet and report; do not force), `3` if a residual position/pending order
-could not be cleaned up (including a cleanup SELL the broker **rejected** or one
-that returned no `odno`/`order_no` — surfaced as `cleanup_error` + non-zero
-`final_position_delta_vs_baseline`, not a silent exit 1), `4` disabled/not
+cleanup result, and final position delta vs baseline. A clean exit `0` requires
+`final_position_delta_vs_baseline` to be **exactly `0`** — any non-zero delta is
+an anomaly. Exit `2` if the fill could not be confirmed in the poll window
+(ROB-341 STOP condition — capture the packet and report; do not force), `3` if
+the position could not be returned to baseline, including:
+- a residual position remaining (`final delta > 0`);
+- an over-flatten / below-baseline drop (`final delta < 0`, e.g. sold past
+  baseline or holdings dropped before the cleanup SELL) — `cleanup` =
+  `over_flattened_anomaly` / `below_baseline_anomaly`;
+- a cleanup SELL the broker **rejected** or one that returned no `odno`/`order_no`.
+
+All exit-3 cases surface `cleanup_error` + the non-zero
+`final_position_delta_vs_baseline` (never a silent exit 1). Exit `4` disabled/not
 configured **or a cleanup preflight gate failure (no order placed)**.
 
 ### Failure categories

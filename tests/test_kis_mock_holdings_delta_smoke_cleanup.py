@@ -211,3 +211,71 @@ async def test_cleanup_residual_position_is_explicit_anomaly():
     assert rc == 3
     assert evidence["cleanup"] == "UNCONFIRMED_residual_position"
     assert evidence["final_position_delta_vs_baseline"] == "1"
+
+
+# --- non-zero NEGATIVE delta must never be a clean exit (ROB-358) -----------
+
+
+class _BelowBaselineBroker:
+    async def _read_snapshot(self, _symbol):
+        return Decimal("6"), Decimal("100")  # already below baseline 7
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_below_baseline_at_start_is_anomaly_not_clean():
+    # cur_qty < base_qty at cleanup start: final delta is -1, so even with an
+    # entry fill present this must NOT exit 0.
+    evidence: dict[str, object] = {}
+    rc = await smoke._cleanup_and_verify(
+        _BelowBaselineBroker(),
+        _FakeClient(),
+        _confirm_args(),
+        "cid",
+        Decimal("7"),
+        evidence,
+        entry_fill=object(),
+    )
+    assert rc == 3
+    assert evidence["final_position_delta_vs_baseline"] == "-1"
+    assert evidence["cleanup"] != "nothing_to_flatten"
+    assert "cleanup_error" in evidence
+
+
+class _OverFlattenBroker:
+    def __init__(self) -> None:
+        # current (8, residual of 1) then post-sell (6, BELOW baseline 7).
+        self._snapshots = [
+            (Decimal("8"), Decimal("100")),
+            (Decimal("6"), Decimal("120")),
+        ]
+
+    async def _read_snapshot(self, _symbol):
+        return self._snapshots.pop(0)
+
+    async def submit_exit_sell(self, **_kwargs):
+        return {"odno": "0000000777"}
+
+    async def confirm_fill(self, _submit):
+        return object()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_over_flatten_below_baseline_is_anomaly():
+    # final_qty < base_qty after the cleanup SELL: final delta is -1, so it must
+    # be an explicit anomaly and NOT report cleanup="flattened".
+    evidence: dict[str, object] = {}
+    rc = await smoke._cleanup_and_verify(
+        _OverFlattenBroker(),
+        _FakeClient(),
+        _confirm_args(),
+        "cid",
+        Decimal("7"),
+        evidence,
+        entry_fill=object(),
+    )
+    assert rc == 3
+    assert evidence["cleanup"] != "flattened"
+    assert evidence["final_position_delta_vs_baseline"] == "-1"
+    assert "cleanup_error" in evidence
