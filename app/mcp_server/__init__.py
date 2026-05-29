@@ -50,7 +50,7 @@ AVAILABLE_TOOL_NAMES = [
     "get_order_history",
     "modify_order",
     "screen_stocks",
-    "recommend_stocks",
+    # ROB-359: recommend_stocks is registry-hidden (parked); not on the tool surface.
     "get_asset_profile",
     "set_asset_profile",
 ]

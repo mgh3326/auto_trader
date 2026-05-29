@@ -72,7 +72,13 @@ async def test_recommend_stocks_tool_uses_analysis_screening_alias(
 
     monkeypatch.setattr(analysis_screening, "_recommend_stocks_impl", fake_recommend)
 
-    result = await tools["recommend_stocks"](budget=1_000_000, market="kr")
+    # ROB-359: recommend_stocks is registry-hidden, so it is no longer present
+    # on the MCP tool surface (build_tools). The implementation facade is
+    # retained and still forwards to the analysis_screening alias.
+    assert "recommend_stocks" not in tools
+    result = await analysis_tool_handlers.recommend_stocks_impl(
+        budget=1_000_000, market="kr"
+    )
 
     assert result["warnings"] == ["shim-test"]
     assert called["market"] == "kr"
@@ -81,7 +87,8 @@ async def test_recommend_stocks_tool_uses_analysis_screening_alias(
 class TestRecommendStocksIntegration:
     @pytest.fixture
     def recommend_stocks(self):
-        return build_tools()["recommend_stocks"]
+        # ROB-359: tool is registry-hidden; exercise the retained impl facade.
+        return analysis_tool_handlers.recommend_stocks_impl
 
     @pytest.mark.asyncio
     async def test_rejects_unsupported_market(self, recommend_stocks):
@@ -1208,7 +1215,8 @@ class TestTwoStageRelaxation:
 
     @pytest.fixture
     def recommend_stocks(self):
-        return build_tools()["recommend_stocks"]
+        # ROB-359: tool is registry-hidden; exercise the retained impl facade.
+        return analysis_tool_handlers.recommend_stocks_impl
 
     @pytest.mark.asyncio
     async def test_value_fallback_triggered(

@@ -111,8 +111,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Discord button flows: `cancel_order(order_id="...", market="...")` — symbol auto-lookup enabled
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
-- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
-- `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
+- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
+- ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Analyze multiple symbols in parallel and return compact per-symbol summaries
   - Default `quick=True` returns compact summary with: symbol, current_price, rsi_14, consensus, recommendation, supports (top 3), resistances (top 3)
@@ -732,7 +732,12 @@ Response format:
 }
 ```
 
-### `recommend_stocks` spec
+### `recommend_stocks` spec (DEPRECATED — registry-hidden, ROB-359)
+> **This tool is no longer registered on the MCP surface.** It is parked, not
+> deleted: `recommend_stocks_impl` remains in `analysis_tool_handlers` for a
+> future narrow `build_buy_plan` tool. The spec below documents the retained
+> implementation only. For candidate discovery use `screen_stocks`.
+
 Parameters:
 - `budget`: Total budget to allocate (required, must be positive)
 - `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
