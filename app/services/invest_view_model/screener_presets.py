@@ -24,7 +24,7 @@ _MISMATCH: ScreenerParityStatus = "mismatch"
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
 CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
-_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy"}
+_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy", "high_yield_value"}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -166,6 +166,22 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             "Toss '성장 기대주'(3년 평균 순이익 증감률 + 직전분기 대비 순이익 증감률)와 의미가 다름."
         ),
     ),
+    ScreenerPreset(
+        id="high_yield_value",
+        name="고수익 저평가",
+        description="ROE가 높으면서 PER이 낮은 고수익·저평가 종목 (지연 스냅샷 기반)",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="ROE", detail="15% 이상"),
+            ScreenerFilterChip(label="PER", detail="0~10"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
 ]
 
 
@@ -272,6 +288,20 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "sort_by": "change_rate",
         "sort_order": "desc",
         "min_market_cap": 1_000_000_000_000.0,
+        "limit": 20,
+    },
+    # high_yield_value is snapshot-only (market_valuation_snapshots); the generic
+    # screening provider has no ROE filter, so build_screener_results never falls
+    # through to it. These kwargs keep market/limit bounded for callers that
+    # inspect the mapping.
+    "high_yield_value": {
+        "market": "kr",
+        "asset_type": "stock",
+        "sort_by": "roe",
+        "sort_order": "desc",
+        "min_roe": 15.0,
+        "min_per": 0.01,
+        "max_per": 10.0,
         "limit": 20,
     },
     "investor_flow_momentum": {

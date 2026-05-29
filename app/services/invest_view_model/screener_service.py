@@ -800,6 +800,7 @@ _METRIC_FIELD: dict[str, str] = {
     "oversold_recovery": "rsi",
     "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
+    "high_yield_value": "roe",
     "investor_flow_momentum": "foreign_net",
     "double_buy": "change_rate",  # NEW — placeholder; Task 3 wires snapshot-first branch
     "crypto_high_volume": "trade_amount_24h",
@@ -1070,6 +1071,8 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return f"{sign}{value:.2f}%", []
     if field in ("per", "pbr", "rsi"):
         return f"{float(value):.1f}", []
+    if field == "roe":
+        return f"{float(value):.1f}%", []
     if field == "dividend_yield":
         return f"{float(value):.2f}%", []
     if field in ("volume", "trade_amount_24h"):
@@ -1509,6 +1512,20 @@ async def build_screener_results(
             _snapshot_empty_warning = (
                 "최신 수급/시세 스냅샷에서 쌍끌이 매수 조건에 맞는 종목이 없습니다."
             )
+        elif preset_id == "high_yield_value":
+            from app.services.invest_view_model.high_yield_value_screener import (
+                load_high_yield_value_from_snapshots,
+            )
+
+            _snapshot_check_result = await load_high_yield_value_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            _snapshot_empty_warning = (
+                "최신 밸류에이션 스냅샷에서 고수익 저평가 조건(ROE 15%↑·PER 0~10)에 "
+                "맞는 종목이 없습니다."
+            )
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
                 session,
@@ -1539,6 +1556,13 @@ async def build_screener_results(
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "수급 또는 시세 스냅샷이 아직 적재되지 않아 쌍끌이 매수 후보를 표시할 수 없습니다."
+
+    if preset_id == "high_yield_value" and _snapshot_check_result is None:
+        # snapshot-only preset; the generic provider has no ROE filter and could
+        # half-apply (PER only) the rule — never fall through to it.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = "밸류에이션 스냅샷이 아직 적재되지 않아 고수익 저평가 후보를 표시할 수 없습니다."
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
@@ -1628,6 +1652,8 @@ async def build_screener_results(
         primary_kind = "screener_snapshot"
         if preset_id == "investor_flow_momentum":
             primary_source = "investor_flow_snapshots"
+        elif preset_id == "high_yield_value":
+            primary_source = "market_valuation_snapshots"
         elif requested_market == "crypto":
             primary_source = "invest_crypto_screener_snapshots"
         else:
