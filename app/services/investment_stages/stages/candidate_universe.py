@@ -8,6 +8,7 @@ from app.schemas.investment_stages import (
     StageCitation,
     StageVerdict,
 )
+from app.services.investment_stages.stages._symbols import normalize_symbol
 from app.services.investment_stages.stages.base import (
     StageContext,
     UnavailableStageError,
@@ -22,11 +23,6 @@ def _cap_confidence(base: int, freshness_status: str, source_count: int) -> int:
     if source_count <= 1:
         confidence = min(confidence, 65)
     return confidence
-
-
-def _norm_symbol(value: str) -> str:
-    s = (value or "").strip().upper()
-    return s[4:] if s.startswith("KRW-") else s
 
 
 def _held_symbols(
@@ -50,7 +46,7 @@ def _held_symbols(
         if isinstance(rows, list):
             for row in rows:
                 if isinstance(row, dict) and isinstance(row.get("ticker"), str):
-                    held.add(_norm_symbol(row["ticker"]))
+                    held.add(normalize_symbol(row["ticker"]))
     return held, (snap if held else None)
 
 
@@ -88,7 +84,7 @@ class CandidateUniverseStage:
         held, portfolio_snap = _held_symbols(context)
 
         def _is_held(c: dict) -> bool:
-            return _norm_symbol(c.get("symbol", "")) in held
+            return normalize_symbol(c.get("symbol", "")) in held
 
         key_points = [
             f"[{'보유·추세' if _is_held(c) else '신규'}] "

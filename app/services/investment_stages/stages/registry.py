@@ -18,6 +18,7 @@ from app.services.investment_stages.stages.news import NewsStage
 from app.services.investment_stages.stages.portfolio_journal import (
     PortfolioJournalStage,
 )
+from app.services.investment_stages.stages.symbol import SymbolStage
 from app.services.investment_stages.stages.watch_context import WatchContextStage
 
 
@@ -35,4 +36,5 @@ def get_default_v1_stages() -> list[Stage]:
         PortfolioJournalStage(),
         WatchContextStage(),
         CandidateUniverseStage(),
+        SymbolStage(),
     ]

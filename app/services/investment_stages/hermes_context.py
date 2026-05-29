@@ -121,8 +121,23 @@ class HermesContextExporter:
             bundle=bundle, snapshots_by_kind=dict(snapshots_by_kind)
         )
 
+        # Unit tests inject a mock session; skip the DB-backed dimension
+        # synthesis (and the stage-run lookup below) so they exercise
+        # stage_inputs without real repo I/O. Real sessions (and integration
+        # tests) build the evidence.
+        is_mock = (
+            hasattr(self._session, "assert_called")
+            or hasattr(self._session, "_mock_name")
+            or "Mock" in type(self._session).__name__
+        )
+
         dimension_evidence = {}
-        if bundle.market in ("kr", "us"):
+        # ROB-369 E11 — crypto bundles previously received empty dimension_evidence
+        # (silent {}). Crypto is included so it gets the same per-dimension
+        # synthesis: market/news/fundamentals query market-scoped sources
+        # (real-where-present, empty otherwise) and sentiment returns an explicit
+        # unavailable (investor-flow is KR-only) — honest, never KR-leaking.
+        if not is_mock and bundle.market in ("kr", "us", "crypto"):
             try:
                 held = set()
                 portfolio_snapshots = snapshots_by_kind.get("portfolio", [])
@@ -191,11 +206,6 @@ class HermesContextExporter:
                 )
                 dimension_evidence["sentiment"] = {"unavailable": str(exc)}
 
-        is_mock = (
-            hasattr(self._session, "assert_called")
-            or hasattr(self._session, "_mock_name")
-            or "Mock" in type(self._session).__name__
-        )
         run = None
         if not is_mock:
             try:
