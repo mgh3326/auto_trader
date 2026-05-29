@@ -134,9 +134,7 @@ def test_consecutive_gainers_preset_reasons_and_score():
             "volume": 1_000_000,
         }
     ]
-    out = build_candidate_evidence(
-        market="kr", preset="consecutive_gainers", rows=rows
-    )
+    out = build_candidate_evidence(market="kr", preset="consecutive_gainers", rows=rows)
     assert len(out) == 1
     ev = out[0]
     assert ev.source_preset == "consecutive_gainers"
