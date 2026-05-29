@@ -262,13 +262,18 @@ async def test_kr_collector_falls_back_to_top_gainers_when_no_preset_rows(
 ):
     """ROB-363 — when KR Toss-parity presets yield no rows, the collector falls
     back to the top_gainers momentum ranking (not_toss_parity), deterministically
-    (loader stubbed to None, so this does not depend on DB contents)."""
+    (ALL three preset loaders stubbed to None, so this does not depend on DB
+    contents in investor_flow_snapshots / market_valuation_snapshots either)."""
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
     import app.services.invest_view_model.screener_service as ss
 
-    async def _no_rows(session, *, market, limit):
+    async def _no_rows(session, *, market, limit, **kwargs):
         return None
 
     monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _no_rows)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", _no_rows)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", _no_rows)
 
     repo = _FakeEquityRepository()
     collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)

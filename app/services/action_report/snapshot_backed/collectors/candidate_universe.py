@@ -11,6 +11,7 @@ read-only and degrades to ``unavailable`` on exception.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections.abc import Callable, Hashable
 from typing import Any
@@ -113,9 +114,12 @@ def _crypto_row_to_input(row: InvestCryptoScreenerSnapshot) -> dict[str, Any]:
     }
 
 
-def _preset_row_to_input(preset: str, row: dict[str, Any]) -> dict[str, Any]:
+def _preset_row_to_input(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize any KR Toss-parity loader row into builder input, carrying the
-    fundamental fields each preset's builder branch needs (ROB-363)."""
+    fundamental fields each preset's builder branch needs (ROB-363).
+
+    Normalization is uniform across presets — the builder selects which fields
+    to score by the ``preset`` argument it is given separately."""
     return {
         "symbol": row.get("symbol"),
         "name": row.get("name") or row.get("symbol"),
@@ -141,8 +145,6 @@ def _merge_evidence(
     UNIONS ``reasons`` + ``risk_flags`` (order-preserving, deduped) from every
     preset that surfaced the symbol, so per-source provenance is preserved.
     Order-preserving on first occurrence."""
-    import dataclasses
-
     order: list[Hashable] = []
     merged: dict[Hashable, CandidateEvidence] = {}
     for ev in evidence:
@@ -342,7 +344,7 @@ class CandidateUniverseSnapshotCollector:
             built = build_candidate_evidence(
                 market="kr",
                 preset=preset_id,
-                rows=[_preset_row_to_input(preset_id, r) for r in rows],
+                rows=[_preset_row_to_input(r) for r in rows],
             )
             # Map freshness by symbol from the raw loader rows — NOT by zipping
             # against ``built``, which build_candidate_evidence re-sorts by score
