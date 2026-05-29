@@ -3,18 +3,20 @@
 Pure function — no DB, no I/O. Used by the freshness service to distinguish
 "never ingested" from "ingested but legitimately empty."
 
-Weekend handling:
-* US markets are closed Saturday + Sunday (UTC weekday 5 / 6); finnhub
-  earningsCalendar still returns rows on weekends in rare cases (e.g. Berkshire
-  weekend release) but for "expected" purposes we treat US weekends as not
-  expected.
-* KR markets follow the same Sat/Sun rule. We do not yet model KRX/NYSE
-  observed holidays — the freshness signal for those days will simply show
-  "no expected partition" rather than "missing." That's fine for the diagnostic
-  surface; the dedicated KR-holidays source is a follow-up tracked in
-  `docs/runbooks/calendar-source-coverage.md`.
+Session handling (weekend + holiday aware as of ROB-371):
+* US sources (finnhub) are gated on the NYSE (XNYS) trading calendar and KR
+  sources (dart, wisefn) on the KRX (XKRX) calendar via
+  :mod:`app.services.market_events.session_calendar`. Both weekends AND observed
+  exchange holidays are excluded — on a holiday those sources are simply "not
+  expected" (no false "missing" signal). This closes the prior follow-up that
+  modelled weekends only; the freshness matrix now reads a missing holiday
+  partition as *expected-absent*, not an ingest failure.
+* finnhub earningsCalendar still returns rows on closed days in rare cases (e.g.
+  Berkshire weekend release) but for "expected" purposes we follow the exchange
+  calendar. Fail-closed: a day the calendar cannot confirm open is treated as
+  closed, so a source is never claimed expected on a non-session day.
 * ForexFactory publishes a "this week" XML that always contains the upcoming
-  five business days; we treat it as expected every day.
+  five business days; we treat it as expected every day (not session-gated).
 * WiseFn KR earnings (ROB-171) is a forward-looking schedule source; we expect
   it on KR weekdays only, matching DART. The default fetcher raises
   NotImplementedError until the upstream contract is confirmed, so freshness
@@ -41,14 +43,17 @@ EXPECTED_SOURCES: frozenset[tuple[str, str, str]] = frozenset(
 def expected_sources_for_date(target_date: date) -> frozenset[tuple[str, str, str]]:
     """Return the subset of EXPECTED_SOURCES expected to have non-empty data on `target_date`.
 
-    Saturday = 5, Sunday = 6 in `date.weekday()`.
+    Session-aware (ROB-371): US sources are gated on the XNYS trading calendar
+    and KR sources on the XKRX calendar — both weekend- and holiday-aware.
+    ForexFactory is expected every day. Fail-closed: a day the calendar cannot
+    confirm open is treated as closed.
     """
-    weekday = target_date.weekday()
-    is_weekend = weekday >= 5
+    from app.services.market_events.session_calendar import is_trading_session
 
     triples: set[tuple[str, str, str]] = {("forexfactory", "economic", "global")}
-    if not is_weekend:
+    if is_trading_session("us", target_date):
         triples.add(("finnhub", "earnings", "us"))
+    if is_trading_session("kr", target_date):
         triples.add(("dart", "disclosure", "kr"))
         triples.add(("wisefn", "earnings", "kr"))
     return frozenset(triples)
