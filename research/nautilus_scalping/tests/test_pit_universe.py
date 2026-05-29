@@ -10,7 +10,14 @@ ts/listed_from/delisted_at/min_seasoning are all integers in the SAME unit
 (caller-defined, e.g. epoch ms); delisted_at is exclusive, None = still live.
 """
 
+import json
+from pathlib import Path
+
+import pit_universe
 from pit_universe import PITManifest, SymbolListing
+
+_MANIFEST = Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.json"
+_META = Path(__file__).resolve().parents[1] / "data_manifests" / "pit_universe.v1.meta.json"
 
 
 def _manifest():
@@ -67,3 +74,109 @@ def test_rejects_delist_before_list():
     except ValueError:
         return
     raise AssertionError("expected ValueError for delisted_at < listed_from")
+
+
+def test_symbollisting_optional_metadata_roundtrips():
+    rec = {
+        "symbol": "EOSUSDT", "listed_from": 1672531200000, "delisted_at": 1700000000000,
+        "status": "dead", "kline_coverage": 1.0, "funding_coverage": 1.0,
+        "confidence": "high", "missing_data_reason": "delisted",
+    }
+    m = pit_universe.PITManifest.from_records([rec])
+    (only,) = m.listings
+    assert only.status == "dead"
+    assert only.kline_coverage == 1.0
+    assert only.confidence == "high"
+    back = pit_universe.PITManifest.from_records(m.to_records())
+    assert back.listings[0].missing_data_reason == "delisted"
+
+
+def test_symbollisting_metadata_defaults_none():
+    m = pit_universe.PITManifest.from_records(
+        [{"symbol": "BTCUSDT", "listed_from": 0, "delisted_at": None}]
+    )
+    only = m.listings[0]
+    assert only.status is None and only.confidence is None
+    assert pit_universe.PITManifest.from_records(m.to_records()).listings[0].symbol == "BTCUSDT"
+
+
+def test_from_pit_index_records_maps_dates_to_epoch_ms():
+    rows = [
+        {"symbol": "EOSUSDT", "status": "dead", "first_seen": "2023-01", "last_seen": "2024-01",
+         "active_from": "2023-01-26", "active_to": "2024-01-11",
+         "kline_coverage": 1.0, "funding_coverage": 1.0, "confidence": "high",
+         "missing_data_reason": "delisted"},
+        {"symbol": "BTCUSDT", "status": "live", "first_seen": "2020-01", "last_seen": "2026-05",
+         "active_from": "2020-01-01", "active_to": "ongoing",
+         "kline_coverage": 1.0, "funding_coverage": 1.0, "confidence": "high",
+         "missing_data_reason": ""},
+    ]
+    m = pit_universe.PITManifest.from_pit_index_records(rows)
+    eos = next(x for x in m.listings if x.symbol == "EOSUSDT")
+    btc = next(x for x in m.listings if x.symbol == "BTCUSDT")
+    assert eos.listed_from == pit_universe._date_to_epoch_ms("2023-01-26")
+    assert eos.delisted_at == pit_universe._date_to_epoch_ms("2024-01-12")
+    assert btc.delisted_at is None
+    assert eos.tradeable_at(pit_universe._date_to_epoch_ms("2024-01-11"))
+    assert not eos.tradeable_at(pit_universe._date_to_epoch_ms("2024-01-12"))
+
+
+def test_from_pit_index_records_skips_rows_without_dates():
+    rows = [{"symbol": "GHOSTUSDT", "status": "dead", "first_seen": None, "last_seen": None,
+             "active_from": None, "active_to": None}]
+    m = pit_universe.PITManifest.from_pit_index_records(rows)
+    assert m.listings == ()
+
+
+def _row(sym, status):
+    return {"symbol": sym, "status": status, "active_from": "2023-01-01", "active_to": "2024-01-01"}
+
+
+def test_strict_usdt_perp_keeps_live_and_dead_plain_usdt():
+    rows = [
+        _row("BTCUSDT", "live"), _row("EOSUSDT", "dead"),
+        _row("ETHUSDC", "live"),
+        _row("BTCBUSD", "dead"),
+        _row("BTCUSDT_230331", "settling"),
+        _row("XRPUSDT", "settling"),
+        _row("FOOUSDT-SETTLED", "dead"),
+    ]
+    m = pit_universe.PITManifest.from_pit_index_records(rows).strict_usdt_perp()
+    kept = {x.symbol for x in m.listings}
+    assert kept == {"BTCUSDT", "EOSUSDT"}
+
+
+def test_snapshot_hash_is_stable_and_order_independent():
+    a = pit_universe.PITManifest.from_records([
+        {"symbol": "A", "listed_from": 1, "delisted_at": None},
+        {"symbol": "B", "listed_from": 2, "delisted_at": 3},
+    ])
+    b = pit_universe.PITManifest.from_records([
+        {"symbol": "B", "listed_from": 2, "delisted_at": 3},
+        {"symbol": "A", "listed_from": 1, "delisted_at": None},
+    ])
+    assert a.snapshot_hash() == b.snapshot_hash()
+    assert len(a.snapshot_hash()) == 64
+
+
+def test_committed_manifest_loads_and_hash_matches_meta():
+    m = pit_universe.PITManifest.load(_MANIFEST)
+    meta = json.loads(_META.read_text())
+    assert len(m.listings) == meta["symbol_count"]
+    assert m.snapshot_hash() == meta["snapshot_hash"]
+
+
+def test_committed_manifest_has_a_usable_perp_universe():
+    m = pit_universe.PITManifest.load(_MANIFEST).strict_usdt_perp()
+    assert len(m.listings) > 100
+    syms = {x.symbol for x in m.listings}
+    assert {"EOSUSDT", "GALUSDT", "HNTUSDT"}.issubset(syms)
+
+
+def test_expected_months_inclusive_span():
+    import build_pit_universe as b
+
+    assert b.expected_months("2023-01", "2023-01") == 1
+    assert b.expected_months("2023-01", "2023-12") == 12
+    assert b.expected_months("2023-11", "2024-02") == 4
+    assert b.expected_months(None, "2024-02") == 0

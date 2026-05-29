@@ -33,3 +33,12 @@ def resolve_artifact_path(namespace: str, *parts: str) -> Path:
             f"unknown artifact namespace {namespace!r}; expected one of {sorted(_NAMESPACES)}"
         )
     return research_artifact_root().joinpath(namespace, *parts)
+
+
+def pit_data_root() -> Path:
+    """Raw-data root for downloaded klines (gitignored). Distinct from
+    ``resolve_artifact_path`` (citable discovery/gate outputs). Env if set
+    (non-blank), else repo-internal ``data/`` (matched by ``.gitignore``)."""
+    raw = os.environ.get(ENV_VAR)
+    base = Path(raw.strip()) if raw is not None and raw.strip() else Path(__file__).resolve().parent
+    return base / "data"
