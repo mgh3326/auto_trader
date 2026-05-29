@@ -11,6 +11,9 @@ from decimal import Decimal
 
 import pytest
 
+from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
+    derive_fill_price,
+)
 from app.services.kis_mock_holdings_reconciler import classify_fill_by_delta
 
 
@@ -39,3 +42,43 @@ def test_classify_fill_by_delta(side, baseline, observed, ordered, verdict, fill
     )
     assert res.verdict == verdict
     assert res.filled_qty == Decimal(filled)
+
+
+@pytest.mark.unit
+def test_price_from_cash_delta_buy():
+    # cash dropped 100000 for 10 shares -> 10000/share
+    price, source = derive_fill_price(
+        side="buy",
+        filled_qty=Decimal("10"),
+        cash_baseline=Decimal("1000000"),
+        cash_observed=Decimal("900000"),
+        limit_price=Decimal("9999"),
+    )
+    assert price == Decimal("10000")
+    assert source == "cash_delta"
+
+
+@pytest.mark.unit
+def test_price_falls_back_to_limit_when_cash_unmoved():
+    price, source = derive_fill_price(
+        side="buy",
+        filled_qty=Decimal("10"),
+        cash_baseline=Decimal("1000000"),
+        cash_observed=Decimal("1000000"),
+        limit_price=Decimal("9999"),
+    )
+    assert price == Decimal("9999")
+    assert source == "limit_fallback"
+
+
+@pytest.mark.unit
+def test_price_falls_back_when_cash_unavailable():
+    price, source = derive_fill_price(
+        side="sell",
+        filled_qty=Decimal("10"),
+        cash_baseline=None,
+        cash_observed=Decimal("900000"),
+        limit_price=Decimal("8888"),
+    )
+    assert price == Decimal("8888")
+    assert source == "limit_fallback"
