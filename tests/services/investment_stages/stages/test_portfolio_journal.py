@@ -87,3 +87,137 @@ async def test_portfolio_journal_derives_totals_from_nested_kis_payload():
     assert payload.verdict == StageVerdict.NEUTRAL
     assert payload.confidence == 60
     assert any(c.snapshot_kind == "portfolio" for c in payload.cited_snapshots)
+
+
+# --- ROB-366 B7: currency-aware (US/USD) portfolio --------------------------
+def _us_snap(payload_extra: dict):
+    base = {"market": "us"}
+    base.update(payload_extra)
+    return _snap("portfolio", base)
+
+
+@pytest.mark.asyncio
+async def test_portfolio_journal_us_surfaces_usd_buying_power():
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "portfolio": [
+                _us_snap(
+                    {
+                        "cash": {"krw": None, "usd": 10_000.0},
+                        "buying_power": {"krw": None, "usd": 8_000.0},
+                        "holdings": [
+                            {
+                                "symbol": "AAPL",
+                                "currency": "USD",
+                                "value_native": 20_000.0,
+                                "value_krw": 27_000_000.0,
+                            }
+                        ],
+                    }
+                )
+            ],
+        },
+        bundle_metadata={},
+    )
+    payload = await PortfolioJournalStage().run(ctx)
+    # NAV(USD) = value_native 20,000 + cash.usd 10,000 = 30,000 (no value_krw)
+    assert "NAV(USD)=30,000" in (payload.summary or "")
+    assert "buying_power_usd=8,000" in (payload.summary or "")
+    assert "buying_power_krw" not in (payload.summary or "")
+    assert "27,000,000" not in (payload.summary or "")  # no KRW cross-currency leak
+    assert payload.cited_snapshots[0].payload_path == "$.buying_power.usd"
+    assert payload.verdict == StageVerdict.NEUTRAL
+    assert payload.confidence == 60  # bp_ratio 8000/30000 ≈ 0.27 → healthy
+    assert payload.risk_evidence == []
+
+
+@pytest.mark.asyncio
+async def test_portfolio_journal_us_buying_power_absent_is_unavailable_not_zero():
+    # ROB-326: KIS overseas cash often unsupported (OPSQ0002) → usd may be None.
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "portfolio": [
+                _us_snap(
+                    {
+                        "cash": {"krw": None, "usd": None},
+                        "buying_power": {"krw": None, "usd": None},
+                        "holdings": [
+                            {
+                                "symbol": "AAPL",
+                                "currency": "USD",
+                                "value_native": 20_000.0,
+                                "value_krw": 27_000_000.0,
+                            }
+                        ],
+                    }
+                )
+            ],
+        },
+        bundle_metadata={},
+    )
+    payload = await PortfolioJournalStage().run(ctx)
+    assert "buying_power_usd=unavailable" in (payload.summary or "")
+    assert "buying_power_usd" in payload.missing_data
+    assert payload.risk_evidence == []  # absence is not a <5% NAV risk
+    assert payload.confidence == 60  # not punished to 40 for absent data
+    assert "buying_power_krw" not in (payload.summary or "")
+    assert "27,000,000" not in (payload.summary or "")  # never falls back to value_krw
+    assert "NAV(USD)=20,000" in (payload.summary or "")  # value_native only
+
+
+@pytest.mark.asyncio
+async def test_portfolio_journal_us_nav_unavailable_when_value_native_missing():
+    # No cross-currency fallback: a holding without value_native makes NAV
+    # honestly unavailable rather than summing the KRW-normalized figure.
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "portfolio": [
+                _us_snap(
+                    {
+                        "cash": {"krw": None, "usd": 5_000.0},
+                        "buying_power": {"krw": None, "usd": 8_000.0},
+                        "holdings": [
+                            {
+                                "symbol": "AAPL",
+                                "currency": "USD",
+                                "value_native": None,
+                                "value_krw": 27_000_000.0,
+                            }
+                        ],
+                    }
+                )
+            ],
+        },
+        bundle_metadata={},
+    )
+    payload = await PortfolioJournalStage().run(ctx)
+    assert "NAV(USD)=unavailable" in (payload.summary or "")
+    assert "27,000,000" not in (payload.summary or "")
+    assert "buying_power_usd=8,000," in (payload.summary or "")  # present, no ratio
+
+
+@pytest.mark.asyncio
+async def test_portfolio_journal_crypto_uses_krw():
+    # Upbit (crypto) is KRW-denominated → KRW path, byte-identical labels.
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "portfolio": [
+                _snap(
+                    "portfolio",
+                    {
+                        "market": "crypto",
+                        "buying_power_krw": 500_000,
+                        "nav_krw": 1_000_000,
+                    },
+                )
+            ],
+        },
+        bundle_metadata={},
+    )
+    payload = await PortfolioJournalStage().run(ctx)
+    assert "buying_power_krw=500,000" in (payload.summary or "")
+    assert payload.cited_snapshots[0].payload_path == "$.buying_power.krw"
