@@ -76,6 +76,7 @@ def classify_candidate_symbol(
     *,
     universe_useful: bool,
     quote_snapshot_present: bool,
+    candidate_fresh: bool = True,
 ) -> str:
     """Deterministic verdict for ONE non-held screener candidate.
 
@@ -83,15 +84,15 @@ def classify_candidate_symbol(
     directional ``rejected`` / ``limit_wait`` — those are Hermes-only.
 
     Order:
-      1. no symbol/quote snapshot at all   -> ``data_gap``   (호가 근거 부족)
-      2. quote present but not actionable  -> ``watch_only`` (저유동성)
-      3. quote actionable, universe stale  -> ``watch_only`` (스크리너 stale)
-      4. quote actionable, universe useful -> ``buy_review``
+      1. no symbol/quote snapshot at all                        -> ``data_gap``   (호가 근거 부족)
+      2. quote present but not actionable                       -> ``watch_only`` (저유동성)
+      3. quote actionable, universe stale OR this candidate stale -> ``watch_only`` (스크리너 stale)
+      4. quote actionable, universe useful, candidate fresh     -> ``buy_review``
     """
     if not quote_snapshot_present:
         return "data_gap"
     if not _quote_is_actionable(quote):
         return "watch_only"
-    if not universe_useful:
+    if not universe_useful or not candidate_fresh:
         return "watch_only"
     return "buy_review"
