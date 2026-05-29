@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
-from app.mcp_server.tooling import market_data_indicators
+from app.mcp_server.tooling import analysis_tool_handlers, market_data_indicators
 from app.mcp_server.tooling.analysis_crypto_score import (
     BEARISH_NORMAL,
     BEARISH_STRONG,
@@ -771,8 +771,8 @@ class TestRecommendStocksCryptoScore:
             mock_collect_portfolio_positions,
         )
 
-        tools = build_tools()
-        result = await tools["recommend_stocks"](
+        # ROB-359: recommend_stocks is registry-hidden; call the retained impl.
+        result = await analysis_tool_handlers.recommend_stocks_impl(
             budget=10_000_000,
             market="crypto",
             strategy="balanced",
@@ -830,8 +830,8 @@ class TestRecommendStocksCryptoScore:
             mock_collect_portfolio_positions,
         )
 
-        tools = build_tools()
-        await tools["recommend_stocks"](
+        # ROB-359: recommend_stocks is registry-hidden; call the retained impl.
+        await analysis_tool_handlers.recommend_stocks_impl(
             budget=10_000_000,
             market="crypto",
             strategy="balanced",

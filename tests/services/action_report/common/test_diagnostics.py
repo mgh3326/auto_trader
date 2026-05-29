@@ -305,6 +305,145 @@ def test_quality_summary_external_status_none_when_absent() -> None:
     assert out["core_fresh_coverage_pct"] == 100
 
 
+# --- build_report_quality_summary: ROB-366 B10 honesty demotion --------------
+def test_quality_grade_demotes_when_core_kind_soft_stale_on_partial() -> None:
+    # ROB-366 B10: the real bundle had core_fresh_coverage_pct=75 — one critical
+    # kind ('market') was non-fresh but only soft_stale, which is NOT in
+    # CRITICAL_KIND_DEGRADING_STATUSES, so the old grade fell through to
+    # high_confidence. A non-fully-fresh core on a non-complete bundle is now an
+    # honest informational_only.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "soft_stale"},
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "informational_only"
+    assert out["core_fresh_coverage_pct"] == 75
+
+
+def test_quality_grade_demotes_on_thin_optional_coverage_without_cross_check() -> None:
+    # ROB-366 B10: core fully fresh but news/candidate/symbol all empty and no
+    # external cross-check to compensate → internal coverage (4/7 ≈ 57%) is too
+    # thin to honestly read as high_confidence.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "unavailable"},
+            "candidate_universe": {"status": "unavailable"},
+            "symbol": {"status": "unavailable"},
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "informational_only"
+    assert out["core_fresh_coverage_pct"] == 100
+
+
+def test_quality_grade_thin_coverage_stays_high_with_passing_cross_check() -> None:
+    # A passing external cross-check is the one signal that legitimately rescues a
+    # thin-but-core-fresh bundle: it stays high_confidence. Guards against the
+    # demotion over-firing when there IS corroborating evidence.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "unavailable"},
+            "candidate_universe": {"status": "unavailable"},
+            "symbol": {"status": "unavailable"},
+            "toss_remote_debug": {"status": "fresh"},
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "high_confidence"
+    assert out["external_cross_check_status"] == "fresh"
+
+
+def test_quality_grade_demotes_when_external_cross_check_hard_stale() -> None:
+    # A hard_stale external probe is a degrading status
+    # (CRITICAL_KIND_DEGRADING_STATUSES) — stale-expired evidence must NOT count
+    # as a usable cross-check that rescues thin coverage back to high_confidence.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "unavailable"},
+            "candidate_universe": {"status": "unavailable"},
+            "symbol": {"status": "unavailable"},
+            "toss_remote_debug": {"status": "hard_stale"},
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "informational_only"
+    assert out["external_cross_check_status"] == "hard_stale"
+
+
+def test_quality_grade_thin_coverage_stays_high_with_soft_stale_cross_check() -> None:
+    # soft_stale is a non-degrading status, so a soft_stale external cross-check
+    # still corroborates and lets a thin-but-core-fresh bundle stay high.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "unavailable"},
+            "candidate_universe": {"status": "unavailable"},
+            "symbol": {"status": "unavailable"},
+            "toss_remote_debug": {"status": "soft_stale"},
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "high_confidence"
+    assert out["external_cross_check_status"] == "soft_stale"
+
+
+def test_quality_grade_complete_bundle_stays_high_without_external() -> None:
+    # An external probe that was simply never run must never tank an otherwise
+    # complete bundle — ROB-323 fail-open preserved in the grade. internal
+    # coverage is 100% so no demotion fires regardless of the absent probe.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "fresh",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+        },
+        bundle_status="complete",
+    )
+    assert out["grade"] == "high_confidence"
+    assert out["external_cross_check_status"] is None
+
+
+def test_quality_grade_no_action_on_stale_fallback_precedence_unchanged() -> None:
+    # The honesty demotion only ever moves high_confidence → informational_only;
+    # it must never interfere with the top-precedence no_action branch.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "hard_stale",
+            "market": {"status": "hard_stale"},
+        },
+        bundle_status="stale_fallback",
+    )
+    assert out["grade"] == "no_action"
+
+
 def test_build_data_quality_audit_shape() -> None:
     from app.services.action_report.common.diagnostics import build_data_quality_audit
 

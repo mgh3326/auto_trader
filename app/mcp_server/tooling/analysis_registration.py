@@ -13,7 +13,6 @@ from app.mcp_server.tooling.analysis_tool_handlers import (
     get_dividends_impl,
     get_fear_greed_index_impl,
     get_top_stocks_impl,
-    recommend_stocks_impl,
     screen_stocks_impl,
 )
 from app.mcp_server.tooling.momentum_candidates import get_momentum_candidates_impl
@@ -32,7 +31,10 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_portfolio",
     "analyze_stock_batch",
     "screen_stocks",
-    "recommend_stocks",
+    # ROB-359: "recommend_stocks" is intentionally registry-hidden (parked).
+    # screen_stocks is the single candidate-discovery entrypoint; the
+    # recommend_stocks_impl implementation is retained in
+    # analysis_tool_handlers for a future narrow build_buy_plan tool.
     "get_top_stocks",
     "get_disclosures",
     "get_correlation",
@@ -250,30 +252,14 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             limit=limit,
         )
 
-    @mcp.tool(
-        name="recommend_stocks",
-        description=(
-            "Recommend stocks from available top ranks using strategy-specific filters."
-        ),
-    )
-    async def recommend_stocks(
-        budget: float,
-        market: str = "kr",
-        strategy: str = "balanced",
-        exclude_symbols: list[str] | None = None,
-        sectors: list[str] | None = None,
-        max_positions: int = 5,
-        exclude_held: bool = True,
-    ) -> dict[str, Any]:
-        return await recommend_stocks_impl(
-            budget=budget,
-            market=market,
-            strategy=strategy,
-            exclude_symbols=exclude_symbols,
-            sectors=sectors,
-            max_positions=max_positions,
-            exclude_held=exclude_held,
-        )
+    # ROB-359: recommend_stocks is intentionally NOT registered on the MCP tool
+    # surface (registry-hidden / parked). Rationale: its role overlapped
+    # ambiguously with screen_stocks and it could be invoked as a new-buy basis.
+    # screen_stocks is now the single candidate-discovery entrypoint. The
+    # read-only recommend_stocks_impl implementation is retained in
+    # app.mcp_server.tooling.analysis_tool_handlers so it can be re-introduced
+    # later as a narrow build_buy_plan tool. Do not call recommend_stocks from
+    # active report/operator prompts.
 
     @mcp.tool(
         name="get_dividends",

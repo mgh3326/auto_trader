@@ -265,7 +265,11 @@ class HermesContextExporter:
             snapshot_bundle_uuid=bundle.bundle_uuid,
             bundle_status=bundle.status,
             market=bundle.market,
-            market_session=None,
+            # ROB-366 B6 — the bundle has no session column; the persisted
+            # market_session lives on the stage run. Derive it from the latest
+            # run already loaded above (None when no run / none recorded — never
+            # computed from a clock, to avoid inventing a session).
+            market_session=run.market_session if run is not None else None,
             account_scope=bundle.account_scope,
             policy_version=bundle.policy_version,
             coverage_summary=dict(bundle.coverage_summary or {}),
@@ -301,6 +305,7 @@ class HermesContextExporter:
                 "freshness_summary": dict(bundle.freshness_summary or {}),
                 "policy_version": bundle.policy_version,
             },
+            market=bundle.market,
             prior_artifacts={},
         )
 

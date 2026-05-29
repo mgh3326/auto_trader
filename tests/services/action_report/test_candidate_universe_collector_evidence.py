@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
+from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
     CandidateUniverseSnapshotCollector,
 )
@@ -56,7 +57,7 @@ async def test_equity_collector_respects_candidate_limit(db_session):
 
     results = await collector.collect(
         CollectorRequest(
-            market="kr",
+            market="us",
             account_scope=None,
             symbols=[],
             candidate_limit=2,
@@ -109,6 +110,11 @@ async def test_crypto_collector_emits_candidate_evidence(db_session):
     assert top["reasons"] == ["단기 상승 모멘텀 후보"]
     assert payload["source_coverage"] == {"tvscreener_upbit": 1}
     assert payload["usefulness"] == "useful"
+    # ROB-359 Scope E — per-candidate lineage so a new-buy item is self-describing.
+    assert top["source_preset"] == "crypto_momentum"
+    assert top["data_state"] == "fresh"  # usefulness "useful" → fresh
+    # crypto_momentum is an auto_trader-original preset, not a Toss-parity one.
+    assert top["toss_parity_status"] == "not_toss_parity"
 
 
 @pytest.mark.asyncio
@@ -171,7 +177,7 @@ async def test_cap_surfaced_when_universe_exceeds_limit(db_session):
     collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
     results = await collector.collect(
         CollectorRequest(
-            market="kr",
+            market="us",
             account_scope=None,
             symbols=[],
             candidate_limit=2,
@@ -192,7 +198,7 @@ async def test_cap_not_flagged_when_universe_within_limit(db_session):
     collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
     results = await collector.collect(
         CollectorRequest(
-            market="kr",
+            market="us",
             account_scope=None,
             symbols=[],
             candidate_limit=10,
@@ -203,3 +209,287 @@ async def test_cap_not_flagged_when_universe_within_limit(db_session):
     assert payload["universe_count"] == 3
     assert payload["capped"] is False
     assert results[0].coverage_json["capped"] is False
+
+
+@pytest.mark.asyncio
+async def test_kr_collector_sources_consecutive_gainers_preset(db_session):
+    """ROB-363 — KR candidate source is consecutive_gainers (full Toss parity),
+    not top_gainers, when the preset returns rows. Per-candidate data_state and
+    toss_parity_status reflect the real preset."""
+    from sqlalchemy import text
+
+    await db_session.execute(text("DELETE FROM invest_screener_snapshots"))
+    await db_session.commit()
+
+    today = dt.date(2026, 5, 29)
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol="005930",
+            snapshot_date=today,
+            latest_close=Decimal("70000"),
+            change_rate=Decimal("2.0"),
+            week_change_rate=Decimal("8.0"),
+            consecutive_up_days=6,
+            closes_window=[1, 2, 3, 4, 5],
+            source="kis",
+        )
+    )
+    await db_session.commit()
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr", account_scope=None, symbols=[], policy_snapshot={}
+        )
+    )
+    payload = results[0].payload_json
+    syms = [c["symbol"] for c in payload["candidates"]]
+    assert "005930" in syms
+    top = next(c for c in payload["candidates"] if c["symbol"] == "005930")
+    assert top["source_preset"] == "consecutive_gainers"
+    assert top["toss_parity_status"] == "full"
+    assert top["data_state"] in {"fresh", "stale"}
+
+    # Cleanup: remove test rows so subsequent runs don't see qualifying KR data.
+    await db_session.execute(text("DELETE FROM invest_screener_snapshots"))
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_kr_collector_falls_back_to_top_gainers_when_no_preset_rows(
+    db_session, monkeypatch
+):
+    """ROB-363 — when KR Toss-parity presets yield no rows, the collector falls
+    back to the top_gainers momentum ranking (not_toss_parity), deterministically
+    (ALL three preset loaders stubbed to None, so this does not depend on DB
+    contents in investor_flow_snapshots / market_valuation_snapshots either)."""
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
+    import app.services.invest_view_model.screener_service as ss
+
+    async def _no_rows(session, *, market, limit, **kwargs):
+        return None
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _no_rows)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", _no_rows)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", _no_rows)
+
+    repo = _FakeEquityRepository()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["preset"] == "top_gainers"
+    top = payload["candidates"][0]
+    assert top["source_preset"] == "top_gainers"
+    assert top["toss_parity_status"] == "not_toss_parity"
+
+
+@pytest.mark.asyncio
+async def test_kr_preset_pool_wider_than_limit_is_capped(db_session, monkeypatch):
+    """ROB-363 — the KR preset pool is gathered wider than candidate_limit, then
+    sliced; universe_count reflects the full evaluated pool and capped is True.
+    Loader stubbed so the assertion does not depend on DB contents."""
+    import app.services.invest_view_model.screener_service as ss
+
+    async def _three_fresh_rows(session, *, market, limit):
+        return [
+            {
+                "symbol": sym,
+                "name": sym,
+                "source": "kis",
+                "change_rate": rate,
+                "close": 1000,
+                "consecutive_up_days": 6,
+                "volume": 1,
+                "_screener_snapshot_state": "fresh",
+            }
+            for sym, rate in [("000660", 9.0), ("005930", 8.0), ("035720", 7.0)]
+        ]
+
+    monkeypatch.setattr(
+        ss, "load_consecutive_gainers_from_snapshots", _three_fresh_rows
+    )
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["universe_count"] == 3
+    assert payload["capped"] is True
+    assert len(payload["candidates"]) == 2
+    assert results[0].coverage_json["capped"] is True
+
+
+@pytest.mark.asyncio
+async def test_kr_collector_merges_duplicate_symbol_across_presets(
+    db_session, monkeypatch
+):
+    """ROB-363 — a symbol surfaced by two presets becomes ONE candidate whose
+    reasons union both presets' provenance. Loaders stubbed (no DB dependency)."""
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
+    import app.services.invest_view_model.screener_service as ss
+
+    async def fake_consecutive(session, *, market, limit):
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "source": "kis",
+                "change_rate": 2.0,
+                "close": 70000,
+                "consecutive_up_days": 6,
+                "volume": 1,
+                "_screener_snapshot_state": "fresh",
+            }
+        ]
+
+    async def fake_double_buy(session, *, market, limit):
+        return None
+
+    async def fake_high_yield(session, *, market, limit, today_market_date=None):
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "source": "kis",
+                "change_rate": 2.0,
+                "latest_close": 70000,
+                "roe": 20.0,
+                "per": 7.0,
+                "volume": 1,
+                "_screener_snapshot_state": "fresh",
+            }
+        ]
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", fake_consecutive)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", fake_double_buy)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", fake_high_yield)
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr", account_scope=None, symbols=[], policy_snapshot={}
+        )
+    )
+    payload = results[0].payload_json
+    rows_005930 = [c for c in payload["candidates"] if c["symbol"] == "005930"]
+    assert len(rows_005930) == 1, "duplicate symbol must merge to one candidate"
+    merged = rows_005930[0]
+    reason_text = " ".join(merged["reasons"])
+    assert "연속 상승" in reason_text  # from consecutive_gainers
+    assert "저평가" in reason_text or "ROE" in reason_text  # from high_yield_value
+
+
+@pytest.mark.asyncio
+async def test_kr_priority_full_fresh_outranks_partial_and_stale(db_session):
+    """ROB-363 — deterministic priority: full+fresh+higher-score first. Internal
+    pool wider than candidate_limit, then sliced."""
+    from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
+        _priority_sort_key,
+    )
+    from app.services.screener_evidence.models import CandidateEvidence
+
+    def ev(symbol, preset, score):
+        return CandidateEvidence(
+            symbol=symbol,
+            market="kr",
+            name=symbol,
+            score=score,
+            score_label="",
+            change_rate=None,
+            price=None,
+            volume_value=None,
+            reasons=[],
+            source="kis",
+            risk_flags=[],
+            source_preset=preset,
+        )
+
+    rows = [
+        (ev("A", "consecutive_gainers", 6.0), "stale"),  # full but stale
+        (ev("B", "high_yield_value", 5.0), "fresh"),  # full + fresh, lower score
+        (ev("C", "high_yield_value", 9.0), "fresh"),  # full + fresh, top score
+        # partial parity + fresh + top score must still rank BELOW any full-parity
+        # candidate (parity dominates freshness and score in the sort key).
+        (ev("D", "cheap_value", 10.0), "fresh"),  # partial parity
+    ]
+    ordered = sorted(rows, key=lambda pair: _priority_sort_key(pair[0], pair[1]))
+    assert [p[0].symbol for p in ordered] == ["C", "B", "A", "D"]
+
+
+@pytest.mark.asyncio
+async def test_kr_stale_only_preset_not_overstated(db_session, monkeypatch):
+    """ROB-363 — when the only preset rows are stale, the collector payload must
+    report usefulness=stale_only and a non-fresh freshness_status, and stamp each
+    candidate data_state=stale (never fabricate freshness). Loaders stubbed."""
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
+    import app.services.invest_view_model.screener_service as ss
+
+    async def _stale_rows(session, *, market, limit):
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "source": "kis",
+                "change_rate": 2.0,
+                "close": 70000,
+                "consecutive_up_days": 6,
+                "volume": 1,
+                "_screener_snapshot_state": "stale",
+            }
+        ]
+
+    async def _none(session, *, market, limit, **kwargs):
+        return None
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _stale_rows)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", _none)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", _none)
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr", account_scope=None, symbols=[], policy_snapshot={}
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["usefulness"] == "stale_only"
+    assert payload["freshness_status"] != "fresh"
+    assert payload["candidates"], (
+        "stale candidates are still surfaced (demoted, not dropped)"
+    )
+    assert all(c["data_state"] == "stale" for c in payload["candidates"])
+    # And the bundle-level freshness must not claim fresh for a stale-only universe.
+    assert results[0].coverage_json["usefulness"] == "stale_only"
+
+
+def test_partial_parity_presets_report_partial_status():
+    """ROB-363 — partial Toss-parity presets (cheap_value, steady_dividend) must
+    derive a 'partial' status, never be inflated to 'full' (honesty criterion)."""
+    from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
+        _toss_parity_status,
+    )
+
+    assert _toss_parity_status("cheap_value", "kr") == "partial"
+    assert _toss_parity_status("steady_dividend", "kr") == "partial"
+    # full presets stay full; non-toss rankings stay not_toss_parity.
+    assert _toss_parity_status("consecutive_gainers", "kr") == "full"
+    assert _toss_parity_status("top_gainers", "kr") == "not_toss_parity"

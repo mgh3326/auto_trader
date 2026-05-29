@@ -15,6 +15,7 @@ def test_candidate_evidence_to_payload_dict_round_trips():
         reasons=["단기 상승 모멘텀 후보"],
         source="tvscreener_upbit",
         risk_flags=[],
+        source_preset="crypto_momentum",
     )
     payload = ev.to_payload_dict()
     assert payload == {
@@ -29,6 +30,7 @@ def test_candidate_evidence_to_payload_dict_round_trips():
         "reasons": ["단기 상승 모멘텀 후보"],
         "source": "tvscreener_upbit",
         "risk_flags": [],
+        "source_preset": "crypto_momentum",
     }
 
 
@@ -106,6 +108,8 @@ def test_builder_equity_top_gainers_uses_change_rate_and_source():
     assert out[0].score_label == "+3.00%"
     assert out[0].reasons == ["단기 상승 모멘텀 후보", "3일 연속 상승"]
     assert out[0].volume_value == 14_000_000.0
+    # ROB-359 Scope E — provenance lineage records which ranking surfaced it.
+    assert out[0].source_preset == "top_gainers"
 
 
 def test_builder_empty_rows_returns_empty():
@@ -113,3 +117,70 @@ def test_builder_empty_rows_returns_empty():
         build_candidate_evidence(market="crypto", preset="crypto_momentum", rows=[])
         == []
     )
+
+
+def test_consecutive_gainers_preset_reasons_and_score():
+    from app.services.screener_evidence.builder import build_candidate_evidence
+
+    rows = [
+        {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "source": "kis",
+            "change_rate": 2.0,
+            "close": 70000,
+            "week_change_rate": 8.0,
+            "consecutive_up_days": 6,
+            "volume": 1_000_000,
+        }
+    ]
+    out = build_candidate_evidence(market="kr", preset="consecutive_gainers", rows=rows)
+    assert len(out) == 1
+    ev = out[0]
+    assert ev.source_preset == "consecutive_gainers"
+    assert ev.price == 70000.0  # reads `close` when `price` absent
+    assert any("연속 상승" in r for r in ev.reasons)
+    assert ev.score > 5.0  # +2.0% momentum -> above neutral
+
+
+def test_double_buy_preset_reasons():
+    from app.services.screener_evidence.builder import build_candidate_evidence
+
+    rows = [
+        {
+            "symbol": "000660",
+            "name": "SK하이닉스",
+            "source": "kis",
+            "change_rate": 1.0,
+            "latest_close": 180000,
+            "volume": 500000,
+            "foreign_net": 1_000_000,
+            "institution_net": 500_000,
+            "foreign_consecutive_buy_days": 3,
+        }
+    ]
+    out = build_candidate_evidence(market="kr", preset="double_buy", rows=rows)
+    assert out[0].source_preset == "double_buy"
+    assert any("쌍끌이" in r or "외국인" in r for r in out[0].reasons)
+
+
+def test_high_yield_value_preset_reasons_and_score_label():
+    from app.services.screener_evidence.builder import build_candidate_evidence
+
+    rows = [
+        {
+            "symbol": "005490",
+            "name": "POSCO홀딩스",
+            "source": "kis",
+            "change_rate": 0.5,
+            "latest_close": 400000,
+            "volume": 100000,
+            "roe": 18.0,
+            "per": 6.5,
+            "pbr": 0.8,
+        }
+    ]
+    out = build_candidate_evidence(market="kr", preset="high_yield_value", rows=rows)
+    assert out[0].source_preset == "high_yield_value"
+    assert "ROE" in out[0].score_label or "PER" in out[0].score_label
+    assert any("저평가" in r or "ROE" in r for r in out[0].reasons)

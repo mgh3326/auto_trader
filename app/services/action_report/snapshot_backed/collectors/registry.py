@@ -23,9 +23,11 @@ from app.services.action_report.snapshot_backed.collectors.journal import (
     JournalSnapshotCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.market import (
+    IndexQuoteFn,
     MarketEventsSnapshotCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.news import (
+    NewsFetchFn,
     NewsSnapshotCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.optional_stubs import (
@@ -127,6 +129,80 @@ class _KISDomesticQuoteOrderbookAdapter:
         }
 
 
+def _build_market_index_quote_fn() -> IndexQuoteFn:
+    """Read-only adapter over the deterministic fundamentals index source.
+
+    Given index symbols, returns one row per resolved index by calling the
+    yfinance/Naver-backed ``get_market_index`` handler per symbol (concurrently).
+    Fail-open per symbol: a symbol whose fetch errors is simply omitted. The
+    handler is imported lazily so the heavy yfinance dependency is not pulled at
+    registry import time, and this stays a thin pass-through (the per-market
+    symbol selection lives in the collector). No order/mutation surface.
+    """
+
+    async def _index_quote_fn(symbols: list[str]) -> list[dict[str, Any]]:
+        import asyncio
+
+        from app.mcp_server.tooling.fundamentals._market_index import (
+            handle_get_market_index,
+        )
+
+        async def _one(sym: str) -> list[dict[str, Any]]:
+            try:
+                result = await handle_get_market_index(
+                    symbol=sym, period="day", count=1
+                )
+            except Exception:  # noqa: BLE001 — best-effort index quote
+                return []
+            if not isinstance(result, dict):
+                return []
+            return [r for r in (result.get("indices") or []) if isinstance(r, dict)]
+
+        gathered = await asyncio.gather(*[_one(sym) for sym in symbols])
+        return [row for rows in gathered for row in rows]
+
+    return _index_quote_fn
+
+
+def _build_news_fetch_fn() -> NewsFetchFn:
+    """Read-only adapter over the deterministic, market-aware news source.
+
+    ROB-366 B8: given (market, hours, limit), returns recent market-scoped
+    ``NewsArticle`` rows mapped to plain dicts in the shape NewsStage reads
+    (``articles``). ``get_news_articles`` is imported lazily and uses its own
+    read-only session; this stays a thin pass-through with no order/mutation
+    surface. The collector wraps the call so a fetch error degrades the
+    optional ``news`` kind to ``unavailable``.
+    """
+
+    async def _news_fetch_fn(
+        market: str, hours: int, limit: int
+    ) -> list[dict[str, Any]]:
+        from app.services.llm_news_service import get_news_articles
+
+        articles, _total = await get_news_articles(
+            market=market, hours=hours, limit=limit
+        )
+        out: list[dict[str, Any]] = []
+        for a in articles:
+            published = getattr(a, "article_published_at", None)
+            out.append(
+                {
+                    "title": a.title,
+                    "url": a.url,
+                    "source": a.source,
+                    "feed_source": a.feed_source,
+                    "summary": a.summary,
+                    "stock_symbol": a.stock_symbol,
+                    "stock_name": a.stock_name,
+                    "published_at": published.isoformat() if published else None,
+                }
+            )
+        return out
+
+    return _news_fetch_fn
+
+
 def _build_kis_client_safely() -> KISClient | None:
     """Construct the KIS client used by the pending-orders collector.
 
@@ -155,10 +231,18 @@ def production_collector_registry(session: AsyncSession) -> SnapshotCollectorReg
     registry.register(PortfolioSnapshotCollector(session))
     registry.register(JournalSnapshotCollector(session))
     registry.register(WatchContextSnapshotCollector(session))
-    registry.register(MarketEventsSnapshotCollector(session))
+    registry.register(
+        MarketEventsSnapshotCollector(
+            session, index_quote_fn=_build_market_index_quote_fn()
+        )
+    )
 
-    # Optional kinds — DB-backed where possible.
-    registry.register(NewsSnapshotCollector(session))
+    # Optional kinds — DB-backed where possible. ROB-366 B8 — wire the
+    # market-aware news article source so US (and KR) bundles serve real
+    # market-scoped news instead of an empty/KR-bleeding research feed.
+    registry.register(
+        NewsSnapshotCollector(session, news_fetch_fn=_build_news_fetch_fn())
+    )
     # ROB-278 Phase 2 — wire the KIS quote/orderbook adapter so KR + kis_live
     # requests get per-symbol quote evidence. Construction is wrapped (the
     # KIS client can be None when credentials are absent) so the collector

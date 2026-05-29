@@ -47,7 +47,29 @@ def test_compute_dca_price_levels_helper_removed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recommend_stocks_registration() -> None:
-    """Test recommend_stocks tool is registered."""
+async def test_recommend_stocks_removed_from_build_tools() -> None:
+    """ROB-359: recommend_stocks is registry-hidden (deprecated/parked).
+
+    The MCP tool surface no longer exposes recommend_stocks so agents cannot
+    invoke it as a new-buy basis; screen_stocks is the single candidate-
+    discovery entrypoint. The recommend_stocks_impl implementation is retained
+    in app.mcp_server.tooling.analysis_tool_handlers for future re-use (e.g. a
+    narrow build_buy_plan tool).
+    """
     tools = build_tools()
-    assert "recommend_stocks" in tools
+
+    assert "recommend_stocks" not in tools
+    # Primary discovery entrypoint must remain.
+    assert "screen_stocks" in tools
+
+
+@pytest.mark.asyncio
+async def test_recommend_stocks_removal_leaves_order_surface_untouched() -> None:
+    """Removing the read-only recommend_stocks tool must not alter the
+    broker/order tool surface (no order/watch/order-intent side effects)."""
+    tools = build_tools()
+
+    # Default profile still exposes its order surface unchanged.
+    for order_tool in ("place_order", "cancel_order", "modify_order"):
+        assert order_tool in tools
+    assert "recommend_stocks" not in tools

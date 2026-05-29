@@ -51,6 +51,19 @@ class _AlwaysUnavailableStage:
         raise UnavailableStageError("watch_context snapshot missing")
 
 
+class _CapturingMarketStage:
+    stage_type = "market"
+
+    def __init__(self) -> None:
+        self.seen_market: object = "UNSET"
+
+    async def run(self, ctx: StageContext) -> StageArtifactPayload:
+        self.seen_market = ctx.market
+        return StageArtifactPayload(
+            stage_type="market", verdict=StageVerdict.NEUTRAL, confidence=20
+        )
+
+
 def _make_bundle(*, status: str = "complete") -> SimpleNamespace:
     return SimpleNamespace(
         id=1,
@@ -70,6 +83,23 @@ def _make_snapshot(kind: str) -> SimpleNamespace:
         snapshot_kind=kind,
         payload_json={},
     )
+
+
+@pytest.mark.asyncio
+async def test_exporter_plumbs_bundle_market_into_stage_context() -> None:
+    # ROB-366 B5: MarketStage must see the bundle market to select US vs KR.
+    bundle = _make_bundle()  # market="crypto"
+    repo = AsyncMock()
+    repo.get_bundle_by_uuid.return_value = bundle
+    repo.list_bundle_items_with_snapshots.return_value = [
+        (object(), _make_snapshot("market")),
+    ]
+    cap = _CapturingMarketStage()
+    exporter = HermesContextExporter(
+        session=AsyncMock(), snapshots_repository=repo, stages=[cap]
+    )
+    await exporter.export(snapshot_bundle_uuid=bundle.bundle_uuid)
+    assert cap.seen_market == "crypto"
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,9 @@ export interface ScreenerFilterChip {
   detail: string | null;
 }
 
+export type ScreenerPresetOrigin = "toss_parity" | "auto_trader_original";
+export type ScreenerParityStatus = "full" | "partial" | "mismatch";
+
 export interface ScreenerPreset {
   id: string;
   name: string;
@@ -30,6 +33,10 @@ export interface ScreenerPreset {
   filterChips: ScreenerFilterChip[];
   metricLabel: string;
   market: ScreenerMarket;
+  // ROB-359 Scope B (additive, optional during transition).
+  presetOrigin?: ScreenerPresetOrigin;
+  parityStatus?: ScreenerParityStatus | null;
+  parityNote?: string | null;
 }
 
 export interface ScreenerPresetsResponse {

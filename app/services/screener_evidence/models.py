@@ -20,6 +20,12 @@ class CandidateEvidence:
     reasons: list[str]  # Korean reason strings
     source: str  # provenance: tvscreener_upbit / upbit_official / kis / yahoo / ...
     risk_flags: list[str]  # Korean risk labels, e.g. "Upbit 유의 종목"
+    # ROB-359 Scope E — provenance lineage so /invest/reports can explain why a
+    # new-buy candidate surfaced. ``source_preset`` is the ranking/preset that
+    # produced this candidate (e.g. "top_gainers", "crypto_momentum"). Universe-
+    # level descriptors (freshness/parity) are stamped onto the payload candidate
+    # dict by the collector, not here, to keep this transformer pure.
+    source_preset: str | None = None
 
     def to_payload_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

@@ -72,6 +72,7 @@ class StageRunner:
                 "status": getattr(bundle, "status", None),
                 "freshness_summary": getattr(bundle, "freshness_summary", None),
             },
+            market=market,
             prior_artifacts={},
         )
 

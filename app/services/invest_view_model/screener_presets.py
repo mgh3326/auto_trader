@@ -7,12 +7,24 @@ via the OHLCV-backed enrichment pipeline."""
 
 from __future__ import annotations
 
-from app.schemas.invest_screener import ScreenerFilterChip, ScreenerPreset
+from app.schemas.invest_screener import (
+    ScreenerFilterChip,
+    ScreenerParityStatus,
+    ScreenerPreset,
+    ScreenerPresetOrigin,
+)
+
+# ROB-359 Scope B — short aliases for catalog provenance metadata.
+_TOSS: ScreenerPresetOrigin = "toss_parity"
+_AT_OWN: ScreenerPresetOrigin = "auto_trader_original"
+_FULL: ScreenerParityStatus = "full"
+_PARTIAL: ScreenerParityStatus = "partial"
+_MISMATCH: ScreenerParityStatus = "mismatch"
 
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
 CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
-_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy"}
+_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy", "high_yield_value"}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -28,6 +40,8 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="주가등락률",
         market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
     ),
     ScreenerPreset(
         id="cheap_value",
@@ -41,6 +55,12 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="PER",
         market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_PARTIAL,
+        parityNote=(
+            "Toss '아직 저렴한 가치주'의 PER·PBR 조건만 반영. "
+            "3년 평균 순이익 증감률(≥0%) 조건은 재무제표 데이터 소스 부재로 미적용(확인 불가)."
+        ),
     ),
     ScreenerPreset(
         id="steady_dividend",
@@ -53,6 +73,12 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="배당수익률",
         market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_PARTIAL,
+        parityNote=(
+            "배당수익률 임계가 Toss(3% 이상)와 달리 2% 이상이며, "
+            "배당성향·배당 연속지급·순이익 연속증가 조건은 재무제표 데이터 소스 부재로 미적용(확인 불가)."
+        ),
     ),
     ScreenerPreset(
         id="oversold_recovery",
@@ -65,6 +91,12 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="RSI",
         market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_MISMATCH,
+        parityNote=(
+            "현재 구현은 RSI ≤ 30 과매도 기반. "
+            "Toss '저평가 탈출'(PER 0~10 + PBR 0~1 + 신고가)과 의미가 다름."
+        ),
     ),
     ScreenerPreset(
         id="kr_high_volume_surge",
@@ -77,6 +109,8 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="거래량",
         market="kr",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 프리셋 (Toss 기본 골라보기에 없음).",
     ),
     ScreenerPreset(
         id="investor_flow_momentum",
@@ -90,6 +124,11 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="외국인 순매수",
         market="kr",
+        presetOrigin=_AT_OWN,
+        parityNote=(
+            "auto_trader 자체 프리셋 (Toss 기본 골라보기에 없음). "
+            "외국인 연속 순매수 중심으로, '쌍끌이 매수'(double_buy)와는 별개."
+        ),
     ),
     ScreenerPreset(
         id="double_buy",
@@ -105,6 +144,8 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="주가등락률",
         market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
     ),
     ScreenerPreset(
         id="growth_expectation",
@@ -118,6 +159,28 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="주가등락률",
         market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_MISMATCH,
+        parityNote=(
+            "현재 구현은 시가총액(≥1조)·등락률 상위 기반. "
+            "Toss '성장 기대주'(3년 평균 순이익 증감률 + 직전분기 대비 순이익 증감률)와 의미가 다름."
+        ),
+    ),
+    ScreenerPreset(
+        id="high_yield_value",
+        name="고수익 저평가",
+        description="ROE가 높으면서 PER이 낮은 고수익·저평가 종목 (지연 스냅샷 기반)",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="ROE", detail="15% 이상"),
+            ScreenerFilterChip(label="PER", detail="0~10"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
     ),
 ]
 
@@ -134,6 +197,8 @@ CRYPTO_SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="거래대금",
         market="crypto",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 가상자산 프리셋 (Toss 국내주식 골라보기 대상 아님).",
     ),
     ScreenerPreset(
         id="crypto_oversold",
@@ -146,6 +211,8 @@ CRYPTO_SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="RSI",
         market="crypto",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 가상자산 프리셋 (Toss 국내주식 골라보기 대상 아님).",
     ),
     ScreenerPreset(
         id="crypto_momentum",
@@ -158,6 +225,8 @@ CRYPTO_SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="등락률",
         market="crypto",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 가상자산 프리셋 (Toss 국내주식 골라보기 대상 아님).",
     ),
 ]
 
@@ -219,6 +288,20 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "sort_by": "change_rate",
         "sort_order": "desc",
         "min_market_cap": 1_000_000_000_000.0,
+        "limit": 20,
+    },
+    # high_yield_value is snapshot-only (market_valuation_snapshots); the generic
+    # screening provider has no ROE filter, so build_screener_results never falls
+    # through to it. These kwargs keep market/limit bounded for callers that
+    # inspect the mapping.
+    "high_yield_value": {
+        "market": "kr",
+        "asset_type": "stock",
+        "sort_by": "roe",
+        "sort_order": "desc",
+        "min_roe": 15.0,
+        "min_per": 0.01,
+        "max_per": 10.0,
         "limit": 20,
     },
     "investor_flow_momentum": {

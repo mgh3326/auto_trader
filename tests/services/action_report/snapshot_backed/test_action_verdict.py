@@ -96,10 +96,16 @@ def test_classify_candidate_symbol(quote, present, useful, expected):
 
 
 def test_classify_candidate_symbol_never_rejects():
-    # Honest-verdict only: rejected / limit_wait are Hermes-only.
+    # Honest-verdict only: rejected / limit_wait are Hermes-only. ROB-363 added
+    # the candidate_fresh demotion branch — cover it here so the invariant holds
+    # across every parameter combination, not just the universe-stale path.
     for present in (True, False):
         for useful in (True, False):
-            v = classify_candidate_symbol(
-                _DEAD_QUOTE, universe_useful=useful, quote_snapshot_present=present
-            )
-            assert v in {"data_gap", "watch_only", "buy_review"}
+            for fresh in (True, False):
+                v = classify_candidate_symbol(
+                    _DEAD_QUOTE,
+                    universe_useful=useful,
+                    quote_snapshot_present=present,
+                    candidate_fresh=fresh,
+                )
+                assert v in {"data_gap", "watch_only", "buy_review"}

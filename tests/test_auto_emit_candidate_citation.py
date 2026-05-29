@@ -33,6 +33,9 @@ def test_buy_item_cites_candidate_evidence():
                         "score": 8.0,
                         "reasons": ["단기 상승 모멘텀 후보"],
                         "source": "kis",
+                        "source_preset": "top_gainers",
+                        "data_state": "fresh",
+                        "toss_parity_status": "not_toss_parity",
                     },
                 ],
             },
@@ -47,6 +50,10 @@ def test_buy_item_cites_candidate_evidence():
     assert ev["candidate_score"] == 8.0
     assert ev["candidate_source"] == "kis"
     assert ev["candidate_reasons"] == ["단기 상승 모멘텀 후보"]
+    # ROB-359 Scope E — screener evidence lineage on the new-buy item.
+    assert ev["candidate_source_preset"] == "top_gainers"
+    assert ev["candidate_data_state"] == "fresh"
+    assert ev["candidate_toss_parity_status"] == "not_toss_parity"
 
 
 def test_buy_candidates_follow_candidate_rank_and_limit():
@@ -269,3 +276,53 @@ def test_held_candidate_not_double_emitted():
     # Held name routes through held_and_trending only — no candidate buy/watch row.
     assert all(not k.startswith("auto-cand-") for k in keys)
     assert all(not k.startswith("auto-buy-") for k in keys)
+
+
+def test_stale_candidate_demoted_even_when_universe_useful():
+    """Per-candidate stale data_state must NOT be emitted as buy_review.
+
+    Universe usefulness == "useful", but one candidate has data_state="stale".
+    That candidate must be demoted to watch_only / screener_stale even though
+    the universe overall is useful.  The fresh candidate stays buy_review.
+    """
+    snaps = [
+        _Snap("portfolio", {"primary_source": "kis", "holdings": []}),
+        _Snap("symbol", {"symbol": "000660", "quote": _OK_QUOTE}, symbol="000660"),
+        _Snap("symbol", {"symbol": "005930", "quote": _OK_QUOTE}, symbol="005930"),
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "useful",
+                "candidates": [
+                    {
+                        "symbol": "000660",
+                        "score": 9.0,
+                        "rank": 1,
+                        "source": "kis",
+                        "data_state": "fresh",
+                    },
+                    {
+                        "symbol": "005930",
+                        "score": 8.0,
+                        "rank": 2,
+                        "source": "kis",
+                        "data_state": "stale",
+                    },
+                ],
+            },
+        ),
+    ]
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps, request_market="kr", account_scope=None
+    )
+    by_symbol = {i.symbol: i for i in items}
+
+    # Fresh candidate with actionable quote → buy_review
+    assert by_symbol["000660"].evidence_snapshot["action_verdict"] == "buy_review"
+
+    # Stale candidate with actionable quote → watch_only / screener_stale
+    assert by_symbol["005930"].evidence_snapshot["action_verdict"] == "watch_only"
+    assert (
+        by_symbol["005930"].evidence_snapshot["reject_or_wait_reason"]
+        == "screener_stale"
+    )

@@ -7,6 +7,9 @@
 .screener-preset-item:hover { background: var(--surface-2); }
 .screener-preset-item-active { background: var(--surface-2); color: var(--fg); font-weight: 700; }
 .screener-preset-badge { font-size: 10px; background: var(--accent-soft); color: var(--accent-press); border-radius: 4px; padding: 2px 6px; font-weight: 600; }
+.screener-preset-tags { display: inline-flex; gap: 4px; align-items: center; }
+.screener-preset-parity { font-size: 10px; border-radius: 4px; padding: 2px 6px; font-weight: 600; background: var(--surface-2); color: var(--fg-3); }
+.screener-preset-parity[data-parity="mismatch"] { color: var(--danger, #c0392b); }
 
 .screener-filter-bar { display: flex; flex-direction: column; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--divider); margin-bottom: 16px; }
 .screener-filter-title { font-size: 22px; margin: 0; color: var(--fg); font-weight: 800; letter-spacing: -0.02em; }
