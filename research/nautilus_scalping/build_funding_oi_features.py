@@ -17,7 +17,10 @@ See the durable report at ``docs/runbooks/rob-356-funding-oi-pit-features.md``.
 
 Usage (operator):
     cd research/nautilus_scalping
-    uv run --no-project python build_funding_oi_features.py --run --limit 40 --out
+    # representative coverage verdict in minutes (stratified across delisted+active):
+    uv run --no-project python build_funding_oi_features.py --run --stratified 40 --out
+    # resume a crashed/partial RUN (skips already-built symbols):
+    uv run --no-project python build_funding_oi_features.py --run --stratified 40 --out --resume
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import urllib.request
 import zipfile
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
+from pathlib import Path
 
 import funding_oi_features as fof
 import pit_universe as pu
@@ -121,6 +125,71 @@ def survivorship_ok(last_day: str | None, delisted_at: int | None) -> bool:
     if last_day is None:
         return False
     return last_day >= _day_str(delisted_at - 1)  # delisted_at is exclusive
+
+
+# --------------------------------------------------------------------------- #
+# ROB-362 — stratified subset + resumable progress checkpoint (pure; unit-tested)
+#   The full 552-symbol RUN is ~4.6h, non-resumable. A stratified subset returns a
+#   representative coverage verdict in minutes; the progress jsonl lets a crashed RUN
+#   resume by skipping already-built symbols. Both are pure/path-based for testability.
+# --------------------------------------------------------------------------- #
+def _evenly_spaced(seq: list, k: int) -> list:
+    """``k`` distinct, evenly-spread elements of ``seq`` (deterministic). Spreading
+    beats first-``k`` truncation, which alphabetically clusters short-lived symbols."""
+    if k <= 0:
+        return []
+    if k >= len(seq):
+        return list(seq)
+    return [seq[i * len(seq) // k] for i in range(k)]
+
+
+def stratified_sample(listings: list, n: int) -> list:
+    """Pick ~``n`` listings stratified across delisted (survivorship-critical, scarce)
+    and active strata, evenly spread within each. ``n<=0`` or ``n>=total`` -> all.
+    The scarce delisted stratum gets at least half of ``n``; active backfills the rest."""
+    if n <= 0 or n >= len(listings):
+        return list(listings)
+    delisted = sorted(
+        (x for x in listings if x.delisted_at is not None), key=lambda x: x.symbol
+    )
+    active = sorted(
+        (x for x in listings if x.delisted_at is None), key=lambda x: x.symbol
+    )
+    n_del = min(len(delisted), max(1, n // 2)) if delisted else 0
+    n_act = min(len(active), n - n_del)
+    n_del = min(len(delisted), n - n_act)  # backfill delisted if active ran short
+    return _evenly_spaced(delisted, n_del) + _evenly_spaced(active, n_act)
+
+
+def load_progress(path) -> list[dict]:
+    """Per-symbol coverage stats persisted by a prior RUN (one JSON object per line).
+    Tolerates a torn final line from a crash mid-write (that symbol is simply re-run)."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    out: list[dict] = []
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # partial trailing line from an interrupted write -> skip
+    return out
+
+
+def append_progress(path, record: dict) -> None:
+    """Atomically append one completed symbol's stats as a JSON line (resume checkpoint)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def completed_symbols(records: list[dict]) -> set:
+    """Symbols already built (skip their network fetch on resume)."""
+    return {r["symbol"] for r in records if "symbol" in r}
 
 
 # --------------------------------------------------------------------------- #
@@ -261,7 +330,37 @@ def main(argv: list[str] | None = None) -> int:
         help="PIT universe manifest path.",
     )
     parser.add_argument(
-        "--limit", type=int, default=0, help="Cap symbols processed (0 = all)."
+        "--limit",
+        type=int,
+        default=0,
+        help="Cap symbols to the first N of the manifest (0 = all). See --stratified.",
+    )
+    parser.add_argument(
+        "--stratified",
+        type=int,
+        default=0,
+        help=(
+            "Pick N symbols stratified across the delisted + active strata (a representative "
+            "coverage verdict in minutes instead of the ~4.6h full RUN). Takes precedence "
+            "over --limit. 0 = off."
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "With --out: skip symbols already in the progress checkpoint and append new "
+            "ones (resume a crashed/partial RUN). Without it the RUN starts a fresh slate."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=10,
+        help=(
+            "With --out: rewrite the coverage summary every N processed symbols so a crash "
+            "leaves an inspectable partial verdict (0 = only at completion)."
+        ),
     )
     parser.add_argument(
         "--out",
@@ -276,7 +375,9 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = pu.PITManifest.load(args.manifest).strict_usdt_perp()
     syms = list(manifest.listings)
-    if args.limit:
+    if args.stratified:
+        syms = stratified_sample(syms, args.stratified)
+    elif args.limit:
         syms = syms[: args.limit]
 
     if not args.run:
@@ -290,36 +391,61 @@ def main(argv: list[str] | None = None) -> int:
 
     from artifact_paths import resolve_artifact_path
 
+    thr = ReadinessThresholds()
     feat_dir = resolve_artifact_path("discovery", "rob356", "features")
+    summary_path = resolve_artifact_path(
+        "discovery", "rob356", "funding_oi_coverage.v1.json"
+    )
+    progress_path = resolve_artifact_path("discovery", "rob356", "_progress.jsonl")
+
+    def _write_summary(s: dict) -> None:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(s, indent=2))
+
+    # Resume: skip symbols a prior RUN already built; otherwise start a fresh slate.
+    done: dict[str, dict] = {}
+    if args.out and args.resume:
+        done = {r["symbol"]: r for r in load_progress(progress_path)}
+        if done:
+            print(f"resume: {len(done)} symbols already built; skipping their fetch")
+    elif args.out:
+        Path(progress_path).unlink(missing_ok=True)
+
     stats: list[dict] = []
     for i, listing in enumerate(syms, 1):
+        if listing.symbol in done:
+            stats.append(done[listing.symbol])
+            print(f"  [{i}/{len(syms)}] {listing.symbol:14} resumed (cached)")
+            continue
         try:
             s = build_symbol(listing)
         except Exception as exc:  # noqa: BLE001 — coverage probe must be resilient per-symbol
             print(f"  [{i}/{len(syms)}] {listing.symbol}: SKIP ({type(exc).__name__})")
             continue
         feats = s.pop("_feats")
-        if args.out:  # --out gates ALL disk writes (feature CSVs + summary)
+        if args.out:  # --out gates ALL disk writes (feature CSVs + progress + summary)
             _write_feature_csv(feat_dir / f"{s['symbol']}.csv", feats)
+            append_progress(progress_path, s)  # checkpoint this symbol for resume
         stats.append(s)
         print(
             f"  [{i}/{len(syms)}] {s['symbol']:14} rows={s['feature_rows']:6} "
             f"oi={s['oi_first_day']}..{s['oi_last_day']} cov={s['oi_coverage']} "
             f"surv={int(s['survivorship_ok'])}"
         )
+        if args.out and args.checkpoint_every > 0 and i % args.checkpoint_every == 0:
+            _write_summary(summarize(stats, thr))  # partial verdict survives a crash
 
-    summary = summarize(stats, ReadinessThresholds())
+    summary = summarize(stats, thr)
     print("\nverdict:", summary["verdict"])
     for r in summary["verdict_reasons"]:
         print("  -", r)
 
     if args.out:
-        out = resolve_artifact_path(
-            "discovery", "rob356", "funding_oi_coverage.v1.json"
+        _write_summary(summary)
+        print(
+            "\nsummary + per-symbol feature CSVs written (gitignored): "
+            f"{summary_path.parent}"
         )
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(summary, indent=2))
-        print(f"\nsummary + per-symbol feature CSVs written (gitignored): {out.parent}")
     else:
         print("\n(no --out: nothing written to disk)")
     return 0
