@@ -41,6 +41,22 @@ _MARKET_TO_TYPES: dict[str, tuple[MarketType, ...]] = {
 }
 
 
+def _normalize_crypto_symbol(raw: object) -> str | None:
+    """Normalize a crypto symbol to the pipeline's ``KRW-XXX`` market code.
+
+    ``UpbitHomeReader`` emits the bare currency (e.g. ``"BTC"``) while
+    ``manual_holdings`` already store the KRW market code. Trim/uppercase,
+    prefix bare currencies with ``KRW-``, keep already-prefixed codes, and
+    drop blanks so the portfolio source unions cleanly.
+    """
+    text = str(raw or "").strip().upper()
+    if not text:
+        return None
+    if text.startswith("KRW-"):
+        return text
+    return f"KRW-{text}"
+
+
 class SymbolDerivation(BaseModel):
     """Result of a single derivation pass."""
 
@@ -69,6 +85,14 @@ class _WatchRepoProtocol(Protocol):
 class _CandidateRepoProtocol(Protocol):
     async def list_fresh_candidate_symbols(
         self, *, market: str, limit: int
+    ) -> list[str]: ...
+
+
+class _LiveHoldingsRepoProtocol(Protocol):
+    # ROB-357 — live (broker-held) positions for markets whose holdings do
+    # not live in ``manual_holdings`` (crypto/Upbit). Read-only.
+    async def list_held_symbols(
+        self, *, market: str, user_id: int | None
     ) -> list[str]: ...
 
 
@@ -116,6 +140,43 @@ class _DefaultWatchRepo:
     async def list_active_watch_symbols(self, *, market: str) -> list[str]:
         alerts = await self._repo.list_active_alerts(market=market)
         return [a.symbol for a in alerts if a.symbol]
+
+
+class _DefaultLiveHoldingsRepo:
+    """ROB-357 — read-only live-holdings adapter.
+
+    Crypto holdings live on the exchange (Upbit), not in ``manual_holdings``,
+    so the symbol scope previously omitted them. We read them through the
+    sanctioned read-only ``UpbitHomeReader`` (the same abstraction the
+    portfolio collector uses for KIS), never the low-level broker client, and
+    fail soft: any error propagates to the service's best-effort ``_safe``
+    wrapper which records it under ``source_errors`` and returns ``[]``.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_held_symbols(self, *, market: str, user_id: int | None) -> list[str]:
+        if market != "crypto":
+            return []
+        from app.services.invest_home_readers import UpbitHomeReader
+
+        reader = UpbitHomeReader(self._session)
+        result = await reader.fetch(user_id=user_id or 0)
+        # ``UpbitHomeReader.fetch`` returns a ``_SourceFetchResult`` whose
+        # positions live on ``result.holdings`` (a flat ``list[Holding]``) —
+        # there is no ``result.account``. Reading the wrong attribute silently
+        # drops every live holding (ROB-357 Hermes review).
+        holdings = getattr(result, "holdings", None) or []
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for holding in holdings:
+            normalized = _normalize_crypto_symbol(getattr(holding, "symbol", None))
+            if normalized is None or normalized in seen:
+                continue
+            seen.add(normalized)
+            symbols.append(normalized)
+        return symbols
 
 
 class _DefaultCandidateRepo:
@@ -174,6 +235,7 @@ class SymbolDerivationService:
         journal_repo: _JournalRepoProtocol | None = None,
         watch_repo: _WatchRepoProtocol | None = None,
         candidate_repo: _CandidateRepoProtocol | None = None,
+        live_holdings_repo: _LiveHoldingsRepoProtocol | None = None,
         max_symbols: int = 50,
         top_held: int = 20,
         top_candidates: int = 20,
@@ -182,6 +244,7 @@ class SymbolDerivationService:
         self._journal = journal_repo or _DefaultJournalRepo(session)
         self._watch = watch_repo or _DefaultWatchRepo(session)
         self._candidate = candidate_repo or _DefaultCandidateRepo(session)
+        self._live = live_holdings_repo or _DefaultLiveHoldingsRepo(session)
         self._max_symbols = max_symbols
         self._top_held = top_held
         self._top_candidates = top_candidates
@@ -222,9 +285,26 @@ class SymbolDerivationService:
                 source_errors[name] = f"{type(exc).__name__}: {exc}"
                 return []
 
-        portfolio = (
-            await _safe("portfolio", self._manual.list_tickers(market=market))
-        )[: self._top_held]
+        # Portfolio = manual_holdings ∪ live broker holdings. For crypto the
+        # held positions live on Upbit (not manual_holdings), so we union in
+        # the read-only live source; manual rows still come first for KR/US.
+        manual_portfolio = await _safe(
+            "portfolio", self._manual.list_tickers(market=market)
+        )
+        live_portfolio: list[str] = []
+        if market == "crypto":
+            live_portfolio = await _safe(
+                "portfolio_live",
+                self._live.list_held_symbols(market=market, user_id=user_id),
+            )
+        portfolio: list[str] = []
+        _portfolio_seen: set[str] = set()
+        for sym in [*manual_portfolio, *live_portfolio]:
+            if sym in _portfolio_seen:
+                continue
+            _portfolio_seen.add(sym)
+            portfolio.append(sym)
+        portfolio = portfolio[: self._top_held]
         journal = await _safe(
             "journal", self._journal.list_active_journal_symbols(market=market)
         )
@@ -277,8 +357,24 @@ class SymbolDerivationService:
             dropped = derived[remaining_room:]
             kept = seeds_in_union + kept_derived
 
+        # ROB-357 — per-source coverage so an empty source (especially the
+        # candidate universe) is explained rather than silently blank.
+        source_coverage: dict[str, Any] = {}
+        for name, syms in sources.items():
+            entry: dict[str, Any] = {"count": len(syms)}
+            if name in source_errors:
+                entry["error"] = source_errors[name]
+            source_coverage[name] = entry
+        if not candidate:
+            source_coverage["candidate"]["empty_reason"] = (
+                "fetch_error"
+                if "candidate" in source_errors
+                else "no_fresh_candidate_universe"
+            )
+
         provenance: dict[str, Any] = {
             "sources": sources,
+            "source_coverage": source_coverage,
             "dropped_by_cap": dropped,
             "cap": self._max_symbols,
             "total_unique": len(union),

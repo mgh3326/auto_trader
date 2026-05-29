@@ -125,6 +125,27 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
 CRYPTO_STOP_LOSS_PCT = -4.5
 CRYPTO_MEAN_REVERSION_RSI_EXIT = 46.0
 
+# ROB-357 — provenance label for Upbit (crypto-live) holdings. The MCP
+# ``account_mode`` selector vocabulary ({db_simulated, kis_mock, kis_live}) is a
+# KIS/paper *routing* selector and has no Upbit member, so an Upbit-only holdings
+# read used to inherit the ``kis_live`` routing default and mislabel the source.
+# This descriptive provenance value never participates in order routing.
+UPBIT_LIVE_PROVENANCE = "upbit_live"
+
+
+def _provenance_account_mode(
+    *, broker: str | None, source: str | None, routing_mode: str
+) -> str:
+    """Derive a per-account holdings provenance label (ROB-357).
+
+    Upbit holdings are crypto-live and must surface ``upbit_live`` rather than
+    inheriting the KIS-defaulted routing selector. KIS / paper / manual groups
+    keep the resolved routing mode unchanged.
+    """
+    if broker == "upbit" or source == "upbit_api":
+        return UPBIT_LIVE_PROVENANCE
+    return routing_mode
+
 
 def _build_crypto_strategy_signal(
     position: dict[str, Any],
@@ -831,6 +852,7 @@ async def _get_holdings_impl(
     minimum_value: float | None = None,
     account_name: str | None = None,
     is_mock: bool = False,
+    routing_account_mode: str = "kis_live",
 ) -> dict[str, Any]:
     """Implementation for get_holdings tool."""
     if minimum_value is not None and minimum_value < 0:
@@ -946,6 +968,13 @@ async def _get_holdings_impl(
                 "account": account_id,
                 "broker": position["broker"],
                 "account_name": position["account_name"],
+                # ROB-357 — per-account provenance label so an Upbit group
+                # never inherits the KIS routing default.
+                "account_mode": _provenance_account_mode(
+                    broker=position.get("broker"),
+                    source=position.get("source"),
+                    routing_mode=routing_account_mode,
+                ),
                 "positions": [],
             },
         )
@@ -1161,7 +1190,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
                     "KIS mock account is disabled or missing required "
                     "configuration: " + ", ".join(missing)
                 )
-        return apply_account_routing_metadata(
+        response = apply_account_routing_metadata(
             await _get_holdings_impl(
                 account=account,
                 market=market,
@@ -1169,9 +1198,22 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
                 minimum_value=minimum_value,
                 account_name=account_name,
                 is_mock=routing.is_kis_mock,
+                routing_account_mode=routing.account_mode,
             ),
             routing,
         )
+        # ROB-357 — a crypto/Upbit-scoped read carries no meaningful KIS routing
+        # selector. When the caller did not explicitly choose a KIS/paper mode,
+        # surface the Upbit-live provenance at the top level instead of echoing
+        # the ``kis_live`` default. Order routing is untouched.
+        explicit_selector = account_mode is not None or account_type is not None
+        crypto_scoped = (
+            _parse_holdings_market_filter(market) == "crypto"
+            or (account or "").strip().lower() == "upbit"
+        )
+        if not explicit_selector and crypto_scoped:
+            response["account_mode"] = UPBIT_LIVE_PROVENANCE
+        return response
 
     @mcp.tool(
         name="get_position",
