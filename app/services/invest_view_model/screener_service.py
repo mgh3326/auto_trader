@@ -551,6 +551,28 @@ async def _load_consecutive_gainers_from_snapshots(
     )
 
 
+async def load_consecutive_gainers_from_snapshots(
+    session: AsyncSession | None,
+    *,
+    market: str,
+    limit: int = _SNAPSHOT_FIRST_LIMIT,
+) -> list[dict[str, Any]] | None:
+    """Public, uniform-contract wrapper over ``_load_consecutive_gainers_from_snapshots``.
+
+    Returns the qualifying snapshot rows (each carrying ``_screener_snapshot_state``),
+    ``[]`` when the latest partition has no qualifiers, or ``None`` when no partition
+    exists / the check could not run — matching the ``load_double_buy_from_snapshots``
+    and ``load_high_yield_value_from_snapshots`` contract so the candidate_universe
+    collector can treat all three Toss-parity presets uniformly (ROB-363).
+    """
+    result = await _load_consecutive_gainers_from_snapshots(
+        session, market=market, limit=limit
+    )
+    if result is None:
+        return None
+    return result.rows
+
+
 async def _load_investor_flow_discovery_from_snapshots(
     session: AsyncSession | None,
     *,
