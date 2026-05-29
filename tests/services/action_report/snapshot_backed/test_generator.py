@@ -1395,3 +1395,59 @@ async def test_reuse_via_ingest_race_rebuilds_from_stored() -> None:
     assert response.report_uuid == stored.report_uuid
     assert response.items_count == 4
     assert response.bundle_reused is True
+
+
+@pytest.mark.asyncio
+async def test_cited_snapshot_uuids_derived_from_evidence() -> None:
+    """ROB-352 Slice B — citations derived from evidence_snapshot UUIDs."""
+    snap_a = str(uuid.uuid4())
+    snap_b = str(uuid.uuid4())
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="risk",
+        intent="risk_review",
+        rationale="r",
+        evidence_snapshot={
+            "snapshot_uuid": snap_a,
+            "candidate_snapshot_uuid": snap_b,
+            "snapshot_kind": "symbol",
+            "not_a_uuid": "hello",
+        },
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request(items=[item]))
+
+    sent_items = ingest.calls[0].items
+    cited = sent_items[0].cited_snapshot_uuids
+    assert {str(u) for u in cited} == {snap_a, snap_b}
+
+
+@pytest.mark.asyncio
+async def test_cited_snapshot_uuids_caller_supplied_wins() -> None:
+    """ROB-352 Slice B — explicit caller citations are not overwritten."""
+    explicit = uuid.uuid4()
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="risk",
+        intent="risk_review",
+        rationale="r",
+        evidence_snapshot={"snapshot_uuid": str(uuid.uuid4())},
+        cited_snapshot_uuids=[explicit],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(_make_request(items=[item]))
+    assert ingest.calls[0].items[0].cited_snapshot_uuids == [explicit]

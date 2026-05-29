@@ -139,6 +139,32 @@ def _derive_overall_from_kind_statuses(
     return _RANK_TO_KIND_STATUS[worst_rank]
 
 
+def _extract_cited_snapshot_uuids(evidence_snapshot: Any) -> list[UUID]:
+    """ROB-352 Slice B — collect snapshot UUIDs cited by an item's evidence.
+
+    Picks the ``snapshot_uuid`` key plus any ``*_snapshot_uuid`` extra
+    (candidate/portfolio/news). Skips non-UUID values; dedupes preserving
+    first-seen order.
+    """
+    if not isinstance(evidence_snapshot, Mapping):
+        return []
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for key, value in evidence_snapshot.items():
+        if key != "snapshot_uuid" and not str(key).endswith("_snapshot_uuid"):
+            continue
+        if not isinstance(value, (str, UUID)):
+            continue
+        try:
+            parsed = value if isinstance(value, UUID) else UUID(str(value))
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if parsed not in seen:
+            seen.add(parsed)
+            out.append(parsed)
+    return out
+
+
 def _optional_kind_names(coverage_summary: Any) -> frozenset[str]:
     """Kinds that must not pollute the derived core ``overall`` (ROB-323).
 
@@ -669,6 +695,12 @@ class SnapshotBackedReportGenerator:
             ):
                 if key in item_dict and item_dict[key] is not None:
                     item_dict[key] = to_jsonable(item_dict[key])
+            # ROB-352 Slice B — derive snapshot citations from evidence unless
+            # the caller supplied them explicitly.
+            if not item_dict.get("cited_snapshot_uuids"):
+                item_dict["cited_snapshot_uuids"] = _extract_cited_snapshot_uuids(
+                    item_dict.get("evidence_snapshot") or {}
+                )
             normalized_items.append(item_dict)
 
         metadata = to_jsonable(dict(request.metadata) or {})
