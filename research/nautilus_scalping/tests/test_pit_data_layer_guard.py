@@ -5,7 +5,8 @@ from pathlib import Path
 import artifact_paths
 
 _ROOT = Path(__file__).resolve().parents[1]
-_MODULES = ["pit_klines_fetcher.py", "pit_bars.py", "build_pit_universe.py", "pit_universe.py"]
+_MODULES = ["pit_klines_fetcher.py", "pit_bars.py", "build_pit_universe.py", "pit_universe.py",
+            "campaign_specs.py", "campaign_controls.py", "run_rob353_campaign.py"]
 
 
 def _imports(path: Path):
