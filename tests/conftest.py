@@ -596,6 +596,7 @@ async def db_session():
                     "ADD COLUMN IF NOT EXISTS decision_bucket TEXT",
                     "ADD COLUMN IF NOT EXISTS cited_symbol_report_uuid UUID",
                     "ADD COLUMN IF NOT EXISTS cited_dimension_report_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
+                    "ADD COLUMN IF NOT EXISTS cited_snapshot_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
                 ):
                     await conn.execute(
                         text(f"ALTER TABLE review.investment_report_items {column_sql}")
