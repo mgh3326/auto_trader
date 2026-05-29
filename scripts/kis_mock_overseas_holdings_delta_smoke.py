@@ -3,7 +3,7 @@
 
 US counterpart to ``scripts/kis_mock_holdings_delta_smoke.py`` (domestic, ROB-358).
 Two modes, both KIS **mock** only (``is_mock=True`` -> mock host; overseas mock
-order TRs VTTT1002U/VTTT1006U/VTTT1004U):
+order TRs VTTT1002U/VTTT1001U/VTTT1004U):
 
 * ``--preflight`` — READ-ONLY. Resolves the US exchange, reads the mock overseas
   holdings (``fetch_my_us_stocks``) and a best-effort margin snapshot, prints the

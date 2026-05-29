@@ -36,7 +36,7 @@ account and order lifecycle for both domestic (KR) and overseas (US) markets.
 | `inquire_overseas_orders` | pending-inquiry, cancel/modify-lookup | `/uapi/overseas-stock/v1/trading/inquire-nccs` | `TTTS3018R` | **mock_unsupported** | fails closed (raises `RuntimeError` with `"mock"` in message) | `errors[].mock_unsupported=true` | `tests/test_kis_overseas_pending_mock.py::test_inquire_overseas_orders_mock_fails_closed` |
 | `inquire_daily_order_overseas` | daily-history | `/uapi/overseas-stock/v1/trading/inquire-ccnl` | `TTTS3035R` | `VTTS3035R` | uses mock TR | — | `tests/test_kis_mock_routing.py::test_inquire_daily_order_mock_uses_mock_tr[overseas]` |
 | `order_overseas_stock` (buy) | order-submit | `/uapi/overseas-stock/v1/trading/order` | `TTTT1002U` | `VTTT1002U` | uses mock TR | — | `tests/test_kis_order_ops.py` |
-| `order_overseas_stock` (sell) | order-submit | `/uapi/overseas-stock/v1/trading/order` | `TTTT1006U` | `VTTT1006U` | uses mock TR | — | `tests/test_kis_order_ops.py` |
+| `order_overseas_stock` (sell) | order-submit | `/uapi/overseas-stock/v1/trading/order` | `TTTT1006U` | `VTTT1001U` for US (`NASD/NYSE/AMEX`); `VTTT1006U` retained for non-US overseas mock until separately verified | uses mock TR | — | `tests/test_kis_overseas_orders_retry.py::test_mock_us_sell_order_uses_portal_tr_id` |
 | `cancel_overseas_order` | cancel-submit | `/uapi/overseas-stock/v1/trading/order-rvsecncl` | `TTTT1004U` | `VTTT1004U` | uses mock TR | — | `tests/test_kis_order_ops.py` |
 | `modify_overseas_order` | modify-submit | `/uapi/overseas-stock/v1/trading/order-rvsecncl` | `TTTT1004U` | `VTTT1004U` | uses mock TR | — | `tests/test_kis_order_ops.py` |
 

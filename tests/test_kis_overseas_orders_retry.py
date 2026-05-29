@@ -115,7 +115,6 @@ class TestOverseasOrdersTransientRetry:
             "msg_cd": "SOME_OTHER",
             "msg1": "알 수 없는 오류",
         }
-
         parent._request_with_rate_limit = AsyncMock(return_value=error_response)
 
         with pytest.raises(RuntimeError, match="SOME_OTHER"):
@@ -125,3 +124,58 @@ class TestOverseasOrdersTransientRetry:
 
         # Should fail on first attempt, no retry
         assert parent._request_with_rate_limit.call_count == 1
+
+    @pytest.fixture
+    def _successful_order_response(self):
+        return {
+            "rt_cd": "0",
+            "msg1": "주문 전송 완료",
+            "output": {"ODNO": "0000000001", "ORD_TMD": "093000"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_mock_us_sell_order_uses_portal_tr_id(
+        self, _mock_overseas_orders, _successful_order_response
+    ):
+        """KIS API Portal lists VTTT1001U as US mock sell, not VTTT1006U."""
+        instance, parent = _mock_overseas_orders
+        parent._kis_url = MagicMock(return_value="https://openapivts.example/order")
+        parent._request_with_rate_limit = AsyncMock(
+            return_value=_successful_order_response
+        )
+
+        await instance.sell_overseas_stock(
+            symbol="F",
+            exchange_code="NYSE",
+            quantity=1,
+            price=18.0,
+            is_mock=True,
+        )
+
+        _, kwargs = parent._request_with_rate_limit.call_args
+        assert kwargs["tr_id"] == "VTTT1001U"
+        assert kwargs["headers"]["tr_id"] == "VTTT1001U"
+        assert kwargs["json_body"]["SLL_TYPE"] == "00"
+        assert kwargs["json_body"]["ORD_DVSN"] == "00"
+
+    @pytest.mark.asyncio
+    async def test_non_us_mock_sell_order_keeps_generic_tr_id_until_verified(
+        self, _mock_overseas_orders, _successful_order_response
+    ):
+        instance, parent = _mock_overseas_orders
+        parent._kis_url = MagicMock(return_value="https://openapivts.example/order")
+        parent._request_with_rate_limit = AsyncMock(
+            return_value=_successful_order_response
+        )
+
+        await instance.sell_overseas_stock(
+            symbol="0700",
+            exchange_code="SEHK",
+            quantity=1,
+            price=300.0,
+            is_mock=True,
+        )
+
+        _, kwargs = parent._request_with_rate_limit.call_args
+        assert kwargs["tr_id"] == "VTTT1006U"
+        assert kwargs["headers"]["tr_id"] == "VTTT1006U"
