@@ -86,6 +86,13 @@ def test_screener_presets_endpoint_returns_catalog() -> None:
     assert len(body["presets"]) >= 6
     assert body["selectedPresetId"] == "consecutive_gainers"
     assert any(p["id"] == "consecutive_gainers" for p in body["presets"])
+    # ROB-359 Scope B — catalog provenance flows through the API contract.
+    by_id = {p["id"]: p for p in body["presets"]}
+    assert by_id["consecutive_gainers"]["presetOrigin"] == "toss_parity"
+    assert by_id["consecutive_gainers"]["parityStatus"] == "full"
+    assert by_id["kr_high_volume_surge"]["presetOrigin"] == "auto_trader_original"
+    assert by_id["oversold_recovery"]["parityStatus"] == "mismatch"
+    assert by_id["oversold_recovery"]["parityNote"]
 
 
 @pytest.mark.unit
