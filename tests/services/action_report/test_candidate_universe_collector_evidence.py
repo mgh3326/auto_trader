@@ -429,3 +429,64 @@ async def test_kr_priority_full_fresh_outranks_partial_and_stale(db_session):
     ]
     ordered = sorted(rows, key=lambda pair: _priority_sort_key(pair[0], pair[1]))
     assert [p[0].symbol for p in ordered] == ["C", "B", "A"]
+
+
+@pytest.mark.asyncio
+async def test_kr_stale_only_preset_not_overstated(db_session, monkeypatch):
+    """ROB-363 — when the only preset rows are stale, the collector payload must
+    report usefulness=stale_only and a non-fresh freshness_status, and stamp each
+    candidate data_state=stale (never fabricate freshness). Loaders stubbed."""
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
+    import app.services.invest_view_model.screener_service as ss
+
+    async def _stale_rows(session, *, market, limit):
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "source": "kis",
+                "change_rate": 2.0,
+                "close": 70000,
+                "consecutive_up_days": 6,
+                "volume": 1,
+                "_screener_snapshot_state": "stale",
+            }
+        ]
+
+    async def _none(session, *, market, limit, **kwargs):
+        return None
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _stale_rows)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", _none)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", _none)
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr", account_scope=None, symbols=[], policy_snapshot={}
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["usefulness"] == "stale_only"
+    assert payload["freshness_status"] != "fresh"
+    assert payload["candidates"], (
+        "stale candidates are still surfaced (demoted, not dropped)"
+    )
+    assert all(c["data_state"] == "stale" for c in payload["candidates"])
+    # And the bundle-level freshness must not claim fresh for a stale-only universe.
+    assert results[0].coverage_json["usefulness"] == "stale_only"
+
+
+def test_partial_parity_presets_report_partial_status():
+    """ROB-363 — partial Toss-parity presets (cheap_value, steady_dividend) must
+    derive a 'partial' status, never be inflated to 'full' (honesty criterion)."""
+    from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
+        _toss_parity_status,
+    )
+
+    assert _toss_parity_status("cheap_value", "kr") == "partial"
+    assert _toss_parity_status("steady_dividend", "kr") == "partial"
+    # full presets stay full; non-toss rankings stay not_toss_parity.
+    assert _toss_parity_status("consecutive_gainers", "kr") == "full"
+    assert _toss_parity_status("top_gainers", "kr") == "not_toss_parity"
