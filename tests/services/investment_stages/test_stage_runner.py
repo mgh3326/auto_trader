@@ -26,6 +26,19 @@ class _NewsUnavailable:
         raise UnavailableStageError("no news snapshot")
 
 
+class _CapturingStage:
+    stage_type = "market"
+
+    def __init__(self) -> None:
+        self.seen_market: object = "UNSET"
+
+    async def run(self, ctx: StageContext) -> StageArtifactPayload:
+        self.seen_market = ctx.market
+        return StageArtifactPayload(
+            stage_type="market", verdict=StageVerdict.NEUTRAL, confidence=20
+        )
+
+
 class _StubBundleReadService:
     def __init__(self, bundle_uuid):
         self._bundle_uuid = bundle_uuid
@@ -60,3 +73,22 @@ async def test_stage_runner_runs_all_stages_and_persists(db_session):
     assert [a.stage_type for a in artifacts] == ["market", "news"]
     assert artifacts[0].verdict == "bull"
     assert artifacts[1].verdict == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_stage_runner_plumbs_market_into_context(db_session):
+    # ROB-366 B5: a stage must be able to branch on the bundle market.
+    bundle_uuid = uuid.uuid4()
+    cap = _CapturingStage()
+    runner = StageRunner(
+        session=db_session,
+        bundle_read_service=_StubBundleReadService(bundle_uuid),
+        stages=[cap],
+    )
+    await runner.run(
+        snapshot_bundle_uuid=bundle_uuid,
+        market="us",
+        market_session="regular",
+        account_scope="kis_live",
+    )
+    assert cap.seen_market == "us"

@@ -305,6 +305,7 @@ class HermesContextExporter:
                 "freshness_summary": dict(bundle.freshness_summary or {}),
                 "policy_version": bundle.policy_version,
             },
+            market=bundle.market,
             prior_artifacts={},
         )
 
