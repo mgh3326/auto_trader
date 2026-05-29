@@ -1519,3 +1519,78 @@ async def test_missing_portfolio_descriptor_is_unavailable() -> None:
     sent = ingest.calls[0]
     assert sent.portfolio_snapshot["status"] == "unavailable"
     assert "reason" in sent.portfolio_snapshot
+
+
+@pytest.mark.asyncio
+async def test_crypto_descriptors_are_pointers_not_empty() -> None:
+    """ROB-357 — a fresh crypto/upbit_live bundle must persist non-empty
+    market/portfolio descriptors (pointer: uuid + freshness + coverage), and
+    must never copy the snapshot payload body. ``7a3e97eb`` showed ``{}`` only
+    because it was a stale insert-only reuse of a pre-Slice-B row.
+    """
+    market = _FakeSnap(kind="market")
+    portfolio = _FakeSnap(kind="portfolio")
+    repo = _FakeSnapshotsRepository(
+        bundle=type("B", (), {"id": 7})(),
+        items=[(object(), market), (object(), portfolio)],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=repo,
+    )
+    await gen.generate(
+        _make_request(market="crypto", account_scope="upbit_live", status="draft")
+    )
+    sent = ingest.calls[0]
+
+    # Non-empty pointer descriptors.
+    assert sent.market_snapshot != {}
+    assert sent.portfolio_snapshot != {}
+    assert sent.market_snapshot["snapshot_uuid"] == str(market.snapshot_uuid)
+    assert sent.portfolio_snapshot["snapshot_uuid"] == str(portfolio.snapshot_uuid)
+    assert sent.market_snapshot["freshness_status"] == "fresh"
+    assert sent.portfolio_snapshot["coverage"] == {"rows": 3}
+
+    # Pointer, NOT payload — the snapshot body must never be copied in.
+    for descriptor in (sent.market_snapshot, sent.portfolio_snapshot):
+        assert "payload_json" not in descriptor
+        assert "holdings" not in descriptor
+        assert "events" not in descriptor
+
+
+@pytest.mark.asyncio
+async def test_crypto_item_citations_derived_from_evidence() -> None:
+    """ROB-357 — when a crypto item carries evidence with snapshot UUIDs, the
+    generator fills ``cited_snapshot_uuids`` (citation connection intact)."""
+    snap = str(uuid.uuid4())
+    item = IngestReportItem(
+        client_item_key="c1",
+        item_kind="risk",
+        symbol="KRW-BTC",
+        intent="risk_review",
+        rationale="r",
+        evidence_snapshot={"snapshot_uuid": snap, "snapshot_kind": "symbol"},
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=_FakeSnapshotsRepository(),
+    )
+    await gen.generate(
+        _make_request(
+            market="crypto",
+            account_scope="upbit_live",
+            status="draft",
+            items=[item],
+        )
+    )
+    sent_items = ingest.calls[0].items
+    cited = sent_items[0].cited_snapshot_uuids
+    assert [str(u) for u in cited] == [snap]
