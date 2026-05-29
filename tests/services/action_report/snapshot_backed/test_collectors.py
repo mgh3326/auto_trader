@@ -741,6 +741,128 @@ async def test_market_collector_query_failure_returns_unavailable():
     assert "boom" in results[0].errors_json["reason"]
 
 
+def _empty_events_query() -> MagicMock:
+    from app.schemas.market_events import MarketEventsRangeResponse
+
+    query = MagicMock()
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=dt.date(2026, 5, 19),
+            to_date=dt.date(2026, 5, 20),
+            count=0,
+            events=[],
+        )
+    )
+    return query
+
+
+@pytest.mark.asyncio
+async def test_market_collector_us_populates_indices_dict():
+    # ROB-366 B5: market-conditioned US index set, list-rows adapted into the
+    # dict-of-dicts MarketStage reads, with change_pct → change_percent.
+    captured: dict = {}
+
+    async def fake_index_fn(symbols):
+        captured["symbols"] = list(symbols)
+        return [
+            {"symbol": "SPX", "name": "S&P 500", "current": 5000.0, "change_pct": 1.1},
+            {
+                "symbol": "NASDAQ",
+                "name": "NASDAQ",
+                "current": 16000.0,
+                "change_pct": 0.8,
+            },
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="us"))
+    payload = results[0].payload_json
+    assert payload["indices"]["SPX"]["change_percent"] == 1.1
+    assert payload["indices"]["NASDAQ"]["change_percent"] == 0.8
+    assert "events" in payload  # events payload still emitted
+    # market-conditioned symbol set requested from the source
+    assert "SPX" in captured["symbols"] and "NASDAQ" in captured["symbols"]
+
+
+@pytest.mark.asyncio
+async def test_market_collector_kr_populates_kospi():
+    async def fake_index_fn(symbols):
+        return [
+            {"symbol": "KOSPI", "name": "코스피", "current": 2700.0, "change_pct": 0.5},
+            {
+                "symbol": "KOSDAQ",
+                "name": "코스닥",
+                "current": 850.0,
+                "change_pct": -0.2,
+            },
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="kr"))
+    payload = results[0].payload_json
+    assert payload["indices"]["KOSPI"]["change_percent"] == 0.5
+    assert "events" in payload
+
+
+@pytest.mark.asyncio
+async def test_market_collector_omits_index_with_none_change_pct():
+    # yfinance previous_close missing → change_pct None must be omitted, never 0.0.
+    async def fake_index_fn(symbols):
+        return [{"symbol": "SPX", "name": "S&P 500", "change_pct": None}]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="us"))
+    payload = results[0].payload_json
+    assert payload.get("indices", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_market_collector_index_fetch_failure_is_soft():
+    async def fake_index_fn(symbols):
+        raise RuntimeError("yfinance down")
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="us"))
+    # Index failure is soft: events payload still emitted, snapshot still fresh.
+    assert results[0].freshness_status == "fresh"
+    assert "events" in results[0].payload_json
+    assert results[0].payload_json.get("indices", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_market_collector_crypto_emits_no_indices():
+    called = {"hit": False}
+
+    async def fake_index_fn(symbols):
+        called["hit"] = True
+        return []
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="crypto"))
+    assert results[0].payload_json.get("indices", {}) == {}
+    assert called["hit"] is False  # no index fetch for crypto
+
+
+@pytest.mark.asyncio
+async def test_market_collector_no_index_fn_emits_no_indices():
+    # Back-compat: without an injected source the payload is events-only.
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query()
+    )
+    results = await collector.collect(_request(market="us"))
+    assert "indices" not in results[0].payload_json
+
+
 # ---------------------------------------------------------------------------
 # News collector
 # ---------------------------------------------------------------------------

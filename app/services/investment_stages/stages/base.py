@@ -20,6 +20,10 @@ class StageContext:
     bundle_uuid: uuid.UUID
     snapshots_by_kind: dict[str, list[InvestmentSnapshot]]
     bundle_metadata: dict[str, Any]
+    # Bundle market ("kr" / "us" / "crypto"). Lets a stage branch on market
+    # (e.g. MarketStage selecting KOSPI vs SPX). Defaults to None so callers
+    # that pre-date the field still construct a valid context.
+    market: str | None = None
     prior_artifacts: dict[str, StageArtifactPayload] = dataclasses.field(
         default_factory=dict
     )
