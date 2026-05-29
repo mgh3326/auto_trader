@@ -133,3 +133,22 @@ def test_parse_metrics_csv_empty_ratio_field_is_none():
     assert r.sum_open_interest == 39080.231
     assert r.count_toptrader_long_short_ratio is None
     assert r.sum_taker_long_short_vol_ratio is None
+
+
+def test_parse_metrics_csv_quoted_empty_ratio_field_is_none():
+    # REAL archives (ROB-360 finding) encode empty ratio columns as CSV-quoted empty
+    # fields ("") rather than bare blanks. A naive split(",") leaves the literal 2-char
+    # string '""' and float('""') raises -> the whole symbol was being SKIP'd, which
+    # disproportionately killed 2022-era delisted symbols (ROB-349 survivorship). The
+    # parser must treat a quoted-empty cell as None and still parse populated columns.
+    csv = METRICS_HEADER + (
+        '2022-01-26 03:35:00,1000BTTCUSDT,2023567.00000000,4176.01498223,"","",8.5,""\n'
+    )
+    (r,) = foa.parse_metrics_csv(csv)
+    assert r.symbol == "1000BTTCUSDT"
+    assert r.sum_open_interest == 2023567.0
+    assert r.sum_open_interest_value == 4176.01498223
+    assert r.count_toptrader_long_short_ratio is None
+    assert r.sum_toptrader_long_short_ratio is None
+    assert r.count_long_short_ratio == 8.5
+    assert r.sum_taker_long_short_vol_ratio is None
