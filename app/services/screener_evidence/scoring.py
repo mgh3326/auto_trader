@@ -29,3 +29,14 @@ def rank_score(index: int, count: int) -> float:
     if count <= 1:
         return 10.0
     return clamp(10.0 * (1.0 - index / count))
+
+
+def high_yield_value_score(roe: float | None, per: float | None) -> float:
+    """ROE-led value score (ROB-363). Higher ROE and lower PER → higher score.
+
+    Both qualify under the preset (ROE>=15, 0<PER<=10) so both contribute:
+    ROE 15 → +0, ROE 35 → +5 (capped); PER 10 → +0, PER 0 → +5. ``None`` parts
+    contribute 0. Result clamped 0–10."""
+    roe_part = 0.0 if roe is None else clamp((roe - 15.0) / 4.0, 0.0, 5.0)
+    per_part = 0.0 if per is None else clamp((10.0 - per) / 2.0, 0.0, 5.0)
+    return clamp(roe_part + per_part)

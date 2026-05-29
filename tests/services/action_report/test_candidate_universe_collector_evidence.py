@@ -262,13 +262,18 @@ async def test_kr_collector_falls_back_to_top_gainers_when_no_preset_rows(
 ):
     """ROB-363 — when KR Toss-parity presets yield no rows, the collector falls
     back to the top_gainers momentum ranking (not_toss_parity), deterministically
-    (loader stubbed to None, so this does not depend on DB contents)."""
+    (ALL three preset loaders stubbed to None, so this does not depend on DB
+    contents in investor_flow_snapshots / market_valuation_snapshots either)."""
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
     import app.services.invest_view_model.screener_service as ss
 
-    async def _no_rows(session, *, market, limit):
+    async def _no_rows(session, *, market, limit, **kwargs):
         return None
 
     monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _no_rows)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", _no_rows)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", _no_rows)
 
     repo = _FakeEquityRepository()
     collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
@@ -329,3 +334,64 @@ async def test_kr_preset_pool_wider_than_limit_is_capped(db_session, monkeypatch
     assert payload["capped"] is True
     assert len(payload["candidates"]) == 2
     assert results[0].coverage_json["capped"] is True
+
+
+@pytest.mark.asyncio
+async def test_kr_collector_merges_duplicate_symbol_across_presets(
+    db_session, monkeypatch
+):
+    """ROB-363 — a symbol surfaced by two presets becomes ONE candidate whose
+    reasons union both presets' provenance. Loaders stubbed (no DB dependency)."""
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
+    import app.services.invest_view_model.screener_service as ss
+
+    async def fake_consecutive(session, *, market, limit):
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "source": "kis",
+                "change_rate": 2.0,
+                "close": 70000,
+                "consecutive_up_days": 6,
+                "volume": 1,
+                "_screener_snapshot_state": "fresh",
+            }
+        ]
+
+    async def fake_double_buy(session, *, market, limit):
+        return None
+
+    async def fake_high_yield(session, *, market, limit, today_market_date=None):
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "source": "kis",
+                "change_rate": 2.0,
+                "latest_close": 70000,
+                "roe": 20.0,
+                "per": 7.0,
+                "volume": 1,
+                "_screener_snapshot_state": "fresh",
+            }
+        ]
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", fake_consecutive)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", fake_double_buy)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", fake_high_yield)
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr", account_scope=None, symbols=[], policy_snapshot={}
+        )
+    )
+    payload = results[0].payload_json
+    rows_005930 = [c for c in payload["candidates"] if c["symbol"] == "005930"]
+    assert len(rows_005930) == 1, "duplicate symbol must merge to one candidate"
+    merged = rows_005930[0]
+    reason_text = " ".join(merged["reasons"])
+    assert "연속 상승" in reason_text  # from consecutive_gainers
+    assert "저평가" in reason_text or "ROE" in reason_text  # from high_yield_value

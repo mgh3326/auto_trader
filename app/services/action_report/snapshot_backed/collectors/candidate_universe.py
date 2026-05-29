@@ -11,6 +11,7 @@ read-only and degrades to ``unavailable`` on exception.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections.abc import Callable, Hashable
 from typing import Any
@@ -113,42 +114,56 @@ def _crypto_row_to_input(row: InvestCryptoScreenerSnapshot) -> dict[str, Any]:
     }
 
 
-def _gainers_row_to_input(row: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a consecutive_gainers loader row into builder input.
+def _preset_row_to_input(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize any KR Toss-parity loader row into builder input, carrying the
+    fundamental fields each preset's builder branch needs (ROB-363).
 
-    The loader emits ``close``/``week_change_rate``/``consecutive_up_days``/
-    ``volume`` plus ``_screener_snapshot_state`` (ROB-363). The builder's
-    momentum branch reads these via the close/volume fallbacks and appends the
-    연속 상승 reason.
-    """
+    Normalization is uniform across presets — the builder selects which fields
+    to score by the ``preset`` argument it is given separately."""
     return {
         "symbol": row.get("symbol"),
         "name": row.get("name") or row.get("symbol"),
         "source": row.get("source") or "kis",
         "change_rate": row.get("change_rate"),
-        "close": row.get("close"),
-        "volume": row.get("volume"),
+        "close": row.get("close") or row.get("latest_close"),
+        "latest_close": row.get("latest_close") or row.get("close"),
+        "volume": row.get("volume") or row.get("daily_volume"),
         "consecutive_up_days": row.get("consecutive_up_days"),
+        "foreign_consecutive_buy_days": row.get("foreign_consecutive_buy_days"),
+        "roe": row.get("roe"),
+        "per": row.get("per"),
+        "pbr": row.get("pbr"),
     }
 
 
-def _dedupe_evidence(
+def _merge_evidence(
     evidence: list[CandidateEvidence], *, key: Callable[[CandidateEvidence], Hashable]
 ) -> list[CandidateEvidence]:
-    """Order-preserving dedupe of CandidateEvidence by ``key`` (ROB-363).
+    """Merge duplicate-symbol CandidateEvidence across presets (ROB-363).
 
-    PR1 keeps the first occurrence (highest-ranked from a single preset). PR2
-    replaces this with a reason-merging variant once multiple presets feed the
-    pool."""
-    seen: set[Any] = set()
-    out: list[CandidateEvidence] = []
+    Keeps the first occurrence's scalar fields (symbol/score/source_preset) and
+    UNIONS ``reasons`` + ``risk_flags`` (order-preserving, deduped) from every
+    preset that surfaced the symbol, so per-source provenance is preserved.
+    Order-preserving on first occurrence."""
+    order: list[Hashable] = []
+    merged: dict[Hashable, CandidateEvidence] = {}
     for ev in evidence:
         k = key(ev)
-        if k in seen:
+        if k not in merged:
+            merged[k] = ev
+            order.append(k)
             continue
-        seen.add(k)
-        out.append(ev)
-    return out
+        prev = merged[k]
+        reasons = list(prev.reasons)
+        for r in ev.reasons:
+            if r not in reasons:
+                reasons.append(r)
+        flags = list(prev.risk_flags)
+        for f in ev.risk_flags:
+            if f not in flags:
+                flags.append(f)
+        merged[k] = dataclasses.replace(prev, reasons=reasons, risk_flags=flags)
+    return [merged[k] for k in order]
 
 
 def _toss_parity_status(preset: str, market: str) -> str:
@@ -295,19 +310,33 @@ class CandidateUniverseSnapshotCollector:
     ) -> list[SnapshotCollectResult] | None:
         """KR Toss-parity preset sourcing (ROB-363). Returns None when no preset
         produced any rows, so the caller falls back to top_gainers."""
-        from app.services.invest_view_model.screener_service import (
-            load_consecutive_gainers_from_snapshots,
+        from app.services.invest_view_model import (
+            double_buy_screener,
+            high_yield_value_screener,
+            screener_service,
         )
 
-        # (preset_id, loader) — PR2 adds double_buy + high_yield_value here.
+        # (preset_id, module, attr) — resolved via getattr at loop time so
+        # monkeypatch.setattr(module, attr, fake) is honoured in tests.
         pool_limit = max(limit * 3, limit + 20)
         loaders = [
-            ("consecutive_gainers", load_consecutive_gainers_from_snapshots),
+            (
+                "consecutive_gainers",
+                screener_service,
+                "load_consecutive_gainers_from_snapshots",
+            ),
+            ("double_buy", double_buy_screener, "load_double_buy_from_snapshots"),
+            (
+                "high_yield_value",
+                high_yield_value_screener,
+                "load_high_yield_value_from_snapshots",
+            ),
         ]
         evidence: list[CandidateEvidence] = []
         per_state: dict[str, str] = {}  # db_symbol -> fresh|stale
         any_rows = False
-        for preset_id, loader in loaders:
+        for preset_id, module, attr in loaders:
+            loader = getattr(module, attr)
             rows = await loader(self._session, market="kr", limit=pool_limit)
             if not rows:  # None (missing) or [] (stale-empty)
                 continue
@@ -315,21 +344,23 @@ class CandidateUniverseSnapshotCollector:
             built = build_candidate_evidence(
                 market="kr",
                 preset=preset_id,
-                rows=[_gainers_row_to_input(r) for r in rows],
+                rows=[_preset_row_to_input(r) for r in rows],
             )
             # Map freshness by symbol from the raw loader rows — NOT by zipping
             # against ``built``, which build_candidate_evidence re-sorts by score
             # (the positions no longer line up). Keyed by db symbol so it stays
-            # correct once PR2 fans in multiple presets.
+            # correct once PR2 fans in multiple presets. A fresh state from ANY
+            # preset wins over stale (a symbol fresh in one source is fresh).
             for src_row in rows:
-                per_state[to_db_symbol(str(src_row.get("symbol")))] = (
-                    src_row.get("_screener_snapshot_state") or "fresh"
-                )
+                k = to_db_symbol(str(src_row.get("symbol")))
+                state = src_row.get("_screener_snapshot_state") or "fresh"
+                if per_state.get(k) != "fresh":
+                    per_state[k] = state
             evidence.extend(built)
         if not any_rows:
             return None
 
-        evidence = _dedupe_evidence(evidence, key=lambda e: to_db_symbol(e.symbol))
+        evidence = _merge_evidence(evidence, key=lambda e: to_db_symbol(e.symbol))
         # Distinct evaluated symbols (pre-slice) = the candidate universe size,
         # so ``capped`` reflects a pool wider than the displayed limit.
         universe_count = len(per_state)

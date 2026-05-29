@@ -141,3 +141,46 @@ def test_consecutive_gainers_preset_reasons_and_score():
     assert ev.price == 70000.0  # reads `close` when `price` absent
     assert any("연속 상승" in r for r in ev.reasons)
     assert ev.score > 5.0  # +2.0% momentum -> above neutral
+
+
+def test_double_buy_preset_reasons():
+    from app.services.screener_evidence.builder import build_candidate_evidence
+
+    rows = [
+        {
+            "symbol": "000660",
+            "name": "SK하이닉스",
+            "source": "kis",
+            "change_rate": 1.0,
+            "latest_close": 180000,
+            "volume": 500000,
+            "foreign_net": 1_000_000,
+            "institution_net": 500_000,
+            "foreign_consecutive_buy_days": 3,
+        }
+    ]
+    out = build_candidate_evidence(market="kr", preset="double_buy", rows=rows)
+    assert out[0].source_preset == "double_buy"
+    assert any("쌍끌이" in r or "외국인" in r for r in out[0].reasons)
+
+
+def test_high_yield_value_preset_reasons_and_score_label():
+    from app.services.screener_evidence.builder import build_candidate_evidence
+
+    rows = [
+        {
+            "symbol": "005490",
+            "name": "POSCO홀딩스",
+            "source": "kis",
+            "change_rate": 0.5,
+            "latest_close": 400000,
+            "volume": 100000,
+            "roe": 18.0,
+            "per": 6.5,
+            "pbr": 0.8,
+        }
+    ]
+    out = build_candidate_evidence(market="kr", preset="high_yield_value", rows=rows)
+    assert out[0].source_preset == "high_yield_value"
+    assert "ROE" in out[0].score_label or "PER" in out[0].score_label
+    assert any("저평가" in r or "ROE" in r for r in out[0].reasons)
