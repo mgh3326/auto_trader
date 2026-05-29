@@ -184,6 +184,25 @@ def _toss_parity_status(preset: str, market: str) -> str:
     return preset_def.parityStatus or "not_toss_parity"
 
 
+_PARITY_RANK = {"full": 0, "partial": 1, "mismatch": 2, "not_toss_parity": 3}
+_FRESHNESS_RANK = {"fresh": 0, "stale": 1, "missing": 2}
+
+
+def _priority_sort_key(
+    ev: CandidateEvidence, data_state: str
+) -> tuple[int, int, float, str]:
+    """Deterministic candidate priority (ROB-363): full Toss parity first, then
+    fresh, then higher score, then symbol (stable tiebreak). Lower tuple sorts
+    first; ``-score`` makes higher score rank earlier."""
+    parity = _toss_parity_status(ev.source_preset or "top_gainers", "kr")
+    return (
+        _PARITY_RANK.get(parity, 3),
+        _FRESHNESS_RANK.get(data_state, 2),
+        -ev.score,
+        ev.symbol,
+    )
+
+
 def _source_coverage(evidence: list[CandidateEvidence]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for ev in evidence:
@@ -361,6 +380,13 @@ class CandidateUniverseSnapshotCollector:
             return None
 
         evidence = _merge_evidence(evidence, key=lambda e: to_db_symbol(e.symbol))
+        # Deterministic priority: full Toss parity + fresh + higher score first,
+        # so the displayed slice keeps the strongest candidates (ROB-363).
+        evidence.sort(
+            key=lambda e: _priority_sort_key(
+                e, per_state.get(to_db_symbol(e.symbol), "fresh")
+            )
+        )
         # Distinct evaluated symbols (pre-slice) = the candidate universe size,
         # so ``capped`` reflects a pool wider than the displayed limit.
         universe_count = len(per_state)

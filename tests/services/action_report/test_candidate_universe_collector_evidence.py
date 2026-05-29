@@ -395,3 +395,37 @@ async def test_kr_collector_merges_duplicate_symbol_across_presets(
     reason_text = " ".join(merged["reasons"])
     assert "연속 상승" in reason_text  # from consecutive_gainers
     assert "저평가" in reason_text or "ROE" in reason_text  # from high_yield_value
+
+
+@pytest.mark.asyncio
+async def test_kr_priority_full_fresh_outranks_partial_and_stale(db_session):
+    """ROB-363 — deterministic priority: full+fresh+higher-score first. Internal
+    pool wider than candidate_limit, then sliced."""
+    from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
+        _priority_sort_key,
+    )
+    from app.services.screener_evidence.models import CandidateEvidence
+
+    def ev(symbol, preset, score):
+        return CandidateEvidence(
+            symbol=symbol,
+            market="kr",
+            name=symbol,
+            score=score,
+            score_label="",
+            change_rate=None,
+            price=None,
+            volume_value=None,
+            reasons=[],
+            source="kis",
+            risk_flags=[],
+            source_preset=preset,
+        )
+
+    rows = [
+        (ev("A", "consecutive_gainers", 6.0), "stale"),  # full but stale
+        (ev("B", "high_yield_value", 5.0), "fresh"),  # full + fresh, lower score
+        (ev("C", "high_yield_value", 9.0), "fresh"),  # full + fresh, top score
+    ]
+    ordered = sorted(rows, key=lambda pair: _priority_sort_key(pair[0], pair[1]))
+    assert [p[0].symbol for p in ordered] == ["C", "B", "A"]
