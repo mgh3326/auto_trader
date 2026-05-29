@@ -5,8 +5,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.investment_reports import InvestmentReport
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
@@ -26,6 +28,22 @@ from app.services.investment_reports.query_service import (
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
 from tests._investment_reports_helpers import future_datetime
+
+
+async def _publish(session: AsyncSession, report: InvestmentReport) -> None:
+    """ROB-352: set status='published', clearing snapshot_freshness_summary to SQL
+    NULL so the DB CHECK constraint (ck_investment_reports_no_published_on_hard_stale)
+    is satisfied.  Direct SQL avoids asyncpg serialising Python None → JSON null.
+    """
+    await session.execute(
+        sa.text(
+            "UPDATE review.investment_reports"
+            " SET status = 'published', snapshot_freshness_summary = NULL"
+            " WHERE id = :id"
+        ).bindparams(id=report.id)
+    )
+    await session.flush()
+    await session.refresh(report)
 
 
 def _request(*, kst_date: str, market: str = "kr", **overrides) -> IngestReportRequest:
@@ -198,6 +216,9 @@ async def test_previous_context_aggregates_across_prior_reports(
             items=[_action_item(client_item_key="r2-action-1", symbol="035420")],
         )
     )
+    # ROB-352: publish r1 and r2 so they appear in prior context (drafts excluded).
+    await _publish(session, r1)
+    await _publish(session, r2)
 
     repo = InvestmentReportsRepository(session)
     r1_items = await repo.list_items_for_report(r1.id)
@@ -251,6 +272,9 @@ async def test_previous_context_excludes_named_report(
     ingest = InvestmentReportIngestionService(session)
     r1 = await ingest.ingest(_request(kst_date="2026-05-17"))
     r2 = await ingest.ingest(_request(kst_date="2026-05-18"))
+    # ROB-352: publish r1 so it appears in prior context (drafts excluded).
+    await _publish(session, r1)
+    await _publish(session, r2)
 
     query = InvestmentReportQueryService(session)
     ctx = await query.previous_report_context(
@@ -264,8 +288,13 @@ async def test_previous_context_respects_n_prior_limit(
     session: AsyncSession,
 ) -> None:
     ingest = InvestmentReportIngestionService(session)
+    reports = []
     for date in ("2026-05-14", "2026-05-15", "2026-05-16", "2026-05-17"):
-        await ingest.ingest(_request(kst_date=date))
+        r = await ingest.ingest(_request(kst_date=date))
+        reports.append(r)
+    # ROB-352: publish all so they appear in prior context (drafts excluded).
+    for r in reports:
+        await _publish(session, r)
 
     query = InvestmentReportQueryService(session)
     ctx = await query.previous_report_context(market="kr", n_prior=2)
