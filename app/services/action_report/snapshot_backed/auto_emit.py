@@ -359,6 +359,7 @@ class EvidenceAutoEmitter:
                 quote,
                 universe_useful=candidate_actionable,
                 quote_snapshot_present=symbol_pair is not None,
+                candidate_fresh=(cand.get("data_state") or "fresh") == "fresh",
             )
             reject_or_wait_reason: str | None = None
             if verdict == "data_gap":
