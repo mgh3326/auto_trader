@@ -113,25 +113,6 @@ def _crypto_row_to_input(row: InvestCryptoScreenerSnapshot) -> dict[str, Any]:
     }
 
 
-def _gainers_row_to_input(row: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a consecutive_gainers loader row into builder input.
-
-    The loader emits ``close``/``week_change_rate``/``consecutive_up_days``/
-    ``volume`` plus ``_screener_snapshot_state`` (ROB-363). The builder's
-    momentum branch reads these via the close/volume fallbacks and appends the
-    연속 상승 reason.
-    """
-    return {
-        "symbol": row.get("symbol"),
-        "name": row.get("name") or row.get("symbol"),
-        "source": row.get("source") or "kis",
-        "change_rate": row.get("change_rate"),
-        "close": row.get("close"),
-        "volume": row.get("volume"),
-        "consecutive_up_days": row.get("consecutive_up_days"),
-    }
-
-
 def _preset_row_to_input(preset: str, row: dict[str, Any]) -> dict[str, Any]:
     """Normalize any KR Toss-parity loader row into builder input, carrying the
     fundamental fields each preset's builder branch needs (ROB-363)."""
