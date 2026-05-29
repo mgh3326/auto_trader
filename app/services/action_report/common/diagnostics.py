@@ -210,6 +210,12 @@ def _why(kind: WhyNoActionKind, blocking_sources: list[str]) -> dict[str, Any]:
 
 ReportQualityGrade = Literal["high_confidence", "informational_only", "no_action"]
 
+# ROB-366 B10 — minimum internal (core + optional, external-excluded) fresh
+# coverage for a non-complete bundle to honestly read as high_confidence. Below
+# this, with no passing external cross-check, the grade is demoted to
+# informational_only (display/audit only — never blocks generation).
+HIGH_CONFIDENCE_MIN_COVERAGE_PCT = 70
+
 
 def build_data_sufficiency_by_source(
     freshness_summary: Mapping[str, Any] | None,
@@ -278,10 +284,20 @@ def build_report_quality_summary(
     * ``external_cross_check_status`` — worst status across the external audit
       kinds present, or ``None`` if none were attempted.
 
-    Grade (unchanged basis — critical kinds + bundle_status):
+    Grade:
     * ``no_action`` — bundle failed or fell back to stale data.
-    * ``informational_only`` — a critical kind is degrading.
-    * ``high_confidence`` — all critical kinds usable.
+    * ``informational_only`` — a critical kind is degrading, OR (ROB-366 B10)
+      the core is not fully fresh, OR internal coverage is below
+      ``HIGH_CONFIDENCE_MIN_COVERAGE_PCT`` with no usable external cross-check to
+      corroborate (a degrading cross-check does not count).
+    * ``high_confidence`` — core fully fresh AND (ample internal coverage OR a
+      usable external cross-check). A genuinely complete bundle is internally
+      all-fresh (the producer's invariant), so it satisfies both checks and is
+      never demoted — no completeness special-case is needed.
+
+    The demotion is one-directional (only ``high_confidence`` →
+    ``informational_only``) and the grade is display/audit metadata only, so it
+    never blocks report generation (ROB-323 external fail-open preserved).
     """
     summary = freshness_summary or {}
     counts: dict[str, int] = {}
@@ -321,6 +337,30 @@ def build_report_quality_summary(
         grade = "informational_only"
     else:
         grade = "high_confidence"
+        # ROB-366 B10 — honesty demotion. The grade is display/audit metadata
+        # (no backend gating reads it), so demoting it never blocks generation
+        # and the ROB-323 external fail-open invariant is preserved: external
+        # probes are excluded from the coverage denominator and only ever enter
+        # as a *compensating* cross-check, never as a hard gate. Computed over
+        # internal kinds only so an un-run operator probe cannot tank an
+        # otherwise-fresh report. A genuinely complete bundle is fresh across all
+        # internal kinds (coverage 100%, core fully fresh) so it never demotes.
+        internal_total = core_total + optional_total
+        internal_fresh = core_fresh + optional_fresh
+        internal_pct = (
+            round(100 * internal_fresh / internal_total) if internal_total else 0
+        )
+        core_incomplete = core_total > 0 and core_fresh < core_total
+        thin_coverage = internal_pct < HIGH_CONFIDENCE_MIN_COVERAGE_PCT
+        # A cross-check only corroborates when it is present and not itself
+        # degrading — a hard_stale/unavailable/failed probe is stale-expired
+        # evidence and must not rescue thin coverage.
+        no_cross_check = (
+            external_status is None
+            or external_status in CRITICAL_KIND_DEGRADING_STATUSES
+        )
+        if core_incomplete or (thin_coverage and no_cross_check):
+            grade = "informational_only"
 
     return {
         "grade": grade,
