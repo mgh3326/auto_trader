@@ -286,3 +286,46 @@ async def test_kr_collector_falls_back_to_top_gainers_when_no_preset_rows(
     top = payload["candidates"][0]
     assert top["source_preset"] == "top_gainers"
     assert top["toss_parity_status"] == "not_toss_parity"
+
+
+@pytest.mark.asyncio
+async def test_kr_preset_pool_wider_than_limit_is_capped(db_session, monkeypatch):
+    """ROB-363 — the KR preset pool is gathered wider than candidate_limit, then
+    sliced; universe_count reflects the full evaluated pool and capped is True.
+    Loader stubbed so the assertion does not depend on DB contents."""
+    import app.services.invest_view_model.screener_service as ss
+
+    async def _three_fresh_rows(session, *, market, limit):
+        return [
+            {
+                "symbol": sym,
+                "name": sym,
+                "source": "kis",
+                "change_rate": rate,
+                "close": 1000,
+                "consecutive_up_days": 6,
+                "volume": 1,
+                "_screener_snapshot_state": "fresh",
+            }
+            for sym, rate in [("000660", 9.0), ("005930", 8.0), ("035720", 7.0)]
+        ]
+
+    monkeypatch.setattr(
+        ss, "load_consecutive_gainers_from_snapshots", _three_fresh_rows
+    )
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["universe_count"] == 3
+    assert payload["capped"] is True
+    assert len(payload["candidates"]) == 2
+    assert results[0].coverage_json["capped"] is True

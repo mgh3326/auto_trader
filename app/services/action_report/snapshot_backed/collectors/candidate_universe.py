@@ -317,8 +317,12 @@ class CandidateUniverseSnapshotCollector:
                 preset=preset_id,
                 rows=[_gainers_row_to_input(r) for r in rows],
             )
-            for ev, src_row in zip(built, rows, strict=False):
-                per_state[to_db_symbol(ev.symbol)] = (
+            # Map freshness by symbol from the raw loader rows — NOT by zipping
+            # against ``built``, which build_candidate_evidence re-sorts by score
+            # (the positions no longer line up). Keyed by db symbol so it stays
+            # correct once PR2 fans in multiple presets.
+            for src_row in rows:
+                per_state[to_db_symbol(str(src_row.get("symbol")))] = (
                     src_row.get("_screener_snapshot_state") or "fresh"
                 )
             evidence.extend(built)
@@ -326,6 +330,9 @@ class CandidateUniverseSnapshotCollector:
             return None
 
         evidence = _dedupe_evidence(evidence, key=lambda e: to_db_symbol(e.symbol))
+        # Distinct evaluated symbols (pre-slice) = the candidate universe size,
+        # so ``capped`` reflects a pool wider than the displayed limit.
+        universe_count = len(per_state)
         evidence = evidence[:limit]
         return [
             self._build_preset_candidate_result(
@@ -334,7 +341,7 @@ class CandidateUniverseSnapshotCollector:
                 evidence=evidence,
                 per_state=per_state,
                 candidate_limit=limit,
-                universe_count=len(evidence),
+                universe_count=universe_count,
             )
         ]
 
