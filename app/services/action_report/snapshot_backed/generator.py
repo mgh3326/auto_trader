@@ -326,6 +326,11 @@ class SnapshotBackedReportGenerator:
         )
         source_conflicts: dict[str, Any] = {}
 
+        market_snapshot, portfolio_snapshot = await self._section_snapshot_descriptors(
+            bundle_uuid=ensure_response.bundle_uuid,
+            unavailable_sources=unavailable_sources,
+        )
+
         # ROB-318 Phase 3 — deterministic report diagnostics, computed before the
         # ingest request so they persist on the report row (PR-B). why_no_action
         # tells a genuine hold from a data-blocked / stale-gated one; the bundle
@@ -374,6 +379,8 @@ class SnapshotBackedReportGenerator:
             source_conflicts=source_conflicts,
             report_diagnostics=report_diagnostics,
             symbol_derivation=derivation,
+            market_snapshot=market_snapshot,
+            portfolio_snapshot=portfolio_snapshot,
         )
 
         # Authoritative gate runs inside ingest(); this pre-flight is a
@@ -517,6 +524,49 @@ class SnapshotBackedReportGenerator:
             request_market=request.market,
             account_scope=request.account_scope,
         )
+
+    async def _section_snapshot_descriptors(
+        self,
+        *,
+        bundle_uuid: UUID,
+        unavailable_sources: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """ROB-352 Slice B — compact provenance descriptors for the report's
+        market / portfolio sections.
+
+        Pointer + freshness into ``investment_snapshots`` (never a full
+        payload copy). Absent kinds get an explicit unavailable reason.
+        """
+
+        def _unavailable(kind: str) -> dict[str, Any]:
+            info = unavailable_sources.get(kind)
+            reason = "not_collected"
+            if isinstance(info, Mapping):
+                reason = str(info.get("reason") or info.get("status") or reason)
+            return {"status": "unavailable", "reason": reason}
+
+        def _descriptor(snapshot: Any) -> dict[str, Any]:
+            as_of = getattr(snapshot, "as_of", None)
+            return {
+                "snapshot_uuid": str(snapshot.snapshot_uuid),
+                "snapshot_kind": snapshot.snapshot_kind,
+                "as_of": as_of.isoformat() if as_of is not None else None,
+                "freshness_status": getattr(snapshot, "freshness_status", None),
+                "coverage": getattr(snapshot, "coverage_json", None) or {},
+            }
+
+        market = _unavailable("market")
+        portfolio = _unavailable("portfolio")
+        bundle = await self._snapshots_repo.get_bundle_by_uuid(bundle_uuid)
+        if bundle is None:
+            return market, portfolio
+        pairs = await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
+        for _item, snapshot in pairs:
+            if snapshot.snapshot_kind == "market":
+                market = _descriptor(snapshot)
+            elif snapshot.snapshot_kind == "portfolio":
+                portfolio = _descriptor(snapshot)
+        return market, portfolio
 
     async def _build_classifier_context(
         self,
@@ -676,6 +726,8 @@ class SnapshotBackedReportGenerator:
         source_conflicts: dict[str, Any],
         report_diagnostics: dict[str, Any] | None = None,
         symbol_derivation: SymbolDerivation | None = None,
+        market_snapshot: dict[str, Any] | None = None,
+        portfolio_snapshot: dict[str, Any] | None = None,
     ) -> IngestReportRequest:
         # Normalise items — each evidence_snapshot / trigger_checklist /
         # max_action / metadata is a free-form dict the caller filled in,
@@ -733,8 +785,8 @@ class SnapshotBackedReportGenerator:
             risk_summary=request.risk_summary,
             thesis_text=request.thesis_text,
             no_action_note=request.no_action_note,
-            market_snapshot={},
-            portfolio_snapshot={},
+            market_snapshot=market_snapshot or {},
+            portfolio_snapshot=portfolio_snapshot or {},
             previous_report_uuid=request.previous_report_uuid,
             status=request.status,
             metadata=metadata,
