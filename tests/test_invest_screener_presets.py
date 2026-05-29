@@ -152,6 +152,30 @@ def test_partial_and_mismatch_presets_explain_the_gap() -> None:
 
 
 @pytest.mark.unit
+def test_high_yield_value_preset_is_full_toss_parity_kr_only() -> None:
+    # ROB-359 PR4: 고수익 저평가 (ROE≥15 + PER 0~10) implemented from
+    # market_valuation_snapshots.
+    by_id = {p.id: p for p in preset_definitions("kr")}
+    assert "high_yield_value" in by_id
+    preset = by_id["high_yield_value"]
+    assert preset.name == "고수익 저평가"
+    assert preset.presetOrigin == "toss_parity"
+    assert preset.parityStatus == "full"
+    assert preset.metricLabel == "ROE"
+    # KR-only: must not surface in the US catalog.
+    assert "high_yield_value" not in {p.id for p in preset_definitions("us")}
+
+
+@pytest.mark.unit
+def test_high_yield_value_filter_mapping_is_bounded() -> None:
+    filters = screening_filters_for("high_yield_value", market="kr")
+    assert filters.get("market") == "kr"
+    assert filters.get("min_roe") == 15.0
+    assert filters.get("max_per") == 10.0
+    assert isinstance(filters.get("limit"), int)
+
+
+@pytest.mark.unit
 def test_crypto_presets_are_auto_trader_original() -> None:
     for p in preset_definitions("crypto"):
         assert p.presetOrigin == "auto_trader_original", p.id
