@@ -41,6 +41,22 @@ _MARKET_TO_TYPES: dict[str, tuple[MarketType, ...]] = {
 }
 
 
+def _normalize_crypto_symbol(raw: object) -> str | None:
+    """Normalize a crypto symbol to the pipeline's ``KRW-XXX`` market code.
+
+    ``UpbitHomeReader`` emits the bare currency (e.g. ``"BTC"``) while
+    ``manual_holdings`` already store the KRW market code. Trim/uppercase,
+    prefix bare currencies with ``KRW-``, keep already-prefixed codes, and
+    drop blanks so the portfolio source unions cleanly.
+    """
+    text = str(raw or "").strip().upper()
+    if not text:
+        return None
+    if text.startswith("KRW-"):
+        return text
+    return f"KRW-{text}"
+
+
 class SymbolDerivation(BaseModel):
     """Result of a single derivation pass."""
 
@@ -147,16 +163,19 @@ class _DefaultLiveHoldingsRepo:
 
         reader = UpbitHomeReader(self._session)
         result = await reader.fetch(user_id=user_id or 0)
-        account = getattr(result, "account", None)
-        holdings = getattr(account, "holdings", None) or []
+        # ``UpbitHomeReader.fetch`` returns a ``_SourceFetchResult`` whose
+        # positions live on ``result.holdings`` (a flat ``list[Holding]``) —
+        # there is no ``result.account``. Reading the wrong attribute silently
+        # drops every live holding (ROB-357 Hermes review).
+        holdings = getattr(result, "holdings", None) or []
         symbols: list[str] = []
+        seen: set[str] = set()
         for holding in holdings:
-            currency = getattr(holding, "symbol", None)
-            if not currency:
+            normalized = _normalize_crypto_symbol(getattr(holding, "symbol", None))
+            if normalized is None or normalized in seen:
                 continue
-            # UpbitHomeReader emits the bare currency (e.g. "BTC"); the
-            # pipeline's crypto convention is the KRW market code "KRW-BTC".
-            symbols.append(f"KRW-{currency}")
+            seen.add(normalized)
+            symbols.append(normalized)
         return symbols
 
 

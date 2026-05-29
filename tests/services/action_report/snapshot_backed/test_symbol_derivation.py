@@ -14,6 +14,7 @@ Lockdown policy:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,6 +22,7 @@ import pytest
 from app.services.action_report.snapshot_backed.symbol_derivation import (
     SymbolDerivation,
     SymbolDerivationService,
+    _DefaultLiveHoldingsRepo,
 )
 
 
@@ -337,3 +339,65 @@ async def test_candidate_non_empty_has_count_and_no_empty_reason():
     coverage = result.provenance["source_coverage"]
     assert coverage["candidate"]["count"] == 2
     assert "empty_reason" not in coverage["candidate"]
+
+
+# ---------------------------------------------------------------------------
+# ROB-357 — real default adapter path (Hermes-found blocker). UpbitHomeReader
+# returns holdings on ``result.holdings`` (NOT ``result.account.holdings``);
+# the adapter must read the right attribute or live holdings silently vanish.
+# ---------------------------------------------------------------------------
+class _FakeUpbitHomeReader:
+    """Stand-in for UpbitHomeReader: fetch() returns ``.holdings`` directly."""
+
+    last_user_id: int | None = None
+
+    def __init__(self, session) -> None:  # noqa: ANN001 — test stub
+        self._session = session
+
+    async def fetch(self, *, user_id: int):
+        type(self).last_user_id = user_id
+        # Mixed shapes: bare currency, lowercase, already KRW-prefixed, blank.
+        return SimpleNamespace(
+            holdings=[
+                SimpleNamespace(symbol="BTC"),
+                SimpleNamespace(symbol="krw-eth"),
+                SimpleNamespace(symbol="KRW-XRP"),
+                SimpleNamespace(symbol="  link  "),
+                SimpleNamespace(symbol=""),
+                SimpleNamespace(symbol=None),
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_default_live_holdings_repo_reads_result_holdings(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.invest_home_readers.UpbitHomeReader",
+        _FakeUpbitHomeReader,
+    )
+    repo = _DefaultLiveHoldingsRepo(session=MagicMock())
+
+    symbols = await repo.list_held_symbols(market="crypto", user_id=42)
+
+    # Bare currency → KRW-prefixed; lowercase normalized; already-prefixed kept;
+    # whitespace trimmed; empty/None skipped.
+    assert symbols == ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-LINK"]
+    assert _FakeUpbitHomeReader.last_user_id == 42
+
+
+@pytest.mark.asyncio
+async def test_default_live_holdings_repo_skips_non_crypto(monkeypatch):
+    called = {"n": 0}
+
+    class _ShouldNotFetch(_FakeUpbitHomeReader):
+        async def fetch(self, *, user_id: int):
+            called["n"] += 1
+            return SimpleNamespace(holdings=[])
+
+    monkeypatch.setattr(
+        "app.services.invest_home_readers.UpbitHomeReader", _ShouldNotFetch
+    )
+    repo = _DefaultLiveHoldingsRepo(session=MagicMock())
+
+    assert await repo.list_held_symbols(market="kr", user_id=42) == []
+    assert called["n"] == 0
