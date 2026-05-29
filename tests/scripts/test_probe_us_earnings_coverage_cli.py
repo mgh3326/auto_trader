@@ -79,7 +79,10 @@ def test_build_artifact_is_counts_only():
     m = _measurement()
     gate = evaluate_section5_gate(m, Section5Thresholds())
     artifact = build_artifact(
-        m, gate, from_date=date(2025, 1, 1), to_date=date(2025, 12, 31),
+        m,
+        gate,
+        from_date=date(2025, 1, 1),
+        to_date=date(2025, 12, 31),
         backfill_performed=False,
     )
     assert all(
@@ -95,7 +98,10 @@ def test_build_artifact_carries_verdict_and_schema():
     m = _measurement()
     gate = evaluate_section5_gate(m, Section5Thresholds())
     artifact = build_artifact(
-        m, gate, from_date=date(2025, 1, 1), to_date=date(2025, 12, 31),
+        m,
+        gate,
+        from_date=date(2025, 1, 1),
+        to_date=date(2025, 12, 31),
         backfill_performed=False,
     )
     assert artifact["schema_version"] == "us_earnings_coverage.v1"

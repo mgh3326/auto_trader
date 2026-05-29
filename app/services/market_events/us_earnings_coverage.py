@@ -38,7 +38,17 @@ logger = logging.getLogger(__name__)
 # US benchmark set: SPY + GICS sector SPDRs. Fetched directly (NOT via the
 # common-stock universe — ETFs are is_common_stock=False/NULL and may be absent).
 BENCHMARK_SYMBOLS: tuple[str, ...] = (
-    "SPY", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE",
+    "SPY",
+    "XLK",
+    "XLF",
+    "XLE",
+    "XLV",
+    "XLI",
+    "XLY",
+    "XLP",
+    "XLU",
+    "XLB",
+    "XLRE",
     "XLC",
 )
 
@@ -221,7 +231,8 @@ class UsEarningsCoverageService:
         window_present: dict[tuple[str, date], tuple[set[date], set[date]]] = {}
         for sym, ed, _th in events:
             window_present[(sym, ed)] = await self._present_bar_dates(
-                sym, ed - timedelta(days=WINDOW_LOOKBACK_DAYS),
+                sym,
+                ed - timedelta(days=WINDOW_LOOKBACK_DAYS),
                 ed + timedelta(days=WINDOW_LOOKAHEAD_DAYS),
             )
 
@@ -274,13 +285,17 @@ class UsEarningsCoverageService:
         if not symbols:
             return set()
         rows = (
-            await self._db.execute(
-                select(USSymbolUniverse.symbol).where(
-                    USSymbolUniverse.symbol.in_(symbols),
-                    USSymbolUniverse.is_active.is_(False),
+            (
+                await self._db.execute(
+                    select(USSymbolUniverse.symbol).where(
+                        USSymbolUniverse.symbol.in_(symbols),
+                        USSymbolUniverse.is_active.is_(False),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return set(rows)
 
     async def _measure_delisted_recoverability(self, sample: list[str]) -> int:

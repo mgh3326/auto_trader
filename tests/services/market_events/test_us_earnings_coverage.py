@@ -94,7 +94,9 @@ def test_null_symbol_rows_drive_dup_ratio():
     # 9 real events + 1 NULL-symbol row dropped upstream -> total_released=10.
     expected = set(_expected_sessions(_EVENT_DATE))
     events = [(f"SYM{i}", _EVENT_DATE, "before_open") for i in range(9)]
-    window_present = {(s, _EVENT_DATE): (set(expected), set(expected)) for s, _, _ in events}
+    window_present = {
+        (s, _EVENT_DATE): (set(expected), set(expected)) for s, _, _ in events
+    }
     m = aggregate_coverage(
         events=events,
         total_released=10,
@@ -186,7 +188,9 @@ def test_unknown_time_ratio_measured():
         ("CCC", _EVENT_DATE, "unknown"),
         ("DDD", _EVENT_DATE, "after_close"),
     ]
-    window_present = {(s, _EVENT_DATE): (set(expected), set(expected)) for s, _, _ in events}
+    window_present = {
+        (s, _EVENT_DATE): (set(expected), set(expected)) for s, _, _ in events
+    }
     m = aggregate_coverage(
         events=events,
         total_released=4,

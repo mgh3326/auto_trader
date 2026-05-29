@@ -75,58 +75,68 @@ def _ratio(numer: int, denom: int) -> float:
     return numer / denom if denom > 0 else 0.0
 
 
-def evaluate_section5_gate(
-    m: CoverageMeasurement, t: Section5Thresholds
-) -> GateResult:
+def evaluate_section5_gate(m: CoverageMeasurement, t: Section5Thresholds) -> GateResult:
     joinable_event_ratio = _ratio(m.joinable_events, m.realized_events)
     no_events = m.realized_events == 0
     not_materialized = m.realized_events > 0 and m.events_with_bars_present == 0
 
     criteria = [
         GateCriterion(
-            "min_realized_events", m.realized_events, t.min_realized_events,
+            "min_realized_events",
+            m.realized_events,
+            t.min_realized_events,
             m.realized_events >= t.min_realized_events,
         ),
         GateCriterion(
-            "min_joinable_symbols", m.joinable_symbols, t.min_joinable_symbols,
+            "min_joinable_symbols",
+            m.joinable_symbols,
+            t.min_joinable_symbols,
             m.joinable_symbols >= t.min_joinable_symbols,
         ),
         GateCriterion(
-            "min_joinable_event_ratio", round(joinable_event_ratio, 4),
+            "min_joinable_event_ratio",
+            round(joinable_event_ratio, 4),
             t.min_joinable_event_ratio,
             joinable_event_ratio >= t.min_joinable_event_ratio,
             note="fraction of realized events with >=90% window join coverage",
         ),
         GateCriterion(
-            "no_intraday_labeling", m.intraday_labeled_events, 0,
+            "no_intraday_labeling",
+            m.intraday_labeled_events,
+            0,
             m.intraday_labeled_events == 0,
             note="intraday labeling is forbidden (ROB-367 boundary)",
         ),
         GateCriterion(
-            "max_dup_ambiguous", m.dup_ambiguous_ratio, t.max_dup_ambiguous,
+            "max_dup_ambiguous",
+            m.dup_ambiguous_ratio,
+            t.max_dup_ambiguous,
             m.dup_ambiguous_ratio <= t.max_dup_ambiguous,
             note="US Finnhub: NULL-symbol ratio (dedup enforced by unique index)",
         ),
         GateCriterion(
-            "min_tradability", m.tradability_coverage, t.min_tradability,
+            "min_tradability",
+            m.tradability_coverage,
+            t.min_tradability,
             m.tradability_coverage >= t.min_tradability,
             note="fraction of joinable symbols with >=1 volume>0 bar",
         ),
         GateCriterion(
-            "min_benchmark", m.benchmark_coverage, t.min_benchmark,
+            "min_benchmark",
+            m.benchmark_coverage,
+            t.min_benchmark,
             m.benchmark_coverage >= t.min_benchmark,
             note="fraction of events with >=1 benchmark ETF window coverage >=90%",
         ),
         GateCriterion(
-            "session_calendar_present", m.session_calendar_present,
+            "session_calendar_present",
+            m.session_calendar_present,
             t.require_session_calendar,
             (m.session_calendar_present or not t.require_session_calendar),
         ),
     ]
 
-    passed = (
-        all(c.passed for c in criteria) and not not_materialized and not no_events
-    )
+    passed = all(c.passed for c in criteria) and not not_materialized and not no_events
 
     # NOTE: verdict keywords PASS / FAIL are machine-parsed by operators and log
     # dashboards; do not refactor the prefixes without updating the runbook.
@@ -139,7 +149,8 @@ def evaluate_section5_gate(
         verdict = (
             "FAIL — coverage not materialized: "
             f"{m.realized_events} realized events but 0 have daily bars. "
-            "If backfill is pending, run --backfill-window against a dev DB and "
+            "If backfill is pending, materialize the window with "
+            "scripts/backfill_daily_candles.py --market us against a dev DB and "
             "re-probe. Otherwise some symbols (delisted / penny) may lack "
             f"history (delisted events={m.delisted_events}, "
             f"Yahoo-recoverable={m.delisted_recoverable}). "
