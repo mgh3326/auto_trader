@@ -103,6 +103,7 @@ def build_candidate_evidence(
                 reasons=reasons,
                 source=_source_of(row, market),
                 risk_flags=_risk_flags(row),
+                source_preset=preset,
             )
         )
 

@@ -113,6 +113,24 @@ def _crypto_row_to_input(row: InvestCryptoScreenerSnapshot) -> dict[str, Any]:
     }
 
 
+def _toss_parity_status(preset: str, market: str) -> str:
+    """ROB-359 Scope E — map the candidate ranking/preset to its Toss-parity
+    status so the report can state honestly where a candidate came from.
+
+    The current collector sources candidates from a top-movers ranking
+    (``top_gainers`` / ``crypto_momentum``), which is NOT a Toss-parity preset,
+    so this returns ``not_toss_parity``. When candidate sourcing is wired to the
+    actual Toss-parity catalog presets (candidate strategy — ROB-346), a real
+    ``full``/``partial``/``mismatch`` status flows through automatically.
+    """
+    from app.services.invest_view_model.screener_presets import get_preset
+
+    preset_def = get_preset(preset, market="crypto" if market == "crypto" else "kr")
+    if preset_def is None or preset_def.presetOrigin != "toss_parity":
+        return "not_toss_parity"
+    return preset_def.parityStatus or "not_toss_parity"
+
+
 def _source_coverage(evidence: list[CandidateEvidence]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for ev in evidence:
@@ -273,8 +291,18 @@ class CandidateUniverseSnapshotCollector:
         usefulness: str,
     ) -> SnapshotCollectResult:
         freshness_status = _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial")
+        # ROB-359 Scope E — stamp universe-level lineage onto each candidate dict
+        # so a new-buy report item is self-describing (preset hit / freshness /
+        # Toss parity status) without needing the universe payload for context.
+        toss_parity_status = _toss_parity_status(preset, market)
         candidates = [
-            {**e.to_payload_dict(), "rank": rank, "candidate_rank": rank}
+            {
+                **e.to_payload_dict(),
+                "rank": rank,
+                "candidate_rank": rank,
+                "data_state": freshness_status,
+                "toss_parity_status": toss_parity_status,
+            }
             for rank, e in enumerate(evidence, start=1)
         ]
         universe_count = fresh_count + stale_count
