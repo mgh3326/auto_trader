@@ -139,7 +139,12 @@ def test_partial_and_mismatch_presets_explain_the_gap() -> None:
     assert by_id["oversold_recovery"].parityStatus == "mismatch"
     assert by_id["growth_expectation"].parityStatus == "mismatch"
     # Honest divergence must be explained, not silently approximated.
-    for pid in ("cheap_value", "steady_dividend", "oversold_recovery", "growth_expectation"):
+    for pid in (
+        "cheap_value",
+        "steady_dividend",
+        "oversold_recovery",
+        "growth_expectation",
+    ):
         assert by_id[pid].parityNote, pid
     # partial presets specifically flag the un-implementable conditions.
     for pid in ("cheap_value", "steady_dividend"):
