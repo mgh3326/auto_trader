@@ -5,10 +5,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
-import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.investment_reports import InvestmentReport
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
@@ -27,23 +25,12 @@ from app.services.investment_reports.query_service import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
-from tests._investment_reports_helpers import future_datetime
-
-
-async def _publish(session: AsyncSession, report: InvestmentReport) -> None:
-    """ROB-352: set status='published', clearing snapshot_freshness_summary to SQL
-    NULL so the DB CHECK constraint (ck_investment_reports_no_published_on_hard_stale)
-    is satisfied.  Direct SQL avoids asyncpg serialising Python None → JSON null.
-    """
-    await session.execute(
-        sa.text(
-            "UPDATE review.investment_reports"
-            " SET status = 'published', snapshot_freshness_summary = NULL"
-            " WHERE id = :id"
-        ).bindparams(id=report.id)
-    )
-    await session.flush()
-    await session.refresh(report)
+from tests._investment_reports_helpers import (
+    future_datetime,
+)
+from tests._investment_reports_helpers import (
+    publish_report as _publish,
+)
 
 
 def _request(*, kst_date: str, market: str = "kr", **overrides) -> IngestReportRequest:
