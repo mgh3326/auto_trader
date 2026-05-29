@@ -3,13 +3,43 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
+from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
     CandidateUniverseSnapshotCollector,
 )
 from app.services.invest_screener_snapshots.repository import CoverageCounts
 from app.services.investment_snapshots.collectors import CollectorRequest
+
+
+@pytest_asyncio.fixture(autouse=True, scope="module")
+async def _clean_kr_screener_rows():
+    """ROB-363 — delete qualifying KR screener rows left by previous test runs.
+
+    ``test_db`` is a shared persistent database (no per-test rollback). The
+    ``test_kr_collector_sources_consecutive_gainers_preset`` test commits KR
+    rows that qualify for the consecutive_gainers filter; if a previous run
+    failed after the INSERT but before the end-of-test cleanup DELETE, those
+    rows persist and cause unrelated KR tests to hit the preset path instead of
+    the fallback. This module-scoped autouse fixture runs once before any test
+    in this file to ensure a clean baseline.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text(
+                "DELETE FROM invest_screener_snapshots"
+                " WHERE consecutive_up_days >= 5 AND week_change_rate >= 0"
+                " AND snapshot_date >= '2026-05-25'"
+            )
+        )
+        await session.commit()
+    yield
 
 
 @dataclass
@@ -208,3 +238,48 @@ async def test_cap_not_flagged_when_universe_within_limit(db_session):
     assert payload["universe_count"] == 3
     assert payload["capped"] is False
     assert results[0].coverage_json["capped"] is False
+
+
+@pytest.mark.asyncio
+async def test_kr_collector_sources_consecutive_gainers_preset(db_session):
+    """ROB-363 — KR candidate source is consecutive_gainers (full Toss parity),
+    not top_gainers, when the preset returns rows. Per-candidate data_state and
+    toss_parity_status reflect the real preset."""
+    from sqlalchemy import text
+
+    await db_session.execute(text("DELETE FROM invest_screener_snapshots"))
+    await db_session.commit()
+
+    today = dt.date(2026, 5, 29)
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol="005930",
+            snapshot_date=today,
+            latest_close=Decimal("70000"),
+            change_rate=Decimal("2.0"),
+            week_change_rate=Decimal("8.0"),
+            consecutive_up_days=6,
+            closes_window=[1, 2, 3, 4, 5],
+            source="kis",
+        )
+    )
+    await db_session.commit()
+
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr", account_scope=None, symbols=[], policy_snapshot={}
+        )
+    )
+    payload = results[0].payload_json
+    syms = [c["symbol"] for c in payload["candidates"]]
+    assert "005930" in syms
+    top = next(c for c in payload["candidates"] if c["symbol"] == "005930")
+    assert top["source_preset"] == "consecutive_gainers"
+    assert top["toss_parity_status"] == "full"
+    assert top["data_state"] in {"fresh", "stale"}
+
+    # Cleanup: remove test rows so subsequent runs don't see qualifying KR data.
+    await db_session.execute(text("DELETE FROM invest_screener_snapshots"))
+    await db_session.commit()
