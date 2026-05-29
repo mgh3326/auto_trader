@@ -13,6 +13,7 @@ from collections.abc import Sequence
 
 import families
 from discovery.screen import HypothesisSummary
+from pit_universe import PITManifest
 from validated_gate import PortfolioPeriod, Trade
 
 NOTIONAL = 1000.0
@@ -74,7 +75,12 @@ def ts_trend_spec(panel: dict[str, Sequence[tuple[int, float]]], oos_split_ts: i
             "kind": "portfolio", "data": periods, "maker_conservative_net": None}
 
 
-def xs_momentum_spec(panel, rebalances, manifest, oos_split_ts: int = OOS_SPLIT_TS) -> dict:
+def xs_momentum_spec(
+    panel: dict[str, Sequence[tuple[int, float]]],
+    rebalances: Sequence[int],
+    manifest: PITManifest | None,
+    oos_split_ts: int = OOS_SPLIT_TS,
+) -> dict:
     periods = families.xs_momentum_periods(panel, rebalances, notional=NOTIONAL, manifest=manifest)
     return {"name": "family3_xs_momentum",
             "summary": _summary_from_periods("family3_xs_momentum", periods, oos_split_ts),
