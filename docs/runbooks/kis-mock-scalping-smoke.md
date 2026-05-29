@@ -151,18 +151,42 @@ Run ONLY after the read-only preflight passes and operator approval boundaries
 are satisfied, during a KRX regular session:
 
 ```bash
-KIS_MOCK_SCALPING_WS_ENABLED=true uv run python -m scripts.kis_mock_holdings_delta_smoke \
+KIS_MOCK_SCALPING_ENABLED=true KIS_MOCK_SCALPING_WS_ENABLED=true \
+    uv run python -m scripts.kis_mock_holdings_delta_smoke \
     --confirm --symbol <KR_CODE> --notional-krw 10000
 ```
+
+The cleanup SELL flattens through the mock scalping-exit bypass, so `--confirm`
+requires **both** `KIS_MOCK_SCALPING_ENABLED=true` (the sell-guard bypass) and
+`KIS_MOCK_SCALPING_WS_ENABLED=true`. **Set both ephemerally for this run only —
+never as persistent env/shell exports.** The cleanup exit reason defaults to
+`stop_loss` (an existing allowed `ScalpingExitContext` reason — ROB-358 does not
+add a smoke-only reason); override with `--cleanup-reason {stop_loss,take_profit,time_stop}`
+only if deliberately needed.
+
+Both gates (plus the cleanup reason) are **preflighted before any BUY** (ROB-358):
+if `KIS_MOCK_SCALPING_ENABLED` is unset or the cleanup reason is not an allowed
+`ScalpingExitContext` reason, the run stops with exit `4` and **no position is
+acquired** — it never buys something it cannot flatten.
 
 Places one small marketable limit BUY (at best ask), confirms the fill via the
 holdings/cash delta, then flattens with a cleanup SELL (at best bid) back to
 baseline. Prints a JSON evidence packet: symbol, side(s), order id(s), baseline
 holdings/cash, post-submit holdings/cash, confirmation signal + price source,
-cleanup result, and final position delta vs baseline. Exit `0` clean, `2` if the
-fill could not be confirmed in the poll window (ROB-341 STOP condition — capture
-the packet and report; do not force), `3` if a residual position/pending order
-could not be cleaned up, `4` disabled/not configured.
+cleanup result, and final position delta vs baseline. A clean exit `0` requires
+`final_position_delta_vs_baseline` to be **exactly `0`** — any non-zero delta is
+an anomaly. Exit `2` if the fill could not be confirmed in the poll window
+(ROB-341 STOP condition — capture the packet and report; do not force), `3` if
+the position could not be returned to baseline, including:
+- a residual position remaining (`final delta > 0`);
+- an over-flatten / below-baseline drop (`final delta < 0`, e.g. sold past
+  baseline or holdings dropped before the cleanup SELL) — `cleanup` =
+  `over_flattened_anomaly` / `below_baseline_anomaly`;
+- a cleanup SELL the broker **rejected** or one that returned no `odno`/`order_no`.
+
+All exit-3 cases surface `cleanup_error` + the non-zero
+`final_position_delta_vs_baseline` (never a silent exit 1). Exit `4` disabled/not
+configured **or a cleanup preflight gate failure (no order placed)**.
 
 ### Failure categories
 
