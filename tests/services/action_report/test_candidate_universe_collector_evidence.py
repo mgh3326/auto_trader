@@ -130,3 +130,76 @@ async def test_crypto_collector_empty_sets_structured_missing_data(db_session):
     assert payload["usefulness"] == "empty"
     assert payload["missing_data"]["confidence_impact"] == "cap 20"
     assert "암호화폐" in payload["missing_data"]["what"]
+
+
+@pytest.mark.asyncio
+async def test_equity_collector_dedupes_symbol_format_variants(db_session):
+    """ROB-352 Slice C — BRK.B / BRK-B collapse to one candidate; ranks contiguous."""
+
+    class _DupRepo(_FakeEquityRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rows = [
+                _EquityRow(symbol="BRK.B", change_rate=Decimal("9.0")),
+                _EquityRow(symbol="BRK-B", change_rate=Decimal("8.5")),
+                _EquityRow(symbol="AAPL", change_rate=Decimal("8.0")),
+            ]
+
+    repo = _DupRepo()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="us",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=10,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    symbols = [c["symbol"] for c in payload["candidates"]]
+    assert symbols == ["BRK.B", "AAPL"]
+    assert payload["candidates"][0]["candidate_rank"] == 1
+    assert payload["candidates"][1]["candidate_rank"] == 2
+    assert results[0].coverage_json["candidate_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cap_surfaced_when_universe_exceeds_limit(db_session):
+    """ROB-352 Slice C — universe larger than the limit is flagged, not silent."""
+    repo = _FakeEquityRepository()  # 3 rows, fresh_count=3
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["universe_count"] == 3
+    assert payload["capped"] is True
+    assert results[0].coverage_json["universe_count"] == 3
+    assert results[0].coverage_json["capped"] is True
+
+
+@pytest.mark.asyncio
+async def test_cap_not_flagged_when_universe_within_limit(db_session):
+    """ROB-352 Slice C — universe <= limit → capped is False."""
+    repo = _FakeEquityRepository()  # 3 rows
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=10,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["universe_count"] == 3
+    assert payload["capped"] is False
+    assert results[0].coverage_json["capped"] is False
