@@ -29,11 +29,25 @@ from app.services.kis_mock_holdings_reconciler import classify_fill_by_delta
         ("buy", "0", "0", "10", "none", "0"),
         ("buy", "5", "15", "10", "filled", "10"),  # baseline position present
         ("buy", "5", "9", "10", "partial", "4"),  # delta below ordered
-        ("buy", "5", "3", "10", "none", "0"),  # holdings DROPPED after a buy -> impossible
+        (
+            "buy",
+            "5",
+            "3",
+            "10",
+            "none",
+            "0",
+        ),  # holdings DROPPED after a buy -> impossible
         ("sell", "10", "0", "10", "filled", "10"),
         ("sell", "10", "6", "10", "partial", "4"),
         ("sell", "10", "10", "10", "none", "0"),
-        ("sell", "10", "12", "10", "none", "0"),  # holdings ROSE after a sell -> impossible
+        (
+            "sell",
+            "10",
+            "12",
+            "10",
+            "none",
+            "0",
+        ),  # holdings ROSE after a sell -> impossible
     ],
 )
 def test_classify_fill_by_delta(side, baseline, observed, ordered, verdict, filled):

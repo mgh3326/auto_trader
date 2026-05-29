@@ -79,9 +79,7 @@ def _gate_or_exit() -> object | None:
     from app.core.config import settings
 
     if not settings.kis_mock_scalping_ws_enabled:
-        logger.info(
-            "KIS_MOCK_SCALPING_WS_ENABLED is not set; smoke disabled (no-op)."
-        )
+        logger.info("KIS_MOCK_SCALPING_WS_ENABLED is not set; smoke disabled (no-op).")
         return None
     missing = [
         name
