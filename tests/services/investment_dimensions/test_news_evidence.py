@@ -14,7 +14,7 @@ async def _clear(db_session):
     await db_session.commit()
 
 
-def _report(dedup_key, *, published_at, title, symbols):
+def _report(dedup_key, *, published_at, title, symbols, market="kr"):
     return ResearchReport(
         dedup_key=dedup_key,
         report_type="research-reports.v1",
@@ -26,7 +26,7 @@ def _report(dedup_key, *, published_at, title, symbols):
         published_at=published_at,
         published_at_text=published_at.isoformat(),
         symbol_candidates=[
-            {"symbol": s, "market": "kr", "source": "naver_research"} for s in symbols
+            {"symbol": s, "market": market, "source": "naver_research"} for s in symbols
         ],
     )
 
@@ -76,6 +76,40 @@ async def test_build_news_evidence_stale_when_old(db_session):
     )
     assert bundle["count"] == 1
     assert bundle["freshness"]["status"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_build_news_evidence_scopes_to_market_no_kr_bleed(db_session):
+    # ROB-366 B8: a US bundle must NOT surface KR research (kis_truefriend bleed).
+    await _clear(db_session)
+    now = dt.datetime(2026, 5, 24, 12, 0, tzinfo=dt.UTC)
+    db_session.add(
+        _report(
+            "kr1",
+            published_at=now - dt.timedelta(hours=1),
+            title="엔비디아 KR 노트",
+            symbols=["NVDA"],
+            market="kr",
+        )
+    )
+    db_session.add(
+        _report(
+            "us1",
+            published_at=now - dt.timedelta(hours=2),
+            title="Apple US note",
+            symbols=["AAPL"],
+            market="us",
+        )
+    )
+    await db_session.commit()
+
+    bundle = await build_news_evidence(
+        ResearchReportsQueryService(db_session), market="us", now=now
+    )
+    assert bundle["count"] == 1
+    assert bundle["citations"][0]["title"] == "Apple US note"
+    # The newer KR report must be excluded despite being more recent.
+    assert all(c["title"] != "엔비디아 KR 노트" for c in bundle["citations"])
 
 
 @pytest.mark.asyncio

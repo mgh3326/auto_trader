@@ -904,6 +904,54 @@ async def test_news_collector_failure_is_fail_open():
     assert results[0].freshness_status == "unavailable"
 
 
+# --- ROB-366 B8: market-scoped news articles via injected fetch fn ----------
+@pytest.mark.asyncio
+async def test_news_collector_articles_from_news_fetch_fn():
+    captured: dict = {}
+
+    async def fake_news_fn(market, hours, limit):
+        captured["market"] = market
+        return [
+            {"title": "Apple beats earnings", "url": "u1", "stock_symbol": "AAPL"},
+            {"title": "Fed holds rates", "url": "u2", "stock_symbol": None},
+        ]
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
+    results = await collector.collect(_request(market="us"))
+    payload = results[0].payload_json
+    # The articles key (what NewsStage reads) is populated, market-scoped.
+    assert payload["count"] == 2
+    assert [a["title"] for a in payload["articles"]] == [
+        "Apple beats earnings",
+        "Fed holds rates",
+    ]
+    assert captured["market"] == "us"
+    assert results[0].freshness_status == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_news_collector_articles_empty_is_partial():
+    async def fake_news_fn(market, hours, limit):
+        return []
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
+    results = await collector.collect(_request(market="us"))
+    assert results[0].payload_json["count"] == 0
+    assert results[0].payload_json["articles"] == []
+    assert results[0].freshness_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_news_collector_articles_fetch_failure_is_fail_open():
+    async def fake_news_fn(market, hours, limit):
+        raise RuntimeError("news feed down")
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
+    results = await collector.collect(_request(market="us"))
+    assert len(results) == 1
+    assert results[0].freshness_status == "unavailable"
+
+
 def _make_citation(*, report_uuid: str, symbols: list[str]):
     from app.schemas.research_reports import (
         ResearchReportCitation,

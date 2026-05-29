@@ -16,6 +16,7 @@ than infer signal from absence.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,11 @@ from app.services.investment_snapshots.collectors import (
     SnapshotCollectResult,
 )
 from app.services.research_reports.query_service import ResearchReportsQueryService
+
+# ROB-366 B8 — read-only market-scoped news article fetch (market, hours, limit)
+# → list of article dicts. Wired in registry.py over the deterministic
+# get_news_articles source so this module imports no MCP tooling.
+NewsFetchFn = Callable[[str, int, int], Awaitable[list[dict[str, Any]]]]
 
 
 def _citation_symbols(citation: Any) -> set[str]:
@@ -52,17 +58,26 @@ class NewsSnapshotCollector:
         session: AsyncSession,
         *,
         query_service: ResearchReportsQueryService | None = None,
+        news_fetch_fn: NewsFetchFn | None = None,
         lookback_hours: int = 24,
         limit: int = 20,
     ) -> None:
         self._session = session
         self._query = query_service or ResearchReportsQueryService(session)
+        self._news_fetch_fn = news_fetch_fn
         self._lookback_hours = max(1, lookback_hours)
         self._limit = max(1, limit)
 
     async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         now = utcnow()
         since = now - dt.timedelta(hours=self._lookback_hours)
+
+        # ROB-366 B8 — when a market-aware article source is wired, the news
+        # dimension serves real (market-scoped) articles in the shape NewsStage
+        # reads (``articles``). Falls back to the research_reports citation path
+        # when no source is injected (back-compat / tests).
+        if self._news_fetch_fn is not None:
+            return await self._collect_articles(request, now=now, since=since)
 
         try:
             response = await self._query.find_relevant(
@@ -138,5 +153,50 @@ class NewsSnapshotCollector:
                 origin="news",
                 as_of=now,
                 coverage={"citation_count": len(citations_payload)},
+            )
+        ]
+
+    async def _collect_articles(
+        self, request: CollectorRequest, *, now: dt.datetime, since: dt.datetime
+    ) -> list[SnapshotCollectResult]:
+        """Market-scoped news articles path (ROB-366 B8). Fail-open like the
+        research path: a fetch error degrades the optional ``news`` kind to
+        ``unavailable`` rather than blocking the bundle. An empty result is
+        ``partial`` (queried, nothing within the window) — never fabricated."""
+        assert self._news_fetch_fn is not None
+        try:
+            articles = await self._news_fetch_fn(
+                request.market, self._lookback_hours, self._limit
+            )
+        except Exception as exc:  # noqa: BLE001 — optional, fail open
+            return [
+                unavailable_result(
+                    snapshot_kind=self.snapshot_kind,
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    origin="news",
+                    reason=f"news article fetch failed: {type(exc).__name__}: {exc}",
+                    as_of=now,
+                )
+            ]
+
+        articles_payload = [a for a in (articles or []) if isinstance(a, dict)]
+        payload: dict[str, Any] = {
+            "since": since.isoformat(),
+            "count": len(articles_payload),
+            "articles": articles_payload,
+            "source": "news_articles",
+            "market": request.market,
+        }
+        return [
+            build_result(
+                snapshot_kind=self.snapshot_kind,
+                market=request.market,
+                account_scope=request.account_scope,
+                payload=payload,
+                origin="news",
+                as_of=now,
+                freshness_status="fresh" if articles_payload else "partial",
+                coverage={"article_count": len(articles_payload)},
             )
         ]

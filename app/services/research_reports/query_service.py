@@ -60,6 +60,7 @@ class ResearchReportsQueryService:
         source: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        market: str | None = None,
         limit: int | None = None,
     ) -> ResearchReportCitationListResponse:
         effective_limit = min(
@@ -83,6 +84,15 @@ class ResearchReportsQueryService:
             stmt = stmt.where(
                 ResearchReport.symbol_candidates.cast(JSONB).op("@>")(
                     [{"symbol": symbol}]
+                )
+            )
+
+        if market is not None:
+            # ROB-366 B8 — scope to a market via the per-candidate market tag so
+            # KR research does not bleed into a US bundle. Mirrors find_feed_page.
+            stmt = stmt.where(
+                ResearchReport.symbol_candidates.cast(JSONB).op("@>")(
+                    [{"market": market}]
                 )
             )
 
