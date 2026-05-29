@@ -309,4 +309,5 @@ class InvestmentReportIngestionService:
             decision_bucket=item_req.decision_bucket,
             cited_symbol_report_uuid=item_req.cited_symbol_report_uuid,
             cited_dimension_report_uuids=list(item_req.cited_dimension_report_uuids),
+            cited_snapshot_uuids=list(item_req.cited_snapshot_uuids),
         )

@@ -307,3 +307,20 @@ async def test_overwrite_blocked_when_item_has_operator_decision(
     still = await repo.list_items_for_report(first.id)
     assert len(still) == 1
     assert len(await repo.list_decisions_for_items([items[0].id])) == 1
+
+
+@pytest.mark.asyncio
+async def test_cited_snapshot_uuids_round_trip(session: AsyncSession) -> None:
+    """ROB-352 Slice B — cited_snapshot_uuids persists and reads back."""
+    import uuid as _uuid
+
+    u1, u2 = _uuid.uuid4(), _uuid.uuid4()
+    service = InvestmentReportIngestionService(session)
+    report = await service.ingest(
+        _base_request(
+            items=[_action_item("a1", cited_snapshot_uuids=[u1, u2])]
+        )
+    )
+    repo = InvestmentReportsRepository(session)
+    items = await repo.list_items_for_report(report.id)
+    assert items[0].cited_snapshot_uuids == [u1, u2]

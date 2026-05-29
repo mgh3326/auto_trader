@@ -146,6 +146,9 @@ async def session() -> AsyncSession:
                         "ALTER TABLE review.investment_report_items "
                         "ADD COLUMN IF NOT EXISTS cited_dimension_report_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
                         "ALTER TABLE review.investment_report_items "
+                        "ADD COLUMN IF NOT EXISTS cited_snapshot_uuids "
+                        "UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
+                        "ALTER TABLE review.investment_report_items "
                         "DROP CONSTRAINT IF EXISTS ck_investment_report_items_ck_investment_report_items_decision_bucket",
                         "ALTER TABLE review.investment_report_items "
                         "DROP CONSTRAINT IF EXISTS ck_investment_report_items_decision_bucket",
