@@ -80,6 +80,7 @@ class _FakeOverseasClient:
         cancel: dict | None = None,
         cancel_exc: Exception | None = None,
         buy: dict | None = None,
+        buy_exc: Exception | None = None,
         fetch_exc: bool = False,
     ) -> None:
         self._holdings_seq = list(holdings_seq or [[]])
@@ -90,6 +91,7 @@ class _FakeOverseasClient:
         self._cancel = cancel
         self._cancel_exc = cancel_exc
         self._buy = buy
+        self._buy_exc = buy_exc
         self._fetch_exc = fetch_exc
         self.sell_calls: list[dict] = []
         self.cancel_calls: list[dict] = []
@@ -124,6 +126,8 @@ class _FakeOverseasClient:
         self.buy_calls.append(
             {"symbol": symbol, "exchange_code": exchange_code, "quantity": quantity}
         )
+        if self._buy_exc is not None:
+            raise self._buy_exc
         return self._buy or {"odno": "BUY0000001"}
 
     async def sell_overseas_stock(
@@ -478,7 +482,9 @@ async def test_cleanup_unfilled_resting_buy_is_cancelled():
     )
     assert client.cancel_calls[0]["exchange_code"] == "NASD"
     assert client.sell_calls == []  # nothing to flatten
-    assert evidence["cleanup_cancel_order_id"] == "CANCEL00001"
+    assert evidence["buy_cancel_attempted"] is True
+    assert evidence["buy_cancel_order_id"] == "CANCEL00001"
+    assert evidence["open_order_check_status"] == "resting_buy_cancelled"
 
 
 @pytest.mark.unit
@@ -502,7 +508,11 @@ async def test_cleanup_cancel_submit_rejection_is_anomaly():
     )
     assert rc == 3
     assert evidence["cleanup"] == "CANCEL_submit_rejected"
-    assert evidence["cleanup_cancel_order_id"] is None
+    assert evidence["buy_cancel_order_id"] is None
+    assert evidence["open_order_check_status"] == "resting_buy_cancel_failed"
+    assert (
+        client.sell_calls == []
+    )  # fail-closed: no SELL after an un-cancellable resting BUY
 
 
 @pytest.mark.unit
@@ -553,6 +563,8 @@ async def test_cleanup_nothing_to_flatten_no_buy_odno_is_fill_unconfirmed():
 async def test_cleanup_late_fill_during_cancel_falls_through_to_sell():
     # delta 0 at cleanup start -> cancel the resting BUY -> a late fill lands
     # (delta 1 on the post-cancel re-read) -> fall through to SELL -> flatten.
+    # The entry was NEVER a confirmed full fill, so even flat this is exit 2,
+    # NOT exit 0 (blocker 2).
     client = _FakeOverseasClient(
         holdings_seq=[_holdings(None, 0), _holdings("AAPL", 1), _holdings(None, 0)],
         close=100.0,
@@ -568,10 +580,10 @@ async def test_cleanup_late_fill_during_cancel_falls_through_to_sell():
         evidence,
         entry_fill=None,  # poll missed it; it filled during the cancel window
     )
-    assert rc == 0
+    assert rc == 2
     assert client.cancel_calls and client.sell_calls
     assert client.sell_calls[0]["quantity"] == 1
-    assert evidence["cleanup"] == "flattened"
+    assert evidence["cleanup"] == "flattened_entry_unconfirmed"
     assert evidence["final_position_delta_vs_baseline"] == "0"
 
 
@@ -620,7 +632,9 @@ async def test_confirm_entry_unconfirmed_but_flat_is_exit_2(monkeypatch):
     _confirm_env(monkeypatch, client)
 
     async def _no_fill(*_a, **_k):
-        return None
+        return smoke._EntryOutcome(
+            fill=None, verdict="none", observed_delta=Decimal("0")
+        )
 
     monkeypatch.setattr(smoke, "_await_entry_fill", _no_fill)
     rc = await smoke.run_confirm(_confirm_args(["--notional-usd", "100"]))
@@ -670,18 +684,30 @@ async def test_confirm_happy_path_evidence_has_required_fields(monkeypatch, capl
         "baseline_holdings_qty",
         "quantity",
         "buy_order_id",
+        "entry_order_id",
         "confirmation_signal",
+        "entry_fill_verdict",
+        "entry_fill_confirmed",
         "entry_filled",
         "fill_price_source",
+        "buy_cancel_attempted",
+        "open_order_check_status",
         "cleanup",
         "cleanup_sell_order_id",
         "final_position_delta_vs_baseline",
+        "final_exit_reason",
         "exit_code",
     ):
         assert key in ev, f"missing evidence field: {key}"
     assert ev["exit_code"] == 0
     assert ev["final_position_delta_vs_baseline"] == "0"
     assert ev["fill_price_source"] == "limit_fallback"  # cash OPSQ0002 in mock
+    assert ev["entry_fill_verdict"] == "filled"
+    assert ev["entry_fill_confirmed"] is True
+    assert ev["open_order_check_status"] == "full_fill_no_resting_order"
+    assert (
+        ev["buy_cancel_attempted"] is False
+    )  # full fill -> no resting order to cancel
 
 
 # --- run_preflight (read-only mode) ----------------------------------------
@@ -820,3 +846,121 @@ def test_parse_usd_cash_invalid_decimal_falls_back_to_next_key():
     cash, source = smoke._parse_usd_cash(rows)
     assert cash == Decimal("50")
     assert source == "frcr_dncl_amt_2"
+
+
+# --- partial / unconfirmed fill must cancel the resting BUY + never exit 0 ---
+# (safety-review blockers 1 & 2)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_partial_fill_cancels_resting_buy_and_is_not_exit_0():
+    # entry never confirmed FULL (entry_fill=None) but holdings moved (+1) -> the
+    # original BUY may have an unfilled resting remainder. Cancel it first, SELL
+    # the filled delta, and even though flat, this is exit 2 (NOT 0).
+    client = _FakeOverseasClient(
+        holdings_seq=[
+            _holdings("AAPL", 1),  # cleanup current (partial fill landed)
+            _holdings("AAPL", 1),  # post-cancel re-read (still held)
+            _holdings(None, 0),  # post-sell flat
+        ],
+        close=100.0,
+    )
+    evidence: dict[str, object] = {}
+    rc = await smoke._cleanup_and_verify(
+        client,
+        _confirm_args(),
+        "NASD",
+        Decimal("0"),
+        "BUY0000001",
+        Decimal("2"),  # ordered 2, only 1 filled -> resting remainder
+        evidence,
+        entry_fill=None,
+    )
+    assert rc == 2  # flat but entry never confirmed full -> NOT a clean exit 0
+    assert (
+        client.cancel_calls and client.cancel_calls[0]["order_number"] == "BUY0000001"
+    )
+    assert client.sell_calls and client.sell_calls[0]["quantity"] == 1
+    assert evidence["buy_cancel_attempted"] is True
+    assert evidence["open_order_check_status"] == "resting_buy_cancelled"
+    assert evidence["cleanup"] == "flattened_entry_unconfirmed"
+    assert evidence["final_position_delta_vs_baseline"] == "0"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_partial_fill_cancel_rejected_is_fail_closed():
+    # entry unconfirmed + positive delta, but the resting BUY cancel is rejected:
+    # we cannot authoritatively remove the resting-order risk -> fail closed (3),
+    # and we do NOT proceed to SELL.
+    client = _FakeOverseasClient(
+        holdings_seq=[_holdings("AAPL", 1)],
+        close=100.0,
+        cancel_exc=RuntimeError("cancel rejected"),
+    )
+    evidence: dict[str, object] = {}
+    rc = await smoke._cleanup_and_verify(
+        client,
+        _confirm_args(),
+        "NASD",
+        Decimal("0"),
+        "BUY0000001",
+        Decimal("2"),
+        evidence,
+        entry_fill=None,
+    )
+    assert rc == 3
+    assert evidence["cleanup"] == "CANCEL_submit_rejected"
+    assert evidence["open_order_check_status"] == "resting_buy_cancel_failed"
+    assert client.sell_calls == []  # never SELL when the resting BUY is un-cancellable
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_unconfirmed_positive_delta_no_odno_is_not_exit_0():
+    # positive delta with an unconfirmed entry and NO acked BUY odno (nothing to
+    # cancel): flatten the delta but still never exit 0.
+    client = _FakeOverseasClient(
+        holdings_seq=[_holdings("AAPL", 1), _holdings(None, 0)], close=100.0
+    )
+    evidence: dict[str, object] = {}
+    rc = await smoke._cleanup_and_verify(
+        client,
+        _confirm_args(),
+        "NASD",
+        Decimal("0"),
+        None,  # no acked BUY order id
+        Decimal("1"),
+        evidence,
+        entry_fill=None,
+    )
+    assert rc == 2
+    assert client.cancel_calls == []
+    assert client.sell_calls and client.sell_calls[0]["quantity"] == 1
+    assert evidence["open_order_check_status"] == "no_order_acked"
+    assert evidence["cleanup"] == "flattened_entry_unconfirmed"
+
+
+# --- BUY submit exception: explicit evidence + consistent non-zero exit ------
+# (safety-review blocker 3)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_confirm_buy_submit_exception_is_consistent_nonzero(monkeypatch, caplog):
+    client = _FakeOverseasClient(
+        close=100.0, buy_exc=RuntimeError("APBK0918 buy rejected")
+    )
+    _confirm_env(monkeypatch, client)
+    with caplog.at_level(logging.INFO, logger=smoke.__name__):
+        rc = await smoke.run_confirm(_confirm_args(["--notional-usd", "100"]))
+    assert rc != 0  # a BUY submit failure is never a clean success
+    ev = _last_json_with(caplog, "exit_code")
+    assert ev is not None
+    assert ev["entry"] == "BUY_submit_rejected"
+    assert "buy_submit_exception" in ev
+    assert ev["entry_order_id"] is None
+    assert ev["entry_fill_confirmed"] is False
+    # evidence exit_code is consistent with the actual process exit code
+    assert ev["exit_code"] == rc

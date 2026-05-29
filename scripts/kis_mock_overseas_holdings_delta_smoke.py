@@ -38,12 +38,20 @@ environment, NOT a persistent Settings flag) plus KIS mock config. ``--confirm``
 must be passed explicitly. Prints only missing env var NAMES, never secret
 values. Always attempts cleanup in a ``finally`` block.
 
+Fill verdict & cleanup policy (fail-closed): a CONFIRMED FULL fill is the only
+path to exit 0. A partial/unconfirmed entry with a positive delta may leave a
+resting BUY remainder; since KIS overseas mock has no authoritative open-order
+query, the smoke CANCELS the original BUY (fail-closed exit 3 if that cancel
+cannot be confirmed) and even a flat outcome is exit 2 — never exit 0.
+
 Exit codes:
-    0  - success (preflight printed, or confirmed round trip cleaned up to baseline)
+    0  - CONFIRMED full fill flattened to baseline (final delta 0); or --preflight
     1  - unexpected exception
     2  - pre-BUY blocked (no/stale quote, unresolved exchange, size zero, baseline
-         read failed) OR fill could not be confirmed in the poll window (but flat)
-    3  - anomaly: residual position / pending order could not be cleaned up
+         read failed); OR partial/unconfirmed fill that ended flat (resting BUY
+         cancelled but entry never confirmed full); OR BUY submit rejected
+    3  - anomaly: resting BUY un-cancellable, residual after SELL, over-flatten /
+         below-baseline, or missing SELL/CANCEL order id
     4  - disabled, KIS mock not configured, cleanup path not submittable, or US
          market closed (no order placed)
 
@@ -98,6 +106,21 @@ class _EntryFill:
     price: Decimal
     quantity: Decimal
     price_source: str
+
+
+@dataclass
+class _EntryOutcome:
+    """Result of the bounded entry-fill poll.
+
+    ``fill`` is non-None ONLY on a confirmed **full** fill. ``verdict`` is the
+    last poll verdict — ``"filled" | "partial" | "none" | "read_failed"`` — so a
+    partial fill is explicitly distinguished from no fill at all (a ``partial``
+    leaves a resting BUY remainder that cleanup must cancel).
+    """
+
+    fill: _EntryFill | None
+    verdict: str
+    observed_delta: Decimal | None
 
 
 def _env_truthy(value: str | None) -> bool:
@@ -257,14 +280,22 @@ async def _await_entry_fill(
     base_qty: Decimal,
     ordered_qty: Decimal,
     limit_price: Decimal,
-) -> _EntryFill | None:
+) -> _EntryOutcome:
+    """Poll holdings for a confirmed FULL fill. Returns an :class:`_EntryOutcome`
+    whose ``fill`` is non-None only on a full fill; a ``partial`` / ``none`` /
+    ``read_failed`` outcome reports the last verdict so the caller can apply the
+    partial-fill cleanup policy (cancel the resting BUY remainder)."""
+    last_verdict = "none"
+    last_delta: Decimal | None = None
     for _ in range(max(args.max_poll, 1)):
         cur = await _read_holdings_qty(client, symbol, exchange)
         if cur is None:
-            return None
+            return _EntryOutcome(fill=None, verdict="read_failed", observed_delta=None)
         decision = classify_fill_by_delta(
             side="buy", ordered_qty=ordered_qty, baseline_qty=base_qty, observed_qty=cur
         )
+        last_verdict = decision.verdict
+        last_delta = decision.delta
         if decision.verdict == "filled":
             price, source = derive_fill_price(
                 side="buy",
@@ -273,11 +304,16 @@ async def _await_entry_fill(
                 cash_observed=None,
                 limit_price=limit_price,
             )
-            return _EntryFill(
-                price=price, quantity=decision.filled_qty, price_source=source
+            return _EntryOutcome(
+                fill=_EntryFill(
+                    price=price, quantity=decision.filled_qty, price_source=source
+                ),
+                verdict="filled",
+                observed_delta=decision.delta,
             )
         await asyncio.sleep(args.poll_interval)
-    return None
+    # Timed out without a full fill: "partial" (some directional delta) or "none".
+    return _EntryOutcome(fill=None, verdict=last_verdict, observed_delta=last_delta)
 
 
 async def _await_flat(
@@ -307,6 +343,7 @@ async def _cancel_resting_buy(
     Inspects the cancel response order id explicitly; a rejection or a missing id
     is an explicit anomaly (exit 3), never a silent success.
     """
+    evidence["buy_cancel_attempted"] = True
     try:
         cancel = await client.cancel_overseas_order(
             order_number=buy_odno,
@@ -316,12 +353,14 @@ async def _cancel_resting_buy(
             is_mock=True,
         )
     except Exception as exc:  # noqa: BLE001 - submit rejection is a cleanup anomaly
-        evidence["cleanup_cancel_order_id"] = None
+        evidence["buy_cancel_order_id"] = None
+        evidence["buy_cancel_status"] = "submit_rejected"
         evidence["cleanup_error"] = str(exc)[:200]
         evidence["cleanup"] = "CANCEL_submit_rejected"
         return 3
     cancel_id = cancel.get("odno") if isinstance(cancel, Mapping) else None
-    evidence["cleanup_cancel_order_id"] = cancel_id
+    evidence["buy_cancel_order_id"] = cancel_id
+    evidence["buy_cancel_status"] = "acked" if cancel_id else "no_order_id"
     if not cancel_id:
         evidence["cleanup_error"] = "cleanup CANCEL response missing odno"
         evidence["cleanup"] = "CANCEL_no_order_id"
@@ -339,13 +378,33 @@ async def _cleanup_and_verify(
     evidence: dict,
     entry_fill,
 ) -> int:
-    """Return holdings to baseline. Returns the process exit code (0 clean, 2
-    fill-unconfirmed-but-flat, 3 anomaly/residual)."""
+    """Return holdings to baseline. Returns the process exit code.
+
+    Exit policy (load-bearing safety contract):
+    * 0 — ONLY a **confirmed full fill** that flattened to baseline (or a
+      confirmed full fill already flat). A clean confirmed round trip.
+    * 2 — flat / nothing to flatten but the entry was **not** a confirmed full
+      fill (partial / unconfirmed) — never a clean success even if flat.
+    * 3 — anomaly: cannot authoritatively cancel a resting BUY, residual after
+      SELL, over-flatten, below-baseline, missing SELL/CANCEL id, read failure.
+
+    KIS overseas mock has NO authoritative open-order query
+    (``inquire_overseas_orders`` raises in mock), so for any entry that is not a
+    confirmed full fill the original BUY may have an unfilled resting remainder.
+    We therefore CANCEL that BUY to remove the risk; if the cancel cannot be
+    authoritatively confirmed, we fail closed (3) and do not SELL.
+    """
     symbol = args.symbol
+    entry_confirmed = entry_fill is not None  # confirmed FULL fill only
+    evidence["entry_fill_confirmed"] = entry_confirmed
+    evidence.setdefault("buy_cancel_attempted", False)
+
     cur = await _read_holdings_qty(client, symbol, exchange)
     if cur is None:
         evidence["cleanup"] = "holdings_read_failed"
         evidence["cleanup_error"] = "post-buy holdings read failed"
+        evidence["open_order_check_status"] = "unknown_holdings_read_failed"
+        evidence["final_exit_reason"] = "post-buy holdings read failed"
         return 3
     delta = cur - base_qty
     evidence["cleanup_current_delta"] = str(delta)
@@ -356,44 +415,73 @@ async def _cleanup_and_verify(
             f"holdings {cur} below baseline {base_qty} before cleanup"
         )
         evidence["final_position_delta_vs_baseline"] = str(delta)
+        evidence["open_order_check_status"] = "not_checked_below_baseline"
+        evidence["final_exit_reason"] = "holdings below baseline before cleanup"
         return 3
 
-    if delta == 0:
-        # No filled shares. A resting unfilled BUY could still fill later -> cancel it.
-        if buy_odno:
-            cancel_rc = await _cancel_resting_buy(
-                client, args, exchange, buy_odno, buy_qty, evidence
+    # A confirmed full fill leaves nothing resting. Any other outcome (partial, or
+    # an unconfirmed entry that nonetheless moved holdings) may leave a resting
+    # BUY -> cancel it authoritatively (mock has no open-order query), else fail
+    # closed.
+    if not entry_confirmed and buy_odno:
+        cancel_rc = await _cancel_resting_buy(
+            client, args, exchange, buy_odno, buy_qty, evidence
+        )
+        if cancel_rc != 0:
+            evidence["open_order_check_status"] = "resting_buy_cancel_failed"
+            evidence.setdefault("final_position_delta_vs_baseline", str(delta))
+            evidence["final_exit_reason"] = (
+                "could not authoritatively cancel the resting BUY; fail closed"
             )
-            if cancel_rc != 0:
-                return cancel_rc
-            cur = await _read_holdings_qty(client, symbol, exchange)
-            if cur is None:
-                evidence["cleanup"] = "holdings_read_failed"
-                evidence["cleanup_error"] = "post-cancel holdings read failed"
-                return 3
-            delta = cur - base_qty
-            evidence["post_cancel_delta"] = str(delta)
-            if delta < 0:
-                evidence["cleanup"] = "below_baseline_anomaly"
-                evidence["cleanup_error"] = (
-                    f"holdings {cur} below baseline {base_qty} after cancel"
-                )
-                evidence["final_position_delta_vs_baseline"] = str(delta)
-                return 3
-        if delta == 0:
-            evidence["cleanup"] = (
-                "flat_after_cancel" if buy_odno else "nothing_to_flatten"
+            return cancel_rc
+        evidence["open_order_check_status"] = "resting_buy_cancelled"
+        cur = await _read_holdings_qty(client, symbol, exchange)
+        if cur is None:
+            evidence["cleanup"] = "holdings_read_failed"
+            evidence["cleanup_error"] = "post-cancel holdings read failed"
+            evidence["final_exit_reason"] = "post-cancel holdings read failed"
+            return 3
+        delta = cur - base_qty
+        evidence["post_cancel_delta"] = str(delta)
+        if delta < 0:
+            evidence["cleanup"] = "below_baseline_anomaly"
+            evidence["cleanup_error"] = (
+                f"holdings {cur} below baseline {base_qty} after cancel"
             )
-            evidence["final_position_delta_vs_baseline"] = "0"
-            return 0 if entry_fill is not None else 2
-        # else: a late fill landed during the cancel -> fall through to SELL.
+            evidence["final_position_delta_vs_baseline"] = str(delta)
+            evidence["final_exit_reason"] = "holdings below baseline after cancel"
+            return 3
+    elif entry_confirmed:
+        evidence["open_order_check_status"] = "full_fill_no_resting_order"
+    else:  # not confirmed and no acked BUY id -> nothing could be resting
+        evidence["open_order_check_status"] = "no_order_acked"
 
-    # delta > 0: residual filled shares -> SELL flatten.
+    if delta == 0:
+        evidence["final_position_delta_vs_baseline"] = "0"
+        if entry_confirmed:
+            evidence["cleanup"] = "flat_full_fill"
+            evidence["final_exit_reason"] = (
+                "confirmed full fill, holdings already flat vs baseline"
+            )
+            return 0
+        evidence["cleanup"] = (
+            "flat_entry_unconfirmed" if buy_odno else "nothing_to_flatten"
+        )
+        evidence["final_exit_reason"] = (
+            "flat after cancelling the resting BUY, but entry fill was never "
+            "confirmed full"
+            if buy_odno
+            else "no fill and no order acked; entry never confirmed"
+        )
+        return 2
+
+    # delta > 0: filled shares to flatten via SELL.
     sell_close = await _latest_close(client, symbol, exchange)
     if sell_close is None:
         evidence["cleanup"] = "no_quote_for_exit"
         evidence["cleanup_error"] = "no usable close to price the cleanup SELL"
         evidence["final_position_delta_vs_baseline"] = str(delta)
+        evidence["final_exit_reason"] = "no quote to price the cleanup SELL"
         return 3
     try:
         sell = await client.sell_overseas_stock(
@@ -405,37 +493,55 @@ async def _cleanup_and_verify(
         )
     except Exception as exc:  # noqa: BLE001 - submit rejection is a cleanup anomaly
         evidence["cleanup_sell_order_id"] = None
+        evidence["cleanup_sell_status"] = "submit_rejected"
         evidence["cleanup_error"] = str(exc)[:200]
         evidence["cleanup"] = "SELL_submit_rejected"
         evidence["final_position_delta_vs_baseline"] = str(delta)
+        evidence["final_exit_reason"] = "cleanup SELL submit rejected"
         return 3
     order_id = sell.get("odno") if isinstance(sell, Mapping) else None
     evidence["cleanup_sell_order_id"] = order_id
+    evidence["cleanup_sell_status"] = "acked" if order_id else "no_order_id"
     if not order_id:
         evidence["cleanup_error"] = "cleanup SELL response missing odno"
         evidence["cleanup"] = "SELL_no_order_id"
         evidence["final_position_delta_vs_baseline"] = str(delta)
+        evidence["final_exit_reason"] = "cleanup SELL response missing order id"
         return 3
 
     final_qty = await _await_flat(client, args, symbol, exchange, base_qty)
     if final_qty is None:
         evidence["cleanup"] = "holdings_read_failed"
         evidence["cleanup_error"] = "post-sell holdings read failed"
+        evidence["final_exit_reason"] = "post-sell holdings read failed"
         return 3
     final_delta = final_qty - base_qty
     evidence["post_holdings_qty"] = str(final_qty)
     evidence["final_position_delta_vs_baseline"] = str(final_delta)
     if final_delta > 0:
         evidence["cleanup"] = "UNCONFIRMED_residual_position"
+        evidence["final_exit_reason"] = "residual position remains after cleanup SELL"
         return 3
     if final_delta < 0:
         evidence["cleanup"] = "over_flattened_anomaly"
         evidence["cleanup_error"] = (
             f"final holdings {final_qty} below baseline {base_qty} after cleanup SELL"
         )
+        evidence["final_exit_reason"] = "over-flattened below baseline"
         return 3
-    evidence["cleanup"] = "flattened"
-    return 0
+    # Flattened to baseline. Exit 0 ONLY for a confirmed full fill; a partial /
+    # unconfirmed entry that we flattened + cancelled is a safe cleanup but NOT a
+    # clean confirmed round trip (blocker 2).
+    if entry_confirmed:
+        evidence["cleanup"] = "flattened"
+        evidence["final_exit_reason"] = "confirmed full fill flattened to baseline"
+        return 0
+    evidence["cleanup"] = "flattened_entry_unconfirmed"
+    evidence["final_exit_reason"] = (
+        "filled delta flattened and resting BUY handled, but entry fill was never "
+        "confirmed full"
+    )
+    return 2
 
 
 def _parse_usd_cash(margin_rows) -> tuple[Decimal | None, str]:
@@ -598,37 +704,62 @@ async def run_confirm(args: argparse.Namespace) -> int:
         return 2
     evidence["quantity"] = str(qty)
 
+    evidence["confirmation_signal"] = "holdings_delta"
+    evidence.setdefault("buy_cancel_attempted", False)
     buy_odno: str | None = None
     entry_fill: _EntryFill | None = None
+    buy_submit_error: str | None = None
     try:
-        buy = await client.buy_overseas_stock(
-            symbol=args.symbol,
-            exchange_code=exchange,
-            quantity=qty,
-            price=float(close),
-            is_mock=True,
-        )
-        buy_odno = buy.get("odno") if isinstance(buy, Mapping) else None
-        evidence["buy_order_id"] = buy_odno
-        evidence["confirmation_signal"] = "holdings_delta"
-        if not buy_odno:
-            evidence["entry"] = "BUY_no_order_id"
-            evidence["note"] = "buy response missing odno; nothing acked to flatten"
-        else:
-            entry_fill = await _await_entry_fill(
-                client, args, args.symbol, exchange, base_qty, Decimal(qty), close
+        try:
+            buy = await client.buy_overseas_stock(
+                symbol=args.symbol,
+                exchange_code=exchange,
+                quantity=qty,
+                price=float(close),
+                is_mock=True,
             )
-            if entry_fill is None:
+        except Exception as exc:  # noqa: BLE001 - classify a BUY submit failure
+            # A BUY submit exception must not leak out as a generic exit 1 with an
+            # inconsistent evidence packet; classify it and keep exit consistent.
+            buy_submit_error = str(exc)[:200]
+            buy = None
+            evidence["entry"] = "BUY_submit_rejected"
+            evidence["buy_submit_exception"] = buy_submit_error
+            evidence["buy_order_id"] = None
+            evidence["entry_order_id"] = None
+            evidence["entry_filled"] = False
+            evidence["entry_fill_verdict"] = "buy_submit_rejected"
+            evidence["entry_fill_confirmed"] = False
+            logger.error("overseas BUY submit failed: %s", buy_submit_error)
+        if buy is not None:
+            buy_odno = buy.get("odno") if isinstance(buy, Mapping) else None
+            evidence["buy_order_id"] = buy_odno
+            evidence["entry_order_id"] = buy_odno
+            if not buy_odno:
+                evidence["entry"] = "BUY_no_order_id"
                 evidence["entry_filled"] = False
-                evidence["note"] = (
-                    "entry fill UNCONFIRMED within poll window — holdings did not "
-                    "reflect a same-day mock fill (ROB-364 STOP condition)"
-                )
+                evidence["entry_fill_verdict"] = "no_order_id"
+                evidence["entry_fill_confirmed"] = False
+                evidence["note"] = "buy response missing odno; nothing acked to flatten"
             else:
-                evidence["entry_filled"] = True
-                evidence["entry_fill_price"] = str(entry_fill.price)
-                evidence["entry_fill_qty"] = str(entry_fill.quantity)
-                evidence["fill_price_source"] = entry_fill.price_source
+                outcome = await _await_entry_fill(
+                    client, args, args.symbol, exchange, base_qty, Decimal(qty), close
+                )
+                entry_fill = outcome.fill
+                evidence["entry_fill_verdict"] = outcome.verdict
+                evidence["entry_fill_confirmed"] = entry_fill is not None
+                if entry_fill is None:
+                    evidence["entry_filled"] = False
+                    evidence["note"] = (
+                        f"entry fill UNCONFIRMED (verdict={outcome.verdict}) within "
+                        "poll window — no confirmed full same-day mock fill "
+                        "(ROB-364 STOP condition)"
+                    )
+                else:
+                    evidence["entry_filled"] = True
+                    evidence["entry_fill_price"] = str(entry_fill.price)
+                    evidence["entry_fill_qty"] = str(entry_fill.quantity)
+                    evidence["fill_price_source"] = entry_fill.price_source
     finally:
         result = await _cleanup_and_verify(
             client,
@@ -640,6 +771,11 @@ async def run_confirm(args: argparse.Namespace) -> int:
             evidence,
             entry_fill,
         )
+        # A BUY submit failure is never a clean success even if cleanup found
+        # nothing to flatten; keep the process exit non-zero AND consistent with
+        # the logged evidence.
+        if buy_submit_error is not None and result == 0:
+            result = 2
         evidence["exit_code"] = result
         logger.info(json.dumps(evidence))
     return result

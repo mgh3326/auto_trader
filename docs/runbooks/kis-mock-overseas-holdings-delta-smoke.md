@@ -83,20 +83,50 @@ KIS_MOCK_OVERSEAS_SMOKE_ENABLED=true uv run python -m \
 ```
 
 The script: sizes a marketable limit from the latest minute close → BUY →
-bounded holdings-delta poll → **cleanup in a `finally`** (SELL a filled residual,
-or CANCEL an unfilled resting BUY) → final open-position/delta verification. It
-prints a JSON evidence packet including symbol, exchange, side(s), order id(s),
-baseline/post holdings, selected fill signal, cleanup result, and final position
-delta vs baseline.
+bounded holdings-delta poll → **cleanup in a `finally`** → final open-position /
+delta verification. It prints a JSON evidence packet (see *Evidence packet* below).
+
+## Fill verdict & cleanup policy (fail-closed)
+
+The entry fill verdict is one of `filled` (full directional delta — the **only**
+confirmation), `partial` (some but not the full ordered qty), `none`, or
+`read_failed`. The cleanup branches on whether the entry was a **confirmed full
+fill**:
+
+- **Confirmed full fill** → no resting remainder exists; SELL the delta to flatten.
+  A clean flatten to baseline (final delta 0) is the **only** path to **exit 0**.
+- **Partial / unconfirmed entry with a positive delta** → the original BUY may
+  have an unfilled resting remainder. KIS overseas mock has **no authoritative
+  open-order query** (`inquire_overseas_orders` raises in mock), so the smoke
+  **cancels the original BUY** to remove that risk, then SELLs the filled delta.
+  Even when it ends flat, this is **exit 2 (never exit 0)** — the entry was never
+  a clean confirmed full fill.
+- **Cannot authoritatively cancel the resting BUY** (cancel rejected or response
+  missing `odno`) → **fail closed, exit 3**, and the smoke does **not** SELL.
+- **No fill / nothing acked** → exit 2 (fill-unconfirmed) — never exit 0.
+
+So a partial fill can never be silently reported as success, and a flat-but-
+unconfirmed run is never mistaken for a clean round trip.
+
+## Evidence packet (every `--confirm` run logs these)
+
+`symbol`, `exchange`, `buy_limit_price`, `baseline_holdings_qty`, `quantity`,
+`buy_order_id` / `entry_order_id`, `entry_fill_verdict`, `entry_fill_confirmed`,
+`entry_filled`, `fill_price_source`, `cleanup_current_delta`,
+`buy_cancel_attempted`, `buy_cancel_order_id` / `buy_cancel_status`,
+`open_order_check_status`, `cleanup_sell_order_id` / `cleanup_sell_status`,
+`cleanup`, `final_position_delta_vs_baseline`, `final_exit_reason`, `exit_code`.
+On a BUY submit failure: `entry="BUY_submit_rejected"` + `buy_submit_exception`
++ `entry_order_id=null`, with a non-zero `exit_code` consistent with the process.
 
 ## Exit codes
 
 | code | meaning |
 |---|---|
-| 0 | success — preflight printed, or confirmed round trip flattened to baseline (final delta 0) |
+| 0 | **confirmed full fill** flattened to baseline (final delta 0) — the only clean success; or `--preflight` printed |
 | 1 | unexpected exception |
-| 2 | pre-BUY blocked (no/stale quote, unresolved exchange, size zero, baseline read failed) **or** fill unconfirmed but flat |
-| 3 | anomaly — residual position / pending order could not be cleaned up (SELL/CANCEL rejected, missing order id, residual, over-flatten) |
+| 2 | pre-BUY blocked (no/stale quote, unresolved exchange, size zero, baseline read failed); **or** partial/unconfirmed fill that ended flat (resting BUY cancelled but entry never confirmed full); **or** BUY submit rejected with nothing acquired |
+| 3 | anomaly — could not authoritatively clean up: resting BUY un-cancellable, residual after SELL, over-flatten/below-baseline, missing SELL/CANCEL order id |
 | 4 | disabled / KIS mock not configured / account un-submittable / US market closed (no order placed) |
 
 ## Safety boundaries
@@ -109,16 +139,30 @@ delta vs baseline.
   (exit 3), never a silent success.
 - Negative / below-baseline / over-flatten deltas are **always** anomalies, never
   a clean exit (final clean exit requires delta exactly 0).
+- A **partial / unconfirmed** entry never reports exit 0: the resting BUY is
+  cancelled (fail-closed if that cancel can't be authoritatively confirmed) and a
+  flat outcome is exit 2, not exit 0.
+- **Confirmed smoke is operator-approved only**, after the read-only `--preflight`
+  passes — one-off, minimal, LIMIT-only, on an idle symbol. No automatic `--confirm`.
 - **Alpaca Paper is a separate broker** (`account_scope=alpaca_paper`,
   `scripts/smoke/*alpaca*`). Do not mix its ledger/preflight semantics into this
   KIS-mock evidence; this smoke never touches the dual-paper preview packet.
 
 ## Caveats / known unknowns (operator must verify on the confirmed run)
 
+- **Open-order query is NOT authoritative in mock.** `inquire_overseas_orders`
+  (pending, TTTS3018R) raises in mock, so the smoke cannot *read* whether a resting
+  BUY exists. Instead it removes the risk by **cancelling** the BUY whenever the
+  entry was not a confirmed full fill; if that cancel can't be confirmed, it fails
+  closed (exit 3). `open_order_check_status` in the evidence records which applied.
 - **Mock fill reflection is unverified.** Whether KIS mock actually fills overseas
   orders and reflects them in `fetch_my_us_stocks(is_mock=True)` is the central
   unknown. If mock does **not** populate overseas holdings on fill, every run is
   fill-unconfirmed (exit 2) — the smoke fails closed and never fabricates a fill.
+- **ROB-364 is NOT Done until the operator confirmed run.** This PR hardens the
+  code/tests/docs only; the issue stays open until an operator-approved confirmed
+  smoke (creds + US RTH) actually exercises the round trip and resolves the
+  unknowns above. This runbook makes no live-trading recommendation.
 - **Quote freshness tz.** Minute-chart timestamps are treated as US/Eastern; the
   freshness gate is coarse. `is_market_open("us")` is the primary session gate and
   the CANCEL cleanup is the real safety net for an unfilled resting limit.
