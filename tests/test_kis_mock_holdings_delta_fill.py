@@ -142,11 +142,13 @@ async def test_confirm_snapshot_error_fails_closed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_confirm_partial_returns_partial_fill():
+async def test_confirm_partial_fails_closed():
+    # ROB-341 review #1: the synchronous confirm path returns a Fill ONLY on a
+    # FULL fill. A partial delta is not-yet-filled -> None, so the executor's
+    # bounded poll either reaches a full fill or times out into an anomaly
+    # (the executor has no partial-fill handling and would otherwise strand the
+    # residual). The periodic reconciler keeps its own partial semantics.
     async def post(symbol):
-        return Decimal("4"), Decimal("720000")  # 4 of 10 filled, cash dropped 280000
+        return Decimal("4"), Decimal("720000")  # 4 of 10 filled
 
-    fill = await confirm_fill_from_holdings_delta(_baseline(), fetch_post=post)
-    assert isinstance(fill, Fill)
-    assert fill.quantity == Decimal("4")
-    assert fill.price == Decimal("70000")  # 280000 / 4
+    assert await confirm_fill_from_holdings_delta(_baseline(), fetch_post=post) is None

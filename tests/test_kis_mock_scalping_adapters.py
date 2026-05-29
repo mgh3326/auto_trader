@@ -51,6 +51,36 @@ async def test_confirm_fill_no_baseline_fails_closed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_dry_run_buy_skips_baseline_snapshot(monkeypatch):
+    # ROB-341 review #6: a dry-run (confirm=False) submit never reaches
+    # confirm_fill, so it must not pay for a baseline balance snapshot.
+    import app.services.brokers.kis.mock_scalping_exec.adapters as mod
+
+    async def fake_place(**kwargs):
+        return {"odno": "0001"}
+
+    monkeypatch.setattr(mod, "_place_order_impl", fake_place)
+    broker = KisMockBroker(get_state=lambda s: None)
+    called = {"n": 0}
+
+    async def fake_snapshot(symbol):
+        called["n"] += 1
+        return Decimal("0"), None
+
+    monkeypatch.setattr(broker, "_read_snapshot", fake_snapshot)
+    result = await broker.submit_buy(
+        symbol="005930",
+        price=Decimal("70000"),
+        quantity=Decimal("1"),
+        correlation_id="cid1",
+        confirm=False,
+    )
+    assert called["n"] == 0  # no baseline read on dry-run
+    assert "_baseline" not in result
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_confirm_fill_no_delta_fails_closed(monkeypatch):
     broker = KisMockBroker(get_state=lambda s: None)
 

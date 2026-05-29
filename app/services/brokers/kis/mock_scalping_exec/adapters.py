@@ -81,8 +81,14 @@ class KisMockBroker:
         correlation_id: str,
         confirm: bool,
     ) -> dict[str, Any]:
-        baseline = await self._capture_baseline(
-            symbol=symbol, side="buy", qty=quantity, limit_price=price
+        # Baseline is only consumed by confirm_fill on the confirm path; a
+        # dry-run returns before confirm, so skip the balance read entirely.
+        baseline = (
+            await self._capture_baseline(
+                symbol=symbol, side="buy", qty=quantity, limit_price=price
+            )
+            if confirm
+            else None
         )
         result = await _place_order_impl(
             symbol=symbol,
@@ -96,7 +102,7 @@ class KisMockBroker:
             reason=f"scalp_entry:{correlation_id}",
             strategy=self._strategy_id,
         )
-        if isinstance(result, dict):
+        if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
         return result
 
@@ -111,8 +117,12 @@ class KisMockBroker:
         correlation_id: str,
         confirm: bool,
     ) -> dict[str, Any]:
-        baseline = await self._capture_baseline(
-            symbol=symbol, side="sell", qty=quantity, limit_price=price
+        baseline = (
+            await self._capture_baseline(
+                symbol=symbol, side="sell", qty=quantity, limit_price=price
+            )
+            if confirm
+            else None
         )
         result = await _place_order_impl(
             symbol=symbol,
@@ -130,7 +140,7 @@ class KisMockBroker:
             scalping_strategy_id=strategy_id,
             scalping_exit_reason=exit_reason,
         )
-        if isinstance(result, dict):
+        if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
         return result
 

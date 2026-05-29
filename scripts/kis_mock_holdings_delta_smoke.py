@@ -193,23 +193,22 @@ async def run_confirm(args: argparse.Namespace) -> int:
         entry_fill = await _await_fill(
             broker, buy, max_poll=args.max_poll, interval=args.poll_interval
         )
+        evidence["confirmation_signal"] = "holdings_delta"
         if entry_fill is None:
             # STOP condition: holdings did not reflect the fill within the window.
-            evidence["confirmation_signal"] = "holdings_delta"
+            # Do NOT early-return — fall through to the finally so cleanup can
+            # detect+flatten a fill that landed just after the poll window and
+            # set the authoritative exit code (residual that can't be flattened
+            # -> 3 outranks fill-unconfirmed -> 2).
             evidence["entry_filled"] = False
             evidence["note"] = (
                 "entry fill UNCONFIRMED within poll window — holdings did not "
                 "reflect a same-day mock fill (ROB-341 STOP condition)"
             )
-            post_qty, _ = await broker._read_snapshot(args.symbol)
-            evidence["post_holdings_qty"] = str(post_qty)
-            logger.info(json.dumps(evidence))
-            # No proven position to clean up beyond baseline; still verify below.
-            return 2
-        evidence["entry_filled"] = True
-        evidence["confirmation_signal"] = "holdings_delta"
-        evidence["entry_fill_price"] = str(entry_fill.price)
-        evidence["entry_fill_qty"] = str(entry_fill.quantity)
+        else:
+            evidence["entry_filled"] = True
+            evidence["entry_fill_price"] = str(entry_fill.price)
+            evidence["entry_fill_qty"] = str(entry_fill.quantity)
     finally:
         result = await _cleanup_and_verify(
             broker, client, args, cid, base_qty, evidence, entry_fill

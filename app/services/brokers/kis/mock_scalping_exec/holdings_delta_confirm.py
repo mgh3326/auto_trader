@@ -10,6 +10,17 @@ kernel (shared with the ROB-102 reconciler).
 return empty rows for same-day mock fills, so an empty same-day daily-ccld can
 neither gate nor override this verdict. daily-ccld remains supplementary,
 post-settlement evidence only.
+
+**Attribution boundary (ROB-341 §4, known limitation).** The delta attributes
+*any* directional holdings change in the poll window to *this* order — it cannot
+distinguish this order's fill from a concurrent same-symbol fill. Two mitigations
+bound the risk: (1) the scalping ws_bridge serializes per-symbol entries via an
+in-flight set + global semaphore, so two concurrent scalps on the same symbol do
+not overlap; (2) a wrong-direction or zero delta already fails closed. The
+residual, un-disambiguated case is external/manual same-symbol account activity
+during the bounded poll; holdings alone cannot resolve it, and a future
+ledger/open-order cross-check is the deeper fix (tracked as follow-up). Keep the
+confirmed smoke to idle symbols with no concurrent manual activity.
 """
 
 from __future__ import annotations
@@ -72,11 +83,19 @@ async def confirm_fill_from_holdings_delta(
     *,
     fetch_post: PostFetch,
 ) -> Fill | None:
-    """Return a ``Fill`` only when the post-submit holdings delta unambiguously
-    proves a (full or partial) fill in the order's direction.
+    """Return a ``Fill`` only when the post-submit holdings delta proves a
+    **full** fill in the order's direction.
 
-    Every other outcome is fail-closed (``None``): missing baseline, snapshot
-    read failure, or a zero / wrong-direction delta. Never fabricates a fill.
+    A partial delta is treated as not-yet-filled and returns ``None`` so the
+    executor's bounded poll either reaches a full fill or times out into an
+    ``entry_unfilled`` / ``exit_unconfirmed`` anomaly — the executor has no
+    partial-fill handling, so confirming a partial would strand the residual
+    position and fabricate full-size PnL. (The periodic ROB-102 reconciler
+    keeps its own partial semantics via the shared kernel.)
+
+    Every non-full outcome is fail-closed (``None``): missing baseline, snapshot
+    read failure, a zero / wrong-direction delta, or a partial. Never fabricates
+    a fill.
     """
     if baseline.holdings_qty is None:
         logger.info(
@@ -100,11 +119,17 @@ async def confirm_fill_from_holdings_delta(
         baseline_qty=baseline.holdings_qty,
         observed_qty=observed_qty,
     )
-    if decision.verdict == "none":
+    if decision.verdict != "filled":
+        # 'none' (no/wrong-direction delta) or 'partial' (not yet fully filled)
+        # both fail closed; on a partial the bounded poll keeps trying.
         logger.info(
-            "kis-mock holdings-delta confirm: no fill delta sym=%s delta=%s -> fail closed",
+            "kis-mock holdings-delta confirm: verdict=%s (not full) sym=%s "
+            "delta=%s filled=%s/%s -> fail closed",
+            decision.verdict,
             baseline.symbol,
             decision.delta,
+            decision.filled_qty,
+            baseline.ordered_qty,
         )
         return None
 
