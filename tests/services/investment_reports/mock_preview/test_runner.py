@@ -234,3 +234,164 @@ async def test_default_runner_wires_nonempty_production_registry(db_session) -> 
     assert kinds, "default runner ensure registry must not be empty"
     # account-independent evidence kinds must be collectable for cross-scope reuse
     assert {"market", "news"} <= kinds
+
+
+@pytest.mark.asyncio
+async def test_runner_reuses_live_bundle_account_independent_rows(db_session) -> None:
+    """ROB-380 runtime invariant: when the live report carries a snapshot_bundle_uuid,
+    the mock bundle cites the SAME account-independent snapshot rows (shared), while
+    account-bound rows stay distinct per scope."""
+    import datetime as _dt
+
+    from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
+    from app.services.action_report.common.snapshot_bundle import (
+        SnapshotBundleEnsureService,
+    )
+    from app.services.investment_snapshots.collectors import SnapshotCollectResult
+    from app.services.investment_snapshots.repository import (
+        InvestmentSnapshotsRepository,
+    )
+
+    fixed_now = _dt.datetime(2025, 1, 15, 9, 0, tzinfo=_dt.UTC)
+
+    def _manual(kind, scope, payload):
+        return SnapshotCollectResult(
+            snapshot_kind=kind,
+            market="us",
+            account_scope=scope,
+            source_kind="manual",
+            payload_json=payload,
+            as_of=fixed_now,
+            freshness_status="fresh",
+        )
+
+    snap_repo = InvestmentSnapshotsRepository(db_session)
+    ensure = SnapshotBundleEnsureService(db_session, clock=lambda: fixed_now)
+
+    # 1. Build a live bundle with account-independent + account-bound evidence.
+    live_bundle = await ensure.ensure(
+        EnsureBundleRequest(
+            purpose="snapshot_backed_report",
+            market="us",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            mode="ensure_fresh",
+            manual_snapshots={
+                "market": [_manual("market", "kis_live", {"m": "L"})],
+                "news": [_manual("news", "kis_live", {"n": "L"})],
+                "portfolio": [_manual("portfolio", "kis_live", {"p": "L"})],
+                "journal": [_manual("journal", "kis_live", {"j": "L"})],
+                "watch_context": [_manual("watch_context", "kis_live", {"w": "L"})],
+            },
+        )
+    )
+    await db_session.flush()
+    assert live_bundle.bundle_uuid is not None
+
+    # 2. Seed a live report that LINKS to that bundle (as the generator does).
+    live_req = IngestReportRequest(
+        report_type="snapshot_backed_advisory_v1",
+        market="us",
+        market_session="regular",
+        account_scope="kis_live",
+        execution_mode="advisory_only",
+        created_by_profile="seed",
+        title="t",
+        summary="s",
+        status="draft",
+        generator_version="v2-snapshot-backed",
+        kst_date="2026-05-30",
+        snapshot_bundle_uuid=live_bundle.bundle_uuid,
+        items=[
+            IngestReportItem(
+                client_item_key="seed1",
+                item_kind="action",
+                side="buy",
+                intent="buy_review",
+                rationale="seed",
+                symbol="AAPL",
+                evidence_snapshot={"reference_price_usd": 200.0},
+                max_action={"notional_usd": 50.0},
+            )
+        ],
+    )
+    live_report = await InvestmentReportIngestionService(db_session).ingest(live_req)
+    await db_session.flush()
+
+    # 3. Run the mock runner with a reuse-capable ensure service whose account-bound
+    #    collection comes from manual snapshots (kis_mock).
+    class _ReuseEnsure(SnapshotBundleEnsureService):
+        async def ensure_reusing_account_independent(
+            self, request, *, reuse_from_bundle_uuid
+        ):  # noqa: ANN001
+            request = request.model_copy(
+                update={
+                    "manual_snapshots": {
+                        "portfolio": [_manual("portfolio", "kis_mock", {"p": "M"})],
+                        "journal": [_manual("journal", "kis_mock", {"j": "M"})],
+                        "watch_context": [
+                            _manual("watch_context", "kis_mock", {"w": "M"})
+                        ],
+                    }
+                }
+            )
+            return await super().ensure_reusing_account_independent(
+                request, reuse_from_bundle_uuid=reuse_from_bundle_uuid
+            )
+
+    runner = MockPreviewReportRunner(
+        db_session, ensure_service=_ReuseEnsure(db_session, clock=lambda: fixed_now)
+    )
+    mock_report, _reused, _count = await runner.run(
+        live_report_uuid=live_report.report_uuid,
+        market="us",
+        market_session="regular",
+        policy_version="intraday_action_report_v1",
+        kst_date="2026-05-30",
+        created_by_profile="schedule",
+    )
+    await db_session.flush()
+
+    # 4. Assert shared independent rows, distinct account-bound rows.
+    async def _by_kind(bundle_uuid):
+        b = await snap_repo.get_bundle_by_uuid(bundle_uuid)
+        pairs = await snap_repo.list_bundle_items_with_snapshots(b.id)
+        return {s.snapshot_kind: s.snapshot_uuid for _i, s in pairs}
+
+    live_uuids = await _by_kind(live_bundle.bundle_uuid)
+    mock_uuids = await _by_kind(mock_report.snapshot_bundle_uuid)
+
+    assert mock_uuids["market"] == live_uuids["market"]
+    assert mock_uuids["news"] == live_uuids["news"]
+    assert mock_uuids["portfolio"] != live_uuids["portfolio"]
+
+
+@pytest.mark.asyncio
+async def test_runner_fallback_when_live_bundle_uuid_absent(
+    db_session, seeded_live_report
+) -> None:
+    """When live.snapshot_bundle_uuid is None, it should fall back to calling ensure()."""
+
+    class _MockEnsure:
+        called = False
+
+        async def ensure(self, request) -> EnsureBundleResponse:
+            self.called = True
+            return EnsureBundleResponse(
+                bundle_uuid=uuid.uuid4(),
+                status="complete",
+                created=True,
+            )
+
+    mock_ensure = _MockEnsure()
+    runner = MockPreviewReportRunner(db_session, ensure_service=mock_ensure)
+    report, _reused, count = await runner.run(
+        live_report_uuid=seeded_live_report.report_uuid,
+        market="us",
+        market_session="regular",
+        policy_version="intraday_action_report_v1",
+        kst_date="2026-05-30",
+        created_by_profile="schedule",
+    )
+    assert mock_ensure.called
+    assert report.snapshot_bundle_uuid is not None
