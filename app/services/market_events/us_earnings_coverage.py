@@ -94,9 +94,13 @@ def aggregate_coverage(
     market: Market = "us",
 ) -> CoverageMeasurement:
     """Pure §5 aggregation. ``window_present`` maps (symbol, event_date) ->
-    (present bar-dates, volume>0 bar-dates); ``benchmark_present`` maps each
-    benchmark symbol -> its present bar-dates over the full span. Expected
-    sessions are computed from the (pure) trading calendar."""
+    (present bar-dates, volume>0 bar-dates), where the caller fetched those bars
+    around the event's **lookahead-safe decision session**; ``benchmark_present``
+    maps each benchmark symbol -> its present bar-dates over the full span.
+    Expected sessions are the -5..+20 window around the decision session (the
+    next tradable session for AMC/unknown), so date-only earnings are never
+    treated as intraday-tradable on event_date. Unmappable events are counted and
+    fail closed."""
     realized_events = len(events)
     null_symbol_count = max(total_released - realized_events, 0)
     dup_ambiguous_ratio = (
@@ -105,6 +109,7 @@ def aggregate_coverage(
 
     labels = [label_earnings_decision_time(ed, th, market) for (_s, ed, th) in events]
     intraday_labeled_events = sum(1 for lbl in labels if lbl.is_intraday_rejected)
+    unmappable_events = sum(1 for lbl in labels if lbl.decision_session is None)
     unknown_count = sum(
         1 for (_s, _ed, th) in events if th not in (_BMO, _AMC, _INTRADAY)
     )
@@ -112,20 +117,22 @@ def aggregate_coverage(
     # Finnhub equity earnings carry no release_time_utc -> date-only by design.
     date_only_ratio = 1.0 if realized_events else 0.0
 
-    # Expected sessions are identical for events sharing an event_date; cache.
+    # Windows are anchored on the lookahead-safe DECISION SESSION (the first bar a
+    # backtest could trade on the news), not the raw event_date — for AMC/unknown
+    # this is the next tradable session. Cached per decision session.
     expected_cache: dict[date, set[date]] = {}
 
-    def _expected(event_date: date) -> set[date]:
-        cached = expected_cache.get(event_date)
+    def _expected(decision_session: date) -> set[date]:
+        cached = expected_cache.get(decision_session)
         if cached is None:
             cached = set(
                 trading_sessions_in_range(
                     market,
-                    event_date - timedelta(days=WINDOW_LOOKBACK_DAYS),
-                    event_date + timedelta(days=WINDOW_LOOKAHEAD_DAYS),
+                    decision_session - timedelta(days=WINDOW_LOOKBACK_DAYS),
+                    decision_session + timedelta(days=WINDOW_LOOKAHEAD_DAYS),
                 )
             )
-            expected_cache[event_date] = cached
+            expected_cache[decision_session] = cached
         return cached
 
     coverages: list[float] = []
@@ -134,8 +141,14 @@ def aggregate_coverage(
     joinable_symbols: set[str] = set()
     symbol_has_volume: dict[str, bool] = {}
 
-    for sym, ed, _th in events:
-        expected = _expected(ed)
+    for (sym, ed, _th), label in zip(events, labels, strict=True):
+        decision = label.decision_session
+        if decision is None:
+            # Unmappable: no lookahead-safe window -> fail closed (0.0 coverage,
+            # never joinable; never silently use the raw event_date window).
+            coverages.append(0.0)
+            continue
+        expected = _expected(decision)
         present, volume = window_present.get((sym, ed), (set(), set()))
         if present:
             events_with_bars_present += 1
@@ -157,8 +170,11 @@ def aggregate_coverage(
         tradability_coverage = 0.0
 
     benchmark_covered = 0
-    for _sym, ed, _th in events:
-        expected = _expected(ed)
+    for (_sym, _ed, _th), label in zip(events, labels, strict=True):
+        decision = label.decision_session
+        if decision is None:
+            continue
+        expected = _expected(decision)
         if not expected:
             continue
         for bdates in benchmark_present.values():
@@ -185,6 +201,7 @@ def aggregate_coverage(
         delisted_events=delisted_events,
         delisted_recoverable=delisted_recoverable,
         session_calendar_present=session_calendar_present,
+        unmappable_events=unmappable_events,
     )
 
 
@@ -228,16 +245,25 @@ class UsEarningsCoverageService:
             (r.symbol, r.event_date, r.time_hint) for r in rows if r.symbol
         ]
 
+        # Fetch each event's bars around its lookahead-safe DECISION SESSION (the
+        # next tradable session for AMC/unknown), matching aggregate_coverage's
+        # window anchor. Unmappable events (no decision session) get no query.
         window_present: dict[tuple[str, date], tuple[set[date], set[date]]] = {}
-        for sym, ed, _th in events:
+        for sym, ed, th in events:
+            decision = label_earnings_decision_time(ed, th, "us").decision_session
+            if decision is None:
+                continue
             window_present[(sym, ed)] = await self._present_bar_dates(
                 sym,
-                ed - timedelta(days=WINDOW_LOOKBACK_DAYS),
-                ed + timedelta(days=WINDOW_LOOKAHEAD_DAYS),
+                decision - timedelta(days=WINDOW_LOOKBACK_DAYS),
+                decision + timedelta(days=WINDOW_LOOKAHEAD_DAYS),
             )
 
+        # Benchmark span covers the latest decision-anchored window. Decision
+        # sessions can sit a few sessions past to_date (AMC near the boundary), so
+        # extend the span end by an extra buffer beyond the +20d lookahead.
         span_start = from_date - timedelta(days=WINDOW_LOOKBACK_DAYS)
-        span_end = to_date + timedelta(days=WINDOW_LOOKAHEAD_DAYS)
+        span_end = to_date + timedelta(days=WINDOW_LOOKAHEAD_DAYS + 10)
         benchmark_present: dict[str, set[date]] = {}
         for bsym in BENCHMARK_SYMBOLS:
             present, _vol = await self._present_bar_dates(bsym, span_start, span_end)

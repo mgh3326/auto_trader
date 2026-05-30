@@ -25,7 +25,12 @@ The probe measures, for realized Finnhub US earnings events
    intraday-labeled event hard-fails the gate.
 2. **`-5..+20d` window join coverage** against `us_candles_1d` (KIS primary +
    Yahoo fallback), measured against the fail-closed NYSE (XNYS) session
-   calendar — counts only, never raw bars.
+   calendar — counts only, never raw bars. The window is anchored on each
+   event's **lookahead-safe decision session** (the next tradable session for
+   AMC/unknown), not the raw `event_date`, so date-only earnings are never
+   treated as intraday-tradable on the announcement day. Events with no
+   mappable decision session (out of calendar range) are counted as
+   `unmappable_events` and fail closed (never joinable).
 3. **Survivorship** — delisted symbols (`us_symbol_universe.is_active=false`)
    are counted; with `--measure-delisted-recoverability` a bounded Yahoo probe
    measures (does not assume) delisted-bar recoverability.

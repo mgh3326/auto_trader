@@ -42,6 +42,10 @@ class CoverageMeasurement:
     delisted_events: int
     delisted_recoverable: int
     session_calendar_present: bool
+    # Events whose date-only timing has no lookahead-safe decision session within
+    # the calendar's range (fail-closed; excluded from joinable). Defaults to 0
+    # so existing constructors stay valid.
+    unmappable_events: int = 0
 
 
 @dataclass(frozen=True)

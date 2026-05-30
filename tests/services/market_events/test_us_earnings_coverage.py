@@ -11,6 +11,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from app.services.market_events.earnings_decision_time import (
+    label_earnings_decision_time,
+)
 from app.services.market_events.session_calendar import trading_sessions_in_range
 from app.services.market_events.us_earnings_coverage import (
     MIN_WINDOW_COVERAGE,
@@ -24,6 +27,17 @@ _EVENT_DATE = date(2025, 7, 15)
 def _expected_sessions(event_date: date) -> list[date]:
     return trading_sessions_in_range(
         "us", event_date - timedelta(days=5), event_date + timedelta(days=20)
+    )
+
+
+def _decision_window(event_date: date, time_hint: str | None) -> set[date]:
+    """Expected -5..+20 sessions anchored on the lookahead-safe decision session
+    (the window a backtest would actually use)."""
+    label = label_earnings_decision_time(event_date, time_hint, "us")
+    d = label.decision_session
+    assert d is not None
+    return set(
+        trading_sessions_in_range("us", d - timedelta(days=5), d + timedelta(days=20))
     )
 
 
@@ -202,6 +216,90 @@ def test_unknown_time_ratio_measured():
     )
     # BBB (None) + CCC (unknown) are the two non-BMO/AMC/intraday -> 2/4.
     assert m.unknown_time_ratio == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------- #
+# Blocker 2: window must be anchored on the lookahead-safe decision session
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+def test_amc_window_anchored_on_next_session_not_event_date():
+    # AMC release: the tradable reaction window starts at the NEXT session, so the
+    # coverage window must be anchored there. Bars present exactly for the
+    # decision-session window -> coverage 1.0. (If the code anchored on event_date,
+    # the shifted window would intersect at <1.0, so p50==1.0 is a sharp proof.)
+    label = label_earnings_decision_time(_EVENT_DATE, "after_close", "us")
+    assert label.decision_session is not None
+    assert label.decision_session != _EVENT_DATE  # AMC shifts forward
+    win = _decision_window(_EVENT_DATE, "after_close")
+    m = aggregate_coverage(
+        events=[("MSFT", _EVENT_DATE, "after_close")],
+        total_released=1,
+        window_present={("MSFT", _EVENT_DATE): (win, win)},
+        benchmark_present={"SPY": win},
+        delisted_symbols=set(),
+        delisted_recoverable=0,
+        session_calendar_present=True,
+    )
+    assert m.joinable_events == 1
+    assert m.joinable_symbols == 1
+    assert m.window_coverage_p50 == pytest.approx(1.0)
+    assert m.benchmark_coverage == pytest.approx(1.0)
+    assert m.unmappable_events == 0
+
+
+@pytest.mark.unit
+def test_event_date_anchored_bars_undercover_an_amc_event():
+    # Conversely: bars covering only the raw event_date window do NOT fully cover
+    # an AMC event's decision-session window -> coverage strictly < 1.0. This
+    # fails if the code (incorrectly) anchored on event_date.
+    event_win = set(_expected_sessions(_EVENT_DATE))
+    m = aggregate_coverage(
+        events=[("MSFT", _EVENT_DATE, "after_close")],
+        total_released=1,
+        window_present={("MSFT", _EVENT_DATE): (event_win, event_win)},
+        benchmark_present={"SPY": event_win},
+        delisted_symbols=set(),
+        delisted_recoverable=0,
+        session_calendar_present=True,
+    )
+    assert m.window_coverage_p50 < 1.0
+
+
+@pytest.mark.unit
+def test_unknown_window_anchored_on_next_session():
+    label = label_earnings_decision_time(_EVENT_DATE, "unknown", "us")
+    assert label.decision_session != _EVENT_DATE
+    win = _decision_window(_EVENT_DATE, "unknown")
+    m = aggregate_coverage(
+        events=[("GOOG", _EVENT_DATE, "unknown")],
+        total_released=1,
+        window_present={("GOOG", _EVENT_DATE): (win, win)},
+        benchmark_present={"SPY": win},
+        delisted_symbols=set(),
+        delisted_recoverable=0,
+        session_calendar_present=True,
+    )
+    assert m.joinable_events == 1
+    assert m.window_coverage_p50 == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_unmappable_event_counted_and_not_joinable():
+    # Out-of-calendar-range event -> no lookahead-safe decision session -> fail
+    # closed: counted explicitly, never treated as a valid event_date window.
+    m = aggregate_coverage(
+        events=[("FUTR", date(2100, 1, 15), "before_open")],
+        total_released=1,
+        window_present={},
+        benchmark_present={},
+        delisted_symbols=set(),
+        delisted_recoverable=0,
+        session_calendar_present=True,
+    )
+    assert m.unmappable_events == 1
+    assert m.joinable_events == 0
+    assert m.realized_events == 1
+    assert m.window_coverage_p50 == pytest.approx(0.0)
 
 
 # --------------------------------------------------------------------------- #
