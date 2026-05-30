@@ -1493,10 +1493,12 @@ async def test_market_portfolio_descriptors_from_bundle() -> None:
     )
     await gen.generate(_make_request())
     sent = ingest.calls[0]
-    assert sent.market_snapshot["snapshot_uuid"] == str(market.snapshot_uuid)
-    assert sent.market_snapshot["freshness_status"] == "fresh"
-    assert sent.portfolio_snapshot["snapshot_kind"] == "portfolio"
-    assert "payload_json" not in sent.market_snapshot
+    assert sent.market_snapshot["provenance"]["snapshot_uuid"] == str(
+        market.snapshot_uuid
+    )
+    assert sent.market_snapshot["provenance"]["freshness_status"] == "fresh"
+    assert sent.portfolio_snapshot["provenance"]["snapshot_kind"] == "portfolio"
+    assert "payload_json" not in sent.market_snapshot["provenance"]
 
 
 @pytest.mark.asyncio
@@ -1550,16 +1552,78 @@ async def test_crypto_descriptors_are_pointers_not_empty() -> None:
     # Non-empty pointer descriptors.
     assert sent.market_snapshot != {}
     assert sent.portfolio_snapshot != {}
-    assert sent.market_snapshot["snapshot_uuid"] == str(market.snapshot_uuid)
-    assert sent.portfolio_snapshot["snapshot_uuid"] == str(portfolio.snapshot_uuid)
-    assert sent.market_snapshot["freshness_status"] == "fresh"
-    assert sent.portfolio_snapshot["coverage"] == {"rows": 3}
+    assert sent.market_snapshot["provenance"]["snapshot_uuid"] == str(
+        market.snapshot_uuid
+    )
+    assert sent.portfolio_snapshot["provenance"]["snapshot_uuid"] == str(
+        portfolio.snapshot_uuid
+    )
+    assert sent.market_snapshot["provenance"]["freshness_status"] == "fresh"
+    assert sent.portfolio_snapshot["provenance"]["coverage"] == {"rows": 3}
+    assert sent.market_snapshot["baseline"] == {}
+    assert sent.portfolio_snapshot["baseline"] == {"holdings_count": 0}
 
     # Pointer, NOT payload — the snapshot body must never be copied in.
-    for descriptor in (sent.market_snapshot, sent.portfolio_snapshot):
+    for descriptor in (
+        sent.market_snapshot["provenance"],
+        sent.portfolio_snapshot["provenance"],
+    ):
         assert "payload_json" not in descriptor
         assert "holdings" not in descriptor
         assert "events" not in descriptor
+
+
+@pytest.mark.asyncio
+async def test_descriptors_freeze_numeric_baseline_from_payload() -> None:
+    """ROB-375 Bug 2 — when the market/portfolio snapshot payloads carry the
+    delta-relevant numerics, the report row freezes them under ``baseline``
+    (indices for market; cash/buying_power/sellable_summary + holdings_count
+    for portfolio) while still never copying the heavy lists into provenance.
+    """
+    market = _FakeSnap(kind="market")
+    market.payload_json = {
+        "market": "us",
+        "from_date": "2026-05-30",
+        "to_date": "2026-05-30",
+        "indices": {"SPX": {"price": 5300.0, "change_pct": 0.4}},
+        "events": [{"big": "blob"}],  # heavy list must NOT be frozen
+    }
+    portfolio = _FakeSnap(kind="portfolio")
+    portfolio.payload_json = {
+        "primary_source": "kis_live",
+        "cash": {"usd_cash": 3095.26, "usd_orderable": 3078.32},
+        "buying_power": {"usd": 3078.32},
+        "sellable_summary": {"count": 4},
+        "holdings": [{"ticker": "BAC"}, {"ticker": "TMUS"}],  # heavy list excluded
+    }
+    repo = _FakeSnapshotsRepository(
+        bundle=type("B", (), {"id": 7})(),
+        items=[(object(), market), (object(), portfolio)],
+    )
+    ensure = _FakeEnsureService(_ensure_response())
+    ingest = _FakeIngestionService()
+    gen = SnapshotBackedReportGenerator(
+        session=object(),
+        ensure_service=ensure,
+        ingestion_service=ingest,
+        snapshots_repository=repo,
+    )
+    await gen.generate(_make_request())
+    sent = ingest.calls[0]
+
+    assert sent.market_snapshot["baseline"]["indices"] == {
+        "SPX": {"price": 5300.0, "change_pct": 0.4}
+    }
+    assert sent.market_snapshot["baseline"]["market"] == "us"
+    assert "events" not in sent.market_snapshot["baseline"]
+
+    pb = sent.portfolio_snapshot["baseline"]
+    assert pb["cash"] == {"usd_cash": 3095.26, "usd_orderable": 3078.32}
+    assert pb["buying_power"] == {"usd": 3078.32}
+    assert pb["sellable_summary"] == {"count": 4}
+    assert pb["primary_source"] == "kis_live"
+    assert pb["holdings_count"] == 2
+    assert "holdings" not in pb
 
 
 @pytest.mark.asyncio
