@@ -51,10 +51,10 @@ async def test_bridge_fail_closed_when_adapter_disabled() -> None:
     )
     assert out["status"] == "unsupported"
     assert out["submit_enabled"] is False
-    # names only — never values
-    assert "KIS_MOCK_APP_KEY" in out.get("missing_env_keys", []) or out.get(
-        "missing_env_keys"
-    ) is not None
+    # names only — never values; list must be non-empty and contain the expected key
+    missing = out.get("missing_env_keys", [])
+    assert isinstance(missing, list) and missing  # non-empty
+    assert "KIS_MOCK_APP_KEY" in missing
 
 
 @pytest.mark.asyncio
@@ -93,3 +93,23 @@ async def test_bridge_previews_kis_mock_only_no_alpaca() -> None:
     assert out["account_scope"] == "kis_mock"
     assert out["submit_enabled"] is False
     assert "alpaca_paper" not in out  # no Alpaca evidence mixed in
+    assert "." not in out["status"]  # status is a clean lowercase token
+
+
+@pytest.mark.unit
+def test_extract_order_params_uses_default_cap_when_no_notional() -> None:
+    params = extract_order_params(
+        symbol="AAPL", evidence_snapshot={"reference_price_usd": 100.0}, max_action={}
+    )
+    assert params is not None
+    assert params.notional_cap_usd == 50.0
+    assert params.quantity == pytest.approx(0.5)
+
+
+@pytest.mark.unit
+def test_extract_order_params_skips_on_zero_cap() -> None:
+    assert extract_order_params(
+        symbol="AAPL",
+        evidence_snapshot={"reference_price_usd": 100.0},
+        max_action={"notional_usd": 0},
+    ) is None

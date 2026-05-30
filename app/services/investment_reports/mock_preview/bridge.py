@@ -50,11 +50,17 @@ def extract_order_params(
     if ref_price <= 0:
         return None
 
-    cap_raw = max_action.get("notional_usd") or max_action.get("notional_cap_usd")
+    cap_raw = max_action.get("notional_usd")
+    if cap_raw is None:
+        cap_raw = max_action.get("notional_cap_usd")
     try:
         cap = float(cap_raw) if cap_raw is not None else _DEFAULT_NOTIONAL_CAP_USD
     except (TypeError, ValueError):
         cap = _DEFAULT_NOTIONAL_CAP_USD
+    # A zero (or negative) cap is invalid for a BUY preview — never emit a
+    # zero-notional order. Return None so callers can skip gracefully.
+    if cap <= 0:
+        return None
 
     limit_raw = evidence_snapshot.get("limit_price_usd")
     try:
