@@ -582,6 +582,61 @@ class TestMCPTopStocks:
         assert result["total_count"] == 2
         assert result["rankings"][0]["symbol"] == "KRW-BTC"
 
+    async def test_crypto_rankings_fills_market_cap_from_coingecko(self, monkeypatch):
+        """ROB-369 B5 — get_top_stocks(crypto) left market_cap=null for every
+        row; it now enriches from the same CoinGecko cache screen_stocks uses."""
+        from app.mcp_server.tooling.screening import crypto as screening_crypto
+
+        tools = build_tools()
+
+        async def mock_fetch_top_traded_coins():
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": "80000000",
+                    "signed_change_rate": "0.025",
+                    "acc_trade_volume_24h": "100",
+                    "acc_trade_price_24h": "8000000000000",
+                },
+                {
+                    "market": "KRW-ETH",
+                    "trade_price": "4000000",
+                    "signed_change_rate": "0.03",
+                    "acc_trade_volume_24h": "80",
+                    "acc_trade_price_24h": "320000000000",
+                },
+            ]
+
+        async def mock_coingecko_fetch():
+            return {
+                "data": {
+                    "BTC": {"market_cap": 3_000_000_000_000_000, "market_cap_rank": 1},
+                    "ETH": {"market_cap": 500_000_000_000_000, "market_cap_rank": 2},
+                },
+                "cached": True,
+                "age_seconds": 1.0,
+                "stale": False,
+                "error": None,
+            }
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            screening_crypto, "_run_crypto_coingecko_fetch", mock_coingecko_fetch
+        )
+
+        result = await tools["get_top_stocks"](
+            market="crypto", ranking_type="volume", limit=2
+        )
+        rankings = result["rankings"]
+        btc = next(r for r in rankings if r["symbol"] == "KRW-BTC")
+        eth = next(r for r in rankings if r["symbol"] == "KRW-ETH")
+        assert btc["market_cap"] == 3_000_000_000_000_000
+        assert eth["market_cap"] == 500_000_000_000_000
+        # trade_amount stays populated (was never the bug).
+        assert btc["trade_amount"] == pytest.approx(8_000_000_000_000.0)
+
     async def test_crypto_rankings_gainers_sort(self, monkeypatch):
         tools = build_tools()
 
