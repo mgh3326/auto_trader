@@ -55,10 +55,16 @@ from app.services.investment_snapshots.policy import (
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
+from app.services.investment_snapshots.scope_policy import is_account_independent
 
 
 def _utcnow() -> dt.datetime:
     return dt.datetime.now(tz=dt.UTC)
+
+
+class LiveBundleNotFoundForReuse(Exception):
+    """ROB-380 — the live bundle whose account-independent rows should be reused
+    could not be resolved. Fail-closed: callers must NOT silently re-collect."""
 
 
 class SnapshotBundleEnsureService:
@@ -195,38 +201,10 @@ class SnapshotBundleEnsureService:
             status_errors: list[tuple[str, dict[str, Any]]] = []
             last_as_of: dt.datetime | None = None
             for result in results:
-                # Collectors run after ``now`` is captured for the reuse gate.
-                # Live collectors can legitimately stamp results a few seconds
-                # after the ensure started, so classify against the post-collect
-                # clock instead of treating long collection time as future data.
-                classification_now = self._clock()
-                computed_status: FreshnessStatus = classify_freshness(
-                    as_of=result.as_of,
-                    now=classification_now,
-                    policy=kind_policy.freshness,
-                )
-                # Caller-supplied status (e.g. 'partial' or 'unavailable') can
-                # downgrade but never upgrade past the policy-classified one.
-                effective_status = _worse_of(result.freshness_status, computed_status)
-                snap = await self._repo.insert_snapshot(
-                    SnapshotCreate(
-                        run_uuid=run.run_uuid,
-                        snapshot_kind=result.snapshot_kind,
-                        market=result.market,
-                        account_scope=result.account_scope,
-                        symbol=result.symbol,
-                        source_table=result.source_table,
-                        source_id=result.source_id,
-                        source_uri=result.source_uri,
-                        source_kind=result.source_kind,
-                        payload_json=result.payload_json,
-                        source_timestamps_json=result.source_timestamps_json,
-                        coverage_json=result.coverage_json,
-                        errors_json=result.errors_json,
-                        as_of=result.as_of,
-                        valid_until=classification_now + kind_policy.freshness.hard_ttl,
-                        freshness_status=effective_status,
-                    )
+                snap, effective_status = await self._insert_collected_snapshot(
+                    run_uuid=run.run_uuid,
+                    kind_policy=kind_policy,
+                    result=result,
                 )
                 linked_items.append((snap.snapshot_uuid, role))
                 kind_statuses.append(effective_status)
@@ -284,6 +262,218 @@ class SnapshotBundleEnsureService:
             warnings=warnings,
             run_uuid=run.run_uuid,
         )
+
+    async def ensure_reusing_account_independent(
+        self,
+        request: EnsureBundleRequest,
+        *,
+        reuse_from_bundle_uuid,  # uuid.UUID
+    ) -> EnsureBundleResponse:
+        """ROB-380 — build a bundle that REUSES ``reuse_from_bundle_uuid``'s
+        account-independent (NULL-scope) snapshot rows and collects ONLY
+        account-bound kinds fresh for ``request.account_scope``.
+
+        Fail-closed: account-independent kinds (market/news/candidate_universe/
+        symbol) are NEVER collected here — they are LINKED from the live bundle,
+        guaranteeing the live and mock reports cite the SAME ``snapshot_uuid``.
+        Account-bound kinds (portfolio/journal/watch_context/pending_orders) are
+        collected fresh so they reflect the mock account.
+        """
+        policy = get_policy(request.policy_version)
+        now = self._clock()
+
+        reuse_snaps = await self._repo.list_account_independent_bundle_snapshots(
+            reuse_from_bundle_uuid
+        )
+        if not reuse_snaps:
+            # Either the bundle does not exist or it carries no independent rows.
+            # Distinguish so callers can fail-closed instead of re-collecting.
+            live_bundle = await self._repo.get_bundle_by_uuid(reuse_from_bundle_uuid)
+            if live_bundle is None:
+                raise LiveBundleNotFoundForReuse(
+                    f"live bundle not found for reuse: {reuse_from_bundle_uuid}"
+                )
+        reuse_by_kind: dict[str, list[Any]] = {}
+        for snap in reuse_snaps:
+            reuse_by_kind.setdefault(snap.snapshot_kind, []).append(snap)
+
+        run = await self._repo.insert_run(
+            SnapshotRunCreate(
+                purpose="report_generation",
+                market=request.market,
+                account_scope=request.account_scope,
+                requested_by=request.requested_by,
+                policy_version=policy.policy_version,
+                policy_snapshot_json=policy.to_snapshot_json(),
+                refresh_reason=(
+                    f"ensure_mock_reuse purpose={request.purpose} "
+                    f"reuse_from={reuse_from_bundle_uuid}"
+                ),
+                run_metadata={
+                    "ensure_request": {
+                        "purpose": request.purpose,
+                        "mode": "reuse_account_independent",
+                        "reuse_from_bundle_uuid": str(reuse_from_bundle_uuid),
+                        "user_id": request.user_id,
+                    }
+                },
+            )
+        )
+
+        coverage: dict[str, dict[str, str]] = {"required": {}, "optional": {}}
+        freshness_summary: dict[str, dict[str, Any]] = {}
+        missing_sources: list[str] = []
+        warnings: list[str] = []
+        linked_items: list[tuple[Any, str]] = []
+
+        for kind_policy in policy.kinds:
+            kind = kind_policy.snapshot_kind
+            bucket = "required" if kind_policy.required else "optional"
+            role = "required" if kind_policy.required else "optional"
+
+            if is_account_independent(kind):
+                # REUSE branch — fail-closed: never call a collector here.
+                reused = reuse_by_kind.get(kind, [])
+                if not reused:
+                    # Independent kind absent from the live bundle. Mark a gap only
+                    # if it was required; optional absences are silent (the live
+                    # bundle may legitimately lack e.g. news).
+                    if kind_policy.required:
+                        coverage[bucket][kind] = "unavailable"
+                        freshness_summary[kind] = {
+                            "status": "unavailable",
+                            **build_kind_diagnostic("unavailable", None),
+                        }
+                        missing_sources.append(kind)
+                    continue
+                statuses: list[str] = []
+                last_as_of: dt.datetime | None = None
+                for snap in reused:
+                    linked_items.append((snap.snapshot_uuid, role))
+                    statuses.append(snap.freshness_status)
+                    last_as_of = snap.as_of
+                worst_status = _worst_status(statuses)
+                coverage[bucket][kind] = worst_status
+                freshness_summary[kind] = {
+                    "status": worst_status,
+                    "as_of": last_as_of.isoformat() if last_as_of else None,
+                    "result_count": str(len(reused)),
+                    "reused_from_bundle": str(reuse_from_bundle_uuid),
+                }
+                continue
+
+            # ACCOUNT-BOUND branch — collect fresh for request.account_scope.
+            results, kind_warnings, attempted = await self._collect_for_kind(
+                kind_policy=kind_policy,
+                request=request,
+                policy_snapshot=policy.to_snapshot_json(),
+            )
+            warnings.extend(kind_warnings)
+            if not results:
+                if kind_policy.required or attempted:
+                    coverage[bucket][kind] = "unavailable"
+                    freshness_summary[kind] = {
+                        "status": "unavailable",
+                        **build_kind_diagnostic("unavailable", None),
+                    }
+                    missing_sources.append(kind)
+                continue
+            kind_statuses: list[str] = []
+            last_bound_as_of: dt.datetime | None = None
+            for result in results:
+                snap, effective_status = await self._insert_collected_snapshot(
+                    run_uuid=run.run_uuid,
+                    kind_policy=kind_policy,
+                    result=result,
+                )
+                linked_items.append((snap.snapshot_uuid, role))
+                kind_statuses.append(effective_status)
+                last_bound_as_of = result.as_of
+            worst_bound = _worst_status(kind_statuses)
+            coverage[bucket][kind] = worst_bound
+            freshness_summary[kind] = {
+                "status": worst_bound,
+                "as_of": last_bound_as_of.isoformat() if last_bound_as_of else None,
+                "result_count": str(len(results)),
+            }
+
+        bundle_status = _derive_bundle_status(coverage)
+        bundle = await self._repo.insert_bundle(
+            BundleCreate(
+                purpose=request.purpose,
+                market=request.market,
+                account_scope=request.account_scope,
+                policy_version=policy.policy_version,
+                policy_snapshot_json=policy.to_snapshot_json(),
+                as_of=now,
+                status=bundle_status,
+                coverage_summary=coverage,
+                freshness_summary=freshness_summary,
+            )
+        )
+        for snapshot_uuid, role in linked_items:
+            await self._repo.link_bundle_item(
+                bundle_uuid=bundle.bundle_uuid,
+                item=BundleItemCreate(snapshot_uuid=snapshot_uuid, role=role),
+            )
+
+        return EnsureBundleResponse(
+            bundle_uuid=bundle.bundle_uuid,
+            status=bundle_status,
+            created=True,
+            coverage_summary=coverage,
+            freshness_summary=freshness_summary,
+            missing_sources=missing_sources,
+            warnings=warnings,
+            run_uuid=run.run_uuid,
+        )
+
+    async def _insert_collected_snapshot(
+        self,
+        *,
+        run_uuid,  # uuid.UUID
+        kind_policy: SnapshotKindPolicy,
+        result: SnapshotCollectResult,
+    ) -> tuple[Any, str]:
+        """Insert one collected snapshot; return (snapshot_row, effective_status).
+
+        Shared by ``ensure`` (account-bound + independent collection) and
+        ``ensure_reusing_account_independent`` (account-bound only) so the
+        ``SnapshotCreate`` shape and freshness reclassification live in ONE place.
+        """
+        # Collectors run after ``now`` is captured for the reuse gate. Live
+        # collectors can stamp results a few seconds after the ensure started,
+        # so classify against the post-collect clock instead of treating long
+        # collection time as future data.
+        classification_now = self._clock()
+        computed_status: FreshnessStatus = classify_freshness(
+            as_of=result.as_of,
+            now=classification_now,
+            policy=kind_policy.freshness,
+        )
+        # Caller-supplied status can downgrade but never upgrade past policy.
+        effective_status = _worse_of(result.freshness_status, computed_status)
+        snap = await self._repo.insert_snapshot(
+            SnapshotCreate(
+                run_uuid=run_uuid,
+                snapshot_kind=result.snapshot_kind,
+                market=result.market,
+                account_scope=result.account_scope,
+                symbol=result.symbol,
+                source_table=result.source_table,
+                source_id=result.source_id,
+                source_uri=result.source_uri,
+                source_kind=result.source_kind,
+                payload_json=result.payload_json,
+                source_timestamps_json=result.source_timestamps_json,
+                coverage_json=result.coverage_json,
+                errors_json=result.errors_json,
+                as_of=result.as_of,
+                valid_until=classification_now + kind_policy.freshness.hard_ttl,
+                freshness_status=effective_status,
+            )
+        )
+        return snap, effective_status
 
     async def _collect_for_kind(
         self,
