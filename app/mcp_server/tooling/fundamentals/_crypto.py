@@ -7,6 +7,7 @@ from typing import Any
 from app.mcp_server.tooling.fundamentals_sources_binance import (
     _fetch_funding_rate,
     _fetch_funding_rate_batch,
+    _fetch_long_short_ratio,
     _fetch_open_interest,
 )
 from app.mcp_server.tooling.fundamentals_sources_coingecko import (
@@ -99,6 +100,33 @@ async def handle_get_open_interest(
     capped_limit = min(max(limit, 1), 500)
     try:
         return await _fetch_open_interest(normalized_symbol, period, capped_limit)
+    except Exception as exc:
+        return _error_payload(
+            source="binance",
+            message=str(exc),
+            symbol=f"{normalized_symbol}USDT",
+            instrument_type="crypto",
+        )
+
+
+async def handle_get_long_short_ratio(
+    symbol: str | None = None,
+    period: str = "1h",
+    limit: int = 30,
+) -> dict[str, Any]:
+    if symbol is None or not symbol.strip():
+        raise ValueError("symbol is required")
+    period = (period or "").strip().lower()
+    if period not in _ALLOWED_PERIODS:
+        raise ValueError(
+            f"period must be one of: {', '.join(sorted(_ALLOWED_PERIODS))}"
+        )
+    normalized_symbol = _normalize_crypto_base_symbol(symbol)
+    if not normalized_symbol:
+        raise ValueError("symbol is required")
+    capped_limit = min(max(limit, 1), 500)
+    try:
+        return await _fetch_long_short_ratio(normalized_symbol, period, capped_limit)
     except Exception as exc:
         return _error_payload(
             source="binance",

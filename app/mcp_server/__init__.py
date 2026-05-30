@@ -34,6 +34,7 @@ AVAILABLE_TOOL_NAMES = [
     "get_kimchi_premium",
     "get_funding_rate",
     "get_open_interest",
+    "get_long_short_ratio",
     "get_market_index",
     "get_support_resistance",
     "get_sector_peers",
