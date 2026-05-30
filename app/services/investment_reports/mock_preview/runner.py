@@ -24,6 +24,9 @@ from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
 from app.services.action_report.common.snapshot_bundle import (
     SnapshotBundleEnsureService,
 )
+from app.services.action_report.snapshot_backed.collectors.registry import (
+    production_collector_registry,
+)
 from app.services.investment_reports.ingestion import InvestmentReportIngestionService
 from app.services.investment_reports.mock_preview.bridge import (
     MockPreviewBridge,
@@ -50,10 +53,18 @@ class MockPreviewReportRunner:
         self._reports_repo = InvestmentReportsRepository(session)
         self._ingestion = InvestmentReportIngestionService(session)
         self._bridge = bridge if bridge is not None else MockPreviewBridge()
+        # ROB-379 smoke finding: the default SnapshotBundleEnsureService registry
+        # is EMPTY (Phase-2 stub), so an un-injected ensure produced a `failed`
+        # kis_mock bundle that collected nothing — defeating evidence reuse. Wire
+        # the production collector registry (read-only adapters) like the
+        # report-generation entrypoints do, so the kis_mock ensure actually
+        # collects (and dedups the shared NULL-scope evidence rows).
         self._ensure = (
             ensure_service
             if ensure_service is not None
-            else SnapshotBundleEnsureService(session)
+            else SnapshotBundleEnsureService(
+                session, collectors=production_collector_registry(session)
+            )
         )
 
     async def run(
