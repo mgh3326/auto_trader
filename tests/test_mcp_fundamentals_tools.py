@@ -4757,3 +4757,16 @@ class TestGetOpenInterest:
         assert result.get("error")
         assert result.get("source") == "binance"
         assert "open_interest_history" not in result
+
+    async def test_symbol_normalization(self, monkeypatch):
+        tools = build_tools()
+        current = {"symbol": "BTCUSDT", "openInterest": "1.0", "time": 1}
+        hist = []
+        self._patch_binance(monkeypatch, current, hist)
+
+        # KRW- prefix and USDT suffix both normalize to the BTCUSDT pair.
+        result_krw = await tools["get_open_interest"]("KRW-BTC")
+        assert result_krw["symbol"] == "BTCUSDT"
+
+        result_suffix = await tools["get_open_interest"]("BTCUSDT")
+        assert result_suffix["symbol"] == "BTCUSDT"
