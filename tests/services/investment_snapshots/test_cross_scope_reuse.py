@@ -43,48 +43,17 @@ def _manual(kind: str, *, account_scope: str | None) -> SnapshotCollectResult:
 
 
 def _manual_for(scope: str) -> dict[str, list[SnapshotCollectResult]]:
-    # account-independent kinds: identical payload (dedup will share them).
-    # account-bound kinds: include scope in payload so they are distinct rows.
+    # IDENTICAL payloads across scopes for ALL kinds. Independent kinds normalize
+    # to NULL -> same hash -> SHARED row. Account-bound kinds keep their scope
+    # (kis_live vs kis_mock) -> same hash but different dedup key -> SEPARATED rows.
+    # This isolates the scope-normalization behavior (would fail if it broke).
     return {
-        # Required account-independent
         "market": [_manual("market", account_scope=scope)],
-        # Required account-bound (include scope so payloads differ → distinct rows)
-        "portfolio": [
-            SnapshotCollectResult(
-                snapshot_kind="portfolio",  # type: ignore[arg-type]
-                market="us",  # type: ignore[arg-type]
-                account_scope=scope,  # type: ignore[arg-type]
-                source_kind="manual",
-                payload_json={"k": "portfolio", "scope": scope},
-                as_of=_FIXED_NOW,
-                freshness_status="fresh",
-            )
-        ],
-        "journal": [
-            SnapshotCollectResult(
-                snapshot_kind="journal",  # type: ignore[arg-type]
-                market="us",  # type: ignore[arg-type]
-                account_scope=scope,  # type: ignore[arg-type]
-                source_kind="manual",
-                payload_json={"k": "journal", "scope": scope},
-                as_of=_FIXED_NOW,
-                freshness_status="fresh",
-            )
-        ],
-        "watch_context": [
-            SnapshotCollectResult(
-                snapshot_kind="watch_context",  # type: ignore[arg-type]
-                market="us",  # type: ignore[arg-type]
-                account_scope=scope,  # type: ignore[arg-type]
-                source_kind="manual",
-                payload_json={"k": "watch_context", "scope": scope},
-                as_of=_FIXED_NOW,
-                freshness_status="fresh",
-            )
-        ],
-        # Optional account-independent (for reuse assertion)
         "news": [_manual("news", account_scope=scope)],
         "candidate_universe": [_manual("candidate_universe", account_scope=scope)],
+        "portfolio": [_manual("portfolio", account_scope=scope)],
+        "journal": [_manual("journal", account_scope=scope)],
+        "watch_context": [_manual("watch_context", account_scope=scope)],
     }
 
 
