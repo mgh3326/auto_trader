@@ -126,17 +126,26 @@ def build_artifact(
     }
 
 
-async def run(args: argparse.Namespace) -> int:
-    if not args.run:
-        logger.info(
-            "[DRY-RUN] would measure US earnings coverage %s..%s "
-            "(delisted_recoverability=%s). Read-only. Pass --run to execute.",
-            args.from_date,
-            args.to_date,
-            args.measure_delisted_recoverability,
-        )
-        return 0
+def _emit_dry_run(args: argparse.Namespace) -> int:
+    """Dry-run summary. Uses ONLY stdlib logging and imports no app/settings
+    modules, so the default no-``--run`` path exits 0 with no KIS/Upbit/OpenDART/
+    DATABASE_URL/SECRET_KEY present (Blocker 1)."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
+    logger.info(
+        "[DRY-RUN] would measure US earnings coverage %s..%s "
+        "(delisted_recoverability=%s, out=%s). Read-only, no DB access, no "
+        "mutation. Pass --run to execute.",
+        args.from_date,
+        args.to_date,
+        args.measure_delisted_recoverability,
+        args.out,
+    )
+    return 0
 
+
+async def _run_measurement(args: argparse.Namespace) -> int:
     from app.core.db import AsyncSessionLocal
     from app.services.market_events.coverage_gate import (
         Section5Thresholds,
@@ -177,12 +186,17 @@ async def run(args: argparse.Namespace) -> int:
 
 
 async def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if not args.run:
+        # Dry-run: no app/settings import, no secrets required (Blocker 1).
+        return _emit_dry_run(args)
+
+    # --run path only: now it is safe to load settings-backed logging/Sentry.
     from app.core.cli import setup_logging_and_sentry
 
     setup_logging_and_sentry(service_name="probe-us-earnings-coverage")
-    args = parse_args(argv)
     try:
-        return await run(args)
+        return await _run_measurement(args)
     except Exception as exc:  # noqa: BLE001 - top-level CLI guard
         logger.exception("probe_us_earnings_coverage crashed: %s", exc)
         return 2

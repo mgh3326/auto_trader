@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +16,8 @@ from app.services.market_events.coverage_gate import (
     evaluate_section5_gate,
 )
 from scripts.probe_us_earnings_coverage import build_artifact, parse_args
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _measurement(**overrides) -> CoverageMeasurement:
@@ -108,3 +114,35 @@ def test_build_artifact_carries_verdict_and_schema():
     assert artifact["passed"] is True
     assert "PASS" in artifact["verdict"].upper()
     assert artifact["backfill_performed"] is False
+
+
+@pytest.mark.integration
+def test_dry_run_subprocess_needs_no_secrets(tmp_path):
+    # Blocker 1 regression: the default (no --run) dry-run must exit 0 WITHOUT
+    # loading app Settings — i.e. with no KIS/Upbit/OpenDART/DATABASE_URL etc.
+    # Run from a temp CWD (so pydantic's env_file=".env" finds nothing) with a
+    # stripped environment; if the dry-run imported app.core.config the required
+    # fields would fail validation and exit non-zero.
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "PYTHONPATH": str(_REPO_ROOT),
+    }
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.probe_us_earnings_coverage",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert "[DRY-RUN]" in (proc.stdout + proc.stderr)
