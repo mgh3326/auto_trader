@@ -41,4 +41,12 @@ async def test_public_wrapper_returns_rows_or_none(db_session):
     assert rows is not None
     assert isinstance(rows, list)
     assert rows[0]["symbol"] == "005930"
-    assert rows[0]["_screener_snapshot_state"] in {"fresh", "stale"}
+    # _screener_snapshot_state is the full DataState taxonomy (fresh/partial/
+    # stale). This fixture's closes_window has length 3 (< _PARTIAL_MAX_LEN=5, so
+    # week_change_rate is not computable), so classify_state returns "partial"
+    # whenever the partition is current (snapshot_date == trading baseline) and
+    # "stale" once the baseline rolls past snapshot_date. Both are valid usable
+    # states; asserting the set keeps this date-independent — the prior
+    # {"fresh", "stale"} only passed on weekdays and went red on weekends, when
+    # the KR baseline rolls back to the Friday snapshot_date (ROB-378 baseline).
+    assert rows[0]["_screener_snapshot_state"] in {"fresh", "stale", "partial"}
