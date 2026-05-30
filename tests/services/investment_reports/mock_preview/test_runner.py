@@ -221,3 +221,16 @@ async def test_runner_fail_closed_when_live_report_has_no_items(db_session) -> N
             kst_date="2026-05-30",
             created_by_profile="schedule",
         )
+
+
+@pytest.mark.asyncio
+async def test_default_runner_wires_nonempty_production_registry(db_session) -> None:
+    """ROB-379 smoke regression: an un-injected runner must use the production
+    collector registry, not the empty Phase-2 default. With the empty default the
+    kis_mock ensure collected nothing (bundle status=failed, all-unavailable) so
+    the shared NULL-scope evidence was never reused. Guard the wiring directly."""
+    runner = MockPreviewReportRunner(db_session)
+    kinds = runner._ensure._collectors.list_kinds()
+    assert kinds, "default runner ensure registry must not be empty"
+    # account-independent evidence kinds must be collectable for cross-scope reuse
+    assert {"market", "news"} <= kinds
