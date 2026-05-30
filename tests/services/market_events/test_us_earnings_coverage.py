@@ -57,12 +57,13 @@ def test_full_coverage_single_event():
         session_calendar_present=True,
     )
     assert m.realized_events == 1
+    assert m.eligible_events == 1
     assert m.events_with_bars_present == 1
     assert m.events_with_zero_bars == 0
     assert m.joinable_events == 1
     assert m.joinable_symbols == 1
     assert m.window_coverage_p50 == pytest.approx(1.0)
-    assert m.intraday_labeled_events == 0
+    assert m.intraday_excluded_events == 0
     assert m.benchmark_coverage == pytest.approx(1.0)
     assert m.tradability_coverage == pytest.approx(1.0)
     assert m.date_only_ratio == 1.0
@@ -89,7 +90,10 @@ def test_zero_bars_event_counts_as_zero_not_joinable():
 
 
 @pytest.mark.unit
-def test_intraday_event_is_counted():
+def test_intraday_event_is_excluded_not_measured():
+    # ROB-378: a during_market event is counted in intraday_excluded_events but
+    # excluded from the eligible population — never measured, joined, or counted
+    # as having bars (even though full bars are supplied here).
     expected = set(_expected_sessions(_EVENT_DATE))
     m = aggregate_coverage(
         events=[("INTC", _EVENT_DATE, "during_market")],
@@ -100,7 +104,43 @@ def test_intraday_event_is_counted():
         delisted_recoverable=0,
         session_calendar_present=True,
     )
-    assert m.intraday_labeled_events == 1
+    assert m.intraday_excluded_events == 1
+    assert m.realized_events == 1
+    assert m.eligible_events == 0
+    assert m.events_with_bars_present == 0
+    assert m.joinable_events == 0
+    assert m.joinable_symbols == 0
+    assert m.benchmark_coverage == pytest.approx(0.0)
+
+
+@pytest.mark.unit
+def test_intraday_mixed_with_eligible_excludes_only_intraday():
+    # One eligible BMO event (full coverage) + one intraday event. The intraday
+    # event is excluded from every join-quality count; the eligible one is
+    # measured normally.
+    expected = set(_expected_sessions(_EVENT_DATE))
+    m = aggregate_coverage(
+        events=[
+            ("AAPL", _EVENT_DATE, "before_open"),
+            ("INTC", _EVENT_DATE, "during_market"),
+        ],
+        total_released=2,
+        window_present={
+            ("AAPL", _EVENT_DATE): (set(expected), set(expected)),
+            ("INTC", _EVENT_DATE): (set(expected), set(expected)),
+        },
+        benchmark_present={"SPY": set(expected)},
+        delisted_symbols=set(),
+        delisted_recoverable=0,
+        session_calendar_present=True,
+    )
+    assert m.realized_events == 2
+    assert m.intraday_excluded_events == 1
+    assert m.eligible_events == 1
+    assert m.joinable_events == 1
+    assert m.joinable_symbols == 1
+    # benchmark denominator is the eligible population (1), fully covered.
+    assert m.benchmark_coverage == pytest.approx(1.0)
 
 
 @pytest.mark.unit
@@ -412,11 +452,12 @@ async def test_measure_counts_released_event_with_full_window(db_session):
         today=date(2025, 8, 31),
     )
     assert m.realized_events == 1
+    assert m.eligible_events == 1
     assert m.events_with_bars_present == 1
     assert m.events_with_zero_bars == 0
     assert m.window_coverage_p50 >= MIN_WINDOW_COVERAGE
     assert m.joinable_symbols == 1
-    assert m.intraday_labeled_events == 0
+    assert m.intraday_excluded_events == 0
     assert m.date_only_ratio == 1.0
     assert m.session_calendar_present is True
 

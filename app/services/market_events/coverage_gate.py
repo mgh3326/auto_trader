@@ -4,17 +4,25 @@ Pure classifier: a :class:`CoverageMeasurement` (counts/ratios only, no raw
 bars) in, a :class:`GateResult` (overall PASS/FAIL + per-criterion breakdown)
 out. No I/O, no DB.
 
-The verdict explicitly distinguishes three FAIL shapes so an unbuilt dev store
+The verdict explicitly distinguishes four FAIL shapes so an unbuilt dev store
 is never mis-reported as a data-quality problem:
 * ``realized_events == 0``                          -> "no earnings in range"
-* events present but every window empty             -> "coverage not materialized"
+* events present but all intraday/excluded          -> "no eligible population"
+* eligible events present but every window empty     -> "coverage not materialized"
 * a §5 threshold genuinely missed                   -> "thresholds not met"
 
 The §5 criteria mirror ``docs/runbooks/rob-367-event-driven-equity-data-feasibility.md``
 section 5. ``date_only_ratio`` / ``unknown_time_ratio`` are recorded for
 transparency but do NOT independently gate: per §5, any ratio is accepted for
-equities once intraday labeling is forbidden, which the ``no_intraday_labeling``
-criterion enforces directly.
+equities once intraday labeling is forbidden.
+
+Intraday (``during_market``) earnings cannot be labeled at daily granularity
+(ROB-367 hard boundary), so they are **excluded** from the eligible
+daily-granularity population rather than hard-failing the whole gate (ROB-378).
+``aggregate_coverage`` reports their count in ``intraday_excluded_events`` and
+the gate evaluates join quality against ``eligible_events`` (= realized minus
+intraday-excluded). The ``intraday_excluded`` criterion surfaces the count for
+transparency but never gates.
 """
 
 from __future__ import annotations
@@ -28,6 +36,10 @@ class CoverageMeasurement:
     bar-date collections — so serializing it can never leak raw data."""
 
     realized_events: int
+    # Daily-granularity study population = realized_events - intraday_excluded_events.
+    # All join-quality criteria (ratio denominator, materialization, window p50)
+    # are measured against this, not the raw realized total (ROB-378).
+    eligible_events: int
     events_with_bars_present: int
     events_with_zero_bars: int
     joinable_events: int
@@ -35,7 +47,9 @@ class CoverageMeasurement:
     window_coverage_p50: float
     date_only_ratio: float
     unknown_time_ratio: float
-    intraday_labeled_events: int
+    # ``during_market`` events excluded from the eligible population: counted for
+    # transparency, never measured/joined, never hard-fails the gate (ROB-378).
+    intraday_excluded_events: int
     dup_ambiguous_ratio: float
     tradability_coverage: float
     benchmark_coverage: float
@@ -80,9 +94,12 @@ def _ratio(numer: int, denom: int) -> float:
 
 
 def evaluate_section5_gate(m: CoverageMeasurement, t: Section5Thresholds) -> GateResult:
-    joinable_event_ratio = _ratio(m.joinable_events, m.realized_events)
+    # Join quality is measured against the eligible (non-intraday) population so
+    # excluded intraday events never depress the ratio (ROB-378).
+    joinable_event_ratio = _ratio(m.joinable_events, m.eligible_events)
     no_events = m.realized_events == 0
-    not_materialized = m.realized_events > 0 and m.events_with_bars_present == 0
+    no_eligible_events = m.realized_events > 0 and m.eligible_events == 0
+    not_materialized = m.eligible_events > 0 and m.events_with_bars_present == 0
 
     criteria = [
         GateCriterion(
@@ -102,14 +119,18 @@ def evaluate_section5_gate(m: CoverageMeasurement, t: Section5Thresholds) -> Gat
             round(joinable_event_ratio, 4),
             t.min_joinable_event_ratio,
             joinable_event_ratio >= t.min_joinable_event_ratio,
-            note="fraction of realized events with >=90% window join coverage",
+            note="fraction of ELIGIBLE (non-intraday) events with >=90% window join coverage",
         ),
         GateCriterion(
-            "no_intraday_labeling",
-            m.intraday_labeled_events,
+            "intraday_excluded",
+            m.intraday_excluded_events,
             0,
-            m.intraday_labeled_events == 0,
-            note="intraday labeling is forbidden (ROB-367 boundary)",
+            # Never gates: intraday (during_market) events are excluded from the
+            # eligible daily-granularity population (ROB-367 forbids intraday
+            # labeling), not a coverage failure. Reported for transparency; the
+            # count also lives in measurement.intraday_excluded_events (ROB-378).
+            True,
+            note="during_market events excluded from the eligible population (reported, not gated)",
         ),
         GateCriterion(
             "max_dup_ambiguous",
@@ -140,7 +161,12 @@ def evaluate_section5_gate(m: CoverageMeasurement, t: Section5Thresholds) -> Gat
         ),
     ]
 
-    passed = all(c.passed for c in criteria) and not not_materialized and not no_events
+    passed = (
+        all(c.passed for c in criteria)
+        and not not_materialized
+        and not no_events
+        and not no_eligible_events
+    )
 
     # NOTE: verdict keywords PASS / FAIL are machine-parsed by operators and log
     # dashboards; do not refactor the prefixes without updating the runbook.
@@ -149,10 +175,17 @@ def evaluate_section5_gate(m: CoverageMeasurement, t: Section5Thresholds) -> Gat
             "FAIL — no earnings events found in the date range. Extend the "
             "window or wait for events to release; this is not a quality failure."
         )
+    elif no_eligible_events:
+        verdict = (
+            f"FAIL — all {m.realized_events} realized events are intraday/excluded; "
+            "the eligible daily-granularity population is empty. Intraday "
+            "(during_market) earnings cannot be labeled at daily granularity "
+            "(ROB-367 boundary); this is a scope limit, not a join-quality failure."
+        )
     elif not_materialized:
         verdict = (
             "FAIL — coverage not materialized: "
-            f"{m.realized_events} realized events but 0 have daily bars. "
+            f"{m.eligible_events} eligible events but 0 have daily bars. "
             "If backfill is pending, materialize the window with "
             "scripts/backfill_daily_candles.py --market us against a dev DB and "
             "re-probe. Otherwise some symbols (delisted / penny) may lack "
