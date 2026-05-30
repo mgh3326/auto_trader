@@ -1951,7 +1951,7 @@ class TestGetMarketIndex:
 
         # fail-open: error payload, never fabricated values
         assert "indices" not in result or not result.get("indices")
-        assert result.get("error") or result.get("source") == "coingecko"
+        assert result.get("error") and result.get("source") == "coingecko"
 
 
 # ---------------------------------------------------------------------------

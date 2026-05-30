@@ -56,6 +56,10 @@ async def handle_get_market_index(
         except Exception as exc:
             return _error_payload(source=meta["source"], message=str(exc), symbol=sym)
 
+    # _DEFAULT_INDICES is equity-only (naver/yfinance) — coingecko symbols
+    # (CRYPTO/BTC.D) are fetched explicitly via the single-symbol path above and
+    # must never appear here (guarded by test_crypto_not_in_default_indices), so
+    # the naver/else(yfinance) split below is exhaustive for the default batch.
     tasks = []
     for idx_sym in _DEFAULT_INDICES:
         meta = _INDEX_META[idx_sym]
