@@ -1715,6 +1715,23 @@ class TestGetMarketIndex:
         assert "history" in result
         assert len(result["history"]) == 5
 
+    async def test_single_us_index_vix(self, monkeypatch):
+        """VIX (^VIX) must be a supported index symbol so volatility can be read
+        through the MCP (ROB-365 bug 4)."""
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch, last_price=18.5, prev_close=17.2)
+        self._patch_yf_download(monkeypatch, rows=3)
+
+        result = await tools["get_market_index"](symbol="VIX")
+
+        assert "indices" in result
+        assert len(result["indices"]) == 1
+        idx = result["indices"][0]
+        assert idx["symbol"] == "VIX"
+        assert idx["source"] == "yfinance"
+        assert idx["current"] == pytest.approx(18.5)
+        assert "history" in result
+
     async def test_all_indices_no_symbol(self, monkeypatch):
         """Test fetching all major indices when no symbol specified."""
         tools = build_tools()
