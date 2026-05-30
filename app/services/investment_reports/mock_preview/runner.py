@@ -87,20 +87,36 @@ class MockPreviewReportRunner:
                 f"live report has no items: {live_report_uuid}"
             )
 
-        # Ensure a kis_mock bundle: account-independent evidence dedups to the
-        # shared NULL-scope rows; only account-bound (portfolio/...) is collected
-        # fresh for kis_mock. Best-effort — partial coverage is acceptable.
-        ensure_resp = await self._ensure.ensure(
-            EnsureBundleRequest(
-                purpose="mock_preview_report",
-                market=market,  # type: ignore[arg-type]
-                account_scope="kis_mock",
-                policy_version=policy_version,
-                mode="ensure_fresh",
-                requested_by="claude_code",
-                user_id=user_id,
+        # ROB-380 — reuse the live bundle's account-independent (NULL-scope)
+        # snapshot rows instead of re-collecting them, so the live and mock
+        # reports cite the SAME snapshot_uuid. Account-bound kinds are still
+        # collected fresh for kis_mock. Fall back to independent collection only
+        # when the live report has no bundle to reuse (legacy / pre-ROB-373 rows).
+        if live.snapshot_bundle_uuid is not None:
+            ensure_resp = await self._ensure.ensure_reusing_account_independent(
+                EnsureBundleRequest(
+                    purpose="mock_preview_report",
+                    market=market,  # type: ignore[arg-type]
+                    account_scope="kis_mock",
+                    policy_version=policy_version,
+                    mode="ensure_fresh",
+                    requested_by="claude_code",
+                    user_id=user_id,
+                ),
+                reuse_from_bundle_uuid=live.snapshot_bundle_uuid,
             )
-        )
+        else:
+            ensure_resp = await self._ensure.ensure(
+                EnsureBundleRequest(
+                    purpose="mock_preview_report",
+                    market=market,  # type: ignore[arg-type]
+                    account_scope="kis_mock",
+                    policy_version=policy_version,
+                    mode="ensure_fresh",
+                    requested_by="claude_code",
+                    user_id=user_id,
+                )
+            )
 
         projected: list[IngestReportItem] = []
         for item in live_items:
