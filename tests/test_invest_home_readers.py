@@ -137,6 +137,7 @@ async def test_kis_reader_overseas_margin_fallback(
                     "crcy_cd": "USD",
                     "frcr_dncl_amt1": 50.0,
                     "frcr_ord_psbl_amt1": 40.0,
+                    "frcr_gnrl_ord_psbl_amt": 40.0,
                 }
             ]
 
@@ -188,6 +189,7 @@ async def test_kis_reader_overseas_margin_fallback_without_us_holdings(
                     "crcy_cd": "USD",
                     "frcr_dncl_amt1": 49.25,
                     "frcr_ord_psbl_amt1": 49.25,
+                    "frcr_gnrl_ord_psbl_amt": 49.25,
                 }
             ]
 
@@ -207,6 +209,71 @@ async def test_kis_reader_overseas_margin_fallback_without_us_holdings(
     account = result.accounts[0]
     assert account.cashBalances.usd == pytest.approx(49.25)
     assert account.buyingPower.usd == pytest.approx(49.25)
+    assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_reader_overseas_margin_uses_general_orderable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-374 (B2): USD buying power must come from ``frcr_gnrl_ord_psbl_amt``.
+
+    The live regression had ``frcr_ord_psbl_amt1 == 0`` while the real orderable
+    (``frcr_gnrl_ord_psbl_amt``) was $3,080.62 — the same value ``get_available_capital``
+    / ``portfolio_cash`` report. Reading the field-1 value produced a false
+    ``buying_power_usd=0`` and a bogus "buying_power < 5% NAV" risk flag.
+    """
+
+    class _FakeKISAccountGeneralOrderable:
+        async def fetch_my_stocks(self, *, is_overseas: bool) -> list[dict[str, Any]]:
+            return []
+
+        async def inquire_integrated_margin(self) -> dict[str, Any]:
+            # Integrated margin reports no USD orderable -> triggers overseas fallback.
+            return {
+                "stck_cash_objt_amt": "100000",
+                "stck_cash100_max_ord_psbl_amt": "50000",
+                "usd_balance": None,
+                "usd_ord_psbl_amt": None,
+            }
+
+        async def fetch_my_overseas_stocks(
+            self, *, exchange_code: str
+        ) -> list[dict[str, Any]]:
+            return [{"ovrs_pdno": "AAPL", "ovrs_cblc_qty": "1"}]
+
+        async def inquire_overseas_margin(self) -> list[dict[str, Any]]:
+            # Real KIS rows carry BOTH fields; field-1 can be 0 even when the
+            # general orderable is non-zero.
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": 3_080.0,
+                    "frcr_ord_psbl_amt1": 0.0,
+                    "frcr_gnrl_ord_psbl_amt": 3_080.62,
+                }
+            ]
+
+    class _FakeKISClient:
+        def __init__(self) -> None:
+            self.account = _FakeKISAccountGeneralOrderable()
+
+    monkeypatch.setattr(readers, "SafeKISClient", _FakeKISClient)
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    result = await readers.KISHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    account = result.accounts[0]
+    # Orderable must be the general orderable ($3,080.62), not the zero field-1 value.
+    assert account.buyingPower.usd == pytest.approx(3_080.62)
+    assert account.cashBalances.usd == pytest.approx(3_080.0)
+    # A non-zero orderable means no "USD unavailable" warning.
     assert result.warning is None
 
 
