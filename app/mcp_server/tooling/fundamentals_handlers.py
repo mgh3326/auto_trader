@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from app.mcp_server.tooling.fundamentals._crypto import (
     handle_get_funding_rate,
     handle_get_kimchi_premium,
+    handle_get_long_short_ratio,
+    handle_get_open_interest,
 )
 from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_earnings_calendar,
@@ -53,6 +55,8 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_short_interest",
     "get_kimchi_premium",
     "get_funding_rate",
+    "get_open_interest",
+    "get_long_short_ratio",
     "get_market_index",
     "get_support_resistance",
     "get_sector_peers",
@@ -220,6 +224,39 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         limit: int = 10,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         return await handle_get_funding_rate(symbol, limit)
+
+    @mcp.tool(
+        name="get_open_interest",
+        description=(
+            "Get Binance USD-M futures open interest for a crypto symbol: current "
+            "open interest plus recent history (sum OI and notional USD value) and "
+            "the OI change over the window. Read-only public Binance data. "
+            "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
+        ),
+    )
+    async def get_open_interest(
+        symbol: str,
+        period: str = "1h",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        return await handle_get_open_interest(symbol, period, limit)
+
+    @mcp.tool(
+        name="get_long_short_ratio",
+        description=(
+            "Get Binance USD-M long/short ratio for a crypto symbol: global account "
+            "ratio (retail sentiment) and top-trader position ratio (smart money), "
+            "each with current value, recent history, and a retail-vs-smart-money "
+            "divergence note. Read-only public Binance data. "
+            "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
+        ),
+    )
+    async def get_long_short_ratio(
+        symbol: str,
+        period: str = "1h",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        return await handle_get_long_short_ratio(symbol, period, limit)
 
     @mcp.tool(
         name="get_market_index",
