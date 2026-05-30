@@ -3373,8 +3373,12 @@ async def test_fetch_price_map_us_uses_kis_daily_close_primary(monkeypatch):
     us_quote_mock = AsyncMock(return_value={"price": 220.0})
     monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_us", us_quote_mock)
 
-    price_map, price_errors, error_map = (
-        await portfolio_holdings._fetch_price_map_for_positions([_us_refresh_position()])
+    (
+        price_map,
+        price_errors,
+        error_map,
+    ) = await portfolio_holdings._fetch_price_map_for_positions(
+        [_us_refresh_position()]
     )
 
     assert price_map[("equity_us", "AAPL")] == pytest.approx(208.0)
@@ -3396,8 +3400,12 @@ async def test_fetch_price_map_us_falls_back_to_yahoo_when_kis_empty(monkeypatch
     us_quote_mock = AsyncMock(return_value={"price": 215.0})
     monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_us", us_quote_mock)
 
-    price_map, price_errors, error_map = (
-        await portfolio_holdings._fetch_price_map_for_positions([_us_refresh_position()])
+    (
+        price_map,
+        price_errors,
+        error_map,
+    ) = await portfolio_holdings._fetch_price_map_for_positions(
+        [_us_refresh_position()]
     )
 
     assert price_map[("equity_us", "AAPL")] == pytest.approx(215.0)
@@ -3421,8 +3429,12 @@ async def test_fetch_price_map_us_fail_closed_when_all_sources_fail(monkeypatch)
     )
     monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_us", us_quote_mock)
 
-    price_map, price_errors, error_map = (
-        await portfolio_holdings._fetch_price_map_for_positions([_us_refresh_position()])
+    (
+        price_map,
+        price_errors,
+        error_map,
+    ) = await portfolio_holdings._fetch_price_map_for_positions(
+        [_us_refresh_position()]
     )
 
     assert ("equity_us", "AAPL") not in price_map  # no fabricated price
