@@ -1,3 +1,11 @@
+"""ROB-373 Unit 5 — safety guards for the mock_preview report path.
+
+Proves: (1) no broker/order/execution mutation imports under
+app/services/investment_reports/mock_preview/, (2) the bridge never enables
+order submission, (3) the snapshot-backed generator's live-only guard still
+rejects account_scope='kis_mock' (ROB-373 did not relax it).
+"""
+
 import ast
 import pathlib
 
@@ -35,6 +43,19 @@ def _imports_in_file(py: pathlib.Path) -> list[str]:
 
 
 @pytest.mark.unit
+def test_scanner_detects_a_synthetic_offender(tmp_path: pathlib.Path) -> None:
+    """Meta-test: the AST scanner must actually flag a banned import."""
+    bad = tmp_path / "bad.py"
+    bad.write_text("from app.services.order_service import place_order\n")
+    offenders = _imports_in_file(bad)
+    assert offenders, "scanner failed to flag a known-banned import"
+    # also catch the bare `import` form
+    bad2 = tmp_path / "bad2.py"
+    bad2.write_text("import app.tasks\n")
+    assert _imports_in_file(bad2)
+
+
+@pytest.mark.unit
 def test_mock_preview_pkg_has_no_mutation_imports() -> None:
     offenders: list[str] = []
     for py in _PKG.rglob("*.py"):
@@ -51,10 +72,10 @@ def test_bridge_never_enables_submit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generator_guard_still_rejects_kis_mock(db_session, monkeypatch) -> None:
+async def test_generator_guard_still_rejects_kis_mock(monkeypatch) -> None:
     """ROB-373 must NOT relax the snapshot-backed generator's live-only guard."""
     from app.core.config import settings as _settings
-    monkeypatch.setattr(_settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True)
+    monkeypatch.setattr(_settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False)
     from app.mcp_server.tooling.investment_reports_handlers import (
         investment_report_generate_from_bundle_impl,
     )
