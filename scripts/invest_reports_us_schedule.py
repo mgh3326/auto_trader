@@ -10,6 +10,12 @@ Modes (mutually exclusive):
   --dry-run : print the planned sequence; no HTTP, no DB, no secrets required.
   --run     : execute live advisory generation + mock_preview runner.
   (no flag) : enabled-no-action guidance.
+
+Exit codes:
+  0 — disabled, dry-run, guidance, or successful run
+  1 — unexpected exception during --run
+  2 — misconfiguration (e.g. --kst-date missing)
+  3 — live advisory generation failed
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ import asyncio
 import logging
 import os
 import sys
+import uuid
 
 logger = logging.getLogger("invest_reports_us_schedule")
 
@@ -65,7 +72,7 @@ _PLAN_LINES = (
     "1. prepare_bundle(market=us)  -> shared NULL-scope evidence collected once",
     "2. generate live report       -> account_scope=kis_live, execution_mode=advisory_only",
     "3. mock_preview runner         -> account_scope=kis_mock, execution_mode=mock_preview",
-    "4. mock preview bridge         -> KIS-mock read-only preflight, submit OFF (no Alpaca)",
+    "4. mock preview bridge         -> invoked per BUY item inside step 3 (KIS-mock read-only, submit OFF, no Alpaca)",
 )
 
 
@@ -106,12 +113,10 @@ async def _run(args: argparse.Namespace) -> int:
     live_uuid = live_result["report_uuid"]
     logger.info("live advisory report: %s", live_uuid)
 
-    import uuid as _uuid  # noqa: PLC0415
-
     async with AsyncSessionLocal() as session:
         runner = MockPreviewReportRunner(session)
         report, reused, count = await runner.run(
-            live_report_uuid=_uuid.UUID(str(live_uuid)),
+            live_report_uuid=uuid.UUID(str(live_uuid)),
             market=_MARKET,
             market_session=args.market_session,
             policy_version=args.policy_version,
@@ -141,7 +146,11 @@ def main(argv: list[str] | None = None) -> int:
         _print_plan()
         return 0
     if args.run:
-        return asyncio.run(_run(args))
+        try:
+            return asyncio.run(_run(args))
+        except Exception:  # noqa: BLE001
+            logger.exception("US schedule run failed")
+            return 1
 
     print(
         "enabled but no action requested. Pass --dry-run to print the plan or "

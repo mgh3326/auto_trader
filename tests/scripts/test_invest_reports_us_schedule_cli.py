@@ -27,3 +27,12 @@ def test_dry_run_prints_plan_without_side_effects(monkeypatch, capsys) -> None:
     assert "prepare_bundle" in out
     assert "kis_live" in out and "advisory_only" in out
     assert "kis_mock" in out and "mock_preview" in out
+
+
+@pytest.mark.unit
+def test_enabled_no_mode_prints_guidance(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("INVEST_REPORTS_US_SCHEDULE_ENABLED", "true")
+    rc = main([])
+    assert rc == 0
+    out = capsys.readouterr().out.lower()
+    assert "no action" in out or "--dry-run" in out
