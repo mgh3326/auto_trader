@@ -287,9 +287,7 @@ async def get_us_common_stock_flags(
         return {}
 
     async def _run(session: AsyncSession) -> dict[str, bool | None]:
-        stmt = select(
-            USSymbolUniverse.symbol, USSymbolUniverse.is_common_stock
-        ).where(
+        stmt = select(USSymbolUniverse.symbol, USSymbolUniverse.is_common_stock).where(
             USSymbolUniverse.symbol.in_(list(canon_to_original)),
             USSymbolUniverse.is_active.is_(True),
         )

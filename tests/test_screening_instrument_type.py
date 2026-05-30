@@ -75,7 +75,14 @@ def test_classify_us_instrument_cases(symbol, name, type_, subtype, expected):
         # is_common_stock=False / None preserve the algorithmic classification.
         ("SPY", "SPDR S&P 500 ETF Trust", "fund", "ETF", False, "etf"),
         ("SPY", "SPDR S&P 500 ETF Trust", "fund", "ETF", None, "etf"),
-        ("BAC.PR.K", "Bank of America Preferred Series K", "stock", "", False, "preferred"),
+        (
+            "BAC.PR.K",
+            "Bank of America Preferred Series K",
+            "stock",
+            "",
+            False,
+            "preferred",
+        ),
         ("AAPL", "Apple Inc.", "stock", "common stock", None, "common"),
     ],
 )

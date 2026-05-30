@@ -515,3 +515,19 @@ async def test_get_us_common_stock_flags_returns_authoritative_flags(tmp_path: P
     assert "MISSING" not in flags  # symbols absent from the universe are omitted
     # input keyed; separator variant (BRK-B) resolves to the canonical BRK.B row
     assert flags["BRK-B"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_us_common_stock_flags_empty_input_returns_empty(tmp_path: Path):
+    """Empty / blank-only symbol lists short-circuit to an empty mapping without a
+    DB round-trip (ROB-365 bug 5)."""
+    async with _search_session(tmp_path / "empty-flags.db", []) as db:
+        assert (
+            await us_symbol_universe_service.get_us_common_stock_flags([], db=db) == {}
+        )
+        assert (
+            await us_symbol_universe_service.get_us_common_stock_flags(
+                ["", "   "], db=db
+            )
+            == {}
+        )
