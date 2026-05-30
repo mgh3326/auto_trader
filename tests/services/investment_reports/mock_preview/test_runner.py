@@ -135,3 +135,37 @@ async def test_runner_fail_closed_when_live_report_missing(db_session) -> None:
             kst_date="2026-05-30",
             created_by_profile="schedule",
         )
+
+
+@pytest.mark.asyncio
+async def test_runner_fail_closed_when_live_report_has_no_items(db_session) -> None:
+    """A live report that exists but has no items must raise MockPreviewSourceMissing."""
+    # Seed a live report with zero items.
+    request = IngestReportRequest(
+        report_type="snapshot_backed_advisory_v1",
+        market="us",
+        market_session="regular",
+        account_scope="kis_live",
+        execution_mode="advisory_only",
+        created_by_profile="seed",
+        title="empty-items report",
+        summary="s",
+        status="draft",
+        generator_version="v2-snapshot-backed",
+        kst_date="2026-05-30",
+        items=[],
+    )
+    svc = InvestmentReportIngestionService(db_session)
+    empty_report = await svc.ingest(request)
+    await db_session.flush()
+
+    runner = MockPreviewReportRunner(db_session, ensure_service=_StubEnsureService())
+    with pytest.raises(MockPreviewSourceMissing):
+        await runner.run(
+            live_report_uuid=empty_report.report_uuid,
+            market="us",
+            market_session="regular",
+            policy_version="intraday_action_report_v1",
+            kst_date="2026-05-30",
+            created_by_profile="schedule",
+        )

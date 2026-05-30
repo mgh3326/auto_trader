@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.investment_reports import InvestmentReport, InvestmentReportItem
 from app.schemas.investment_reports import (
     IngestReportItem,
@@ -39,7 +41,7 @@ class MockPreviewSourceMissing(Exception):
 class MockPreviewReportRunner:
     def __init__(
         self,
-        session,
+        session: AsyncSession,
         *,
         bridge: MockPreviewBridge | None = None,
         ensure_service: SnapshotBundleEnsureService | None = None,
@@ -92,8 +94,8 @@ class MockPreviewReportRunner:
         )
 
         projected: list[IngestReportItem] = []
-        for idx, item in enumerate(live_items):
-            projected.append(await self._project(item, idx))
+        for item in live_items:
+            projected.append(await self._project(item))
 
         request = IngestReportRequest(
             report_type=live.report_type,
@@ -112,13 +114,14 @@ class MockPreviewReportRunner:
             items=projected,
             generator_version=_MOCK_GENERATOR_VERSION,
             kst_date=kst_date,
+            # ensure_fresh always returns a bundle_uuid (None only occurs for mode="reuse_only").
             snapshot_bundle_uuid=ensure_resp.bundle_uuid,
             snapshot_policy_version=policy_version,
         )
         return await self._ingestion.ingest_with_outcome(request)
 
     async def _project(
-        self, item: InvestmentReportItem, idx: int
+        self, item: InvestmentReportItem
     ) -> IngestReportItem:
         evidence = dict(item.evidence_snapshot or {})
         max_action = dict(item.max_action or {})
@@ -149,7 +152,7 @@ class MockPreviewReportRunner:
         )
 
         return IngestReportItem(
-            client_item_key=f"mockpv:{idx}:{item.item_kind}:{item.symbol or 'na'}",
+            client_item_key=f"mockpv:{item.item_uuid}",
             item_kind=item.item_kind,  # type: ignore[arg-type]
             operation=item.operation,  # type: ignore[arg-type]
             symbol=item.symbol,
@@ -171,5 +174,7 @@ class MockPreviewReportRunner:
             diff=item.diff,
             apply_policy="requires_user_approval",
             decision_bucket=item.decision_bucket,
+            cited_symbol_report_uuid=item.cited_symbol_report_uuid,
+            cited_dimension_report_uuids=list(item.cited_dimension_report_uuids or []),
             cited_snapshot_uuids=list(item.cited_snapshot_uuids or []),
         )
