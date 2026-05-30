@@ -35,8 +35,11 @@ from app.services.market_events.session_calendar import (
 
 logger = logging.getLogger(__name__)
 
-# US benchmark set: SPY + GICS sector SPDRs. Fetched directly (NOT via the
-# common-stock universe — ETFs are is_common_stock=False/NULL and may be absent).
+# US benchmark set: SPY + GICS sector SPDRs. The symbols are an explicit
+# hard-coded list (NOT resolved from the common-stock universe — ETFs are
+# is_common_stock=False/NULL and may be absent from it). Their bars are READ from
+# the pre-materialized us_candles_1d store below (the probe never live-fetches bar
+# data during the gate), so each benchmark symbol must already be backfilled.
 BENCHMARK_SYMBOLS: tuple[str, ...] = (
     "SPY",
     "XLK",
@@ -100,7 +103,14 @@ def aggregate_coverage(
     Expected sessions are the -5..+20 window around the decision session (the
     next tradable session for AMC/unknown), so date-only earnings are never
     treated as intraday-tradable on event_date. Unmappable events are counted and
-    fail closed."""
+    fail closed.
+
+    Intraday (``during_market``) events are **excluded** from the eligible
+    daily-granularity population (ROB-378): they are counted in
+    ``intraday_excluded_events`` but never measured, joined, or placed in the
+    coverage/benchmark denominator. ``eligible_events`` = realized minus
+    intraday-excluded; all join-quality counts are over the eligible set. The
+    labeling logic is untouched, so lookahead safety is preserved."""
     realized_events = len(events)
     null_symbol_count = max(total_released - realized_events, 0)
     dup_ambiguous_ratio = (
@@ -108,7 +118,8 @@ def aggregate_coverage(
     )
 
     labels = [label_earnings_decision_time(ed, th, market) for (_s, ed, th) in events]
-    intraday_labeled_events = sum(1 for lbl in labels if lbl.is_intraday_rejected)
+    intraday_excluded_events = sum(1 for lbl in labels if lbl.is_intraday_rejected)
+    eligible_events = realized_events - intraday_excluded_events
     unmappable_events = sum(1 for lbl in labels if lbl.decision_session is None)
     unknown_count = sum(
         1 for (_s, _ed, th) in events if th not in (_BMO, _AMC, _INTRADAY)
@@ -142,6 +153,12 @@ def aggregate_coverage(
     symbol_has_volume: dict[str, bool] = {}
 
     for (sym, ed, _th), label in zip(events, labels, strict=True):
+        if label.is_intraday_rejected:
+            # Excluded from the eligible daily-granularity population (ROB-378):
+            # intraday timing cannot be pinned to a lookahead-safe daily bar, so
+            # it is counted in intraday_excluded_events but never measured,
+            # joined, or placed in the coverage denominator.
+            continue
         decision = label.decision_session
         if decision is None:
             # Unmappable: no lookahead-safe window -> fail closed (0.0 coverage,
@@ -160,7 +177,7 @@ def aggregate_coverage(
         has_vol = bool(volume & expected)
         symbol_has_volume[sym] = symbol_has_volume.get(sym, False) or has_vol
 
-    events_with_zero_bars = realized_events - events_with_bars_present
+    events_with_zero_bars = eligible_events - events_with_bars_present
     window_coverage_p50 = median(coverages) if coverages else 0.0
 
     if joinable_symbols:
@@ -171,6 +188,10 @@ def aggregate_coverage(
 
     benchmark_covered = 0
     for (_sym, _ed, _th), label in zip(events, labels, strict=True):
+        if label.is_intraday_rejected:
+            # Excluded from the eligible population (ROB-378), so also excluded
+            # from the benchmark-coverage denominator below.
+            continue
         decision = label.decision_session
         if decision is None:
             continue
@@ -181,12 +202,13 @@ def aggregate_coverage(
             if len(expected & bdates) / len(expected) >= MIN_WINDOW_COVERAGE:
                 benchmark_covered += 1
                 break
-    benchmark_coverage = benchmark_covered / realized_events if realized_events else 0.0
+    benchmark_coverage = benchmark_covered / eligible_events if eligible_events else 0.0
 
     delisted_events = sum(1 for (sym, _ed, _th) in events if sym in delisted_symbols)
 
     return CoverageMeasurement(
         realized_events=realized_events,
+        eligible_events=eligible_events,
         events_with_bars_present=events_with_bars_present,
         events_with_zero_bars=events_with_zero_bars,
         joinable_events=joinable_events,
@@ -194,7 +216,7 @@ def aggregate_coverage(
         window_coverage_p50=round(window_coverage_p50, 4),
         date_only_ratio=date_only_ratio,
         unknown_time_ratio=round(unknown_time_ratio, 4),
-        intraday_labeled_events=intraday_labeled_events,
+        intraday_excluded_events=intraday_excluded_events,
         dup_ambiguous_ratio=round(dup_ambiguous_ratio, 4),
         tradability_coverage=round(tradability_coverage, 4),
         benchmark_coverage=round(benchmark_coverage, 4),

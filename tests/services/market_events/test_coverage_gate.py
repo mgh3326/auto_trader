@@ -21,7 +21,7 @@ def _passing_measurement(**overrides) -> CoverageMeasurement:
         "window_coverage_p50": 0.98,
         "date_only_ratio": 1.0,
         "unknown_time_ratio": 0.05,
-        "intraday_labeled_events": 0,
+        "intraday_excluded_events": 0,
         "dup_ambiguous_ratio": 0.0,
         "tradability_coverage": 0.95,
         "benchmark_coverage": 0.97,
@@ -30,6 +30,11 @@ def _passing_measurement(**overrides) -> CoverageMeasurement:
         "session_calendar_present": True,
     }
     base.update(overrides)
+    # eligible_events defaults to the (post-intraday-exclusion) realized total so
+    # callers that only tweak realized/joinable stay self-consistent (ROB-378).
+    base.setdefault(
+        "eligible_events", base["realized_events"] - base["intraday_excluded_events"]
+    )
     return CoverageMeasurement(**base)
 
 
@@ -76,14 +81,64 @@ def test_too_few_joinable_symbols_fails():
 
 
 @pytest.mark.unit
-def test_intraday_labeled_events_hard_fail():
+def test_intraday_excluded_does_not_hard_fail():
+    # ROB-378: intraday (during_market) events are excluded from the eligible
+    # population and reported, NOT a hard gate failure. With a healthy eligible
+    # population the gate still PASSes.
     result = evaluate_section5_gate(
-        _passing_measurement(intraday_labeled_events=3), Section5Thresholds()
+        _passing_measurement(
+            realized_events=618,
+            intraday_excluded_events=18,
+            eligible_events=600,
+            joinable_events=560,
+        ),
+        Section5Thresholds(),
     )
+    assert result.passed is True
+    crit = {c.name: c for c in result.criteria}
+    assert "intraday_excluded" in crit
+    assert crit["intraday_excluded"].passed is True
+    assert crit["intraday_excluded"].observed == 18
+    # The legacy hard-fail criterion no longer exists.
+    assert "no_intraday_labeling" not in crit
+
+
+@pytest.mark.unit
+def test_intraday_excluded_from_joinable_ratio_denominator():
+    # 600 eligible events, 540 joinable -> 540/600 = 0.90 passes. The 200 excluded
+    # intraday events must NOT enter the denominator (else 540/800 = 0.675 fails).
+    result = evaluate_section5_gate(
+        _passing_measurement(
+            realized_events=800,
+            intraday_excluded_events=200,
+            eligible_events=600,
+            joinable_events=540,
+        ),
+        Section5Thresholds(),
+    )
+    ratio = next(c for c in result.criteria if c.name == "min_joinable_event_ratio")
+    assert ratio.observed == pytest.approx(0.90)
+    assert ratio.passed is True
+
+
+@pytest.mark.unit
+def test_all_intraday_reports_no_eligible_population_not_quality_failure():
+    # FALSE-FAIL guard: events exist but every one is intraday-excluded -> the
+    # eligible daily-granularity population is empty (a scope limit, not a
+    # join-quality or materialization failure).
+    m = _passing_measurement(
+        realized_events=600,
+        intraday_excluded_events=600,
+        eligible_events=0,
+        events_with_bars_present=0,
+        events_with_zero_bars=0,
+        joinable_events=0,
+        joinable_symbols=0,
+    )
+    result = evaluate_section5_gate(m, Section5Thresholds())
     assert result.passed is False
-    assert any(
-        c.name == "no_intraday_labeling" and not c.passed for c in result.criteria
-    )
+    assert "eligible" in result.verdict.lower()
+    assert "not materialized" not in result.verdict.lower()
 
 
 @pytest.mark.unit

@@ -30,7 +30,7 @@ def _measurement(**overrides) -> CoverageMeasurement:
         "window_coverage_p50": 0.98,
         "date_only_ratio": 1.0,
         "unknown_time_ratio": 0.05,
-        "intraday_labeled_events": 0,
+        "intraday_excluded_events": 0,
         "dup_ambiguous_ratio": 0.0,
         "tradability_coverage": 0.95,
         "benchmark_coverage": 0.97,
@@ -39,6 +39,9 @@ def _measurement(**overrides) -> CoverageMeasurement:
         "session_calendar_present": True,
     }
     base.update(overrides)
+    base.setdefault(
+        "eligible_events", base["realized_events"] - base["intraday_excluded_events"]
+    )
     return CoverageMeasurement(**base)
 
 
