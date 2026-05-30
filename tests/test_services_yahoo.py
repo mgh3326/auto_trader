@@ -101,6 +101,76 @@ class TestYahooService:
         assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
 
     @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
+    async def test_fetch_fast_info_degrades_nonetype_flake_to_none(
+        self, mock_ticker_class, monkeypatch
+    ):
+        """A yfinance internal "'NoneType' object is not subscriptable" raised on lazy
+        fast_info attribute access must degrade that field to None, not crash the whole
+        quote (ROB-365 bug 2). .get() still works, so it is the attribute path that flakes.
+        """
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            lambda: object(),
+        )
+
+        class _FlakyFastInfo:
+            def __getattr__(self, name):
+                raise TypeError("'NoneType' object is not subscriptable")
+
+            def get(self, key, default=None):
+                return default
+
+        mock_ticker = MagicMock()
+        mock_ticker.fast_info = _FlakyFastInfo()
+        mock_ticker_class.return_value = mock_ticker
+
+        from app.services.brokers.yahoo.client import fetch_fast_info
+
+        result = await fetch_fast_info("AAPL")
+
+        assert result["symbol"] == "AAPL"
+        assert result["close"] is None
+        assert result["previous_close"] is None
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
+    async def test_fetch_fast_info_still_retries_and_raises_on_crumb_error(
+        self, mock_ticker_class, monkeypatch
+    ):
+        """Crumb/auth errors must still bubble (and trigger the fresh-session retry),
+        not be swallowed by the NoneType-flake hardening (ROB-365 bug 2 regression guard)."""
+        sessions: list[object] = []
+
+        def _build():
+            session = object()
+            sessions.append(session)
+            return session
+
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            _build,
+        )
+
+        class _CrumbFastInfo:
+            def __getattr__(self, name):
+                raise RuntimeError("invalid crumb")
+
+            def get(self, key, default=None):
+                raise RuntimeError("invalid crumb")
+
+        mock_ticker = MagicMock()
+        mock_ticker.fast_info = _CrumbFastInfo()
+        mock_ticker_class.return_value = mock_ticker
+
+        from app.services.brokers.yahoo.client import fetch_fast_info
+
+        with pytest.raises(RuntimeError, match="invalid crumb"):
+            await fetch_fast_info("AAPL")
+
+        assert len(sessions) == 2  # original attempt + one fresh-session crumb retry
+
+    @pytest.mark.asyncio
     async def test_fetch_price_offloads_blocking_call_to_thread(self, monkeypatch):
         import app.services.brokers.yahoo.client as yahoo
 
