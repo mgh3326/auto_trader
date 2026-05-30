@@ -11,6 +11,7 @@ import pandas as pd
 import yfinance as yf
 
 from app.monitoring import yfinance_tracing_session
+from app.services.external.btc_dominance import fetch_btc_dominance
 
 _INDEX_META: dict[str, dict[str, str]] = {
     "KOSPI": {"name": "코스피", "source": "naver", "naver_code": "KOSPI"},
@@ -21,6 +22,16 @@ _INDEX_META: dict[str, dict[str, str]] = {
     "DJI": {"name": "다우존스", "source": "yfinance", "yf_ticker": "^DJI"},
     "DOW": {"name": "다우존스", "source": "yfinance", "yf_ticker": "^DJI"},
     "VIX": {"name": "CBOE 변동성지수(VIX)", "source": "yfinance", "yf_ticker": "^VIX"},
+    "CRYPTO": {
+        "name": "암호화폐 총 시가총액",
+        "source": "coingecko",
+        "cg_metric": "total_market_cap",
+    },
+    "BTC.D": {
+        "name": "BTC 도미넌스",
+        "source": "coingecko",
+        "cg_metric": "btc_dominance",
+    },
 }
 
 _DEFAULT_INDICES = ["KOSPI", "KOSDAQ", "SPX", "NASDAQ"]
@@ -206,6 +217,42 @@ async def _fetch_index_us_history(
     return history
 
 
+async def _fetch_index_crypto_current(
+    cg_metric: str, name: str, symbol: str
+) -> dict[str, Any]:
+    """Crypto market-regime "index" row from CoinGecko /global (cached).
+
+    Row shape matches the KR/US index rows so the snapshot collector and
+    MarketStage consume it unchanged. ``total_market_cap`` carries a usable
+    24h change_pct (the regime driver); ``btc_dominance`` reports the dominance
+    level only (CoinGecko /global has no dominance 24h change) → change_pct is
+    None, which the collector intentionally drops and MarketStage skips rather
+    than fabricating a flat 0.0%. Raises on an unreachable /global so the
+    handler maps it to an error payload (never fabricate values).
+    """
+    data = await fetch_btc_dominance()
+    if not data:
+        raise RuntimeError("CoinGecko /global unavailable")
+
+    if cg_metric == "total_market_cap":
+        current = data.get("total_market_cap_usd")
+        change_pct = data.get("total_market_cap_change_24h")
+    elif cg_metric == "btc_dominance":
+        current = data.get("btc_dominance")
+        change_pct = None
+    else:
+        raise ValueError(f"unknown cg_metric '{cg_metric}'")
+
+    return {
+        "symbol": symbol,
+        "name": name,
+        "current": current,
+        "change": None,
+        "change_pct": change_pct,
+        "source": "coingecko",
+    }
+
+
 __all__ = [
     "_DEFAULT_INDICES",
     "_INDEX_META",
@@ -213,4 +260,5 @@ __all__ = [
     "_fetch_index_kr_history",
     "_fetch_index_us_current",
     "_fetch_index_us_history",
+    "_fetch_index_crypto_current",
 ]

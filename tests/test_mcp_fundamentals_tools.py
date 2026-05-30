@@ -4092,6 +4092,17 @@ class TestIndexMeta:
             == fundamentals_sources_indices._INDEX_META["DOW"]["yf_ticker"]
         )
 
+    def test_crypto_indices_have_coingecko_source(self):
+        for sym in ("CRYPTO", "BTC.D"):
+            meta = fundamentals_sources_indices._INDEX_META[sym]
+            assert meta["source"] == "coingecko"
+            assert "cg_metric" in meta
+
+    def test_crypto_not_in_default_indices(self):
+        # Crypto is fetched explicitly, never in the no-arg equity default list.
+        for sym in ("CRYPTO", "BTC.D"):
+            assert sym not in fundamentals_sources_indices._DEFAULT_INDICES
+
 
 # ---------------------------------------------------------------------------
 # TestCalculateFibonacci
@@ -4459,3 +4470,68 @@ class TestGetInvestorTrends:
         result = await tools["get_investor_trends"]("005930")
 
         assert "error" in result or "message" in result
+
+
+# ---------------------------------------------------------------------------
+# TestFetchIndexCryptoCurrent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestFetchIndexCryptoCurrent:
+    """ROB-377 PR1: crypto market-regime index rows from CoinGecko /global."""
+
+    async def _patch_global(self, monkeypatch, data):
+        async def fake_fetch():
+            return data
+
+        monkeypatch.setattr(
+            fundamentals_sources_indices, "fetch_btc_dominance", fake_fetch
+        )
+
+    async def test_crypto_total_market_cap_row(self, monkeypatch):
+        await self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+        row = await fundamentals_sources_indices._fetch_index_crypto_current(
+            "total_market_cap", "암호화폐 총 시가총액", "CRYPTO"
+        )
+        assert row["symbol"] == "CRYPTO"
+        assert row["current"] == pytest.approx(2.31e12)
+        assert row["change_pct"] == pytest.approx(1.85)
+        assert row["source"] == "coingecko"
+
+    async def test_btc_dominance_row_has_no_change_pct(self, monkeypatch):
+        await self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+        row = await fundamentals_sources_indices._fetch_index_crypto_current(
+            "btc_dominance", "BTC 도미넌스", "BTC.D"
+        )
+        assert row["symbol"] == "BTC.D"
+        assert row["current"] == pytest.approx(52.3)
+        assert row["change_pct"] is None
+
+    async def test_raises_when_global_unavailable(self, monkeypatch):
+        async def fake_fetch():
+            return None
+
+        monkeypatch.setattr(
+            fundamentals_sources_indices, "fetch_btc_dominance", fake_fetch
+        )
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await fundamentals_sources_indices._fetch_index_crypto_current(
+                "total_market_cap", "암호화폐 총 시가총액", "CRYPTO"
+            )
