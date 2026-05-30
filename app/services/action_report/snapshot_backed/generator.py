@@ -77,6 +77,31 @@ from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
 
+_MARKET_BASELINE_KEYS = ("market", "from_date", "to_date", "indices")
+_PORTFOLIO_BASELINE_KEYS = (
+    "primary_source",
+    "cash",
+    "buying_power",
+    "sellable_summary",
+)
+
+
+def _market_numeric_baseline(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Whitelist the small delta-relevant numerics from a market snapshot
+    payload. Never copies the heavy ``events`` list. Missing keys are skipped
+    (no fabrication)."""
+    return {k: payload[k] for k in _MARKET_BASELINE_KEYS if k in payload}
+
+
+def _portfolio_numeric_baseline(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Whitelist cash/buying_power/sellable_summary + a holdings count.
+    Never copies the heavy ``holdings`` list."""
+    base = {k: payload[k] for k in _PORTFOLIO_BASELINE_KEYS if k in payload}
+    holdings = payload.get("holdings")
+    base["holdings_count"] = len(holdings) if isinstance(holdings, list) else 0
+    return base
+
+
 _MARKET_ACCOUNT_PAIRS: dict[str, str] = {
     "kr": "kis_live",
     "us": "kis_live",  # ROB-297 — KIS overseas (US) stock account.
@@ -545,14 +570,17 @@ class SnapshotBackedReportGenerator:
                 reason = str(info.get("reason") or info.get("status") or reason)
             return {"status": "unavailable", "reason": reason}
 
-        def _descriptor(snapshot: Any) -> dict[str, Any]:
+        def _section(snapshot: Any, baseline: dict[str, Any]) -> dict[str, Any]:
             as_of = getattr(snapshot, "as_of", None)
             return {
-                "snapshot_uuid": str(snapshot.snapshot_uuid),
-                "snapshot_kind": snapshot.snapshot_kind,
-                "as_of": as_of.isoformat() if as_of is not None else None,
-                "freshness_status": getattr(snapshot, "freshness_status", None),
-                "coverage": getattr(snapshot, "coverage_json", None) or {},
+                "provenance": {
+                    "snapshot_uuid": str(snapshot.snapshot_uuid),
+                    "snapshot_kind": snapshot.snapshot_kind,
+                    "as_of": as_of.isoformat() if as_of is not None else None,
+                    "freshness_status": getattr(snapshot, "freshness_status", None),
+                    "coverage": getattr(snapshot, "coverage_json", None) or {},
+                },
+                "baseline": baseline,
             }
 
         market = _unavailable("market")
@@ -562,10 +590,11 @@ class SnapshotBackedReportGenerator:
             return market, portfolio
         pairs = await self._snapshots_repo.list_bundle_items_with_snapshots(bundle.id)
         for _item, snapshot in pairs:
+            payload = getattr(snapshot, "payload_json", None) or {}
             if snapshot.snapshot_kind == "market":
-                market = _descriptor(snapshot)
+                market = _section(snapshot, _market_numeric_baseline(payload))
             elif snapshot.snapshot_kind == "portfolio":
-                portfolio = _descriptor(snapshot)
+                portfolio = _section(snapshot, _portfolio_numeric_baseline(payload))
         return market, portfolio
 
     async def _build_classifier_context(
