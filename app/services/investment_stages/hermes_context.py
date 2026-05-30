@@ -158,8 +158,25 @@ class HermesContextExporter:
                 dimension_evidence["market"] = {"unavailable": str(exc)}
 
             try:
+                # ROB-374 B3 — feed the dimension the SAME news-article snapshot
+                # NewsStage reads so stage_inputs.news and dimension_evidence.news
+                # agree. A present (even empty) ``articles`` payload is
+                # authoritative; absent it, build_news_evidence falls back to the
+                # research_reports query.
+                news_articles: list[Any] = []
+                has_news_article_snapshot = False
+                for snap in snapshots_by_kind.get("news", []):
+                    snap_payload = snap.payload_json or {}
+                    if "articles" in snap_payload:
+                        has_news_article_snapshot = True
+                        news_articles.extend(snap_payload.get("articles") or [])
+                news_snapshot_payload = (
+                    {"articles": news_articles} if has_news_article_snapshot else None
+                )
                 news_evidence = await build_news_evidence(
-                    ResearchReportsQueryService(self._session), market=bundle.market
+                    ResearchReportsQueryService(self._session),
+                    market=bundle.market,
+                    snapshot_payload=news_snapshot_payload,
                 )
                 dimension_evidence["news"] = news_evidence
             except Exception as exc:  # noqa: BLE001 — best-effort, like market
