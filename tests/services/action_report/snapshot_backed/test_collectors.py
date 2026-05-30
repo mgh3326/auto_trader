@@ -1671,6 +1671,183 @@ async def test_symbol_collector_quote_respects_enrichment_cap():
 
 
 # ---------------------------------------------------------------------------
+# Symbol collector — crypto enrichment (ROB-369 Slice 2c).
+#
+# Crypto symbols are NOT in stock_info; they live in upbit_symbol_universe.
+# For (market=crypto, account_scope=upbit_live) the collector resolves metadata
+# from that universe and enriches each symbol with read-only Upbit orderbook
+# liquidity (best bid/ask, spread, depth). Public market-data → no user_id
+# required (unlike KIS). Per-symbol fail-open + the shared enrichment cap.
+# ---------------------------------------------------------------------------
+def _upbit_universe_row(market: str = "KRW-BTC", korean_name: str = "비트코인"):
+    class _Row:
+        def __init__(self) -> None:
+            self.market = market
+            self.korean_name = korean_name
+            self.english_name = "Bitcoin"
+            self.base_currency = market.split("-")[-1]
+            self.quote_currency = "KRW"
+            self.is_active = True
+
+    return _Row()
+
+
+def _fake_upbit_quote_client_ok() -> MagicMock:
+    """Fake Upbit orderbook adapter returning a full top-of-book (no last_price)."""
+
+    async def fetch(symbol: str) -> dict[str, Any]:
+        return {
+            "last_price": None,
+            "best_bid": 94_900_000.0,
+            "best_ask": 95_100_000.0,
+            "bid_depth": 0.5,
+            "ask_depth": 0.3,
+            "venue": "upbit",
+            "session": "24h",
+            "nxt_eligible": False,
+            "as_of": "1716200000000",
+        }
+
+    client = MagicMock()
+    client.fetch_quote_orderbook = AsyncMock(side_effect=fetch)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_resolves_metadata_from_upbit_universe():
+    """ROB-369 2c — crypto symbols resolve from upbit_symbol_universe (not
+    stock_info); metadata is populated even when no quote adapter is wired."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_upbit_universe_row("KRW-ETH", "이더리움")])
+    collector = SymbolSnapshotCollector(session)  # no upbit quote client wired
+    req = CollectorRequest(
+        market="crypto",
+        account_scope="upbit_live",
+        symbols=["KRW-ETH"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=1,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["symbol"] == "KRW-ETH"
+    assert payload["name"] == "이더리움"
+    assert payload["instrument_type"] == "crypto"
+    assert payload["exchange"] == "upbit"
+    assert payload["is_active"] is True
+    # Enrichment is wanted (crypto+upbit_live) but no client → honest unavailable.
+    assert payload["quote"]["status"] == "unavailable"
+    assert "no quote client" in payload["quote"]["unavailable_reason"]
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_enriches_with_upbit_orderbook_no_user_id():
+    """ROB-369 2c — crypto+upbit_live enriches via the Upbit orderbook adapter;
+    public market-data requires NO user_id (unlike KIS)."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_upbit_universe_row("KRW-BTC", "비트코인")])
+    quote_client = _fake_upbit_quote_client_ok()
+    collector = SymbolSnapshotCollector(session, upbit_quote_client=quote_client)
+    req = CollectorRequest(
+        market="crypto",
+        account_scope="upbit_live",
+        symbols=["KRW-BTC"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=None,  # no user_id — Upbit market-data is public
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["symbol"] == "KRW-BTC"
+    q = payload["quote"]
+    assert q["status"] == "ok"
+    assert q["best_bid"] == 94_900_000.0
+    assert q["best_ask"] == 95_100_000.0
+    assert q["spread"] == 200_000.0
+    assert q["spread_bps"] == pytest.approx(21.05, rel=0.05)
+    assert q["venue"] == "upbit"
+    assert q["last_price"] is None  # orderbook carries no last trade — honest
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with("KRW-BTC")
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_skips_quote_when_not_upbit_live():
+    """ROB-369 2c — crypto without upbit_live scope must not call the quote client."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_upbit_universe_row("KRW-BTC", "비트코인")])
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(
+        side_effect=AssertionError("upbit quote client must not be called")
+    )
+    collector = SymbolSnapshotCollector(session, upbit_quote_client=quote_client)
+    req = CollectorRequest(
+        market="crypto",
+        account_scope=None,
+        symbols=["KRW-BTC"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=1,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["symbol"] == "KRW-BTC"
+    assert "quote" not in payload or payload.get("quote") is None
+    quote_client.fetch_quote_orderbook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_orderbook_failure_is_fail_open():
+    """ROB-369 2c — an Upbit orderbook error marks that symbol unavailable
+    without crashing others (per-symbol fail-open)."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session(
+        [
+            _upbit_universe_row("KRW-BTC", "비트코인"),
+            _upbit_universe_row("KRW-XRP", "리플"),
+        ]
+    )
+
+    async def fetch(symbol: str):
+        if symbol == "KRW-BTC":
+            raise RuntimeError("upbit timeout")
+        return {
+            "last_price": None,
+            "best_bid": 800.0,
+            "best_ask": 801.0,
+            "bid_depth": 100.0,
+            "ask_depth": 120.0,
+            "venue": "upbit",
+            "session": "24h",
+            "nxt_eligible": False,
+            "as_of": None,
+        }
+
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(side_effect=fetch)
+    collector = SymbolSnapshotCollector(session, upbit_quote_client=quote_client)
+    req = CollectorRequest(
+        market="crypto",
+        account_scope="upbit_live",
+        symbols=["KRW-BTC", "KRW-XRP"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=None,
+    )
+    results = await collector.collect(req)
+    by_symbol = {r.symbol: r for r in results if r.symbol}
+    assert by_symbol["KRW-BTC"].payload_json["quote"]["status"] == "unavailable"
+    assert (
+        "upbit timeout"
+        in by_symbol["KRW-BTC"].payload_json["quote"]["unavailable_reason"]
+    )
+    assert by_symbol["KRW-XRP"].payload_json["quote"]["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
 # Candidate-universe collector
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
@@ -1904,6 +2081,82 @@ def test_production_registry_registers_pending_orders():
     """ROB-274 — pending_orders collector is wired into the production registry."""
     registry = production_collector_registry(session=MagicMock())
     assert "pending_orders" in registry.list_kinds()
+
+
+def test_production_registry_wires_upbit_quote_client_into_symbol_collector():
+    """ROB-369 2c — the symbol collector gets the Upbit orderbook adapter so
+    crypto + upbit_live requests can be enriched."""
+    registry = production_collector_registry(session=MagicMock())
+    symbol_collector = registry.get("symbol")
+    assert symbol_collector is not None
+    assert symbol_collector._upbit_quote_client is not None
+    assert symbol_collector._kis_quote_client is not None
+
+
+@pytest.mark.asyncio
+async def test_upbit_quote_adapter_maps_orderbook_top_of_book(monkeypatch):
+    """ROB-369 2c — the Upbit adapter maps the orderbook top-of-book into the
+    shared quote contract (last_price None — orderbook has no last trade)."""
+    from app.services.action_report.snapshot_backed.collectors import (
+        registry as registry_mod,
+    )
+
+    async def fake_fetch_orderbook(market: str):
+        assert market == "KRW-BTC"
+        return {
+            "market": "KRW-BTC",
+            "timestamp": 1716200000000,
+            "total_ask_size": 1.0,
+            "total_bid_size": 2.0,
+            "orderbook_units": [
+                {
+                    "ask_price": 95_100_000.0,
+                    "bid_price": 94_900_000.0,
+                    "ask_size": 0.3,
+                    "bid_size": 0.5,
+                },
+                {
+                    "ask_price": 95_200_000.0,
+                    "bid_price": 94_800_000.0,
+                    "ask_size": 1.0,
+                    "bid_size": 1.0,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.upbit_orderbook.fetch_orderbook", fake_fetch_orderbook
+    )
+    adapter = registry_mod._UpbitQuoteOrderbookAdapter()
+    quote = await adapter.fetch_quote_orderbook("KRW-BTC")
+    assert quote["best_bid"] == 94_900_000.0
+    assert quote["best_ask"] == 95_100_000.0
+    assert quote["bid_depth"] == 0.5
+    assert quote["ask_depth"] == 0.3
+    assert quote["last_price"] is None
+    assert quote["venue"] == "upbit"
+    assert quote["as_of"] == "1716200000000"
+
+
+@pytest.mark.asyncio
+async def test_upbit_quote_adapter_empty_orderbook_yields_none_top(monkeypatch):
+    """ROB-369 2c — empty/missing orderbook → None top-of-book, which the
+    collector's empty-book branch then marks unavailable."""
+    from app.services.action_report.snapshot_backed.collectors import (
+        registry as registry_mod,
+    )
+
+    async def fake_fetch_orderbook(market: str):
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.upbit_orderbook.fetch_orderbook", fake_fetch_orderbook
+    )
+    adapter = registry_mod._UpbitQuoteOrderbookAdapter()
+    quote = await adapter.fetch_quote_orderbook("KRW-FOO")
+    assert quote["best_bid"] is None
+    assert quote["best_ask"] is None
+    assert quote["venue"] == "upbit"
 
 
 # ---------------------------------------------------------------------------
