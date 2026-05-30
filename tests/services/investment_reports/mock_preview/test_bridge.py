@@ -25,16 +25,19 @@ def test_extract_order_params_happy_path() -> None:
 
 @pytest.mark.unit
 def test_extract_order_params_skips_when_no_price() -> None:
-    assert extract_order_params(
-        symbol="AAPL", evidence_snapshot={}, max_action={}
-    ) is None
+    assert (
+        extract_order_params(symbol="AAPL", evidence_snapshot={}, max_action={}) is None
+    )
 
 
 @pytest.mark.unit
 def test_extract_order_params_skips_when_no_symbol() -> None:
-    assert extract_order_params(
-        symbol=None, evidence_snapshot={"reference_price_usd": 10.0}, max_action={}
-    ) is None
+    assert (
+        extract_order_params(
+            symbol=None, evidence_snapshot={"reference_price_usd": 10.0}, max_action={}
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -45,8 +48,11 @@ async def test_bridge_fail_closed_when_adapter_disabled() -> None:
     bridge = MockPreviewBridge(adapter=KisMockUsAdapter(enabled=False))
     out = await bridge.preview(
         OrderParams(
-            symbol="AAPL", quantity=0.25, limit_price_usd=200.0,
-            notional_cap_usd=50.0, reference_price_usd=200.0,
+            symbol="AAPL",
+            quantity=0.25,
+            limit_price_usd=200.0,
+            notional_cap_usd=50.0,
+            reference_price_usd=200.0,
         )
     )
     assert out["status"] == "unsupported"
@@ -85,8 +91,11 @@ async def test_bridge_previews_kis_mock_only_no_alpaca() -> None:
     bridge = MockPreviewBridge(adapter=_StubAdapter(enabled=True))
     out = await bridge.preview(
         OrderParams(
-            symbol="AAPL", quantity=0.25, limit_price_usd=200.0,
-            notional_cap_usd=50.0, reference_price_usd=200.0,
+            symbol="AAPL",
+            quantity=0.25,
+            limit_price_usd=200.0,
+            notional_cap_usd=50.0,
+            reference_price_usd=200.0,
         )
     )
     assert out["status"] == "previewed"
@@ -108,8 +117,11 @@ def test_extract_order_params_uses_default_cap_when_no_notional() -> None:
 
 @pytest.mark.unit
 def test_extract_order_params_skips_on_zero_cap() -> None:
-    assert extract_order_params(
-        symbol="AAPL",
-        evidence_snapshot={"reference_price_usd": 100.0},
-        max_action={"notional_usd": 0},
-    ) is None
+    assert (
+        extract_order_params(
+            symbol="AAPL",
+            evidence_snapshot={"reference_price_usd": 100.0},
+            max_action={"notional_usd": 0},
+        )
+        is None
+    )

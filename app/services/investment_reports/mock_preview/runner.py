@@ -69,9 +69,7 @@ class MockPreviewReportRunner:
     ) -> tuple[InvestmentReport, bool, int]:
         live = await self._reports_repo.get_report_by_uuid(live_report_uuid)
         if live is None:
-            raise MockPreviewSourceMissing(
-                f"live report not found: {live_report_uuid}"
-            )
+            raise MockPreviewSourceMissing(f"live report not found: {live_report_uuid}")
         live_items = await self._reports_repo.list_items_for_report(live.id)
         if not live_items:
             raise MockPreviewSourceMissing(
@@ -120,9 +118,7 @@ class MockPreviewReportRunner:
         )
         return await self._ingestion.ingest_with_outcome(request)
 
-    async def _project(
-        self, item: InvestmentReportItem
-    ) -> IngestReportItem:
+    async def _project(self, item: InvestmentReportItem) -> IngestReportItem:
         evidence = dict(item.evidence_snapshot or {})
         max_action = dict(item.max_action or {})
 

@@ -93,9 +93,7 @@ async def seeded_live_report(db_session):
 async def test_runner_projects_live_items_into_mock_preview_report(
     db_session, seeded_live_report
 ) -> None:
-    runner = MockPreviewReportRunner(
-        db_session, ensure_service=_StubEnsureService()
-    )
+    runner = MockPreviewReportRunner(db_session, ensure_service=_StubEnsureService())
     report, _reused, count = await runner.run(
         live_report_uuid=seeded_live_report.report_uuid,
         market="us",
@@ -179,9 +177,7 @@ async def test_runner_isolates_bridge_failure_as_per_item_error_sentinel(
 
 @pytest.mark.asyncio
 async def test_runner_fail_closed_when_live_report_missing(db_session) -> None:
-    runner = MockPreviewReportRunner(
-        db_session, ensure_service=_StubEnsureService()
-    )
+    runner = MockPreviewReportRunner(db_session, ensure_service=_StubEnsureService())
     with pytest.raises(MockPreviewSourceMissing):
         await runner.run(
             live_report_uuid=uuid.uuid4(),

@@ -60,9 +60,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--market-session", default="regular")
     parser.add_argument("--kst-date", default=None, help="KST date YYYY-MM-DD.")
-    parser.add_argument(
-        "--policy-version", default="intraday_action_report_v1"
-    )
+    parser.add_argument("--policy-version", default="intraday_action_report_v1")
     parser.add_argument("--created-by-profile", default="schedule")
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)

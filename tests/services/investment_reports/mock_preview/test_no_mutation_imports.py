@@ -67,7 +67,7 @@ def test_mock_preview_pkg_has_no_mutation_imports() -> None:
 def test_bridge_never_enables_submit() -> None:
     """Static guarantee: the source asserts submit_enabled=False, never True."""
     src = (_PKG / "bridge.py").read_text()
-    assert "submit_enabled\"] = False" in src or "submit_enabled'] = False" in src
+    assert 'submit_enabled"] = False' in src or "submit_enabled'] = False" in src
     assert "submit_enabled=True" not in src
 
 
@@ -75,7 +75,10 @@ def test_bridge_never_enables_submit() -> None:
 async def test_generator_guard_still_rejects_kis_mock(monkeypatch) -> None:
     """ROB-373 must NOT relax the snapshot-backed generator's live-only guard."""
     from app.core.config import settings as _settings
-    monkeypatch.setattr(_settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False)
+
+    monkeypatch.setattr(
+        _settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
+    )
     from app.mcp_server.tooling.investment_reports_handlers import (
         investment_report_generate_from_bundle_impl,
     )
