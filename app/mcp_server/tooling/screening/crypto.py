@@ -283,18 +283,24 @@ async def _normalize_crypto_results(
     finally:
         await _db.close()
 
-    # Fetch Upbit 24h volumes
+    # Fetch Upbit 24h volume + trade amount (거래대금). ROB-369 B4: tvscreener
+    # VALUE_TRADED is null in production, so the live Upbit ``acc_trade_price_24h``
+    # (already returned by this same ticker call) is the real trade-amount source.
     ticker_volume_map: dict[str, float] = {}
+    ticker_trade_amount_map: dict[str, float] = {}
     if market_codes:
         try:
             ticker_rows = await upbit_service.fetch_multiple_tickers(market_codes)
-            ticker_volume_map = {
-                str(row.get("market") or "").strip().upper(): (
+            for row in ticker_rows:
+                code = str(row.get("market") or "").strip().upper()
+                if not code:
+                    continue
+                ticker_volume_map[code] = (
                     _to_optional_float(row.get("acc_trade_volume_24h")) or 0.0
                 )
-                for row in ticker_rows
-                if str(row.get("market") or "").strip()
-            }
+                amount = _to_optional_float(row.get("acc_trade_price_24h"))
+                if amount is not None:
+                    ticker_trade_amount_map[code] = amount
         except Exception as exc:
             warnings.append(
                 "Upbit 24h volume enrichment failed; volume_24h defaulted to 0.0 "
@@ -356,9 +362,13 @@ async def _normalize_crypto_results(
             filtered_by_crash += 1
             continue
 
-        trade_amount_24h = _to_optional_float(
-            raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h")
-        )
+        # Prefer the live Upbit 거래대금; fall back to tvscreener VALUE_TRADED
+        # only when Upbit did not return a trade amount for this market.
+        trade_amount_24h = ticker_trade_amount_map.get(market_code)
+        if trade_amount_24h is None:
+            trade_amount_24h = _to_optional_float(
+                raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h")
+            )
         item = {
             "symbol": market_code,
             "original_market": market_code,
