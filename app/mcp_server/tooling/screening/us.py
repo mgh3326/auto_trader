@@ -43,6 +43,7 @@ from app.services.tvscreener_service import (
     TvScreenerService,
     _import_tvscreener,
 )
+from app.services.us_symbol_universe_service import get_us_common_stock_flags
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +209,18 @@ async def _screen_us(
                     return value
             return None
 
+        # ROB-365 bug 5: load the authoritative NASDAQ-Trader is_common_stock
+        # flags once, to correct yfinance type glitches (e.g. NFLX tagged ETF).
+        # Fail-soft: if the universe DB is unavailable, fall back to algorithmic
+        # classification (unchanged behavior).
+        try:
+            common_flags = await get_us_common_stock_flags(
+                [s for q in quotes if (s := q.get("symbol"))]
+            )
+        except Exception as exc:
+            logger.debug("US common-stock flag lookup failed: %s", exc)
+            common_flags = {}
+
         results = []
         for quote in quotes:
             mapped = {
@@ -255,6 +268,7 @@ async def _screen_us(
                 mapped.get("name"),
                 _first_value(quote, "quoteType", "type"),
                 _first_value(quote, "typeDisp", "subtype"),
+                is_common_stock=common_flags.get(mapped.get("code")),
             )
             market_cap = _to_optional_float(mapped.get("market_cap"))
             if market_cap is not None:
@@ -696,6 +710,20 @@ async def _screen_us_via_tvscreener(
             market=market,
             usd_krw_rate=usd_krw_rate,
         )
+
+        # ROB-365 bug 5: apply the authoritative NASDAQ-Trader is_common_stock
+        # flag (correcting tvscreener type glitches, e.g. NFLX tagged ETF) BEFORE
+        # instrument-type filtering. Fail-soft: skip on universe-DB error.
+        try:
+            common_flags = await get_us_common_stock_flags(
+                [s.get("symbol") for s in stocks if s.get("symbol")]
+            )
+        except Exception as exc:
+            logger.debug("US common-stock flag lookup failed: %s", exc)
+            common_flags = {}
+        for stock in stocks:
+            if common_flags.get(stock.get("symbol")) is True:
+                stock["instrument_type"] = "common"
 
         stocks = _filter_by_min_analyst_buy(stocks, min_analyst_buy)
 

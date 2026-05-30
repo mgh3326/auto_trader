@@ -453,3 +453,65 @@ async def test_search_us_symbols_keeps_name_search_behavior(
         )
 
     assert [result["symbol"] for result in results] == ["BRK.B"]
+
+
+@pytest.mark.asyncio
+async def test_get_us_common_stock_flags_returns_authoritative_flags(tmp_path: Path):
+    """ROB-365 bug 5: the batch loader returns is_common_stock for active symbols,
+    keyed by the caller's input symbol; inactive/missing are omitted and an
+    un-synced (NULL) flag maps to None."""
+    rows = [
+        USSymbolUniverse(
+            symbol="NFLX",
+            exchange="NASD",
+            name_kr="넷플릭스",
+            name_en="Netflix Inc.",
+            is_active=True,
+            is_common_stock=True,
+        ),
+        USSymbolUniverse(
+            symbol="SPY",
+            exchange="NYSE",
+            name_kr="SPY",
+            name_en="SPDR S&P 500 ETF Trust",
+            is_active=True,
+            is_common_stock=False,
+        ),
+        USSymbolUniverse(
+            symbol="TSM",
+            exchange="NYSE",
+            name_kr="TSM",
+            name_en="Taiwan Semiconductor",
+            is_active=True,
+            is_common_stock=None,  # present but not yet synced
+        ),
+        USSymbolUniverse(
+            symbol="DEAD",
+            exchange="NASD",
+            name_kr="상폐",
+            name_en="Delisted Co",
+            is_active=False,
+            is_common_stock=True,
+        ),
+        USSymbolUniverse(
+            symbol="BRK.B",
+            exchange="NYSE",
+            name_kr="버크셔B",
+            name_en="Berkshire Hathaway B",
+            is_active=True,
+            is_common_stock=True,
+        ),
+    ]
+
+    async with _search_session(tmp_path / "common-flags.db", rows) as db:
+        flags = await us_symbol_universe_service.get_us_common_stock_flags(
+            ["NFLX", "SPY", "TSM", "DEAD", "MISSING", "BRK-B"], db=db
+        )
+
+    assert flags["NFLX"] is True
+    assert flags["SPY"] is False
+    assert flags["TSM"] is None
+    assert "DEAD" not in flags  # inactive rows are omitted
+    assert "MISSING" not in flags  # symbols absent from the universe are omitted
+    # input keyed; separator variant (BRK-B) resolves to the canonical BRK.B row
+    assert flags["BRK-B"] is True

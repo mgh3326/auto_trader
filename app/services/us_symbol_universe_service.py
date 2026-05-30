@@ -264,6 +264,50 @@ async def get_us_exchange_by_symbol(
         return row.exchange
 
 
+async def get_us_common_stock_flags(
+    symbols: list[str],
+    db: AsyncSession | None = None,
+) -> dict[str, bool | None]:
+    """Return ``{input_symbol: is_common_stock}`` for active US symbols (ROB-365 bug 5).
+
+    ``is_common_stock`` is the authoritative NASDAQ-Trader flag (ROB-204). The
+    returned dict is keyed by the caller's original symbol string for easy
+    lookup. Symbols absent from the active universe are omitted; a present but
+    un-synced symbol maps to ``None`` (the flag column is nullable). Callers
+    treat both missing and ``None`` as "use algorithmic classification".
+    """
+    canon_to_original: dict[str, str] = {}
+    for raw in symbols:
+        if not raw:
+            continue
+        canon = to_db_symbol(_normalize_symbol(raw))
+        if canon:
+            canon_to_original.setdefault(canon, raw)
+    if not canon_to_original:
+        return {}
+
+    async def _run(session: AsyncSession) -> dict[str, bool | None]:
+        stmt = select(
+            USSymbolUniverse.symbol, USSymbolUniverse.is_common_stock
+        ).where(
+            USSymbolUniverse.symbol.in_(list(canon_to_original)),
+            USSymbolUniverse.is_active.is_(True),
+        )
+        result = await session.execute(stmt)
+        flags: dict[str, bool | None] = {}
+        for canon_symbol, is_common in result.all():
+            original = canon_to_original.get(canon_symbol)
+            if original is not None:
+                flags[original] = is_common
+        return flags
+
+    if db is not None:
+        return await _run(db)
+
+    async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
+        return await _run(session)
+
+
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
     normalized_name = normalize_name(name)
     if not normalized_name:

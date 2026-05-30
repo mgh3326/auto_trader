@@ -64,3 +64,25 @@ def test_classify_kr_instrument_cases(symbol, name, subtype, expected):
 )
 def test_classify_us_instrument_cases(symbol, name, type_, subtype, expected):
     assert classify_us_instrument(symbol, name, type_, subtype) == expected
+
+
+@pytest.mark.parametrize(
+    ("symbol", "name", "type_", "subtype", "is_common", "expected"),
+    [
+        # NASDAQ-Trader authority (is_common_stock=True) overrides a wrong yfinance
+        # ETF/fund signal — the ROB-365 bug 5 NFLX-classified-as-etf case.
+        ("NFLX", "Netflix Inc.", "fund", "ETF", True, "common"),
+        # is_common_stock=False / None preserve the algorithmic classification.
+        ("SPY", "SPDR S&P 500 ETF Trust", "fund", "ETF", False, "etf"),
+        ("SPY", "SPDR S&P 500 ETF Trust", "fund", "ETF", None, "etf"),
+        ("BAC.PR.K", "Bank of America Preferred Series K", "stock", "", False, "preferred"),
+        ("AAPL", "Apple Inc.", "stock", "common stock", None, "common"),
+    ],
+)
+def test_classify_us_instrument_is_common_stock_authority(
+    symbol, name, type_, subtype, is_common, expected
+):
+    assert (
+        classify_us_instrument(symbol, name, type_, subtype, is_common_stock=is_common)
+        == expected
+    )
