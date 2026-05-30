@@ -31,7 +31,10 @@ from app.schemas.investment_snapshots import (
     SnapshotRunCreate,
 )
 from app.services.action_report.common.canonicalize import canonical_payload_hash
-from app.services.investment_snapshots.scope_policy import normalize_account_scope
+from app.services.investment_snapshots.scope_policy import (
+    ACCOUNT_INDEPENDENT_SNAPSHOT_KINDS,
+    normalize_account_scope,
+)
 
 
 class InvestmentSnapshotsRepository:
@@ -249,6 +252,37 @@ class InvestmentSnapshotsRepository:
         )
         result = await self._session.execute(stmt)
         return [(item, snap) for item, snap in result.all()]
+
+    async def list_account_independent_bundle_snapshots(
+        self, bundle_uuid: uuid.UUID
+    ) -> list[InvestmentSnapshot]:
+        """ROB-380 — account-independent snapshots linked to a bundle.
+
+        SELECT-only. Returns the ``market/news/candidate_universe/symbol``
+        snapshots (the kinds normalized to ``account_scope=NULL``) so the
+        mock_preview path can LINK them into a kis_mock bundle instead of
+        re-collecting them. Account-bound kinds are intentionally excluded.
+        """
+        stmt = (
+            sa.select(InvestmentSnapshot)
+            .join(
+                InvestmentSnapshotBundleItem,
+                InvestmentSnapshotBundleItem.snapshot_id == InvestmentSnapshot.id,
+            )
+            .join(
+                InvestmentSnapshotBundle,
+                InvestmentSnapshotBundle.id == InvestmentSnapshotBundleItem.bundle_id,
+            )
+            .where(
+                InvestmentSnapshotBundle.bundle_uuid == bundle_uuid,
+                InvestmentSnapshot.snapshot_kind.in_(
+                    tuple(ACCOUNT_INDEPENDENT_SNAPSHOT_KINDS)
+                ),
+            )
+            .order_by(InvestmentSnapshot.id.asc())
+        )
+        result = await self._session.scalars(stmt)
+        return list(result.all())
 
     async def list_bundles(
         self,
