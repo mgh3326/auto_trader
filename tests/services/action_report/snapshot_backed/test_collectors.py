@@ -1061,7 +1061,9 @@ async def test_market_collector_index_fetch_failure_is_soft():
 
 
 @pytest.mark.asyncio
-async def test_market_collector_crypto_emits_no_indices():
+async def test_market_collector_crypto_emits_no_indices_when_fn_returns_empty():
+    # ROB-377: crypto now fetches the CRYPTO symbol, but if the source returns
+    # empty (e.g. CoinGecko down), indices is still {} (fail-open).
     called = {"hit": False}
 
     async def fake_index_fn(symbols):
@@ -1073,7 +1075,33 @@ async def test_market_collector_crypto_emits_no_indices():
     )
     results = await collector.collect(_request(market="crypto"))
     assert results[0].payload_json.get("indices", {}) == {}
-    assert called["hit"] is False  # no index fetch for crypto
+    assert called["hit"] is True  # crypto now triggers index fetch (ROB-377)
+
+
+@pytest.mark.asyncio
+async def test_market_collector_crypto_populates_indices_dict():
+    # ROB-377 PR1: crypto market dimension gets a CRYPTO (total mcap) index so
+    # MarketStage no longer fails closed for crypto.
+    captured: dict = {}
+
+    async def fake_index_fn(symbols):
+        captured["symbols"] = list(symbols)
+        return [
+            {
+                "symbol": "CRYPTO",
+                "name": "암호화폐 총 시가총액",
+                "current": 2.31e12,
+                "change_pct": 1.85,
+            }
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="crypto"))
+    payload = results[0].payload_json
+    assert payload["indices"]["CRYPTO"]["change_percent"] == 1.85
+    assert "CRYPTO" in captured["symbols"]
 
 
 @pytest.mark.asyncio

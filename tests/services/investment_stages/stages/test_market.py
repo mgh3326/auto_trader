@@ -163,3 +163,46 @@ async def test_market_stage_unavailable_when_change_percent_none():
     )
     with pytest.raises(UnavailableStageError):
         await MarketStage().run(ctx)
+
+
+# --- ROB-377 PR1: crypto market dimension uses CRYPTO total-mcap index -------
+@pytest.mark.asyncio
+async def test_market_stage_crypto_selects_crypto_bull():
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "market": [_snapshot({"indices": {"CRYPTO": {"change_percent": 2.0}}})]
+        },
+        bundle_metadata={},
+        market="crypto",
+    )
+    payload = await MarketStage().run(ctx)
+    assert payload.verdict == StageVerdict.BULL
+    assert payload.cited_snapshots[0].payload_path == "$.indices.CRYPTO.change_percent"
+
+
+@pytest.mark.asyncio
+async def test_market_stage_crypto_selects_crypto_bear():
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "market": [_snapshot({"indices": {"CRYPTO": {"change_percent": -2.0}}})]
+        },
+        bundle_metadata={},
+        market="crypto",
+    )
+    payload = await MarketStage().run(ctx)
+    assert payload.verdict == StageVerdict.BEAR
+
+
+@pytest.mark.asyncio
+async def test_market_stage_crypto_unavailable_when_no_index():
+    # No CRYPTO index entry → still fail-closed (e.g. CoinGecko /global down).
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={"market": [_snapshot({"indices": {}})]},
+        bundle_metadata={},
+        market="crypto",
+    )
+    with pytest.raises(UnavailableStageError):
+        await MarketStage().run(ctx)
