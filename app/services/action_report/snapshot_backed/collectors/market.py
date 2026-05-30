@@ -40,11 +40,12 @@ _MARKET_TO_QUERY: dict[str, str | None] = {
 # ROB-366 B5 — per-market index symbol set populated into the ``indices`` key so
 # MarketStage can read a real index quote (it was previously a silent no-op for
 # every market). KR → KOSPI/KOSDAQ (Naver); US → S&P 500 / NASDAQ / Dow
-# (yfinance). Crypto has no index dimension.
+# (yfinance). Crypto → CRYPTO total market cap regime index via CoinGecko
+# (ROB-377).
 _MARKET_TO_INDEX_SYMBOLS: dict[str, list[str]] = {
     "kr": ["KOSPI", "KOSDAQ"],
     "us": ["SPX", "NASDAQ", "DJI"],
-    "crypto": [],
+    "crypto": ["CRYPTO"],
 }
 
 # A read-only callable: given index symbols, return one row per resolved index

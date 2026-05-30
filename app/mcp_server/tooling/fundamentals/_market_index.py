@@ -8,6 +8,7 @@ from typing import Any
 from app.mcp_server.tooling.fundamentals_sources_indices import (
     _DEFAULT_INDICES,
     _INDEX_META,
+    _fetch_index_crypto_current,
     _fetch_index_kr_current,
     _fetch_index_kr_history,
     _fetch_index_us_current,
@@ -41,15 +42,24 @@ async def handle_get_market_index(
                     _fetch_index_kr_current(meta["naver_code"], meta["name"]),
                     _fetch_index_kr_history(meta["naver_code"], capped_count, period),
                 )
-            else:
-                current_data, history = await asyncio.gather(
-                    _fetch_index_us_current(meta["yf_ticker"], meta["name"], sym),
-                    _fetch_index_us_history(meta["yf_ticker"], capped_count, period),
+                return {"indices": [current_data], "history": history}
+            if meta["source"] == "coingecko":
+                current_data = await _fetch_index_crypto_current(
+                    meta["cg_metric"], meta["name"], sym
                 )
+                return {"indices": [current_data], "history": []}
+            current_data, history = await asyncio.gather(
+                _fetch_index_us_current(meta["yf_ticker"], meta["name"], sym),
+                _fetch_index_us_history(meta["yf_ticker"], capped_count, period),
+            )
             return {"indices": [current_data], "history": history}
         except Exception as exc:
             return _error_payload(source=meta["source"], message=str(exc), symbol=sym)
 
+    # _DEFAULT_INDICES is equity-only (naver/yfinance) — coingecko symbols
+    # (CRYPTO/BTC.D) are fetched explicitly via the single-symbol path above and
+    # must never appear here (guarded by test_crypto_not_in_default_indices), so
+    # the naver/else(yfinance) split below is exhaustive for the default batch.
     tasks = []
     for idx_sym in _DEFAULT_INDICES:
         meta = _INDEX_META[idx_sym]

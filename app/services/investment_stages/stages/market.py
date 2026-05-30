@@ -17,11 +17,12 @@ _BEAR_THRESHOLD = -0.5
 
 # Per-market primary-index selection order. The stage drives its verdict off the
 # first index present with a usable change_percent. KR mirrors the legacy
-# single-KOSPI behaviour; US uses S&P 500 with NASDAQ/Dow fallback (ROB-366 B5).
+# single-KOSPI behaviour; US uses S&P 500 with NASDAQ/Dow fallback (ROB-366 B5);
+# crypto uses the CoinGecko total-market-cap regime index (ROB-377).
 _PRIMARY_INDEX_BY_MARKET: dict[str, tuple[str, ...]] = {
     "kr": ("KOSPI",),
     "us": ("SPX", "NASDAQ", "DJI"),
-    "crypto": (),
+    "crypto": ("CRYPTO",),
 }
 
 
