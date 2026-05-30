@@ -57,8 +57,20 @@ def classify_us_instrument(
     name: object,
     tvscreener_type: object,
     tvscreener_subtype: object,
+    is_common_stock: bool | None = None,
 ) -> InstrumentType:
-    """Classify US instruments into the public screen_stocks taxonomy."""
+    """Classify US instruments into the public screen_stocks taxonomy.
+
+    ``is_common_stock`` is the authoritative NASDAQ-Trader flag from
+    ``us_symbol_universe`` (ROB-204). When it is ``True`` it overrides the
+    yfinance-derived tokens, which intermittently mislabel a common stock as an
+    ETF/fund (ROB-365 bug 5, e.g. NFLX). ``False``/``None`` fall through to the
+    token-based classification (so genuine ETFs/preferred/REITs stay correct,
+    and unknown symbols are still best-effort classified).
+    """
+    if is_common_stock is True:
+        return "common"
+
     symbol_text = str(symbol or "").strip().upper()
     name_text = str(name or "").strip()
     type_text = str(tvscreener_type or "").strip()
