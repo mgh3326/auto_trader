@@ -45,7 +45,8 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "account_type defaults to 'live'; set to 'paper' for paper journals, "
             "or None to query both. "
             "account (optional) filters to a specific account name. "
-            "paperclip_issue_id (optional) reverse lookup by Paperclip issue ID."
+            "paperclip_issue_id (optional) reverse lookup by Paperclip issue ID. "
+            "enrich_live (optional, default False): fetch live quotes to compute current_price/pnl_pct_live/target_reached/stop_reached and near_target/near_stop. Slower (one quote per returned entry); fail-open per entry."
         ),
     )(get_trade_journal)
     _ = mcp.tool(

@@ -62,6 +62,46 @@ def _serialize_journal(j: TradeJournal) -> dict[str, Any]:
     }
 
 
+_LONG_SIDES = {"buy", "long"}
+_QUOTE_MARKET_BY_INSTRUMENT = {
+    InstrumentType.equity_us: "us",
+    InstrumentType.equity_kr: "kr",
+    InstrumentType.crypto: "crypto",
+}
+_NEAR_PCT = 1.5  # within ±1.5% of target/stop counts as "near"
+
+
+def _apply_live_enrich(
+    entry: dict[str, Any], *, current_price: float, side: str | None
+) -> None:
+    """Mutate ``entry`` in place with live target/stop/pnl judgements.
+
+    Pure: takes an already-fetched ``current_price`` so it is trivially
+    testable without network. Leaves a field ``None`` when its inputs are
+    missing rather than fabricating a value.
+    """
+    is_long = (side or "buy").strip().lower() in _LONG_SIDES
+    entry["current_price"] = current_price
+
+    entry_price = entry.get("entry_price")
+    if entry_price:
+        raw_pct = (current_price - entry_price) / entry_price * 100.0
+        entry["pnl_pct_live"] = raw_pct if is_long else -raw_pct
+    else:
+        entry["pnl_pct_live"] = None
+
+    target = entry.get("target_price")
+    if target is not None:
+        entry["target_reached"] = (
+            current_price >= target if is_long else current_price <= target
+        )
+    stop = entry.get("stop_loss")
+    if stop is not None:
+        entry["stop_reached"] = (
+            current_price <= stop if is_long else current_price >= stop
+        )
+
+
 async def save_trade_journal(
     symbol: str,
     thesis: str,
@@ -208,6 +248,7 @@ async def get_trade_journal(
     account_type: str | None = "live",
     account: str | None = None,
     paperclip_issue_id: str | None = None,
+    enrich_live: bool = False,
 ) -> dict[str, Any]:
     """Query trade journals. Call before any sell decision to check thesis and hold periods.
 
@@ -299,12 +340,41 @@ async def get_trade_journal(
                     entry["hold_remaining_days"] = None
                     entry["hold_expired"] = None
 
-                # Current price not fetched here (too slow for bulk queries)
-                # Caller can use get_quote separately
+                # Live enrichment is opt-in (per-entry quote is slow for bulk).
                 entry["current_price"] = None
                 entry["pnl_pct_live"] = None
                 entry["target_reached"] = None
                 entry["stop_reached"] = None
+                if enrich_live:
+                    market_alias = _QUOTE_MARKET_BY_INSTRUMENT.get(j.instrument_type)
+                    if market_alias is not None:
+                        from app.services.market_data.service import get_quote
+
+                        try:
+                            quote = await get_quote(j.symbol, market_alias)
+                        except Exception:  # fail-open per entry
+                            logger.debug(
+                                "enrich_live quote failed for %s",
+                                j.symbol,
+                                exc_info=True,
+                            )
+                        else:
+                            _apply_live_enrich(
+                                entry, current_price=quote.price, side=j.side
+                            )
+                            if j.status == JournalStatus.active:
+                                tgt = entry.get("target_price")
+                                stp = entry.get("stop_loss")
+                                if (
+                                    tgt
+                                    and abs(quote.price - tgt) / tgt * 100 <= _NEAR_PCT
+                                ):
+                                    near_target += 1
+                                if (
+                                    stp
+                                    and abs(quote.price - stp) / stp * 100 <= _NEAR_PCT
+                                ):
+                                    near_stop += 1
 
                 if j.status == JournalStatus.active:
                     total_active += 1
