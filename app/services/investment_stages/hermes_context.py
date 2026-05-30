@@ -50,6 +50,7 @@ from app.services.investment_dimensions.sentiment_evidence import (
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
+from app.services.investment_stages.market_session import derive_market_session
 from app.services.investment_stages.stages.base import (
     Stage,
     StageContext,
@@ -275,11 +276,16 @@ class HermesContextExporter:
             snapshot_bundle_uuid=bundle.bundle_uuid,
             bundle_status=bundle.status,
             market=bundle.market,
-            # ROB-366 B6 — the bundle has no session column; the persisted
-            # market_session lives on the stage run. Derive it from the latest
-            # run already loaded above (None when no run / none recorded — never
-            # computed from a clock, to avoid inventing a session).
-            market_session=run.market_session if run is not None else None,
+            # ROB-366 B6 / ROB-374 B6 — an operator/Hermes-recorded session on
+            # the latest stage run wins; otherwise derive it from the bundle's
+            # own ``as_of`` (a real captured market moment, not a wall-clock
+            # guess) so ``intraday_action_report_v1`` always carries a session
+            # when one is determinable. Unknown/closed instants stay ``None``.
+            market_session=(
+                run.market_session
+                if run is not None and run.market_session is not None
+                else derive_market_session(bundle.market, bundle.as_of)
+            ),
             account_scope=bundle.account_scope,
             policy_version=bundle.policy_version,
             coverage_summary=dict(bundle.coverage_summary or {}),

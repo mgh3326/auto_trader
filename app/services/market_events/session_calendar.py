@@ -15,7 +15,7 @@ labeling must never leak across a session it could not confirm is open.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,41 @@ def is_trading_session(market: Market, day: date) -> bool:
             exc_info=True,
         )
         return False
+
+
+def regular_session_bounds(
+    market: Market, day: date
+) -> tuple[datetime, datetime] | None:
+    """UTC ``(open, close)`` of the regular session on ``day``.
+
+    Returns ``None`` when ``day`` is not a confirmed trading session (weekend /
+    holiday / out of the calendar's range) or any calendar/library error occurs
+    (fail-closed, same contract as :func:`is_trading_session`). Early-close
+    half-days are honored — the bounds come straight from the library, which
+    models them (e.g. the day after US Thanksgiving closes at 13:00 ET).
+    """
+    import pandas as pd
+
+    try:
+        cal = _calendar(market)
+        session = pd.Timestamp(day)
+        if not cal.is_session(session):
+            return None
+        open_ts = cal.session_open(session)
+        close_ts = cal.session_close(session)
+    except (ValueError, KeyError):
+        return None
+    except Exception:  # noqa: BLE001 - fail-closed on any calendar/library error
+        logger.warning(
+            "session_calendar: unexpected error reading session bounds for %s %s; "
+            "treating as no session (fail-closed)",
+            market,
+            day,
+            exc_info=True,
+        )
+        return None
+    # ``session_open``/``session_close`` return tz-aware UTC pandas Timestamps.
+    return open_ts.to_pydatetime(), close_ts.to_pydatetime()
 
 
 def next_trading_session(market: Market, day: date) -> date | None:

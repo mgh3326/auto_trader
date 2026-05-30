@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -10,6 +10,7 @@ from app.services.market_events.session_calendar import (
     is_trading_session,
     next_trading_session,
     previous_trading_session,
+    regular_session_bounds,
     trading_sessions_in_range,
 )
 
@@ -82,6 +83,57 @@ def test_trading_sessions_in_range_out_of_bounds_is_empty():
 @pytest.mark.unit
 def test_trading_sessions_in_range_reversed_is_empty():
     assert trading_sessions_in_range("us", date(2025, 7, 8), date(2025, 7, 1)) == []
+
+
+@pytest.mark.unit
+def test_regular_session_bounds_us_returns_utc_open_close():
+    bounds = regular_session_bounds("us", date(2026, 5, 29))
+    assert bounds is not None
+    open_utc, close_utc = bounds
+    # XNYS regular 09:30-16:00 ET == 13:30-20:00 UTC on this date.
+    assert open_utc == datetime(2026, 5, 29, 13, 30, tzinfo=UTC)
+    assert close_utc == datetime(2026, 5, 29, 20, 0, tzinfo=UTC)
+
+
+@pytest.mark.unit
+def test_regular_session_bounds_honors_half_day_early_close():
+    # Day after US Thanksgiving closes early at 13:00 ET == 18:00 UTC.
+    bounds = regular_session_bounds("us", date(2025, 11, 28))
+    assert bounds is not None
+    _, close_utc = bounds
+    assert close_utc == datetime(2025, 11, 28, 18, 0, tzinfo=UTC)
+
+
+@pytest.mark.unit
+def test_regular_session_bounds_kr():
+    bounds = regular_session_bounds("kr", date(2026, 5, 29))
+    assert bounds is not None
+    open_utc, close_utc = bounds
+    # XKRX 09:00-15:30 KST == 00:00-06:30 UTC.
+    assert open_utc == datetime(2026, 5, 29, 0, 0, tzinfo=UTC)
+    assert close_utc == datetime(2026, 5, 29, 6, 30, tzinfo=UTC)
+
+
+@pytest.mark.unit
+def test_regular_session_bounds_weekend_and_holiday_are_none():
+    assert regular_session_bounds("us", date(2026, 5, 30)) is None  # Saturday
+    assert regular_session_bounds("us", date(2026, 5, 25)) is None  # Memorial Day
+
+
+@pytest.mark.unit
+def test_regular_session_bounds_out_of_range_fails_closed():
+    assert regular_session_bounds("us", date(2100, 1, 4)) is None
+
+
+@pytest.mark.unit
+def test_regular_session_bounds_unexpected_error_fails_closed(monkeypatch):
+    import app.services.market_events.session_calendar as sc
+
+    def _boom(_market):
+        raise RuntimeError("calendar load blew up")
+
+    monkeypatch.setattr(sc, "_calendar", _boom)
+    assert sc.regular_session_bounds("us", date(2026, 5, 29)) is None
 
 
 @pytest.mark.unit
