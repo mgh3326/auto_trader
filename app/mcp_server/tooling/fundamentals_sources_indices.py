@@ -20,6 +20,7 @@ _INDEX_META: dict[str, dict[str, str]] = {
     "NASDAQ": {"name": "NASDAQ Composite", "source": "yfinance", "yf_ticker": "^IXIC"},
     "DJI": {"name": "다우존스", "source": "yfinance", "yf_ticker": "^DJI"},
     "DOW": {"name": "다우존스", "source": "yfinance", "yf_ticker": "^DJI"},
+    "VIX": {"name": "CBOE 변동성지수(VIX)", "source": "yfinance", "yf_ticker": "^VIX"},
 }
 
 _DEFAULT_INDICES = ["KOSPI", "KOSDAQ", "SPX", "NASDAQ"]
