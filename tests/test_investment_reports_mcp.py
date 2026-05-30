@@ -510,3 +510,26 @@ async def test_generate_from_bundle_user_id_defaults_to_mcp_user(
     assert result["success"] is True
     assert result["resolved_user_id"] == expected
     assert captured["request"].user_id == expected
+
+
+@pytest.mark.asyncio
+async def test_context_get_includes_draft_when_include_draft_true(
+    session: AsyncSession,
+) -> None:
+    # 1. Create a draft report (by default status="draft" inside investment_report_create_impl)
+    r = await investment_report_create_impl(
+        items=[_action_item_dict()],
+        **_create_kwargs(kst_date="2026-05-18"),
+    )
+    # Draft is not published, so status remains "draft"
+
+    # 2. Get context with default include_draft=False
+    ctx_default = await investment_report_context_get_impl(market="kr")
+    assert len(ctx_default["prior_reports"]) == 0
+
+    # 3. Get context with include_draft=True
+    ctx_include = await investment_report_context_get_impl(
+        market="kr", include_draft=True
+    )
+    assert len(ctx_include["prior_reports"]) == 1
+    assert ctx_include["prior_reports"][0]["report_uuid"] == r["report"]["report_uuid"]

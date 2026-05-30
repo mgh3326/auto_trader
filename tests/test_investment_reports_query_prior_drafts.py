@@ -45,3 +45,25 @@ async def test_prior_reports_excludes_drafts(session: AsyncSession) -> None:
     titles = {r.title for r in ctx["prior_reports"]}
     assert titles == {"real-1", "real-2"}
     assert all(r.status != "draft" for r in ctx["prior_reports"])
+
+
+@pytest.mark.asyncio
+async def test_prior_reports_includes_drafts_if_requested(
+    session: AsyncSession,
+) -> None:
+    repo = InvestmentReportsRepository(session)
+    await _make_report(repo, key="pub:1", status="published", title="real-1")
+    await _make_report(repo, key="draft:1", status="draft", title="hermes-smoke-1")
+    await _make_report(repo, key="draft:2", status="draft", title="hermes-smoke-2")
+    await _make_report(repo, key="pub:2", status="published", title="real-2")
+
+    svc = InvestmentReportQueryService(session)
+    ctx = await svc.previous_report_context(
+        market="us",
+        account_scope="kis_live",
+        report_type="snapshot_backed_advisory_v1",
+        n_prior=4,
+        include_draft=True,
+    )
+    titles = {r.title for r in ctx["prior_reports"]}
+    assert titles == {"real-1", "real-2", "hermes-smoke-1", "hermes-smoke-2"}

@@ -248,6 +248,7 @@ class InvestmentReportQueryService:
         exclude_report_uuid: UUID | None = None,
         n_prior: int = 3,
         events_since: datetime | None = None,
+        include_draft: bool = False,
     ) -> dict[str, Any]:
         """Locked refinement #7 — previous context is a query, not a single FK.
 
@@ -272,7 +273,8 @@ class InvestmentReportQueryService:
             prior_reports = [
                 r for r in prior_reports if r.report_uuid != exclude_report_uuid
             ]
-        prior_reports = [r for r in prior_reports if r.status != "draft"]
+        if not include_draft:
+            prior_reports = [r for r in prior_reports if r.status != "draft"]
         prior_reports = prior_reports[:n_prior]
 
         prior_report_uuids = [r.report_uuid for r in prior_reports]
