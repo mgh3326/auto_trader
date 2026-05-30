@@ -159,7 +159,9 @@ async def _fetch_open_interest(symbol: str, period: str, limit: int) -> dict[str
         current_data = current_resp.json()
         hist_data = hist_resp.json()
 
-    current_oi = _to_optional_float((current_data or {}).get("openInterest"))
+    current_oi = _to_optional_float(
+        current_data.get("openInterest") if isinstance(current_data, dict) else None
+    )
 
     history: list[dict[str, Any]] = []
     for entry in hist_data if isinstance(hist_data, list) else []:

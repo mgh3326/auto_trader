@@ -4894,3 +4894,16 @@ class TestGetLongShortRatio:
         assert result.get("error")
         assert result.get("source") == "binance"
         assert "global_account" not in result
+
+    async def test_divergence_unavailable_when_a_leg_is_empty(self, monkeypatch):
+        tools = build_tools()
+        # global leg has data; top-position leg returns an empty list -> None leg.
+        global_resp = [self._row(1.5, 0.6, 0.4, 1707210000000)]
+        top_resp = []
+        self._patch_binance(monkeypatch, global_resp, top_resp)
+
+        result = await tools["get_long_short_ratio"]("BTC")
+
+        assert result["global_account"] is not None
+        assert result["top_position"] is None
+        assert "판단 불가" in result["divergence_note"]
