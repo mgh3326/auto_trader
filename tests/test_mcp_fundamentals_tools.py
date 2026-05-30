@@ -4506,6 +4506,7 @@ class TestFetchIndexCryptoCurrent:
         assert row["current"] == pytest.approx(2.31e12)
         assert row["change_pct"] == pytest.approx(1.85)
         assert row["source"] == "coingecko"
+        assert row["change"] is None
 
     async def test_btc_dominance_row_has_no_change_pct(self, monkeypatch):
         await self._patch_global(
@@ -4534,4 +4535,19 @@ class TestFetchIndexCryptoCurrent:
         with pytest.raises(RuntimeError, match="unavailable"):
             await fundamentals_sources_indices._fetch_index_crypto_current(
                 "total_market_cap", "암호화폐 총 시가총액", "CRYPTO"
+            )
+
+    async def test_unknown_cg_metric_raises(self, monkeypatch):
+        await self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 50.0,
+                "total_market_cap_change_24h": 1.0,
+                "total_market_cap_usd": 2.0e12,
+                "eth_dominance": 17.0,
+            },
+        )
+        with pytest.raises(ValueError, match="unknown cg_metric"):
+            await fundamentals_sources_indices._fetch_index_crypto_current(
+                "unsupported", "x", "X"
             )
