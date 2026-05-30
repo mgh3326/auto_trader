@@ -121,6 +121,62 @@ async def test_runner_projects_live_items_into_mock_preview_report(
     assert mock_items[0].apply_policy == "requires_user_approval"
 
 
+class _RaisingBridge:
+    """Stub bridge that always raises to simulate a transient KIS-mock failure."""
+
+    async def preview(self, params):  # noqa: ANN001
+        raise RuntimeError("simulated transient KIS-mock account read failure")
+
+
+@pytest.mark.asyncio
+async def test_runner_isolates_bridge_failure_as_per_item_error_sentinel(
+    db_session, seeded_live_report
+) -> None:
+    """A bridge failure must become a per-item error sentinel, not abort the report.
+
+    Invariants:
+    - The run still returns a report with at least one item.
+    - The BUY item's evidence_snapshot["mock_preview"]["status"] == "error".
+    - submit_enabled is False (never enabled on error).
+    - reason is the exception TYPE NAME only — no message/account values leaked.
+    """
+    runner = MockPreviewReportRunner(
+        db_session,
+        bridge=_RaisingBridge(),
+        ensure_service=_StubEnsureService(),
+    )
+    report, _reused, count = await runner.run(
+        live_report_uuid=seeded_live_report.report_uuid,
+        market="us",
+        market_session="regular",
+        policy_version="intraday_action_report_v1",
+        kst_date="2026-05-30",
+        created_by_profile="schedule",
+    )
+
+    assert count >= 1
+
+    repo = InvestmentReportsRepository(db_session)
+    mock_items = await repo.list_items_for_report(report.id)
+    assert mock_items
+
+    buy_item = next(
+        (i for i in mock_items if i.item_kind == "action" and i.side == "buy"),
+        None,
+    )
+    assert buy_item is not None, "expected a BUY action item in projected report"
+
+    mock_preview = buy_item.evidence_snapshot["mock_preview"]
+    assert mock_preview["status"] == "error"
+    assert mock_preview["submit_enabled"] is False
+
+    # reason must be the exception type name only — no message/args that could
+    # leak account identifiers or secret values.
+    reason = mock_preview["reason"]
+    assert reason == "RuntimeError"
+    assert "simulated" not in reason  # message must NOT appear
+
+
 @pytest.mark.asyncio
 async def test_runner_fail_closed_when_live_report_missing(db_session) -> None:
     runner = MockPreviewReportRunner(

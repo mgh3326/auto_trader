@@ -138,7 +138,14 @@ class MockPreviewReportRunner:
                     "submit_enabled": False,
                 }
             else:
-                evidence["mock_preview"] = await self._bridge.preview(params)
+                try:
+                    evidence["mock_preview"] = await self._bridge.preview(params)
+                except Exception as exc:  # noqa: BLE001 — isolate one item's failure
+                    evidence["mock_preview"] = {
+                        "status": "error",
+                        "reason": type(exc).__name__,
+                        "submit_enabled": False,
+                    }
 
         watch_condition = (
             WatchConditionPayload.model_validate(item.watch_condition)
