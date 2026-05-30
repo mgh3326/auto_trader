@@ -221,3 +221,41 @@ async def test_portfolio_journal_crypto_uses_krw():
     payload = await PortfolioJournalStage().run(ctx)
     assert "buying_power_krw=500,000" in (payload.summary or "")
     assert payload.cited_snapshots[0].payload_path == "$.buying_power.krw"
+
+
+@pytest.mark.asyncio
+async def test_portfolio_journal_crypto_nested_upbit_payload_yields_live_nav():
+    """ROB-369 E9 — the upbit_live collector now emits a *nested* payload
+    (cash.krw, buying_power.krw, holdings[].value_krw). NAV must reflect the
+    live Upbit eval instead of defaulting to 0 (the pre-fix bug that reported
+    "NAV=0, buying_power_krw=0" for a real ~25.75M KRW account)."""
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "portfolio": [
+                _snap(
+                    "portfolio",
+                    {
+                        "market": "crypto",
+                        "primary_source": "upbit",
+                        "cash": {"krw": 365_342.0, "usd": None},
+                        "buying_power": {"krw": 365_342.0, "usd": None},
+                        "holdings": [
+                            {"symbol": "BTC", "value_krw": 25_384_658.0},
+                        ],
+                    },
+                )
+            ],
+        },
+        bundle_metadata={},
+    )
+    payload = await PortfolioJournalStage().run(ctx)
+    # NAV = holdings 25,384,658 + cash 365,342 = 25,750,000 (live eval, not 0).
+    assert "NAV=25,750,000" in (payload.summary or "")
+    assert "NAV=0," not in (payload.summary or "")
+    assert "buying_power_krw=365,342" in (payload.summary or "")
+    assert payload.cited_snapshots[0].payload_path == "$.buying_power.krw"
+    # Low orderable vs a 25.75M book is now a TRUE signal (~1.4% < 5%),
+    # not the pre-fix 0/0 artifact.
+    assert payload.risk_evidence == ["buying_power < 5% NAV"]
+    assert payload.confidence == 40
