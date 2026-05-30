@@ -228,6 +228,9 @@ def _build_lsr_leg(data: Any, *, role: str) -> dict[str, Any] | None:
         ts = _to_optional_int(entry.get("timestamp"))
         if ts is None:
             continue
+        # Both globalLongShortAccountRatio and topLongShortPositionRatio return
+        # "longAccount"/"shortAccount" proportion fields; if Binance ever differentiates
+        # field names per endpoint, long_pct/short_pct would degrade to None (fail-soft).
         long_acc = _to_optional_float(entry.get("longAccount"))
         short_acc = _to_optional_float(entry.get("shortAccount"))
         history.append(
@@ -268,6 +271,9 @@ def _lsr_divergence_note(
         or top_leg.get("ratio") is None
     ):
         return "divergence 판단 불가 (일부 데이터 없음)"
+    # ratio == 1.0 is treated as "not long" (> 1 is False), so a rare both-legs-exactly-1.0
+    # case reads as same-side "aligned" — matches the spec's >1/==1/<1 convention; live
+    # float ratios essentially never equal exactly 1.0.
     g_long = global_leg["ratio"] > 1
     t_long = top_leg["ratio"] > 1
     if g_long == t_long:
