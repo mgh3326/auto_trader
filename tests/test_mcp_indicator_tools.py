@@ -919,7 +919,9 @@ async def test_get_indicators_us_degrades_to_close_with_stale_flag(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_support_resistance_us_positions_levels_against_live_price(monkeypatch):
+async def test_get_support_resistance_us_positions_levels_against_live_price(
+    monkeypatch,
+):
     """US get_support_resistance must position levels against the live price, not the OHLCV close (ROB-365 bug 1)."""
     from app.mcp_server.tooling.fundamentals import _support_resistance
 
