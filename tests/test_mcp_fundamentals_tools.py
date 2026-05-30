@@ -1892,6 +1892,67 @@ class TestGetMarketIndex:
 
         assert result["indices"][0]["symbol"] == "KOSPI"
 
+    def _patch_global(self, monkeypatch, data):
+        from app.mcp_server.tooling import fundamentals_sources_indices
+
+        async def fake_fetch():
+            return data
+
+        monkeypatch.setattr(
+            fundamentals_sources_indices, "fetch_btc_dominance", fake_fetch
+        )
+
+    async def test_crypto_total_market_cap(self, monkeypatch):
+        tools = build_tools()
+        self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+
+        result = await tools["get_market_index"](symbol="CRYPTO")
+
+        assert len(result["indices"]) == 1
+        idx = result["indices"][0]
+        assert idx["symbol"] == "CRYPTO"
+        assert idx["current"] == pytest.approx(2.31e12)
+        assert idx["change_pct"] == pytest.approx(1.85)
+        assert idx["source"] == "coingecko"
+        assert result["history"] == []
+
+    async def test_crypto_btc_dominance(self, monkeypatch):
+        tools = build_tools()
+        self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+
+        result = await tools["get_market_index"](symbol="BTC.D")
+
+        idx = result["indices"][0]
+        assert idx["symbol"] == "BTC.D"
+        assert idx["current"] == pytest.approx(52.3)
+        assert idx["change_pct"] is None
+
+    async def test_crypto_global_failure_returns_error_payload(self, monkeypatch):
+        tools = build_tools()
+        self._patch_global(monkeypatch, None)
+
+        result = await tools["get_market_index"](symbol="CRYPTO")
+
+        # fail-open: error payload, never fabricated values
+        assert "indices" not in result or not result.get("indices")
+        assert result.get("error") or result.get("source") == "coingecko"
+
 
 # ---------------------------------------------------------------------------
 # get_sector_peers Tool

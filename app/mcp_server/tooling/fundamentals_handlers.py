@@ -224,8 +224,11 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_market_index",
         description=(
-            "Get market index data. Supports KOSPI/KOSDAQ and major US indices. "
-            "Without symbol returns current major indices, with symbol adds OHLCV history."
+            "Get market index data. Supports KOSPI/KOSDAQ, major US indices "
+            "(SPX/NASDAQ/DJI/VIX), and crypto market regime "
+            "(CRYPTO=total market cap, BTC.D=BTC dominance via CoinGecko). "
+            "Without symbol returns current major equity indices, with symbol "
+            "adds OHLCV history (crypto has no history)."
         ),
     )
     async def get_market_index(
