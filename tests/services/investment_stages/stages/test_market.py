@@ -193,6 +193,7 @@ async def test_market_stage_crypto_selects_crypto_bear():
     )
     payload = await MarketStage().run(ctx)
     assert payload.verdict == StageVerdict.BEAR
+    assert payload.cited_snapshots[0].payload_path == "$.indices.CRYPTO.change_percent"
 
 
 @pytest.mark.asyncio

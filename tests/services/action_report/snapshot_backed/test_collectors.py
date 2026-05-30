@@ -1102,6 +1102,7 @@ async def test_market_collector_crypto_populates_indices_dict():
     payload = results[0].payload_json
     assert payload["indices"]["CRYPTO"]["change_percent"] == 1.85
     assert "CRYPTO" in captured["symbols"]
+    assert results[0].coverage_json["index_count"] == 1
 
 
 @pytest.mark.asyncio
