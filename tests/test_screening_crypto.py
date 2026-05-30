@@ -146,7 +146,8 @@ class TestCryptoScreeningPhases:
         assert all(row["symbol"].startswith("KRW-") for row in payload["results"])
         warnings = payload.get("warnings", [])
         assert not any("KRW-BTC ticker not found" in warning for warning in warnings)
-        assert (
-            "BTC 기준 데이터가 없어 급락 방어 필터를 기본값으로 적용했습니다."
-            in warnings
-        )
+        # ROB-369 B4 — the BTC-default crash-filter warning is only emitted when
+        # a crash candidate (≤ -30%) is present AND the KRW-BTC reference can't be
+        # recovered. KRW-IMX here is +36% (no crash candidate), so the reference
+        # is irrelevant and no warning is raised (previously it was noise).
+        assert not any("BTC 기준 데이터가 없어" in warning for warning in warnings)
