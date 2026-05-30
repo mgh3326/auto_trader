@@ -22,7 +22,7 @@ from app.services.action_report.common.snapshot_bundle import (
 from app.services.investment_snapshots.collectors import SnapshotCollectResult
 from app.services.investment_snapshots.repository import InvestmentSnapshotsRepository
 
-_FIXED_NOW = dt.datetime(2025, 1, 15, 9, 0, tzinfo=dt.timezone.utc)  # well in the past
+_FIXED_NOW = dt.datetime(2025, 1, 15, 9, 0, tzinfo=dt.UTC)  # well in the past
 
 
 def _frozen_clock():

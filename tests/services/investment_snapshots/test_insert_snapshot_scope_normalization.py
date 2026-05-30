@@ -5,7 +5,7 @@ import pytest
 from app.schemas.investment_snapshots import SnapshotCreate, SnapshotRunCreate
 from app.services.investment_snapshots.repository import InvestmentSnapshotsRepository
 
-_NOW = dt.datetime(2026, 5, 30, 9, 0, tzinfo=dt.timezone.utc)
+_NOW = dt.datetime(2026, 5, 30, 9, 0, tzinfo=dt.UTC)
 
 
 async def _new_run(repo: InvestmentSnapshotsRepository):
