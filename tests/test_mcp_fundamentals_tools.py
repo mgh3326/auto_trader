@@ -4612,3 +4612,148 @@ class TestFetchIndexCryptoCurrent:
             await fundamentals_sources_indices._fetch_index_crypto_current(
                 "unsupported", "x", "X"
             )
+
+
+@pytest.mark.asyncio
+class TestGetOpenInterest:
+    """ROB-377 PR2: get_open_interest (Binance USD-M, read-only)."""
+
+    def _patch_binance(self, monkeypatch, current_resp, hist_resp, captured=None):
+        class MockResponse:
+            def __init__(self, data):
+                self._data = data
+                self.status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if captured is not None:
+                    captured.append({"url": url, "params": params or {}})
+                if "openInterestHist" in url:
+                    return MockResponse(hist_resp)
+                return MockResponse(current_resp)
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+    async def test_successful_fetch(self, monkeypatch):
+        tools = build_tools()
+        current = {
+            "symbol": "BTCUSDT",
+            "openInterest": "120000.0",
+            "time": 1707235200000,
+        }
+        hist = [
+            {
+                "symbol": "BTCUSDT",
+                "sumOpenInterest": "100000.0",
+                "sumOpenInterestValue": "7000000000.0",
+                "timestamp": 1707206400000,
+            },
+            {
+                "symbol": "BTCUSDT",
+                "sumOpenInterest": "110000.0",
+                "sumOpenInterestValue": "7700000000.0",
+                "timestamp": 1707210000000,
+            },
+        ]
+        self._patch_binance(monkeypatch, current, hist)
+
+        result = await tools["get_open_interest"]("BTC")
+
+        assert result["symbol"] == "BTCUSDT"
+        assert result["current_open_interest"] == pytest.approx(120000.0)
+        assert result["period"] == "1h"
+        assert len(result["open_interest_history"]) == 2
+        assert result["open_interest_history"][0]["sum_open_interest"] == pytest.approx(
+            100000.0
+        )
+        assert result["open_interest_history"][-1][
+            "sum_open_interest"
+        ] == pytest.approx(110000.0)
+        assert result["oi_change_pct"] == pytest.approx(10.0)
+        assert "증가" in result["interpretation"]
+
+    async def test_oi_change_null_when_insufficient_history(self, monkeypatch):
+        tools = build_tools()
+        current = {
+            "symbol": "BTCUSDT",
+            "openInterest": "120000.0",
+            "time": 1707235200000,
+        }
+        hist = [
+            {
+                "symbol": "BTCUSDT",
+                "sumOpenInterest": "100000.0",
+                "sumOpenInterestValue": "7000000000.0",
+                "timestamp": 1707206400000,
+            },
+        ]
+        self._patch_binance(monkeypatch, current, hist)
+
+        result = await tools["get_open_interest"]("BTC")
+
+        assert result["oi_change_pct"] is None
+        assert "판단 불가" in result["interpretation"]
+
+    async def test_empty_symbol_raises(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_open_interest"]("")
+
+    async def test_invalid_period_raises(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="period"):
+            await tools["get_open_interest"]("BTC", period="7m")
+
+    async def test_limit_is_clamped(self, monkeypatch):
+        tools = build_tools()
+        current = {"symbol": "BTCUSDT", "openInterest": "1.0", "time": 1}
+        hist = []
+        captured: list = []
+        self._patch_binance(monkeypatch, current, hist, captured=captured)
+
+        await tools["get_open_interest"]("BTC", limit=9999)
+        hist_calls = [c for c in captured if "openInterestHist" in c["url"]]
+        assert hist_calls and hist_calls[0]["params"]["limit"] == 500
+
+        captured.clear()
+        await tools["get_open_interest"]("BTC", limit=0)
+        hist_calls = [c for c in captured if "openInterestHist" in c["url"]]
+        assert hist_calls and hist_calls[0]["params"]["limit"] == 1
+
+    async def test_error_handling(self, monkeypatch):
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                raise Exception("Binance API down")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+        result = await tools["get_open_interest"]("BTC")
+        assert result.get("error")
+        assert result.get("source") == "binance"
+        assert "open_interest_history" not in result

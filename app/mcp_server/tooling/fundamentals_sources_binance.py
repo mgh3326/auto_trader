@@ -17,6 +17,20 @@ from app.mcp_server.tooling.shared import (
 
 BINANCE_PREMIUM_INDEX_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
 BINANCE_FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
+BINANCE_OPEN_INTEREST_URL = "https://fapi.binance.com/fapi/v1/openInterest"
+BINANCE_OPEN_INTEREST_HIST_URL = (
+    "https://fapi.binance.com/futures/data/openInterestHist"
+)
+
+
+def _oi_interpretation_text(oi_change_pct: float | None) -> str:
+    if oi_change_pct is None:
+        return "데이터 부족 — OI 추세 판단 불가"
+    if oi_change_pct > 0:
+        return "OI 증가 — 신규 포지션 유입 (추세 강화 가능)"
+    if oi_change_pct < 0:
+        return "OI 감소 — 포지션 청산/이탈"
+    return "OI 변동 없음"
 
 
 def _funding_interpretation_text(rate: float) -> str:
@@ -129,4 +143,62 @@ async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
         }
 
 
-__all__ = ["_fetch_funding_rate", "_fetch_funding_rate_batch"]
+async def _fetch_open_interest(symbol: str, period: str, limit: int) -> dict[str, Any]:
+    pair = f"{symbol.upper()}USDT"
+
+    async with httpx.AsyncClient(timeout=10) as cli:
+        current_resp, hist_resp = await asyncio.gather(
+            cli.get(BINANCE_OPEN_INTEREST_URL, params={"symbol": pair}),
+            cli.get(
+                BINANCE_OPEN_INTEREST_HIST_URL,
+                params={"symbol": pair, "period": period, "limit": limit},
+            ),
+        )
+        current_resp.raise_for_status()
+        hist_resp.raise_for_status()
+        current_data = current_resp.json()
+        hist_data = hist_resp.json()
+
+    current_oi = _to_optional_float((current_data or {}).get("openInterest"))
+
+    history: list[dict[str, Any]] = []
+    for entry in hist_data if isinstance(hist_data, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        ts = _to_optional_int(entry.get("timestamp"))
+        if ts is None:
+            continue
+        history.append(
+            {
+                "_ts": ts,
+                "time": datetime.datetime.fromtimestamp(
+                    ts / 1000, tz=datetime.UTC
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "sum_open_interest": _to_optional_float(entry.get("sumOpenInterest")),
+                "sum_open_interest_value_usd": _to_optional_float(
+                    entry.get("sumOpenInterestValue")
+                ),
+            }
+        )
+    history.sort(key=lambda e: e["_ts"])
+    for e in history:
+        del e["_ts"]
+
+    oi_change_pct: float | None = None
+    if len(history) >= 2:
+        first = history[0]["sum_open_interest"]
+        last = history[-1]["sum_open_interest"]
+        if first is not None and last is not None and first != 0:
+            oi_change_pct = round((last - first) / first * 100, 4)
+
+    return {
+        "symbol": pair,
+        "current_open_interest": current_oi,
+        "period": period,
+        "open_interest_history": history,
+        "oi_change_pct": oi_change_pct,
+        "interpretation": _oi_interpretation_text(oi_change_pct),
+    }
+
+
+__all__ = ["_fetch_funding_rate", "_fetch_funding_rate_batch", "_fetch_open_interest"]
