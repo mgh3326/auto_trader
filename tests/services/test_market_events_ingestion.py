@@ -49,6 +49,61 @@ FINNHUB_RESPONSE_ONE_ROW = {
 }
 
 
+async def _load_events(
+    db_session,
+    model,
+    *,
+    source,
+    category,
+    market,
+    event_date=None,
+    event_dates=None,
+    symbol=None,
+    symbols=None,
+    source_event_id=None,
+):
+    stmt = select(model).where(
+        model.source == source,
+        model.category == category,
+        model.market == market,
+    )
+    if event_date is not None:
+        stmt = stmt.where(model.event_date == event_date)
+    if event_dates is not None:
+        stmt = stmt.where(model.event_date.in_(tuple(event_dates)))
+    if symbol is not None:
+        stmt = stmt.where(model.symbol == symbol)
+    if symbols is not None:
+        stmt = stmt.where(model.symbol.in_(tuple(symbols)))
+    if source_event_id is not None:
+        stmt = stmt.where(model.source_event_id == source_event_id)
+    stmt = stmt.order_by(model.event_date, model.symbol)
+    return (await db_session.execute(stmt)).scalars().all()
+
+
+async def _load_partitions(
+    db_session,
+    model,
+    *,
+    source,
+    category,
+    market,
+    partition_date=None,
+    partition_dates=None,
+):
+    stmt = select(model).where(
+        model.source == source,
+        model.category == category,
+        model.market == market,
+    )
+    if partition_date is not None:
+        stmt = stmt.where(model.partition_date == partition_date)
+    if partition_dates is not None:
+        stmt = stmt.where(model.partition_date.in_(tuple(partition_dates)))
+    stmt = stmt.order_by(model.partition_date)
+    return (await db_session.execute(stmt)).scalars().all()
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_ingest_us_earnings_for_date_succeeds(db_session, monkeypatch):
@@ -65,14 +120,25 @@ async def test_ingest_us_earnings_for_date_succeeds(db_session, monkeypatch):
     assert result.event_count == 1
     fake.assert_awaited_once_with(None, "2026-05-07", "2026-05-07")
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = await _load_events(
+        db_session,
+        MarketEvent,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        event_date=date(2026, 5, 7),
+        symbol="IONQ",
+    )
     assert len(events) == 1
     assert events[0].symbol == "IONQ"
 
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=date(2026, 5, 7),
     )
     assert len(parts) == 1
     assert parts[0].status == "succeeded"
@@ -95,10 +161,13 @@ async def test_ingest_us_earnings_for_date_records_failure(db_session, monkeypat
     assert result.event_count == 0
     assert "read timeout" in (result.error or "")
 
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=date(2026, 5, 8),
     )
     assert len(parts) == 1
     assert parts[0].status == "failed"
@@ -119,12 +188,35 @@ async def test_ingest_us_earnings_for_date_is_idempotent(db_session, monkeypatch
     await ingestion.ingest_us_earnings_for_date(db_session, date(2026, 5, 7))
     await db_session.commit()
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    db_session.add(
+        MarketEvent(
+            category="earnings",
+            market="us",
+            symbol="AAPL",
+            event_date=date(2026, 5, 7),
+            source="finnhub",
+            source_event_id="unrelated::AAPL::2026-05-07",
+        )
+    )
+    await db_session.commit()
+
+    events = await _load_events(
+        db_session,
+        MarketEvent,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        event_date=date(2026, 5, 7),
+        symbol="IONQ",
+    )
     assert len(events) == 1
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=date(2026, 5, 7),
     )
     assert len(parts) == 1
     assert parts[0].status == "succeeded"
@@ -157,7 +249,16 @@ async def test_ingest_kr_disclosures_for_date_with_injected_fetcher(db_session):
     assert result.status == "succeeded"
     assert result.event_count == 1
 
-    rows = (await db_session.execute(select(MarketEvent))).scalars().all()
+    rows = await _load_events(
+        db_session,
+        MarketEvent,
+        source="dart",
+        category="earnings",
+        market="kr",
+        event_date=date(2026, 5, 7),
+        symbol="005930",
+        source_event_id="20260507000123",
+    )
     assert len(rows) == 1
     assert rows[0].source == "dart"
     assert rows[0].source_event_id == "20260507000123"
@@ -187,10 +288,13 @@ async def test_ingest_us_earnings_records_failure_when_upsert_fails(
 
     assert result.status == "failed"
     assert "database write failed" in (result.error or "")
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=date(2026, 5, 9),
     )
     assert len(parts) == 1
     assert parts[0].status == "failed"
@@ -235,7 +339,15 @@ async def test_ingest_economic_events_for_date_succeeds(db_session):
     assert result.status == "succeeded"
     assert result.event_count == 1
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = await _load_events(
+        db_session,
+        MarketEvent,
+        source="forexfactory",
+        category="economic",
+        market="global",
+        event_date=date(2026, 5, 13),
+        source_event_id=FF_ROW["source_event_id"],
+    )
     assert len(events) == 1
     e = events[0]
     assert e.category == "economic"
@@ -244,15 +356,26 @@ async def test_ingest_economic_events_for_date_succeeds(db_session):
     assert e.currency == "USD"
     assert e.importance == 3
 
-    values = (await db_session.execute(select(MarketEventValue))).scalars().all()
+    values = (
+        (
+            await db_session.execute(
+                select(MarketEventValue).where(MarketEventValue.event_id == e.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(values) == 1
     assert values[0].metric_name == "actual"
     assert values[0].unit == "%"
 
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="forexfactory",
+        category="economic",
+        market="global",
+        partition_date=date(2026, 5, 13),
     )
     assert len(parts) == 1
     assert parts[0].source == "forexfactory"
@@ -276,7 +399,15 @@ async def test_ingest_economic_events_is_idempotent(db_session):
         )
         await db_session.commit()
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = await _load_events(
+        db_session,
+        MarketEvent,
+        source="forexfactory",
+        category="economic",
+        market="global",
+        event_date=date(2026, 5, 13),
+        source_event_id=FF_ROW["source_event_id"],
+    )
     assert len(events) == 1
 
 
@@ -295,10 +426,13 @@ async def test_ingest_economic_events_records_failure(db_session):
     await db_session.commit()
 
     assert result.status == "failed"
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="forexfactory",
+        category="economic",
+        market="global",
+        partition_date=date(2026, 5, 13),
     )
     assert len(parts) == 1
     assert parts[0].status == "failed"
@@ -425,13 +559,24 @@ async def test_ingest_us_earnings_for_range_groups_by_date(db_session, monkeypat
     assert [r.status for r in results] == ["succeeded", "succeeded", "succeeded"]
     assert [r.event_count for r in results] == [2, 0, 1]
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = await _load_events(
+        db_session,
+        MarketEvent,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        event_dates=(date(2026, 5, 11), date(2026, 5, 13)),
+        symbols=("AAA", "BBB", "CCC"),
+    )
     assert sorted(e.symbol for e in events) == ["AAA", "BBB", "CCC"]
 
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_dates=(date(2026, 5, 11), date(2026, 5, 12), date(2026, 5, 13)),
     )
     parts_by_date = {p.partition_date: p for p in parts}
     assert set(parts_by_date.keys()) == {
@@ -473,10 +618,13 @@ async def test_ingest_us_earnings_for_range_skips_succeeded_by_default(
     assert results[0].status == "succeeded"
     assert results[0].event_count == 1
 
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_dates=(date(2026, 5, 11), date(2026, 5, 12), date(2026, 5, 13)),
     )
     parts_by_date = {p.partition_date: p for p in parts}
     assert parts_by_date[date(2026, 5, 11)].event_count == 1
@@ -565,9 +713,12 @@ async def test_ingest_us_earnings_for_range_429_is_fail_closed(db_session, monke
         )
     await db_session.rollback()
 
-    parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
-        .scalars()
-        .all()
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_dates=(date(2026, 5, 11), date(2026, 5, 12), date(2026, 5, 13)),
     )
     assert parts == []
