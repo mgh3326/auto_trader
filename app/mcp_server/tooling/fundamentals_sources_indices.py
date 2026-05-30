@@ -128,16 +128,85 @@ async def _fetch_index_kr_history(
     return history
 
 
+def _safe_fast_info_attr(info: Any, name: str) -> Any:
+    """Read a yfinance ``fast_info`` attribute without propagating its internals.
+
+    ROB-365 hotfix: ``getattr(info, name, default)`` only shields against
+    ``AttributeError``. yfinance's ``FastInfo`` computes values lazily on access
+    and can raise ``TypeError: 'NoneType' object is not subscriptable`` (and
+    similar) when the underlying price frame is missing — that propagates out of
+    ``getattr`` and crashes the caller. Treat any such failure as "unavailable".
+    """
+    if info is None:
+        return None
+    try:
+        return getattr(info, name, None)
+    except Exception:  # noqa: BLE001 — FastInfo internals can raise non-AttributeError
+        return None
+
+
+async def _index_current_from_history(yf_ticker: str) -> dict[str, Any] | None:
+    """Latest-history-row fallback for a US index current quote (ROB-365 hotfix).
+
+    Returns ``{current, previous_close, open, high, low, volume}`` from the most
+    recent daily history row (``previous_close`` from the prior row when present),
+    or ``None`` when history is empty/unavailable. Never raises.
+    """
+    try:
+        rows = await _fetch_index_us_history(yf_ticker, 2, "day")
+    except Exception:  # noqa: BLE001 — fallback must never raise
+        return None
+    if not rows:
+        return None
+    latest = rows[-1]
+    current = latest.get("close")
+    if current is None:
+        return None
+    return {
+        "current": current,
+        "previous_close": rows[-2].get("close") if len(rows) >= 2 else None,
+        "open": latest.get("open"),
+        "high": latest.get("high"),
+        "low": latest.get("low"),
+        "volume": latest.get("volume"),
+    }
+
+
 async def _fetch_index_us_current(
     yf_ticker: str, name: str, symbol: str
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    with yfinance_tracing_session() as session:
-        ticker_obj = yf.Ticker(yf_ticker, session=session)
-        info = await loop.run_in_executor(None, lambda: ticker_obj.fast_info)
+    # fast_info acquisition itself can fail (network / yfinance internals); never
+    # let it crash the current-quote path.
+    info: Any = None
+    try:
+        with yfinance_tracing_session() as session:
+            ticker_obj = yf.Ticker(yf_ticker, session=session)
+            info = await loop.run_in_executor(None, lambda: ticker_obj.fast_info)
+    except Exception:  # noqa: BLE001 — degrade to history fallback below
+        info = None
 
-    current = getattr(info, "last_price", None)
-    previous_close = getattr(info, "regular_market_previous_close", None)
+    current = _safe_fast_info_attr(info, "last_price")
+    previous_close = _safe_fast_info_attr(info, "regular_market_previous_close")
+    open_ = _safe_fast_info_attr(info, "open")
+    high = _safe_fast_info_attr(info, "day_high")
+    low = _safe_fast_info_attr(info, "day_low")
+    volume = _safe_fast_info_attr(info, "last_volume")
+    source = "yfinance"
+
+    # ROB-365 hotfix: when fast_info yields no current price (failed internally or
+    # returned None), fall back to the latest daily history row.
+    if current is None:
+        fallback = await _index_current_from_history(yf_ticker)
+        if fallback is not None:
+            current = fallback["current"]
+            if previous_close is None:
+                previous_close = fallback["previous_close"]
+            open_ = open_ if open_ is not None else fallback["open"]
+            high = high if high is not None else fallback["high"]
+            low = low if low is not None else fallback["low"]
+            volume = volume if volume is not None else fallback["volume"]
+            source = "yfinance_history_fallback"
 
     change: float | None = None
     change_pct: float | None = None
@@ -145,18 +214,26 @@ async def _fetch_index_us_current(
         change = round(current - previous_close, 2)
         change_pct = round((current - previous_close) / previous_close * 100, 2)
 
-    return {
+    result: dict[str, Any] = {
         "symbol": symbol,
         "name": name,
         "current": current,
         "change": change,
         "change_pct": change_pct,
-        "open": getattr(info, "open", None),
-        "high": getattr(info, "day_high", None),
-        "low": getattr(info, "day_low", None),
-        "volume": getattr(info, "last_volume", None),
-        "source": "yfinance",
+        "open": open_,
+        "high": high,
+        "low": low,
+        "volume": volume,
+        "source": source,
     }
+    # Fail-closed: neither fast_info nor history yielded a price -> explicit
+    # degraded result instead of raising.
+    if current is None:
+        result["unavailable"] = True
+        result["degraded_reason"] = (
+            "current quote unavailable: fast_info failed and no history fallback"
+        )
+    return result
 
 
 async def _fetch_index_us_history(
