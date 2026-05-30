@@ -420,6 +420,7 @@ async def investment_report_context_get_impl(
     report_type: str | None = None,
     exclude_report_uuid: str | None = None,
     n_prior: int = 3,
+    include_draft: bool = False,
 ) -> dict:
     capped = max(1, min(int(n_prior), 10))
     exclude_uuid = UUID(exclude_report_uuid) if exclude_report_uuid else None
@@ -432,6 +433,7 @@ async def investment_report_context_get_impl(
             report_type=report_type,
             exclude_report_uuid=exclude_uuid,
             n_prior=capped,
+            include_draft=include_draft,
         )
         # ROB-274 — enrich the response with the pending_orders snapshot so
         # next-report drafters see what's already open at the broker. The
@@ -743,7 +745,9 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         description=(
             "Return previous-report context for the next-report generator: "
             "prior_reports, unresolved_deferred_items, active_watches, "
-            "triggered_events, recent_decisions. n_prior clamped to 1..10."
+            "triggered_events, recent_decisions. n_prior clamped to 1..10. "
+            "include_draft (optional, default False): include draft reports as prior context. "
+            "advisory reports persist as draft, so set True to chain the next delta report off the latest advisory baseline."
         ),
     )(investment_report_context_get_impl)
     mcp.tool(
