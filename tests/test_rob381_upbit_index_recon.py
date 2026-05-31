@@ -70,11 +70,15 @@ def test_index_summary_exposes_regime_stats():
 
 @pytest.mark.unit
 def test_interval_change_rate_supports_breadth():
-    """interval_change_rate gives multi-period returns per market → breadth.
+    """interval_change_rate gives multi-period returns per market (observed schema).
 
-    This proves the *shape* a PR2 breadth calc would consume. In PR2 the breadth
-    fraction is derived from the official Open API ticker, not this robots-
-    disallowed crix endpoint (see verdict), but the schema is identical.
+    This fixture only *records the observed schema* of the robots-disallowed crix
+    endpoint — it is not a production input contract. PR2 does NOT consume this
+    shape: the default 24h breadth is derived from the official Open API
+    ``/v1/ticker`` (``signed_change_rate``, 24h only), and 7/30/90d breadth is a
+    separate PR2b built on official ``/v1/candles/days``. ``/v1/ticker`` does not
+    expose multi-period change rates, so PR2 must implement its own normalizer
+    against the official ticker/candles responses, whose fields differ from crix.
     """
     rows = _load("interval_change_rate_sample.json")
     assert isinstance(rows, list) and rows
