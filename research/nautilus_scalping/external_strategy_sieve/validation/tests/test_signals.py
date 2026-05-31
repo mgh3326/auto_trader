@@ -61,3 +61,22 @@ def test_bbrsi_v_shape_yields_long_round_trip():
     )
     assert len(trades) >= 1
     assert all(t.notional == 1000.0 for t in trades)
+
+
+def test_squeeze_momentum_runs_and_is_deterministic():
+    from external_strategy_sieve.validation.signals import squeeze_momentum_trades
+
+    closes = [100.0 + 0.05 * (i % 2) for i in range(40)] + _up_then_down(
+        30, 130.0, 100.0
+    )
+    bars = _bars_from_closes(closes)
+    trades = squeeze_momentum_trades(bars, length=20, bb_k=2.0, kc_mult=1.5)
+    assert squeeze_momentum_trades(bars) == squeeze_momentum_trades(bars)
+    assert isinstance(trades, list)
+
+
+def test_squeeze_flat_series_no_trades():
+    from external_strategy_sieve.validation.signals import squeeze_momentum_trades
+
+    bars = _bars_from_closes([100.0] * 60)
+    assert squeeze_momentum_trades(bars) == []

@@ -14,7 +14,15 @@ import families
 from families import REF_FEE_BPS, make_taker_trade
 from validated_gate import Trade
 
-from external_strategy_sieve.validation.indicators import atr, bollinger, closes_of, rsi
+from external_strategy_sieve.validation.indicators import (
+    atr,
+    bollinger,
+    closes_of,
+    ema,
+    keltner,
+    rsi,
+    sma,
+)
 
 
 def _round_trip(
@@ -152,3 +160,95 @@ def bbrsi_trades(
                 trades.append(trade)
             pos = None
     return trades
+
+
+def _sign(x: float) -> int:
+    return 1 if x > 0 else (-1 if x < 0 else 0)
+
+
+def squeeze_momentum_trades(
+    bars: Sequence[families.Bar],
+    length: int = 20,
+    bb_k: float = 2.0,
+    kc_mult: float = 1.5,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    """Clean-room TTM squeeze: release plus simplified close-SMA momentum."""
+    closes = closes_of(bars)
+    _bb_mid, upper_bb, lower_bb = bollinger(closes, length, bb_k)
+    _kc_mid, upper_kc, lower_kc = keltner(bars, length, kc_mult)
+    base = sma(closes, length)
+    momentum = [
+        closes[i] - base[i] if base[i] is not None else None
+        for i in range(len(bars))
+    ]
+    squeeze_on: list[bool | None] = [None] * len(bars)
+    for i in range(len(bars)):
+        if None in (upper_bb[i], lower_bb[i], upper_kc[i], lower_kc[i]):
+            continue
+        squeeze_on[i] = lower_bb[i] > lower_kc[i] and upper_bb[i] < upper_kc[i]
+
+    trades: list[Trade] = []
+    pos: tuple[str, float, int, int] | None = None
+    for i in range(1, len(bars)):
+        if squeeze_on[i] is None or squeeze_on[i - 1] is None or momentum[i] is None:
+            continue
+        mom_sign = _sign(momentum[i])
+        if pos is None:
+            if squeeze_on[i - 1] and not squeeze_on[i] and mom_sign != 0:
+                direction = "long" if mom_sign > 0 else "short"
+                pos = (direction, closes[i], bars[i].ts, mom_sign)
+        elif mom_sign != pos[3] and mom_sign != 0:
+            trade = _round_trip(
+                pos[0], pos[1], closes[i], pos[2], notional, ref_fee_bps
+            )
+            if trade:
+                trades.append(trade)
+            pos = None
+    return trades
+
+
+def range_filter_trades(
+    bars: Sequence[families.Bar],
+    period: int = 20,
+    mult: float = 1.0,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    """Clean-room smoothed range filter: trade flips on filter direction changes."""
+    closes = closes_of(bars)
+    diffs = [0.0] + [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    avg_range = ema(diffs, period)
+    smooth = [
+        None if avg_range[i] is None else avg_range[i] * mult for i in range(len(closes))
+    ]
+    direction: list[str | None] = [None] * len(bars)
+    filt_prev: float | None = None
+    prev_dir = "long"
+    for i in range(len(bars)):
+        if smooth[i] is None:
+            continue
+        close = closes[i]
+        if filt_prev is None:
+            filt_prev = close
+            direction[i] = prev_dir
+            continue
+        rng = smooth[i]
+        if rng is None:
+            continue
+        if close > filt_prev + rng:
+            filt = close - rng
+        elif close < filt_prev - rng:
+            filt = close + rng
+        else:
+            filt = filt_prev
+        if filt > filt_prev:
+            next_dir = "long"
+        elif filt < filt_prev:
+            next_dir = "short"
+        else:
+            next_dir = prev_dir
+        direction[i] = next_dir
+        filt_prev, prev_dir = filt, next_dir
+    return _trades_from_direction(bars, direction, notional, ref_fee_bps)
