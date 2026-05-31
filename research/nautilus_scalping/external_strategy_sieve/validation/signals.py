@@ -1,0 +1,258 @@
+"""ROB-383 Phase 3 - clean-room signals to validated_gate Trades.
+
+Each signal turns a bar series into non-overlapping round-trip trades. Gross PnL
+is the realized close-to-close return on a fixed notional, recorded at
+``REF_FEE_BPS`` via ``families.make_taker_trade`` so ``cost_model`` rescales to
+any fee. Signals are clean-room reimplementations of public indicator concepts.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import families
+from families import REF_FEE_BPS, make_taker_trade
+from validated_gate import Trade
+
+from external_strategy_sieve.validation.indicators import (
+    atr,
+    bollinger,
+    closes_of,
+    ema,
+    keltner,
+    rsi,
+    sma,
+)
+
+
+def _round_trip(
+    direction: str,
+    entry_close: float,
+    exit_close: float,
+    ts: int,
+    notional: float,
+    ref_fee_bps: float,
+) -> Trade | None:
+    if entry_close <= 0:
+        return None
+    ret = (exit_close - entry_close) / entry_close
+    if direction == "short":
+        ret = -ret
+    return make_taker_trade(ret * notional, ts, notional, ref_fee_bps)
+
+
+def _trades_from_direction(
+    bars: Sequence[families.Bar],
+    direction: list[str | None],
+    notional: float,
+    ref_fee_bps: float,
+) -> list[Trade]:
+    """Open on first direction and realize a trade on each direction change."""
+    trades: list[Trade] = []
+    pos: tuple[str, float, int] | None = None
+    for i, d in enumerate(direction):
+        if d is None:
+            continue
+        if pos is None:
+            pos = (d, bars[i].close, bars[i].ts)
+            continue
+        if d != pos[0]:
+            trade = _round_trip(
+                pos[0], pos[1], bars[i].close, pos[2], notional, ref_fee_bps
+            )
+            if trade:
+                trades.append(trade)
+            pos = (d, bars[i].close, bars[i].ts)
+    return trades
+
+
+def supertrend_trades(
+    bars: Sequence[families.Bar],
+    atr_period: int = 10,
+    multiplier: float = 3.0,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    a = atr(bars, atr_period)
+    direction: list[str | None] = [None] * len(bars)
+    fu_prev = fl_prev = None
+    prev_dir = "long"
+    for i in range(len(bars)):
+        if a[i] is None:
+            continue
+        hl2 = (bars[i].high + bars[i].low) / 2.0
+        basic_upper = hl2 + multiplier * a[i]
+        basic_lower = hl2 - multiplier * a[i]
+        if fu_prev is None:
+            fu_prev, fl_prev = basic_upper, basic_lower
+            direction[i] = prev_dir
+            continue
+        c_prev = bars[i - 1].close
+        final_upper = (
+            basic_upper if basic_upper < fu_prev or c_prev > fu_prev else fu_prev
+        )
+        final_lower = (
+            basic_lower if basic_lower > fl_prev or c_prev < fl_prev else fl_prev
+        )
+        close = bars[i].close
+        if close > fu_prev:
+            next_dir = "long"
+        elif close < fl_prev:
+            next_dir = "short"
+        else:
+            next_dir = prev_dir
+        direction[i] = next_dir
+        fu_prev, fl_prev, prev_dir = final_upper, final_lower, next_dir
+    return _trades_from_direction(bars, direction, notional, ref_fee_bps)
+
+
+def chandelier_trades(
+    bars: Sequence[families.Bar],
+    atr_period: int = 22,
+    multiplier: float = 3.0,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    a = atr(bars, atr_period)
+    direction: list[str | None] = [None] * len(bars)
+    prev_dir = "long"
+    for i in range(len(bars)):
+        if a[i] is None or i < atr_period:
+            continue
+        window = bars[i - atr_period + 1 : i + 1]
+        highest_high = max(b.high for b in window)
+        lowest_low = min(b.low for b in window)
+        long_stop = highest_high - multiplier * a[i]
+        short_stop = lowest_low + multiplier * a[i]
+        close = bars[i].close
+        if close > short_stop:
+            next_dir = "long"
+        elif close < long_stop:
+            next_dir = "short"
+        else:
+            next_dir = prev_dir
+        direction[i] = next_dir
+        prev_dir = next_dir
+    return _trades_from_direction(bars, direction, notional, ref_fee_bps)
+
+
+def bbrsi_trades(
+    bars: Sequence[families.Bar],
+    bb_period: int = 20,
+    bb_k: float = 2.0,
+    rsi_period: int = 14,
+    rsi_oversold: float = 30.0,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    """Long-only mean reversion: lower Bollinger breach plus RSI oversold."""
+    closes = closes_of(bars)
+    mid, _upper, lower = bollinger(closes, bb_period, bb_k)
+    r = rsi(closes, rsi_period)
+    trades: list[Trade] = []
+    pos: tuple[float, int] | None = None
+    for i in range(len(bars)):
+        if lower[i] is None or r[i] is None or mid[i] is None:
+            continue
+        close = bars[i].close
+        if pos is None:
+            if close < lower[i] and r[i] < rsi_oversold:
+                pos = (close, bars[i].ts)
+        elif close >= mid[i]:
+            trade = _round_trip("long", pos[0], close, pos[1], notional, ref_fee_bps)
+            if trade:
+                trades.append(trade)
+            pos = None
+    return trades
+
+
+def _sign(x: float) -> int:
+    return 1 if x > 0 else (-1 if x < 0 else 0)
+
+
+def squeeze_momentum_trades(
+    bars: Sequence[families.Bar],
+    length: int = 20,
+    bb_k: float = 2.0,
+    kc_mult: float = 1.5,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    """Clean-room TTM squeeze: release plus simplified close-SMA momentum."""
+    closes = closes_of(bars)
+    _bb_mid, upper_bb, lower_bb = bollinger(closes, length, bb_k)
+    _kc_mid, upper_kc, lower_kc = keltner(bars, length, kc_mult)
+    base = sma(closes, length)
+    momentum = [
+        closes[i] - base[i] if base[i] is not None else None for i in range(len(bars))
+    ]
+    squeeze_on: list[bool | None] = [None] * len(bars)
+    for i in range(len(bars)):
+        if None in (upper_bb[i], lower_bb[i], upper_kc[i], lower_kc[i]):
+            continue
+        squeeze_on[i] = lower_bb[i] > lower_kc[i] and upper_bb[i] < upper_kc[i]
+
+    trades: list[Trade] = []
+    pos: tuple[str, float, int, int] | None = None
+    for i in range(1, len(bars)):
+        if squeeze_on[i] is None or squeeze_on[i - 1] is None or momentum[i] is None:
+            continue
+        mom_sign = _sign(momentum[i])
+        if pos is None:
+            if squeeze_on[i - 1] and not squeeze_on[i] and mom_sign != 0:
+                direction = "long" if mom_sign > 0 else "short"
+                pos = (direction, closes[i], bars[i].ts, mom_sign)
+        elif mom_sign != pos[3] and mom_sign != 0:
+            trade = _round_trip(
+                pos[0], pos[1], closes[i], pos[2], notional, ref_fee_bps
+            )
+            if trade:
+                trades.append(trade)
+            pos = None
+    return trades
+
+
+def range_filter_trades(
+    bars: Sequence[families.Bar],
+    period: int = 20,
+    mult: float = 1.0,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    """Clean-room smoothed range filter: trade flips on filter direction changes."""
+    closes = closes_of(bars)
+    diffs = [0.0] + [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    avg_range = ema(diffs, period)
+    smooth = [
+        None if avg_range[i] is None else avg_range[i] * mult
+        for i in range(len(closes))
+    ]
+    direction: list[str | None] = [None] * len(bars)
+    filt_prev: float | None = None
+    prev_dir = "long"
+    for i in range(len(bars)):
+        if smooth[i] is None:
+            continue
+        close = closes[i]
+        if filt_prev is None:
+            filt_prev = close
+            direction[i] = prev_dir
+            continue
+        rng = smooth[i]
+        if rng is None:
+            continue
+        if close > filt_prev + rng:
+            filt = close - rng
+        elif close < filt_prev - rng:
+            filt = close + rng
+        else:
+            filt = filt_prev
+        if filt > filt_prev:
+            next_dir = "long"
+        elif filt < filt_prev:
+            next_dir = "short"
+        else:
+            next_dir = prev_dir
+        direction[i] = next_dir
+        filt_prev, prev_dir = filt, next_dir
+    return _trades_from_direction(bars, direction, notional, ref_fee_bps)
