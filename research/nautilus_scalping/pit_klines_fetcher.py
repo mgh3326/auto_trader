@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROB-353 (PR1) — download Binance USDⓈ-M public klines dumps (1d, 1h).
+"""ROB-353 (PR1) — download Binance USDⓈ-M public klines dumps (1d, 1h, 5m).
 
 Pure stdlib. PUBLIC data only (data.binance.vision) — no keys, no auth, no orders.
 Each archive is verified against its sibling ``.CHECKSUM`` when published. Writes
@@ -9,6 +9,7 @@ Usage:
     uv run --no-project python pit_klines_fetcher.py --symbol EOSUSDT \\
         --interval 1d --from-month 2023-01 --to-month 2024-01
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,13 +23,15 @@ from pathlib import Path
 from artifact_paths import pit_data_root
 
 BASE = "https://data.binance.vision/data"
-SUPPORTED_INTERVALS = ("1d", "1h")
+SUPPORTED_INTERVALS = ("1d", "1h", "5m")
 _CHUNK = 1 << 16
 
 
 def kline_url(symbol, interval, year, month, market="um", cadence="monthly", day=None):
     if interval not in SUPPORTED_INTERVALS:
-        raise ValueError(f"unsupported interval {interval!r}; expected {SUPPORTED_INTERVALS}")
+        raise ValueError(
+            f"unsupported interval {interval!r}; expected {SUPPORTED_INTERVALS}"
+        )
     if cadence == "monthly":
         stem = f"{symbol}-{interval}-{year:04d}-{month:02d}"
         sub = f"futures/{market}/monthly/klines/{symbol}/{interval}"
@@ -78,7 +81,9 @@ def _months(from_month: str, to_month: str):
         cur += 1
 
 
-def fetch_months(symbol, interval, from_month, to_month, market="um", out_root=None) -> dict:
+def fetch_months(
+    symbol, interval, from_month, to_month, market="um", out_root=None
+) -> dict:
     out_root = Path(out_root) if out_root else pit_data_root()
     out_dir = out_root / "klines" / interval / symbol
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -102,20 +107,31 @@ def fetch_months(symbol, interval, from_month, to_month, market="um", out_root=N
             zf.extractall(out_dir)
         zip_path.unlink()
         downloaded += 1
-    return {"downloaded": downloaded, "skipped": skipped, "missing": missing, "dir": str(out_dir)}
+    return {
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "missing": missing,
+        "dir": str(out_dir),
+    }
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Download Binance USDⓈ-M public klines (1d/1h)")
+    ap = argparse.ArgumentParser(
+        description="Download Binance USDⓈ-M public klines (1d/1h/5m)"
+    )
     ap.add_argument("--symbol", required=True)
     ap.add_argument("--interval", choices=SUPPORTED_INTERVALS, required=True)
     ap.add_argument("--from-month", required=True, help="YYYY-MM")
     ap.add_argument("--to-month", required=True, help="YYYY-MM")
     ap.add_argument("--market", default="um")
     args = ap.parse_args(argv)
-    summary = fetch_months(args.symbol, args.interval, args.from_month, args.to_month, args.market)
-    print(f"done: {summary['downloaded']} downloaded, {summary['skipped']} skipped, "
-          f"{summary['missing']} missing -> {summary['dir']}")
+    summary = fetch_months(
+        args.symbol, args.interval, args.from_month, args.to_month, args.market
+    )
+    print(
+        f"done: {summary['downloaded']} downloaded, {summary['skipped']} skipped, "
+        f"{summary['missing']} missing -> {summary['dir']}"
+    )
     return 0
 
 

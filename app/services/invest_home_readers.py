@@ -227,7 +227,12 @@ class KISHomeReader:
                     )
                     if us_margin:
                         usd_balance = us_margin.get("frcr_dncl_amt1")
-                        usd_buying_power = us_margin.get("frcr_ord_psbl_amt1")
+                        # ROB-374 (B2): the orderable is the *general* order-possible
+                        # amount, the same field ``get_available_capital`` /
+                        # ``portfolio_cash`` / ``account.service`` read. The field-1
+                        # value (``frcr_ord_psbl_amt1``) can be 0 even when the account
+                        # has buying power, producing a false ``buying_power_usd=0``.
+                        usd_buying_power = us_margin.get("frcr_gnrl_ord_psbl_amt")
                 except Exception as exc:
                     logger.warning("KIS overseas margin fallback failed: %s", exc)
 

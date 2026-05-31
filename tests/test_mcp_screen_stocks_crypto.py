@@ -172,6 +172,265 @@ class TestScreenStocksCrypto:
         assert "volume" not in first
 
     @pytest.mark.asyncio
+    async def test_crypto_trade_amount_uses_upbit_value_when_tvscreener_null(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        """ROB-369 B4 — tvscreener VALUE_TRADED is null in production, so
+        ``trade_amount_24h`` defaulted to 0 for every crypto row. The Upbit
+        ticker's ``acc_trade_price_24h`` (거래대금) IS available and already
+        fetched; the screener now prefers it."""
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW"],
+                "name": ["BTCKRW"],
+                "description": ["Bitcoin TV"],
+                "price": [150_000_000.0],
+                "change_percent": [0.01],
+                "relative_strength_index_14": [45.5],
+                "average_directional_index_14": [25.3],
+                "volume_24h_in_usd": [156_000_000.0],
+                "value_traded": [None],  # tvscreener VALUE_TRADED null (the bug)
+                "market_cap": [2_500_000_000_000_000.0],
+                "exchange": ["UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC"]
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "acc_trade_volume_24h": 12_345.0,
+                    # Upbit 거래대금(24H) in KRW — confirmed present on the venue.
+                    "acc_trade_price_24h": 146_153_871_600.0,
+                }
+            ]
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            return set()
+
+        async def mock_market_cap_cache_get() -> dict[str, object]:
+            return {
+                "data": {},
+                "cached": True,
+                "age_seconds": 1.0,
+                "stale": False,
+                "error": None,
+            }
+
+        monkeypatch.setattr(
+            screening_crypto,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service, "fetch_multiple_tickers", mock_fetch_multiple_tickers
+        )
+        monkeypatch.setattr(
+            screening_crypto, "get_upbit_warning_markets", mock_warning_markets
+        )
+        monkeypatch.setattr(
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE, "get", mock_market_cap_cache_get
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {"korean_name": "비트코인", "english_name": "Bitcoin"}
+                }
+            ),
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="desc",
+            limit=1,
+        )
+        first = result["results"][0]
+        assert first["symbol"] == "KRW-BTC"
+        # Upbit 거래대금 is used instead of the null tvscreener value (was 0.0).
+        assert first["trade_amount_24h"] == pytest.approx(146_153_871_600.0)
+        assert first["volume_24h"] == pytest.approx(12_345.0)
+
+    def _btc_absent_tv_service(self):
+        """tvscreener result omitting KRW-BTC (only KRW-ETH, down 35% — a crash
+        candidate ≤ DROP_THRESHOLD of -30%)."""
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:ETHKRW"],
+                "name": ["ETHKRW"],
+                "description": ["Ethereum TV"],
+                "price": [5_000_000.0],
+                "change_percent": [-0.35],  # 35% drop → crash candidate
+                "relative_strength_index_14": [28.0],
+                "average_directional_index_14": [30.0],
+                "volume_24h_in_usd": [95_000_000.0],
+                "value_traded": [None],
+                "market_cap": [500_000_000_000_000.0],
+                "exchange": ["UPBIT"],
+            }
+        )
+        return tv_service
+
+    async def _empty_cache_get(self):
+        return {
+            "data": {},
+            "cached": True,
+            "age_seconds": 1.0,
+            "stale": False,
+            "error": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_crypto_crash_filter_recovers_btc_reference_via_ticker_fallback(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        """ROB-369 B4 — when tvscreener omits KRW-BTC, the crash filter fell back
+        to btc_change_24h=0.0, so a market-wide crash looked like an isolated
+        drop and the deep loser was wrongly filtered. The screener now fetches
+        the KRW-BTC ticker directly; with BTC down 15% (panic), the ETH 35% drop
+        is a market crash (not isolated) and survives."""
+        tv_service = self._btc_absent_tv_service()
+        calls: list[list[str]] = []
+
+        async def mock_fetch_multiple_tickers(market_codes):
+            calls.append(list(market_codes))
+            if list(market_codes) == ["KRW-BTC"]:
+                return [{"market": "KRW-BTC", "signed_change_rate": -0.15}]
+            return [{"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0}]
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            return set()
+
+        monkeypatch.setattr(
+            screening_crypto,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            screening_crypto, "TvScreenerService", lambda timeout=30.0: tv_service
+        )
+        monkeypatch.setattr(
+            upbit_service, "fetch_multiple_tickers", mock_fetch_multiple_tickers
+        )
+        monkeypatch.setattr(
+            screening_crypto, "get_upbit_warning_markets", mock_warning_markets
+        )
+        monkeypatch.setattr(
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE, "get", self._empty_cache_get
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-ETH": {"korean_name": "이더리움", "english_name": "Ethereum"}
+                }
+            ),
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="desc",
+            limit=5,
+        )
+        # The KRW-BTC fallback ticker fetch was attempted.
+        assert ["KRW-BTC"] in calls
+        # ETH survives — BTC down 15% means this is a market crash, not isolated.
+        assert len(result["results"]) == 1
+        assert result["results"][0]["symbol"] == "KRW-ETH"
+        assert result["meta"]["filtered_by_crash"] == 0
+        # No "BTC 기준 데이터가 없어" warning — the reference was recovered.
+        assert not any("BTC 기준" in w for w in result.get("warnings", []))
+
+    @pytest.mark.asyncio
+    async def test_crypto_crash_filter_btc_fallback_failure_degrades_gracefully(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        """ROB-369 B4 — when the KRW-BTC fallback fetch also fails, the screener
+        degrades to btc_change_24h=0.0 with the warning (the prior behaviour),
+        never crashing."""
+        tv_service = self._btc_absent_tv_service()
+        calls: list[list[str]] = []
+
+        async def mock_fetch_multiple_tickers(market_codes):
+            calls.append(list(market_codes))
+            if list(market_codes) == ["KRW-BTC"]:
+                raise RuntimeError("upbit ticker timeout")
+            return [{"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0}]
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            return set()
+
+        monkeypatch.setattr(
+            screening_crypto,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            screening_crypto, "TvScreenerService", lambda timeout=30.0: tv_service
+        )
+        monkeypatch.setattr(
+            upbit_service, "fetch_multiple_tickers", mock_fetch_multiple_tickers
+        )
+        monkeypatch.setattr(
+            screening_crypto, "get_upbit_warning_markets", mock_warning_markets
+        )
+        monkeypatch.setattr(
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE, "get", self._empty_cache_get
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "get_upbit_market_display_names",
+            AsyncMock(return_value={}),
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="desc",
+            limit=5,
+        )
+        # The fallback was attempted even though it failed.
+        assert ["KRW-BTC"] in calls
+        # Degrades to 0.0 reference → ETH 35% drop looks isolated → filtered.
+        assert result["meta"]["filtered_by_crash"] == 1
+        assert any("BTC 기준" in w for w in result.get("warnings", []))
+
+    @pytest.mark.asyncio
     async def test_crypto_coingecko_span_wraps_actual_fetch(
         self, fake_crypto_tvscreener_module, monkeypatch
     ):

@@ -107,6 +107,10 @@ class OverseasOrderClient:
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
+        exchange_code_normalized = _EXCHANGE_ALIAS_MAP.get(
+            str(exchange_code or "").strip().upper(),
+            str(exchange_code or "").strip().upper(),
+        )
 
         if order_type.lower() == "buy":
             tr_id = (
@@ -116,11 +120,17 @@ class OverseasOrderClient:
             )
             order_type_korean = "매수"
         elif order_type.lower() == "sell":
-            tr_id = (
-                constants.OVERSEAS_ORDER_SELL_TR_MOCK
-                if is_mock
-                else constants.OVERSEAS_ORDER_SELL_TR
-            )
+            if (
+                is_mock
+                and exchange_code_normalized in constants.OVERSEAS_US_EXCHANGE_CODES
+            ):
+                tr_id = constants.OVERSEAS_ORDER_SELL_TR_MOCK_US
+            else:
+                tr_id = (
+                    constants.OVERSEAS_ORDER_SELL_TR_MOCK
+                    if is_mock
+                    else constants.OVERSEAS_ORDER_SELL_TR
+                )
             order_type_korean = "매도"
         else:
             raise ValueError(

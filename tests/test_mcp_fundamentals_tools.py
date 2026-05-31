@@ -1715,6 +1715,23 @@ class TestGetMarketIndex:
         assert "history" in result
         assert len(result["history"]) == 5
 
+    async def test_single_us_index_vix(self, monkeypatch):
+        """VIX (^VIX) must be a supported index symbol so volatility can be read
+        through the MCP (ROB-365 bug 4)."""
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch, last_price=18.5, prev_close=17.2)
+        self._patch_yf_download(monkeypatch, rows=3)
+
+        result = await tools["get_market_index"](symbol="VIX")
+
+        assert "indices" in result
+        assert len(result["indices"]) == 1
+        idx = result["indices"][0]
+        assert idx["symbol"] == "VIX"
+        assert idx["source"] == "yfinance"
+        assert idx["current"] == pytest.approx(18.5)
+        assert "history" in result
+
     async def test_all_indices_no_symbol(self, monkeypatch):
         """Test fetching all major indices when no symbol specified."""
         tools = build_tools()
@@ -1874,6 +1891,67 @@ class TestGetMarketIndex:
         result = await tools["get_market_index"](symbol="  KOSPI  ")
 
         assert result["indices"][0]["symbol"] == "KOSPI"
+
+    def _patch_global(self, monkeypatch, data):
+        from app.mcp_server.tooling import fundamentals_sources_indices
+
+        async def fake_fetch():
+            return data
+
+        monkeypatch.setattr(
+            fundamentals_sources_indices, "fetch_btc_dominance", fake_fetch
+        )
+
+    async def test_crypto_total_market_cap(self, monkeypatch):
+        tools = build_tools()
+        self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+
+        result = await tools["get_market_index"](symbol="CRYPTO")
+
+        assert len(result["indices"]) == 1
+        idx = result["indices"][0]
+        assert idx["symbol"] == "CRYPTO"
+        assert idx["current"] == pytest.approx(2.31e12)
+        assert idx["change_pct"] == pytest.approx(1.85)
+        assert idx["source"] == "coingecko"
+        assert result["history"] == []
+
+    async def test_crypto_btc_dominance(self, monkeypatch):
+        tools = build_tools()
+        self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+
+        result = await tools["get_market_index"](symbol="BTC.D")
+
+        idx = result["indices"][0]
+        assert idx["symbol"] == "BTC.D"
+        assert idx["current"] == pytest.approx(52.3)
+        assert idx["change_pct"] is None
+
+    async def test_crypto_global_failure_returns_error_payload(self, monkeypatch):
+        tools = build_tools()
+        self._patch_global(monkeypatch, None)
+
+        result = await tools["get_market_index"](symbol="CRYPTO")
+
+        # fail-open: error payload, never fabricated values
+        assert "indices" not in result or not result.get("indices")
+        assert result.get("error") and result.get("source") == "coingecko"
 
 
 # ---------------------------------------------------------------------------
@@ -4075,6 +4153,17 @@ class TestIndexMeta:
             == fundamentals_sources_indices._INDEX_META["DOW"]["yf_ticker"]
         )
 
+    def test_crypto_indices_have_coingecko_source(self):
+        for sym in ("CRYPTO", "BTC.D"):
+            meta = fundamentals_sources_indices._INDEX_META[sym]
+            assert meta["source"] == "coingecko"
+            assert "cg_metric" in meta
+
+    def test_crypto_not_in_default_indices(self):
+        # Crypto is fetched explicitly, never in the no-arg equity default list.
+        for sym in ("CRYPTO", "BTC.D"):
+            assert sym not in fundamentals_sources_indices._DEFAULT_INDICES
+
 
 # ---------------------------------------------------------------------------
 # TestCalculateFibonacci
@@ -4442,3 +4531,379 @@ class TestGetInvestorTrends:
         result = await tools["get_investor_trends"]("005930")
 
         assert "error" in result or "message" in result
+
+
+# ---------------------------------------------------------------------------
+# TestFetchIndexCryptoCurrent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestFetchIndexCryptoCurrent:
+    """ROB-377 PR1: crypto market-regime index rows from CoinGecko /global."""
+
+    async def _patch_global(self, monkeypatch, data):
+        async def fake_fetch():
+            return data
+
+        monkeypatch.setattr(
+            fundamentals_sources_indices, "fetch_btc_dominance", fake_fetch
+        )
+
+    async def test_crypto_total_market_cap_row(self, monkeypatch):
+        await self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+        row = await fundamentals_sources_indices._fetch_index_crypto_current(
+            "total_market_cap", "암호화폐 총 시가총액", "CRYPTO"
+        )
+        assert row["symbol"] == "CRYPTO"
+        assert row["current"] == pytest.approx(2.31e12)
+        assert row["change_pct"] == pytest.approx(1.85)
+        assert row["source"] == "coingecko"
+        assert row["change"] is None
+
+    async def test_btc_dominance_row_has_no_change_pct(self, monkeypatch):
+        await self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 52.3,
+                "total_market_cap_change_24h": 1.85,
+                "total_market_cap_usd": 2.31e12,
+                "eth_dominance": 17.2,
+            },
+        )
+        row = await fundamentals_sources_indices._fetch_index_crypto_current(
+            "btc_dominance", "BTC 도미넌스", "BTC.D"
+        )
+        assert row["symbol"] == "BTC.D"
+        assert row["current"] == pytest.approx(52.3)
+        assert row["change_pct"] is None
+
+    async def test_raises_when_global_unavailable(self, monkeypatch):
+        async def fake_fetch():
+            return None
+
+        monkeypatch.setattr(
+            fundamentals_sources_indices, "fetch_btc_dominance", fake_fetch
+        )
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await fundamentals_sources_indices._fetch_index_crypto_current(
+                "total_market_cap", "암호화폐 총 시가총액", "CRYPTO"
+            )
+
+    async def test_unknown_cg_metric_raises(self, monkeypatch):
+        await self._patch_global(
+            monkeypatch,
+            {
+                "btc_dominance": 50.0,
+                "total_market_cap_change_24h": 1.0,
+                "total_market_cap_usd": 2.0e12,
+                "eth_dominance": 17.0,
+            },
+        )
+        with pytest.raises(ValueError, match="unknown cg_metric"):
+            await fundamentals_sources_indices._fetch_index_crypto_current(
+                "unsupported", "x", "X"
+            )
+
+
+@pytest.mark.asyncio
+class TestGetOpenInterest:
+    """ROB-377 PR2: get_open_interest (Binance USD-M, read-only)."""
+
+    def _patch_binance(self, monkeypatch, current_resp, hist_resp, captured=None):
+        class MockResponse:
+            def __init__(self, data):
+                self._data = data
+                self.status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if captured is not None:
+                    captured.append({"url": url, "params": params or {}})
+                if "openInterestHist" in url:
+                    return MockResponse(hist_resp)
+                return MockResponse(current_resp)
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+    async def test_successful_fetch(self, monkeypatch):
+        tools = build_tools()
+        current = {
+            "symbol": "BTCUSDT",
+            "openInterest": "120000.0",
+            "time": 1707235200000,
+        }
+        hist = [
+            {
+                "symbol": "BTCUSDT",
+                "sumOpenInterest": "100000.0",
+                "sumOpenInterestValue": "7000000000.0",
+                "timestamp": 1707206400000,
+            },
+            {
+                "symbol": "BTCUSDT",
+                "sumOpenInterest": "110000.0",
+                "sumOpenInterestValue": "7700000000.0",
+                "timestamp": 1707210000000,
+            },
+        ]
+        self._patch_binance(monkeypatch, current, hist)
+
+        result = await tools["get_open_interest"]("BTC")
+
+        assert result["symbol"] == "BTCUSDT"
+        assert result["current_open_interest"] == pytest.approx(120000.0)
+        assert result["period"] == "1h"
+        assert len(result["open_interest_history"]) == 2
+        assert result["open_interest_history"][0]["sum_open_interest"] == pytest.approx(
+            100000.0
+        )
+        assert result["open_interest_history"][-1][
+            "sum_open_interest"
+        ] == pytest.approx(110000.0)
+        assert result["oi_change_pct"] == pytest.approx(10.0)
+        assert "증가" in result["interpretation"]
+
+    async def test_oi_change_null_when_insufficient_history(self, monkeypatch):
+        tools = build_tools()
+        current = {
+            "symbol": "BTCUSDT",
+            "openInterest": "120000.0",
+            "time": 1707235200000,
+        }
+        hist = [
+            {
+                "symbol": "BTCUSDT",
+                "sumOpenInterest": "100000.0",
+                "sumOpenInterestValue": "7000000000.0",
+                "timestamp": 1707206400000,
+            },
+        ]
+        self._patch_binance(monkeypatch, current, hist)
+
+        result = await tools["get_open_interest"]("BTC")
+
+        assert result["oi_change_pct"] is None
+        assert "판단 불가" in result["interpretation"]
+
+    async def test_empty_symbol_raises(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_open_interest"]("")
+
+    async def test_invalid_period_raises(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="period"):
+            await tools["get_open_interest"]("BTC", period="7m")
+
+    async def test_limit_is_clamped(self, monkeypatch):
+        tools = build_tools()
+        current = {"symbol": "BTCUSDT", "openInterest": "1.0", "time": 1}
+        hist = []
+        captured: list = []
+        self._patch_binance(monkeypatch, current, hist, captured=captured)
+
+        await tools["get_open_interest"]("BTC", limit=9999)
+        hist_calls = [c for c in captured if "openInterestHist" in c["url"]]
+        assert hist_calls and hist_calls[0]["params"]["limit"] == 500
+
+        captured.clear()
+        await tools["get_open_interest"]("BTC", limit=0)
+        hist_calls = [c for c in captured if "openInterestHist" in c["url"]]
+        assert hist_calls and hist_calls[0]["params"]["limit"] == 1
+
+    async def test_error_handling(self, monkeypatch):
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                raise Exception("Binance API down")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+        result = await tools["get_open_interest"]("BTC")
+        assert result.get("error")
+        assert result.get("source") == "binance"
+        assert "open_interest_history" not in result
+
+    async def test_symbol_normalization(self, monkeypatch):
+        tools = build_tools()
+        current = {"symbol": "BTCUSDT", "openInterest": "1.0", "time": 1}
+        hist = []
+        self._patch_binance(monkeypatch, current, hist)
+
+        # KRW- prefix and USDT suffix both normalize to the BTCUSDT pair.
+        result_krw = await tools["get_open_interest"]("KRW-BTC")
+        assert result_krw["symbol"] == "BTCUSDT"
+
+        result_suffix = await tools["get_open_interest"]("BTCUSDT")
+        assert result_suffix["symbol"] == "BTCUSDT"
+
+
+@pytest.mark.asyncio
+class TestGetLongShortRatio:
+    """ROB-377 PR2: get_long_short_ratio (Binance USD-M, read-only)."""
+
+    def _patch_binance(self, monkeypatch, global_resp, top_resp, captured=None):
+        class MockResponse:
+            def __init__(self, data):
+                self._data = data
+                self.status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if captured is not None:
+                    captured.append({"url": url, "params": params or {}})
+                if "globalLongShortAccountRatio" in url:
+                    return MockResponse(global_resp)
+                return MockResponse(top_resp)
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+    def _row(self, ratio, long_acc, short_acc, ts):
+        return {
+            "symbol": "BTCUSDT",
+            "longShortRatio": str(ratio),
+            "longAccount": str(long_acc),
+            "shortAccount": str(short_acc),
+            "timestamp": ts,
+        }
+
+    async def test_successful_fetch_with_divergence(self, monkeypatch):
+        tools = build_tools()
+        global_resp = [
+            self._row(1.5, 0.60, 0.40, 1707206400000),
+            self._row(1.85, 0.649, 0.351, 1707210000000),
+        ]
+        top_resp = [
+            self._row(0.95, 0.487, 0.513, 1707206400000),
+            self._row(0.92, 0.479, 0.521, 1707210000000),
+        ]
+        self._patch_binance(monkeypatch, global_resp, top_resp)
+
+        result = await tools["get_long_short_ratio"]("BTC")
+
+        assert result["symbol"] == "BTCUSDT"
+        assert result["period"] == "1h"
+        assert result["global_account"]["ratio"] == pytest.approx(1.85)
+        assert result["global_account"]["long_pct"] == pytest.approx(64.9)
+        assert result["global_account"]["short_pct"] == pytest.approx(35.1)
+        assert len(result["global_account"]["history"]) == 2
+        assert "롱 우위" in result["global_account"]["interpretation"]
+        assert result["top_position"]["ratio"] == pytest.approx(0.92)
+        assert "숏 우위" in result["top_position"]["interpretation"]
+        assert "contrarian" in result["divergence_note"]
+
+    async def test_aligned_divergence_note(self, monkeypatch):
+        tools = build_tools()
+        global_resp = [self._row(1.4, 0.58, 0.42, 1707210000000)]
+        top_resp = [self._row(1.2, 0.545, 0.455, 1707210000000)]
+        self._patch_binance(monkeypatch, global_resp, top_resp)
+
+        result = await tools["get_long_short_ratio"]("BTC")
+        assert "정렬" in result["divergence_note"]
+
+    async def test_empty_symbol_raises(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_long_short_ratio"]("")
+
+    async def test_invalid_period_raises(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="period"):
+            await tools["get_long_short_ratio"]("BTC", period="3m")
+
+    async def test_limit_is_clamped(self, monkeypatch):
+        tools = build_tools()
+        captured: list = []
+        self._patch_binance(
+            monkeypatch,
+            [self._row(1.0, 0.5, 0.5, 1)],
+            [self._row(1.0, 0.5, 0.5, 1)],
+            captured=captured,
+        )
+        await tools["get_long_short_ratio"]("BTC", limit=9999)
+        assert captured and all(c["params"]["limit"] == 500 for c in captured)
+
+    async def test_error_handling(self, monkeypatch):
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                raise Exception("Binance API down")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+        result = await tools["get_long_short_ratio"]("BTC")
+        assert result.get("error")
+        assert result.get("source") == "binance"
+        assert "global_account" not in result
+
+    async def test_divergence_unavailable_when_a_leg_is_empty(self, monkeypatch):
+        tools = build_tools()
+        # global leg has data; top-position leg returns an empty list -> None leg.
+        global_resp = [self._row(1.5, 0.6, 0.4, 1707210000000)]
+        top_resp = []
+        self._patch_binance(monkeypatch, global_resp, top_resp)
+
+        result = await tools["get_long_short_ratio"]("BTC")
+
+        assert result["global_account"] is not None
+        assert result["top_position"] is None
+        assert "판단 불가" in result["divergence_note"]

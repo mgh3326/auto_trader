@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -71,6 +72,7 @@ def _make_bundle(*, status: str = "complete") -> SimpleNamespace:
         market="crypto",
         account_scope="upbit_live",
         policy_version="intraday_action_report_v1",
+        as_of=dt.datetime(2026, 5, 29, 19, 39, tzinfo=dt.UTC),
         coverage_summary={"news": {"status": "fresh"}},
         freshness_summary={"overall": "fresh"},
         status=status,

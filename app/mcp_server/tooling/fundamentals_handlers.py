@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from app.mcp_server.tooling.fundamentals._crypto import (
     handle_get_funding_rate,
     handle_get_kimchi_premium,
+    handle_get_long_short_ratio,
+    handle_get_open_interest,
 )
 from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_earnings_calendar,
@@ -29,6 +31,10 @@ from app.mcp_server.tooling.fundamentals._support_resistance import (
 )
 from app.mcp_server.tooling.fundamentals._support_resistance import (
     get_support_resistance_impl as _get_support_resistance_impl,
+)
+from app.mcp_server.tooling.fundamentals._upbit_index import (
+    handle_get_upbit_altseason,
+    handle_get_upbit_index,
 )
 from app.mcp_server.tooling.fundamentals._valuation import (
     handle_get_investment_opinions,
@@ -53,7 +59,11 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_short_interest",
     "get_kimchi_premium",
     "get_funding_rate",
+    "get_open_interest",
+    "get_long_short_ratio",
     "get_market_index",
+    "get_upbit_index",
+    "get_upbit_altseason",
     "get_support_resistance",
     "get_sector_peers",
 }
@@ -222,10 +232,46 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         return await handle_get_funding_rate(symbol, limit)
 
     @mcp.tool(
+        name="get_open_interest",
+        description=(
+            "Get Binance USD-M futures open interest for a crypto symbol: current "
+            "open interest plus recent history (sum OI and notional USD value) and "
+            "the OI change over the window. Read-only public Binance data. "
+            "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
+        ),
+    )
+    async def get_open_interest(
+        symbol: str,
+        period: str = "1h",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        return await handle_get_open_interest(symbol, period, limit)
+
+    @mcp.tool(
+        name="get_long_short_ratio",
+        description=(
+            "Get Binance USD-M long/short ratio for a crypto symbol: global account "
+            "ratio (retail sentiment) and top-trader position ratio (smart money), "
+            "each with current value, recent history, and a retail-vs-smart-money "
+            "divergence note. Read-only public Binance data. "
+            "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
+        ),
+    )
+    async def get_long_short_ratio(
+        symbol: str,
+        period: str = "1h",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        return await handle_get_long_short_ratio(symbol, period, limit)
+
+    @mcp.tool(
         name="get_market_index",
         description=(
-            "Get market index data. Supports KOSPI/KOSDAQ and major US indices. "
-            "Without symbol returns current major indices, with symbol adds OHLCV history."
+            "Get market index data. Supports KOSPI/KOSDAQ, major US indices "
+            "(SPX/NASDAQ/DJI/VIX), and crypto market regime "
+            "(CRYPTO=total market cap, BTC.D=BTC dominance via CoinGecko). "
+            "Without symbol returns current major equity indices, with symbol "
+            "adds OHLCV history (crypto has no history)."
         ),
     )
     async def get_market_index(
@@ -234,6 +280,35 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         count: int = 20,
     ) -> dict[str, Any]:
         return await handle_get_market_index(symbol, period, count)
+
+    @mcp.tool(
+        name="get_upbit_index",
+        description=(
+            "Get Upbit digital-asset indices (디지털 자산 지수): market indices "
+            "(UBMI=Upbit Market Index, UBAI=Upbit Altcoin Index, top-10/30) plus "
+            "sector/strategy/theme indices, each with current value, 24h change, "
+            "and yield/risk stats (daily~yearly yield, beta, sharpe, winRate). "
+            "Read-only public data from datalab-static. Optional category in "
+            "{market,sector,strategy,theme} filters the result."
+        ),
+    )
+    async def get_upbit_index(
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        return await handle_get_upbit_index(category)
+
+    @mcp.tool(
+        name="get_upbit_altseason",
+        description=(
+            "Get an Upbit altseason snapshot: the UBAI/UBMI ratio (altcoin index "
+            "vs market index) and 24h breadth (fraction of KRW-quoted alts beating "
+            "BTC over 24h, derived from the official Upbit ticker). Higher ratio + "
+            "higher breadth lean altseason. Read-only public data. Note: breadth is "
+            "24h only (multi-period breadth is a separate follow-up)."
+        ),
+    )
+    async def get_upbit_altseason() -> dict[str, Any]:
+        return await handle_get_upbit_altseason()
 
     @mcp.tool(
         name="get_support_resistance",

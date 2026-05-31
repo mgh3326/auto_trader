@@ -34,7 +34,9 @@ async def fetch_btc_dominance() -> dict[str, Any] | None:
     Returns:
         {
             "btc_dominance": float,  # BTC market cap percentage
-            "total_market_cap_change_24h": float  # 24h change %
+            "total_market_cap_change_24h": float | None,  # 24h change %
+            "total_market_cap_usd": float | None,  # total crypto market cap in USD
+            "eth_dominance": float | None,  # ETH market cap percentage
         }
         or None if fetch fails
     """
@@ -69,12 +71,21 @@ async def fetch_btc_dominance() -> dict[str, Any] | None:
             logger.warning("BTC dominance not found in CoinGecko response")
             return None
 
+        total_market_cap = (market_data.get("total_market_cap") or {}).get("usd")
+        eth_dominance = market_cap_pct.get("eth")
+
         result = {
             "btc_dominance": round(float(btc_dominance), 2),
             "total_market_cap_change_24h": (
                 round(float(market_cap_change), 2)
                 if market_cap_change is not None
                 else None
+            ),
+            "total_market_cap_usd": (
+                float(total_market_cap) if total_market_cap is not None else None
+            ),
+            "eth_dominance": (
+                round(float(eth_dominance), 2) if eth_dominance is not None else None
             ),
         }
 

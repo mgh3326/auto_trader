@@ -36,6 +36,8 @@ def test_repository_surface_only_inserts_and_links_and_reads():
     # guard above still rejects update_/delete_/etc.
     # ROB-275 added get_bundle_item_with_snapshot — a SELECT-only membership
     # check used by the report-centric evidence viewer.
+    # ROB-380 added list_account_independent_bundle_snapshots — a SELECT-only
+    # read used by the mock_preview reuse path. Still no mutation methods.
     assert public_methods == [
         "find_latest_bundle",
         "get_bundle_by_uuid",
@@ -46,6 +48,7 @@ def test_repository_surface_only_inserts_and_links_and_reads():
         "insert_run",
         "insert_snapshot",
         "link_bundle_item",
+        "list_account_independent_bundle_snapshots",
         "list_bundle_items_with_snapshots",
         "list_bundles",
         "list_snapshots",

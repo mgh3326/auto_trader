@@ -1511,3 +1511,75 @@ class TestScreenStocksTvScreenerContract:
 
         assert result["market"] == "us"
         assert "results" in result
+
+
+@pytest.mark.asyncio
+async def test_us_tvscreener_applies_is_common_stock_authority(monkeypatch):
+    """ROB-365 bug 5: the tvscreener (primary) US path corrects a yfinance/tvscreener
+    ETF mistag to 'common' using the us_symbol_universe.is_common_stock authority."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "NFLX",
+                "name": "Netflix Inc.",
+                "price": 1000.0,
+                "type": "fund",  # tvscreener glitch — NFLX is common stock
+                "subtype": "ETF",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        screening_us,
+        "_build_us_filters",
+        lambda **kwargs: {"columns": [], "where_conditions": [], "Market": object()},
+    )
+    monkeypatch.setattr(screening_us, "_execute_us_query", AsyncMock(return_value=df))
+    monkeypatch.setattr(
+        screening_us,
+        "get_us_common_stock_flags",
+        AsyncMock(return_value={"NFLX": True}),
+    )
+
+    result = await screening_us._screen_us_via_tvscreener(market="us", limit=10)
+
+    assert result.get("error") is None
+    nflx = next(s for s in result["stocks"] if s.get("symbol") == "NFLX")
+    assert nflx["instrument_type"] == "common"
+
+
+@pytest.mark.asyncio
+async def test_us_tvscreener_is_common_stock_lookup_is_fail_soft(monkeypatch):
+    """If the is_common_stock universe lookup raises, the tvscreener path falls back
+    to algorithmic classification rather than crashing (ROB-365 bug 5)."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "SPY",
+                "name": "SPDR S&P 500 ETF Trust",
+                "price": 500.0,
+                "type": "fund",
+                "subtype": "ETF",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        screening_us,
+        "_build_us_filters",
+        lambda **kwargs: {"columns": [], "where_conditions": [], "Market": object()},
+    )
+    monkeypatch.setattr(screening_us, "_execute_us_query", AsyncMock(return_value=df))
+    monkeypatch.setattr(
+        screening_us,
+        "get_us_common_stock_flags",
+        AsyncMock(side_effect=RuntimeError("universe DB unavailable")),
+    )
+
+    result = await screening_us._screen_us_via_tvscreener(market="us", limit=10)
+
+    assert result.get("error") is None
+    spy = next(s for s in result["stocks"] if s.get("symbol") == "SPY")
+    assert spy["instrument_type"] == "etf"  # algorithmic classification preserved

@@ -31,6 +31,10 @@ from app.schemas.investment_snapshots import (
     SnapshotRunCreate,
 )
 from app.services.action_report.common.canonicalize import canonical_payload_hash
+from app.services.investment_snapshots.scope_policy import (
+    ACCOUNT_INDEPENDENT_SNAPSHOT_KINDS,
+    normalize_account_scope,
+)
 
 
 class InvestmentSnapshotsRepository:
@@ -93,21 +97,28 @@ class InvestmentSnapshotsRepository:
             f"{symbol_component}:{canonical_hash[:12]}"
         )
 
-        # 3. Dedup short-circuit — same canonical payload reuses the existing
+        # 3. ROB-373 — normalize account-independent kinds to scope=None so the
+        #    dedup key shares market/news/candidate/symbol rows across scopes.
+        effective_account_scope = normalize_account_scope(
+            payload.snapshot_kind, payload.account_scope
+        )
+
+        # 4. Dedup short-circuit — same canonical payload reuses the existing
         #    row across runs (intentional, see docstring above).
         existing = await self._session.scalar(
             sa.select(InvestmentSnapshot).where(
                 InvestmentSnapshot.canonical_payload_hash == canonical_hash,
                 InvestmentSnapshot.snapshot_kind == payload.snapshot_kind,
                 InvestmentSnapshot.market == payload.market,
-                InvestmentSnapshot.account_scope == payload.account_scope,
+                InvestmentSnapshot.account_scope == effective_account_scope,
             )
         )
         if existing is not None:
             return existing
 
-        # 4. Insert.
+        # 5. Insert.
         data = payload.model_dump(exclude={"run_uuid"})
+        data["account_scope"] = effective_account_scope
         row = InvestmentSnapshot(
             run_id=run.id,
             canonical_payload_hash=canonical_hash,
@@ -241,6 +252,37 @@ class InvestmentSnapshotsRepository:
         )
         result = await self._session.execute(stmt)
         return [(item, snap) for item, snap in result.all()]
+
+    async def list_account_independent_bundle_snapshots(
+        self, bundle_uuid: uuid.UUID
+    ) -> list[InvestmentSnapshot]:
+        """ROB-380 — account-independent snapshots linked to a bundle.
+
+        SELECT-only. Returns the ``market/news/candidate_universe/symbol``
+        snapshots (the kinds normalized to ``account_scope=NULL``) so the
+        mock_preview path can LINK them into a kis_mock bundle instead of
+        re-collecting them. Account-bound kinds are intentionally excluded.
+        """
+        stmt = (
+            sa.select(InvestmentSnapshot)
+            .join(
+                InvestmentSnapshotBundleItem,
+                InvestmentSnapshotBundleItem.snapshot_id == InvestmentSnapshot.id,
+            )
+            .join(
+                InvestmentSnapshotBundle,
+                InvestmentSnapshotBundle.id == InvestmentSnapshotBundleItem.bundle_id,
+            )
+            .where(
+                InvestmentSnapshotBundle.bundle_uuid == bundle_uuid,
+                InvestmentSnapshot.snapshot_kind.in_(
+                    tuple(ACCOUNT_INDEPENDENT_SNAPSHOT_KINDS)
+                ),
+            )
+            .order_by(InvestmentSnapshot.id.asc())
+        )
+        result = await self._session.scalars(stmt)
+        return list(result.all())
 
     async def list_bundles(
         self,

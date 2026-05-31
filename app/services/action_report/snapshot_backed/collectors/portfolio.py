@@ -3,8 +3,8 @@
 For the ROB-278 lockdown the collector emits a v2 payload that is
 **additive** over the legacy ``holdings``/``count``/``market`` shape:
 
-* ``primary_source``: ``"kis" | "manual" | "none"`` — explicit label so the
-  viewer/audit can tell which source backs the holdings.
+* ``primary_source``: ``"kis" | "upbit" | "manual" | "none"`` — explicit label
+  so the viewer/audit can tell which source backs the holdings.
 * ``reference_holdings``: manual rows surfaced when KIS live is primary, so
   manual/Toss entries remain visible for cross-check without being mislabeled
   as KIS live.
@@ -24,6 +24,14 @@ Policy invariants:
   default).
 * Non-(kis_live) combos preserve the v1 manual-primary behaviour and add
   the ``primary_source="manual"`` label only.
+
+ROB-369 E9 — ``market="crypto" + account_scope="upbit_live"`` reads the live
+Upbit account via ``UpbitHomeReader`` (``primary_source="upbit"``), mirroring
+the KIS-live path: live holdings + KRW cash/orderable are primary, manual
+``CRYPTO`` rows stay reference-only, and an Upbit failure yields
+``primary_source="none"`` / ``freshness="unavailable"``. Provenance uses
+``upbit_fetch_status``. Crypto has no sellable/pending-sell concept, so
+``sellable_summary`` is ``None``.
 
 ROB-297 — ``market="us" + account_scope="kis_live"`` is the canonical KIS
 overseas combo and takes the same KIS-live path as ``market="kr"``. The KR/US
@@ -98,7 +106,48 @@ def _manual_row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def _kis_holding_to_dict(h: Holding) -> dict[str, Any]:
+def _classify_fetch_status(
+    holdings_dicts: list[dict[str, Any]],
+    account: Any | None,
+    fetch_warnings: list[str],
+) -> str:
+    """Classify a live read-only fetch as ``ok`` / ``partial`` / ``failed``.
+
+    Shared by the KIS-live and Upbit-live paths so they stay in lockstep:
+
+    * ``failed`` — nothing usable returned (no holdings AND no account), or
+      warnings present with no holdings (data-quality gate).
+    * ``partial`` — holdings present but the reader flagged a warning.
+    * ``ok`` — holdings (and/or account) present with no warnings.
+    """
+    if not holdings_dicts and account is None:
+        return "failed"
+    if fetch_warnings and not holdings_dicts:
+        return "failed"
+    if fetch_warnings:
+        return "partial"
+    return "ok"
+
+
+def _krw_or_zero(value: float | None) -> float:
+    """Coerce an Upbit KRW figure to an explicit float.
+
+    The Upbit reader reports a missing KRW row as ``None``, which for Upbit
+    means the account genuinely holds 0 KRW (distinct from the KIS-overseas
+    case where ``None`` means cash is *unsupported*/unknown). Emitting an
+    explicit ``0.0`` keeps the portfolio stage's ``$.buying_power.krw`` citation
+    pointed at a real value instead of a null.
+    """
+    return float(value) if value is not None else 0.0
+
+
+def _reader_holding_to_dict(h: Holding) -> dict[str, Any]:
+    """Map a read-only :class:`Holding` to the snapshot dict shape.
+
+    Used by both the KIS-live (``h.source == "kis"``) and the Upbit-live
+    (``h.source == "upbit"``) paths; ``source`` is taken from the holding so
+    the audit trail records the real provenance rather than a hard-coded label.
+    """
     return {
         "ticker": h.symbol,
         "market": h.market,
@@ -115,7 +164,7 @@ def _kis_holding_to_dict(h: Holding) -> dict[str, Any]:
         "pnl_rate": h.pnlRate,
         "sellable_quantity": h.sellableQuantity,
         "pending_sell_quantity": h.pendingSellQuantity,
-        "source": "kis",
+        "source": h.source,
     }
 
 
@@ -130,11 +179,13 @@ class PortfolioSnapshotCollector:
         session: AsyncSession,
         *,
         kis_reader: Any | None = None,
+        upbit_reader: Any | None = None,
     ) -> None:
         self._session = session
-        # KISHomeReader is imported lazily to avoid pulling broker module
-        # graph into call sites that don't need KIS (tests, unit imports).
+        # Home readers are imported lazily to avoid pulling the broker module
+        # graph into call sites that don't need them (tests, unit imports).
         self._kis_reader = kis_reader
+        self._upbit_reader = upbit_reader
 
     def _get_kis_reader(self) -> Any:
         if self._kis_reader is not None:
@@ -143,6 +194,14 @@ class PortfolioSnapshotCollector:
 
         self._kis_reader = KISHomeReader(self._session)
         return self._kis_reader
+
+    def _get_upbit_reader(self) -> Any:
+        if self._upbit_reader is not None:
+            return self._upbit_reader
+        from app.services.invest_home_readers import UpbitHomeReader
+
+        self._upbit_reader = UpbitHomeReader(self._session)
+        return self._upbit_reader
 
     async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         market_types = _MARKET_TO_TYPES.get(request.market)
@@ -168,6 +227,11 @@ class PortfolioSnapshotCollector:
             "us",
         ):
             return await self._collect_kis_live(request, market_types, now=now)
+        # ROB-369 E9 — crypto + upbit_live reads the live Upbit account so the
+        # portfolio stage gets real NAV / cash / orderable instead of the
+        # manual-primary empty payload that produced "NAV=0".
+        if request.account_scope == "upbit_live" and request.market == "crypto":
+            return await self._collect_upbit_live(request, market_types, now=now)
         return await self._collect_manual_primary(request, market_types, now=now)
 
     async def _collect_manual_primary(
@@ -307,7 +371,7 @@ class PortfolioSnapshotCollector:
                 for h in (kis_result.holdings or [])
                 if h.market == holding_market_filter
             ]
-            kis_holdings_dicts = [_kis_holding_to_dict(h) for h in market_holdings]
+            kis_holdings_dicts = [_reader_holding_to_dict(h) for h in market_holdings]
             if kis_result.warning is not None:
                 fetch_warnings.append(
                     f"{kis_result.warning.source}: {kis_result.warning.message}"
@@ -337,14 +401,9 @@ class PortfolioSnapshotCollector:
                 "sellable_count": sellable_count,
                 "pending_sell_count": pending_sell_count,
             }
-            if not kis_holdings_dicts and account is None:
-                kis_fetch_status = "failed"
-            elif fetch_warnings and not kis_holdings_dicts:
-                kis_fetch_status = "failed"
-            elif fetch_warnings:
-                kis_fetch_status = "partial"
-            else:
-                kis_fetch_status = "ok"
+            kis_fetch_status = _classify_fetch_status(
+                kis_holdings_dicts, account, fetch_warnings
+            )
 
         if kis_fetch_status == "failed":
             primary_source = "none"
@@ -396,6 +455,149 @@ class PortfolioSnapshotCollector:
                     errors={
                         "reason_code": "kis_fetch_failed",
                         "reason": "KIS live portfolio fetch failed",
+                        "warnings": fetch_warnings,
+                        "errors": fetch_errors,
+                    },
+                )
+            ]
+
+        return [
+            build_result(
+                snapshot_kind=self.snapshot_kind,
+                market=request.market,
+                account_scope=request.account_scope,
+                payload=payload,
+                origin="auto_trader_db",
+                as_of=now,
+                freshness_status=freshness,
+                coverage=coverage,
+            )
+        ]
+
+    async def _collect_upbit_live(
+        self,
+        request: CollectorRequest,
+        market_types: tuple[MarketType, ...],
+        *,
+        now: dt.datetime,
+    ) -> list[SnapshotCollectResult]:
+        """Upbit live path for ``crypto + upbit_live`` (ROB-369 E9).
+
+        Mirrors ``_collect_kis_live``: live Upbit holdings + KRW cash/orderable
+        become ``primary_source="upbit"``; any manual ``CRYPTO`` rows surface
+        only via ``reference_holdings`` and are NEVER promoted to primary. An
+        Upbit fetch failure yields ``primary_source="none"`` with
+        ``freshness="unavailable"`` so the report's stale gate handles it.
+
+        Unlike KIS, Upbit uses global env credentials rather than a per-user
+        account, so ``user_id`` does not select an account and is not required
+        (passed through as ``0`` when absent, matching ``UpbitHomeReader``
+        usage in ``symbol_derivation``). Crypto positions are continuously
+        liquid, so there is no sellable/pending-sell concept — the payload
+        carries ``sellable_summary=None``.
+        """
+        manual_rows = await self._read_manual_rows(market_types)
+        reference_holdings = [_manual_row_to_dict(r) for r in manual_rows]
+
+        reader = self._get_upbit_reader()
+        fetch_warnings: list[str] = []
+        fetch_errors: list[str] = []
+        upbit_result: Any = None
+        try:
+            upbit_result = await reader.fetch(user_id=request.user_id or 0)
+        except Exception as exc:  # noqa: BLE001 — collector must never crash
+            logger.warning("Upbit read-only fetch failed: %s", exc, exc_info=True)
+            fetch_errors.append(f"{type(exc).__name__}: {exc}")
+
+        upbit_holdings_dicts: list[dict[str, Any]] = []
+        cash_payload: dict[str, Any] | None = None
+        buying_power_payload: dict[str, Any] | None = None
+        upbit_fetch_status: str
+        if upbit_result is None:
+            upbit_fetch_status = "failed"
+        else:
+            holdings = list(upbit_result.holdings or [])
+            upbit_holdings_dicts = [_reader_holding_to_dict(h) for h in holdings]
+            if upbit_result.warning is not None:
+                fetch_warnings.append(
+                    f"{upbit_result.warning.source}: {upbit_result.warning.message}"
+                )
+            account = next(iter(upbit_result.accounts or []), None)
+            if account is not None:
+                # Upbit reports a KRW-only account (no USD leg); surface both
+                # keys so the consumer contract matches the KIS payload shape.
+                # KRW is coerced to an explicit 0.0 (Upbit None = 0 KRW) so the
+                # portfolio citation never points at a null.
+                cash_payload = {
+                    "krw": _krw_or_zero(account.cashBalances.krw),
+                    "usd": account.cashBalances.usd,
+                }
+                buying_power_payload = {
+                    "krw": _krw_or_zero(account.buyingPower.krw),
+                    "usd": account.buyingPower.usd,
+                }
+            upbit_fetch_status = _classify_fetch_status(
+                upbit_holdings_dicts, account, fetch_warnings
+            )
+
+        if upbit_fetch_status == "failed":
+            primary_source = "none"
+            holdings_out: list[dict[str, Any]] = []
+            cash_payload = None
+            buying_power_payload = None
+            freshness = "unavailable"
+        else:
+            primary_source = "upbit"
+            holdings_out = upbit_holdings_dicts
+            freshness = "fresh" if upbit_fetch_status == "ok" else "partial"
+
+        payload: dict[str, Any] = {
+            "holdings": holdings_out,
+            "count": len(holdings_out),
+            "market": request.market,
+            "primary_source": primary_source,
+            "reference_holdings": reference_holdings,
+            "cash": cash_payload,
+            "buying_power": buying_power_payload,
+            "sellable_summary": None,
+            "provenance": {
+                "upbit_fetch_status": upbit_fetch_status,
+                "account_scope": request.account_scope,
+                "fetched_at": _iso(now),
+                "warnings": fetch_warnings,
+                "errors": fetch_errors,
+            },
+        }
+
+        coverage = {
+            "holdings_count": len(holdings_out),
+            "reference_count": len(reference_holdings),
+            "upbit_fetch_status": upbit_fetch_status,
+        }
+        # Surface the reader's dust (<5000 KRW) / inactive filtering so the
+        # snapshot NAV's divergence from the raw Upbit eval is auditable rather
+        # than a silent drop.
+        hidden_counts = getattr(upbit_result, "hidden_counts", None)
+        if hidden_counts is not None:
+            coverage["hidden_dust_count"] = getattr(hidden_counts, "upbitDust", 0)
+            coverage["hidden_inactive_count"] = getattr(
+                hidden_counts, "upbitInactive", 0
+            )
+
+        if freshness == "unavailable":
+            return [
+                build_result(
+                    snapshot_kind=self.snapshot_kind,
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    payload=payload,
+                    origin="auto_trader_db",
+                    as_of=now,
+                    freshness_status="unavailable",
+                    coverage=coverage,
+                    errors={
+                        "reason_code": "upbit_fetch_failed",
+                        "reason": "Upbit live portfolio fetch failed",
                         "warnings": fetch_warnings,
                         "errors": fetch_errors,
                     },

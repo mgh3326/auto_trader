@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pandas as pd
@@ -56,6 +57,8 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
+
+logger = logging.getLogger(__name__)
 
 _normalize_symbol_input = _normalize_symbol_input_impl
 _resolve_market_type = _resolve_market_type_impl
@@ -181,10 +184,49 @@ async def _get_us_rankings(
     return await _get_us_rankings_impl(ranking_type, limit, _map_us_row)
 
 
+async def _enrich_crypto_rankings_market_cap(rankings: list[dict[str, Any]]) -> None:
+    """ROB-369 B5 — fill ``market_cap`` from the shared CoinGecko cache.
+
+    Upbit rankings carry no market cap, so ``_map_crypto_row`` leaves it None.
+    This reuses the same cached CoinGecko source ``screen_stocks`` uses, matched
+    by the bare coin symbol (``KRW-BTC`` → ``BTC``). Best-effort: any failure
+    leaves ``market_cap`` None (honest, never fabricated). Only ``market_cap`` is
+    touched — the ranking row contract has no ``market_cap_rank`` field.
+    """
+    if not rankings:
+        return
+    try:
+        # Lazy imports avoid any module-load import cycle with the screener pkg.
+        from app.mcp_server.tooling.analysis_screen_crypto import (
+            _extract_market_symbol,
+        )
+        from app.mcp_server.tooling.screening.crypto import (
+            _run_crypto_coingecko_fetch,
+        )
+
+        payload = await _run_crypto_coingecko_fetch()
+        coingecko_data = payload.get("data") or {}
+        for row in rankings:
+            symbol = _extract_market_symbol(row.get("symbol"))
+            cap_data = coingecko_data.get(symbol) if symbol else None
+            if cap_data and cap_data.get("market_cap") is not None:
+                row["market_cap"] = cap_data.get("market_cap")
+    except Exception as exc:  # noqa: BLE001 — best-effort enrichment, fail open
+        logger.warning(
+            "crypto market_cap enrichment failed; market_cap left null (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+
+
 async def _get_crypto_rankings(
     ranking_type: str, limit: int
 ) -> tuple[list[dict[str, Any]], str]:
-    return await _get_crypto_rankings_impl(ranking_type, limit, _map_crypto_row)
+    rankings, source = await _get_crypto_rankings_impl(
+        ranking_type, limit, _map_crypto_row
+    )
+    await _enrich_crypto_rankings_market_cap(rankings)
+    return rankings, source
 
 
 def _calculate_pearson_correlation(x: list[float], y: list[float]) -> float:

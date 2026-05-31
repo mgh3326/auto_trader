@@ -15,6 +15,7 @@ from app.mcp_server.tooling.market_data_indicators import (
     _format_fibonacci_source,
     _split_support_resistance_levels,
 )
+from app.mcp_server.tooling.market_data_quotes import fetch_us_live_last_price
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
 )
@@ -56,6 +57,14 @@ async def get_support_resistance_impl(
                 raise ValueError(f"Missing required column: {col}")
 
         current_price = round(float(df["close"].iloc[-1]), 2)
+        current_price_source = "ohlcv_close"
+        if market_type == "equity_us":
+            # ROB-365 bug 1: position levels against the live intraday price,
+            # not the previous daily close (levels themselves stay historical).
+            live = await fetch_us_live_last_price(normalized_symbol)
+            if live is not None:
+                current_price = round(live, 2)
+                current_price_source = "yahoo_live"
         fib_result = _calculate_fibonacci(df, current_price)
         fib_result["symbol"] = normalized_symbol
 
@@ -122,12 +131,16 @@ async def get_support_resistance_impl(
             current_price,
         )
 
-        return {
+        result: dict[str, Any] = {
             "symbol": normalized_symbol,
             "current_price": round(current_price, 2),
             "supports": supports,
             "resistances": resistances,
         }
+        if market_type == "equity_us":
+            result["current_price_source"] = current_price_source
+            result["current_price_stale"] = current_price_source != "yahoo_live"
+        return result
     except Exception as exc:
         return _error_payload(
             source=source,

@@ -315,3 +315,58 @@ async def test_get_bundle_item_with_snapshot_returns_none_for_foreign_pair(
         bundle_uuid=bundle_uuid, snapshot_uuid=uuid.uuid4()
     )
     assert pair is None
+
+
+@pytest.mark.asyncio
+async def test_list_account_independent_bundle_snapshots(db_session) -> None:
+    """ROB-380 — returns only the bundle's account-independent (NULL-scope) snapshots."""
+    import uuid as _uuid
+
+    from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
+    from app.services.action_report.common.snapshot_bundle import (
+        SnapshotBundleEnsureService,
+    )
+    from app.services.investment_snapshots.collectors import SnapshotCollectResult
+    from app.services.investment_snapshots.repository import (
+        InvestmentSnapshotsRepository,
+    )
+
+    def _manual(kind: str, *, account_scope: str | None) -> SnapshotCollectResult:
+        return SnapshotCollectResult(
+            snapshot_kind=kind,  # type: ignore[arg-type]
+            market="us",  # type: ignore[arg-type]
+            account_scope=account_scope,  # type: ignore[arg-type]
+            source_kind="manual",
+            payload_json={"k": kind, "v": "x"},
+            as_of=dt.datetime(2025, 1, 15, 9, 0, tzinfo=dt.UTC),
+            freshness_status="fresh",
+        )
+
+    svc = SnapshotBundleEnsureService(
+        db_session, clock=lambda: dt.datetime(2025, 1, 15, 9, 0, tzinfo=dt.UTC)
+    )
+    resp = await svc.ensure(
+        EnsureBundleRequest(
+            purpose=f"rob380_read_{_uuid.uuid4().hex[:8]}",
+            market="us",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            mode="ensure_fresh",
+            manual_snapshots={
+                "market": [_manual("market", account_scope="kis_live")],
+                "news": [_manual("news", account_scope="kis_live")],
+                "portfolio": [_manual("portfolio", account_scope="kis_live")],
+                "journal": [_manual("journal", account_scope="kis_live")],
+                "watch_context": [_manual("watch_context", account_scope="kis_live")],
+            },
+        )
+    )
+    await db_session.commit()
+    assert resp.bundle_uuid is not None
+
+    repo = InvestmentSnapshotsRepository(db_session)
+    snaps = await repo.list_account_independent_bundle_snapshots(resp.bundle_uuid)
+    kinds = {s.snapshot_kind for s in snaps}
+    # market + news are account-independent → returned; portfolio/journal/watch are not.
+    assert kinds == {"market", "news"}
+    assert all(s.account_scope is None for s in snaps)

@@ -93,6 +93,36 @@ class InvestmentReportIngestionService:
         items = await self._repo.list_items_for_report(existing.id)
         return existing, len(items)
 
+    async def find_existing_report(
+        self,
+        *,
+        report_type: str,
+        market: str,
+        market_session: str | None,
+        account_scope: str | None,
+        execution_mode: str,
+        kst_date: str,
+        generator_version: str,
+    ) -> InvestmentReport | None:
+        """ROB-380 — resolve the report for this idempotency identity, or None.
+
+        Lets a caller (the mock_preview runner) learn whether
+        :meth:`ingest_with_outcome` will idempotently return an existing row
+        BEFORE it builds a snapshot bundle — so it never creates a bundle that
+        the idempotent-reuse return would orphan. Reuses the same ``report_key``
+        composition as the ingest path (no drift).
+        """
+        idempotency_key = report_key(
+            report_type=report_type,
+            market=market,
+            market_session=market_session,
+            account_scope=account_scope,
+            execution_mode=execution_mode,
+            kst_date=kst_date,
+            generator_version=generator_version,
+        )
+        return await self._repo.get_report_by_idempotency_key(idempotency_key)
+
     async def ingest(
         self,
         request: IngestReportRequest,

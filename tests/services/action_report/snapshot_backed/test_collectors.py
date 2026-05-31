@@ -331,46 +331,269 @@ async def test_portfolio_v2_kr_kis_live_exception_is_fail_closed():
     assert "boom" in payload["provenance"]["errors"][0]
 
 
-@pytest.mark.asyncio
-async def test_portfolio_v2_crypto_upbit_live_preserves_v1_manual_primary():
-    """ROB-278 — non-(kr+kis_live) combos unchanged: manual still primary."""
-    from app.models.manual_holdings import MarketType
-
-    class _CryptoRow:
-        ticker = "KRW-BTC"
-        market_type = MarketType.CRYPTO
-        quantity = 0.1
-        avg_price = 50_000_000
-        display_name = "비트코인"
-        updated_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
-
-    session = MagicMock()
-    scalars = MagicMock(all=MagicMock(return_value=[_CryptoRow()]))
-    session.execute = AsyncMock(
-        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
-    )
-    # KIS reader MUST NOT be called for upbit_live.
-    reader = MagicMock()
-    reader.fetch = AsyncMock(
-        side_effect=AssertionError("KIS reader called for non-kis_live request")
-    )
-    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
-    req = CollectorRequest(
+# ---------------------------------------------------------------------------
+# Portfolio v2 — ROB-369 E9: crypto + upbit_live reads the live Upbit account.
+#
+# Before ROB-369 the crypto/upbit_live combo fell through to the v1
+# manual-primary path, so the portfolio snapshot carried no live NAV / cash /
+# buying power. The Hermes portfolio stage then reported "NAV=0,
+# buying_power_krw=0" for a real Upbit account (eval ~25.75M KRW) and misfired
+# a "buying_power < 5% NAV" risk on a 0/0 artifact. The collector now routes
+# crypto+upbit_live to ``UpbitHomeReader`` (mirroring the KIS-live path): live
+# holdings + KRW cash/orderable become primary; manual CRYPTO rows stay
+# reference-only and are never promoted.
+# ---------------------------------------------------------------------------
+def _crypto_upbit_request(user_id: int | None = 1) -> CollectorRequest:
+    return CollectorRequest(
         market="crypto",
         account_scope="upbit_live",
         symbols=None,
         candidate_limit=None,
         policy_snapshot={},
-        user_id=None,
+        user_id=user_id,
     )
-    results = await collector.collect(req)
+
+
+def _manual_crypto_session(rows: list[Any] | None = None) -> MagicMock:
+    from app.models.manual_holdings import MarketType
+
+    class _ManualCryptoRow:
+        def __init__(
+            self,
+            ticker: str = "KRW-BTC",
+            quantity: float = 0.01,
+            avg_price: float = 40_000_000.0,
+        ) -> None:
+            self.ticker = ticker
+            self.market_type = MarketType.CRYPTO
+            self.quantity = quantity
+            self.avg_price = avg_price
+            self.display_name = ticker
+            self.updated_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
+
+    rows = rows if rows is not None else [_ManualCryptoRow()]
+    session = MagicMock()
+    scalars = MagicMock(all=MagicMock(return_value=rows))
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=scalars))
+    )
+    return session
+
+
+def _upbit_reader_with_holdings(
+    *,
+    warning: Any | None = None,
+    cash_krw: float | None = 365_342.0,
+    hidden_dust: int = 0,
+    hidden_inactive: int = 0,
+) -> MagicMock:
+    """UpbitHomeReader stub: one live BTC holding + KRW cash/orderable.
+
+    Upbit reports the same KRW figure for cash balance and buying power
+    (orderable), and never carries a USD leg — mirrors the real reader.
+    ``cash_krw=None`` models a KRW-less (all-coin) account; ``hidden_*`` model
+    the reader's dust/inactive filtering.
+    """
+    from app.schemas.invest_home import (
+        Account,
+        CashAmounts,
+        Holding,
+        InvestHomeHiddenCounts,
+    )
+    from app.services.invest_home_service import _SourceFetchResult
+
+    holding_btc = Holding(
+        holdingId="upbit:BTC",
+        accountId="upbit_account",
+        source="upbit",
+        accountKind="live",
+        symbol="BTC",
+        market="CRYPTO",
+        assetType="crypto",
+        assetCategory="crypto",
+        displayName="BTC",
+        quantity=0.235,
+        averageCost=90_000_000.0,
+        costBasis=21_150_000.0,
+        currency="KRW",
+        valueNative=25_384_658.0,
+        valueKrw=25_384_658.0,
+        pnlKrw=4_234_658.0,
+        pnlRate=0.20,
+        priceState="live",
+    )
+    account = Account(
+        accountId="upbit_account",
+        displayName="Upbit",
+        source="upbit",
+        accountKind="live",
+        includedInHome=True,
+        valueKrw=25_384_658.0,
+        costBasisKrw=21_150_000.0,
+        pnlKrw=4_234_658.0,
+        pnlRate=0.20,
+        cashBalances=CashAmounts(krw=cash_krw, usd=None),
+        buyingPower=CashAmounts(krw=cash_krw, usd=None),
+    )
+    hidden_counts = InvestHomeHiddenCounts()
+    hidden_counts.upbitDust = hidden_dust
+    hidden_counts.upbitInactive = hidden_inactive
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        return_value=_SourceFetchResult(
+            accounts=[account],
+            holdings=[holding_btc],
+            warning=warning,
+            hidden_counts=hidden_counts,
+        )
+    )
+    return reader
+
+
+def _upbit_reader_failed() -> MagicMock:
+    from app.schemas.invest_home import InvestHomeWarning
+    from app.services.invest_home_service import _SourceFetchResult
+
+    reader = MagicMock()
+    reader.fetch = AsyncMock(
+        return_value=_SourceFetchResult(
+            accounts=[],
+            holdings=[],
+            warning=InvestHomeWarning(source="upbit", message="upbit auth refused"),
+        )
+    )
+    return reader
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_crypto_upbit_live_success_populates_upbit_primary():
+    """ROB-369 E9 — Upbit live success: primary_source=upbit, live KRW NAV/cash,
+    manual CRYPTO rows surface as reference only (never promoted)."""
+    session = _manual_crypto_session()
+    upbit_reader = _upbit_reader_with_holdings()
+    # KIS reader MUST NOT be touched for upbit_live.
+    kis_reader = MagicMock()
+    kis_reader.fetch = AsyncMock(
+        side_effect=AssertionError("KIS reader called for upbit_live request")
+    )
+    collector = PortfolioSnapshotCollector(
+        session, kis_reader=kis_reader, upbit_reader=upbit_reader
+    )
+    results = await collector.collect(_crypto_upbit_request(user_id=1))
+    assert len(results) == 1
     payload = results[0].payload_json
     assert results[0].freshness_status == "fresh"
+    assert payload["primary_source"] == "upbit"
     assert payload["count"] == 1
-    assert payload["holdings"][0]["ticker"] == "KRW-BTC"
-    # New label is "manual" for non-KIS combos so payload always says where data came from.
-    assert payload.get("primary_source") == "manual"
-    reader.fetch.assert_not_called()
+    assert payload["holdings"][0]["ticker"] == "BTC"
+    assert payload["holdings"][0]["source"] == "upbit"
+    assert payload["holdings"][0]["value_krw"] == 25_384_658.0
+    # KRW cash + orderable surfaced — the E9 fix (not None/0).
+    assert payload["cash"]["krw"] == 365_342.0
+    assert payload["buying_power"]["krw"] == 365_342.0
+    # Crypto has no pending-sell concept on the reader.
+    assert payload["sellable_summary"] is None
+    # Manual CRYPTO row visible as reference, never promoted to primary.
+    assert len(payload["reference_holdings"]) == 1
+    assert payload["reference_holdings"][0]["ticker"] == "KRW-BTC"
+    assert payload["reference_holdings"][0]["source"] == "manual"
+    # Provenance.
+    assert payload["provenance"]["upbit_fetch_status"] == "ok"
+    assert payload["provenance"]["account_scope"] == "upbit_live"
+    upbit_reader.fetch.assert_awaited_once_with(user_id=1)
+    kis_reader.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_crypto_upbit_live_failure_does_not_promote_manual():
+    """ROB-369 E9 — Upbit fetch failure: primary_source=none, manual stays reference."""
+    session = _manual_crypto_session()
+    upbit_reader = _upbit_reader_failed()
+    collector = PortfolioSnapshotCollector(session, upbit_reader=upbit_reader)
+    results = await collector.collect(_crypto_upbit_request(user_id=1))
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "unavailable"
+    assert payload["primary_source"] == "none"
+    assert payload["holdings"] == []
+    assert payload["count"] == 0
+    assert payload["cash"] is None
+    assert payload["buying_power"] is None
+    # Manual remains visible as reference, never promoted to primary.
+    assert len(payload["reference_holdings"]) == 1
+    assert payload["reference_holdings"][0]["source"] == "manual"
+    assert payload["provenance"]["upbit_fetch_status"] == "failed"
+    assert "upbit" in str(payload["provenance"]["warnings"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_crypto_upbit_live_exception_is_fail_closed():
+    """ROB-369 E9 — UpbitHomeReader raising is treated like 'failed', not a crash."""
+    session = _manual_crypto_session()
+    upbit_reader = MagicMock()
+    upbit_reader.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+    collector = PortfolioSnapshotCollector(session, upbit_reader=upbit_reader)
+    results = await collector.collect(_crypto_upbit_request(user_id=1))
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "unavailable"
+    assert payload["primary_source"] == "none"
+    assert "boom" in payload["provenance"]["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_crypto_upbit_live_price_warning_is_partial():
+    """ROB-369 E9 — a price warning with live holdings → partial, still upbit primary."""
+    from app.schemas.invest_home import InvestHomeWarning
+
+    session = _manual_crypto_session()
+    upbit_reader = _upbit_reader_with_holdings(
+        warning=InvestHomeWarning(
+            source="upbit",
+            message="일부 코인은 현재가가 없어 평가금액에서 제외했습니다.",
+        )
+    )
+    collector = PortfolioSnapshotCollector(session, upbit_reader=upbit_reader)
+    results = await collector.collect(_crypto_upbit_request(user_id=1))
+    payload = results[0].payload_json
+    assert results[0].freshness_status == "partial"
+    assert payload["primary_source"] == "upbit"
+    assert payload["provenance"]["upbit_fetch_status"] == "partial"
+    assert payload["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_crypto_upbit_live_krw_less_account_emits_explicit_zero():
+    """ROB-369 E9 — a KRW-less (all-coin) Upbit account reports krw=None on the
+    reader. The collector must coerce to an explicit 0.0 (the honest value for
+    Upbit, unlike KIS-overseas None=unsupported) so the portfolio citation
+    ``$.buying_power.krw`` resolves to a real number, not null."""
+    session = _manual_crypto_session()
+    upbit_reader = _upbit_reader_with_holdings(cash_krw=None)
+    collector = PortfolioSnapshotCollector(session, upbit_reader=upbit_reader)
+    results = await collector.collect(_crypto_upbit_request(user_id=1))
+    payload = results[0].payload_json
+    # Successful fetch — a 0-KRW coin-only account is a complete, valid state.
+    assert results[0].freshness_status == "fresh"
+    assert payload["primary_source"] == "upbit"
+    # Explicit 0.0, never None — the citation must point at a real value.
+    assert payload["cash"]["krw"] == 0.0
+    assert payload["buying_power"]["krw"] == 0.0
+    assert payload["cash"]["krw"] is not None
+    assert payload["buying_power"]["krw"] is not None
+
+
+@pytest.mark.asyncio
+async def test_portfolio_v2_crypto_upbit_live_surfaces_hidden_dust_count():
+    """ROB-369 E9 — the reader hides dust (<5000 KRW) and inactive coins, so the
+    snapshot NAV undercounts the raw Upbit eval. Surface the hidden counts in
+    coverage so the divergence is auditable rather than silent."""
+    session = _manual_crypto_session()
+    upbit_reader = _upbit_reader_with_holdings(hidden_dust=3, hidden_inactive=2)
+    collector = PortfolioSnapshotCollector(session, upbit_reader=upbit_reader)
+    results = await collector.collect(_crypto_upbit_request(user_id=1))
+    coverage = results[0].coverage_json
+    assert coverage["hidden_dust_count"] == 3
+    assert coverage["hidden_inactive_count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +1061,9 @@ async def test_market_collector_index_fetch_failure_is_soft():
 
 
 @pytest.mark.asyncio
-async def test_market_collector_crypto_emits_no_indices():
+async def test_market_collector_crypto_emits_no_indices_when_fn_returns_empty():
+    # ROB-377: crypto now fetches the CRYPTO symbol, but if the source returns
+    # empty (e.g. CoinGecko down), indices is still {} (fail-open).
     called = {"hit": False}
 
     async def fake_index_fn(symbols):
@@ -850,7 +1075,34 @@ async def test_market_collector_crypto_emits_no_indices():
     )
     results = await collector.collect(_request(market="crypto"))
     assert results[0].payload_json.get("indices", {}) == {}
-    assert called["hit"] is False  # no index fetch for crypto
+    assert called["hit"] is True  # crypto now triggers index fetch (ROB-377)
+
+
+@pytest.mark.asyncio
+async def test_market_collector_crypto_populates_indices_dict():
+    # ROB-377 PR1: crypto market dimension gets a CRYPTO (total mcap) index so
+    # MarketStage no longer fails closed for crypto.
+    captured: dict = {}
+
+    async def fake_index_fn(symbols):
+        captured["symbols"] = list(symbols)
+        return [
+            {
+                "symbol": "CRYPTO",
+                "name": "암호화폐 총 시가총액",
+                "current": 2.31e12,
+                "change_pct": 1.85,
+            }
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="crypto"))
+    payload = results[0].payload_json
+    assert payload["indices"]["CRYPTO"]["change_percent"] == 1.85
+    assert "CRYPTO" in captured["symbols"]
+    assert results[0].coverage_json["index_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -861,6 +1113,107 @@ async def test_market_collector_no_index_fn_emits_no_indices():
     )
     results = await collector.collect(_request(market="us"))
     assert "indices" not in results[0].payload_json
+
+
+@pytest.mark.asyncio
+async def test_market_collector_crypto_attaches_altseason():
+    # ROB-381 PR3: crypto market dimension gains an Upbit altseason snapshot.
+    called = {"hit": False}
+
+    async def fake_altseason_fn():
+        called["hit"] = True
+        return {"ubai_ubmi_ratio": 0.455, "breadth": {"alts_beating_btc_pct": 0.42}}
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    payload = results[0].payload_json
+    assert called["hit"] is True
+    assert payload["altseason"]["ubai_ubmi_ratio"] == 0.455
+    assert results[0].coverage_json["has_altseason"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_only_for_crypto():
+    # Non-crypto markets never call the altseason source.
+    called = {"hit": False}
+
+    async def fake_altseason_fn():
+        called["hit"] = True
+        return {"ubai_ubmi_ratio": 0.5}
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="us"))
+    assert called["hit"] is False
+    assert "altseason" not in results[0].payload_json
+    assert results[0].coverage_json["has_altseason"] is False
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_failure_is_soft():
+    # Altseason is best-effort: a fetch error leaves the rest of the snapshot.
+    async def fake_altseason_fn():
+        raise RuntimeError("upbit down")
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    assert results[0].freshness_status == "fresh"
+    assert "events" in results[0].payload_json
+    assert "altseason" not in results[0].payload_json
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_none_is_omitted():
+    # Source returning None (both planes down) → no altseason key, not fabricated.
+    async def fake_altseason_fn():
+        return None
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    assert "altseason" not in results[0].payload_json
+    assert results[0].coverage_json["has_altseason"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_altseason_fn_returns_payload(monkeypatch):
+    # ROB-381 PR3: registry adapter passes through the upbit altseason service.
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def fake_fetch():
+        return {"ubai_ubmi_ratio": 0.47}
+
+    monkeypatch.setattr(
+        "app.services.external.upbit_index.fetch_upbit_altseason", fake_fetch
+    )
+    fn = registry._build_altseason_fn()
+    assert await fn() == {"ubai_ubmi_ratio": 0.47}
+
+
+@pytest.mark.asyncio
+async def test_build_altseason_fn_failopen_on_error(monkeypatch):
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def boom():
+        raise RuntimeError("upbit down")
+
+    monkeypatch.setattr("app.services.external.upbit_index.fetch_upbit_altseason", boom)
+    fn = registry._build_altseason_fn()
+    assert await fn() is None
 
 
 # ---------------------------------------------------------------------------
@@ -1448,6 +1801,183 @@ async def test_symbol_collector_quote_respects_enrichment_cap():
 
 
 # ---------------------------------------------------------------------------
+# Symbol collector — crypto enrichment (ROB-369 Slice 2c).
+#
+# Crypto symbols are NOT in stock_info; they live in upbit_symbol_universe.
+# For (market=crypto, account_scope=upbit_live) the collector resolves metadata
+# from that universe and enriches each symbol with read-only Upbit orderbook
+# liquidity (best bid/ask, spread, depth). Public market-data → no user_id
+# required (unlike KIS). Per-symbol fail-open + the shared enrichment cap.
+# ---------------------------------------------------------------------------
+def _upbit_universe_row(market: str = "KRW-BTC", korean_name: str = "비트코인"):
+    class _Row:
+        def __init__(self) -> None:
+            self.market = market
+            self.korean_name = korean_name
+            self.english_name = "Bitcoin"
+            self.base_currency = market.split("-")[-1]
+            self.quote_currency = "KRW"
+            self.is_active = True
+
+    return _Row()
+
+
+def _fake_upbit_quote_client_ok() -> MagicMock:
+    """Fake Upbit orderbook adapter returning a full top-of-book (no last_price)."""
+
+    async def fetch(symbol: str) -> dict[str, Any]:
+        return {
+            "last_price": None,
+            "best_bid": 94_900_000.0,
+            "best_ask": 95_100_000.0,
+            "bid_depth": 0.5,
+            "ask_depth": 0.3,
+            "venue": "upbit",
+            "session": "24h",
+            "nxt_eligible": False,
+            "as_of": "1716200000000",
+        }
+
+    client = MagicMock()
+    client.fetch_quote_orderbook = AsyncMock(side_effect=fetch)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_resolves_metadata_from_upbit_universe():
+    """ROB-369 2c — crypto symbols resolve from upbit_symbol_universe (not
+    stock_info); metadata is populated even when no quote adapter is wired."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_upbit_universe_row("KRW-ETH", "이더리움")])
+    collector = SymbolSnapshotCollector(session)  # no upbit quote client wired
+    req = CollectorRequest(
+        market="crypto",
+        account_scope="upbit_live",
+        symbols=["KRW-ETH"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=1,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["symbol"] == "KRW-ETH"
+    assert payload["name"] == "이더리움"
+    assert payload["instrument_type"] == "crypto"
+    assert payload["exchange"] == "upbit"
+    assert payload["is_active"] is True
+    # Enrichment is wanted (crypto+upbit_live) but no client → honest unavailable.
+    assert payload["quote"]["status"] == "unavailable"
+    assert "no quote client" in payload["quote"]["unavailable_reason"]
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_enriches_with_upbit_orderbook_no_user_id():
+    """ROB-369 2c — crypto+upbit_live enriches via the Upbit orderbook adapter;
+    public market-data requires NO user_id (unlike KIS)."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_upbit_universe_row("KRW-BTC", "비트코인")])
+    quote_client = _fake_upbit_quote_client_ok()
+    collector = SymbolSnapshotCollector(session, upbit_quote_client=quote_client)
+    req = CollectorRequest(
+        market="crypto",
+        account_scope="upbit_live",
+        symbols=["KRW-BTC"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=None,  # no user_id — Upbit market-data is public
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["symbol"] == "KRW-BTC"
+    q = payload["quote"]
+    assert q["status"] == "ok"
+    assert q["best_bid"] == 94_900_000.0
+    assert q["best_ask"] == 95_100_000.0
+    assert q["spread"] == 200_000.0
+    assert q["spread_bps"] == pytest.approx(21.05, rel=0.05)
+    assert q["venue"] == "upbit"
+    assert q["last_price"] is None  # orderbook carries no last trade — honest
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with("KRW-BTC")
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_skips_quote_when_not_upbit_live():
+    """ROB-369 2c — crypto without upbit_live scope must not call the quote client."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_upbit_universe_row("KRW-BTC", "비트코인")])
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(
+        side_effect=AssertionError("upbit quote client must not be called")
+    )
+    collector = SymbolSnapshotCollector(session, upbit_quote_client=quote_client)
+    req = CollectorRequest(
+        market="crypto",
+        account_scope=None,
+        symbols=["KRW-BTC"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=1,
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["symbol"] == "KRW-BTC"
+    assert "quote" not in payload or payload.get("quote") is None
+    quote_client.fetch_quote_orderbook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_crypto_orderbook_failure_is_fail_open():
+    """ROB-369 2c — an Upbit orderbook error marks that symbol unavailable
+    without crashing others (per-symbol fail-open)."""
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session(
+        [
+            _upbit_universe_row("KRW-BTC", "비트코인"),
+            _upbit_universe_row("KRW-XRP", "리플"),
+        ]
+    )
+
+    async def fetch(symbol: str):
+        if symbol == "KRW-BTC":
+            raise RuntimeError("upbit timeout")
+        return {
+            "last_price": None,
+            "best_bid": 800.0,
+            "best_ask": 801.0,
+            "bid_depth": 100.0,
+            "ask_depth": 120.0,
+            "venue": "upbit",
+            "session": "24h",
+            "nxt_eligible": False,
+            "as_of": None,
+        }
+
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(side_effect=fetch)
+    collector = SymbolSnapshotCollector(session, upbit_quote_client=quote_client)
+    req = CollectorRequest(
+        market="crypto",
+        account_scope="upbit_live",
+        symbols=["KRW-BTC", "KRW-XRP"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=None,
+    )
+    results = await collector.collect(req)
+    by_symbol = {r.symbol: r for r in results if r.symbol}
+    assert by_symbol["KRW-BTC"].payload_json["quote"]["status"] == "unavailable"
+    assert (
+        "upbit timeout"
+        in by_symbol["KRW-BTC"].payload_json["quote"]["unavailable_reason"]
+    )
+    assert by_symbol["KRW-XRP"].payload_json["quote"]["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
 # Candidate-universe collector
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
@@ -1681,6 +2211,82 @@ def test_production_registry_registers_pending_orders():
     """ROB-274 — pending_orders collector is wired into the production registry."""
     registry = production_collector_registry(session=MagicMock())
     assert "pending_orders" in registry.list_kinds()
+
+
+def test_production_registry_wires_upbit_quote_client_into_symbol_collector():
+    """ROB-369 2c — the symbol collector gets the Upbit orderbook adapter so
+    crypto + upbit_live requests can be enriched."""
+    registry = production_collector_registry(session=MagicMock())
+    symbol_collector = registry.get("symbol")
+    assert symbol_collector is not None
+    assert symbol_collector._upbit_quote_client is not None
+    assert symbol_collector._kis_quote_client is not None
+
+
+@pytest.mark.asyncio
+async def test_upbit_quote_adapter_maps_orderbook_top_of_book(monkeypatch):
+    """ROB-369 2c — the Upbit adapter maps the orderbook top-of-book into the
+    shared quote contract (last_price None — orderbook has no last trade)."""
+    from app.services.action_report.snapshot_backed.collectors import (
+        registry as registry_mod,
+    )
+
+    async def fake_fetch_orderbook(market: str):
+        assert market == "KRW-BTC"
+        return {
+            "market": "KRW-BTC",
+            "timestamp": 1716200000000,
+            "total_ask_size": 1.0,
+            "total_bid_size": 2.0,
+            "orderbook_units": [
+                {
+                    "ask_price": 95_100_000.0,
+                    "bid_price": 94_900_000.0,
+                    "ask_size": 0.3,
+                    "bid_size": 0.5,
+                },
+                {
+                    "ask_price": 95_200_000.0,
+                    "bid_price": 94_800_000.0,
+                    "ask_size": 1.0,
+                    "bid_size": 1.0,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.upbit_orderbook.fetch_orderbook", fake_fetch_orderbook
+    )
+    adapter = registry_mod._UpbitQuoteOrderbookAdapter()
+    quote = await adapter.fetch_quote_orderbook("KRW-BTC")
+    assert quote["best_bid"] == 94_900_000.0
+    assert quote["best_ask"] == 95_100_000.0
+    assert quote["bid_depth"] == 0.5
+    assert quote["ask_depth"] == 0.3
+    assert quote["last_price"] is None
+    assert quote["venue"] == "upbit"
+    assert quote["as_of"] == "1716200000000"
+
+
+@pytest.mark.asyncio
+async def test_upbit_quote_adapter_empty_orderbook_yields_none_top(monkeypatch):
+    """ROB-369 2c — empty/missing orderbook → None top-of-book, which the
+    collector's empty-book branch then marks unavailable."""
+    from app.services.action_report.snapshot_backed.collectors import (
+        registry as registry_mod,
+    )
+
+    async def fake_fetch_orderbook(market: str):
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.upbit_orderbook.fetch_orderbook", fake_fetch_orderbook
+    )
+    adapter = registry_mod._UpbitQuoteOrderbookAdapter()
+    quote = await adapter.fetch_quote_orderbook("KRW-FOO")
+    assert quote["best_bid"] is None
+    assert quote["best_ask"] is None
+    assert quote["venue"] == "upbit"
 
 
 # ---------------------------------------------------------------------------

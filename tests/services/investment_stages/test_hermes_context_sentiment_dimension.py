@@ -236,3 +236,87 @@ async def test_exporter_attaches_sentiment_evidence_bundle_us_unavailable(
     assert sent["market"] == "us"
     assert sent["freshness"]["status"] == "unavailable"
     assert sent["per_symbol"] == []
+
+
+@pytest.mark.asyncio
+async def test_exporter_crypto_bundle_gets_dimensions_sentiment_unavailable(
+    db_session,
+) -> None:
+    """ROB-369 E11 — crypto bundles previously got ``dimension_evidence={}``
+    (hard kr/us gate). The gate now includes crypto, so the same per-dimension
+    synthesis runs: all four dimension keys are present, and sentiment is
+    honestly ``unavailable`` (investor-flow is KR-only) — never fabricated or
+    KR-leaking."""
+    await _clear(db_session)
+    snapshots_repo = InvestmentSnapshotsRepository(db_session)
+    now = dt.datetime.now(tz=dt.UTC)
+
+    run_obj = await snapshots_repo.insert_run(
+        SnapshotRunCreate(
+            purpose="report_generation",
+            market="crypto",
+            account_scope="upbit_live",
+            requested_by="user",
+            policy_version="intraday_action_report_v1",
+        )
+    )
+    portfolio_snap = await snapshots_repo.insert_snapshot(
+        SnapshotCreate(
+            run_uuid=run_obj.run_uuid,
+            snapshot_kind="portfolio",
+            market="crypto",
+            account_scope="upbit_live",
+            source_kind="auto_trader_mcp",
+            payload_json={
+                "primary_source": "upbit",
+                "holdings": [{"ticker": "BTC", "source": "upbit", "market": "CRYPTO"}],
+                "reference_holdings": [],
+                "count": 1,
+                "market": "crypto",
+            },
+            as_of=now,
+            freshness_status="fresh",
+        )
+    )
+    bundle = await snapshots_repo.insert_bundle(
+        BundleCreate(
+            purpose=f"crypto_dim_test_{uuid.uuid4().hex[:8]}",
+            market="crypto",
+            account_scope="upbit_live",
+            policy_version="intraday_action_report_v1",
+            as_of=now,
+            status="complete",
+        )
+    )
+    await snapshots_repo.link_bundle_item(
+        bundle_uuid=bundle.bundle_uuid,
+        item=BundleItemCreate(
+            snapshot_uuid=portfolio_snap.snapshot_uuid, role="required"
+        ),
+    )
+    await db_session.commit()
+
+    stage_run = InvestmentStageRun(
+        run_uuid=uuid.uuid4(),
+        snapshot_bundle_uuid=bundle.bundle_uuid,
+        market="crypto",
+        account_scope=None,
+        policy_version="v1",
+        generator_version="v1",
+        status="running",
+        started_at=now,
+    )
+    db_session.add(stage_run)
+    await db_session.commit()
+
+    exporter = HermesContextExporter(db_session, stages=[])
+    payload = await exporter.export(snapshot_bundle_uuid=bundle.bundle_uuid)
+
+    de = payload.dimension_evidence
+    assert de != {}, "crypto dimension_evidence must no longer be silently empty"
+    # All four dimensions are now synthesized for crypto (gate lifted).
+    assert {"market", "news", "fundamentals", "sentiment"} <= set(de)
+    # Sentiment is KR-only by design → explicit unavailable for crypto.
+    assert de["sentiment"]["market"] == "crypto"
+    assert de["sentiment"]["freshness"]["status"] == "unavailable"
+    assert de["sentiment"]["per_symbol"] == []

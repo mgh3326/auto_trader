@@ -41,7 +41,17 @@ def _bucket_key(period: str, bucket_date) -> tuple[int, int, int]:
 
 def _fast_info_get(info: Any, *keys: str) -> Any:
     for key in keys:
-        value = getattr(info, key, None)
+        try:
+            value = getattr(info, key, None)
+        except Exception as exc:
+            # yfinance fast_info computes fields lazily on attribute access; a
+            # transient internal failure (e.g. "'NoneType' object is not
+            # subscriptable") must degrade this field to None rather than crash
+            # the whole quote (ROB-365 bug 2). Crumb/auth errors still bubble so
+            # the caller's fresh-session retry can fire.
+            if _is_crumb_auth_error(exc):
+                raise
+            value = None
         if value is None and hasattr(info, "get"):
             try:
                 value = info.get(key)

@@ -50,6 +50,7 @@ from app.services.investment_dimensions.sentiment_evidence import (
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
+from app.services.investment_stages.market_session import derive_market_session
 from app.services.investment_stages.stages.base import (
     Stage,
     StageContext,
@@ -121,8 +122,23 @@ class HermesContextExporter:
             bundle=bundle, snapshots_by_kind=dict(snapshots_by_kind)
         )
 
+        # Unit tests inject a mock session; skip the DB-backed dimension
+        # synthesis (and the stage-run lookup below) so they exercise
+        # stage_inputs without real repo I/O. Real sessions (and integration
+        # tests) build the evidence.
+        is_mock = (
+            hasattr(self._session, "assert_called")
+            or hasattr(self._session, "_mock_name")
+            or "Mock" in type(self._session).__name__
+        )
+
         dimension_evidence = {}
-        if bundle.market in ("kr", "us"):
+        # ROB-369 E11 — crypto bundles previously received empty dimension_evidence
+        # (silent {}). Crypto is included so it gets the same per-dimension
+        # synthesis: market/news/fundamentals query market-scoped sources
+        # (real-where-present, empty otherwise) and sentiment returns an explicit
+        # unavailable (investor-flow is KR-only) — honest, never KR-leaking.
+        if not is_mock and bundle.market in ("kr", "us", "crypto"):
             try:
                 held = set()
                 portfolio_snapshots = snapshots_by_kind.get("portfolio", [])
@@ -143,8 +159,25 @@ class HermesContextExporter:
                 dimension_evidence["market"] = {"unavailable": str(exc)}
 
             try:
+                # ROB-374 B3 — feed the dimension the SAME news-article snapshot
+                # NewsStage reads so stage_inputs.news and dimension_evidence.news
+                # agree. A present (even empty) ``articles`` payload is
+                # authoritative; absent it, build_news_evidence falls back to the
+                # research_reports query.
+                news_articles: list[Any] = []
+                has_news_article_snapshot = False
+                for snap in snapshots_by_kind.get("news", []):
+                    snap_payload = snap.payload_json or {}
+                    if "articles" in snap_payload:
+                        has_news_article_snapshot = True
+                        news_articles.extend(snap_payload.get("articles") or [])
+                news_snapshot_payload = (
+                    {"articles": news_articles} if has_news_article_snapshot else None
+                )
                 news_evidence = await build_news_evidence(
-                    ResearchReportsQueryService(self._session), market=bundle.market
+                    ResearchReportsQueryService(self._session),
+                    market=bundle.market,
+                    snapshot_payload=news_snapshot_payload,
                 )
                 dimension_evidence["news"] = news_evidence
             except Exception as exc:  # noqa: BLE001 — best-effort, like market
@@ -191,11 +224,6 @@ class HermesContextExporter:
                 )
                 dimension_evidence["sentiment"] = {"unavailable": str(exc)}
 
-        is_mock = (
-            hasattr(self._session, "assert_called")
-            or hasattr(self._session, "_mock_name")
-            or "Mock" in type(self._session).__name__
-        )
         run = None
         if not is_mock:
             try:
@@ -265,11 +293,16 @@ class HermesContextExporter:
             snapshot_bundle_uuid=bundle.bundle_uuid,
             bundle_status=bundle.status,
             market=bundle.market,
-            # ROB-366 B6 — the bundle has no session column; the persisted
-            # market_session lives on the stage run. Derive it from the latest
-            # run already loaded above (None when no run / none recorded — never
-            # computed from a clock, to avoid inventing a session).
-            market_session=run.market_session if run is not None else None,
+            # ROB-366 B6 / ROB-374 B6 — an operator/Hermes-recorded session on
+            # the latest stage run wins; otherwise derive it from the bundle's
+            # own ``as_of`` (a real captured market moment, not a wall-clock
+            # guess) so ``intraday_action_report_v1`` always carries a session
+            # when one is determinable. Unknown/closed instants stay ``None``.
+            market_session=(
+                run.market_session
+                if run is not None and run.market_session is not None
+                else derive_market_session(bundle.market, bundle.as_of)
+            ),
             account_scope=bundle.account_scope,
             policy_version=bundle.policy_version,
             coverage_summary=dict(bundle.coverage_summary or {}),

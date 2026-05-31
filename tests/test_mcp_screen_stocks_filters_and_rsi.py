@@ -942,3 +942,87 @@ class TestScreenStocksPhase2Spec:
         assert result["market"] == "crypto"
         assert result["filters_applied"]["sort_by"] == "trade_amount"
         assert result["filters_applied"]["sort_order"] == "desc"
+
+
+@pytest.mark.asyncio
+async def test_us_screen_is_common_stock_overrides_etf_misclassification(monkeypatch):
+    """ROB-365 bug 5: a common stock mis-tagged ETF by the yfinance screener is
+    corrected to 'common' when the us_symbol_universe.is_common_stock authority
+    says so."""
+    import yfinance as yf
+
+    def screen_func(query, size, sortField, sortAsc, session=None):
+        assert session is not None
+        return {
+            "quotes": [
+                {
+                    "symbol": "NFLX",
+                    "shortname": "Netflix Inc.",
+                    "lastprice": 1000.0,
+                    "quoteType": "ETF",  # yfinance glitch — NFLX is common stock
+                    "typeDisp": "ETF",
+                    "percentchange": 1.0,
+                    "dayvolume": 5_000_000,
+                    "intradaymarketcap": 400_000_000_000,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(yf, "screen", screen_func)
+    # Force the legacy yfinance path (the surface this test exercises).
+    monkeypatch.setattr(
+        screening_us, "_can_use_tvscreener_stock_path", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        screening_us,
+        "get_us_common_stock_flags",
+        AsyncMock(return_value={"NFLX": True}),
+    )
+
+    tools = build_tools()
+    result = await tools["screen_stocks"](market="us", limit=10)
+
+    assert "error" not in result, f"Unexpected error: {result.get('error')}"
+    nflx = next(r for r in result["results"] if r.get("code") == "NFLX")
+    assert nflx["instrument_type"] == "common"
+
+
+@pytest.mark.asyncio
+async def test_us_screen_is_common_stock_lookup_is_fail_soft(monkeypatch):
+    """If the is_common_stock universe lookup raises, the yfinance path falls back
+    to algorithmic classification rather than erroring (ROB-365 bug 5)."""
+    import yfinance as yf
+
+    def screen_func(query, size, sortField, sortAsc, session=None):
+        assert session is not None
+        return {
+            "quotes": [
+                {
+                    "symbol": "SPY",
+                    "shortname": "SPDR S&P 500 ETF Trust",
+                    "lastprice": 500.0,
+                    "quoteType": "ETF",
+                    "typeDisp": "ETF",
+                    "percentchange": 0.3,
+                    "dayvolume": 50_000_000,
+                    "intradaymarketcap": 500_000_000_000,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(yf, "screen", screen_func)
+    monkeypatch.setattr(
+        screening_us, "_can_use_tvscreener_stock_path", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        screening_us,
+        "get_us_common_stock_flags",
+        AsyncMock(side_effect=RuntimeError("universe DB unavailable")),
+    )
+
+    tools = build_tools()
+    result = await tools["screen_stocks"](market="us", limit=10)
+
+    assert "error" not in result, f"Unexpected error: {result.get('error')}"
+    spy = next(r for r in result["results"] if r.get("code") == "SPY")
+    assert spy["instrument_type"] == "etf"  # algorithmic classification preserved

@@ -14,6 +14,7 @@ import app.services.brokers.upbit.client as upbit_service
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.analysis_screen_crypto import finalize_crypto_screen
 from app.mcp_server.tooling.screening.common import (
+    DROP_THRESHOLD,
     MarketCapCache,
     _clean_text,
     _compute_rsi_bucket,
@@ -283,18 +284,24 @@ async def _normalize_crypto_results(
     finally:
         await _db.close()
 
-    # Fetch Upbit 24h volumes
+    # Fetch Upbit 24h volume + trade amount (거래대금). ROB-369 B4: tvscreener
+    # VALUE_TRADED is null in production, so the live Upbit ``acc_trade_price_24h``
+    # (already returned by this same ticker call) is the real trade-amount source.
     ticker_volume_map: dict[str, float] = {}
+    ticker_trade_amount_map: dict[str, float] = {}
     if market_codes:
         try:
             ticker_rows = await upbit_service.fetch_multiple_tickers(market_codes)
-            ticker_volume_map = {
-                str(row.get("market") or "").strip().upper(): (
+            for row in ticker_rows:
+                code = str(row.get("market") or "").strip().upper()
+                if not code:
+                    continue
+                ticker_volume_map[code] = (
                     _to_optional_float(row.get("acc_trade_volume_24h")) or 0.0
                 )
-                for row in ticker_rows
-                if str(row.get("market") or "").strip()
-            }
+                amount = _to_optional_float(row.get("acc_trade_price_24h"))
+                if amount is not None:
+                    ticker_trade_amount_map[code] = amount
         except Exception as exc:
             warnings.append(
                 "Upbit 24h volume enrichment failed; volume_24h defaulted to 0.0 "
@@ -312,14 +319,49 @@ async def _normalize_crypto_results(
     )
     btc_change_24h: float | None = None
     if btc_item is None:
-        if not pure_market_snapshot:
-            logger.warning(
-                "KRW-BTC ticker not found in Upbit KRW crypto screener rows; "
-                "crash filter uses btc_change_24h=0.0 fallback"
+        # ROB-369 B4 — KRW-BTC can be absent from the tvscreener rows, leaving
+        # the crash filter with a btc_change_24h=0.0 fallback that mistakes a
+        # market-wide crash for an isolated drop (wrongly filtering deep losers).
+        # Recover the reference with a direct Upbit ticker fetch — but only when
+        # it can change the outcome: a crash candidate (≤ DROP_THRESHOLD) exists
+        # and we're in interactive screening (the filter is skipped for snapshot
+        # builds). This avoids an extra Upbit call on calm screens.
+        has_crash_candidate = not pure_market_snapshot and any(
+            (
+                _to_optional_float(
+                    item.get("signed_change_rate")
+                    if item.get("signed_change_rate") is not None
+                    else item.get("change_rate")
+                )
+                or 0.0
             )
-            warnings.append(
-                "BTC 기준 데이터가 없어 급락 방어 필터를 기본값으로 적용했습니다."
-            )
+            <= DROP_THRESHOLD
+            for item in raw_results
+        )
+        if has_crash_candidate:
+            try:
+                btc_rows = await upbit_service.fetch_multiple_tickers(["KRW-BTC"])
+            except Exception as exc:  # noqa: BLE001 — best-effort, degrade to 0.0
+                logger.warning(
+                    "KRW-BTC crash-filter fallback fetch failed (%s: %s)",
+                    type(exc).__name__,
+                    exc,
+                )
+                btc_rows = []
+            if btc_rows:
+                btc_change_24h = _to_optional_float(
+                    btc_rows[0].get("signed_change_rate")
+                    or btc_rows[0].get("change_rate")
+                )
+            if btc_change_24h is None:
+                logger.warning(
+                    "KRW-BTC ticker not found in Upbit KRW crypto screener rows "
+                    "and fallback fetch yielded no change rate; crash filter uses "
+                    "btc_change_24h=0.0 fallback"
+                )
+                warnings.append(
+                    "BTC 기준 데이터가 없어 급락 방어 필터를 기본값으로 적용했습니다."
+                )
     else:
         btc_change_24h = _to_optional_float(
             btc_item.get("signed_change_rate") or btc_item.get("change_rate")
@@ -356,9 +398,13 @@ async def _normalize_crypto_results(
             filtered_by_crash += 1
             continue
 
-        trade_amount_24h = _to_optional_float(
-            raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h")
-        )
+        # Prefer the live Upbit 거래대금; fall back to tvscreener VALUE_TRADED
+        # only when Upbit did not return a trade amount for this market.
+        trade_amount_24h = ticker_trade_amount_map.get(market_code)
+        if trade_amount_24h is None:
+            trade_amount_24h = _to_optional_float(
+                raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h")
+            )
         item = {
             "symbol": market_code,
             "original_market": market_code,
