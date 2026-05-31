@@ -35,5 +35,15 @@ def test_portfolio_baseline_whitelists_cash_and_summary():
 
 
 def test_baselines_handle_missing_keys():
+    # Missing keys are skipped entirely (no fabrication). Critically, a missing
+    # ``holdings`` must NOT become holdings_count=0 — "we have no holdings data"
+    # is not the same as "zero holdings".
     assert gen._market_numeric_baseline({}) == {}
-    assert gen._portfolio_numeric_baseline({}) == {"holdings_count": 0}
+    assert gen._portfolio_numeric_baseline({}) == {}
+
+
+def test_portfolio_baseline_zero_holdings_is_explicit_empty_list():
+    # An explicit empty holdings list DOES mean "zero holdings" -> count 0.
+    assert gen._portfolio_numeric_baseline({"holdings": []}) == {"holdings_count": 0}
+    # A non-list holdings value is treated as missing (no count emitted).
+    assert gen._portfolio_numeric_baseline({"holdings": None}) == {}
