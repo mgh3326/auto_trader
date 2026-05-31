@@ -395,3 +395,300 @@ async def test_runner_fallback_when_live_bundle_uuid_absent(
     )
     assert mock_ensure.called
     assert report.snapshot_bundle_uuid is not None
+
+
+# ---------------------------------------------------------------------------
+# ROB-380 follow-up — idempotent-existing-report interaction (operator smoke
+# 2026-05-31): the persisted mock report must end up on the reuse bundle, and a
+# re-run must not orphan a freshly built bundle.
+# ---------------------------------------------------------------------------
+import datetime as _dt  # noqa: E402
+
+import sqlalchemy as _sa  # noqa: E402
+
+from app.models.investment_snapshots import (  # noqa: E402
+    InvestmentSnapshotBundle as _Bundle,
+)
+from app.schemas.investment_snapshots_mcp import (  # noqa: E402
+    EnsureBundleRequest as _EnsureReq,
+)
+from app.services.action_report.common.snapshot_bundle import (  # noqa: E402
+    SnapshotBundleEnsureService as _Ensure,
+)
+from app.services.investment_snapshots.collectors import (  # noqa: E402
+    SnapshotCollectResult as _Collect,
+)
+from app.services.investment_snapshots.repository import (  # noqa: E402
+    InvestmentSnapshotsRepository as _SnapRepo,
+)
+
+
+def _unique_now() -> _dt.datetime:
+    """A per-test ``as_of``. Snapshot/bundle tables are NOT truncated between
+    tests (conftest: they use UUID-scoped / uniquely-timestamped rows). A unique
+    timestamp keeps this test's bundle idempotency keys
+    (``...:<purpose>:us:kis_mock:...:<as_of>``) from colliding with bundles other
+    tests commit at a shared fixed clock."""
+    n = uuid.uuid4().int
+    return _dt.datetime(2030, 1, 1, tzinfo=_dt.UTC) + _dt.timedelta(
+        seconds=n % 50_000_000, microseconds=n % 1_000_000
+    )
+
+
+def _mk(kind: str, scope: str | None, payload: dict, now: _dt.datetime) -> _Collect:
+    return _Collect(
+        snapshot_kind=kind,  # type: ignore[arg-type]
+        market="us",  # type: ignore[arg-type]
+        account_scope=scope,  # type: ignore[arg-type]
+        source_kind="manual",
+        payload_json=payload,
+        as_of=now,
+        freshness_status="fresh",
+    )
+
+
+def _reuse_ensure(db_session, now: _dt.datetime, nonce: str):
+    """Reuse-capable ensure whose kis_mock account-bound kinds come from manual
+    snapshots (no network); account-independent kinds are linked from live."""
+
+    class _RE(_Ensure):
+        async def ensure_reusing_account_independent(
+            self, request, *, reuse_from_bundle_uuid
+        ):  # noqa: ANN001
+            request = request.model_copy(
+                update={
+                    "manual_snapshots": {
+                        "portfolio": [_mk("portfolio", "kis_mock", {"p": nonce}, now)],
+                        "journal": [_mk("journal", "kis_mock", {"j": nonce}, now)],
+                        "watch_context": [
+                            _mk("watch_context", "kis_mock", {"w": nonce}, now)
+                        ],
+                    }
+                }
+            )
+            return await super().ensure_reusing_account_independent(
+                request, reuse_from_bundle_uuid=reuse_from_bundle_uuid
+            )
+
+    return _RE(db_session, clock=lambda: now)
+
+
+async def _independent_uuids(db_session, bundle_uuid):
+    snaps = await _SnapRepo(db_session).list_account_independent_bundle_snapshots(
+        bundle_uuid
+    )
+    return {s.snapshot_uuid for s in snaps}
+
+
+async def _seed_live_bundle_and_report(db_session, now: _dt.datetime, nonce: str):
+    """Build a kis_live bundle (independent + account-bound, nonce-scoped) and a
+    live report linked to it. Returns (live_report, live_bundle_uuid)."""
+    ensure = _Ensure(db_session, clock=lambda: now)
+    live_bundle = await ensure.ensure(
+        _EnsureReq(
+            purpose=f"snapshot_backed_report_{nonce}",
+            market="us",
+            account_scope="kis_live",
+            policy_version="intraday_action_report_v1",
+            mode="ensure_fresh",
+            manual_snapshots={
+                "market": [_mk("market", "kis_live", {"m": "L", "n": nonce}, now)],
+                "news": [_mk("news", "kis_live", {"x": "L", "n": nonce}, now)],
+                "portfolio": [
+                    _mk("portfolio", "kis_live", {"p": "L", "n": nonce}, now)
+                ],
+                "journal": [_mk("journal", "kis_live", {"j": "L", "n": nonce}, now)],
+                "watch_context": [
+                    _mk("watch_context", "kis_live", {"w": "L", "n": nonce}, now)
+                ],
+            },
+        )
+    )
+    await db_session.flush()
+    live_req = IngestReportRequest(
+        report_type="snapshot_backed_advisory_v1",
+        market="us",
+        market_session="regular",
+        account_scope="kis_live",
+        execution_mode="advisory_only",
+        created_by_profile="seed",
+        title="t",
+        summary="s",
+        status="draft",
+        generator_version="v2-snapshot-backed",
+        kst_date="2026-05-30",
+        snapshot_bundle_uuid=live_bundle.bundle_uuid,
+        items=[
+            IngestReportItem(
+                client_item_key="seed1",
+                item_kind="action",
+                side="buy",
+                intent="buy_review",
+                rationale="seed",
+                symbol="AAPL",
+                evidence_snapshot={"reference_price_usd": 200.0},
+                max_action={"notional_usd": 50.0},
+            )
+        ],
+    )
+    live_report = await InvestmentReportIngestionService(db_session).ingest(live_req)
+    await db_session.flush()
+    return live_report, live_bundle.bundle_uuid
+
+
+@pytest.mark.asyncio
+async def test_runner_repoints_stale_existing_mock_report_to_reuse_bundle(
+    db_session,
+) -> None:
+    """ROB-380 follow-up (operator smoke 2026-05-31): a mock_preview report with
+    the same identity already exists (pre-fix) pointing at an OLD bundle that does
+    NOT share independent rows with live. ingest_with_outcome() idempotently
+    returns that row unchanged — which left the freshly built reuse bundle
+    orphaned and the persisted report on the stale bundle. The runner must
+    re-point the persisted report to the reuse bundle so it shares live's
+    account-independent rows."""
+    now = _unique_now()
+    nonce = uuid.uuid4().hex[:10]
+    ensure = _Ensure(db_session, clock=lambda: now)
+    live_report, live_bundle_uuid = await _seed_live_bundle_and_report(
+        db_session, now, nonce
+    )
+
+    # An OLD, non-sharing kis_mock bundle (different independent payloads). A
+    # distinct ``purpose`` keeps it a separate bundle row from the runner's
+    # freshly built reuse bundle (production gets that separation via a later
+    # as_of); models the pre-fix bundle.
+    old_mock = await ensure.ensure(
+        _EnsureReq(
+            purpose=f"mock_preview_report_prefix_{nonce}",
+            market="us",
+            account_scope="kis_mock",
+            policy_version="intraday_action_report_v1",
+            mode="ensure_fresh",
+            manual_snapshots={
+                "market": [_mk("market", "kis_mock", {"m": "OLD", "n": nonce}, now)],
+                "news": [_mk("news", "kis_mock", {"x": "OLD", "n": nonce}, now)],
+                "portfolio": [
+                    _mk("portfolio", "kis_mock", {"p": "OLD", "n": nonce}, now)
+                ],
+                "journal": [_mk("journal", "kis_mock", {"j": "OLD", "n": nonce}, now)],
+                "watch_context": [
+                    _mk("watch_context", "kis_mock", {"w": "OLD", "n": nonce}, now)
+                ],
+            },
+        )
+    )
+    await db_session.flush()
+    old_ind = await _independent_uuids(db_session, old_mock.bundle_uuid)
+    live_ind = await _independent_uuids(db_session, live_bundle_uuid)
+    assert old_ind != live_ind  # sanity: the old bundle does NOT share with live
+
+    # Seed an EXISTING mock_preview report with the runner's identity, on the OLD bundle.
+    existing_req = IngestReportRequest(
+        report_type="snapshot_backed_advisory_v1",
+        market="us",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="schedule",
+        title="[MOCK PREVIEW] t",
+        summary="s",
+        status="draft",
+        generator_version="v2-mock-preview",
+        kst_date="2026-05-30",
+        snapshot_bundle_uuid=old_mock.bundle_uuid,
+        items=[
+            IngestReportItem(
+                client_item_key="mockpv:old",
+                item_kind="action",
+                side="buy",
+                intent="buy_review",
+                rationale="seed",
+                symbol="AAPL",
+                evidence_snapshot={"reference_price_usd": 200.0},
+                max_action={"notional_usd": 50.0},
+            )
+        ],
+    )
+    existing_mock = await InvestmentReportIngestionService(db_session).ingest(
+        existing_req
+    )
+    await db_session.flush()
+    assert existing_mock.snapshot_bundle_uuid == old_mock.bundle_uuid
+
+    runner = MockPreviewReportRunner(
+        db_session, ensure_service=_reuse_ensure(db_session, now, nonce)
+    )
+    report, reused, _count = await runner.run(
+        live_report_uuid=live_report.report_uuid,
+        market="us",
+        market_session="regular",
+        policy_version="intraday_action_report_v1",
+        kst_date="2026-05-30",
+        created_by_profile="schedule",
+    )
+    await db_session.flush()
+
+    # Same report row (stable report_uuid), re-pointed OFF the stale bundle ...
+    assert reused is True
+    assert report.report_uuid == existing_mock.report_uuid
+    assert report.snapshot_bundle_uuid != old_mock.bundle_uuid
+    # ... ONTO a bundle that shares live's account-independent rows.
+    repointed_ind = await _independent_uuids(db_session, report.snapshot_bundle_uuid)
+    assert repointed_ind == live_ind
+
+
+@pytest.mark.asyncio
+async def test_runner_idempotent_rerun_creates_no_orphan_bundle(db_session) -> None:
+    """ROB-380 follow-up: a second identical run must NOT build a new (orphan)
+    reuse bundle. Once the mock report already points at a bundle that shares
+    live's independent rows, the re-run returns it unchanged and creates no bundle.
+
+    The two runs use DISTINCT clocks so that — absent the fix — the second run's
+    bundle ``as_of`` differs and a new bundle row would be inserted (the
+    production reality; a single frozen clock would falsely dedup the bundle and
+    hide the orphan)."""
+    nonce = uuid.uuid4().hex[:10]
+    t1 = _unique_now()
+    t2 = t1 + _dt.timedelta(minutes=1)
+    live_report, _live_bundle_uuid = await _seed_live_bundle_and_report(
+        db_session, t1, nonce
+    )
+
+    async def _bundle_count() -> int:
+        return await db_session.scalar(
+            _sa.select(_sa.func.count()).select_from(_Bundle)
+        )
+
+    report1, reused1, _ = await MockPreviewReportRunner(
+        db_session, ensure_service=_reuse_ensure(db_session, t1, nonce)
+    ).run(
+        live_report_uuid=live_report.report_uuid,
+        market="us",
+        market_session="regular",
+        policy_version="intraday_action_report_v1",
+        kst_date="2026-05-30",
+        created_by_profile="schedule",
+    )
+    await db_session.flush()
+    assert reused1 is False
+    count_after_first = await _bundle_count()
+    bundle_after_first = report1.snapshot_bundle_uuid
+
+    report2, reused2, _ = await MockPreviewReportRunner(
+        db_session, ensure_service=_reuse_ensure(db_session, t2, nonce)
+    ).run(
+        live_report_uuid=live_report.report_uuid,
+        market="us",
+        market_session="regular",
+        policy_version="intraday_action_report_v1",
+        kst_date="2026-05-30",
+        created_by_profile="schedule",
+    )
+    await db_session.flush()
+
+    assert reused2 is True
+    assert report2.report_uuid == report1.report_uuid
+    assert report2.snapshot_bundle_uuid == bundle_after_first
+    # No new (orphan) bundle was created by the idempotent re-run.
+    assert await _bundle_count() == count_after_first

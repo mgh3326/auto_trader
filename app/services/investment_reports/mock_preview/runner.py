@@ -33,6 +33,7 @@ from app.services.investment_reports.mock_preview.bridge import (
     extract_order_params,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.investment_snapshots.repository import InvestmentSnapshotsRepository
 
 _MOCK_GENERATOR_VERSION = "v2-mock-preview"
 
@@ -51,6 +52,7 @@ class MockPreviewReportRunner:
     ) -> None:
         self._session = session
         self._reports_repo = InvestmentReportsRepository(session)
+        self._snap_repo = InvestmentSnapshotsRepository(session)
         self._ingestion = InvestmentReportIngestionService(session)
         self._bridge = bridge if bridge is not None else MockPreviewBridge()
         # ROB-379 smoke finding: the default SnapshotBundleEnsureService registry
@@ -86,6 +88,31 @@ class MockPreviewReportRunner:
             raise MockPreviewSourceMissing(
                 f"live report has no items: {live_report_uuid}"
             )
+
+        # ROB-380 follow-up — the mock report is idempotent on this identity
+        # (report_type/market/session/scope/execution_mode/kst_date/generator).
+        # If a mock report already exists AND already cites the live bundle's
+        # account-independent rows, it is already correct: return it unchanged
+        # and build NO bundle. Building one would only be orphaned, because
+        # ingest_with_outcome() would idempotently return this same row.
+        existing_mock = await self._ingestion.find_existing_report(
+            report_type=live.report_type,
+            market=market,
+            market_session=market_session,
+            account_scope="kis_mock",
+            execution_mode="mock_preview",
+            kst_date=kst_date,
+            generator_version=_MOCK_GENERATOR_VERSION,
+        )
+        if (
+            existing_mock is not None
+            and live.snapshot_bundle_uuid is not None
+            and await self._shares_account_independent_rows(
+                existing_mock.snapshot_bundle_uuid, live.snapshot_bundle_uuid
+            )
+        ):
+            items = await self._reports_repo.list_items_for_report(existing_mock.id)
+            return existing_mock, True, len(items)
 
         # ROB-380 — reuse the live bundle's account-independent (NULL-scope)
         # snapshot rows instead of re-collecting them, so the live and mock
@@ -143,7 +170,48 @@ class MockPreviewReportRunner:
             snapshot_bundle_uuid=ensure_resp.bundle_uuid,
             snapshot_policy_version=policy_version,
         )
-        return await self._ingestion.ingest_with_outcome(request)
+        report, reused, count = await self._ingestion.ingest_with_outcome(request)
+
+        # ROB-380 follow-up — when ingestion idempotently returned a STALE
+        # existing report (one persisted before this fix, still pointing at a
+        # non-sharing bundle), its snapshot_bundle_uuid is NOT the reuse bundle
+        # we just built. Re-point it (report_uuid / items stay stable) so the
+        # persisted report shares the live bundle's account-independent rows and
+        # the freshly built reuse bundle is not orphaned.
+        if reused and report.snapshot_bundle_uuid != ensure_resp.bundle_uuid:
+            await self._reports_repo.update_report(
+                report.id, snapshot_bundle_uuid=ensure_resp.bundle_uuid
+            )
+            await self._session.refresh(report)
+
+        return report, reused, count
+
+    async def _shares_account_independent_rows(
+        self, candidate_bundle_uuid: UUID | None, live_bundle_uuid: UUID
+    ) -> bool:
+        """True when ``candidate`` already links EXACTLY the live bundle's
+        account-independent snapshot rows (so rebuilding/re-pointing is a no-op).
+
+        An empty live independent set returns False (nothing to share — fall
+        through to the normal build path).
+        """
+        if candidate_bundle_uuid is None:
+            return False
+        live_independent = {
+            s.snapshot_uuid
+            for s in await self._snap_repo.list_account_independent_bundle_snapshots(
+                live_bundle_uuid
+            )
+        }
+        if not live_independent:
+            return False
+        candidate_independent = {
+            s.snapshot_uuid
+            for s in await self._snap_repo.list_account_independent_bundle_snapshots(
+                candidate_bundle_uuid
+            )
+        }
+        return candidate_independent == live_independent
 
     async def _project(self, item: InvestmentReportItem) -> IngestReportItem:
         evidence = dict(item.evidence_snapshot or {})
