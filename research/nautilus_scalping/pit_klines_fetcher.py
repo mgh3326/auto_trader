@@ -22,7 +22,9 @@ from pathlib import Path
 from artifact_paths import pit_data_root
 
 BASE = "https://data.binance.vision/data"
-SUPPORTED_INTERVALS = ("1d", "1h")
+# ROB-382: added 1m/5m/15m so external-strategy ports run at their NATIVE timeframe
+# (timeframe-faithful falsification, not short-horizon coercion). 1d/1h predate ROB-353.
+SUPPORTED_INTERVALS = ("1m", "5m", "15m", "1h", "1d")
 _CHUNK = 1 << 16
 
 
