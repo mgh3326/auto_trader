@@ -513,23 +513,37 @@ async def test_generate_from_bundle_user_id_defaults_to_mcp_user(
 
 
 @pytest.mark.asyncio
-async def test_context_get_includes_draft_when_include_draft_true(
+async def test_context_get_draft_policy_advisory_only(
     session: AsyncSession,
 ) -> None:
-    # 1. Create a draft report (by default status="draft" inside investment_report_create_impl)
-    r = await investment_report_create_impl(
+    """draft_policy='advisory_only' admits an advisory (HERMES_ADVISOR) draft as
+    prior context; the default 'exclude' drops it; a smoke draft stays excluded
+    even under 'advisory_only'."""
+    # 1. An advisory draft (HERMES_ADVISOR) — the genuine baseline.
+    advisory = await investment_report_create_impl(
         items=[_action_item_dict()],
-        **_create_kwargs(kst_date="2026-05-18"),
+        **_create_kwargs(kst_date="2026-05-18", created_by_profile="HERMES_ADVISOR"),
     )
-    # Draft is not published, so status remains "draft"
+    # 2. A smoke/test draft (default test profile) — must never be admitted.
+    await investment_report_create_impl(
+        items=[_action_item_dict("action-2")],
+        **_create_kwargs(kst_date="2026-05-17", created_by_profile="t"),
+    )
 
-    # 2. Get context with default include_draft=False
+    # 3. Default draft_policy='exclude' drops all drafts.
     ctx_default = await investment_report_context_get_impl(market="kr")
     assert len(ctx_default["prior_reports"]) == 0
 
-    # 3. Get context with include_draft=True
-    ctx_include = await investment_report_context_get_impl(
-        market="kr", include_draft=True
+    # 4. draft_policy='advisory_only' admits ONLY the advisory draft.
+    ctx_advisory = await investment_report_context_get_impl(
+        market="kr", draft_policy="advisory_only"
     )
-    assert len(ctx_include["prior_reports"]) == 1
-    assert ctx_include["prior_reports"][0]["report_uuid"] == r["report"]["report_uuid"]
+    uuids = {r["report_uuid"] for r in ctx_advisory["prior_reports"]}
+    assert uuids == {advisory["report"]["report_uuid"]}
+
+    # 5. An unknown policy (e.g. a hallucinated "all") fails closed to 'exclude'
+    #    at the tool boundary — never errors, never over-includes drafts.
+    ctx_unknown = await investment_report_context_get_impl(
+        market="kr", draft_policy="all"
+    )
+    assert len(ctx_unknown["prior_reports"]) == 0
