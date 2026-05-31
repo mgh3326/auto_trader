@@ -83,11 +83,15 @@ def score_card(card: CandidateCard, rubric: Rubric) -> ScoredCandidate:
 
     disposition = _lower(band, cap)
 
-    # R1: only a source-verified, `verified`, keep-disposition card is eligible.
+    # R1: only a source-verified, `verified`, non-rejected card is eligible.
+    # keep AND shadow_only are validation candidates (shadow_only = clean-room /
+    # cost-caveat path) — RUBRIC_VERSION v2 rationale in the runbook. Public crypto
+    # strategies are almost all GPL/unclear-license (G1) or cost-sensitive (G5), so
+    # a keep-only shortlist would be structurally empty for this domain.
     eligible = (
         card.source_verified
         and card.score_status == "verified"
-        and disposition == "keep"
+        and disposition != "reject"
     )
 
     return ScoredCandidate(
@@ -148,7 +152,9 @@ def freeze_shortlist(scored: list[ScoredCandidate], rubric: Rubric) -> Shortlist
 
     gaps: list[str] = []
     if not pool:
-        gaps.append("No source-verified keep candidates available for shortlist.")
+        gaps.append(
+            "No source-verified, non-rejected candidates available for shortlist."
+        )
         return ShortlistResult(shortlist=(), gaps=tuple(gaps))
 
     shortlist: list[ScoredCandidate] = []

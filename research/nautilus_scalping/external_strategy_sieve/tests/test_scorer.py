@@ -40,11 +40,12 @@ def test_unverified_seed_is_never_eligible():
 
 
 def test_high_cost_card_cannot_be_keep():
-    # G5 cost cap.
+    # G5 cost cap -> shadow_only (not keep). v2: a verified shadow_only card IS
+    # shortlist-eligible (eligibility excludes only `reject`).
     s = score_card(_strong_verified(expected_cost_sensitivity="high"), RUBRIC)
     assert "G5_cost" in s.gates_triggered
-    assert s.disposition != "keep"
-    assert s.eligible_for_shortlist is False
+    assert s.disposition == "shadow_only"
+    assert s.eligible_for_shortlist is True
 
 
 def test_martingale_card_is_capped_below_keep():
@@ -87,6 +88,8 @@ def test_weak_card_lands_reject_by_band():
         RUBRIC,
     )
     assert s.disposition == "reject"
+    # v2: a verified card whose disposition is `reject` is NOT shortlist-eligible.
+    assert s.eligible_for_shortlist is False
 
 
 def test_scoring_is_deterministic():
@@ -132,7 +135,7 @@ def test_freeze_shortlist_refuses_unverified():
     scored = [score_card(_good_card(candidate_id=f"seed{i}"), RUBRIC) for i in range(8)]
     result = freeze_shortlist(scored, RUBRIC)
     assert result.shortlist == ()
-    assert "no source-verified keep candidates" in " ".join(result.gaps).lower()
+    assert "no source-verified" in " ".join(result.gaps).lower()
 
 
 def test_freeze_shortlist_enforces_family_diversity():

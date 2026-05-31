@@ -136,8 +136,13 @@ martingale into the shortlist — hence the independent caps.)
 
 ### Pre-validation disposition mapping
 
-`keep` (shortlist-eligible) / `shadow_only` / `reject`, from composite bands +
-gate caps. Band thresholds live in the frozen rubric.
+`keep` / `shadow_only` / `reject`, from composite bands + gate caps. Band
+thresholds live in the frozen rubric. **Shortlist eligibility (v2) = verified +
+disposition ∈ {keep, shadow_only}** (excludes only `reject`): public crypto
+strategies are almost all GPL/unclear-license (G1) or cost-sensitive (G5) and thus
+cap to `shadow_only`, so a keep-only shortlist is structurally empty for this
+domain, and clean-room handling of GPL is explicitly sanctioned. (v1 was keep-only;
+the change is recorded via `RUBRIC_VERSION` bump + new `config_hash`.)
 
 ### Freeze enforcement
 
@@ -151,7 +156,7 @@ runbook **before** any Phase-3 validation result exists (pre-registration).
 
 | rule | requirement |
 |------|-------------|
-| **R1 unverified ⇒ not shortlist-eligible** | `source_verified=false` or `score_status=unverified_seed` → only a `provisional_score`, `eligible_for_shortlist=false`. Scorer **refuses** to freeze a shortlist containing any non-verified candidate. Promotion happens only after a survey session sets `source_verified=true` + `score_status=verified`. |
+| **R1 unverified ⇒ not shortlist-eligible** | eligible = `source_verified` AND `score_status=="verified"` AND `disposition != "reject"` (v2). `unverified_seed` / `taxonomy_only` / `source_unavailable` / reject → `eligible_for_shortlist=false`. Scorer **refuses** to freeze a shortlist containing any non-verified candidate. Promotion happens only after a survey session sets `source_verified=true` + `score_status=verified`. |
 | **R2 no fabrication / evidence required** | `verified` requires non-null `source_url`, `license`, `code_availability`, `strategy_family`. Missing → forced to `code_not_confirmed`/`source_unavailable`, never silently scored. A card claiming `verified` without the evidence fields is flagged. |
 | **R3 determinism + freeze** | Same catalog → identical scores, ranking, shortlist. Stable sort, tie-break on `candidate_id`. No clock/random. Rubric hash pinned by test. |
 | **R4 family diversity** | Shortlist 6–8: ≤2 per `strategy_family`, ≥K distinct families. If the verified pool cannot meet diversity, surface the gap rather than pad with near-duplicates (no all-RSI/MACD/Bollinger shortlist). |

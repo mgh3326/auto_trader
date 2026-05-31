@@ -64,29 +64,49 @@ def test_unknown_field_is_an_error(tmp_path):
     assert any("surprise" in e for e in load.errors)
 
 
-# --- Seed-catalog end-to-end tests ---
+# --- Committed catalog (post-survey) end-to-end tests ---
 
-_SEED_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "candidates.json")
-
-
-def test_seed_catalog_loads_clean():
-    load = load_catalog(_SEED_PATH)
-    assert load.errors == () or load.errors == []
-    assert 8 <= len(load.cards) <= 12
+_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "candidates.json"
+)
 
 
-def test_seed_catalog_covers_at_least_four_buckets():
-    load = load_catalog(_SEED_PATH)
+def test_catalog_loads_clean_and_meets_minimum():
+    # Acceptance: >=15 well-described candidates, no validation errors.
+    load = load_catalog(_CATALOG_PATH)
+    assert load.errors == ()
+    assert len(load.cards) >= 15
+
+
+def test_catalog_covers_at_least_four_buckets():
+    load = load_catalog(_CATALOG_PATH)
     buckets = {c.source_bucket for c in load.cards}
     assert len(buckets) >= 4
 
 
-def test_all_seeds_are_unverified_and_not_shortlist_eligible():
-    # R1: cold-start seeds must never be promotable before verification.
-    load = load_catalog(_SEED_PATH)
-    assert all(c.score_status == "unverified_seed" for c in load.cards)
-    assert all(c.source_verified is False for c in load.cards)
+def test_catalog_shortlist_is_verified_only_and_diverse():
+    # R1 + R4 end-to-end on the real catalog: the frozen shortlist contains only
+    # source-verified, non-rejected candidates and is family-diverse.
+    load = load_catalog(_CATALOG_PATH)
     scored = [score_card(c, RUBRIC) for c in load.cards]
-    assert all(not s.eligible_for_shortlist for s in scored)
     result = freeze_shortlist(scored, RUBRIC)
-    assert result.shortlist == ()
+    assert result.shortlist  # non-empty
+    assert len(result.shortlist) <= RUBRIC.shortlist_max
+    for s in result.shortlist:
+        assert s.score_status == "verified"
+        assert s.disposition != "reject"
+    fam_counts = {}
+    for s in result.shortlist:
+        fam_counts[s.strategy_family] = fam_counts.get(s.strategy_family, 0) + 1
+    assert all(c <= RUBRIC.max_per_family for c in fam_counts.values())
+    assert len(fam_counts) >= RUBRIC.min_distinct_families
+
+
+def test_catalog_non_verified_cards_never_shortlisted():
+    # R1: taxonomy_only / unverified cards must not be source_verified-eligible.
+    load = load_catalog(_CATALOG_PATH)
+    scored = [score_card(c, RUBRIC) for c in load.cards]
+    eligible_ids = {s.candidate_id for s in scored if s.eligible_for_shortlist}
+    for c in load.cards:
+        if c.score_status != "verified" or not c.source_verified:
+            assert c.candidate_id not in eligible_ids

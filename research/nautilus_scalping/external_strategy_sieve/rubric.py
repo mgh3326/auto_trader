@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 
 from external_strategy_sieve.schema import CandidateCard
 
-RUBRIC_VERSION = "rob383.sieve.v1"
+RUBRIC_VERSION = "rob383.sieve.v2"
 
 # Positive criteria and their weights.
 WEIGHTS: dict[str, int] = {
