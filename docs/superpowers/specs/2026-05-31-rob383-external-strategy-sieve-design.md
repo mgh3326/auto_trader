@@ -51,7 +51,7 @@ research/nautilus_scalping/external_strategy_sieve/
 ├── rubric.py        # frozen scoring rubric: weights, gates, RUBRIC_VERSION + config_hash()
 ├── scorer.py        # pure stdlib: cards → scores → disposition → bucketed output + shortlist freeze
 ├── catalog.py       # YAML loader + integrity guards over the card list
-├── candidates.yaml  # seed 8–12 cards, all source_verified=false / score_status=unverified_seed
+├── candidates.json  # seed 8–12 cards, all source_verified=false / score_status=unverified_seed
 └── tests/
     ├── __init__.py
     ├── test_schema.py
@@ -232,7 +232,7 @@ Read-only instruction set for a separate session (codex / gemini / agy worker).
   source-code copy; metadata only in cards; popularity ≠ alpha; never touch
   broker/order/DB/scheduler/secret paths.
 - **Role separation:** workers (incl. agy) perform read-only survey only and
-  produce structured card proposals. Repo edits, `candidates.yaml` merges, scorer
+  produce structured card proposals. Repo edits, `candidates.json` merges, scorer
   runs, and shortlist freeze are done **only by Claude Code main/integrator**.
 
 ## 9. Runbook skeleton (`docs/runbooks/external-crypto-strategy-sieve.md`)
