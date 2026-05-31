@@ -1,0 +1,47 @@
+[
+  {
+    "code": "IDX.UPBIT.SCTIDXD02_EW",
+    "candleDateTime": "2026-05-30T16:22:19+00:00",
+    "openingPrice": 144.142815,
+    "highPrice": 147.24490408,
+    "lowPrice": 143.03640562,
+    "tradePrice": 143.4315158,
+    "prevClosingPrice": 144.43052706,
+    "change": "FALL",
+    "changePrice": 0.9990112600000032,
+    "signedChangePrice": -0.9990112600000032,
+    "changeRate": 0.006916898250914683,
+    "signedChangeRate": -0.006916898250914683,
+    "timestamp": 1780158139000
+  },
+  {
+    "code": "IDX.UPBIT.SCTIDXC03-01_EW",
+    "candleDateTime": "2026-05-30T16:22:19+00:00",
+    "openingPrice": 433.15635212,
+    "highPrice": 443.6192933,
+    "lowPrice": 433.11610108,
+    "tradePrice": 438.61765462,
+    "prevClosingPrice": 433.0750207,
+    "change": "RISE",
+    "changePrice": 5.542633920000014,
+    "signedChangePrice": 5.542633920000014,
+    "changeRate": 0.012798322819545627,
+    "signedChangeRate": 0.012798322819545627,
+    "timestamp": 1780158139000
+  },
+  {
+    "code": "IDX.UPBIT.SCTIDXC01-01_EW",
+    "candleDateTime": "2026-05-30T16:22:09+00:00",
+    "openingPrice": 3195.38733006,
+    "highPrice": 3227.18735711,
+    "lowPrice": 3194.83715984,
+    "tradePrice": 3207.30134583,
+    "prevClosingPrice": 3195.8218629,
+    "change": "RISE",
+    "changePrice": 11.479482930000358,
+    "signedChangePrice": 11.479482930000358,
+    "changeRate": 0.0035920284116159884,
+    "signedChangeRate": 0.0035920284116159884,
+    "timestamp": 1780158129000
+  }
+]

@@ -1,0 +1,60 @@
+{
+  "markets": [
+    {
+      "code": "CRIX.UPBIT.KRW-USDS",
+      "localName": "유에스디에스",
+      "koreanName": "유에스디에스",
+      "englishName": "USDS",
+      "pair": "USDS/KRW",
+      "volumePower": 374.13031509,
+      "signedChangePrice": 3.0,
+      "signedChangeRate": 0.00202977,
+      "rank": 1
+    },
+    {
+      "code": "CRIX.UPBIT.KRW-AERO",
+      "localName": "에어로드롬파이낸스",
+      "koreanName": "에어로드롬파이낸스",
+      "englishName": "Aerodrome Finance",
+      "pair": "AERO/KRW",
+      "volumePower": 326.79727289,
+      "signedChangePrice": 14.0,
+      "signedChangeRate": 0.022875817,
+      "rank": 2
+    },
+    {
+      "code": "CRIX.UPBIT.KRW-XAUT",
+      "localName": "테더골드",
+      "koreanName": "테더골드",
+      "englishName": "Tether Gold",
+      "pair": "XAUT/KRW",
+      "volumePower": 199.12158292,
+      "signedChangePrice": -3000.0,
+      "signedChangeRate": -0.0004480287,
+      "rank": 3
+    },
+    {
+      "code": "CRIX.UPBIT.KRW-DEEP",
+      "localName": "딥북",
+      "koreanName": "딥북",
+      "englishName": "DeepBook",
+      "pair": "DEEP/KRW",
+      "volumePower": 195.79450547,
+      "signedChangePrice": 0.2,
+      "signedChangeRate": 0.004587156,
+      "rank": 4
+    },
+    {
+      "code": "CRIX.UPBIT.KRW-JST",
+      "localName": "저스트",
+      "koreanName": "저스트",
+      "englishName": "JUST",
+      "pair": "JST/KRW",
+      "volumePower": 185.77261698,
+      "signedChangePrice": 0.0,
+      "signedChangeRate": 0,
+      "rank": 5
+    }
+  ],
+  "lastUpdated": 1780158193729
+}
