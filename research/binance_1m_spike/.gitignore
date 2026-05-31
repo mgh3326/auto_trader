@@ -1,0 +1,7 @@
+# Spike-local data + artifacts: never commit raw bars or result dumps.
+data/
+results/
+__pycache__/
+*.pyc
+_run.*
+_*.txt
