@@ -23,6 +23,7 @@ from app.services.action_report.snapshot_backed.collectors.journal import (
     JournalSnapshotCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.market import (
+    AltseasonFn,
     IndexQuoteFn,
     MarketEventsSnapshotCollector,
 )
@@ -198,6 +199,25 @@ def _build_market_index_quote_fn() -> IndexQuoteFn:
     return _index_quote_fn
 
 
+def _build_altseason_fn() -> AltseasonFn:
+    """Read-only adapter over the Upbit altseason source (ROB-381 PR3).
+
+    Returns the UBAI/UBMI ratio + 24h alt-vs-BTC breadth snapshot, or ``None`` on
+    any failure. Imported lazily and already fail-open inside the service, so the
+    crypto market snapshot degrades gracefully. No order/mutation surface.
+    """
+
+    async def _altseason_fn() -> dict[str, Any] | None:
+        from app.services.external.upbit_index import fetch_upbit_altseason
+
+        try:
+            return await fetch_upbit_altseason()
+        except Exception:  # noqa: BLE001 — best-effort altseason signal
+            return None
+
+    return _altseason_fn
+
+
 def _build_news_fetch_fn() -> NewsFetchFn:
     """Read-only adapter over the deterministic, market-aware news source.
 
@@ -267,7 +287,9 @@ def production_collector_registry(session: AsyncSession) -> SnapshotCollectorReg
     registry.register(WatchContextSnapshotCollector(session))
     registry.register(
         MarketEventsSnapshotCollector(
-            session, index_quote_fn=_build_market_index_quote_fn()
+            session,
+            index_quote_fn=_build_market_index_quote_fn(),
+            altseason_fn=_build_altseason_fn(),
         )
     )
 
