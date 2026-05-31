@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.schemas.investment_stages import (
     StageArtifactPayload,
     StageCitation,
@@ -47,6 +49,46 @@ def _select_index(indices: dict, market: str) -> tuple[str, float] | None:
     return None
 
 
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _altseason_points(altseason: Any) -> tuple[list[str], list[str]]:
+    """Return compact Upbit altseason summary/key-point strings.
+
+    The market snapshot stores Upbit altseason as best-effort optional data.
+    Missing/non-numeric fields are skipped rather than fabricated, so the
+    CRYPTO index remains the only hard gate for the market stage.
+    """
+    if not isinstance(altseason, dict):
+        return [], []
+
+    summary_parts: list[str] = []
+    key_points: list[str] = []
+
+    ratio = _coerce_float(altseason.get("ubai_ubmi_ratio"))
+    if ratio is not None:
+        ratio_text = f"{ratio:.3f}"
+        summary_parts.append(f"UBAI/UBMI={ratio_text}")
+        key_points.append(f"Upbit altseason UBAI/UBMI={ratio_text}")
+
+    breadth = altseason.get("breadth")
+    breadth_pct = None
+    if isinstance(breadth, dict):
+        breadth_pct = _coerce_float(breadth.get("alts_beating_btc_pct"))
+    if breadth_pct is not None:
+        breadth_text = f"{breadth_pct * 100:.1f}%"
+        summary_parts.append(f"alts_beating_btc={breadth_text}")
+        key_points.append(f"Upbit breadth alts beating BTC {breadth_text}")
+
+    return summary_parts, key_points
+
+
 class MarketStage:
     stage_type = "market"
 
@@ -77,23 +119,60 @@ class MarketStage:
 
         confidence = min(int(abs(change) * 30), 90)
 
+        summary = f"{symbol} change_percent={change:+.2f}%"
+        key_points = [f"{symbol} {change:+.2f}%"]
+        cited_snapshots = [
+            StageCitation(
+                snapshot_uuid=snapshot.snapshot_uuid,
+                snapshot_kind="market",
+                payload_path=f"$.indices.{symbol}.change_percent",
+            )
+        ]
+        if market == "crypto":
+            altseason = (snapshot.payload_json or {}).get("altseason")
+            altseason_summary_parts, altseason_key_points = _altseason_points(altseason)
+            if altseason_summary_parts:
+                summary = (
+                    f"{summary}; Upbit altseason {', '.join(altseason_summary_parts)}"
+                )
+                key_points.extend(altseason_key_points)
+                if (
+                    isinstance(altseason, dict)
+                    and _coerce_float(altseason.get("ubai_ubmi_ratio")) is not None
+                ):
+                    cited_snapshots.append(
+                        StageCitation(
+                            snapshot_uuid=snapshot.snapshot_uuid,
+                            snapshot_kind="market",
+                            payload_path="$.altseason.ubai_ubmi_ratio",
+                        )
+                    )
+                breadth = (
+                    altseason.get("breadth") if isinstance(altseason, dict) else None
+                )
+                if (
+                    isinstance(breadth, dict)
+                    and _coerce_float(breadth.get("alts_beating_btc_pct")) is not None
+                ):
+                    cited_snapshots.append(
+                        StageCitation(
+                            snapshot_uuid=snapshot.snapshot_uuid,
+                            snapshot_kind="market",
+                            payload_path="$.altseason.breadth.alts_beating_btc_pct",
+                        )
+                    )
+
         return StageArtifactPayload(
             stage_type=self.stage_type,
             verdict=verdict,
             confidence=max(confidence, 30 if verdict != StageVerdict.NEUTRAL else 20),
-            summary=f"{symbol} change_percent={change:+.2f}%",
-            key_points=[f"{symbol} {change:+.2f}%"],
+            summary=summary,
+            key_points=key_points,
             buy_evidence=[f"{symbol} 상승 {change:+.2f}%"]
             if verdict == StageVerdict.BULL
             else [],
             sell_evidence=[f"{symbol} 하락 {change:+.2f}%"]
             if verdict == StageVerdict.BEAR
             else [],
-            cited_snapshots=[
-                StageCitation(
-                    snapshot_uuid=snapshot.snapshot_uuid,
-                    snapshot_kind="market",
-                    payload_path=f"$.indices.{symbol}.change_percent",
-                )
-            ],
+            cited_snapshots=cited_snapshots,
         )
