@@ -1,0 +1,50 @@
+{
+  "markets": [
+    {
+      "code": "CRIX.UPBIT.BTC-SC",
+      "localName": "시아코인",
+      "koreanName": "시아코인",
+      "englishName": "Siacoin",
+      "pair": "SC/BTC",
+      "signedChangeRate": 1,
+      "rank": 1
+    },
+    {
+      "code": "CRIX.UPBIT.BTC-XLM",
+      "localName": "스텔라루멘",
+      "koreanName": "스텔라루멘",
+      "englishName": "Lumen",
+      "pair": "XLM/BTC",
+      "signedChangeRate": 0.7382198953,
+      "rank": 2
+    },
+    {
+      "code": "CRIX.UPBIT.BTC-PROS",
+      "localName": "파로스",
+      "koreanName": "파로스",
+      "englishName": "Pharos",
+      "pair": "PROS/BTC",
+      "signedChangeRate": 0.5503875969,
+      "rank": 3
+    },
+    {
+      "code": "CRIX.UPBIT.BTC-AZTEC",
+      "localName": "아즈텍",
+      "koreanName": "아즈텍",
+      "englishName": "Aztec",
+      "pair": "AZTEC/BTC",
+      "signedChangeRate": 0.55,
+      "rank": 4
+    },
+    {
+      "code": "CRIX.UPBIT.BTC-ID",
+      "localName": "스페이스아이디",
+      "koreanName": "스페이스아이디",
+      "englishName": "SPACE ID",
+      "pair": "ID/BTC",
+      "signedChangeRate": 0.5384615385,
+      "rank": 5
+    }
+  ],
+  "lastUpdated": 1780158005000
+}
