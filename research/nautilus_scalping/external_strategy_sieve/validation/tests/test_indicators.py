@@ -14,7 +14,8 @@ from external_strategy_sieve.validation.indicators import (
 
 def _bars(seq):
     return [
-        families.Bar(ts=i, high=h, low=l, close=c) for i, (h, l, c) in enumerate(seq)
+        families.Bar(ts=i, high=high, low=low, close=close)
+        for i, (high, low, close) in enumerate(seq)
     ]
 
 

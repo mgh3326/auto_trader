@@ -29,7 +29,9 @@ def random_entry_trades(
         entry = bars[i].close
         exit_ = bars[i + hold].close
         ret = (exit_ - entry) / entry if entry else 0.0
-        trades.append(make_taker_trade(ret * notional, bars[i].ts, notional, ref_fee_bps))
+        trades.append(
+            make_taker_trade(ret * notional, bars[i].ts, notional, ref_fee_bps)
+        )
     return trades
 
 

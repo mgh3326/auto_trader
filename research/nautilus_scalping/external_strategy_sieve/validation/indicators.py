@@ -96,11 +96,7 @@ def rsi(closes: Sequence[float], n: int) -> list[float | None]:
         delta = closes[i] - closes[i - 1]
         avg_gain = (avg_gain * (n - 1) + max(delta, 0.0)) / n
         avg_loss = (avg_loss * (n - 1) + max(-delta, 0.0)) / n
-        out[i] = (
-            100.0
-            if avg_loss == 0
-            else 100.0 - 100.0 / (1 + avg_gain / avg_loss)
-        )
+        out[i] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1 + avg_gain / avg_loss)
     return out
 
 

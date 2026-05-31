@@ -88,8 +88,12 @@ def supertrend_trades(
             direction[i] = prev_dir
             continue
         c_prev = bars[i - 1].close
-        final_upper = basic_upper if basic_upper < fu_prev or c_prev > fu_prev else fu_prev
-        final_lower = basic_lower if basic_lower > fl_prev or c_prev < fl_prev else fl_prev
+        final_upper = (
+            basic_upper if basic_upper < fu_prev or c_prev > fu_prev else fu_prev
+        )
+        final_lower = (
+            basic_lower if basic_lower > fl_prev or c_prev < fl_prev else fl_prev
+        )
         close = bars[i].close
         if close > fu_prev:
             next_dir = "long"
@@ -180,8 +184,7 @@ def squeeze_momentum_trades(
     _kc_mid, upper_kc, lower_kc = keltner(bars, length, kc_mult)
     base = sma(closes, length)
     momentum = [
-        closes[i] - base[i] if base[i] is not None else None
-        for i in range(len(bars))
+        closes[i] - base[i] if base[i] is not None else None for i in range(len(bars))
     ]
     squeeze_on: list[bool | None] = [None] * len(bars)
     for i in range(len(bars)):
@@ -221,7 +224,8 @@ def range_filter_trades(
     diffs = [0.0] + [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
     avg_range = ema(diffs, period)
     smooth = [
-        None if avg_range[i] is None else avg_range[i] * mult for i in range(len(closes))
+        None if avg_range[i] is None else avg_range[i] * mult
+        for i in range(len(closes))
     ]
     direction: list[str | None] = [None] * len(bars)
     filt_prev: float | None = None

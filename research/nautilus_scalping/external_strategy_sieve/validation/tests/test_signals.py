@@ -52,13 +52,13 @@ def test_signals_are_deterministic():
 
 
 def test_bbrsi_v_shape_yields_long_round_trip():
-    closes = [100.0] * 25 + [100 - 3 * i for i in range(1, 16)] + [
-        55 + 3 * i for i in range(1, 30)
-    ]
-    bars = _bars_from_closes(closes)
-    trades = bbrsi_trades(
-        bars, bb_period=20, bb_k=2.0, rsi_period=14, rsi_oversold=35
+    closes = (
+        [100.0] * 25
+        + [100 - 3 * i for i in range(1, 16)]
+        + [55 + 3 * i for i in range(1, 30)]
     )
+    bars = _bars_from_closes(closes)
+    trades = bbrsi_trades(bars, bb_period=20, bb_k=2.0, rsi_period=14, rsi_oversold=35)
     assert len(trades) >= 1
     assert all(t.notional == 1000.0 for t in trades)
 
