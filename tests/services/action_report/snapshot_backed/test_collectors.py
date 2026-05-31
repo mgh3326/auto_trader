@@ -1189,6 +1189,33 @@ async def test_market_collector_altseason_none_is_omitted():
     assert results[0].coverage_json["has_altseason"] is False
 
 
+@pytest.mark.asyncio
+async def test_build_altseason_fn_returns_payload(monkeypatch):
+    # ROB-381 PR3: registry adapter passes through the upbit altseason service.
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def fake_fetch():
+        return {"ubai_ubmi_ratio": 0.47}
+
+    monkeypatch.setattr(
+        "app.services.external.upbit_index.fetch_upbit_altseason", fake_fetch
+    )
+    fn = registry._build_altseason_fn()
+    assert await fn() == {"ubai_ubmi_ratio": 0.47}
+
+
+@pytest.mark.asyncio
+async def test_build_altseason_fn_failopen_on_error(monkeypatch):
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def boom():
+        raise RuntimeError("upbit down")
+
+    monkeypatch.setattr("app.services.external.upbit_index.fetch_upbit_altseason", boom)
+    fn = registry._build_altseason_fn()
+    assert await fn() is None
+
+
 # ---------------------------------------------------------------------------
 # News collector
 # ---------------------------------------------------------------------------
