@@ -1560,8 +1560,11 @@ async def test_crypto_descriptors_are_pointers_not_empty() -> None:
     )
     assert sent.market_snapshot["provenance"]["freshness_status"] == "fresh"
     assert sent.portfolio_snapshot["provenance"]["coverage"] == {"rows": 3}
+    # Payload {"x": 1} has no whitelisted numerics and no ``holdings`` key, so
+    # the baseline is empty — holdings_count is NOT fabricated as 0 (missing !=
+    # zero).
     assert sent.market_snapshot["baseline"] == {}
-    assert sent.portfolio_snapshot["baseline"] == {"holdings_count": 0}
+    assert sent.portfolio_snapshot["baseline"] == {}
 
     # Pointer, NOT payload — the snapshot body must never be copied in.
     for descriptor in (

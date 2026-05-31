@@ -95,10 +95,14 @@ def _market_numeric_baseline(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _portfolio_numeric_baseline(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Whitelist cash/buying_power/sellable_summary + a holdings count.
-    Never copies the heavy ``holdings`` list."""
+    Never copies the heavy ``holdings`` list. ``holdings_count`` is emitted ONLY
+    when ``holdings`` is an actual list — a missing/non-list value leaves it out
+    rather than coercing to 0, so "no holdings data" is not confused with
+    "zero holdings" by a downstream delta reader."""
     base = {k: payload[k] for k in _PORTFOLIO_BASELINE_KEYS if k in payload}
     holdings = payload.get("holdings")
-    base["holdings_count"] = len(holdings) if isinstance(holdings, list) else 0
+    if isinstance(holdings, list):
+        base["holdings_count"] = len(holdings)
     return base
 
 
