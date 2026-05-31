@@ -1,6 +1,8 @@
 # ROB-381 — Upbit 디지털자산지수·알트시즌 데이터 소스 정찰 (reconnaissance spike)
 
-**Status:** PR1 reconnaissance only. No production MCP tool / collector built here.
+**Status:** PR1 reconnaissance (merged #1054). **PR2 implements** `get_upbit_index` /
+`get_upbit_altseason` MCP read tools (`app/services/external/upbit_index.py` +
+`app/mcp_server/tooling/fundamentals/_upbit_index.py`). Collector wiring = PR3.
 **Parent:** ROB-377 (코인 마켓레짐·파생심리 데이터 소스 — A1/A2 완료) · ROB-369 (crypto 리포트 데이터 공백)
 **Verdict:** `implement` — **분할 권장** (아래 [Final verdict](#final-verdict) 참고).
 **Date:** 2026-05-31
