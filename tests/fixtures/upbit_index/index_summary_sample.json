@@ -1,0 +1,86 @@
+[
+  {
+    "code": "IDX.UPBIT.SCTIDXA04-01_EW",
+    "categoryType": "sector",
+    "koreanName": "DID",
+    "englishName": "DID",
+    "headingName": null,
+    "basketCount": 4,
+    "description": {
+      "koreanSummary": "블록체인 기반의 디지털 신원 인프라 관련 디지털 자산으로 구성된 섹터 인덱스 ",
+      "englishSummary": "DID Index is the sector index composed of digital assets related to blockchain-based digital identity infrastructure.",
+      "koreanDescription": "",
+      "englishDescription": ""
+    },
+    "stats": {
+      "dailyYield": 0.08794126,
+      "weeklyYield": 0.07462481,
+      "monthlyYield": 0.16602772,
+      "quarterlyYield": -0.00544187,
+      "yearlyYield": -0.74608695,
+      "winningRate": 0.52222222,
+      "volatility": 0.58916773,
+      "beta": 1.31102905,
+      "sharpeRatio": -0.037149,
+      "alpha": -0.66007517,
+      "trackingError": 0.47267382,
+      "informationRatio": -0.69102522
+    }
+  },
+  {
+    "code": "IDX.UPBIT.SCTIDXD03-01_EW",
+    "categoryType": "sector",
+    "koreanName": "소셜/DAO",
+    "englishName": "Social/DAO",
+    "headingName": null,
+    "basketCount": 7,
+    "description": {
+      "koreanSummary": "커뮤니티 및 커뮤니티 툴 관련 디지털 자산으로 구성된 섹터 인덱스",
+      "englishSummary": "Social/DAO Index is the sector index composed of digital assets related to communities and community tools such as DAOs.",
+      "koreanDescription": "",
+      "englishDescription": ""
+    },
+    "stats": {
+      "dailyYield": 0.05144188,
+      "weeklyYield": -0.07258784,
+      "monthlyYield": -0.0375522,
+      "quarterlyYield": -0.07320627,
+      "yearlyYield": -0.71719796,
+      "winningRate": 0.51111111,
+      "volatility": 0.51728747,
+      "beta": 1.15300298,
+      "sharpeRatio": -0.51290679,
+      "alpha": -0.82658384,
+      "trackingError": 0.40986629,
+      "informationRatio": -1.22181297
+    }
+  },
+  {
+    "code": "IDX.UPBIT.SCTIDXD03_EW",
+    "categoryType": "sector",
+    "koreanName": "커뮤니티",
+    "englishName": "Community",
+    "headingName": null,
+    "basketCount": 9,
+    "description": {
+      "koreanSummary": "커뮤니티 관련 플랫폼 혹은 관련 서비스 디지털 자산으로 구성된 섹터 인덱스",
+      "englishSummary": "Community Index is the sector index composed of digital assets related to community platforms or services.",
+      "koreanDescription": "",
+      "englishDescription": ""
+    },
+    "stats": {
+      "dailyYield": 0.04528237,
+      "weeklyYield": -0.08254667,
+      "monthlyYield": -0.05857183,
+      "quarterlyYield": 0.04716825,
+      "yearlyYield": -0.69600333,
+      "winningRate": 0.51111111,
+      "volatility": 0.60455823,
+      "beta": 1.04472462,
+      "sharpeRatio": 0.33996668,
+      "alpha": -0.30302575,
+      "trackingError": 0.53142196,
+      "informationRatio": -0.3511525
+    }
+  }
+]
