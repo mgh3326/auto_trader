@@ -14,7 +14,7 @@ import families
 from families import REF_FEE_BPS, make_taker_trade
 from validated_gate import Trade
 
-from external_strategy_sieve.validation.indicators import atr
+from external_strategy_sieve.validation.indicators import atr, bollinger, closes_of, rsi
 
 
 def _round_trip(
@@ -122,3 +122,33 @@ def chandelier_trades(
         direction[i] = next_dir
         prev_dir = next_dir
     return _trades_from_direction(bars, direction, notional, ref_fee_bps)
+
+
+def bbrsi_trades(
+    bars: Sequence[families.Bar],
+    bb_period: int = 20,
+    bb_k: float = 2.0,
+    rsi_period: int = 14,
+    rsi_oversold: float = 30.0,
+    notional: float = 1000.0,
+    ref_fee_bps: float = REF_FEE_BPS,
+) -> list[Trade]:
+    """Long-only mean reversion: lower Bollinger breach plus RSI oversold."""
+    closes = closes_of(bars)
+    mid, _upper, lower = bollinger(closes, bb_period, bb_k)
+    r = rsi(closes, rsi_period)
+    trades: list[Trade] = []
+    pos: tuple[float, int] | None = None
+    for i in range(len(bars)):
+        if lower[i] is None or r[i] is None or mid[i] is None:
+            continue
+        close = bars[i].close
+        if pos is None:
+            if close < lower[i] and r[i] < rsi_oversold:
+                pos = (close, bars[i].ts)
+        elif close >= mid[i]:
+            trade = _round_trip("long", pos[0], close, pos[1], notional, ref_fee_bps)
+            if trade:
+                trades.append(trade)
+            pos = None
+    return trades

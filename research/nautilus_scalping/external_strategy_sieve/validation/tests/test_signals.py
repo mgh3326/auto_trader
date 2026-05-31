@@ -3,8 +3,6 @@ import families
 from external_strategy_sieve.validation.signals import (
     bbrsi_trades,
     chandelier_trades,
-    range_filter_trades,
-    squeeze_momentum_trades,
     supertrend_trades,
 )
 
@@ -41,6 +39,8 @@ def test_chandelier_up_then_down_yields_trades():
 
 
 def test_range_filter_up_then_down_yields_trades():
+    from external_strategy_sieve.validation.signals import range_filter_trades
+
     bars = _bars_from_closes(_up_then_down())
     trades = range_filter_trades(bars, period=10, mult=1.0)
     assert len(trades) >= 1
@@ -49,3 +49,15 @@ def test_range_filter_up_then_down_yields_trades():
 def test_signals_are_deterministic():
     bars = _bars_from_closes(_up_then_down())
     assert supertrend_trades(bars) == supertrend_trades(bars)
+
+
+def test_bbrsi_v_shape_yields_long_round_trip():
+    closes = [100.0] * 25 + [100 - 3 * i for i in range(1, 16)] + [
+        55 + 3 * i for i in range(1, 30)
+    ]
+    bars = _bars_from_closes(closes)
+    trades = bbrsi_trades(
+        bars, bb_period=20, bb_k=2.0, rsi_period=14, rsi_oversold=35
+    )
+    assert len(trades) >= 1
+    assert all(t.notional == 1000.0 for t in trades)
