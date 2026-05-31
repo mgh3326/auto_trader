@@ -34,6 +34,27 @@ from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
 
+# ROB-375 Bug 1 — advisory reports persist as status="draft" (no publish step),
+# but so does smoke/CI boilerplate. ``created_by_profile`` is the reliable
+# discriminator: the Hermes advisory composition path hard-codes
+# "HERMES_ADVISOR" (investment_hermes_handlers / hermes_ingest), and no
+# smoke/test/operator profile ("t", "test", "schedule", "pilot-operator", …)
+# uses it. So a draft counts as an advisory prior iff it carries this profile.
+_ADVISORY_DRAFT_PROFILES: frozenset[str] = frozenset({"HERMES_ADVISOR"})
+
+# Allowed draft policies for ``previous_report_context``. There is intentionally
+# NO "all" policy — admitting every draft would re-introduce smoke boilerplate.
+DRAFT_POLICY_EXCLUDE = "exclude"
+DRAFT_POLICY_ADVISORY_ONLY = "advisory_only"
+_VALID_DRAFT_POLICIES: frozenset[str] = frozenset(
+    {DRAFT_POLICY_EXCLUDE, DRAFT_POLICY_ADVISORY_ONLY}
+)
+
+
+def _is_advisory_draft(report: InvestmentReport) -> bool:
+    """True when a draft report is a genuine advisory baseline (not smoke)."""
+    return report.created_by_profile in _ADVISORY_DRAFT_PROFILES
+
 
 class InvestmentReportQueryService:
     """Read-only queries — list / get / latest / previous-context."""
@@ -248,7 +269,7 @@ class InvestmentReportQueryService:
         exclude_report_uuid: UUID | None = None,
         n_prior: int = 3,
         events_since: datetime | None = None,
-        include_draft: bool = False,
+        draft_policy: str = DRAFT_POLICY_EXCLUDE,
     ) -> dict[str, Any]:
         """Locked refinement #7 — previous context is a query, not a single FK.
 
@@ -256,11 +277,17 @@ class InvestmentReportQueryService:
         the unresolved/deferred items, active watches, triggered watch
         events, and recent decisions that span those reports.
         """
-        # ROB-352 Slice B — fetch a buffer so dropping drafts (smoke
-        # boilerplate ships as draft) + the excluded uuid still yields up to
-        # n_prior published rows. NOTE: silently under-fills (returns < n_prior)
-        # if more than _DRAFT_FETCH_BUFFER consecutive drafts precede the last
-        # wanted published row; raise the buffer if smoke density grows.
+        if draft_policy not in _VALID_DRAFT_POLICIES:
+            raise ValueError(
+                f"draft_policy must be one of {sorted(_VALID_DRAFT_POLICIES)}; "
+                f"got {draft_policy!r}"
+            )
+
+        # ROB-352 Slice B / ROB-375 Bug 1 — fetch a buffer so dropping excluded
+        # drafts + the excluded uuid still yields up to n_prior kept rows. NOTE:
+        # silently under-fills (returns < n_prior) if more than
+        # _DRAFT_FETCH_BUFFER consecutive dropped drafts precede the last wanted
+        # row; raise the buffer if smoke density grows.
         _DRAFT_FETCH_BUFFER = 5
         prior_reports: list[InvestmentReport] = await self._repo.list_reports(
             market=market,
@@ -273,7 +300,13 @@ class InvestmentReportQueryService:
             prior_reports = [
                 r for r in prior_reports if r.report_uuid != exclude_report_uuid
             ]
-        if not include_draft:
+        # Draft handling: 'exclude' drops every draft (default); 'advisory_only'
+        # keeps advisory drafts (HERMES_ADVISOR) but still drops smoke drafts.
+        if draft_policy == DRAFT_POLICY_ADVISORY_ONLY:
+            prior_reports = [
+                r for r in prior_reports if r.status != "draft" or _is_advisory_draft(r)
+            ]
+        else:  # DRAFT_POLICY_EXCLUDE
             prior_reports = [r for r in prior_reports if r.status != "draft"]
         prior_reports = prior_reports[:n_prior]
 
