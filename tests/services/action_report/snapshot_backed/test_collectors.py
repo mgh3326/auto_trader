@@ -1115,6 +1115,107 @@ async def test_market_collector_no_index_fn_emits_no_indices():
     assert "indices" not in results[0].payload_json
 
 
+@pytest.mark.asyncio
+async def test_market_collector_crypto_attaches_altseason():
+    # ROB-381 PR3: crypto market dimension gains an Upbit altseason snapshot.
+    called = {"hit": False}
+
+    async def fake_altseason_fn():
+        called["hit"] = True
+        return {"ubai_ubmi_ratio": 0.455, "breadth": {"alts_beating_btc_pct": 0.42}}
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    payload = results[0].payload_json
+    assert called["hit"] is True
+    assert payload["altseason"]["ubai_ubmi_ratio"] == 0.455
+    assert results[0].coverage_json["has_altseason"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_only_for_crypto():
+    # Non-crypto markets never call the altseason source.
+    called = {"hit": False}
+
+    async def fake_altseason_fn():
+        called["hit"] = True
+        return {"ubai_ubmi_ratio": 0.5}
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="us"))
+    assert called["hit"] is False
+    assert "altseason" not in results[0].payload_json
+    assert results[0].coverage_json["has_altseason"] is False
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_failure_is_soft():
+    # Altseason is best-effort: a fetch error leaves the rest of the snapshot.
+    async def fake_altseason_fn():
+        raise RuntimeError("upbit down")
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    assert results[0].freshness_status == "fresh"
+    assert "events" in results[0].payload_json
+    assert "altseason" not in results[0].payload_json
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_none_is_omitted():
+    # Source returning None (both planes down) → no altseason key, not fabricated.
+    async def fake_altseason_fn():
+        return None
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    assert "altseason" not in results[0].payload_json
+    assert results[0].coverage_json["has_altseason"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_altseason_fn_returns_payload(monkeypatch):
+    # ROB-381 PR3: registry adapter passes through the upbit altseason service.
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def fake_fetch():
+        return {"ubai_ubmi_ratio": 0.47}
+
+    monkeypatch.setattr(
+        "app.services.external.upbit_index.fetch_upbit_altseason", fake_fetch
+    )
+    fn = registry._build_altseason_fn()
+    assert await fn() == {"ubai_ubmi_ratio": 0.47}
+
+
+@pytest.mark.asyncio
+async def test_build_altseason_fn_failopen_on_error(monkeypatch):
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def boom():
+        raise RuntimeError("upbit down")
+
+    monkeypatch.setattr("app.services.external.upbit_index.fetch_upbit_altseason", boom)
+    fn = registry._build_altseason_fn()
+    assert await fn() is None
+
+
 # ---------------------------------------------------------------------------
 # News collector
 # ---------------------------------------------------------------------------
