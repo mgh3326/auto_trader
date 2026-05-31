@@ -9,13 +9,12 @@ Leaderboard rank / popularity never enters scoring (R8) — it is not a card fie
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from external_strategy_sieve.rubric import (
     MAX_POSITIVE,
     MIN_COMPOSITE,
     Rubric,
-    classify_license,
     derive_scores,
 )
 from external_strategy_sieve.schema import CandidateCard
@@ -115,8 +114,11 @@ _STATUS_BUCKET = {
     "reject": "reject",
 }
 _BUCKET_NAMES = (
-    "verified_ranked", "unverified_seed", "taxonomy_only",
-    "source_unavailable", "reject",
+    "verified_ranked",
+    "unverified_seed",
+    "taxonomy_only",
+    "source_unavailable",
+    "reject",
 )
 
 
@@ -132,7 +134,9 @@ def bucketize(scored: list[ScoredCandidate]) -> dict[str, list[ScoredCandidate]]
     buckets: dict[str, list[ScoredCandidate]] = {name: [] for name in _BUCKET_NAMES}
     for s in scored:
         buckets[_STATUS_BUCKET[s.score_status]].append(s)
-    buckets["verified_ranked"].sort(key=lambda s: (-s.composite_normalized, s.candidate_id))
+    buckets["verified_ranked"].sort(
+        key=lambda s: (-s.composite_normalized, s.candidate_id)
+    )
     return buckets
 
 
@@ -166,7 +170,7 @@ def freeze_shortlist(scored: list[ScoredCandidate], rubric: Rubric) -> Shortlist
         gaps.append(
             f"Only {len(shortlist)} eligible candidates; shortlist_min is {rubric.shortlist_min}."
         )
-    distinct = len(set(s.strategy_family for s in shortlist))
+    distinct = len({s.strategy_family for s in shortlist})
     if distinct < rubric.min_distinct_families:
         gaps.append(
             f"Only {distinct} distinct families in shortlist; "

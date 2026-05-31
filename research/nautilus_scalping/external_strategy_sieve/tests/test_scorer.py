@@ -1,17 +1,24 @@
-from external_strategy_sieve.scorer import score_card, bucketize, freeze_shortlist
 from external_strategy_sieve.rubric import RUBRIC
+from external_strategy_sieve.scorer import bucketize, freeze_shortlist, score_card
 from external_strategy_sieve.tests.test_schema import _good_card
 
 
 def _strong_verified(**overrides):
-    base = dict(
-        license="MIT", code_availability="open", data_requirements=("ohlcv",),
-        expected_cost_sensitivity="low", spot_or_futures="both",
-        novelty_vs_failed_families="novel", holding_horizon="intraday",
-        implementation_complexity="low", lookahead_repaint_risk="none",
-        tail_risk_flags=(), source_verified=True, score_status="verified",
-        recommended_disposition_pre_validation="keep",
-    )
+    base = {
+        "license": "MIT",
+        "code_availability": "open",
+        "data_requirements": ("ohlcv",),
+        "expected_cost_sensitivity": "low",
+        "spot_or_futures": "both",
+        "novelty_vs_failed_families": "novel",
+        "holding_horizon": "intraday",
+        "implementation_complexity": "low",
+        "lookahead_repaint_risk": "none",
+        "tail_risk_flags": (),
+        "source_verified": True,
+        "score_status": "verified",
+        "recommended_disposition_pre_validation": "keep",
+    }
     base.update(overrides)
     return _good_card(**base)
 
@@ -26,7 +33,9 @@ def test_strong_card_scores_keep_and_is_eligible():
 
 def test_unverified_seed_is_never_eligible():
     # R1: even a metadata-strong seed cannot be shortlist-eligible.
-    s = score_card(_strong_verified(source_verified=False, score_status="unverified_seed"), RUBRIC)
+    s = score_card(
+        _strong_verified(source_verified=False, score_status="unverified_seed"), RUBRIC
+    )
     assert s.eligible_for_shortlist is False
 
 
@@ -60,14 +69,23 @@ def test_opaque_code_triggers_gate():
 
 
 def test_weak_card_lands_reject_by_band():
-    s = score_card(_good_card(
-        license="proprietary", code_availability="opaque",
-        data_requirements=("ohlcv", "fundamentals"), expected_cost_sensitivity="high",
-        spot_or_futures="spot", novelty_vs_failed_families="duplicate",
-        holding_horizon="position", implementation_complexity="high",
-        lookahead_repaint_risk="high", tail_risk_flags=("martingale",),
-        source_verified=True, score_status="verified",
-    ), RUBRIC)
+    s = score_card(
+        _good_card(
+            license="proprietary",
+            code_availability="opaque",
+            data_requirements=("ohlcv", "fundamentals"),
+            expected_cost_sensitivity="high",
+            spot_or_futures="spot",
+            novelty_vs_failed_families="duplicate",
+            holding_horizon="position",
+            implementation_complexity="high",
+            lookahead_repaint_risk="high",
+            tail_risk_flags=("martingale",),
+            source_verified=True,
+            score_status="verified",
+        ),
+        RUBRIC,
+    )
     assert s.disposition == "reject"
 
 
@@ -120,18 +138,27 @@ def test_freeze_shortlist_refuses_unverified():
 def test_freeze_shortlist_enforces_family_diversity():
     # 5 trend + 2 breakout + 1 volatility, all verified-keep.
     families = ["trend"] * 5 + ["breakout", "breakout", "volatility"]
-    scored = [score_card(_verified_keep(f"c{i}", fam), RUBRIC) for i, fam in enumerate(families)]
+    scored = [
+        score_card(_verified_keep(f"c{i}", fam), RUBRIC)
+        for i, fam in enumerate(families)
+    ]
     result = freeze_shortlist(scored, RUBRIC)
     fam_counts = {}
     for s in result.shortlist:
         fam_counts[s.strategy_family] = fam_counts.get(s.strategy_family, 0) + 1
     assert all(c <= RUBRIC.max_per_family for c in fam_counts.values())
-    assert len(set(s.strategy_family for s in result.shortlist)) >= RUBRIC.min_distinct_families
+    assert (
+        len({s.strategy_family for s in result.shortlist})
+        >= RUBRIC.min_distinct_families
+    )
 
 
 def test_freeze_shortlist_reports_gap_when_too_few_families():
     # Only 2 distinct families available but min is 3.
     families = ["trend", "trend", "breakout", "breakout"]
-    scored = [score_card(_verified_keep(f"c{i}", fam), RUBRIC) for i, fam in enumerate(families)]
+    scored = [
+        score_card(_verified_keep(f"c{i}", fam), RUBRIC)
+        for i, fam in enumerate(families)
+    ]
     result = freeze_shortlist(scored, RUBRIC)
     assert any("distinct families" in g.lower() for g in result.gaps)

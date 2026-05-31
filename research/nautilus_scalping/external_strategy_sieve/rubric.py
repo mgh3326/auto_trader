@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 from external_strategy_sieve.schema import CandidateCard
 
@@ -32,15 +32,23 @@ WEIGHTS: dict[str, int] = {
 
 # Derivation tables (metadata -> 0..3).
 _CODE_AVAIL_SCORE = {"open": 3, "partial": 2, "opaque": 1, "code_not_confirmed": 0}
-_LICENSE_SCORE = {"permissive": 3, "weak_copyleft": 2, "strong_copyleft": 1, "unknown": 0}
+_LICENSE_SCORE = {
+    "permissive": 3,
+    "weak_copyleft": 2,
+    "strong_copyleft": 1,
+    "unknown": 0,
+}
 _COST_SCORE = {"low": 3, "medium": 2, "high": 0}
 _NOVELTY_SCORE = {"duplicate": 0, "adjacent": 2, "novel": 3}
 _MARKET_FIT = {"both": 3, "futures": 3, "spot": 2}
 _COMPLEXITY_PENALTY = {"low": 0, "medium": 1, "high": 2}
 _REPAINT_PENALTY = {"none": 0, "low": 0, "medium": 1, "high": 1}
 _TAIL_SEVERITY = {
-    "martingale": 3, "unlimited_averaging": 3,
-    "no_stoploss": 2, "dca": 2, "grid": 2,
+    "martingale": 3,
+    "unlimited_averaging": 3,
+    "no_stoploss": 2,
+    "dca": 2,
+    "grid": 2,
     "leverage": 1,
 }
 
@@ -97,13 +105,17 @@ def derive_scores(card: CandidateCard) -> dict:
         "source_hygiene_reproducibility": _CODE_AVAIL_SCORE[card.code_availability],
         "license_safety": _LICENSE_SCORE[classify_license(card.license)],
         "faithful_port_feasibility": max(0, port),
-        "data_availability_auto_trader": _data_availability_score(card.data_requirements),
+        "data_availability_auto_trader": _data_availability_score(
+            card.data_requirements
+        ),
         "cost_fee_survivability_potential": _COST_SCORE[card.expected_cost_sensitivity],
         "market_fit_binance_demo": _MARKET_FIT[card.spot_or_futures],
         "novelty_vs_failed_families": _NOVELTY_SCORE[card.novelty_vs_failed_families],
         "expected_daily_review_usefulness": _horizon_score(card.holding_horizon),
     }
-    tail_severity = max((_TAIL_SEVERITY.get(f, 0) for f in card.tail_risk_flags), default=0)
+    tail_severity = max(
+        (_TAIL_SEVERITY.get(f, 0) for f in card.tail_risk_flags), default=0
+    )
     return {"positive": positive, "tail_severity": tail_severity}
 
 
@@ -118,7 +130,9 @@ class Rubric:
     min_distinct_families: int = 3
     shortlist_min: int = 6
     shortlist_max: int = 8
-    code_avail_score: tuple[tuple[str, int], ...] = tuple(sorted(_CODE_AVAIL_SCORE.items()))
+    code_avail_score: tuple[tuple[str, int], ...] = tuple(
+        sorted(_CODE_AVAIL_SCORE.items())
+    )
     license_score: tuple[tuple[str, int], ...] = tuple(sorted(_LICENSE_SCORE.items()))
     cost_score: tuple[tuple[str, int], ...] = tuple(sorted(_COST_SCORE.items()))
     novelty_score: tuple[tuple[str, int], ...] = tuple(sorted(_NOVELTY_SCORE.items()))
@@ -129,7 +143,10 @@ class Rubric:
         d = asdict(self)
         for k, v in d.items():
             if isinstance(v, list):
-                d[k] = [list(item) if isinstance(item, (list, tuple)) else item for item in v]
+                d[k] = [
+                    list(item) if isinstance(item, (list, tuple)) else item
+                    for item in v
+                ]
         return d
 
     def config_hash(self) -> str:
@@ -144,4 +161,4 @@ RUBRIC = Rubric()
 
 # Maximum achievable positive weighted sum (all criteria at 3): used to normalise.
 MAX_POSITIVE = sum(w for _, w in RUBRIC.weights) * 3  # = 60
-MIN_COMPOSITE = -RUBRIC.tail_risk_weight * 3          # = -9
+MIN_COMPOSITE = -RUBRIC.tail_risk_weight * 3  # = -9
