@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -162,7 +161,7 @@ async def test_run_notifies_actionable_and_records_last_review(
 async def test_throttle_suppresses_same_verdict_same_day(
     session: AsyncSession, _stub_md
 ) -> None:
-    alert = await _seed_active_alert(session, recommendation=_rec())
+    await _seed_active_alert(session, recommendation=_rec())
     hermes = _StubHermes()
 
     @asynccontextmanager

@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.schemas.investment_reports import WatchRecommendationPayload, WatchRecommendationEvidence
+from app.schemas.investment_reports import (
+    WatchRecommendationEvidence,
+    WatchRecommendationPayload,
+)
 from app.services.investment_reports.watch_validity_policy import (
-    REPRICE_DRIFT_PCT,
     WatchValidityInput,
     classify_watch_validity,
 )
 
-_NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
+_NOW = datetime(2026, 6, 1, tzinfo=UTC)
 
 
 def _stored(entry="100", inval="80") -> dict:
@@ -38,13 +40,13 @@ def _recomputed_ok(entry: str) -> WatchRecommendationPayload:
 
 
 def _inp(**kw) -> WatchValidityInput:
-    base = dict(
-        stored_recommendation=_stored(),
-        current_price=Decimal("90"),
-        recomputed=None,
-        valid_until=_NOW + timedelta(days=30),
-        now=_NOW,
-    )
+    base = {
+        "stored_recommendation": _stored(),
+        "current_price": Decimal("90"),
+        "recomputed": None,
+        "valid_until": _NOW + timedelta(days=30),
+        "now": _NOW,
+    }
     base.update(kw)
     return WatchValidityInput(**base)
 
