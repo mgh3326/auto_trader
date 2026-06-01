@@ -136,6 +136,11 @@ class PortfolioJournalStage:
 
         missing_data = [] if journal_snaps else ["journal"]
         key_points = [e.get("thesis", "") for e in entries[:5] if e.get("thesis")]
+        # ROB-392 — surface the NAV scope label (byte-identical summary stays
+        # unchanged; the label rides only in key_points).
+        nav_scope_label = payload.get("nav_scope_label")
+        if isinstance(nav_scope_label, str) and nav_scope_label:
+            key_points = [nav_scope_label, *key_points]
 
         if currency == "krw":
             # Byte-identical legacy KR contract: buying power is always a float

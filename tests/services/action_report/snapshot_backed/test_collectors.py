@@ -2532,3 +2532,48 @@ async def test_market_collector_kr_regular_session_has_no_frozen_note():
     results = await collector.collect(_request(market="kr"))
     payload = results[0].payload_json
     assert "index_session" not in payload
+
+
+# ---------------------------------------------------------------------------
+# ROB-392 Slice A — NAV scope label + KR code-as-name fallback.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_kr_kis_live_payload_carries_nav_scope_label():
+    # Reuse the same fixture wiring as
+    # test_portfolio_v2_kr_kis_live_success_populates_kis_primary.
+    session = _manual_kr_session()
+    reader = _kis_reader_with_holdings()
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_kr_kis_request(user_id=42))
+    payload = results[0].payload_json
+    assert payload["primary_source"] == "kis"
+    assert payload["nav_scope"] == "kis_primary_sellable"
+    assert "ISA/Toss" in payload["nav_scope_label"]
+    # 수치 회귀: holdings/count는 라벨 추가와 무관하게 유지.
+    assert payload["count"] == len(payload["holdings"])
+
+
+def test_apply_kr_name_fallback_fills_code_as_name_rows():
+    from app.services.action_report.snapshot_backed.collectors.portfolio import (
+        _apply_kr_name_fallback,
+    )
+
+    rows = [
+        {"ticker": "035420", "display_name": None},  # missing
+        {"ticker": "035720", "display_name": "035720"},  # code-as-name
+        {"ticker": "005930", "display_name": "삼성전자"},  # already good
+    ]
+    _apply_kr_name_fallback(rows, {"035420": "NAVER", "035720": "카카오"})
+    assert rows[0]["display_name"] == "NAVER"
+    assert rows[1]["display_name"] == "카카오"
+    assert rows[2]["display_name"] == "삼성전자"  # untouched
+
+
+def test_apply_kr_name_fallback_keeps_code_when_unresolved():
+    from app.services.action_report.snapshot_backed.collectors.portfolio import (
+        _apply_kr_name_fallback,
+    )
+
+    rows = [{"ticker": "999999", "display_name": None}]
+    _apply_kr_name_fallback(rows, {})  # lookup returned nothing
+    assert rows[0]["display_name"] is None  # no fabricated name
