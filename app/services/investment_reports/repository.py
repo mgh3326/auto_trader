@@ -204,6 +204,17 @@ class InvestmentReportsRepository:
             .values(**values)
         )
 
+    async def update_item_watch_recommendation(
+        self, item_id: int, watch_recommendation: dict
+    ) -> None:
+        """ROB-337 — persist the advisory watch_recommendation JSONB onto an
+        item. Flushes but never commits (caller owns the transaction)."""
+        await self._session.execute(
+            sa.update(InvestmentReportItem)
+            .where(InvestmentReportItem.id == item_id)
+            .values(watch_recommendation=watch_recommendation)
+        )
+
     async def delete_items_for_report(self, report_id: int) -> None:
         """ROB-352 — remove every item of one report (overwrite path).
 
