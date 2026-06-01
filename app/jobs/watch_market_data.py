@@ -11,8 +11,9 @@ legacy scanner's duplicate copy.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Any, Callable
+from typing import Any
 
 import exchange_calendars as xcals
 import pandas as pd

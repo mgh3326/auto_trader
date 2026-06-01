@@ -351,5 +351,3 @@ def test_ingest_item_validates_max_action_when_present():
             valid_until="2026-12-31T00:00:00Z",
             max_action={"side": "buy"},  # invalid: no quantity/notional
         )
-
-

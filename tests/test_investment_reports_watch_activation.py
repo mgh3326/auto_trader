@@ -283,7 +283,9 @@ async def test_alert_accepts_between_operator_and_conditions(
         threshold=Decimal("50000"),
         threshold_high=Decimal("55000"),
         threshold_key="and(price:between:50000-55000)",
-        conditions=[{"metric": "price", "op": "between", "low": "50000", "high": "55000"}],
+        conditions=[
+            {"metric": "price", "op": "between", "low": "50000", "high": "55000"}
+        ],
         combine="and",
         intent="buy_review",
         action_mode="notify_only",
@@ -351,4 +353,3 @@ async def test_activate_maps_conditions_and_flat_primary(
     assert alert.operator == "between"
     assert Decimal(alert.threshold) == Decimal("50000")
     assert Decimal(alert.threshold_high) == Decimal("55000")
-

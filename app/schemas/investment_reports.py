@@ -208,9 +208,7 @@ class MaxActionPayload(BaseModel):
         has_qty = self.quantity is not None
         has_notional = self.notional is not None
         if has_qty == has_notional:
-            raise ValueError(
-                "max_action requires exactly one of quantity or notional"
-            )
+            raise ValueError("max_action requires exactly one of quantity or notional")
         return self
 
 

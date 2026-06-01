@@ -514,7 +514,6 @@ async def test_close_closes_hermes_client(
 async def test_scan_market_triggers_on_zone_inside(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.jobs.watch_market_data as wmd
 
     ingest = InvestmentReportIngestionService(session)
     report = await ingest.ingest(

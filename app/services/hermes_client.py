@@ -28,9 +28,8 @@ from app.schemas.investment_reports import (
     MarketLiteral,
     TargetKindLiteral,
     WatchActionModeLiteral,
-    WatchMetricLiteral,
     WatchClauseOpLiteral,
-    WatchOperatorLiteral,
+    WatchMetricLiteral,
 )
 
 logger = logging.getLogger(__name__)
