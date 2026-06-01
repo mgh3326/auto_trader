@@ -209,6 +209,20 @@ INVEST_DATA_SOURCE_CONTRACT: tuple[DataSourceContractEntry, ...] = (
         collector_snapshot_kind="candidate_universe",
     ),
     DataSourceContractEntry(
+        # ROB-398 Slice 2 — Naver 모멘텀 랭킹(read-model). reference/calibration이며
+        # KIS authority 대체 금지 → supplementary.
+        surface="screener",
+        source_name="invest_momentum_events",
+        authority_tier="supplementary",
+        reusable_table="invest_momentum_event_snapshots",
+        fetch_policy="pre_collected",
+        freshness_ttl=None,
+        fallback_source=None,
+        may_affect_ranking=True,
+        unavailable_label="stale",
+        collector_snapshot_kind="kr_market_ranking",
+    ),
+    DataSourceContractEntry(
         surface="screener",
         source_name="investor_flow_snapshots",
         authority_tier="supplementary",
