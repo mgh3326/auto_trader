@@ -106,19 +106,25 @@ def _derive_shadow_fill(
     if row.lifecycle_state != "fill":
         return 0.0, ordered_qty, "pending"
 
+    # Compare in Decimal so a fractional-share fill (e.g. 9.9999999 vs 10) is not
+    # mislabeled partial by float rounding; the reconciler emits Decimal values.
+    ordered_dec = Decimal(str(ordered_qty))
     detail = row.last_reconcile_detail or {}
     raw = detail.get("attributed_fill_qty")
     if raw is None:
-        filled = ordered_qty
+        filled_dec = ordered_dec
     else:
         try:
-            filled = float(raw)
-        except (TypeError, ValueError):
-            filled = ordered_qty
-        filled = max(0.0, min(filled, ordered_qty))
-    remaining = ordered_qty - filled
-    status = "filled" if filled >= ordered_qty else "partial"
-    return filled, remaining, status
+            filled_dec = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError):
+            filled_dec = ordered_dec
+        if filled_dec < 0:
+            filled_dec = Decimal("0")
+        elif filled_dec > ordered_dec:
+            filled_dec = ordered_dec
+    remaining_dec = ordered_dec - filled_dec
+    status = "filled" if filled_dec >= ordered_dec else "partial"
+    return float(filled_dec), float(remaining_dec), status
 
 
 def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:

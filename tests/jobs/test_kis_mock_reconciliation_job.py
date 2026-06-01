@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
+from app.mcp_server.tooling.kis_mock_ledger import _shadow_row_to_order
 from app.models.review import KISMockOrderLedger
 
 
@@ -198,3 +199,63 @@ async def test_reconciliation_attributes_single_delta_and_records_attributed_qty
     # attributed_fill_qty is recorded in the applied detail / event payload
     assert events[24]["detail"]["attributed_fill_qty"] == "10"
     assert events[23]["detail"]["attributed_fill_qty"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_attributed_fill_qty_roundtrips_into_shadow_order_history(monkeypatch):
+    """Cross-seam (ROB-400 Fix #3): the exact detail the job hands the
+    persistence layer (str(Decimal) ``attributed_fill_qty``) is read back by the
+    shadow order-history reader without contradicting ``lifecycle_state``.
+
+    This closes the writer/reader contract — a rename on either side breaks it,
+    whereas the isolated reconciler and shadow tests would each still pass.
+    """
+    row24 = _ledger_row(
+        ledger_id=24,
+        symbol="0148J0",
+        side="buy",
+        qty=Decimal("10"),
+        state="accepted",
+        baseline=Decimal("0"),
+        accepted_age_sec=60,
+    )
+    row24.price = Decimal("15900")
+
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [row24]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    fake_kis = _fake_kis_client(kr=[{"pdno": "0148J0", "hldg_qty": "10"}])
+
+    await run_kis_mock_reconciliation(mock_db, dry_run=False, kis_client=fake_kis)
+
+    # Reconstruct exactly what KISMockLifecycleService.apply_lifecycle_transition
+    # persists into row.last_reconcile_detail: {"reason_code", **detail}.
+    call = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    persisted_detail = {"reason_code": call["reason_code"], **call["detail"]}
+
+    shadow_row = MagicMock(spec=KISMockOrderLedger)
+    shadow_row.id = 24
+    shadow_row.order_no = None
+    shadow_row.symbol = "0148J0"
+    shadow_row.instrument_type = "equity_kr"
+    shadow_row.side = "buy"
+    shadow_row.order_type = "limit"
+    shadow_row.quantity = Decimal("10")
+    shadow_row.price = Decimal("15900")
+    shadow_row.amount = Decimal("159000")
+    shadow_row.currency = "KRW"
+    shadow_row.trade_date = datetime.now(UTC)
+    shadow_row.lifecycle_state = call["next_state"]
+    shadow_row.last_reconcile_detail = persisted_detail
+
+    out = _shadow_row_to_order(shadow_row)
+    assert out["lifecycle_state"] == "fill"
+    assert out["status"] == "filled"
+    assert out["filled_qty"] == 10.0
+    assert out["remaining_qty"] == 0.0

@@ -131,6 +131,10 @@ async def run_kis_mock_reconciliation(
     events: list[dict[str, Any]] = []
 
     for proposal in proposals:
+        # ``observed_delta`` is the raw un-apportioned per-order delta (diagnostic
+        # only — a pending sibling in a same-symbol group may show a non-zero
+        # delta it did NOT receive). ``attributed_fill_qty`` is the authoritative
+        # apportioned quantity that drives lifecycle and order-history status.
         detail = {
             "observed_holdings_qty": (
                 str(proposal.observed_holdings_qty)
