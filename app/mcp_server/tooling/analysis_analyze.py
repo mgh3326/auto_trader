@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import sentry_sdk
@@ -27,6 +29,7 @@ from app.mcp_server.tooling.fundamentals_sources_yfinance import (
 )
 from app.mcp_server.tooling.market_data_indicators import _fetch_ohlcv_for_indicators
 from app.mcp_server.tooling.market_data_quotes import (
+    _fetch_kr_live_quote,
     _fetch_quote_crypto,
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -40,6 +43,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
+from app.services.symbol_analysis.freshness import compute_is_stale
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +94,38 @@ def _build_kr_quote_from_ohlcv(
     }
 
 
+_KST = ZoneInfo("Asia/Seoul")
+
+
+async def _resolve_kr_quote(
+    symbol: str, ohlcv_df: pd.DataFrame
+) -> dict[str, Any] | None:
+    """KR analyze quote: 라이브 inquire_price 우선, 실패 시 일봉 종가 fallback.
+    두 경로 모두 price_as_of + is_stale_price 를 정직하게 태그한다."""
+    trading_date = datetime.now(_KST).date()
+
+    live = await _fetch_kr_live_quote(symbol)
+    if live is not None:
+        as_of_raw = live.get("price_as_of")
+        as_of_dt = datetime.fromisoformat(as_of_raw) if as_of_raw else None
+        live["is_stale_price"] = compute_is_stale(
+            "price", as_of_dt, trading_date=trading_date
+        )
+        return live
+
+    fallback = _build_kr_quote_from_ohlcv(symbol, ohlcv_df)
+    if fallback is None:
+        return None
+    last_idx = ohlcv_df.index[-1]
+    as_of_dt = pd.Timestamp(last_idx).to_pydatetime()
+    fallback["price_as_of"] = as_of_dt.isoformat()
+    fallback["is_stale_price"] = compute_is_stale(
+        "price", as_of_dt, trading_date=trading_date
+    )
+    return fallback
+
+
+
 async def _get_indicators_impl(
     symbol: str,
     indicators: list[str],
@@ -137,17 +173,13 @@ def _prepare_quote_tasks(
     named_tasks: list[tuple[str, asyncio.Task[Any]]] = []
 
     if market_type == "equity_kr":
-        preloaded_quote = _build_kr_quote_from_ohlcv(normalized_symbol, ohlcv_df)
-        if preloaded_quote is None:
-            named_tasks.append(
-                (
-                    "quote",
-                    asyncio.create_task(
-                        _get_quote_impl(normalized_symbol, market_type)
-                    ),
-                )
+        named_tasks.append(
+            (
+                "quote",
+                asyncio.create_task(_resolve_kr_quote(normalized_symbol, ohlcv_df)),
             )
-        return preloaded_quote, named_tasks
+        )
+        return None, named_tasks
 
     named_tasks.append(
         (

@@ -438,6 +438,45 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
     }
 
 
+async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
+    """analyze 전용: KR 라이브 현재가(KIS inquire_price, stck_prpr) + as_of.
+
+    공유 _fetch_quote_equity_kr(orders/portfolio 사용)는 건드리지 않는다.
+    실패/빈응답이면 None (호출자가 일봉으로 fallback).
+    """
+    kis = KISClient()
+    try:
+        df = await kis.inquire_price(code=symbol, market="J")
+    except Exception:
+        return None
+    if df.empty:
+        return None
+
+    row = df.iloc[0].to_dict()  # index=종목코드
+    as_of: datetime.datetime | None = None
+    date_val = row.get("date")
+    time_val = row.get("time")
+    if date_val is not None:
+        d = pd.Timestamp(date_val).to_pydatetime()
+        if time_val is not None:
+            as_of = datetime.datetime.combine(d.date(), time_val)
+        else:
+            as_of = d
+
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_kr",
+        "price": row.get("close"),  # stck_prpr → close
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "volume": row.get("volume"),
+        "value": row.get("value"),
+        "source": "kis",
+        "price_as_of": as_of.isoformat() if as_of is not None else None,
+    }
+
+
 async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     """Fetch US equity quote from Yahoo Finance."""
     normalized_symbol = str(symbol or "").strip().upper()
@@ -1168,6 +1207,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 __all__ = [
     "_fetch_quote_crypto",
     "_fetch_quote_equity_kr",
+    "_fetch_kr_live_quote",
     "_fetch_quote_equity_us",
     "_fetch_ohlcv_crypto",
     "_fetch_ohlcv_equity_kr",
