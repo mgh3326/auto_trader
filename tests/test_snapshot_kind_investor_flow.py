@@ -21,8 +21,13 @@ def test_model_check_has_investor_flow_and_preserves_old():
     sql = _check_sql()
     assert "investor_flow" in sql
     for kind in (
-        "portfolio", "market", "news", "symbol", "candidate_universe",
-        "validated_run_card", "kr_market_ranking",
+        "portfolio",
+        "market",
+        "news",
+        "symbol",
+        "candidate_universe",
+        "validated_run_card",
+        "kr_market_ranking",
     ):
         assert kind in sql
 

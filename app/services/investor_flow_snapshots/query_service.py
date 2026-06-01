@@ -31,7 +31,7 @@ class InvestorFlowRow:
 
 @dataclass(frozen=True)
 class Freshness:
-    overall: str               # "fresh" | "stale" | "unavailable"
+    overall: str  # "fresh" | "stale" | "unavailable"
     snapshot_date: dt.date | None
     stale_reason: str | None
     age_days: int | None
@@ -54,7 +54,9 @@ def _map_row(row: object) -> InvestorFlowRow:
         double_buy=bool(getattr(row, "double_buy", False)),
         double_sell=bool(getattr(row, "double_sell", False)),
         foreign_consecutive_buy_days=getattr(row, "foreign_consecutive_buy_days", None),
-        foreign_consecutive_sell_days=getattr(row, "foreign_consecutive_sell_days", None),
+        foreign_consecutive_sell_days=getattr(
+            row, "foreign_consecutive_sell_days", None
+        ),
         institution_consecutive_buy_days=getattr(
             row, "institution_consecutive_buy_days", None
         ),
@@ -89,9 +91,7 @@ class InvestorFlowQueryService:
         ttl_days: int = FLOW_TTL_DAYS,
     ) -> InvestorFlow:
         rows = await self._repo.latest_by_symbols(market=market, symbols=list(symbols))  # type: ignore[union-attr]
-        freshness, snapshot_date = _derive_freshness(
-            rows, now=now, ttl_days=ttl_days
-        )
+        freshness, snapshot_date = _derive_freshness(rows, now=now, ttl_days=ttl_days)
         return InvestorFlow(
             market=market,
             snapshot_date=snapshot_date,

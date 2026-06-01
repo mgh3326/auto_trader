@@ -33,6 +33,7 @@ def test_intraday_action_report_v1_optional_kinds_match_phase1_whitelist():
         "symbol",
         "candidate_universe",
         "kr_market_ranking",
+        "investor_flow",
         "news",
         "naver_remote_debug",
         "toss_remote_debug",

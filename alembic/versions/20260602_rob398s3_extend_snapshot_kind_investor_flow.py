@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20260602_rob398s3"
-down_revision: str | Sequence[str] | None = ("20260602_rob398s2", "91097f38827e")
+down_revision: str | Sequence[str] | None = "bb4fb793a865"  # rebase 후 단일 main head (#1093이 slice2+405 병합 완료)
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

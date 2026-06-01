@@ -11,7 +11,9 @@ NOW = dt.datetime(2026, 6, 2, 18, 0, tzinfo=KST)
 TODAY = NOW.date()
 
 
-def _row(symbol, *, snapshot_date, foreign_net=100, institution_net=50, double_buy=True):
+def _row(
+    symbol, *, snapshot_date, foreign_net=100, institution_net=50, double_buy=True
+):
     return SimpleNamespace(
         symbol=symbol,
         snapshot_date=snapshot_date,

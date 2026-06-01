@@ -26,11 +26,7 @@ def _flow(overall="fresh"):
     return InvestorFlow(
         market="kr",
         snapshot_date=dt.date(2026, 6, 2),
-        rows=(
-            InvestorFlowRow(
-                "005930", 100, 50, -150, True, False, 3, 0, 2, 0
-            ),
-        ),
+        rows=(InvestorFlowRow("005930", 100, 50, -150, True, False, 3, 0, 2, 0),),
         freshness=Freshness(overall, dt.date(2026, 6, 2), None, 0),
     )
 
@@ -48,7 +44,9 @@ class _FakeQuery:
 
 @pytest.mark.asyncio
 async def test_collect_returns_investor_flow_payload():
-    collector = InvestorFlowSnapshotCollector(session=None, query_service=_FakeQuery(flow=_flow("fresh")))
+    collector = InvestorFlowSnapshotCollector(
+        session=None, query_service=_FakeQuery(flow=_flow("fresh"))
+    )
     assert collector.snapshot_kind == "investor_flow"
     results = await collector.collect(_request())
     assert len(results) == 1
@@ -61,22 +59,30 @@ async def test_collect_returns_investor_flow_payload():
 
 @pytest.mark.asyncio
 async def test_collect_stale_maps_to_soft_stale():
-    collector = InvestorFlowSnapshotCollector(session=None, query_service=_FakeQuery(flow=_flow("stale")))
+    collector = InvestorFlowSnapshotCollector(
+        session=None, query_service=_FakeQuery(flow=_flow("stale"))
+    )
     results = await collector.collect(_request())
     assert results[0].freshness_status == "soft_stale"
 
 
 @pytest.mark.asyncio
 async def test_collect_unavailable_when_no_rows():
-    empty = InvestorFlow("kr", None, (), Freshness("unavailable", None, "no_flow_rows", None))
-    collector = InvestorFlowSnapshotCollector(session=None, query_service=_FakeQuery(flow=empty))
+    empty = InvestorFlow(
+        "kr", None, (), Freshness("unavailable", None, "no_flow_rows", None)
+    )
+    collector = InvestorFlowSnapshotCollector(
+        session=None, query_service=_FakeQuery(flow=empty)
+    )
     results = await collector.collect(_request())
     assert results[0].freshness_status == "unavailable"
 
 
 @pytest.mark.asyncio
 async def test_collect_degrades_on_error():
-    collector = InvestorFlowSnapshotCollector(session=None, query_service=_FakeQuery(raises=True))
+    collector = InvestorFlowSnapshotCollector(
+        session=None, query_service=_FakeQuery(raises=True)
+    )
     results = await collector.collect(_request())
     assert results[0].freshness_status == "unavailable"
     assert "reason" in results[0].errors_json
@@ -84,6 +90,8 @@ async def test_collect_degrades_on_error():
 
 @pytest.mark.asyncio
 async def test_collect_unavailable_when_no_symbols():
-    collector = InvestorFlowSnapshotCollector(session=None, query_service=_FakeQuery(flow=_flow()))
+    collector = InvestorFlowSnapshotCollector(
+        session=None, query_service=_FakeQuery(flow=_flow())
+    )
     results = await collector.collect(_request(symbols=()))
     assert results[0].freshness_status == "unavailable"

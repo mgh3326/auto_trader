@@ -19,11 +19,11 @@ from app.services.action_report.snapshot_backed.collectors.candidate_universe im
 from app.services.action_report.snapshot_backed.collectors.invest_page import (
     InvestPageSnapshotCollector,
 )
-from app.services.action_report.snapshot_backed.collectors.journal import (
-    JournalSnapshotCollector,
-)
 from app.services.action_report.snapshot_backed.collectors.investor_flow import (
     InvestorFlowSnapshotCollector,
+)
+from app.services.action_report.snapshot_backed.collectors.journal import (
+    JournalSnapshotCollector,
 )
 from app.services.action_report.snapshot_backed.collectors.kr_market_ranking import (
     KrMarketRankingSnapshotCollector,
