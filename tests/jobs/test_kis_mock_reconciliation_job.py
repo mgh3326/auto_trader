@@ -259,3 +259,32 @@ async def test_attributed_fill_qty_roundtrips_into_shadow_order_history(monkeypa
     assert out["status"] == "filled"
     assert out["filled_qty"] == 10.0
     assert out["remaining_qty"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_run_passes_symbol_to_list_open_orders(db_session, monkeypatch):
+    from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+
+    captured: dict = {}
+
+    async def _fake_list_open_orders(self, *, limit=100, symbol=None, **kw):
+        captured["symbol"] = symbol
+        captured["limit"] = limit
+        return []  # empty → run short-circuits before broker/holdings
+
+    monkeypatch.setattr(
+        KISMockLifecycleService, "list_open_orders", _fake_list_open_orders
+    )
+    result = await run_kis_mock_reconciliation(
+        db_session, symbol="005930", dry_run=True
+    )
+    assert captured["symbol"] == "005930"
+    assert result["orders_processed"] == 0
+
+
+def test_reconcile_gate_flags_default_false():
+    from app.core.config import settings
+
+    assert settings.KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED is False
+    assert settings.KIS_MOCK_RECONCILE_PERIODIC_ENABLED is False
+
