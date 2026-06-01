@@ -1089,6 +1089,13 @@ async def _place_order_impl(
             is_mock=is_mock,
         )
     except Exception as exc:
+        logger.exception(
+            "place_order execution failed (symbol=%s side=%s market=%s): %s",
+            normalized_symbol,
+            side_lower,
+            market_type,
+            exc,
+        )
         await _record_order_history(
             symbol=normalized_symbol,
             side=side_lower,
