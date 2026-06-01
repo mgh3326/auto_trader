@@ -1,0 +1,1 @@
+- **ROB-395 (KIS Live Order Fill-Evidence Gate)**: Live KR orders record accepted-only at send time to prevent phantom journals; fills are reconciled later from broker inquire_daily_order_domestic evidence using kis_live_reconcile_orders. Reuses KIS scalping evidence classifier. Keying on order_no sidesteps holdings-delta multi-order attribution defect.
