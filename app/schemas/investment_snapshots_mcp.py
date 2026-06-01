@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.investment_reports import MarketSessionLiteral
 from app.schemas.investment_snapshots import (
     BundleItemRole,
     BundleStatus,
@@ -25,7 +26,6 @@ from app.schemas.investment_snapshots import (
     SourceKind,
 )
 from app.services.investment_snapshots.collectors import SnapshotCollectResult
-from app.schemas.investment_reports import MarketSessionLiteral
 
 EnsureMode = Literal["ensure_fresh", "reuse_only"]
 

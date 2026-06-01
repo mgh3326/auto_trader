@@ -1899,7 +1899,9 @@ async def test_symbol_collector_crypto_enriches_with_upbit_orderbook_no_user_id(
     assert q["spread_bps"] == pytest.approx(21.05, rel=0.05)
     assert q["venue"] == "upbit"
     assert q["last_price"] is None  # orderbook carries no last trade — honest
-    quote_client.fetch_quote_orderbook.assert_awaited_once_with("KRW-BTC", venue="upbit")
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with(
+        "KRW-BTC", venue="upbit"
+    )
 
 
 @pytest.mark.asyncio
@@ -2375,7 +2377,6 @@ async def test_snapshot_bundle_threads_market_session_into_collector_request():
         SnapshotBundleEnsureService,
     )
     from app.services.investment_snapshots.collectors import (
-        CollectorRequest,
         SnapshotCollectResult,
     )
 
@@ -2424,8 +2425,9 @@ async def test_snapshot_bundle_threads_market_session_into_collector_request():
 
 @pytest.mark.asyncio
 async def test_kis_adapter_maps_nxt_venue_to_market_code_nx():
+    from unittest.mock import AsyncMock, MagicMock
+
     import pandas as pd
-    from unittest.mock import MagicMock, AsyncMock
 
     from app.services.action_report.snapshot_backed.collectors.registry import (
         _KISDomesticQuoteOrderbookAdapter,
@@ -2440,7 +2442,12 @@ async def test_kis_adapter_maps_nxt_venue_to_market_code_nx():
 
     async def _inquire_orderbook(code, market="J"):
         captured["market"] = market
-        return {"askp1": "70100", "bidp1": "69900", "askp_rsqn1": "10", "bidp_rsqn1": "12"}
+        return {
+            "askp1": "70100",
+            "bidp1": "69900",
+            "askp_rsqn1": "10",
+            "bidp_rsqn1": "12",
+        }
 
     kis_client.inquire_orderbook = AsyncMock(side_effect=_inquire_orderbook)
 
@@ -2525,9 +2532,3 @@ async def test_market_collector_kr_regular_session_has_no_frozen_note():
     results = await collector.collect(_request(market="kr"))
     payload = results[0].payload_json
     assert "index_session" not in payload
-
-
-
-
-
-
