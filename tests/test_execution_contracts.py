@@ -37,12 +37,13 @@ class TestOrderLifecycleState:
                 "stale",
                 "failed",
                 "anomaly",
+                "cancelled",
             }
         )
 
     def test_terminal_states(self):
         assert ec.TERMINAL_LIFECYCLE_STATES == frozenset(
-            {"reconciled", "failed", "stale"}
+            {"reconciled", "failed", "stale", "cancelled"}
         )
 
     def test_in_flight_states(self):
@@ -445,3 +446,16 @@ class TestModuleIsLeaf:
                     del sys.modules[name]
             for name, mod in snapshot.items():
                 sys.modules[name] = mod
+
+
+def test_cancelled_is_registered_terminal_state():
+    from app.schemas.execution_contracts import (
+        ORDER_LIFECYCLE_STATES,
+        TERMINAL_LIFECYCLE_STATES,
+        is_terminal_state,
+    )
+
+    assert "cancelled" in ORDER_LIFECYCLE_STATES
+    assert "cancelled" in TERMINAL_LIFECYCLE_STATES
+    assert is_terminal_state("cancelled") is True
+
