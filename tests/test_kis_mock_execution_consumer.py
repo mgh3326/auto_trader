@@ -152,3 +152,62 @@ async def test_preflight_force_dry_run(monkeypatch):
     outcome = await consumer.handle_message(_fill_event())
     assert outcome == "reconciled_dry_run"
     assert calls[0]["dry_run"] is True
+
+
+class _FakePubSub:
+    def __init__(self, messages):
+        self._messages = messages
+        self.unsubscribed = False
+        self.closed = False
+
+    async def psubscribe(self, pattern):
+        self._pattern = pattern
+
+    async def listen(self):
+        for m in self._messages:
+            yield m
+
+    async def punsubscribe(self, pattern):
+        self.unsubscribed = True
+
+    async def aclose(self):
+        self.closed = True
+
+
+class _FakeRedisWithPubSub(_FakeRedis):
+    def __init__(self, messages):
+        super().__init__()
+        self._pubsub = _FakePubSub(messages)
+
+    def pubsub(self):
+        return self._pubsub
+
+
+@pytest.mark.asyncio
+async def test_run_loop_dispatches_pmessage(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.kis_mock_execution_consumer.settings."
+        "KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED",
+        True,
+        raising=False,
+    )
+    messages = [
+        {"type": "psubscribe", "data": 1},  # ignored
+        {"type": "pmessage", "channel": "execution:kr", "data": _fill_event()},
+    ]
+    redis_client = _FakeRedisWithPubSub(messages)
+    calls: list[dict] = []
+
+    async def _fake_reconcile(db, *, symbol=None, dry_run=True, **kw):
+        calls.append({"symbol": symbol, "dry_run": dry_run})
+        return {"success": True}
+
+    consumer = KISMockExecutionConsumer(
+        redis_client=redis_client,
+        reconcile_fn=_fake_reconcile,
+        session_factory=_session_factory,
+    )
+    await consumer.run()
+    assert calls == [{"symbol": "005930", "dry_run": False}]
+    assert redis_client._pubsub.unsubscribed is True
+

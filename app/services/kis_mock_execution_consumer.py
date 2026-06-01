@@ -89,5 +89,27 @@ class KISMockExecutionConsumer:
             await self._reconcile_fn(db, symbol=symbol, dry_run=dry_run)
         return "reconciled_dry_run" if dry_run else "reconciled"
 
+    async def run(self) -> None:
+        """Subscribe to execution:* and dispatch each fill to handle_message."""
+        redis_client = await self._client()
+        pubsub = redis_client.pubsub()
+        await pubsub.psubscribe(_CHANNEL_PATTERN)
+        logger.info("kis_mock execution consumer subscribed to %s", _CHANNEL_PATTERN)
+        try:
+            async for message in pubsub.listen():
+                if self._stop.is_set():
+                    break
+                if message.get("type") != "pmessage":
+                    continue
+                try:
+                    outcome = await self.handle_message(message["data"])
+                    logger.debug("kis_mock execution event outcome=%s", outcome)
+                except Exception:  # noqa: BLE001 - one bad event must not kill loop
+                    logger.exception("kis_mock execution consumer handler failed")
+        finally:
+            await pubsub.punsubscribe(_CHANNEL_PATTERN)
+            await pubsub.aclose()
+
     def request_stop(self) -> None:
         self._stop.set()
+
