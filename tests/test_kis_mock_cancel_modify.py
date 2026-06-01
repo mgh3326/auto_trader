@@ -160,3 +160,62 @@ async def test_mock_cancel_unknown_order_fails(
     result = await omc._cancel_kis_domestic("NO-SUCH", None, is_mock=True)
     assert result["success"] is False
     assert "ledger" in result["error"]
+
+
+class _FakeKisModifyOK:
+    async def modify_korea_order(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        return {"odno": "REV-2"}
+
+    async def inquire_korea_orders(self, *a, **k):
+        raise AssertionError("inquire_korea_orders called in mock modify path")
+
+
+class _FakeKisModifyUnsupported:
+    async def modify_korea_order(self, *args, **kwargs):
+        raise RuntimeError("APBK0918 not available in mock mode")
+
+    async def inquire_korea_orders(self, *a, **k):
+        raise AssertionError("inquire_korea_orders called in mock modify path")
+
+
+@pytest.mark.asyncio
+async def test_mock_modify_success_updates_ledger(
+    db_session: AsyncSession, monkeypatch
+):
+    row = await _seed(db_session, orgno="00950", price="70000", quantity="10")
+    fake = _FakeKisModifyOK()
+    monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: fake)
+
+    result = await omc._modify_kis_domestic(
+        row.order_no, "005930", "equity_kr",
+        new_price=71000.0, new_quantity=8.0, dry_run=False, is_mock=True,
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "modified"
+    await db_session.refresh(row)
+    assert row.price == Decimal("71000")
+    assert row.quantity == Decimal("8")
+
+
+@pytest.mark.asyncio
+async def test_mock_modify_unsupported_fails_closed(
+    db_session: AsyncSession, monkeypatch
+):
+    row = await _seed(db_session, orgno="00950")
+    monkeypatch.setattr(
+        omc, "_create_kis_client", lambda *, is_mock: _FakeKisModifyUnsupported()
+    )
+
+    result = await omc._modify_kis_domestic(
+        row.order_no, "005930", "equity_kr",
+        new_price=71000.0, new_quantity=None, dry_run=False, is_mock=True,
+    )
+
+    assert result["success"] is False
+    assert result["mock_unsupported"] is True
+    await db_session.refresh(row)
+    assert row.lifecycle_state == "accepted"  # unchanged, not soft-modified
+    assert row.price == Decimal("70000")  # unchanged
