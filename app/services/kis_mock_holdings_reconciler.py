@@ -40,6 +40,7 @@ class LedgerOrderInput:
     lifecycle_state: OrderLifecycleState
     holdings_baseline_qty: Decimal | None
     accepted_at: datetime
+    price: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,7 @@ class LifecycleTransitionProposal:
     reason_code: ReasonCode
     observed_holdings_qty: Decimal | None
     observed_delta: Decimal | None
+    attributed_fill_qty: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

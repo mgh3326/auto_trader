@@ -214,3 +214,48 @@ def test_reconciler_does_not_import_db_or_broker():
     ]
     for tok in forbidden:
         assert tok not in src, f"forbidden import in reconciler: {tok}"
+
+
+@pytest.mark.unit
+def test_ledger_order_input_has_price_default():
+    from app.services.kis_mock_holdings_reconciler import LedgerOrderInput
+
+    order = LedgerOrderInput(
+        ledger_id=1,
+        symbol="005930",
+        side="buy",
+        ordered_qty=Decimal("10"),
+        lifecycle_state="accepted",
+        holdings_baseline_qty=Decimal("0"),
+        accepted_at=_now(),
+    )
+    assert order.price == Decimal("0")  # default keeps existing call sites working
+
+    priced = LedgerOrderInput(
+        ledger_id=2,
+        symbol="005930",
+        side="buy",
+        ordered_qty=Decimal("10"),
+        lifecycle_state="accepted",
+        holdings_baseline_qty=Decimal("0"),
+        accepted_at=_now(),
+        price=Decimal("15900"),
+    )
+    assert priced.price == Decimal("15900")
+
+
+@pytest.mark.unit
+def test_proposal_attributed_fill_qty_defaults_none():
+    from app.services.kis_mock_holdings_reconciler import LifecycleTransitionProposal
+
+    p = LifecycleTransitionProposal(
+        ledger_id=1,
+        symbol="005930",
+        prior_state="accepted",
+        next_state="pending",
+        reason_code="pending_unconfirmed",
+        observed_holdings_qty=Decimal("0"),
+        observed_delta=Decimal("0"),
+    )
+    assert p.attributed_fill_qty is None
+
