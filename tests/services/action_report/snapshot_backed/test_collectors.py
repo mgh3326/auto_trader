@@ -1592,6 +1592,34 @@ async def test_symbol_collector_us_falls_back_to_universe_for_unheld():
     assert all(r.freshness_status != "partial" for r in results)
 
 
+@pytest.mark.asyncio
+async def test_symbol_collector_us_prefers_stock_info_meta_no_dup():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # AAPL is in BOTH stock_info and the universe; stock_info must win and the
+    # universe row must NOT produce a duplicate.
+    session = _two_stage_session(
+        stock_rows=[_stock_info_row("AAPL", "애플")],
+        universe_rows=[_us_universe_row("AAPL", name_en="Apple Inc")],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["AAPL"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    aapl_rows = [r for r in results if r.symbol == "AAPL"]
+    assert len(aapl_rows) == 1
+    # stock_info meta preserved (sector/market_cap come only from stock_info).
+    assert aapl_rows[0].payload_json["sector"] == "Tech"
+    assert aapl_rows[0].payload_json["market_cap"] == 1_000_000.0
+    assert aapl_rows[0].payload_json["name"] == "애플"
+
+
 # ---------------------------------------------------------------------------
 # Symbol collector quote/orderbook enrichment — ROB-278 Phase 2.
 #
