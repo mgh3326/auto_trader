@@ -9,6 +9,7 @@ import logging
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
@@ -25,6 +26,14 @@ from tests._mcp_tooling_support import (
 EXPECTED_MARKET_ERROR = (
     "MCP place_order only supports limit orders; market orders are not allowed."
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_live_order_ledger_schema(db_session):
+    """ROB-407: live US/crypto orders write to review.live_order_ledger directly.
+    Depend on db_session so its create_all builds the table before any test in this
+    module inserts (CI builds the test schema via create_all, not alembic)."""
+    yield
 
 
 def _assert_market_rejected(result):
@@ -1625,7 +1634,7 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
 
         async def place_sell_order(self, symbol, volume, price):
             return {
-                "uuid": "test-uuid",
+                "uuid": "cd-sell-loss-uuid",
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
@@ -1729,7 +1738,7 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
 
         async def place_sell_order(self, symbol, volume, price):
             return {
-                "uuid": "test-uuid",
+                "uuid": "cd-sell-profit-uuid",
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
@@ -1774,8 +1783,10 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
 
 
 @pytest.mark.asyncio
-async def test_real_sell_closes_journals_and_returns_summary(monkeypatch) -> None:
-    """Real sell should close journals and return summary in response."""
+async def test_real_sell_is_accepted_only_no_journal_close_at_send(monkeypatch) -> None:
+    """ROB-407: live crypto sell records accepted-only and must NOT close journals
+    at send. Journal close happens later from confirmed fill evidence in
+    live_reconcile_orders (see tests/mcp_server/tooling/test_live_order_ledger.py)."""
     tools = build_tools()
 
     monkeypatch.setattr(
@@ -1802,7 +1813,7 @@ async def test_real_sell_closes_journals_and_returns_summary(monkeypatch) -> Non
         "place_sell_order",
         AsyncMock(
             return_value={
-                "uuid": "sell-uuid",
+                "uuid": "rc-sell-close-uuid",
                 "side": "ask",
                 "market": "KRW-BTC",
                 "price": "95000000",
@@ -1810,19 +1821,11 @@ async def test_real_sell_closes_journals_and_returns_summary(monkeypatch) -> Non
             }
         ),
     )
-    monkeypatch.setattr(
-        order_execution, "_save_order_fill", AsyncMock(return_value=123)
-    )
+    save_mock = AsyncMock(return_value=123)
+    monkeypatch.setattr(order_execution, "_save_order_fill", save_mock)
     monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
 
-    close_mock = AsyncMock(
-        return_value={
-            "journals_closed": 2,
-            "journals_kept": 1,
-            "closed_ids": [42, 55],
-            "total_pnl_pct": 5.2,
-        }
-    )
+    close_mock = AsyncMock()
     monkeypatch.setattr(order_execution, "_close_journals_on_sell", close_mock)
 
     result = await tools["place_order"](
@@ -1837,15 +1840,19 @@ async def test_real_sell_closes_journals_and_returns_summary(monkeypatch) -> Non
     )
 
     assert result["success"] is True
-    assert result["journals_closed"] == 2
-    assert result["journals_kept"] == 1
-    assert result["closed_journal_ids"] == [42, 55]
-    close_mock.assert_awaited_once()
+    assert result["fill_recorded"] is False
+    assert result["broker_status"] == "accepted"
+    assert "journals_closed" not in result
+    close_mock.assert_not_awaited()  # no journal close at send
+    save_mock.assert_not_awaited()  # no fill booked at send
 
 
 @pytest.mark.asyncio
-async def test_sell_journal_close_failure_keeps_order_success(monkeypatch) -> None:
-    """Journal close failure should not fail the sell order."""
+async def test_sell_send_does_not_touch_journals_even_if_close_would_fail(
+    monkeypatch,
+) -> None:
+    """ROB-407: send path never calls _close_journals_on_sell, so a would-be close
+    failure cannot affect the accepted-only sell. Close is reconcile-time only."""
     tools = build_tools()
 
     monkeypatch.setattr(
@@ -1872,7 +1879,7 @@ async def test_sell_journal_close_failure_keeps_order_success(monkeypatch) -> No
         "place_sell_order",
         AsyncMock(
             return_value={
-                "uuid": "sell-uuid",
+                "uuid": "rc-sell-closefail-uuid",
                 "side": "ask",
                 "market": "KRW-BTC",
                 "price": "95000000",
@@ -1884,11 +1891,8 @@ async def test_sell_journal_close_failure_keeps_order_success(monkeypatch) -> No
         order_execution, "_save_order_fill", AsyncMock(return_value=123)
     )
     monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
-    monkeypatch.setattr(
-        order_execution,
-        "_close_journals_on_sell",
-        AsyncMock(side_effect=RuntimeError("db timeout")),
-    )
+    close_mock = AsyncMock(side_effect=RuntimeError("db timeout"))
+    monkeypatch.setattr(order_execution, "_close_journals_on_sell", close_mock)
 
     result = await tools["place_order"](
         symbol="KRW-BTC",
@@ -1900,8 +1904,9 @@ async def test_sell_journal_close_failure_keeps_order_success(monkeypatch) -> No
     )
 
     assert result["success"] is True
-    assert "journal_warning" in result
-    assert "journal close failed after sell" in result["journal_warning"]
+    assert result["fill_recorded"] is False
+    assert "journal_warning" not in result
+    close_mock.assert_not_awaited()  # close is never attempted at send
 
 
 @pytest.mark.asyncio
@@ -2035,8 +2040,10 @@ class TestOrderFillRecording:
         assert result["dry_run"] is True
 
     @pytest.mark.asyncio
-    async def test_successful_order_saves_fill(self, monkeypatch) -> None:
-        """Real order execution should save to review.trades."""
+    async def test_real_buy_is_accepted_only_no_fill_at_send(self, monkeypatch) -> None:
+        """ROB-407: live crypto buy records accepted-only; the fill is NOT saved to
+        review.trades at send. _save_order_fill is invoked only by
+        live_reconcile_orders once broker fill evidence confirms execution."""
         tools = build_tools()
 
         # Mock Upbit API calls
@@ -2098,8 +2105,9 @@ class TestOrderFillRecording:
 
         assert result["success"] is True
         assert result["dry_run"] is False
-        assert result.get("fill_recorded") is True
-        save_mock.assert_awaited_once()
+        assert result.get("fill_recorded") is False
+        assert result["broker_status"] == "accepted"
+        save_mock.assert_not_awaited()  # no fill booked at send (reconcile-gated)
 
     @pytest.mark.asyncio
     async def test_dry_run_does_not_save_fill(self, monkeypatch) -> None:
@@ -2142,8 +2150,10 @@ class TestOrderFillRecording:
         save_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_real_buy_creates_journal_then_links_fill(self, monkeypatch) -> None:
-        """Real buy orders should create journal and link to fill."""
+    async def test_real_buy_no_journal_at_send(self, monkeypatch) -> None:
+        """ROB-407: live crypto buy is accepted-only; no trade journal is created at
+        send. Journal creation + fill link happen in live_reconcile_orders once the
+        broker confirms the fill."""
         tools = build_tools()
 
         monkeypatch.setattr(
@@ -2165,7 +2175,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "test-uuid",
+                    "uuid": "rc-buy-journal-uuid",
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2201,10 +2211,9 @@ class TestOrderFillRecording:
         )
 
         assert result["success"] is True
-        assert result["journal_created"] is True
-        assert result["journal_id"] == 77
-        assert result["journal_status"] == "active"
-        create_journal_mock.assert_awaited_once()
+        assert result["journal_created"] is False
+        assert result["broker_status"] == "accepted"
+        create_journal_mock.assert_not_awaited()  # no journal at send
 
     @pytest.mark.asyncio
     async def test_sell_order_does_not_create_trade_journal(self, monkeypatch) -> None:
@@ -2231,7 +2240,7 @@ class TestOrderFillRecording:
             "place_sell_order",
             AsyncMock(
                 return_value={
-                    "uuid": "test-uuid",
+                    "uuid": "ofr-sell-uuid",
                     "side": "ask",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2258,10 +2267,12 @@ class TestOrderFillRecording:
         create_journal_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_journal_creation_failure_keeps_order_success(
+    async def test_buy_send_does_not_create_journal_even_if_it_would_fail(
         self, monkeypatch
     ) -> None:
-        """Journal creation failure should not fail the order."""
+        """ROB-407: send path never calls _create_trade_journal_for_buy, so a
+        would-be journal failure cannot affect the accepted-only buy. Journal
+        creation is reconcile-time only."""
         tools = build_tools()
 
         monkeypatch.setattr(
@@ -2283,7 +2294,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "test-uuid",
+                    "uuid": "ofr-buy-jfail-uuid",
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2292,10 +2303,11 @@ class TestOrderFillRecording:
             ),
         )
 
+        create_journal_mock = AsyncMock(side_effect=RuntimeError("db down"))
         monkeypatch.setattr(
             order_execution,
             "_create_trade_journal_for_buy",
-            AsyncMock(side_effect=RuntimeError("db down")),
+            create_journal_mock,
         )
         monkeypatch.setattr(
             order_execution, "_save_order_fill", AsyncMock(return_value=555)
@@ -2315,7 +2327,8 @@ class TestOrderFillRecording:
 
         assert result["success"] is True
         assert result["journal_created"] is False
-        assert "journal_warning" in result
+        assert "journal_warning" not in result
+        create_journal_mock.assert_not_awaited()  # not called at send
 
 
 # ----------------------------------------------------------------------

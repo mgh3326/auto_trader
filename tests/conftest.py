@@ -720,6 +720,49 @@ async def db_session():
                         ")"
                     )
                 )
+                # ROB-321 — add missing scalping columns if they are not present
+                # on review.kis_mock_order_ledger in persistent test DB.
+                for col_name, col_type in (
+                    ("correlation_id", "TEXT"),
+                    ("scalping_role", "TEXT"),
+                    ("exit_reason", "TEXT"),
+                    ("gross_pnl", "NUMERIC(20, 4)"),
+                    ("net_pnl", "NUMERIC(20, 4)"),
+                ):
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.kis_mock_order_ledger "
+                            f"ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                        )
+                    )
+                # ROB-406 — extend kis_mock_order_ledger.lifecycle_state CHECK
+                # to include 'cancelled'. create_all is no-op on the persistent
+                # test table, so drop+recreate here; canonical schema lives in
+                # migration <rev>_rob406_kis_mock_cancelled_state.py.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.kis_mock_order_ledger "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "kis_mock_ledger_lifecycle_state_allowed"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.kis_mock_order_ledger "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.kis_mock_order_ledger "
+                        "ADD CONSTRAINT ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10 "
+                        "CHECK (lifecycle_state IN ("
+                        "'planned','previewed','submitted','accepted','pending',"
+                        "'fill','reconciled','stale','failed','anomaly','cancelled'"
+                        "))"
+                    )
+                )
                 # ROB-403 — investment_watch_alerts: add conditions/combine/
                 # threshold_high columns + extend operator CHECK to 'between'.
                 # create_all is no-op on the persistent test table.
@@ -811,6 +854,57 @@ async def db_session():
                         "ALTER TABLE review.investment_watch_events "
                         "ADD CONSTRAINT ck_investment_watch_events_operator "
                         "CHECK (operator IN ('above','below','between'))"
+                    )
+                )
+                # ROB-402 — action_mode auto_execute_mock on alerts + events.
+                for _t in ("investment_watch_alerts", "investment_watch_events"):
+                    _c = f"ck_{_t}_action_mode"
+                    await conn.execute(
+                        text(f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS {_c}")
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS {_c}_{_c}"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_ck_investment_watch_alerts_a_646d"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_a_05f0"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_ac_6a20"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} ADD CONSTRAINT {_c} "
+                            "CHECK (action_mode IN ('notify_only','preview_only',"
+                            "'approval_required','auto_execute_mock'))"
+                        )
+                    )
+                # ROB-402 — outcome executed on events.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events DROP CONSTRAINT IF EXISTS ck_investment_watch_events_outcome"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_outcome"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events ADD CONSTRAINT ck_investment_watch_events_outcome "
+                        "CHECK (outcome IN ('notified','review_required','preview_attached',"
+                        "'executed','expired','ignored','failed'))"
                     )
                 )
         finally:

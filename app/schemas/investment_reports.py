@@ -59,7 +59,9 @@ WatchMetricLiteral = Literal["price", "rsi", "trade_value"]
 WatchOperatorLiteral = Literal["above", "below"]
 WatchClauseOpLiteral = Literal["above", "below", "between"]
 WatchCombineLiteral = Literal["and"]
-WatchActionModeLiteral = Literal["notify_only", "preview_only", "approval_required"]
+WatchActionModeLiteral = Literal[
+    "notify_only", "preview_only", "approval_required", "auto_execute_mock"
+]
 
 DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_approve"]
 
