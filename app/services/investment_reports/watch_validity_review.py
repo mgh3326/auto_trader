@@ -105,10 +105,16 @@ class WatchValidityReviewService:
                 results[market] = await self.review_market(market, dry_run=dry_run)
             except Exception as exc:
                 logger.exception("watch validity review_market raised: %s", market)
-                results[market] = {"market": market, "status": "failed", "error": str(exc)}
+                results[market] = {
+                    "market": market,
+                    "status": "failed",
+                    "error": str(exc),
+                }
         return results
 
-    async def review_market(self, market: str, *, dry_run: bool = True) -> dict[str, Any]:
+    async def review_market(
+        self, market: str, *, dry_run: bool = True
+    ) -> dict[str, Any]:
         stats = _ReviewStats(market=market)
         now_utc = datetime.now(UTC)
         async with self._session_factory() as db:
@@ -148,10 +154,9 @@ class WatchValidityReviewService:
 
                 kst_date = now_kst().date().isoformat()
                 last = (alert.alert_metadata or {}).get("last_review") or {}
-                material = (
-                    result.verdict != last.get("verdict")
-                    or kst_date != last.get("kst_date")
-                )
+                material = result.verdict != last.get(
+                    "verdict"
+                ) or kst_date != last.get("kst_date")
                 if result.verdict in _ACTIONABLE and material:
                     if await self._notify(alert, result, current_price, kst_date):
                         stats.notified += 1

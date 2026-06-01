@@ -33,7 +33,9 @@ class _StubHermes:
         default_factory=lambda: HermesDeliveryResult(status="success", http_status=200)
     )
 
-    async def send_review_trigger(self, payload: ReviewTriggerPayload) -> HermesDeliveryResult:
+    async def send_review_trigger(
+        self, payload: ReviewTriggerPayload
+    ) -> HermesDeliveryResult:
         self.calls.append(payload)
         return self.delivery
 

@@ -95,7 +95,10 @@ def test_reprice_on_material_drift() -> None:
 
 def test_no_stored_with_recompute_is_reprice() -> None:
     r = classify_watch_validity(
-        _inp(stored_recommendation=None, current_price=Decimal("100"),
-             recomputed=_recomputed_ok("90"))
+        _inp(
+            stored_recommendation=None,
+            current_price=Decimal("100"),
+            recomputed=_recomputed_ok("90"),
+        )
     )
     assert r.verdict == "reprice"
