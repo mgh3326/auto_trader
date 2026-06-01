@@ -435,6 +435,16 @@ class PortfolioSnapshotCollector:
             },
         }
 
+        # ROB-392 — label the NAV scope so the report makes explicit that the
+        # number is KIS-primary (sellable) holdings + cash, with ISA/Toss
+        # reference rows excluded (ROB-297). KR-only wording; numbers unchanged.
+        if request.market == "kr":
+            payload["nav_scope"] = "kis_primary_sellable"
+            payload["nav_scope_label"] = (
+                "NAV는 KIS 실거래(매도가능) 보유 + 현금 기준 · "
+                "ISA/Toss 참조분(reference_holdings)은 제외"
+            )
+
         coverage = {
             "holdings_count": len(holdings_out),
             "reference_count": len(reference_holdings),

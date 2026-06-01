@@ -2532,3 +2532,22 @@ async def test_market_collector_kr_regular_session_has_no_frozen_note():
     results = await collector.collect(_request(market="kr"))
     payload = results[0].payload_json
     assert "index_session" not in payload
+
+
+# ---------------------------------------------------------------------------
+# ROB-392 Slice A — NAV scope label + KR code-as-name fallback.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_kr_kis_live_payload_carries_nav_scope_label():
+    # Reuse the same fixture wiring as
+    # test_portfolio_v2_kr_kis_live_success_populates_kis_primary.
+    session = _manual_kr_session()
+    reader = _kis_reader_with_holdings()
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_kr_kis_request(user_id=42))
+    payload = results[0].payload_json
+    assert payload["primary_source"] == "kis"
+    assert payload["nav_scope"] == "kis_primary_sellable"
+    assert "ISA/Toss" in payload["nav_scope_label"]
+    # 수치 회귀: holdings/count는 라벨 추가와 무관하게 유지.
+    assert payload["count"] == len(payload["holdings"])
