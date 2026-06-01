@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.jobs.watch_market_data import (
+    evaluate_alert_conditions,
     get_current_value,
     is_market_open,
     is_triggered,
@@ -131,12 +132,25 @@ class InvestmentWatchScanner:
                     continue
 
                 try:
-                    current_value = await get_current_value(
-                        target_kind=alert.target_kind,
-                        metric=alert.metric,
-                        symbol=alert.symbol,
-                        market=alert.market,
-                    )
+                    if alert.conditions:
+                        triggered, current_value = await evaluate_alert_conditions(
+                            target_kind=alert.target_kind,
+                            symbol=alert.symbol,
+                            market=alert.market,
+                            conditions=alert.conditions,
+                            combine=alert.combine,
+                            get_value_fn=get_current_value,
+                        )
+                    else:
+                        current_value = await get_current_value(
+                            target_kind=alert.target_kind,
+                            metric=alert.metric,
+                            symbol=alert.symbol,
+                            market=alert.market,
+                        )
+                        triggered = is_triggered(
+                            current_value, alert.operator, float(alert.threshold)
+                        )
                 except Exception as exc:
                     logger.warning(
                         "investment-watch lookup failed: "
@@ -150,8 +164,7 @@ class InvestmentWatchScanner:
                     stats.failed_lookups += 1
                     continue
 
-                threshold_value = float(alert.threshold)
-                if not is_triggered(current_value, alert.operator, threshold_value):
+                if not triggered:
                     continue
 
                 # Insert (or look up existing) event row with delivery_status='pending'.

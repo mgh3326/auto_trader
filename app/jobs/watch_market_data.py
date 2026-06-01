@@ -12,7 +12,7 @@ legacy scanner's duplicate copy.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Callable
 
 import exchange_calendars as xcals
 import pandas as pd
@@ -208,7 +208,53 @@ def is_triggered(current: float | None, operator: str, threshold: float) -> bool
     return False
 
 
+def evaluate_clause(current: float | None, clause: dict) -> bool:
+    """Evaluate one condition clause against a current value."""
+    if current is None:
+        return False
+    op = clause.get("op")
+    if op == "above":
+        return current > float(clause["threshold"])
+    if op == "below":
+        return current < float(clause["threshold"])
+    if op == "between":
+        return float(clause["low"]) <= current <= float(clause["high"])
+    return False
+
+
+async def evaluate_alert_conditions(
+    *,
+    target_kind: str,
+    symbol: str,
+    market: str,
+    conditions: list[dict],
+    combine: str,
+    get_value_fn: Callable = get_current_value,
+) -> tuple[bool, float | None]:
+    """Evaluate normalized conditions. Returns (triggered, primary_value).
+
+    primary_value is the first clause's current value (used for event detail).
+    All clauses share the alert's target_kind/symbol/market; only metric varies.
+    """
+    primary_value: float | None = None
+    results: list[bool] = []
+    for idx, clause in enumerate(conditions):
+        value = await get_value_fn(
+            target_kind=target_kind,
+            metric=clause["metric"],
+            symbol=symbol,
+            market=market,
+        )
+        if idx == 0:
+            primary_value = value
+        results.append(evaluate_clause(value, clause))
+    triggered = bool(results) and all(results)  # combine == "and"
+    return triggered, primary_value
+
+
 __all__ = [
+    "evaluate_alert_conditions",
+    "evaluate_clause",
     "get_current_value",
     "get_fx_price",
     "get_index_price",
