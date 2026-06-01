@@ -783,6 +783,21 @@ async def _execute_and_record(
     if not is_mock and market_type == "crypto":
         from app.mcp_server.tooling.live_order_ledger import _record_live_order
 
+        # ROB-407: live crypto fills/journals are evidence-gated now, but the
+        # stop-loss re-entry cooldown is a send-time intent guard that used to
+        # live in _record_fill_and_journals. Preserve it here so a stop-loss
+        # crypto sell still blocks immediate re-entry (decision: record at send).
+        if (
+            side == "sell"
+            and avg_price > 0
+            and current_price <= avg_price * (1 - CRYPTO_STOP_LOSS_PCT)
+        ):
+            try:
+                cooldown_service = _get_crypto_trade_cooldown_service()
+                await cooldown_service.record_stop_loss(normalized_symbol)
+            except Exception as cooldown_exc:
+                logger.warning("Failed to record stop-loss cooldown: %s", cooldown_exc)
+
         is_market = (order_type or "").lower() == "market" or price is None
         market_symbol = execution_result.get("market") or dry_run_result.get("market")
         return await _record_live_order(
