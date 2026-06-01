@@ -393,3 +393,122 @@ async def test_reconcile_orders_impl_aggregates_counts():
     assert out["counts"]["pending"] == 1
     assert len(out["reconciled"]) == 2
     assert out["dry_run"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mark_ledger_cancelled_only_touches_open_rows(db_session):
+    from app.mcp_server.tooling.kis_live_ledger import (
+        _mark_ledger_cancelled,
+        _order_session_factory,
+        _save_kis_live_order_ledger,
+    )
+    from sqlalchemy import select
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="012450",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=1160000.0,
+        amount=1160000.0,
+        currency="KRW",
+        order_no="TEST-CXL-1",
+        order_time="0930",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    updated = await _mark_ledger_cancelled("TEST-CXL-1")
+    assert updated == 1
+    async with _order_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(KISLiveOrderLedger).where(KISLiveOrderLedger.id == lid)
+            )
+        ).scalar_one()
+    assert row.status == "cancelled"
+    assert row.lifecycle_state == "cancelled"
+
+    # idempotent: a terminal row is not reopened/re-touched
+    assert await _mark_ledger_cancelled("TEST-CXL-1") == 0
+    # unknown order_no is a no-op
+    assert await _mark_ledger_cancelled("NOPE") == 0
+    assert await _mark_ledger_cancelled(None) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_repoint_ledger_after_modify(db_session):
+    from app.mcp_server.tooling.kis_live_ledger import (
+        _order_session_factory,
+        _repoint_ledger_after_modify,
+        _save_kis_live_order_ledger,
+    )
+    from sqlalchemy import select
+
+    await _save_kis_live_order_ledger(
+        symbol="015760",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=38500.0,
+        amount=38500.0,
+        currency="KRW",
+        order_no="TEST-MOD-OLD",
+        order_time="0930",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    updated = await _repoint_ledger_after_modify(
+        old_order_no="TEST-MOD-OLD",
+        new_order_no="TEST-MOD-NEW",
+        new_price=39000.0,
+        new_quantity=2.0,
+    )
+    assert updated == 1
+    async with _order_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(KISLiveOrderLedger).where(
+                    KISLiveOrderLedger.order_no == "TEST-MOD-NEW"
+                )
+            )
+        ).scalar_one()
+    assert float(row.price) == 39000.0
+    assert float(row.quantity) == 2.0
+    assert row.status == "accepted"  # still open, now tracked under the new odno
+
+    # missing ids are a no-op
+    assert await _repoint_ledger_after_modify(old_order_no=None, new_order_no="X") == 0
+    assert (
+        await _repoint_ledger_after_modify(
+            old_order_no="TEST-MOD-NEW", new_order_no=None
+        )
+        == 0
+    )

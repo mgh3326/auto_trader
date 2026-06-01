@@ -300,6 +300,80 @@ async def _update_ledger_outcome(
         )
 
 
+async def _mark_ledger_cancelled(order_no: str | None) -> int:
+    """Mark a non-terminal live ledger row as cancelled (proactive on cancel).
+
+    Idempotent: only touches accepted/pending/partial rows for ``order_no`` so a
+    later reconcile cannot reopen it. Returns the number of rows updated.
+    """
+    if not order_no:
+        return 0
+    try:
+        async with _order_session_factory()() as db:
+            result = await db.execute(
+                update(KISLiveOrderLedger)
+                .where(
+                    KISLiveOrderLedger.order_no == order_no,
+                    KISLiveOrderLedger.status.in_(("accepted", "pending", "partial")),
+                )
+                .values(
+                    status="cancelled",
+                    lifecycle_state=_status_to_lifecycle("cancelled"),
+                    reconciled_at=now_kst(),
+                )
+            )
+            await db.commit()
+            return result.rowcount or 0
+    except Exception as exc:
+        logger.warning(
+            "Failed to mark kis_live ledger cancelled order_no=%s: %s", order_no, exc
+        )
+        return 0
+
+
+async def _repoint_ledger_after_modify(
+    *,
+    old_order_no: str | None,
+    new_order_no: str | None,
+    new_price: float | None = None,
+    new_quantity: float | None = None,
+) -> int:
+    """Re-point a live ledger row to a modified order's new order_no.
+
+    KIS 정정주문 issues a fresh odno, so keep the captured intent attached to the
+    live order — otherwise reconcile would mark the old order cancelled and lose
+    track of the replacement. Updates price/quantity only when supplied. Returns
+    the number of rows updated.
+    """
+    if not old_order_no or not new_order_no:
+        return 0
+    values: dict[str, Any] = {"order_no": new_order_no}
+    if new_price is not None:
+        values["price"] = new_price
+    if new_quantity is not None:
+        values["quantity"] = new_quantity
+    try:
+        async with _order_session_factory()() as db:
+            result = await db.execute(
+                update(KISLiveOrderLedger)
+                .where(
+                    KISLiveOrderLedger.order_no == old_order_no,
+                    KISLiveOrderLedger.status.in_(("accepted", "pending", "partial")),
+                )
+                .values(**values)
+            )
+            await db.commit()
+            return result.rowcount or 0
+    except Exception as exc:
+        logger.warning(
+            "Failed to repoint kis_live ledger %s->%s: %s",
+            old_order_no,
+            new_order_no,
+            exc,
+        )
+        return 0
+
+
 async def _load_ledger_row(ledger_id: int) -> KISLiveOrderLedger:
     async with _order_session_factory()() as db:
         row = (
