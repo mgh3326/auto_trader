@@ -230,7 +230,12 @@ async def test_reconcile_cancelled_no_journal():
 async def test_live_reconcile_impl_dry_run_empty():
     from app.mcp_server.tooling import live_order_ledger as ll
 
-    out = await ll.live_reconcile_orders_impl(dry_run=True, limit=10)
+    # Scope to a guaranteed-nonexistent order_id so this is deterministic on the
+    # shared test DB (other xdist workers may have open rows) and never reaches a
+    # broker evidence adapter / real network call.
+    out = await ll.live_reconcile_orders_impl(
+        order_id="__no_such_order__", dry_run=True, limit=10
+    )
     assert out["success"] is True
     assert out["dry_run"] is True
     assert out["counts"] == {}

@@ -106,9 +106,13 @@ async def _save_live_order_ledger(
             dt_caller_source=dt_caller_source,
         )
         db.add(row)
+        # flush assigns the PK inside the transaction; read it before commit so
+        # we never issue a post-commit refresh (a concurrent delete of this row —
+        # e.g. another xdist worker truncating the table — would make refresh fail).
+        await db.flush()
+        ledger_id = row.id
         await db.commit()
-        await db.refresh(row)
-        return row.id
+        return ledger_id
 
 
 async def _load_live_ledger_row(ledger_id: int) -> LiveOrderLedger | None:
