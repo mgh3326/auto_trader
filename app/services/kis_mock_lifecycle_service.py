@@ -65,17 +65,13 @@ class KISMockLifecycleService:
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_by_order_no(
-        self, *, order_no: str
-    ) -> KISMockOrderLedger | None:
+    async def get_by_order_no(self, *, order_no: str) -> KISMockOrderLedger | None:
         """Look up a single ledger row by broker order number.
 
         Used by cancel/modify so KIS mock never depends on the unsupported
         TTTC8036R pending-orders inquiry.
         """
-        stmt = select(KISMockOrderLedger).where(
-            KISMockOrderLedger.order_no == order_no
-        )
+        stmt = select(KISMockOrderLedger).where(KISMockOrderLedger.order_no == order_no)
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 

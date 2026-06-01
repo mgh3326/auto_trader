@@ -234,5 +234,3 @@ async def test_update_order_terms_persists(
     assert row.price == Decimal("71000")
     assert row.quantity == Decimal("8")
     assert row.last_reconcile_detail == {"modified_via": "test"}
-
-

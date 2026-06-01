@@ -458,4 +458,3 @@ def test_cancelled_is_registered_terminal_state():
     assert "cancelled" in ORDER_LIFECYCLE_STATES
     assert "cancelled" in TERMINAL_LIFECYCLE_STATES
     assert is_terminal_state("cancelled") is True
-
