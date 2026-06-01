@@ -64,8 +64,49 @@ class UsOverseasEvidenceAdapter:
         return classify_fill_evidence(order_no=str(row.order_no), rows=[normalized])
 
 
+from app.services.brokers.upbit.orders import fetch_order_detail
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+class UpbitEvidenceAdapter:
+    broker = "upbit"
+
+    async def fetch_evidence(self, row: Any) -> FillEvidence:
+        detail = await fetch_order_detail(str(row.order_no))
+        if not detail:
+            return FillEvidence(
+                FillVerdict.PENDING, Decimal("0"), None, None, "not_found",
+                f"order {row.order_no} detail empty",
+            )
+        state = str(detail.get("state", "")).strip()
+        executed = _to_decimal(detail.get("executed_volume")) or Decimal("0")
+        remaining = _to_decimal(detail.get("remaining_volume")) or Decimal("0")
+        avg = _to_decimal(detail.get("avg_price")) or _to_decimal(detail.get("price"))
+
+        # 체결분이 있으면 (취소 후 부분체결 포함) 체결을 우선 인정
+        if executed > 0 and avg and avg > 0:
+            verdict = FillVerdict.FILLED if remaining <= 0 else FillVerdict.PARTIAL
+            return FillEvidence(verdict, executed, avg, None, verdict.value,
+                                f"upbit {row.order_no} {verdict.value} {executed}@{avg}")
+        if state == "wait":
+            return FillEvidence(FillVerdict.PENDING, Decimal("0"), None, None,
+                                "pending", f"upbit {row.order_no} waiting")
+        # done/cancel with zero executed → 미체결 종료
+        return FillEvidence(FillVerdict.NONE, Decimal("0"), None, None,
+                            "cancelled", f"upbit {row.order_no} ended unfilled")
+
+
 _ADAPTERS: dict[str, LiveFillEvidenceAdapter] = {
     "kis": UsOverseasEvidenceAdapter(),
+    "upbit": UpbitEvidenceAdapter(),
 }
 
 
@@ -74,3 +115,4 @@ def get_evidence_adapter(broker: str) -> LiveFillEvidenceAdapter:
     if adapter is None:
         raise ValueError(f"no live evidence adapter for broker={broker!r}")
     return adapter
+
