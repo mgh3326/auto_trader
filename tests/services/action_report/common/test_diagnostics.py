@@ -501,3 +501,31 @@ def test_report_diagnostics_includes_data_quality_audit() -> None:
     )
     assert "data_quality_audit" in out
     assert out["data_quality_audit"]["snapshot_bundle_uuid"] == "b-1"
+
+
+def test_quality_grade_demotes_when_candidate_universe_stale_no_cross_check() -> None:
+    # ROB-415: candidate_universe (the buy-candidate source) is stale while other
+    # optional kinds are fresh, so aggregate internal coverage stays >=70% and the
+    # old thin_coverage rule never fired. With no usable external cross-check, a
+    # stale candidate_universe must demote high_confidence → informational_only.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+            "symbol": {"status": "fresh"},
+            "invest_page": {"status": "fresh"},
+            "candidate_universe": {"status": "soft_stale"},
+            "toss_remote_debug": {"status": "unavailable"},  # external, no rescue
+        },
+        bundle_status="partial",
+    )
+    # Core fully fresh and internal coverage is high (7/8 ≈ 88%), so the old rule
+    # left it high_confidence — the bug.
+    assert out["core_fresh_coverage_pct"] == 100
+    assert out["grade"] == "informational_only"
+    assert out["external_cross_check_status"] == "unavailable"
+
