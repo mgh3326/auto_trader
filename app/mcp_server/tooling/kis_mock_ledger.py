@@ -94,8 +94,43 @@ def _decimal_to_float(value: Any) -> float:
     return _to_float(value, default=0.0)
 
 
+def _derive_shadow_fill(
+    row: KISMockOrderLedger, ordered_qty: float
+) -> tuple[float, float, str]:
+    """Derive (filled_qty, remaining_qty, status) consistent with lifecycle_state.
+
+    A row in ``fill`` must never report status=pending/filled_qty=0. When the
+    reconciler recorded ``attributed_fill_qty`` (ROB-400) we honor it; legacy
+    fill rows without it fall back to a full fill so lifecycle and status agree.
+    """
+    if row.lifecycle_state != "fill":
+        return 0.0, ordered_qty, "pending"
+
+    # Compare in Decimal so a fractional-share fill (e.g. 9.9999999 vs 10) is not
+    # mislabeled partial by float rounding; the reconciler emits Decimal values.
+    ordered_dec = Decimal(str(ordered_qty))
+    detail = row.last_reconcile_detail or {}
+    raw = detail.get("attributed_fill_qty")
+    if raw is None:
+        filled_dec = ordered_dec
+    else:
+        try:
+            filled_dec = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError):
+            filled_dec = ordered_dec
+        if filled_dec < 0:
+            filled_dec = Decimal("0")
+        elif filled_dec > ordered_dec:
+            filled_dec = ordered_dec
+    remaining_dec = ordered_dec - filled_dec
+    status = "filled" if filled_dec >= ordered_dec else "partial"
+    return float(filled_dec), float(remaining_dec), status
+
+
 def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:
     ordered_at = row.trade_date.isoformat() if row.trade_date else None
+    ordered_qty = _decimal_to_float(row.quantity)
+    filled_qty, remaining_qty, status = _derive_shadow_fill(row, ordered_qty)
     return {
         "order_id": row.order_no or f"ledger:{row.id}",
         "ledger_id": row.id,
@@ -104,11 +139,11 @@ def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:
         "instrument_type": row.instrument_type,
         "side": row.side,
         "order_type": row.order_type,
-        "status": "pending",
+        "status": status,
         "lifecycle_state": row.lifecycle_state,
-        "ordered_qty": _decimal_to_float(row.quantity),
-        "remaining_qty": _decimal_to_float(row.quantity),
-        "filled_qty": 0.0,
+        "ordered_qty": ordered_qty,
+        "remaining_qty": remaining_qty,
+        "filled_qty": filled_qty,
         "ordered_price": _decimal_to_float(row.price),
         "amount": _decimal_to_float(row.amount),
         "currency": row.currency,

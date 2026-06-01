@@ -114,6 +114,7 @@ async def run_kis_mock_reconciliation(
                 else None
             ),
             accepted_at=row.trade_date,
+            price=_to_decimal(row.price),
         )
         for row in open_rows
     ]
@@ -130,6 +131,10 @@ async def run_kis_mock_reconciliation(
     events: list[dict[str, Any]] = []
 
     for proposal in proposals:
+        # ``observed_delta`` is the raw un-apportioned per-order delta (diagnostic
+        # only — a pending sibling in a same-symbol group may show a non-zero
+        # delta it did NOT receive). ``attributed_fill_qty`` is the authoritative
+        # apportioned quantity that drives lifecycle and order-history status.
         detail = {
             "observed_holdings_qty": (
                 str(proposal.observed_holdings_qty)
@@ -139,6 +144,11 @@ async def run_kis_mock_reconciliation(
             "observed_delta": (
                 str(proposal.observed_delta)
                 if proposal.observed_delta is not None
+                else None
+            ),
+            "attributed_fill_qty": (
+                str(proposal.attributed_fill_qty)
+                if proposal.attributed_fill_qty is not None
                 else None
             ),
         }
