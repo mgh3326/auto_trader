@@ -300,3 +300,74 @@ async def test_record_live_order_inline_confirm_books_on_done():
         )
     assert out["fill_recorded"] is True
     assert out["inline_reconcile"]["action"] == "booked"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_sell_reattaches_defensive_trim_note():
+    """ROB-164/ROB-407: a defensive-trim sell stores approval audit at send; the
+    evidence-gated reconcile close must reconstruct the DefensiveTrimContext from
+    the ledger row and pass it to _close_journals_on_sell."""
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await ll._save_live_order_ledger(
+        broker="upbit",
+        account_scope="upbit_live",
+        market="crypto",
+        symbol="KRW-BTC",
+        exchange=None,
+        market_symbol="KRW-BTC",
+        side="sell",
+        order_kind="limit",
+        quantity=1.0,
+        price=1005.0,
+        amount=1005.0,
+        currency="KRW",
+        order_no="DT-SELL-1",
+        order_time=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason="defensive trim",
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        dt_approval_issue_id="ROB-164",
+        dt_requester_agent_id="trader-agent",
+        dt_caller_source="http_header",
+    )
+    row = await ll._load_live_ledger_row(lid)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("1"), Decimal("1005"), None, "filled", ""
+    )
+
+    class _Adapter:
+        broker = "upbit"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=321)),
+        patch.object(ll, "_close_journals_on_sell", new=AsyncMock()) as m_close,
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=False)
+
+    assert out["verdict"] == "filled"
+    m_close.assert_awaited_once()
+    ctx = m_close.await_args.kwargs["defensive_trim_ctx"]
+    assert ctx is not None
+    assert ctx.approval_issue_id == "ROB-164"
+    assert ctx.requester_agent_id == "trader-agent"

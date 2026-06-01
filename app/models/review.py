@@ -401,6 +401,13 @@ class LiveOrderLedger(Base):
     exit_reason: Mapped[str | None] = mapped_column(Text)
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
+    # ROB-164 defensive-trim approval audit, captured at send so the
+    # evidence-gated journal close (reconcile) can still append the
+    # defensive-trim note to the closed journal.
+    dt_approval_issue_id: Mapped[str | None] = mapped_column(Text)
+    dt_requester_agent_id: Mapped[str | None] = mapped_column(Text)
+    dt_caller_source: Mapped[str | None] = mapped_column(Text)
+
     # reconcile outcomes (filled_qty = 이미 booked된 누적 체결량, 델타 멱등용)
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))

@@ -776,6 +776,13 @@ async def _execute_and_record(
             min_hold_days=min_hold_days,
             notes=notes,
             indicators_snapshot=indicators_snapshot,
+            dt_approval_issue_id=(
+                defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+            ),
+            dt_requester_agent_id=(
+                defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
+            ),
+            dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
         )
 
     # ROB-407: crypto live 주문. 지정가 pending은 accepted-only(reconcile 위임),
@@ -826,6 +833,13 @@ async def _execute_and_record(
             notes=notes,
             indicators_snapshot=indicators_snapshot,
             inline_confirm=is_market,
+            dt_approval_issue_id=(
+                defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+            ),
+            dt_requester_agent_id=(
+                defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
+            ),
+            dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
         )
 
     # Record phase: fills + journals

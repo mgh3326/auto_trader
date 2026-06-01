@@ -66,6 +66,9 @@ async def _save_live_order_ledger(
     notes: str | None,
     exit_reason: str | None,
     indicators_snapshot: dict[str, Any] | None,
+    dt_approval_issue_id: str | None = None,
+    dt_requester_agent_id: str | None = None,
+    dt_caller_source: str | None = None,
 ) -> int:
     async with _order_session_factory()() as db:
         row = LiveOrderLedger(
@@ -98,6 +101,9 @@ async def _save_live_order_ledger(
             notes=notes,
             exit_reason=exit_reason,
             indicators_snapshot=indicators_snapshot,
+            dt_approval_issue_id=dt_approval_issue_id,
+            dt_requester_agent_id=dt_requester_agent_id,
+            dt_caller_source=dt_caller_source,
         )
         db.add(row)
         await db.commit()
@@ -267,6 +273,19 @@ async def _reconcile_one_live_row(
                 account=row.broker,
             )
     elif row.side == "sell":
+        # ROB-164/ROB-407: re-attach the defensive-trim approval note to the
+        # closed journal. The fields were captured at send (order_execution
+        # records the order-history audit then; the journal close is deferred
+        # here to evidence-gated reconcile).
+        dt_ctx = None
+        if row.dt_approval_issue_id and row.dt_requester_agent_id:
+            from app.mcp_server.tooling.order_validation import DefensiveTrimContext
+
+            dt_ctx = DefensiveTrimContext(
+                approval_issue_id=row.dt_approval_issue_id,
+                requester_agent_id=row.dt_requester_agent_id,
+                approval_verified_at=row.trade_date or datetime.now(UTC),
+            )
         await _close_journals_on_sell(
             symbol=row.symbol,
             sell_quantity=float(delta),
@@ -274,6 +293,7 @@ async def _reconcile_one_live_row(
             exit_reason=(row.exit_reason or row.reason),
             account_type="live",
             account=row.broker,
+            defensive_trim_ctx=dt_ctx,
         )
 
     await _update_live_ledger_outcome(
@@ -360,6 +380,9 @@ async def _record_live_order(
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
     inline_confirm: bool = False,
+    dt_approval_issue_id: str | None = None,
+    dt_requester_agent_id: str | None = None,
+    dt_caller_source: str | None = None,
 ) -> dict[str, Any]:
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
     qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
@@ -395,6 +418,9 @@ async def _record_live_order(
         notes=notes,
         exit_reason=exit_reason,
         indicators_snapshot=indicators_snapshot,
+        dt_approval_issue_id=dt_approval_issue_id,
+        dt_requester_agent_id=dt_requester_agent_id,
+        dt_caller_source=dt_caller_source,
     )
     fill_recorded = False
     inline_outcome: dict[str, Any] | None = None
