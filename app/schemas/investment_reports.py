@@ -412,6 +412,12 @@ class ActivateWatchRequest(BaseModel):
     item_uuid: UUID
     actor: str
     idempotency_key: str | None = None
+    # ROB-393 — operation='review' watches are created without a condition
+    # (schema + DB CHECK both exempt them). Allow supplying the condition /
+    # expiry at activation time so such a watch can still be armed. Auto
+    # derivation of the condition is out of scope (ROB-337 seam).
+    watch_condition: WatchConditionPayload | None = None
+    valid_until: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
