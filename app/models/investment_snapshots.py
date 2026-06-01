@@ -131,7 +131,7 @@ class InvestmentSnapshot(Base):
             "'candidate_universe','browser_probe','invest_page',"
             "'journal','watch_context','naver_remote_debug',"
             "'toss_remote_debug','llm_input_frozen','pending_orders',"
-            "'validated_run_card')",
+            "'validated_run_card','kr_market_ranking')",
             name="ck_investment_snapshots_snapshot_kind",
         ),
         CheckConstraint(_MARKET_CHECK, name="ck_investment_snapshots_market"),
