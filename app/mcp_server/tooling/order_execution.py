@@ -742,6 +742,106 @@ async def _execute_and_record(
             indicators_snapshot=indicators_snapshot,
         )
 
+    # ROB-407: US/해외 live 주문도 accepted-only 기록; fill/journal/pnl은
+    # live_reconcile_orders가 broker 체결 증거(해외 일별주문)로만 반영.
+    if not is_mock and market_type == "equity_us":
+        from app.mcp_server.tooling.live_order_ledger import _record_live_order
+
+        exchange = execution_result.get("ovrs_excg_cd") or (
+            execution_result.get("output") or {}
+        ).get("OVRS_EXCG_CD")
+        return await _record_live_order(
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            normalized_symbol=normalized_symbol,
+            exchange=str(exchange) if exchange else None,
+            market_symbol=None,
+            side=side,
+            order_kind=order_type,
+            currency="USD",
+            order_no=execution_result.get("odno") or execution_result.get("ord_no"),
+            order_time=execution_result.get("ord_tmd"),
+            rt_cd=str(execution_result.get("rt_cd", "")) or None,
+            response_message=execution_result.get("msg")
+            or execution_result.get("msg1"),
+            dry_run_result=dry_run_result,
+            execution_result=execution_result,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+            dt_approval_issue_id=(
+                defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+            ),
+            dt_requester_agent_id=(
+                defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
+            ),
+            dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
+        )
+
+    # ROB-407: crypto live 주문. 지정가 pending은 accepted-only(reconcile 위임),
+    # 시장가는 전송 직후 inline evidence 확인으로 체결 반영.
+    if not is_mock and market_type == "crypto":
+        from app.mcp_server.tooling.live_order_ledger import _record_live_order
+
+        # ROB-407: live crypto fills/journals are evidence-gated now, but the
+        # stop-loss re-entry cooldown is a send-time intent guard that used to
+        # live in _record_fill_and_journals. Preserve it here so a stop-loss
+        # crypto sell still blocks immediate re-entry (decision: record at send).
+        if (
+            side == "sell"
+            and avg_price > 0
+            and current_price <= avg_price * (1 - CRYPTO_STOP_LOSS_PCT)
+        ):
+            try:
+                cooldown_service = _get_crypto_trade_cooldown_service()
+                await cooldown_service.record_stop_loss(normalized_symbol)
+            except Exception as cooldown_exc:
+                logger.warning("Failed to record stop-loss cooldown: %s", cooldown_exc)
+
+        is_market = (order_type or "").lower() == "market" or price is None
+        market_symbol = execution_result.get("market") or dry_run_result.get("market")
+        return await _record_live_order(
+            broker="upbit",
+            account_scope="upbit_live",
+            market="crypto",
+            normalized_symbol=normalized_symbol,
+            exchange=None,
+            market_symbol=str(market_symbol) if market_symbol else None,
+            side=side,
+            order_kind="market" if is_market else "limit",
+            currency="KRW",
+            order_no=execution_result.get("uuid"),
+            order_time=execution_result.get("created_at"),
+            rt_cd="0" if execution_result.get("uuid") else "1",
+            response_message=execution_result.get("error") or None,
+            dry_run_result=dry_run_result,
+            execution_result=execution_result,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+            inline_confirm=is_market,
+            dt_approval_issue_id=(
+                defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+            ),
+            dt_requester_agent_id=(
+                defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
+            ),
+            dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
+        )
+
     # Record phase: fills + journals
     record_result = await _record_fill_and_journals(
         side=side,
@@ -989,6 +1089,13 @@ async def _place_order_impl(
             is_mock=is_mock,
         )
     except Exception as exc:
+        logger.exception(
+            "place_order execution failed (symbol=%s side=%s market=%s): %s",
+            normalized_symbol,
+            side_lower,
+            market_type,
+            exc,
+        )
         await _record_order_history(
             symbol=normalized_symbol,
             side=side_lower,

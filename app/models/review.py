@@ -338,6 +338,94 @@ class KISLiveOrderLedger(Base):
     )
 
 
+class LiveOrderLedger(Base):
+    """ROB-407 — 제네릭 live (real-money) order lifecycle ledger.
+
+    US/해외(`equity_us`)·crypto(`crypto`) live 주문을 전송 시 accepted-only로 기록한다.
+    KISLiveOrderLedger(KR domestic 전용)와 동일 evidence-gated 계약을 따르되,
+    broker/market 디스크리미네이터와 시장별 메타(exchange/market_symbol)를 갖는다.
+    fill/journal/realized_pnl은 live_reconcile_orders가 broker 체결 증거로만 반영한다.
+    """
+
+    __tablename__ = "live_order_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "broker", "account_scope", "order_no", name="uq_live_ledger_order"
+        ),
+        Index("ix_live_ledger_status", "status"),
+        Index("ix_live_ledger_market_symbol", "market", "symbol"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    trade_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+
+    # discriminators / market metadata
+    broker: Mapped[str] = mapped_column(Text, nullable=False)  # kis | upbit
+    account_scope: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )  # kis_live | upbit_live
+    market: Mapped[str] = mapped_column(Text, nullable=False)  # us | crypto
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)  # DB dot-format
+    exchange: Mapped[str | None] = mapped_column(Text)  # US: NASD/NYSE/AMEX
+    market_symbol: Mapped[str | None] = mapped_column(Text)  # crypto: KRW-BTC
+
+    side: Mapped[str] = mapped_column(Text, nullable=False)  # buy | sell
+    order_kind: Mapped[str] = mapped_column(Text, nullable=False)  # market | limit
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    currency: Mapped[str | None] = mapped_column(Text)
+
+    order_no: Mapped[str | None] = mapped_column(Text)  # KIS odno / Upbit uuid
+    order_time: Mapped[str | None] = mapped_column(Text)
+
+    # send-time status: accepted | rejected ; reconcile updates to
+    # filled | partial | pending | cancelled | anomaly
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+    response_code: Mapped[str | None] = mapped_column(Text)
+    response_message: Mapped[str | None] = mapped_column(Text)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB)
+
+    # buy/sell intent captured at send, consumed by reconcile
+    reason: Mapped[str | None] = mapped_column(Text)
+    thesis: Mapped[str | None] = mapped_column(Text)
+    strategy: Mapped[str | None] = mapped_column(Text)
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
+    notes: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+
+    # ROB-164 defensive-trim approval audit, captured at send so the
+    # evidence-gated journal close (reconcile) can still append the
+    # defensive-trim note to the closed journal.
+    dt_approval_issue_id: Mapped[str | None] = mapped_column(Text)
+    dt_requester_agent_id: Mapped[str | None] = mapped_column(Text)
+    dt_caller_source: Mapped[str | None] = mapped_column(Text)
+
+    # reconcile outcomes (filled_qty = 이미 booked된 누적 체결량, 델타 멱등용)
+    filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    trade_id: Mapped[int | None] = mapped_column(BigInteger)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # review.alpaca_paper_order_ledger — Alpaca Paper execution lifecycle ledger (ROB-84/ROB-90)
 # Records plan → preview → validation → submit → fill → position → close → final reconcile.
