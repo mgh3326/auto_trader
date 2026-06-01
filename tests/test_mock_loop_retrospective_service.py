@@ -16,6 +16,12 @@ from app.services.trade_journal.mock_loop_retrospective_service import (
     build_mock_loop_retrospective,
 )
 
+# These tests seed + commit investment_watch_events / trade_journals on the
+# shared test DB. Hold the investment-report cleanup lock so a concurrent
+# xdist worker's TRUNCATE CASCADE can't wipe the committed rows mid-test
+# (ROB-375 mechanism).
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 
 async def _seed_cycle(db, *, day, cid, pnl="5", verdict="good", market="kr"):
     db.add(
