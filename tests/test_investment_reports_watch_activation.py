@@ -9,12 +9,13 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.investment_reports import InvestmentReportItem
+from app.models.investment_reports import InvestmentReportItem, InvestmentWatchAlert
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
     IngestReportRequest,
     RecordDecisionRequest,
+    WatchConditionClause,
     WatchConditionPayload,
 )
 from app.services.investment_reports.decisions import (
@@ -263,3 +264,92 @@ async def test_caller_supplied_idempotency_key_cross_item_collision_rejected(
                 idempotency_key=shared_key,
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_alert_accepts_between_operator_and_conditions(
+    session: AsyncSession,
+) -> None:
+    alert = InvestmentWatchAlert(
+        alert_uuid=uuid.uuid4(),
+        idempotency_key=f"k-{uuid.uuid4()}",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="between",
+        threshold=Decimal("50000"),
+        threshold_high=Decimal("55000"),
+        threshold_key="and(price:between:50000-55000)",
+        conditions=[
+            {"metric": "price", "op": "between", "low": "50000", "high": "55000"}
+        ],
+        combine="and",
+        intent="buy_review",
+        action_mode="notify_only",
+        rationale="zone buy",
+        valid_until=future_datetime(),
+    )
+    session.add(alert)
+    await session.commit()
+    fetched = await session.get(InvestmentWatchAlert, alert.id)
+    assert fetched.operator == "between"
+    assert fetched.conditions[0]["op"] == "between"
+    assert fetched.combine == "and"
+
+
+@pytest.mark.asyncio
+async def test_activate_maps_conditions_and_flat_primary(
+    session: AsyncSession,
+) -> None:
+    ingest = InvestmentReportIngestionService(session)
+    report = await ingest.ingest(
+        IngestReportRequest(
+            report_type="kr_morning",
+            market="kr",
+            account_scope="kis_mock",
+            execution_mode="mock_preview",
+            created_by_profile="test",
+            title="t",
+            summary="s",
+            kst_date="2026-05-18",
+            items=[
+                IngestReportItem(
+                    client_item_key="watch-zone-1",
+                    item_kind="watch",
+                    symbol="005930",
+                    intent="buy_review",
+                    rationale="zone buy",
+                    watch_condition=WatchConditionPayload(
+                        conditions=[
+                            WatchConditionClause(
+                                metric="price",
+                                op="between",
+                                low=Decimal("50000"),
+                                high=Decimal("55000"),
+                            )
+                        ]
+                    ),
+                    valid_until=future_datetime(),
+                )
+            ],
+        )
+    )
+    repo = InvestmentReportsRepository(session)
+    item = (await repo.list_items_for_report(report.id))[0]
+    await InvestmentReportDecisionService(session).record(
+        RecordDecisionRequest(
+            item_uuid=item.item_uuid, decision="approve", actor="operator-test"
+        )
+    )
+    alert = await WatchActivationService(session).activate(
+        ActivateWatchRequest(item_uuid=item.item_uuid, actor="operator-test")
+    )
+    assert alert.conditions[0]["op"] == "between"
+    assert alert.combine == "and"
+    # flat primary 요약 (between → operator='between', threshold=low, high)
+    assert alert.operator == "between"
+    assert Decimal(alert.threshold) == Decimal("50000")
+    assert Decimal(alert.threshold_high) == Decimal("55000")

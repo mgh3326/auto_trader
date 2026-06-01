@@ -77,13 +77,19 @@ async def run_kis_mock_reconciliation(
     *,
     dry_run: bool = True,
     limit: int = 100,
+    symbol: str | None = None,
     thresholds: ReconcilerThresholds | None = None,
     kis_client: KISClient | None = None,
 ) -> dict[str, Any]:
-    """Fetch open mock orders, fetch mock holdings, propose & optionally apply transitions."""
+    """Fetch open mock orders, fetch mock holdings, propose & optionally apply transitions.
+
+    ``symbol`` (ROB-404) restricts reconciliation to one symbol's open orders —
+    the delta-budget kernel groups by (symbol, side) so a single-symbol pass is
+    self-consistent. ``None`` keeps the full-batch behavior.
+    """
     thresholds = thresholds or ReconcilerThresholds()
     lifecycle_svc = KISMockLifecycleService(db)
-    open_rows = await lifecycle_svc.list_open_orders(limit=limit)
+    open_rows = await lifecycle_svc.list_open_orders(limit=limit, symbol=symbol)
     if not open_rows:
         return {
             "success": True,
