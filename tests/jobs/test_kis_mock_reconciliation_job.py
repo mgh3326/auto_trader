@@ -287,4 +287,3 @@ def test_reconcile_gate_flags_default_false():
 
     assert settings.KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED is False
     assert settings.KIS_MOCK_RECONCILE_PERIODIC_ENABLED is False
-

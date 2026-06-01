@@ -102,7 +102,9 @@ async def test_live_event_ignored(monkeypatch):
 @pytest.mark.asyncio
 async def test_non_fill_ignored(monkeypatch):
     consumer, calls = _make_consumer()
-    outcome = await consumer.handle_message(_fill_event(fill_yn="N", execution_type="0"))
+    outcome = await consumer.handle_message(
+        _fill_event(fill_yn="N", execution_type="0")
+    )
     assert outcome == "ignored_non_mock_fill"
     assert calls == []
 
@@ -210,4 +212,3 @@ async def test_run_loop_dispatches_pmessage(monkeypatch):
     await consumer.run()
     assert calls == [{"symbol": "005930", "dry_run": False}]
     assert redis_client._pubsub.unsubscribed is True
-

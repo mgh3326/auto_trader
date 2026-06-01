@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
@@ -112,4 +113,3 @@ class KISMockExecutionConsumer:
 
     def request_stop(self) -> None:
         self._stop.set()
-
