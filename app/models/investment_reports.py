@@ -601,7 +601,7 @@ class InvestmentWatchEvent(Base):
         ),
         CheckConstraint(
             "outcome IN ('notified','review_required','preview_attached',"
-            "'expired','ignored','failed')",
+            "'executed','expired','ignored','failed')",
             name="ck_investment_watch_events_outcome",
         ),
         CheckConstraint(
