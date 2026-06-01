@@ -267,6 +267,18 @@ class InvestmentReportsRepository:
         await self._session.refresh(row)
         return row
 
+    async def update_alert_metadata(self, alert_id: int, metadata: dict) -> None:
+        """ROB-337 — replace an alert's alert_metadata JSONB (caller merges).
+
+        Used by the validity review job to persist a ``last_review`` block.
+        Does NOT touch status / threshold / valid_until. Flushes via the
+        caller's transaction; never commits."""
+        await self._session.execute(
+            sa.update(InvestmentWatchAlert)
+            .where(InvestmentWatchAlert.id == alert_id)
+            .values(alert_metadata=metadata)
+        )
+
     async def get_alert_by_idempotency_key(
         self, idempotency_key: str
     ) -> InvestmentWatchAlert | None:

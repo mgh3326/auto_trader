@@ -388,6 +388,10 @@ class Settings(BaseSettings):
     HERMES_TOKEN: str = ""
     HERMES_ENABLED: bool = False
 
+    # ROB-337 Slice 2 — watch validity review job. Default off; the task and
+    # CLI are scheduleless / dry-run-default even when this is set.
+    WATCH_VALIDITY_REVIEW_ENABLED: bool = False
+
     # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
     N8N_FILL_WEBHOOK_URL: str = ""
     # Watch Alert router (Phase 0 of ROB-122 — transport-neutral seam).
