@@ -1529,6 +1529,69 @@ async def test_symbol_collector_query_failure_is_fail_open():
     assert results[0].freshness_status == "unavailable"
 
 
+def _us_universe_row(
+    symbol: str,
+    *,
+    name_kr: str = "",
+    name_en: str = "",
+    exchange: str = "NASD",
+    is_active: bool = True,
+):
+    class _Row:
+        def __init__(self) -> None:
+            self.symbol = symbol
+            self.name_kr = name_kr
+            self.name_en = name_en
+            self.exchange = exchange
+            self.is_active = is_active
+
+    return _Row()
+
+
+def _two_stage_session(stock_rows: list[Any], universe_rows: list[Any]) -> MagicMock:
+    """Session whose 1st execute() returns stock_info rows, 2nd returns
+    us_symbol_universe rows (US fallback path issues two queries)."""
+    session = MagicMock()
+
+    def _result(rows: list[Any]) -> MagicMock:
+        scalars = MagicMock(all=MagicMock(return_value=rows))
+        return MagicMock(scalars=MagicMock(return_value=scalars))
+
+    session.execute = AsyncMock(
+        side_effect=[_result(stock_rows), _result(universe_rows)]
+    )
+    return session
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_falls_back_to_universe_for_unheld():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # stock_info has the held name; the candidate is only in us_symbol_universe.
+    session = _two_stage_session(
+        stock_rows=[_stock_info_row("AAPL", "애플")],
+        universe_rows=[_us_universe_row("HCA", name_en="HCA Healthcare")],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["AAPL", "HCA"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    resolved = {r.symbol for r in results if r.symbol}
+    assert resolved == {"AAPL", "HCA"}
+    hca = next(r for r in results if r.symbol == "HCA")
+    assert hca.payload_json["instrument_type"] == "equity_us"
+    assert hca.payload_json["name"] == "HCA Healthcare"
+    assert hca.payload_json["exchange"] == "NASD"
+    # No partial/missing row when everything resolved.
+    assert all(r.freshness_status != "partial" for r in results)
+
+
 # ---------------------------------------------------------------------------
 # Symbol collector quote/orderbook enrichment — ROB-278 Phase 2.
 #

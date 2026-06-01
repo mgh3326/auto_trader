@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.analysis import StockInfo
 from app.models.upbit_symbol_universe import UpbitSymbolUniverse
+from app.models.us_symbol_universe import USSymbolUniverse
 from app.services.action_report.snapshot_backed.collectors._base import (
     build_result,
     unavailable_result,
@@ -158,7 +159,7 @@ class SymbolSnapshotCollector:
             ]
         stmt = select(StockInfo).where(StockInfo.symbol.in_(symbols))
         rows = (await self._session.execute(stmt)).scalars().all()
-        return [
+        payloads = [
             {
                 "symbol": row.symbol,
                 "name": row.name,
@@ -166,6 +167,37 @@ class SymbolSnapshotCollector:
                 "exchange": row.exchange,
                 "sector": row.sector,
                 "market_cap": row.market_cap,
+                "is_active": row.is_active,
+            }
+            for row in rows
+        ]
+        if market == "us":
+            resolved_syms = {p["symbol"] for p in payloads}
+            remaining = [s for s in symbols if s not in resolved_syms]
+            if remaining:
+                payloads.extend(
+                    await self._resolve_us_universe_payloads(remaining)
+                )
+        return payloads
+
+    async def _resolve_us_universe_payloads(
+        self, symbols: list[str]
+    ) -> list[dict[str, Any]]:
+        """Resolve US symbols absent from ``stock_info`` against the
+        ``us_symbol_universe`` master (active rows only)."""
+        stmt = select(USSymbolUniverse).where(
+            USSymbolUniverse.symbol.in_(symbols),
+            USSymbolUniverse.is_active.is_(True),
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [
+            {
+                "symbol": row.symbol,
+                "name": row.name_kr or row.name_en or row.symbol,
+                "instrument_type": "equity_us",
+                "exchange": row.exchange,
+                "sector": None,
+                "market_cap": None,
                 "is_active": row.is_active,
             }
             for row in rows
