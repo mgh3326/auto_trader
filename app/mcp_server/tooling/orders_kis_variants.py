@@ -494,6 +494,36 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             account_type=account_type,
         )
 
+    @mcp.tool(
+        name="live_reconcile_orders",
+        description=(
+            "Reconcile accepted/pending US/overseas + crypto live (real-money) orders "
+            "against broker fill evidence (overseas daily-order / Upbit order-state). "
+            "Books fills/journals/realized_pnl ONLY from confirmed fills (delta-idempotent); "
+            "marks unfilled/cancelled without journal side-effects. dry_run=True by default. "
+            "KR domestic uses kis_live_reconcile_orders instead."
+        ),
+    )
+    async def live_reconcile_orders(
+        market: str | None = None,
+        broker: str | None = None,
+        symbol: str | None = None,
+        order_id: str | None = None,
+        dry_run: bool = True,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        from app.mcp_server.tooling.live_order_ledger import live_reconcile_orders_impl
+
+        return await live_reconcile_orders_impl(
+            market=market,
+            broker=broker,
+            symbol=symbol,
+            order_id=order_id,
+            dry_run=dry_run,
+            limit=limit,
+        )
+
+
 
 # ---------------------------------------------------------------------------
 # Mock variants (is_mock=True hard-pinned)
