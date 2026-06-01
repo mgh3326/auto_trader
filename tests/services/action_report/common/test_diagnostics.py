@@ -553,3 +553,22 @@ def test_quality_grade_candidate_universe_stale_rescued_by_cross_check() -> None
     assert out["external_cross_check_status"] == "fresh"
 
 
+def test_quality_grade_candidate_universe_fresh_stays_high() -> None:
+    # candidate_universe present and fresh must NOT trigger the ROB-415 demotion.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+            "candidate_universe": {"status": "fresh"},
+            "toss_remote_debug": {"status": "unavailable"},  # external, no rescue
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "high_confidence"
+
+
+
