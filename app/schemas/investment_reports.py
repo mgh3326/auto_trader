@@ -321,7 +321,6 @@ class ActivateWatchRequest(BaseModel):
     valid_until: datetime | None = None
 
 
-
 # ---------------------------------------------------------------------------
 # Response models (Plan 3 — HTTP / MCP read surface)
 # ---------------------------------------------------------------------------

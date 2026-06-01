@@ -104,9 +104,7 @@ class WatchActivationService:
         # Persist any injected fields before building the alert.
         await self._repo.update_item_watch_condition(
             item.id,
-            watch_condition=(
-                watch_condition if item.watch_condition is None else None
-            ),
+            watch_condition=(watch_condition if item.watch_condition is None else None),
             valid_until=(valid_until if item.valid_until is None else None),
         )
 
@@ -137,7 +135,6 @@ class WatchActivationService:
             max_action=dict(item.max_action),
             valid_until=valid_until,
         )
-
 
         await self._repo.update_item_status(item.id, "activated")
         await self._session.flush()

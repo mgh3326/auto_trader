@@ -107,7 +107,6 @@ def _review_watch_item_dict(client_item_key: str = "review-watch-1") -> dict:
     }
 
 
-
 def test_tool_names_match_registered_set() -> None:
     assert INVESTMENT_REPORT_TOOL_NAMES == {
         "investment_report_create",

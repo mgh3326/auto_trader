@@ -414,7 +414,6 @@ async def investment_report_activate_watch_impl(
     return response.model_dump(mode="json", by_alias=True)
 
 
-
 # ---------------------------------------------------------------------------
 # investment_report_context_get
 # ---------------------------------------------------------------------------

@@ -204,7 +204,6 @@ class InvestmentReportsRepository:
             .values(**values)
         )
 
-
     async def delete_items_for_report(self, report_id: int) -> None:
         """ROB-352 — remove every item of one report (overwrite path).
 
