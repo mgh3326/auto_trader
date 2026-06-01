@@ -30,18 +30,22 @@ async def sync_mock_roundtrip_journals(db, *, force: bool = False) -> dict[str, 
         return {"status": "disabled", "created": 0, "closed": 0}
 
     rows = (
-        await db.execute(
-            select(KISMockOrderLedger)
-            .where(
-                KISMockOrderLedger.account_mode == "kis_mock",
-                KISMockOrderLedger.correlation_id.is_not(None),
-                KISMockOrderLedger.lifecycle_state.in_(_RECONCILED_STATES),
-            )
-            .order_by(
-                KISMockOrderLedger.trade_date.asc(), KISMockOrderLedger.id.asc()
+        (
+            await db.execute(
+                select(KISMockOrderLedger)
+                .where(
+                    KISMockOrderLedger.account_mode == "kis_mock",
+                    KISMockOrderLedger.correlation_id.is_not(None),
+                    KISMockOrderLedger.lifecycle_state.in_(_RECONCILED_STATES),
+                )
+                .order_by(
+                    KISMockOrderLedger.trade_date.asc(), KISMockOrderLedger.id.asc()
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     groups: dict[str, list[KISMockOrderLedger]] = {}
     for r in rows:

@@ -7,6 +7,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,15 @@ from app.models.trade_journal import TradeJournal
 from app.services.trade_journal.mock_roundtrip_journal_bridge import (
     sync_mock_roundtrip_journals,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_database(db_session):
+    from sqlalchemy import delete
+
+    await db_session.execute(delete(KISMockOrderLedger))
+    await db_session.execute(delete(TradeJournal))
+    await db_session.commit()
 
 
 async def _seed_leg(db, *, cid, side, role, price, lifecycle="reconciled", **over):
@@ -45,9 +55,7 @@ async def _seed_leg(db, *, cid, side, role, price, lifecycle="reconciled", **ove
 
 async def _journal_for(db, cid):
     return (
-        await db.execute(
-            select(TradeJournal).where(TradeJournal.correlation_id == cid)
-        )
+        await db.execute(select(TradeJournal).where(TradeJournal.correlation_id == cid))
     ).scalar_one_or_none()
 
 
@@ -68,7 +76,11 @@ async def test_exit_closes_with_pnl(db_session: AsyncSession):
     cid = f"corr-{uuid4().hex}"
     await _seed_leg(db_session, cid=cid, side="buy", role="entry", price="50000")
     await _seed_leg(
-        db_session, cid=cid, side="sell", role="exit", price="55000",
+        db_session,
+        cid=cid,
+        side="sell",
+        role="exit",
+        price="55000",
         exit_reason="take_profit",
     )
     out = await sync_mock_roundtrip_journals(db_session, force=True)
@@ -89,10 +101,14 @@ async def test_idempotent(db_session: AsyncSession):
     out2 = await sync_mock_roundtrip_journals(db_session, force=True)
     assert out2["created"] == 0 and out2["closed"] == 0
     rows = (
-        await db_session.execute(
-            select(TradeJournal).where(TradeJournal.correlation_id == cid)
+        (
+            await db_session.execute(
+                select(TradeJournal).where(TradeJournal.correlation_id == cid)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
 
 
@@ -100,11 +116,21 @@ async def test_idempotent(db_session: AsyncSession):
 async def test_ignores_rows_without_correlation_id(db_session: AsyncSession):
     row = KISMockOrderLedger(
         trade_date=datetime(2026, 6, 2, 9, 0, tzinfo=UTC),
-        symbol="000660", instrument_type="equity_kr", side="buy", order_type="limit",
-        quantity=Decimal("1"), price=Decimal("100"), amount=Decimal("100"),
-        currency="KRW", order_no=f"MOCK-{uuid4()}", account_mode="kis_mock",
-        broker="kis", status="accepted", lifecycle_state="reconciled",
-        correlation_id=None, thesis="t",
+        symbol="000660",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=Decimal("1"),
+        price=Decimal("100"),
+        amount=Decimal("100"),
+        currency="KRW",
+        order_no=f"MOCK-{uuid4()}",
+        account_mode="kis_mock",
+        broker="kis",
+        status="accepted",
+        lifecycle_state="reconciled",
+        correlation_id=None,
+        thesis="t",
     )
     db_session.add(row)
     await db_session.commit()
@@ -116,9 +142,7 @@ async def test_ignores_rows_without_correlation_id(db_session: AsyncSession):
 async def test_flag_off_disables(db_session: AsyncSession, monkeypatch):
     from app.services.trade_journal import mock_roundtrip_journal_bridge as mod
 
-    monkeypatch.setattr(
-        mod.settings, "MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED", False
-    )
+    monkeypatch.setattr(mod.settings, "MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED", False)
     cid = f"corr-{uuid4().hex}"
     await _seed_leg(db_session, cid=cid, side="buy", role="entry", price="50000")
     out = await sync_mock_roundtrip_journals(db_session)  # force defaults False

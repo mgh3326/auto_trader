@@ -171,4 +171,3 @@ def test_bridge_flag_default_false():
     from app.core.config import settings
 
     assert settings.MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED is False
-
