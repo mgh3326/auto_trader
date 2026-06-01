@@ -148,3 +148,42 @@ async def test_reconciliation_job_no_open_orders(monkeypatch):
     )
     assert result["orders_processed"] == 0
     fake_kis.fetch_my_stocks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_attributes_single_delta_and_records_attributed_qty(monkeypatch):
+    row23 = _ledger_row(
+        ledger_id=23, symbol="0148J0", side="buy", qty=Decimal("10"),
+        state="accepted", baseline=Decimal("0"), accepted_age_sec=120
+    )
+    row23.price = Decimal("15500")
+
+    row24 = _ledger_row(
+        ledger_id=24, symbol="0148J0", side="buy", qty=Decimal("10"),
+        state="accepted", baseline=Decimal("0"), accepted_age_sec=60
+    )
+    row24.price = Decimal("15900")
+
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [row23, row24]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    fake_kis = _fake_kis_client(kr=[{"pdno": "0148J0", "hldg_qty": "10"}])
+
+    result = await run_kis_mock_reconciliation(
+        mock_db, dry_run=True, kis_client=fake_kis
+    )
+
+    events = {e["detail"]["ledger_id"]: e for e in result["events"]}
+    assert events[24]["state"] == "fill"
+    assert events[23]["state"] == "pending"
+
+    # attributed_fill_qty is recorded in the applied detail / event payload
+    assert events[24]["detail"]["attributed_fill_qty"] == "10"
+    assert events[23]["detail"]["attributed_fill_qty"] == "0"
+

@@ -114,6 +114,7 @@ async def run_kis_mock_reconciliation(
                 else None
             ),
             accepted_at=row.trade_date,
+            price=_to_decimal(row.price),
         )
         for row in open_rows
     ]
@@ -139,6 +140,11 @@ async def run_kis_mock_reconciliation(
             "observed_delta": (
                 str(proposal.observed_delta)
                 if proposal.observed_delta is not None
+                else None
+            ),
+            "attributed_fill_qty": (
+                str(proposal.attributed_fill_qty)
+                if proposal.attributed_fill_qty is not None
                 else None
             ),
         }
