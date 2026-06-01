@@ -813,6 +813,32 @@ async def db_session():
                         "CHECK (operator IN ('above','below','between'))"
                     )
                 )
+                # ROB-405 Slice A — trade_journals: correlation_id + account_type 'mock'.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_journals "
+                        "ADD COLUMN IF NOT EXISTS correlation_id TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_journals "
+                        "DROP CONSTRAINT IF EXISTS trade_journals_account_type"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_journals "
+                        "DROP CONSTRAINT IF EXISTS ck_trade_journals_trade_journals_account_type"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_journals "
+                        "ADD CONSTRAINT trade_journals_account_type "
+                        "CHECK (account_type IN ('live','paper','mock'))"
+                    )
+                )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so

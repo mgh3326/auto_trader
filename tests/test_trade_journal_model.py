@@ -142,3 +142,33 @@ class TestMetadataJSONBField:
         assert journal.extra_metadata["tags"] == ["momentum", "oversold"]
         assert journal.extra_metadata["scores"]["technical"] == 85
         assert journal.extra_metadata["nested"]["deep"]["value"] is True
+
+
+@pytest.mark.asyncio
+async def test_journal_accepts_mock_account_type_and_correlation_id(db_session):
+    from app.models.trade_journal import TradeJournal
+
+    j = TradeJournal(
+        symbol="005930",
+        instrument_type="equity_kr",
+        side="buy",
+        entry_price=Decimal("55000"),
+        quantity=Decimal("10"),
+        thesis="auto roundtrip",
+        account_type="mock",
+        account="kis_mock",
+        correlation_id="corr-405a",
+        status="active",
+    )
+    db_session.add(j)
+    await db_session.commit()
+    fetched = await db_session.get(TradeJournal, j.id)
+    assert fetched.account_type == "mock"
+    assert fetched.correlation_id == "corr-405a"
+
+
+def test_bridge_flag_default_false():
+    from app.core.config import settings
+
+    assert settings.MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED is False
+
