@@ -1678,6 +1678,29 @@ async def test_symbol_collector_us_universe_empty_reason():
     assert unresolved == {"NVDA": "universe_empty"}
 
 
+@pytest.mark.asyncio
+async def test_symbol_collector_kr_missing_has_no_unresolved_field():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # KR uses the single-query stock_info path; missing rows stay bulk-only.
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930", "000660"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    assert partial.payload_json["missing_symbols"] == ["000660"]
+    assert "unresolved" not in partial.payload_json
+    # KR path issues exactly one query (no universe fallback).
+    assert session.execute.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Symbol collector quote/orderbook enrichment — ROB-278 Phase 2.
 #
