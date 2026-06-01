@@ -56,6 +56,8 @@ ItemStatusLiteral = Literal[
 
 WatchMetricLiteral = Literal["price", "rsi", "trade_value"]
 WatchOperatorLiteral = Literal["above", "below"]
+WatchClauseOpLiteral = Literal["above", "below", "between"]
+WatchCombineLiteral = Literal["and"]
 WatchActionModeLiteral = Literal["notify_only", "preview_only", "approval_required"]
 
 DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_approve"]
@@ -69,24 +71,85 @@ ApplyPolicyLiteral = Literal["requires_user_approval"]
 TargetRefTypeLiteral = Literal["investment_watch_alert", "broker_order", "ambiguous"]
 
 
-class WatchConditionPayload(BaseModel):
-    """Embedded condition for a watch item. Persisted as JSONB."""
+class WatchConditionClause(BaseModel):
+    """One condition clause. above/below use ``threshold``; between uses low/high."""
 
     metric: WatchMetricLiteral
-    operator: WatchOperatorLiteral
-    threshold: Decimal
-    threshold_key: str | None = None
-    target_kind: TargetKindLiteral = "asset"
-    action_mode: WatchActionModeLiteral = "notify_only"
+    op: WatchClauseOpLiteral
+    threshold: Decimal | None = None
+    low: Decimal | None = None
+    high: Decimal | None = None
 
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
-    def _default_threshold_key(self) -> WatchConditionPayload:
-        # Canonical form: str(Decimal). Caller can override if they need
-        # a different dedup key (e.g. rounded value).
+    def _validate_clause(self) -> WatchConditionClause:
+        if self.op in ("above", "below"):
+            if self.threshold is None:
+                raise ValueError(f"op={self.op} requires threshold")
+            if self.low is not None or self.high is not None:
+                raise ValueError(f"op={self.op} must not set low/high")
+        elif self.op == "between":
+            if self.low is None or self.high is None:
+                raise ValueError("op=between requires low and high")
+            if self.low > self.high:
+                raise ValueError("op=between requires low <= high")
+            if self.threshold is not None:
+                raise ValueError("op=between must not set threshold")
+        return self
+
+
+def _derive_condition_key(clauses: list[WatchConditionClause]) -> str:
+    """Deterministic dedup key. Single above/below clause keeps legacy str(threshold)."""
+    if len(clauses) == 1 and clauses[0].op in ("above", "below"):
+        return str(clauses[0].threshold)
+    parts: list[str] = []
+    for c in clauses:
+        if c.op == "between":
+            parts.append(f"{c.metric}:between:{c.low}-{c.high}")
+        else:
+            parts.append(f"{c.metric}:{c.op}:{c.threshold}")
+    return "and(" + ",".join(parts) + ")"
+
+
+class WatchConditionPayload(BaseModel):
+    """Embedded condition for a watch item. Persisted as JSONB.
+
+    Two accepted input shapes, both normalized to ``conditions``:
+    - legacy flat: ``metric`` + ``operator`` + ``threshold``
+    - v2: ``conditions=[{metric, op, threshold|low/high}]`` + ``combine``
+    """
+
+    # legacy flat (optional)
+    metric: WatchMetricLiteral | None = None
+    operator: WatchOperatorLiteral | None = None
+    threshold: Decimal | None = None
+    threshold_key: str | None = None
+    target_kind: TargetKindLiteral = "asset"
+    action_mode: WatchActionModeLiteral = "notify_only"
+    # v2
+    conditions: list[WatchConditionClause] | None = None
+    combine: WatchCombineLiteral = "and"
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _normalize(self) -> WatchConditionPayload:
+        if self.conditions is None:
+            if self.metric is None or self.operator is None or self.threshold is None:
+                raise ValueError(
+                    "watch_condition requires either conditions[] or "
+                    "metric+operator+threshold"
+                )
+            self.conditions = [
+                WatchConditionClause(
+                    metric=self.metric, op=self.operator, threshold=self.threshold
+                )
+            ]
+        elif not self.conditions:
+            raise ValueError("conditions must be non-empty")
         if self.threshold_key is None:
-            self.threshold_key = str(self.threshold)
+            self.threshold_key = _derive_condition_key(self.conditions)
         return self
 
 
