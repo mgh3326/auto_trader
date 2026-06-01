@@ -2337,3 +2337,31 @@ def test_collector_modules_do_not_import_broker_or_activation_paths():
                 f"{name} unexpectedly references {forbidden!r} — "
                 "collectors must remain read-only"
             )
+
+
+def test_collector_request_carries_market_session_default_none():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    req = CollectorRequest(market="kr", account_scope="kis_live", policy_snapshot={})
+    assert req.market_session is None
+    req2 = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        policy_snapshot={},
+        market_session="nxt",
+    )
+    assert req2.market_session == "nxt"
+
+
+def test_ensure_bundle_request_carries_market_session_default_none():
+    from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
+
+    req = EnsureBundleRequest(
+        market="kr",
+        account_scope="kis_live",
+        purpose="testing",
+        policy_version="v1",
+    )
+    assert req.market_session is None
+
+

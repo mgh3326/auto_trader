@@ -92,6 +92,10 @@ class CollectorRequest(BaseModel):
     live-account read endpoints (e.g. KIS holdings/cash). ``None`` means the
     caller did not supply one; broker-backed collectors must then fail
     closed (``unavailable``) rather than invent a default."""
+    market_session: str | None = None
+    """ROB-390 — venue/session context ("regular"/"nxt"/...). ``None`` = unset.
+    Collectors that switch venue by trading session (e.g. NXT orderbook) read
+    this; left ``None`` for callers that do not distinguish sessions."""
 
 
 @runtime_checkable

@@ -25,6 +25,7 @@ from app.schemas.investment_snapshots import (
     SourceKind,
 )
 from app.services.investment_snapshots.collectors import SnapshotCollectResult
+from app.schemas.investment_reports import MarketSessionLiteral
 
 EnsureMode = Literal["ensure_fresh", "reuse_only"]
 
@@ -41,6 +42,7 @@ class EnsureBundleRequest(BaseModel):
     policy_version: str = Field(min_length=1)
     mode: EnsureMode = "ensure_fresh"
     symbols: list[str] | None = None
+    market_session: MarketSessionLiteral | None = None
     candidate_limit: Annotated[int | None, Field(ge=1, le=100)] = None
     manual_snapshots: dict[SnapshotKind, list[SnapshotCollectResult]] | None = None
     """Caller-supplied pre-collected snapshots keyed by ``snapshot_kind``.
