@@ -471,6 +471,9 @@ class Settings(BaseSettings):
     # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
     # (no real mock orders) until an operator flips this.
     WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False
+    # ROB-405 Slice A — mock roundtrip → trade_journal bridge. Default off:
+    # no journals are created until an operator flips this.
+    MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED: bool = False
     # ROB-269 Phase 2 — gates BOTH the 4 MCP snapshot tools AND the
     # /trading/api/investment-snapshots/* GET router. Default off: code is
     # importable but unreachable from caller surfaces until flipped post-merge.
