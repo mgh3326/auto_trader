@@ -119,6 +119,7 @@ def test_tool_names_match_registered_set() -> None:
         # ROB-273 — opt-in snapshot-backed advisory generator.
         "investment_report_generate_from_bundle",
         "investment_watch_recommend",
+        "investment_report_delta_get",
     }
 
 
