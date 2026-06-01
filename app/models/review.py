@@ -193,7 +193,7 @@ class KISMockOrderLedger(Base):
         CheckConstraint(
             "lifecycle_state IN ("
             "'planned','previewed','submitted','accepted','pending','fill',"
-            "'reconciled','stale','failed','anomaly'"
+            "'reconciled','stale','failed','anomaly','cancelled'"
             ")",
             name="kis_mock_ledger_lifecycle_state_allowed",
         ),
