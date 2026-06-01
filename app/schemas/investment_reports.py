@@ -307,6 +307,94 @@ class RecordDecisionRequest(BaseModel):
         return self
 
 
+class WatchInvalidation(BaseModel):
+    """ROB-337 — when a dip-buy watch thesis is invalidated."""
+
+    kind: Literal["price_below", "condition_text"]
+    price: Decimal | None = None
+    text: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_kind(self) -> WatchInvalidation:
+        if self.kind == "price_below" and self.price is None:
+            raise ValueError("invalidation kind='price_below' requires price")
+        if self.kind == "condition_text" and not self.text:
+            raise ValueError("invalidation kind='condition_text' requires text")
+        return self
+
+
+class WatchPriceRange(BaseModel):
+    """ROB-337 — suggested limit price band [low, high]."""
+
+    low: Decimal
+    high: Decimal
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_order(self) -> WatchPriceRange:
+        if self.low > self.high:
+            raise ValueError("WatchPriceRange.low must be <= high")
+        return self
+
+
+class WatchRecommendationEvidence(BaseModel):
+    """ROB-337 — deterministic evidence behind a watch recommendation."""
+
+    support: Decimal | None = None
+    resistance: Decimal | None = None
+    spread_bps: Decimal | None = None
+    volatility_pct: Decimal | None = None
+    lookback_days: int
+    news_ref: str | None = None
+    screener_reason: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WatchRecommendationPayload(BaseModel):
+    """ROB-337 Slice 1 — advisory price-review thresholds for a watch item.
+
+    Persisted as JSONB in ``investment_report_items.watch_recommendation``.
+    Advisory only — no order is created or submitted from this payload.
+    """
+
+    watch_reason: str
+    data_state: Literal["ok", "data_gap"]
+    reference_price: Decimal | None = None
+    entry_review_below_price: Decimal | None = None
+    suggested_limit_price_range: WatchPriceRange | None = None
+    max_chase_price: Decimal | None = None
+    invalidation: WatchInvalidation | None = None
+    expiry_at: datetime | None = None
+    review_cadence: str = "daily"
+    source_evidence: WatchRecommendationEvidence
+    policy_version: str
+    computed_at: datetime
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_ok_completeness(self) -> WatchRecommendationPayload:
+        if self.data_state == "ok":
+            missing = [
+                name
+                for name, val in (
+                    ("reference_price", self.reference_price),
+                    ("entry_review_below_price", self.entry_review_below_price),
+                    ("suggested_limit_price_range", self.suggested_limit_price_range),
+                    ("max_chase_price", self.max_chase_price),
+                    ("invalidation", self.invalidation),
+                )
+                if val is None
+            ]
+            if missing:
+                raise ValueError(f"data_state='ok' requires {missing}")
+        return self
+
+
 class ActivateWatchRequest(BaseModel):
     """Activate an approved watch item into ``investment_watch_alerts``."""
 
@@ -389,6 +477,7 @@ class InvestmentReportItemResponse(BaseModel):
     rationale: str
     evidence_snapshot: dict[str, Any]
     watch_condition: dict[str, Any] | None
+    watch_recommendation: dict[str, Any] | None = None
     trigger_checklist: list[Any]
     max_action: dict[str, Any]
     valid_until: datetime | None
