@@ -106,3 +106,36 @@ async def test_save_kis_live_order_ledger_inserts_row(db_session):
     assert row.trade_id is None and row.journal_id is None
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_record_kis_live_order_does_not_book_fill(db_session):
+    from app.mcp_server.tooling.kis_live_ledger import _record_kis_live_order
+
+    out = await _record_kis_live_order(
+        normalized_symbol="035420",
+        market_type="equity_kr",
+        side="sell",
+        order_type="limit",
+        dry_run_result={"price": 250000, "quantity": 10, "estimated_value": 2500000},
+        execution_result={"rt_cd": "0", "odno": "TEST-REC-1", "ord_tmd": "0925"},
+        reason="r",
+        exit_reason="take_profit",
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        indicators_snapshot=None,
+    )
+    assert out["broker_status"] == "accepted"
+    assert out["fill_recorded"] is False
+    assert out["journal_created"] is False
+    # MUST NOT pre-book realized_pnl / journals_closed
+    assert "realized_pnl" not in out
+    assert "journals_closed" not in out
+    assert out["order_id"] == "TEST-REC-1"
+    assert out["ledger_id"] is not None
+
+
+

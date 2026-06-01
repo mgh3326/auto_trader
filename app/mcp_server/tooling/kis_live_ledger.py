@@ -140,3 +140,94 @@ async def _save_kis_live_order_ledger(
         logger.warning("Failed to save kis_live order ledger row: %s", exc)
         return None
 
+
+async def _record_kis_live_order(
+    *,
+    normalized_symbol: str,
+    market_type: str,
+    side: str,
+    order_type: str,
+    dry_run_result: dict[str, Any],
+    execution_result: dict[str, Any],
+    reason: str | None,
+    exit_reason: str | None,
+    thesis: str | None,
+    strategy: str | None,
+    target_price: float | None,
+    stop_loss: float | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Record a live KR order as accepted/rejected. No fill/journal/pnl booked."""
+    price_val = _to_float(dry_run_result.get("price"), default=0.0)
+    qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
+    amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
+    currency = "KRW" if market_type != "equity_us" else "USD"
+
+    order_no = execution_result.get("odno") or execution_result.get("ord_no")
+    order_time = execution_result.get("ord_tmd")
+    raw_output = execution_result.get("output") or {}
+    krx_orgno = execution_result.get("krx_fwdg_ord_orgno") or raw_output.get(
+        "KRX_FWDG_ORD_ORGNO"
+    )
+    rt_cd = str(execution_result.get("rt_cd", "")) or None
+    msg = execution_result.get("msg") or execution_result.get("msg1")
+
+    status = _derive_live_send_status(
+        rt_cd=rt_cd, order_no=str(order_no) if order_no else None
+    )
+
+    ledger_id = await _save_kis_live_order_ledger(
+        symbol=normalized_symbol,
+        instrument_type=market_type,
+        side=side,
+        order_type=order_type,
+        quantity=qty_val,
+        price=price_val,
+        amount=amt_val,
+        currency=currency,
+        order_no=str(order_no) if order_no else None,
+        order_time=order_time,
+        krx_fwdg_ord_orgno=krx_orgno,
+        status=status,
+        response_code=rt_cd,
+        response_message=msg,
+        raw_response=execution_result,
+        reason=reason,
+        thesis=thesis,
+        strategy=strategy,
+        target_price=target_price,
+        stop_loss=stop_loss,
+        min_hold_days=min_hold_days,
+        notes=notes,
+        exit_reason=exit_reason,
+        indicators_snapshot=indicators_snapshot,
+    )
+
+    return {
+        "success": True,
+        "dry_run": False,
+        "preview": dry_run_result,
+        "execution": execution_result,
+        "account_mode": "kis_live",
+        "broker": "kis",
+        "ledger_id": ledger_id,
+        "order_id": str(order_no) if order_no else None,
+        "odno": str(order_no) if order_no else None,
+        "order_time": order_time,
+        "krx_fwdg_ord_orgno": krx_orgno,
+        "broker_status": status,
+        "response_code": rt_cd,
+        "response_message": msg,
+        "fill_recorded": False,
+        "journal_created": False,
+        "message": (
+            "KIS live order accepted (pending fill); run kis_live_reconcile_orders "
+            "to record fill/journal once the broker confirms execution"
+            if status == "accepted"
+            else f"KIS live order not accepted (broker_status={status})"
+        ),
+    }
+
+
