@@ -714,6 +714,7 @@ async def _execute_and_record(
             reason=reason,
             thesis=thesis,
             strategy=strategy,
+            notes=notes,
             holdings_baseline_qty=kis_mock_baseline_qty,
         )
 
