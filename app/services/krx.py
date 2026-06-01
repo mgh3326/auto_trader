@@ -26,6 +26,16 @@ from app.core.number_utils import parse_korean_number as _parse_korean_number
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
+
+class KRXSessionExpiredError(httpx.HTTPStatusError):
+    """KRX session stayed logged out after a re-auth attempt.
+
+    Subclasses ``httpx.HTTPStatusError`` so existing ``except httpx.HTTPStatusError``
+    callers keep working, while new callers can classify this as a transient,
+    retryable KRX-session failure (vs. a generic HTTP error).
+    """
+
+
 # Constants
 KRX_API_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 KRX_RESOURCE_URL = (
@@ -231,7 +241,7 @@ class KRXSessionManager:
                         "KRX 재인증 후에도 LOGOUT 응답 (login_code=%s)",
                         self._last_login_code or "unknown",
                     )
-                    raise httpx.HTTPStatusError(
+                    raise KRXSessionExpiredError(
                         "KRX session expired after re-auth",
                         request=response.request,
                         response=response,

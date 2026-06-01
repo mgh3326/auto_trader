@@ -574,9 +574,11 @@ def _validate_screen_filters(
                 "Crypto market does not support sorting by 'dividend_yield'"
             )
     else:
-        if sort_by == "trade_amount":
+        kr_markets = {"kr", "kospi", "kosdaq", "konex", "all"}
+        if sort_by == "trade_amount" and market not in kr_markets:
             raise ValueError(
-                "'trade_amount' sorting is only supported for crypto market"
+                "'trade_amount' sorting is supported for KR and crypto markets; "
+                "for US use 'volume', 'market_cap', or 'change_rate'."
             )
 
     if market in ("kr", "kospi", "kosdaq", "konex", "all") and asset_type == "etn":
@@ -695,7 +697,13 @@ def _sort_and_limit(
     reverse = sort_order == "desc"
 
     def sort_value(item: dict[str, Any]) -> float:
-        value = item.get(field)
+        if sort_by == "trade_amount":
+            # crypto rows expose trade_amount_24h; KR rows expose trade_amount.
+            value = item.get("trade_amount_24h")
+            if value is None:
+                value = item.get("trade_amount")
+        else:
+            value = item.get(field)
         if field in {"rsi", "score"} and value is None:
             return -999.0 if reverse else 999.0
         return float(value or 0)
