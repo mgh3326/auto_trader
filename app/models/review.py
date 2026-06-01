@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 import uuid
 from datetime import datetime
 
@@ -259,6 +260,85 @@ class KISMockOrderLedger(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class KISLiveOrderLedger(Base):
+    """ROB-395 — KIS live (real-money) order lifecycle ledger.
+
+    Records every accepted/rejected live KR order at SEND time, carrying the
+    buy/sell intent. Fills/journals/realized_pnl are NOT booked here; they are
+    applied only by kis_live_reconcile_orders from order-id-keyed broker fill
+    evidence. Keyed by order_no so multi-order-same-symbol cannot double-book
+    (unlike holdings-delta attribution — see ROB-400).
+    """
+
+    __tablename__ = "kis_live_order_ledger"
+    __table_args__ = (
+        UniqueConstraint("order_no", name="uq_kis_live_ledger_order_no"),
+        Index("ix_kis_live_ledger_status", "status"),
+        Index("ix_kis_live_ledger_symbol", "symbol"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    trade_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    order_type: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    currency: Mapped[str | None] = mapped_column(Text)
+
+    order_no: Mapped[str | None] = mapped_column(Text)
+    order_time: Mapped[str | None] = mapped_column(Text)
+    krx_fwdg_ord_orgno: Mapped[str | None] = mapped_column(Text)
+    account_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, default="kis_live"
+    )
+    broker: Mapped[str] = mapped_column(Text, nullable=False, default="kis")
+
+    # send-time status: accepted | rejected ; reconcile updates to
+    # filled | partial | pending | cancelled | anomaly
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+    response_code: Mapped[str | None] = mapped_column(Text)
+    response_message: Mapped[str | None] = mapped_column(Text)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB)
+
+    # buy/sell intent captured at send, consumed by reconcile
+    reason: Mapped[str | None] = mapped_column(Text)
+    thesis: Mapped[str | None] = mapped_column(Text)
+    strategy: Mapped[str | None] = mapped_column(Text)
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
+    notes: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+
+    # reconcile outcomes
+    filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    trade_id: Mapped[int | None] = mapped_column(BigInteger)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    reconciled_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
