@@ -30,7 +30,9 @@ def test_live_order_ledger_model_shape():
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_live_ledger():
+async def _clean_live_ledger(db_session):
+    # Depend on db_session so its create_all builds review.live_order_ledger
+    # before we touch it (CI builds the test schema via create_all, not alembic).
     from app.mcp_server.tooling.live_order_ledger import _order_session_factory
     from app.models.review import LiveOrderLedger
 

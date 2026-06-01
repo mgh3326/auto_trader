@@ -9,6 +9,7 @@ import logging
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
@@ -25,6 +26,14 @@ from tests._mcp_tooling_support import (
 EXPECTED_MARKET_ERROR = (
     "MCP place_order only supports limit orders; market orders are not allowed."
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_live_order_ledger_schema(db_session):
+    """ROB-407: live US/crypto orders write to review.live_order_ledger directly.
+    Depend on db_session so its create_all builds the table before any test in this
+    module inserts (CI builds the test schema via create_all, not alembic)."""
+    yield
 
 
 def _assert_market_rejected(result):

@@ -7,6 +7,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
@@ -16,6 +17,13 @@ from app.mcp_server.tooling.orders_registration import register_order_tools
 from tests._mcp_tooling_support import build_tools
 
 TRADER_AGENT_ID = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_live_order_ledger_schema(db_session):
+    """ROB-407: defensive-trim live crypto sell writes to review.live_order_ledger.
+    Depend on db_session so create_all builds the table before any direct insert."""
+    yield
 
 
 def _mock_crypto_sell_context(
