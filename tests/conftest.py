@@ -813,6 +813,19 @@ async def db_session():
                         "CHECK (operator IN ('above','below','between'))"
                     )
                 )
+                # ROB-402 — action_mode auto_execute_mock on alerts + events.
+                for _t in ("investment_watch_alerts", "investment_watch_events"):
+                    _c = f"ck_{_t}_action_mode"
+                    await conn.execute(
+                        text(f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS {_c}")
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} ADD CONSTRAINT {_c} "
+                            "CHECK (action_mode IN ('notify_only','preview_only',"
+                            "'approval_required','auto_execute_mock'))"
+                        )
+                    )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so

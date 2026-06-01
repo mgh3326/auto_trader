@@ -245,6 +245,18 @@ async def session() -> AsyncSession:
                         "ALTER TABLE review.investment_watch_events "
                         "ADD CONSTRAINT ck_investment_watch_events_operator "
                         "CHECK (operator IN ('above','below','between'))",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_action_mode",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD CONSTRAINT ck_investment_watch_alerts_action_mode "
+                        "CHECK (action_mode IN ('notify_only','preview_only',"
+                        "'approval_required','auto_execute_mock'))",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_action_mode",
+                        "ALTER TABLE review.investment_watch_events "
+                        "ADD CONSTRAINT ck_investment_watch_events_action_mode "
+                        "CHECK (action_mode IN ('notify_only','preview_only',"
+                        "'approval_required','auto_execute_mock'))",
                     ):
                         await conn.execute(sa.text(stmt))
                 factory = async_sessionmaker(engine, expire_on_commit=False)

@@ -351,3 +351,16 @@ def test_ingest_item_validates_max_action_when_present():
             valid_until="2026-12-31T00:00:00Z",
             max_action={"side": "buy"},  # invalid: no quantity/notional
         )
+
+
+def test_auto_execute_mock_action_mode_flag_and_literal():
+    from app.core.config import settings
+    from app.schemas.investment_reports import WatchConditionPayload
+
+    assert settings.WATCH_AUTO_EXECUTE_MOCK_ENABLED is False
+    # auto_execute_mock is now a valid action_mode literal value
+    p = WatchConditionPayload(
+        metric="price", operator="below", threshold="5", action_mode="auto_execute_mock"
+    )
+    assert p.action_mode == "auto_execute_mock"
+
