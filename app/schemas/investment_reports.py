@@ -477,6 +477,7 @@ class InvestmentReportItemResponse(BaseModel):
     rationale: str
     evidence_snapshot: dict[str, Any]
     watch_condition: dict[str, Any] | None
+    watch_recommendation: dict[str, Any] | None = None
     trigger_checklist: list[Any]
     max_action: dict[str, Any]
     valid_until: datetime | None
