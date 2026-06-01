@@ -50,12 +50,18 @@ from app.services.action_report.snapshot_backed.collectors._base import (
     unavailable_result,
     utcnow,
 )
+from app.services.symbol_universe_common import has_any_rows
 from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
 )
 
 _DEFAULT_QUOTE_ENRICHMENT_LIMIT = 25
+
+_US_REASON_NOT_REGISTERED = "not_registered"
+_US_REASON_INACTIVE = "inactive"
+_US_REASON_UNIVERSE_EMPTY = "universe_empty"
+_US_REASON_UNIVERSE_LOOKUP_ERROR = "universe_lookup_error"
 
 
 class _QuoteOrderbookClient(Protocol):
@@ -133,30 +139,27 @@ class SymbolSnapshotCollector:
 
     async def _resolve_symbol_payloads(
         self, market: str, symbols: list[str]
-    ) -> list[dict[str, Any]]:
-        """Resolve per-symbol base metadata from the market's master source.
-
-        Crypto reads ``upbit_symbol_universe`` (keyed by the ``KRW-XXX`` market
-        code); KR/US read ``stock_info``. Both return the same payload shape so
-        the enrichment loop is venue-uniform.
-        """
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         if market == "crypto":
             stmt = select(UpbitSymbolUniverse).where(
                 UpbitSymbolUniverse.market.in_(symbols)
             )
             rows = (await self._session.execute(stmt)).scalars().all()
-            return [
-                {
-                    "symbol": row.market,
-                    "name": row.korean_name,
-                    "instrument_type": "crypto",
-                    "exchange": "upbit",
-                    "sector": None,
-                    "market_cap": None,
-                    "is_active": row.is_active,
-                }
-                for row in rows
-            ]
+            return (
+                [
+                    {
+                        "symbol": row.market,
+                        "name": row.korean_name,
+                        "instrument_type": "crypto",
+                        "exchange": "upbit",
+                        "sector": None,
+                        "market_cap": None,
+                        "is_active": row.is_active,
+                    }
+                    for row in rows
+                ],
+                {},
+            )
         stmt = select(StockInfo).where(StockInfo.symbol.in_(symbols))
         rows = (await self._session.execute(stmt)).scalars().all()
         payloads = [
@@ -171,37 +174,72 @@ class SymbolSnapshotCollector:
             }
             for row in rows
         ]
-        if market == "us":
-            resolved_syms = {p["symbol"] for p in payloads}
-            remaining = [s for s in symbols if s not in resolved_syms]
-            if remaining:
-                payloads.extend(
-                    await self._resolve_us_universe_payloads(remaining)
+        if market != "us":
+            return payloads, {}
+        resolved_syms = {p["symbol"] for p in payloads}
+        remaining = [s for s in symbols if s not in resolved_syms]
+        us_reasons: dict[str, str] = {}
+        if remaining:
+            try:
+                extra, us_reasons = await self._resolve_us_universe_payloads(
+                    remaining
                 )
-        return payloads
+            except Exception as exc:  # noqa: BLE001 — fail-open, preserve stock_info
+                us_reasons = {
+                    s: _US_REASON_UNIVERSE_LOOKUP_ERROR for s in remaining
+                }
+                _ = exc
+            else:
+                payloads.extend(extra)
+        return payloads, us_reasons
 
     async def _resolve_us_universe_payloads(
         self, symbols: list[str]
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         """Resolve US symbols absent from ``stock_info`` against the
-        ``us_symbol_universe`` master (active rows only)."""
-        stmt = select(USSymbolUniverse).where(
-            USSymbolUniverse.symbol.in_(symbols),
-            USSymbolUniverse.is_active.is_(True),
-        )
+        ``us_symbol_universe`` master.
+
+        Returns ``(resolved_payloads, reason_by_symbol)``: active universe rows
+        become payloads; inactive rows / absent symbols become per-symbol reason
+        codes. An empty universe maps every requested symbol to
+        ``universe_empty``.
+        """
+        stmt = select(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(symbols))
         rows = (await self._session.execute(stmt)).scalars().all()
-        return [
-            {
-                "symbol": row.symbol,
-                "name": row.name_kr or row.name_en or row.symbol,
-                "instrument_type": "equity_us",
-                "exchange": row.exchange,
-                "sector": None,
-                "market_cap": None,
-                "is_active": row.is_active,
-            }
-            for row in rows
-        ]
+        by_symbol = {row.symbol: row for row in rows}
+
+        # Empty universe → every requested symbol is unresolvable for the same
+        # reason (operator must run the sync). Distinguish from not_registered.
+        any_universe_rows = await has_any_rows(
+            self._session, USSymbolUniverse.symbol
+        )
+
+        payloads: list[dict[str, Any]] = []
+        reasons: dict[str, str] = {}
+        for symbol in symbols:
+            row = by_symbol.get(symbol)
+            if row is None:
+                reasons[symbol] = (
+                    _US_REASON_NOT_REGISTERED
+                    if any_universe_rows
+                    else _US_REASON_UNIVERSE_EMPTY
+                )
+                continue
+            if not row.is_active:
+                reasons[symbol] = _US_REASON_INACTIVE
+                continue
+            payloads.append(
+                {
+                    "symbol": row.symbol,
+                    "name": row.name_kr or row.name_en or row.symbol,
+                    "instrument_type": "equity_us",
+                    "exchange": row.exchange,
+                    "sector": None,
+                    "market_cap": None,
+                    "is_active": row.is_active,
+                }
+            )
+        return payloads, reasons
 
     async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         now = utcnow()
@@ -219,7 +257,9 @@ class SymbolSnapshotCollector:
             ]
 
         try:
-            base_payloads = await self._resolve_symbol_payloads(request.market, symbols)
+            base_payloads, us_reasons = await self._resolve_symbol_payloads(
+                request.market, symbols
+            )
         except Exception as exc:  # noqa: BLE001 — optional, fail open
             return [
                 unavailable_result(
@@ -286,12 +326,21 @@ class SymbolSnapshotCollector:
 
         missing = [s for s in symbols if s not in seen_symbols]
         if missing:
+            missing_payload: dict[str, Any] = {"missing_symbols": missing}
+            if us_reasons:
+                missing_payload["unresolved"] = [
+                    {
+                        "symbol": s,
+                        "reason_code": us_reasons.get(s, _US_REASON_NOT_REGISTERED),
+                    }
+                    for s in missing
+                ]
             results.append(
                 build_result(
                     snapshot_kind=self.snapshot_kind,
                     market=request.market,
                     account_scope=request.account_scope,
-                    payload={"missing_symbols": missing},
+                    payload=missing_payload,
                     origin="auto_trader_db",
                     as_of=now,
                     freshness_status="partial",
@@ -300,14 +349,21 @@ class SymbolSnapshotCollector:
             )
 
         if not results:
-            # Every symbol missed — return a single partial summary so the
-            # caller still records the attempt without forcing 'unavailable'.
+            empty_payload: dict[str, Any] = {"missing_symbols": symbols}
+            if us_reasons:
+                empty_payload["unresolved"] = [
+                    {
+                        "symbol": s,
+                        "reason_code": us_reasons.get(s, _US_REASON_NOT_REGISTERED),
+                    }
+                    for s in symbols
+                ]
             results.append(
                 build_result(
                     snapshot_kind=self.snapshot_kind,
                     market=request.market,
                     account_scope=request.account_scope,
-                    payload={"missing_symbols": symbols},
+                    payload=empty_payload,
                     origin="auto_trader_db",
                     as_of=now,
                     freshness_status="partial",

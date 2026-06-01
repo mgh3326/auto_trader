@@ -1550,15 +1550,22 @@ def _us_universe_row(
 
 def _two_stage_session(stock_rows: list[Any], universe_rows: list[Any]) -> MagicMock:
     """Session whose 1st execute() returns stock_info rows, 2nd returns
-    us_symbol_universe rows (US fallback path issues two queries)."""
+    us_symbol_universe rows, and 3rd returns whether the universe is non-empty."""
     session = MagicMock()
 
     def _result(rows: list[Any]) -> MagicMock:
         scalars = MagicMock(all=MagicMock(return_value=rows))
         return MagicMock(scalars=MagicMock(return_value=scalars))
 
+    any_rows_mock = MagicMock()
+    any_rows_mock.scalar_one_or_none.return_value = 1 if universe_rows else None
+
     session.execute = AsyncMock(
-        side_effect=[_result(stock_rows), _result(universe_rows)]
+        side_effect=[
+            _result(stock_rows),
+            _result(universe_rows),
+            any_rows_mock,
+        ]
     )
     return session
 
@@ -1618,6 +1625,57 @@ async def test_symbol_collector_us_prefers_stock_info_meta_no_dup():
     assert aapl_rows[0].payload_json["sector"] == "Tech"
     assert aapl_rows[0].payload_json["market_cap"] == 1_000_000.0
     assert aapl_rows[0].payload_json["name"] == "애플"
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_unresolved_reason_codes():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # NOPE: absent everywhere → not_registered.
+    # DEAD: present in universe but inactive → inactive.
+    session = _two_stage_session(
+        stock_rows=[],
+        universe_rows=[_us_universe_row("DEAD", name_en="Dead Co", is_active=False)],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["NOPE", "DEAD"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    unresolved = {
+        u["symbol"]: u["reason_code"] for u in partial.payload_json["unresolved"]
+    }
+    assert unresolved == {"NOPE": "not_registered", "DEAD": "inactive"}
+    # back-compat bulk list still present.
+    assert set(partial.payload_json["missing_symbols"]) == {"NOPE", "DEAD"}
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_universe_empty_reason():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _two_stage_session(stock_rows=[], universe_rows=[])
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["NVDA"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    unresolved = {
+        u["symbol"]: u["reason_code"] for u in partial.payload_json["unresolved"]
+    }
+    assert unresolved == {"NVDA": "universe_empty"}
 
 
 # ---------------------------------------------------------------------------
