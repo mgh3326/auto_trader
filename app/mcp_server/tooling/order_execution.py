@@ -747,10 +747,9 @@ async def _execute_and_record(
     if not is_mock and market_type == "equity_us":
         from app.mcp_server.tooling.live_order_ledger import _record_live_order
 
-        exchange = (
-            execution_result.get("ovrs_excg_cd")
-            or (execution_result.get("output") or {}).get("OVRS_EXCG_CD")
-        )
+        exchange = execution_result.get("ovrs_excg_cd") or (
+            execution_result.get("output") or {}
+        ).get("OVRS_EXCG_CD")
         return await _record_live_order(
             broker="kis",
             account_scope="kis_live",
@@ -764,7 +763,8 @@ async def _execute_and_record(
             order_no=execution_result.get("odno") or execution_result.get("ord_no"),
             order_time=execution_result.get("ord_tmd"),
             rt_cd=str(execution_result.get("rt_cd", "")) or None,
-            response_message=execution_result.get("msg") or execution_result.get("msg1"),
+            response_message=execution_result.get("msg")
+            or execution_result.get("msg1"),
             dry_run_result=dry_run_result,
             execution_result=execution_result,
             reason=reason,
@@ -784,10 +784,7 @@ async def _execute_and_record(
         from app.mcp_server.tooling.live_order_ledger import _record_live_order
 
         is_market = (order_type or "").lower() == "market" or price is None
-        market_symbol = (
-            execution_result.get("market")
-            or dry_run_result.get("market")
-        )
+        market_symbol = execution_result.get("market") or dry_run_result.get("market")
         return await _record_live_order(
             broker="upbit",
             account_scope="upbit_live",
@@ -815,8 +812,6 @@ async def _execute_and_record(
             indicators_snapshot=indicators_snapshot,
             inline_confirm=is_market,
         )
-
-
 
     # Record phase: fills + journals
     record_result = await _record_fill_and_journals(

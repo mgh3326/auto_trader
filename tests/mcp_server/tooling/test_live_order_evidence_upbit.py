@@ -1,11 +1,18 @@
-import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 
 def _detail(**kw):
-    base = {"uuid": "U-1", "state": "wait", "executed_volume": "0",
-            "remaining_volume": "1", "avg_price": None, "price": "100"}
+    base = {
+        "uuid": "U-1",
+        "state": "wait",
+        "executed_volume": "0",
+        "remaining_volume": "1",
+        "avg_price": None,
+        "price": "100",
+    }
     base.update(kw)
     return base
 
@@ -18,6 +25,7 @@ async def test_upbit_adapter_wait_is_pending():
 
     class _Row:
         order_no = "U-1"
+
     with patch.object(ev, "fetch_order_detail", new=AsyncMock(return_value=_detail())):
         e = await ev.UpbitEvidenceAdapter().fetch_evidence(_Row())
     assert e.verdict == FillVerdict.PENDING
@@ -31,7 +39,10 @@ async def test_upbit_adapter_done_filled():
 
     class _Row:
         order_no = "U-1"
-    detail = _detail(state="done", executed_volume="1", remaining_volume="0", avg_price="101.5")
+
+    detail = _detail(
+        state="done", executed_volume="1", remaining_volume="0", avg_price="101.5"
+    )
     with patch.object(ev, "fetch_order_detail", new=AsyncMock(return_value=detail)):
         e = await ev.UpbitEvidenceAdapter().fetch_evidence(_Row())
     assert e.verdict == FillVerdict.FILLED
@@ -47,7 +58,10 @@ async def test_upbit_adapter_partial():
 
     class _Row:
         order_no = "U-1"
-    detail = _detail(state="wait", executed_volume="0.4", remaining_volume="0.6", avg_price="100")
+
+    detail = _detail(
+        state="wait", executed_volume="0.4", remaining_volume="0.6", avg_price="100"
+    )
     with patch.object(ev, "fetch_order_detail", new=AsyncMock(return_value=detail)):
         e = await ev.UpbitEvidenceAdapter().fetch_evidence(_Row())
     assert e.verdict == FillVerdict.PARTIAL
@@ -62,7 +76,10 @@ async def test_upbit_adapter_cancelled_zero_fill_is_none():
 
     class _Row:
         order_no = "U-1"
-    detail = _detail(state="cancel", executed_volume="0", remaining_volume="0", avg_price=None)
+
+    detail = _detail(
+        state="cancel", executed_volume="0", remaining_volume="0", avg_price=None
+    )
     with patch.object(ev, "fetch_order_detail", new=AsyncMock(return_value=detail)):
         e = await ev.UpbitEvidenceAdapter().fetch_evidence(_Row())
     assert e.verdict == FillVerdict.NONE

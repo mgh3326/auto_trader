@@ -1,4 +1,6 @@
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
 
 @pytest.mark.unit
@@ -27,14 +29,10 @@ def test_live_order_ledger_model_shape():
     assert LiveOrderLedger.__table__.schema == "review"
 
 
-import pytest_asyncio
-from sqlalchemy import delete
-
-
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_live_ledger():
-    from app.models.review import LiveOrderLedger
     from app.mcp_server.tooling.live_order_ledger import _order_session_factory
+    from app.models.review import LiveOrderLedger
 
     async with _order_session_factory()() as db:
         await db.execute(delete(LiveOrderLedger))
@@ -88,6 +86,7 @@ async def test_save_live_order_ledger_accepted_only():
 async def test_reconcile_filled_buy_books_once_and_idempotent():
     from decimal import Decimal
     from unittest.mock import AsyncMock, patch
+
     from app.mcp_server.tooling import live_order_ledger as ll
     from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
         FillEvidence,
@@ -95,16 +94,38 @@ async def test_reconcile_filled_buy_books_once_and_idempotent():
     )
 
     lid = await ll._save_live_order_ledger(
-        broker="kis", account_scope="kis_live", market="us", symbol="AAPL",
-        exchange="NASD", market_symbol=None, side="buy", order_kind="limit",
-        quantity=3.0, price=190.0, amount=570.0, currency="USD",
-        order_no="US-RC-1", order_time="0930", status="accepted",
-        response_code="0", response_message=None, raw_response=None,
-        reason=None, thesis="t", strategy="s", target_price=None, stop_loss=None,
-        min_hold_days=None, notes=None, exit_reason=None, indicators_snapshot=None,
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="AAPL",
+        exchange="NASD",
+        market_symbol=None,
+        side="buy",
+        order_kind="limit",
+        quantity=3.0,
+        price=190.0,
+        amount=570.0,
+        currency="USD",
+        order_no="US-RC-1",
+        order_time="0930",
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
     )
     row = await ll._load_live_ledger_row(lid)
-    filled = FillEvidence(FillVerdict.FILLED, Decimal("3"), Decimal("191.5"), None, "filled", "")
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("3"), Decimal("191.5"), None, "filled", ""
+    )
 
     class _Adapter:
         broker = "kis"
@@ -114,8 +135,15 @@ async def test_reconcile_filled_buy_books_once_and_idempotent():
         patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
         patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=111)) as m_fill,
         patch.object(
-            ll, "_create_trade_journal_for_buy",
-            new=AsyncMock(return_value={"journal_created": True, "journal_id": 9, "journal_status": "draft"}),
+            ll,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(
+                return_value={
+                    "journal_created": True,
+                    "journal_id": 9,
+                    "journal_status": "draft",
+                }
+            ),
         ) as m_buy,
         patch.object(ll, "_link_journal_to_fill", new=AsyncMock(return_value=None)),
     ):
@@ -125,6 +153,7 @@ async def test_reconcile_filled_buy_books_once_and_idempotent():
         out2 = await ll._reconcile_one_live_row(row2, dry_run=False)
 
     assert out1["verdict"] == "filled"
+    assert out2["action"] == "noop_already_booked"
     # broker 확정 qty/price로 1회만 fill booking
     _, fkw = m_fill.await_args
     assert float(fkw["quantity"]) == 3.0
@@ -138,6 +167,7 @@ async def test_reconcile_filled_buy_books_once_and_idempotent():
 async def test_reconcile_cancelled_no_journal():
     from decimal import Decimal
     from unittest.mock import AsyncMock, patch
+
     from app.mcp_server.tooling import live_order_ledger as ll
     from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
         FillEvidence,
@@ -145,13 +175,33 @@ async def test_reconcile_cancelled_no_journal():
     )
 
     lid = await ll._save_live_order_ledger(
-        broker="kis", account_scope="kis_live", market="us", symbol="AAPL",
-        exchange="NASD", market_symbol=None, side="buy", order_kind="limit",
-        quantity=3.0, price=190.0, amount=570.0, currency="USD",
-        order_no="US-RC-2", order_time="0930", status="accepted",
-        response_code="0", response_message=None, raw_response=None,
-        reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None,
-        min_hold_days=None, notes=None, exit_reason=None, indicators_snapshot=None,
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="AAPL",
+        exchange="NASD",
+        market_symbol=None,
+        side="buy",
+        order_kind="limit",
+        quantity=3.0,
+        price=190.0,
+        amount=570.0,
+        currency="USD",
+        order_no="US-RC-2",
+        order_time="0930",
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
     )
     row = await ll._load_live_ledger_row(lid)
     none_ev = FillEvidence(FillVerdict.NONE, Decimal("0"), None, None, "cancelled", "")
@@ -192,12 +242,16 @@ async def test_live_reconcile_impl_dry_run_empty():
 async def test_record_live_order_inline_confirm_books_on_done():
     from decimal import Decimal
     from unittest.mock import AsyncMock, patch
+
     from app.mcp_server.tooling import live_order_ledger as ll
     from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
-        FillEvidence, FillVerdict,
+        FillEvidence,
+        FillVerdict,
     )
 
-    filled = FillEvidence(FillVerdict.FILLED, Decimal("0.01"), Decimal("50000000"), None, "filled", "")
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("0.01"), Decimal("50000000"), None, "filled", ""
+    )
 
     class _Adapter:
         broker = "upbit"
@@ -206,24 +260,43 @@ async def test_record_live_order_inline_confirm_books_on_done():
     with (
         patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
         patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=222)),
-        patch.object(ll, "_create_trade_journal_for_buy",
-                     new=AsyncMock(return_value={"journal_created": True, "journal_id": 12})),
+        patch.object(
+            ll,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 12}),
+        ),
         patch.object(ll, "_link_journal_to_fill", new=AsyncMock()),
     ):
         out = await ll._record_live_order(
-            broker="upbit", account_scope="upbit_live", market="crypto",
-            normalized_symbol="BTC", exchange=None, market_symbol="KRW-BTC",
-            side="buy", order_kind="market", currency="KRW",
-            order_no="U-INLINE-1", order_time=None, rt_cd="0", response_message=None,
-            dry_run_result={"price": 0.0, "quantity": 0.01, "estimated_value": 500000.0},
+            broker="upbit",
+            account_scope="upbit_live",
+            market="crypto",
+            normalized_symbol="BTC",
+            exchange=None,
+            market_symbol="KRW-BTC",
+            side="buy",
+            order_kind="market",
+            currency="KRW",
+            order_no="U-INLINE-1",
+            order_time=None,
+            rt_cd="0",
+            response_message=None,
+            dry_run_result={
+                "price": 0.0,
+                "quantity": 0.01,
+                "estimated_value": 500000.0,
+            },
             execution_result={"uuid": "U-INLINE-1"},
-            reason=None, exit_reason=None, thesis="t", strategy="s",
-            target_price=None, stop_loss=None, min_hold_days=None, notes=None,
-            indicators_snapshot=None, inline_confirm=True,
+            reason=None,
+            exit_reason=None,
+            thesis="t",
+            strategy="s",
+            target_price=None,
+            stop_loss=None,
+            min_hold_days=None,
+            notes=None,
+            indicators_snapshot=None,
+            inline_confirm=True,
         )
     assert out["fill_recorded"] is True
     assert out["inline_reconcile"]["action"] == "booked"
-
-
-
-

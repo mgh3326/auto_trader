@@ -364,7 +364,9 @@ class LiveOrderLedger(Base):
 
     # discriminators / market metadata
     broker: Mapped[str] = mapped_column(Text, nullable=False)  # kis | upbit
-    account_scope: Mapped[str] = mapped_column(Text, nullable=False)  # kis_live | upbit_live
+    account_scope: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )  # kis_live | upbit_live
     market: Mapped[str] = mapped_column(Text, nullable=False)  # us | crypto
     symbol: Mapped[str] = mapped_column(Text, nullable=False)  # DB dot-format
     exchange: Mapped[str | None] = mapped_column(Text)  # US: NASD/NYSE/AMEX
@@ -415,7 +417,6 @@ class LiveOrderLedger(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
-
 
 
 # ---------------------------------------------------------------------------

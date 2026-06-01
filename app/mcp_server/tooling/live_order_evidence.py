@@ -21,6 +21,7 @@ from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
 )
+from app.services.brokers.upbit.orders import fetch_order_detail
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,18 @@ def _normalize_overseas_for_classify(order: dict[str, Any]) -> dict[str, Any]:
     """해외 일별주문 row(ft_ 키)를 classify_fill_evidence canonical 키로 정규화."""
     return {
         "odno": order.get("odno") or order.get("ODNO") or order.get("ord_no"),
-        "ord_qty": order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or order.get("ord_qty") or 0,
-        "tot_ccld_qty": order.get("ft_ccld_qty") or order.get("FT_CCLD_QTY") or order.get("ccld_qty") or 0,
-        "ccld_unpr": order.get("ft_ccld_unpr3") or order.get("FT_CCLD_UNPR3") or order.get("ccld_unpr") or 0,
+        "ord_qty": order.get("ft_ord_qty")
+        or order.get("FT_ORD_QTY")
+        or order.get("ord_qty")
+        or 0,
+        "tot_ccld_qty": order.get("ft_ccld_qty")
+        or order.get("FT_CCLD_QTY")
+        or order.get("ccld_qty")
+        or 0,
+        "ccld_unpr": order.get("ft_ccld_unpr3")
+        or order.get("FT_CCLD_UNPR3")
+        or order.get("ccld_unpr")
+        or 0,
     }
 
 
@@ -64,9 +74,6 @@ class UsOverseasEvidenceAdapter:
         return classify_fill_evidence(order_no=str(row.order_no), rows=[normalized])
 
 
-from app.services.brokers.upbit.orders import fetch_order_detail
-
-
 def _to_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
@@ -83,7 +90,11 @@ class UpbitEvidenceAdapter:
         detail = await fetch_order_detail(str(row.order_no))
         if not detail:
             return FillEvidence(
-                FillVerdict.PENDING, Decimal("0"), None, None, "not_found",
+                FillVerdict.PENDING,
+                Decimal("0"),
+                None,
+                None,
+                "not_found",
                 f"order {row.order_no} detail empty",
             )
         state = str(detail.get("state", "")).strip()
@@ -94,14 +105,32 @@ class UpbitEvidenceAdapter:
         # 체결분이 있으면 (취소 후 부분체결 포함) 체결을 우선 인정
         if executed > 0 and avg and avg > 0:
             verdict = FillVerdict.FILLED if remaining <= 0 else FillVerdict.PARTIAL
-            return FillEvidence(verdict, executed, avg, None, verdict.value,
-                                f"upbit {row.order_no} {verdict.value} {executed}@{avg}")
+            return FillEvidence(
+                verdict,
+                executed,
+                avg,
+                None,
+                verdict.value,
+                f"upbit {row.order_no} {verdict.value} {executed}@{avg}",
+            )
         if state == "wait":
-            return FillEvidence(FillVerdict.PENDING, Decimal("0"), None, None,
-                                "pending", f"upbit {row.order_no} waiting")
+            return FillEvidence(
+                FillVerdict.PENDING,
+                Decimal("0"),
+                None,
+                None,
+                "pending",
+                f"upbit {row.order_no} waiting",
+            )
         # done/cancel with zero executed → 미체결 종료
-        return FillEvidence(FillVerdict.NONE, Decimal("0"), None, None,
-                            "cancelled", f"upbit {row.order_no} ended unfilled")
+        return FillEvidence(
+            FillVerdict.NONE,
+            Decimal("0"),
+            None,
+            None,
+            "cancelled",
+            f"upbit {row.order_no} ended unfilled",
+        )
 
 
 _ADAPTERS: dict[str, LiveFillEvidenceAdapter] = {
@@ -115,4 +144,3 @@ def get_evidence_adapter(broker: str) -> LiveFillEvidenceAdapter:
     if adapter is None:
         raise ValueError(f"no live evidence adapter for broker={broker!r}")
     return adapter
-

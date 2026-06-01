@@ -1,6 +1,7 @@
-import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
 def _row(**kw):
@@ -11,7 +12,9 @@ def _row(**kw):
 
 @pytest.mark.unit
 def test_normalize_overseas_row_maps_ft_keys():
-    from app.mcp_server.tooling.live_order_evidence import _normalize_overseas_for_classify
+    from app.mcp_server.tooling.live_order_evidence import (
+        _normalize_overseas_for_classify,
+    )
 
     norm = _normalize_overseas_for_classify(
         _row(ft_ord_qty="3", ft_ccld_qty="3", ft_ccld_unpr3="191.5")

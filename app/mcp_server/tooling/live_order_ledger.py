@@ -6,22 +6,22 @@ US/해외(equity_us)·crypto(crypto) live 주문 전용. KR domestic은 kis_live
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
 
-from app.models.review import LiveOrderLedger
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory, _to_float
+from app.mcp_server.tooling.live_order_evidence import get_evidence_adapter
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
     _link_journal_to_fill,
     _save_order_fill,
 )
+from app.models.review import LiveOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
-    FillEvidence,
     FillVerdict,
 )
 
@@ -69,7 +69,7 @@ async def _save_live_order_ledger(
 ) -> int:
     async with _order_session_factory()() as db:
         row = LiveOrderLedger(
-            trade_date=datetime.now(timezone.utc),
+            trade_date=datetime.now(UTC),
             broker=broker,
             account_scope=account_scope,
             market=market,
@@ -120,9 +120,6 @@ def _derive_live_send_status(*, rt_cd: str | None, order_no: str | None) -> str:
     if order_no:
         return "accepted"
     return "rejected" if rt_cd not in (None, "0", "") else "accepted"
-
-
-from app.mcp_server.tooling.live_order_evidence import get_evidence_adapter
 
 
 async def _list_open_live_ledger_rows(
@@ -176,7 +173,7 @@ async def _update_live_ledger_outcome(
             row.trade_id = trade_id
         if journal_id is not None:
             row.journal_id = journal_id
-        row.reconciled_at = datetime.now(timezone.utc)
+        row.reconciled_at = datetime.now(UTC)
         await db.commit()
 
 
@@ -218,8 +215,10 @@ async def _reconcile_one_live_row(
         base["action"] = "noop_already_booked"
         if not dry_run:
             await _update_live_ledger_outcome(
-                ledger_id=row.id, status=new_status,
-                filled_qty=broker_cum, avg_fill_price=avg_price,
+                ledger_id=row.id,
+                status=new_status,
+                filled_qty=broker_cum,
+                avg_fill_price=avg_price,
             )
         return base
 
@@ -278,9 +277,12 @@ async def _reconcile_one_live_row(
         )
 
     await _update_live_ledger_outcome(
-        ledger_id=row.id, status=new_status,
-        filled_qty=broker_cum, avg_fill_price=avg_price,
-        trade_id=trade_id, journal_id=journal_id,
+        ledger_id=row.id,
+        status=new_status,
+        filled_qty=broker_cum,
+        avg_fill_price=avg_price,
+        trade_id=trade_id,
+        journal_id=journal_id,
     )
     base["action"] = "booked"
     base["trade_id"] = trade_id
@@ -313,8 +315,10 @@ async def live_reconcile_orders_impl(
         except Exception as exc:
             logger.warning("live reconcile failed order_no=%s: %s", row.order_no, exc)
             outcome = {
-                "ledger_id": row.id, "order_id": row.order_no,
-                "verdict": "anomaly", "error": str(exc) or exc.__class__.__name__,
+                "ledger_id": row.id,
+                "order_id": row.order_no,
+                "verdict": "anomaly",
+                "error": str(exc) or exc.__class__.__name__,
             }
         reconciled.append(outcome)
         v = str(outcome.get("verdict", "anomaly"))
@@ -328,3 +332,98 @@ async def live_reconcile_orders_impl(
         "message": f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}",
     }
 
+
+async def _record_live_order(
+    *,
+    broker: str,
+    account_scope: str,
+    market: str,
+    normalized_symbol: str,
+    exchange: str | None,
+    market_symbol: str | None,
+    side: str,
+    order_kind: str,
+    currency: str,
+    order_no: str | None,
+    order_time: str | None,
+    rt_cd: str | None,
+    response_message: str | None,
+    dry_run_result: dict[str, Any],
+    execution_result: dict[str, Any],
+    reason: str | None,
+    exit_reason: str | None,
+    thesis: str | None,
+    strategy: str | None,
+    target_price: float | None,
+    stop_loss: float | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+    inline_confirm: bool = False,
+) -> dict[str, Any]:
+    price_val = _to_float(dry_run_result.get("price"), default=0.0)
+    qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
+    amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
+    status = _derive_live_send_status(
+        rt_cd=rt_cd, order_no=str(order_no) if order_no else None
+    )
+    ledger_id = await _save_live_order_ledger(
+        broker=broker,
+        account_scope=account_scope,
+        market=market,
+        symbol=normalized_symbol,
+        exchange=exchange,
+        market_symbol=market_symbol,
+        side=side,
+        order_kind=order_kind,
+        quantity=qty_val,
+        price=price_val,
+        amount=amt_val,
+        currency=currency,
+        order_no=str(order_no) if order_no else None,
+        order_time=order_time,
+        status=status,
+        response_code=rt_cd,
+        response_message=response_message,
+        raw_response=execution_result,
+        reason=reason,
+        thesis=thesis,
+        strategy=strategy,
+        target_price=target_price,
+        stop_loss=stop_loss,
+        min_hold_days=min_hold_days,
+        notes=notes,
+        exit_reason=exit_reason,
+        indicators_snapshot=indicators_snapshot,
+    )
+    fill_recorded = False
+    inline_outcome: dict[str, Any] | None = None
+    if inline_confirm and status == "accepted":
+        row = await _load_live_ledger_row(ledger_id)
+        if row is not None:
+            inline_outcome = await _reconcile_one_live_row(row, dry_run=False)
+            fill_recorded = inline_outcome.get("action") == "booked"
+    return {
+        "success": True,
+        "dry_run": False,
+        "preview": dry_run_result,
+        "execution": execution_result,
+        "broker": broker,
+        "account_scope": account_scope,
+        "market": market,
+        "ledger_id": ledger_id,
+        "order_id": str(order_no) if order_no else None,
+        "broker_status": status,
+        "fill_recorded": fill_recorded,
+        "journal_created": bool(inline_outcome and inline_outcome.get("journal_id")),
+        "inline_reconcile": inline_outcome,
+        "message": (
+            "Live order accepted (pending fill); run live_reconcile_orders to book fill"
+            if status == "accepted" and not fill_recorded
+            else (
+                "Live order filled inline"
+                if fill_recorded
+                else f"Live order not accepted (broker_status={status})"
+            )
+        ),
+    }
