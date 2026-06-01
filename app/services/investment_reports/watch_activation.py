@@ -77,8 +77,28 @@ class WatchActivationService:
             raise ValueError(f"report not found for item: {item.report_id}")
 
         condition: dict[str, Any] = item.watch_condition
-        threshold = _to_decimal(condition.get("threshold"))
-        threshold_key = condition.get("threshold_key") or str(threshold)
+        clauses: list[dict[str, Any]] = list(condition.get("conditions") or [])
+        if not clauses:
+            # legacy flat payload that predates normalization
+            clauses = [
+                {
+                    "metric": condition["metric"],
+                    "op": condition["operator"],
+                    "threshold": condition.get("threshold"),
+                }
+            ]
+        combine = condition.get("combine", "and")
+        primary = clauses[0]
+        primary_metric = primary["metric"]
+        if primary["op"] == "between":
+            primary_operator = "between"
+            primary_threshold = _to_decimal(primary.get("low"))
+            primary_threshold_high: Decimal | None = _to_decimal(primary.get("high"))
+        else:
+            primary_operator = primary["op"]
+            primary_threshold = _to_decimal(primary.get("threshold"))
+            primary_threshold_high = None
+        threshold_key = condition.get("threshold_key") or str(primary_threshold)
 
         alert = await self._repo.insert_alert(
             alert_uuid=None,  # default from PG
@@ -88,10 +108,13 @@ class WatchActivationService:
             market=report.market,
             target_kind=item.target_kind,
             symbol=item.symbol,
-            metric=condition["metric"],
-            operator=condition["operator"],
-            threshold=threshold,
+            metric=primary_metric,
+            operator=primary_operator,
+            threshold=primary_threshold,
+            threshold_high=primary_threshold_high,
             threshold_key=threshold_key,
+            conditions=clauses,
+            combine=combine,
             intent=item.intent,
             action_mode=condition.get("action_mode", "notify_only"),
             rationale=item.rationale,
