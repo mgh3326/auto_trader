@@ -12,6 +12,7 @@ from app.tasks import (
     market_quote_snapshot_tasks,
     market_valuation_snapshot_tasks,
     mock_roundtrip_journal_tasks,
+    journal_verdict_tasks,
     pending_orders,
     research_reports_ingest_tasks,
     research_run_refresh_tasks,
@@ -33,6 +34,7 @@ TASKIQ_TASK_MODULES = (
     market_quote_snapshot_tasks,
     market_valuation_snapshot_tasks,
     mock_roundtrip_journal_tasks,
+    journal_verdict_tasks,
     research_reports_ingest_tasks,
     research_run_refresh_tasks,
     watch_scan_tasks,
@@ -43,3 +45,4 @@ TASKIQ_TASK_MODULES = (
     us_candles_tasks,
     us_symbol_universe_tasks,
 )
+
