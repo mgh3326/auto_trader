@@ -31,6 +31,7 @@ SnapshotKind = Literal[
     "llm_input_frozen",
     "pending_orders",
     "validated_run_card",
+    "kr_market_ranking",
 ]
 SourceKind = Literal[
     "kis_mcp",
