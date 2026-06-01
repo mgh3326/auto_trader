@@ -29,6 +29,7 @@ from app.schemas.investment_reports import (
     TargetKindLiteral,
     WatchActionModeLiteral,
     WatchMetricLiteral,
+    WatchClauseOpLiteral,
     WatchOperatorLiteral,
 )
 
@@ -63,8 +64,9 @@ class ReviewTriggerPayload(BaseModel):
     target_kind: TargetKindLiteral
     symbol: str
     metric: WatchMetricLiteral
-    operator: WatchOperatorLiteral
+    operator: WatchClauseOpLiteral
     threshold: Decimal
+    threshold_high: Decimal | None = None
     threshold_key: str
     intent: ItemIntentLiteral
     action_mode: WatchActionModeLiteral
