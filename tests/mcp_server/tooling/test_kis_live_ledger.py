@@ -1,7 +1,18 @@
 # tests/mcp_server/tooling/test_kis_live_ledger.py
 import pytest
+import pytest_asyncio
 
 from app.models.review import KISLiveOrderLedger
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_kis_live_ledger(db_session):
+    from sqlalchemy import text
+    from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
+    async with _order_session_factory()() as db:
+        await db.execute(text("TRUNCATE TABLE review.kis_live_order_ledger CASCADE"))
+        await db.commit()
+
 
 
 @pytest.mark.unit
@@ -192,6 +203,80 @@ async def test_update_ledger_outcome(db_session):
     assert row.lifecycle_state == "filled"
     assert row.trade_id == 42 and row.journal_id == 7
     assert row.reconciled_at is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_filled_buy_books_fill_and_journal(db_session):
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.mcp_server.tooling.kis_live_ledger import _save_kis_live_order_ledger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence, FillVerdict,
+    )
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660", instrument_type="equity_kr", side="buy", order_type="limit",
+        quantity=1.0, price=1000.0, amount=1000.0, currency="KRW",
+        order_no="TEST-RC-BUY", order_time="0930", krx_fwdg_ord_orgno=None,
+        status="accepted", response_code="0", response_message=None, raw_response=None,
+        reason=None, thesis="t", strategy="s", target_price=None, stop_loss=None,
+        min_hold_days=None, notes=None, exit_reason=None, indicators_snapshot=None,
+    )
+    row = await kl._load_ledger_row(lid)
+
+    filled = FillEvidence(FillVerdict.FILLED, Decimal("1"), Decimal("1005"), None, "filled", "")
+    with (
+        patch.object(kl, "_fetch_live_daily_rows", new=AsyncMock(return_value=[{"odno": "TEST-RC-BUY"}])),
+        patch.object(kl, "classify_fill_evidence", return_value=filled),
+        patch.object(kl, "_save_order_fill", new=AsyncMock(return_value=111)) as m_fill,
+        patch.object(kl, "_create_trade_journal_for_buy", new=AsyncMock(return_value={"journal_created": True, "journal_id": 9, "journal_status": "draft"})) as m_buy,
+        patch.object(kl, "_link_journal_to_fill", new=AsyncMock(return_value=None)) as m_link,
+    ):
+        result = await kl._reconcile_one_ledger_row(row, dry_run=False)
+
+    assert result["verdict"] == "filled"
+    # fill booked with BROKER-confirmed qty/price, not the 1000 preview price
+    _, fkw = m_fill.await_args
+    assert float(fkw["price"]) == 1005.0
+    assert float(fkw["quantity"]) == 1.0
+    m_buy.assert_awaited_once()
+    m_link.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_pending_is_noop(db_session):
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.mcp_server.tooling.kis_live_ledger import _save_kis_live_order_ledger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence, FillVerdict,
+    )
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660", instrument_type="equity_kr", side="buy", order_type="limit",
+        quantity=1.0, price=1000.0, amount=1000.0, currency="KRW",
+        order_no="TEST-RC-PEND", order_time="0930", krx_fwdg_ord_orgno=None,
+        status="accepted", response_code="0", response_message=None, raw_response=None,
+        reason=None, thesis="t", strategy="s", target_price=None, stop_loss=None,
+        min_hold_days=None, notes=None, exit_reason=None, indicators_snapshot=None,
+    )
+    row = await kl._load_ledger_row(lid)
+    pending = FillEvidence(FillVerdict.PENDING, Decimal("0"), None, None, "pending", "")
+    with (
+        patch.object(kl, "_fetch_live_daily_rows", new=AsyncMock(return_value=[])),
+        patch.object(kl, "classify_fill_evidence", return_value=pending),
+        patch.object(kl, "_save_order_fill", new=AsyncMock()) as m_fill,
+        patch.object(kl, "_close_journals_on_sell", new=AsyncMock()) as m_sell,
+    ):
+        result = await kl._reconcile_one_ledger_row(row, dry_run=False)
+    assert result["verdict"] == "pending"
+    m_fill.assert_not_awaited()
+    m_sell.assert_not_awaited()
+
 
 
 

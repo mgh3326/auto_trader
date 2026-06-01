@@ -19,9 +19,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.order_journal import (
+    _close_journals_on_sell,
+    _create_trade_journal_for_buy,
+    _link_journal_to_fill,
+    _save_order_fill,
+)
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISLiveOrderLedger
+from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+    FillVerdict,
+    classify_fill_evidence,
+)
 
 # lifecycle_state mirrors status for live (no separate mock shadow semantics)
 _STATUS_TO_LIFECYCLE: dict[str, str] = {
@@ -287,6 +297,144 @@ async def _update_ledger_outcome(
             await db.commit()
     except Exception as exc:
         logger.warning("Failed to update kis_live ledger outcome id=%s: %s", ledger_id, exc)
+
+
+async def _load_ledger_row(ledger_id: int) -> KISLiveOrderLedger:
+    async with _order_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(KISLiveOrderLedger).where(KISLiveOrderLedger.id == ledger_id)
+            )
+        ).scalar_one()
+        db.expunge(row)
+        return row
+
+
+async def _list_open_ledger_rows(
+    *, symbol: str | None, order_no: str | None, limit: int
+) -> list[KISLiveOrderLedger]:
+    """Non-terminal live ledger rows (accepted/pending) needing reconcile."""
+    async with _order_session_factory()() as db:
+        stmt = select(KISLiveOrderLedger).where(
+            KISLiveOrderLedger.status.in_(("accepted", "pending", "partial"))
+        )
+        if symbol:
+            stmt = stmt.where(KISLiveOrderLedger.symbol == symbol)
+        if order_no:
+            stmt = stmt.where(KISLiveOrderLedger.order_no == order_no)
+        stmt = stmt.order_by(KISLiveOrderLedger.created_at.asc()).limit(limit)
+        rows = list((await db.execute(stmt)).scalars().all())
+        for r in rows:
+            db.expunge(r)
+        return rows
+
+
+async def _reconcile_one_ledger_row(
+    row: KISLiveOrderLedger, *, dry_run: bool
+) -> dict[str, Any]:
+    """Classify one accepted/pending order and apply journal mutation if filled.
+
+    Pending -> noop. Cancelled/rejected (no matching row) -> ledger update only.
+    Filled/partial -> book fill + journal from BROKER-confirmed qty/price.
+    """
+    order_no = row.order_no
+    rows = await _fetch_live_daily_rows(symbol=row.symbol, order_no=order_no)
+    evidence = classify_fill_evidence(order_no=order_no, rows=rows)
+
+    base = {
+        "ledger_id": row.id,
+        "order_id": order_no,
+        "symbol": row.symbol,
+        "side": row.side,
+        "verdict": str(evidence.verdict),
+        "filled_qty": float(evidence.filled_qty) if evidence.filled_qty is not None else None,
+        "avg_price": float(evidence.avg_price) if evidence.avg_price is not None else None,
+    }
+
+    if evidence.verdict == FillVerdict.PENDING:
+        base["action"] = "noop_pending"
+        return base
+
+    if evidence.verdict == FillVerdict.NONE:
+        # No daily-execution row. Distinguish still-open vs cancelled by checking
+        # live pending orders; absence from both fill and pending => cancelled.
+        base["action"] = "marked_cancelled" if not dry_run else "would_mark_cancelled"
+        if not dry_run:
+            await _update_ledger_outcome(ledger_id=row.id, status="cancelled")
+        return base
+
+    # FILLED or PARTIAL — broker-confirmed values only.
+    filled_qty = evidence.filled_qty or Decimal("0")
+    avg_price = evidence.avg_price or Decimal("0")
+    new_status = "filled" if evidence.verdict == FillVerdict.FILLED else "partial"
+
+    if dry_run:
+        base["action"] = f"would_book_{new_status}"
+        return base
+
+    trade_id = await _save_order_fill(
+        symbol=row.symbol,
+        instrument_type=row.instrument_type,
+        side=row.side,
+        price=float(avg_price),
+        quantity=float(filled_qty),
+        total_amount=float(avg_price) * float(filled_qty),
+        fee=float(row.fee or 0.0),
+        currency=row.currency or "KRW",
+        account="kis",
+        order_id=order_no,
+    )
+
+    journal_id: int | None = None
+    if row.side == "buy":
+        buy_preview = {
+            "price": float(avg_price),
+            "quantity": float(filled_qty),
+            "estimated_value": float(avg_price) * float(filled_qty),
+        }
+        journal_result = await _create_trade_journal_for_buy(
+            symbol=row.symbol,
+            market_type=row.instrument_type,
+            preview=buy_preview,
+            thesis=(row.thesis or "").strip() or "reconciled fill",
+            strategy=(row.strategy or "").strip() or "reconciled fill",
+            target_price=float(row.target_price) if row.target_price is not None else None,
+            stop_loss=float(row.stop_loss) if row.stop_loss is not None else None,
+            min_hold_days=row.min_hold_days,
+            notes=row.notes,
+            indicators_snapshot=row.indicators_snapshot,
+            account_type="live",
+            account="kis",
+        )
+        journal_id = journal_result.get("journal_id")
+        if trade_id and journal_id:
+            await _link_journal_to_fill(row.symbol, trade_id, account_type="live", account="kis")
+    else:  # sell
+        close_result = await _close_journals_on_sell(
+            symbol=row.symbol,
+            sell_quantity=float(filled_qty),
+            sell_price=float(avg_price),
+            exit_reason=row.exit_reason or row.reason,
+            account_type="live",
+            account="kis",
+        )
+        base["journals_closed"] = close_result["journals_closed"]
+        base["closed_journal_ids"] = close_result["closed_ids"]
+        base["realized_pnl_pct"] = close_result["total_pnl_pct"]
+
+    await _update_ledger_outcome(
+        ledger_id=row.id,
+        status=new_status,
+        filled_qty=filled_qty,
+        avg_fill_price=avg_price,
+        trade_id=trade_id,
+        journal_id=journal_id,
+    )
+    base["action"] = f"booked_{new_status}"
+    base["trade_id"] = trade_id
+    base["journal_id"] = journal_id
+    return base
+
 
 
 
