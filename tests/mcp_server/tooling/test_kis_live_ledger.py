@@ -278,6 +278,32 @@ async def test_reconcile_pending_is_noop(db_session):
     m_sell.assert_not_awaited()
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_orders_impl_aggregates_counts():
+    from unittest.mock import AsyncMock, patch
+    from app.mcp_server.tooling import kis_live_ledger as kl
+
+    fake_rows = [object(), object()]
+    with (
+        patch.object(kl, "_list_open_ledger_rows", new=AsyncMock(return_value=fake_rows)),
+        patch.object(
+            kl, "_reconcile_one_ledger_row",
+            new=AsyncMock(side_effect=[
+                {"verdict": "filled", "order_id": "A"},
+                {"verdict": "pending", "order_id": "B"},
+            ]),
+        ),
+    ):
+        out = await kl.kis_live_reconcile_orders_impl(dry_run=False)
+    assert out["success"] is True
+    assert out["counts"]["filled"] == 1
+    assert out["counts"]["pending"] == 1
+    assert len(out["reconciled"]) == 2
+    assert out["dry_run"] is False
+
+
+
 
 
 

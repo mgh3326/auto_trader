@@ -436,6 +436,57 @@ async def _reconcile_one_ledger_row(
     return base
 
 
+async def kis_live_reconcile_orders_impl(
+    *,
+    symbol: str | None = None,
+    order_id: str | None = None,
+    dry_run: bool = True,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Reconcile accepted/pending live KR orders against broker fill evidence."""
+    try:
+        rows = await _list_open_ledger_rows(
+            symbol=symbol, order_no=order_id, limit=limit
+        )
+    except Exception as exc:
+        logger.exception("Failed to list open kis_live ledger rows: %s", exc)
+        return {
+            "success": False,
+            "error": str(exc) or exc.__class__.__name__,
+            "account_mode": "kis_live",
+        }
+
+    reconciled: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        try:
+            outcome = await _reconcile_one_ledger_row(row, dry_run=dry_run)
+        except Exception as exc:
+            logger.warning("reconcile failed for order_no=%s: %s", row.order_no, exc)
+            outcome = {
+                "ledger_id": row.id,
+                "order_id": row.order_no,
+                "verdict": "anomaly",
+                "error": str(exc) or exc.__class__.__name__,
+            }
+        reconciled.append(outcome)
+        verdict = str(outcome.get("verdict", "anomaly"))
+        counts[verdict] = counts.get(verdict, 0) + 1
+
+    return {
+        "success": True,
+        "account_mode": "kis_live",
+        "dry_run": dry_run,
+        "counts": counts,
+        "reconciled": reconciled,
+        "message": (
+            f"Reconciled {len(reconciled)} live order(s) "
+            f"(dry_run={dry_run}): {counts}"
+        ),
+    }
+
+
+
 
 
 
