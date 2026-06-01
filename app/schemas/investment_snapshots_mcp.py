@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.investment_reports import MarketSessionLiteral
 from app.schemas.investment_snapshots import (
     BundleItemRole,
     BundleStatus,
@@ -41,6 +42,7 @@ class EnsureBundleRequest(BaseModel):
     policy_version: str = Field(min_length=1)
     mode: EnsureMode = "ensure_fresh"
     symbols: list[str] | None = None
+    market_session: MarketSessionLiteral | None = None
     candidate_limit: Annotated[int | None, Field(ge=1, le=100)] = None
     manual_snapshots: dict[SnapshotKind, list[SnapshotCollectResult]] | None = None
     """Caller-supplied pre-collected snapshots keyed by ``snapshot_kind``.
