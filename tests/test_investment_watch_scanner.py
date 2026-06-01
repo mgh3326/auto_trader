@@ -23,6 +23,7 @@ from app.schemas.investment_reports import (
     IngestReportItem,
     IngestReportRequest,
     RecordDecisionRequest,
+    WatchConditionClause,
     WatchConditionPayload,
 )
 from app.services.hermes_client import HermesDeliveryResult, ReviewTriggerPayload
@@ -507,3 +508,70 @@ async def test_close_closes_hermes_client(
     scanner = InvestmentWatchScanner(hermes_client=stub)
     await scanner.close()
     assert stub.closed is True
+
+
+@pytest.mark.asyncio
+async def test_scan_market_triggers_on_zone_inside(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    ingest = InvestmentReportIngestionService(session)
+    report = await ingest.ingest(
+        IngestReportRequest(
+            report_type="kr_morning",
+            market="kr",
+            market_session="regular",
+            account_scope="kis_mock",
+            execution_mode="mock_preview",
+            created_by_profile="test",
+            title="t",
+            summary="s",
+            kst_date="2026-05-18",
+            items=[
+                IngestReportItem(
+                    client_item_key="watch-zone",
+                    item_kind="watch",
+                    symbol="005930",
+                    intent="buy_review",
+                    rationale="zone",
+                    watch_condition=WatchConditionPayload(
+                        conditions=[
+                            WatchConditionClause(
+                                metric="price",
+                                op="between",
+                                low=Decimal("50000"),
+                                high=Decimal("55000"),
+                            )
+                        ]
+                    ),
+                    valid_until=future_datetime(days=30),
+                )
+            ],
+        )
+    )
+    repo = InvestmentReportsRepository(session)
+    item = (await repo.list_items_for_report(report.id))[0]
+    await InvestmentReportDecisionService(session).record(
+        RecordDecisionRequest(item_uuid=item.item_uuid, decision="approve", actor="op")
+    )
+    await WatchActivationService(session).activate(
+        ActivateWatchRequest(item_uuid=item.item_uuid, actor="op")
+    )
+    await session.commit()
+
+    async def _price_inside(**_kwargs) -> float:
+        return 52000.0  # inside [50000, 55000] → triggered
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _price_inside)
+
+    stub = _StubHermesClient()
+    scanner = InvestmentWatchScanner(hermes_client=stub)
+    summary = await scanner.scan_market("kr")
+
+    assert summary["triggered"] == 1
+    assert len(stub.calls) == 1
+    payload = stub.calls[0]
+    assert payload.operator == "between"
+    assert payload.threshold == Decimal("50000")
+    assert payload.threshold_high == Decimal("55000")

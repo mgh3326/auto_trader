@@ -22,6 +22,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.execution_contracts import AccountMode
 from app.schemas.investment_snapshots import (
     BundleItemRole,
     BundleStatus,
@@ -56,6 +57,8 @@ ItemStatusLiteral = Literal[
 
 WatchMetricLiteral = Literal["price", "rsi", "trade_value"]
 WatchOperatorLiteral = Literal["above", "below"]
+WatchClauseOpLiteral = Literal["above", "below", "between"]
+WatchCombineLiteral = Literal["and"]
 WatchActionModeLiteral = Literal["notify_only", "preview_only", "approval_required"]
 
 DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_approve"]
@@ -69,24 +72,85 @@ ApplyPolicyLiteral = Literal["requires_user_approval"]
 TargetRefTypeLiteral = Literal["investment_watch_alert", "broker_order", "ambiguous"]
 
 
-class WatchConditionPayload(BaseModel):
-    """Embedded condition for a watch item. Persisted as JSONB."""
+class WatchConditionClause(BaseModel):
+    """One condition clause. above/below use ``threshold``; between uses low/high."""
 
     metric: WatchMetricLiteral
-    operator: WatchOperatorLiteral
-    threshold: Decimal
-    threshold_key: str | None = None
-    target_kind: TargetKindLiteral = "asset"
-    action_mode: WatchActionModeLiteral = "notify_only"
+    op: WatchClauseOpLiteral
+    threshold: Decimal | None = None
+    low: Decimal | None = None
+    high: Decimal | None = None
 
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
-    def _default_threshold_key(self) -> WatchConditionPayload:
-        # Canonical form: str(Decimal). Caller can override if they need
-        # a different dedup key (e.g. rounded value).
+    def _validate_clause(self) -> WatchConditionClause:
+        if self.op in ("above", "below"):
+            if self.threshold is None:
+                raise ValueError(f"op={self.op} requires threshold")
+            if self.low is not None or self.high is not None:
+                raise ValueError(f"op={self.op} must not set low/high")
+        elif self.op == "between":
+            if self.low is None or self.high is None:
+                raise ValueError("op=between requires low and high")
+            if self.low > self.high:
+                raise ValueError("op=between requires low <= high")
+            if self.threshold is not None:
+                raise ValueError("op=between must not set threshold")
+        return self
+
+
+def _derive_condition_key(clauses: list[WatchConditionClause]) -> str:
+    """Deterministic dedup key. Single above/below clause keeps legacy str(threshold)."""
+    if len(clauses) == 1 and clauses[0].op in ("above", "below"):
+        return str(clauses[0].threshold)
+    parts: list[str] = []
+    for c in clauses:
+        if c.op == "between":
+            parts.append(f"{c.metric}:between:{c.low}-{c.high}")
+        else:
+            parts.append(f"{c.metric}:{c.op}:{c.threshold}")
+    return "and(" + ",".join(parts) + ")"
+
+
+class WatchConditionPayload(BaseModel):
+    """Embedded condition for a watch item. Persisted as JSONB.
+
+    Two accepted input shapes, both normalized to ``conditions``:
+    - legacy flat: ``metric`` + ``operator`` + ``threshold``
+    - v2: ``conditions=[{metric, op, threshold|low/high}]`` + ``combine``
+    """
+
+    # legacy flat (optional)
+    metric: WatchMetricLiteral | None = None
+    operator: WatchOperatorLiteral | None = None
+    threshold: Decimal | None = None
+    threshold_key: str | None = None
+    target_kind: TargetKindLiteral = "asset"
+    action_mode: WatchActionModeLiteral = "notify_only"
+    # v2
+    conditions: list[WatchConditionClause] | None = None
+    combine: WatchCombineLiteral = "and"
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _normalize(self) -> WatchConditionPayload:
+        if self.conditions is None:
+            if self.metric is None or self.operator is None or self.threshold is None:
+                raise ValueError(
+                    "watch_condition requires either conditions[] or "
+                    "metric+operator+threshold"
+                )
+            self.conditions = [
+                WatchConditionClause(
+                    metric=self.metric, op=self.operator, threshold=self.threshold
+                )
+            ]
+        elif not self.conditions:
+            raise ValueError("conditions must be non-empty")
         if self.threshold_key is None:
-            self.threshold_key = str(self.threshold)
+            self.threshold_key = _derive_condition_key(self.conditions)
         return self
 
 
@@ -120,6 +184,31 @@ class TargetRefPayload(BaseModel):
                 raise ValueError(
                     "target_ref.id is required for non-ambiguous target_ref"
                 )
+        return self
+
+
+class MaxActionPayload(BaseModel):
+    """Structured order params a watch trigger proposes. Consumed by ROB-402.
+
+    ``extra='allow'`` preserves legacy keys (e.g. ``notional_usd`` used by
+    mock_preview). The live auto-execute block is enforced by ROB-402 on the
+    (action_mode, account_mode) combination, not here.
+    """
+
+    side: ItemSideLiteral
+    quantity: Decimal | None = None
+    notional: Decimal | None = None
+    limit_price: Decimal | None = None
+    account_mode: AccountMode
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _xor_quantity_notional(self) -> MaxActionPayload:
+        has_qty = self.quantity is not None
+        has_notional = self.notional is not None
+        if has_qty == has_notional:
+            raise ValueError("max_action requires exactly one of quantity or notional")
         return self
 
 
@@ -187,6 +276,16 @@ class IngestReportItem(BaseModel):
                     "watch items require valid_until when "
                     "operation is null/'create'/'modify'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_max_action(self) -> IngestReportItem:
+        if (
+            self.item_kind == "watch"
+            and self.operation in ("create", "modify")
+            and self.max_action
+        ):
+            MaxActionPayload.model_validate(self.max_action)
         return self
 
     @model_validator(mode="after")
