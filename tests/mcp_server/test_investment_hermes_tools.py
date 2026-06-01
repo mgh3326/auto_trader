@@ -35,7 +35,6 @@ from app.mcp_server.tooling.investment_hermes_handlers import (
     investment_report_get_hermes_context_impl,
     investment_report_prepare_bundle_impl,
     investment_stage_artifacts_ingest_from_hermes_impl,
-    investment_report_prepare_intraday_context_impl,
     register_investment_hermes_tools,
 )
 
@@ -707,8 +706,11 @@ async def test_prepare_intraday_context_attaches_delta(monkeypatch) -> None:
     class _FakeDelta:
         def __init__(self, db): ...
         async def compute_delta(self, report_uuid, **kw):
-            return {"success": True, "baseline_report_uuid": str(report_uuid),
-                    "levels_delta": {"summary": {"target_hit": 1}}}
+            return {
+                "success": True,
+                "baseline_report_uuid": str(report_uuid),
+                "levels_delta": {"summary": {"target_hit": 1}},
+            }
 
     monkeypatch.setattr(h, "HermesContextExporter", _FakeExporter)
     monkeypatch.setattr(h, "DeltaService", _FakeDelta)

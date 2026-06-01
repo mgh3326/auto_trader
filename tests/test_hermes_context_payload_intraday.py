@@ -8,12 +8,12 @@ from app.schemas.hermes_composition import HermesContextPayload
 
 
 def _minimal(**kw) -> HermesContextPayload:
-    base = dict(
-        snapshot_bundle_uuid=uuid.uuid4(),
-        bundle_status="ready",
-        market="us",
-        policy_version="intraday_action_report_v1",
-    )
+    base = {
+        "snapshot_bundle_uuid": uuid.uuid4(),
+        "bundle_status": "ready",
+        "market": "us",
+        "policy_version": "intraday_action_report_v1",
+    }
     base.update(kw)
     return HermesContextPayload(**base)
 

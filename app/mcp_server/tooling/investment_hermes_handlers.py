@@ -37,10 +37,6 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from app.services.investment_reports.delta_service import DeltaService
-
-logger = logging.getLogger(__name__)
-
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.schemas.hermes_composition import (
@@ -55,6 +51,7 @@ from app.services.action_report.common.snapshot_bundle import (
 from app.services.action_report.snapshot_backed.collectors.registry import (
     production_collector_registry,
 )
+from app.services.investment_reports.delta_service import DeltaService
 from app.services.investment_stages.hermes_context import (
     HermesContextExporter,
     HermesContextExportError,
@@ -68,6 +65,9 @@ from app.services.investment_stages.hermes_ingest import (
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+
+logger = logging.getLogger(__name__)
 
 
 INVESTMENT_HERMES_TOOL_NAMES: set[str] = {
