@@ -2494,6 +2494,40 @@ async def test_symbol_collector_switches_to_nxt_venue_when_nxt_session():
     assert payload["quote"]["session"] == "nxt"
 
 
+@pytest.mark.asyncio
+async def test_market_collector_kr_nxt_marks_index_frozen():
+    async def fake_index_fn(symbols):
+        return [
+            {"symbol": "KOSPI", "name": "코스피", "current": 2700.0, "change_pct": 0.0},
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    req = _request(market="kr")
+    req = req.model_copy(update={"market_session": "nxt"})
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["index_session"] == "regular_closed"
+    assert "frozen" in payload["index_session_note"]
+
+
+@pytest.mark.asyncio
+async def test_market_collector_kr_regular_session_has_no_frozen_note():
+    async def fake_index_fn(symbols):
+        return [
+            {"symbol": "KOSPI", "name": "코스피", "current": 2700.0, "change_pct": 0.5},
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="kr"))
+    payload = results[0].payload_json
+    assert "index_session" not in payload
+
+
+
 
 
 
