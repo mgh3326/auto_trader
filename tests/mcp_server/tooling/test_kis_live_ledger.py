@@ -159,5 +159,41 @@ async def test_fetch_live_daily_rows_for_order():
     assert kwargs.get("is_mock") is False
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_ledger_outcome(db_session):
+    from decimal import Decimal
+    from sqlalchemy import select
+    from app.mcp_server.tooling.kis_live_ledger import (
+        _order_session_factory,
+        _save_kis_live_order_ledger,
+        _update_ledger_outcome,
+    )
+    from app.models.review import KISLiveOrderLedger
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660", instrument_type="equity_kr", side="buy", order_type="limit",
+        quantity=1.0, price=1000.0, amount=1000.0, currency="KRW",
+        order_no="TEST-UPD-1", order_time="0930", krx_fwdg_ord_orgno=None,
+        status="accepted", response_code="0", response_message=None,
+        raw_response=None, reason=None, thesis="t", strategy="s",
+        target_price=None, stop_loss=None, min_hold_days=None, notes=None,
+        exit_reason=None, indicators_snapshot=None,
+    )
+    await _update_ledger_outcome(
+        ledger_id=lid, status="filled", filled_qty=Decimal("1"),
+        avg_fill_price=Decimal("1000"), trade_id=42, journal_id=7,
+    )
+    async with _order_session_factory()() as db:
+        row = (await db.execute(
+            select(KISLiveOrderLedger).where(KISLiveOrderLedger.id == lid)
+        )).scalar_one()
+    assert row.status == "filled"
+    assert row.lifecycle_state == "filled"
+    assert row.trade_id == 42 and row.journal_id == 7
+    assert row.reconciled_at is not None
+
+
+
 
 

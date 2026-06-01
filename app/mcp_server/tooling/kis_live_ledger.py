@@ -259,4 +259,35 @@ async def _fetch_live_daily_rows(
     return rows or []
 
 
+async def _update_ledger_outcome(
+    *,
+    ledger_id: int,
+    status: str,
+    filled_qty: Decimal | None = None,
+    avg_fill_price: Decimal | None = None,
+    trade_id: int | None = None,
+    journal_id: int | None = None,
+) -> None:
+    """Update a ledger row's reconcile outcome (status + fill + linkage)."""
+    try:
+        async with _order_session_factory()() as db:
+            await db.execute(
+                update(KISLiveOrderLedger)
+                .where(KISLiveOrderLedger.id == ledger_id)
+                .values(
+                    status=status,
+                    lifecycle_state=_status_to_lifecycle(status),
+                    filled_qty=filled_qty,
+                    avg_fill_price=avg_fill_price,
+                    trade_id=trade_id,
+                    journal_id=journal_id,
+                    reconciled_at=now_kst(),
+                )
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to update kis_live ledger outcome id=%s: %s", ledger_id, exc)
+
+
+
 
