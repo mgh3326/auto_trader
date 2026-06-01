@@ -742,6 +742,44 @@ async def _execute_and_record(
             indicators_snapshot=indicators_snapshot,
         )
 
+    # ROB-407: US/해외 live 주문도 accepted-only 기록; fill/journal/pnl은
+    # live_reconcile_orders가 broker 체결 증거(해외 일별주문)로만 반영.
+    if not is_mock and market_type == "equity_us":
+        from app.mcp_server.tooling.live_order_ledger import _record_live_order
+
+        exchange = (
+            execution_result.get("ovrs_excg_cd")
+            or (execution_result.get("output") or {}).get("OVRS_EXCG_CD")
+        )
+        return await _record_live_order(
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            normalized_symbol=normalized_symbol,
+            exchange=str(exchange) if exchange else None,
+            market_symbol=None,
+            side=side,
+            order_kind=order_type,
+            currency="USD",
+            order_no=execution_result.get("odno") or execution_result.get("ord_no"),
+            order_time=execution_result.get("ord_tmd"),
+            rt_cd=str(execution_result.get("rt_cd", "")) or None,
+            response_message=execution_result.get("msg") or execution_result.get("msg1"),
+            dry_run_result=dry_run_result,
+            execution_result=execution_result,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+            inline_confirm=False,
+        )
+
+
     # Record phase: fills + journals
     record_result = await _record_fill_and_journals(
         side=side,
