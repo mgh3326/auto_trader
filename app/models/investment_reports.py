@@ -467,7 +467,8 @@ class InvestmentWatchAlert(Base):
             name="ck_investment_watch_alerts_operator",
         ),
         CheckConstraint(
-            "action_mode IN ('notify_only','preview_only','approval_required')",
+            "action_mode IN ('notify_only','preview_only','approval_required',"
+            "'auto_execute_mock')",
             name="ck_investment_watch_alerts_action_mode",
         ),
         CheckConstraint(
@@ -600,7 +601,7 @@ class InvestmentWatchEvent(Base):
         ),
         CheckConstraint(
             "outcome IN ('notified','review_required','preview_attached',"
-            "'expired','ignored','failed')",
+            "'executed','expired','ignored','failed')",
             name="ck_investment_watch_events_outcome",
         ),
         CheckConstraint(
@@ -616,7 +617,8 @@ class InvestmentWatchEvent(Base):
             name="ck_investment_watch_events_operator",
         ),
         CheckConstraint(
-            "action_mode IN ('notify_only','preview_only','approval_required')",
+            "action_mode IN ('notify_only','preview_only','approval_required',"
+            "'auto_execute_mock')",
             name="ck_investment_watch_events_action_mode",
         ),
         # Plan 4 hardening — Hermes delivery is auditable and the alert

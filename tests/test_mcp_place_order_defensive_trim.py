@@ -7,6 +7,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
@@ -16,6 +17,13 @@ from app.mcp_server.tooling.orders_registration import register_order_tools
 from tests._mcp_tooling_support import build_tools
 
 TRADER_AGENT_ID = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_live_order_ledger_schema(db_session):
+    """ROB-407: defensive-trim live crypto sell writes to review.live_order_ledger.
+    Depend on db_session so create_all builds the table before any direct insert."""
+    yield
 
 
 def _mock_crypto_sell_context(
@@ -408,10 +416,14 @@ async def test_flag_on_still_rejects_below_current_price(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_journal_and_redis_record_defensive_trim_fields(
+async def test_defensive_trim_sell_accepted_only_persists_audit_to_ledger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful defensive trim sell records journal and Redis audit fields."""
+    """ROB-407: live crypto defensive-trim sell records accepted-only. The
+    order-history approval audit is still recorded at send; the journal close is
+    deferred to evidence-gated reconcile, so the defensive-trim approval fields are
+    persisted on the live_order_ledger row (re-attached to the journal at reconcile,
+    see tests/mcp_server/tooling/test_live_order_ledger.py)."""
     tools = build_tools()
     _mock_crypto_sell_context(monkeypatch, current_price=1000.0, avg_buy_price="1000.0")
     monkeypatch.setattr(
@@ -431,14 +443,7 @@ async def test_journal_and_redis_record_defensive_trim_fields(
         order_execution, "_save_order_fill", AsyncMock(return_value=9191)
     )
     monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
-    close_mock = AsyncMock(
-        return_value={
-            "journals_closed": 1,
-            "journals_kept": 0,
-            "closed_ids": [71],
-            "total_pnl_pct": 0.5,
-        }
-    )
+    close_mock = AsyncMock()
     monkeypatch.setattr(order_execution, "_close_journals_on_sell", close_mock)
 
     result = await tools["place_order"](
@@ -453,8 +458,11 @@ async def test_journal_and_redis_record_defensive_trim_fields(
     )
 
     assert result["success"] is True
-    assert result["journals_closed"] == 1
+    assert result["fill_recorded"] is False
+    assert result["broker_status"] == "accepted"
+    assert "journals_closed" not in result
 
+    # order-history approval audit is still recorded at send
     record_mock.assert_awaited_once()
     kwargs = record_mock.await_args.kwargs
     assert kwargs["defensive_trim"] is True
@@ -462,10 +470,32 @@ async def test_journal_and_redis_record_defensive_trim_fields(
     assert kwargs["requester_agent_id"] == TRADER_AGENT_ID
     assert kwargs["caller_source"] == "http_header"
 
-    close_mock.assert_awaited_once()
-    close_kwargs = close_mock.await_args.kwargs
-    assert close_kwargs["defensive_trim_ctx"].approval_issue_id == "ROB-164"
-    assert close_kwargs["defensive_trim_ctx"].requester_agent_id == TRADER_AGENT_ID
+    # journal close is deferred to reconcile — never attempted at send
+    close_mock.assert_not_awaited()
+
+    # approval audit is persisted on the ledger row so reconcile can re-attach
+    # the defensive-trim note to the closed journal.
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling.live_order_ledger import _order_session_factory
+    from app.models.review import LiveOrderLedger
+
+    async with _order_session_factory()() as db:
+        row = (
+            (
+                await db.execute(
+                    select(LiveOrderLedger).where(
+                        LiveOrderLedger.order_no == "defensive-trim-uuid"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+    assert row is not None
+    assert row.dt_approval_issue_id == "ROB-164"
+    assert row.dt_requester_agent_id == TRADER_AGENT_ID
+    assert row.dt_caller_source == "http_header"
 
 
 @pytest.mark.unit

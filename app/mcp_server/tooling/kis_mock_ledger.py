@@ -321,6 +321,7 @@ async def _record_kis_mock_order(
     strategy: str | None,
     notes: str | None,
     holdings_baseline_qty: Decimal | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -366,6 +367,7 @@ async def _record_kis_mock_order(
         notes=notes,
         lifecycle_state=_status_to_lifecycle_state(status),
         holdings_baseline_qty=holdings_baseline_qty,
+        correlation_id=correlation_id,
     )
 
     return {

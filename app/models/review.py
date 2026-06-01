@@ -338,6 +338,94 @@ class KISLiveOrderLedger(Base):
     )
 
 
+class LiveOrderLedger(Base):
+    """ROB-407 — 제네릭 live (real-money) order lifecycle ledger.
+
+    US/해외(`equity_us`)·crypto(`crypto`) live 주문을 전송 시 accepted-only로 기록한다.
+    KISLiveOrderLedger(KR domestic 전용)와 동일 evidence-gated 계약을 따르되,
+    broker/market 디스크리미네이터와 시장별 메타(exchange/market_symbol)를 갖는다.
+    fill/journal/realized_pnl은 live_reconcile_orders가 broker 체결 증거로만 반영한다.
+    """
+
+    __tablename__ = "live_order_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "broker", "account_scope", "order_no", name="uq_live_ledger_order"
+        ),
+        Index("ix_live_ledger_status", "status"),
+        Index("ix_live_ledger_market_symbol", "market", "symbol"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    trade_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+
+    # discriminators / market metadata
+    broker: Mapped[str] = mapped_column(Text, nullable=False)  # kis | upbit
+    account_scope: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )  # kis_live | upbit_live
+    market: Mapped[str] = mapped_column(Text, nullable=False)  # us | crypto
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)  # DB dot-format
+    exchange: Mapped[str | None] = mapped_column(Text)  # US: NASD/NYSE/AMEX
+    market_symbol: Mapped[str | None] = mapped_column(Text)  # crypto: KRW-BTC
+
+    side: Mapped[str] = mapped_column(Text, nullable=False)  # buy | sell
+    order_kind: Mapped[str] = mapped_column(Text, nullable=False)  # market | limit
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    currency: Mapped[str | None] = mapped_column(Text)
+
+    order_no: Mapped[str | None] = mapped_column(Text)  # KIS odno / Upbit uuid
+    order_time: Mapped[str | None] = mapped_column(Text)
+
+    # send-time status: accepted | rejected ; reconcile updates to
+    # filled | partial | pending | cancelled | anomaly
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+    response_code: Mapped[str | None] = mapped_column(Text)
+    response_message: Mapped[str | None] = mapped_column(Text)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB)
+
+    # buy/sell intent captured at send, consumed by reconcile
+    reason: Mapped[str | None] = mapped_column(Text)
+    thesis: Mapped[str | None] = mapped_column(Text)
+    strategy: Mapped[str | None] = mapped_column(Text)
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
+    notes: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+
+    # ROB-164 defensive-trim approval audit, captured at send so the
+    # evidence-gated journal close (reconcile) can still append the
+    # defensive-trim note to the closed journal.
+    dt_approval_issue_id: Mapped[str | None] = mapped_column(Text)
+    dt_requester_agent_id: Mapped[str | None] = mapped_column(Text)
+    dt_caller_source: Mapped[str | None] = mapped_column(Text)
+
+    # reconcile outcomes (filled_qty = 이미 booked된 누적 체결량, 델타 멱등용)
+    filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    trade_id: Mapped[int | None] = mapped_column(BigInteger)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # review.alpaca_paper_order_ledger — Alpaca Paper execution lifecycle ledger (ROB-84/ROB-90)
 # Records plan → preview → validation → submit → fill → position → close → final reconcile.
@@ -531,4 +619,82 @@ class AlpacaPaperOrderLedger(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class WatchOrderIntentLedger(Base):
+    """ROB-402 — watch-sourced order intent (kis_mock only). Audit of the
+    auto-execute decision; the actual order lives in KISMockOrderLedger linked
+    by correlation_id. Mirrors migration daf4130b13ce."""
+
+    __tablename__ = "watch_order_intent_ledger"
+    __table_args__ = (
+        UniqueConstraint("correlation_id", name="uq_watch_intent_correlation_id"),
+        CheckConstraint(
+            "lifecycle_state IN ('previewed','failed')",
+            name="watch_intent_ledger_lifecycle_state",
+        ),
+        CheckConstraint("side IN ('buy','sell')", name="watch_intent_ledger_side"),
+        CheckConstraint(
+            "account_mode = 'kis_mock'", name="watch_intent_ledger_account_mode"
+        ),
+        CheckConstraint(
+            "execution_source = 'watch'", name="watch_intent_ledger_execution_source"
+        ),
+        CheckConstraint(
+            "currency IS NULL OR currency IN ('KRW','USD')",
+            name="watch_intent_ledger_currency",
+        ),
+        Index("ix_watch_intent_kst_date", "kst_date"),
+        Index("ix_watch_intent_market_symbol", "market", "symbol"),
+        Index("ix_watch_intent_state_created_at", "lifecycle_state", "created_at"),
+        Index(
+            "uq_watch_intent_previewed_idempotency",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("lifecycle_state = 'previewed'"),
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    target_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    condition_type: Mapped[str] = mapped_column(Text, nullable=False)
+    threshold: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
+    threshold_key: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_source: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    limit_price: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    notional: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    currency: Mapped[str | None] = mapped_column(Text)
+    notional_krw_input: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    max_notional_krw: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    notional_krw_evaluated: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    fx_usd_krw_used: Mapped[float | None] = mapped_column(Numeric(18, 4))
+    approval_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    execution_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    blocking_reasons: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    blocked_by: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    preview_line: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    triggered_value: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    kst_date: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

@@ -736,3 +736,86 @@ async def test_shadow_exposure_unknown_on_db_error(monkeypatch):
     assert result["buy_reserved_amount"] == 0.0
     assert result["sell_reserved_quantity"] == 0.0
     assert "db unavailable" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling import order_execution
+    from app.models.review import KISMockOrderLedger
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda *_, **__: [],
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_execute_order",
+        AsyncMock(
+            return_value={
+                "odno": "0001234567",
+                "ord_tmd": "091500",
+                "msg": "정상처리",
+                "rt_cd": "0",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(return_value=55000.0),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(
+            return_value={
+                "symbol": "005930",
+                "side": "buy",
+                "order_type": "limit",
+                "price": 55000.0,
+                "quantity": 10,
+                "estimated_value": 550000.0,
+                "fee": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_daily_order_limit",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_record_order_history",
+        AsyncMock(),
+    )
+
+    result = await order_execution._place_order_impl(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=55000,
+        dry_run=False,
+        reason="rob402-test",
+        is_mock=True,
+        correlation_id="corr-rob402",
+    )
+    assert result["success"] is True, result
+    row = (
+        await db_session.execute(
+            select(KISMockOrderLedger).where(
+                KISMockOrderLedger.correlation_id == "corr-rob402"
+            )
+        )
+    ).scalar_one_or_none()
+    assert row is not None

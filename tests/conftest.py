@@ -856,6 +856,57 @@ async def db_session():
                         "CHECK (operator IN ('above','below','between'))"
                     )
                 )
+                # ROB-402 — action_mode auto_execute_mock on alerts + events.
+                for _t in ("investment_watch_alerts", "investment_watch_events"):
+                    _c = f"ck_{_t}_action_mode"
+                    await conn.execute(
+                        text(f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS {_c}")
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS {_c}_{_c}"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_ck_investment_watch_alerts_a_646d"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_a_05f0"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_ac_6a20"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{_t} ADD CONSTRAINT {_c} "
+                            "CHECK (action_mode IN ('notify_only','preview_only',"
+                            "'approval_required','auto_execute_mock'))"
+                        )
+                    )
+                # ROB-402 — outcome executed on events.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events DROP CONSTRAINT IF EXISTS ck_investment_watch_events_outcome"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_outcome"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events ADD CONSTRAINT ck_investment_watch_events_outcome "
+                        "CHECK (outcome IN ('notified','review_required','preview_attached',"
+                        "'executed','expired','ignored','failed'))"
+                    )
+                )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so
