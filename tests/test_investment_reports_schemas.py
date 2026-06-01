@@ -17,6 +17,7 @@ from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
     IngestReportRequest,
+    MaxActionPayload,
     RecordDecisionRequest,
     ReportSnapshotBundleResponse,
     ReportSnapshotDetailResponse,
@@ -317,4 +318,38 @@ def test_conditions_payload_multi_metric_and():
 def test_payload_requires_conditions_or_flat():
     with pytest.raises(ValidationError):
         WatchConditionPayload(target_kind="asset")  # neither flat nor conditions
+
+
+def test_max_action_xor_quantity_notional():
+    MaxActionPayload(side="buy", quantity="10", account_mode="kis_mock")
+    MaxActionPayload(side="sell", notional="1000000", account_mode="kis_mock")
+    with pytest.raises(ValidationError):
+        MaxActionPayload(side="buy", account_mode="kis_mock")  # neither
+    with pytest.raises(ValidationError):
+        MaxActionPayload(
+            side="buy", quantity="10", notional="100", account_mode="kis_mock"
+        )  # both
+
+
+def test_max_action_allows_extra_legacy_keys():
+    m = MaxActionPayload(
+        side="buy", quantity="10", account_mode="kis_mock", notional_usd="500"
+    )
+    assert m.model_dump()["notional_usd"] == "500"
+
+
+def test_ingest_item_validates_max_action_when_present():
+    with pytest.raises(ValidationError):
+        IngestReportItem(
+            client_item_key="k1",
+            item_kind="watch",
+            operation="create",
+            intent="buy_review",
+            rationale="r",
+            symbol="005930",
+            watch_condition={"metric": "price", "operator": "below", "threshold": "5"},
+            valid_until="2026-12-31T00:00:00Z",
+            max_action={"side": "buy"},  # invalid: no quantity/notional
+        )
+
 

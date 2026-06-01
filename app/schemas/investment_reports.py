@@ -22,6 +22,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.execution_contracts import AccountMode
 from app.schemas.investment_snapshots import (
     BundleItemRole,
     BundleStatus,
@@ -186,6 +187,33 @@ class TargetRefPayload(BaseModel):
         return self
 
 
+class MaxActionPayload(BaseModel):
+    """Structured order params a watch trigger proposes. Consumed by ROB-402.
+
+    ``extra='allow'`` preserves legacy keys (e.g. ``notional_usd`` used by
+    mock_preview). The live auto-execute block is enforced by ROB-402 on the
+    (action_mode, account_mode) combination, not here.
+    """
+
+    side: ItemSideLiteral
+    quantity: Decimal | None = None
+    notional: Decimal | None = None
+    limit_price: Decimal | None = None
+    account_mode: AccountMode
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _xor_quantity_notional(self) -> MaxActionPayload:
+        has_qty = self.quantity is not None
+        has_notional = self.notional is not None
+        if has_qty == has_notional:
+            raise ValueError(
+                "max_action requires exactly one of quantity or notional"
+            )
+        return self
+
+
 class IngestReportItem(BaseModel):
     """One proposal item attached to an ingested report.
 
@@ -250,6 +278,16 @@ class IngestReportItem(BaseModel):
                     "watch items require valid_until when "
                     "operation is null/'create'/'modify'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_max_action(self) -> IngestReportItem:
+        if (
+            self.item_kind == "watch"
+            and self.operation in ("create", "modify")
+            and self.max_action
+        ):
+            MaxActionPayload.model_validate(self.max_action)
         return self
 
     @model_validator(mode="after")
