@@ -70,6 +70,10 @@ class _UpbitOpenOrdersAdapter:
         return await _upbit_fetch_open_orders(market=market)
 
 
+# ROB-390 — venue -> KIS domestic market-division code. "J"=KRX, "NX"=NXT.
+_VENUE_TO_KIS_MARKET_CODE = {"krx": "J", "nxt": "NX"}
+
+
 class _KISDomesticQuoteOrderbookAdapter:
     """ROB-278 Phase 2 — read-only adapter wrapping the existing KIS quote
     + orderbook calls. Exposes a single ``fetch_quote_orderbook(symbol)``
@@ -84,13 +88,16 @@ class _KISDomesticQuoteOrderbookAdapter:
     def __init__(self, kis_client: KISClient | None) -> None:
         self._client = kis_client
 
-    async def fetch_quote_orderbook(self, symbol: str) -> dict[str, Any]:
+    async def fetch_quote_orderbook(
+        self, symbol: str, venue: str = "krx"
+    ) -> dict[str, Any]:
         if self._client is None:
             raise RuntimeError("kis client unavailable")
         # Two read-only calls — both already exist on the KIS client. No
         # new HTTP surface, no order placement/cancellation paths reached.
+        market_code = _VENUE_TO_KIS_MARKET_CODE.get(venue, "J")
         price_df = await self._client.inquire_price(symbol)
-        orderbook = await self._client.inquire_orderbook(symbol)
+        orderbook = await self._client.inquire_orderbook(symbol, market=market_code)
 
         last_price = float(price_df["close"].iloc[0]) if len(price_df) else 0.0
 
@@ -123,7 +130,7 @@ class _KISDomesticQuoteOrderbookAdapter:
             "best_ask": best_ask,
             "bid_depth": bid_depth,
             "ask_depth": ask_depth,
-            "venue": "krx",
+            "venue": venue if venue in _VENUE_TO_KIS_MARKET_CODE else "krx",
             "as_of": None,  # KIS orderbook payload has no clean as_of; UI uses snapshot.as_of
             "session": "regular" if best_bid > 0 and best_ask > 0 else "closed",
             "nxt_eligible": bool(nxt_eligible),
@@ -142,7 +149,10 @@ class _UpbitQuoteOrderbookAdapter:
     top-of-book is the liquidity signal the symbol stage reads.
     """
 
-    async def fetch_quote_orderbook(self, symbol: str) -> dict[str, Any]:
+    async def fetch_quote_orderbook(
+        self, symbol: str, venue: str = "krx"
+    ) -> dict[str, Any]:
+        _ = venue  # Upbit has a single venue; argument kept for protocol parity.
         # Lazy import keeps httpx / the Upbit module out of the registry import
         # graph (mirrors the news / index fns) and narrow to the read function.
         from app.services.upbit_orderbook import fetch_orderbook

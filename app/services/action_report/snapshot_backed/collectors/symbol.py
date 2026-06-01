@@ -65,7 +65,9 @@ class _QuoteOrderbookClient(Protocol):
     not call any broker order-mutation path.
     """
 
-    async def fetch_quote_orderbook(self, symbol: str) -> dict[str, Any]: ...
+    async def fetch_quote_orderbook(
+        self, symbol: str, venue: str = "krx"
+    ) -> dict[str, Any]: ...
 
 
 def _is_empty_book(quote: dict[str, Any]) -> bool:

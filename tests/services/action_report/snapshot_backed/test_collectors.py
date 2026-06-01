@@ -2422,4 +2422,37 @@ async def test_snapshot_bundle_threads_market_session_into_collector_request():
     assert captured["market_session"] == "nxt"
 
 
+@pytest.mark.asyncio
+async def test_kis_adapter_maps_nxt_venue_to_market_code_nx():
+    import pandas as pd
+    from unittest.mock import MagicMock, AsyncMock
+
+    from app.services.action_report.snapshot_backed.collectors.registry import (
+        _KISDomesticQuoteOrderbookAdapter,
+    )
+
+    captured: dict = {}
+
+    kis_client = MagicMock()
+    kis_client.inquire_price = AsyncMock(
+        return_value=pd.DataFrame({"close": [70_000.0]})
+    )
+
+    async def _inquire_orderbook(code, market="J"):
+        captured["market"] = market
+        return {"askp1": "70100", "bidp1": "69900", "askp_rsqn1": "10", "bidp_rsqn1": "12"}
+
+    kis_client.inquire_orderbook = AsyncMock(side_effect=_inquire_orderbook)
+
+    adapter = _KISDomesticQuoteOrderbookAdapter(kis_client)
+    raw = await adapter.fetch_quote_orderbook("005930", venue="nxt")
+    assert captured["market"] == "NX"
+    assert raw["venue"] == "nxt"
+
+    raw_krx = await adapter.fetch_quote_orderbook("005930")  # default venue
+    assert captured["market"] == "J"
+    assert raw_krx["venue"] == "krx"
+
+
+
 
