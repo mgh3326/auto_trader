@@ -65,18 +65,56 @@ class WatchActivationService:
             raise ValueError(
                 f"only approved items can be activated; status={item.status}"
             )
-        if item.watch_condition is None:
-            raise ValueError("watch_condition missing on item (corrupt state)")
-        if item.valid_until is None:
-            raise ValueError("valid_until missing on watch item (corrupt state)")
+        # ROB-393 — operation='review' watches are created without a
+        # watch_condition/valid_until (schema + DB CHECK both exempt them).
+        # Allow supplying them at activation time; persist back onto the item
+        # so the item stays the source of truth and re-activation is idempotent.
+        watch_condition = item.watch_condition
+        valid_until = item.valid_until
+
+        if request.watch_condition is not None:
+            if watch_condition is not None:
+                raise ValueError(
+                    "watch_condition already set on item; refusing to override "
+                    "at activation"
+                )
+            watch_condition = request.watch_condition.model_dump(mode="json")
+        if request.valid_until is not None:
+            if valid_until is not None:
+                raise ValueError(
+                    "valid_until already set on item; refusing to override "
+                    "at activation"
+                )
+            valid_until = request.valid_until
+
+        if watch_condition is None:
+            raise ValueError(
+                "watch_condition not set (operation='review' watch); pass "
+                "watch_condition to activate, or recreate the watch with a "
+                "condition"
+            )
+        if valid_until is None:
+            raise ValueError(
+                "valid_until not set (operation='review' watch); pass "
+                "valid_until to activate, or recreate the watch with an expiry"
+            )
         if item.symbol is None:
             raise ValueError("symbol missing on watch item")
+
+        # Persist any injected fields before building the alert.
+        await self._repo.update_item_watch_condition(
+            item.id,
+            watch_condition=(
+                watch_condition if item.watch_condition is None else None
+            ),
+            valid_until=(valid_until if item.valid_until is None else None),
+        )
 
         report = await self._repo.get_report_by_id(item.report_id)
         if report is None:
             raise ValueError(f"report not found for item: {item.report_id}")
 
-        condition: dict[str, Any] = item.watch_condition
+        condition: dict[str, Any] = watch_condition
         threshold = _to_decimal(condition.get("threshold"))
         threshold_key = condition.get("threshold_key") or str(threshold)
 
@@ -97,8 +135,9 @@ class WatchActivationService:
             rationale=item.rationale,
             trigger_checklist=list(item.trigger_checklist),
             max_action=dict(item.max_action),
-            valid_until=item.valid_until,
+            valid_until=valid_until,
         )
+
 
         await self._repo.update_item_status(item.id, "activated")
         await self._session.flush()
