@@ -181,6 +181,30 @@ class InvestmentReportsRepository:
             .values(status=status)
         )
 
+    async def update_item_watch_condition(
+        self,
+        item_id: int,
+        watch_condition: dict | None,
+        valid_until: datetime | None,
+    ) -> None:
+        """ROB-393 — persist a watch_condition / valid_until injected at
+        activation time onto a review-watch item. Only non-None values are
+        written; a None field is left unchanged. Flushes but never commits
+        (caller owns the transaction)."""
+        values: dict[str, Any] = {}
+        if watch_condition is not None:
+            values["watch_condition"] = watch_condition
+        if valid_until is not None:
+            values["valid_until"] = valid_until
+        if not values:
+            return
+        await self._session.execute(
+            sa.update(InvestmentReportItem)
+            .where(InvestmentReportItem.id == item_id)
+            .values(**values)
+        )
+
+
     async def delete_items_for_report(self, report_id: int) -> None:
         """ROB-352 — remove every item of one report (overwrite path).
 
