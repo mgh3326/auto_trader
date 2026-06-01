@@ -94,8 +94,35 @@ def _decimal_to_float(value: Any) -> float:
     return _to_float(value, default=0.0)
 
 
+def _derive_shadow_fill(row: KISMockOrderLedger, ordered_qty: float) -> tuple[float, float, str]:
+    """Derive (filled_qty, remaining_qty, status) consistent with lifecycle_state.
+
+    A row in ``fill`` must never report status=pending/filled_qty=0. When the
+    reconciler recorded ``attributed_fill_qty`` (ROB-400) we honor it; legacy
+    fill rows without it fall back to a full fill so lifecycle and status agree.
+    """
+    if row.lifecycle_state != "fill":
+        return 0.0, ordered_qty, "pending"
+
+    detail = row.last_reconcile_detail or {}
+    raw = detail.get("attributed_fill_qty")
+    if raw is None:
+        filled = ordered_qty
+    else:
+        try:
+            filled = float(raw)
+        except (TypeError, ValueError):
+            filled = ordered_qty
+        filled = max(0.0, min(filled, ordered_qty))
+    remaining = ordered_qty - filled
+    status = "filled" if filled >= ordered_qty else "partial"
+    return filled, remaining, status
+
+
 def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:
     ordered_at = row.trade_date.isoformat() if row.trade_date else None
+    ordered_qty = _decimal_to_float(row.quantity)
+    filled_qty, remaining_qty, status = _derive_shadow_fill(row, ordered_qty)
     return {
         "order_id": row.order_no or f"ledger:{row.id}",
         "ledger_id": row.id,
@@ -104,11 +131,11 @@ def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:
         "instrument_type": row.instrument_type,
         "side": row.side,
         "order_type": row.order_type,
-        "status": "pending",
+        "status": status,
         "lifecycle_state": row.lifecycle_state,
-        "ordered_qty": _decimal_to_float(row.quantity),
-        "remaining_qty": _decimal_to_float(row.quantity),
-        "filled_qty": 0.0,
+        "ordered_qty": ordered_qty,
+        "remaining_qty": remaining_qty,
+        "filled_qty": filled_qty,
         "ordered_price": _decimal_to_float(row.price),
         "amount": _decimal_to_float(row.amount),
         "currency": row.currency,
