@@ -35,6 +35,7 @@ from app.mcp_server.tooling.investment_hermes_handlers import (
     investment_report_get_hermes_context_impl,
     investment_report_prepare_bundle_impl,
     investment_stage_artifacts_ingest_from_hermes_impl,
+    investment_report_prepare_intraday_context_impl,
     register_investment_hermes_tools,
 )
 
@@ -80,6 +81,7 @@ def test_investment_hermes_tool_names_lock() -> None:
         "investment_report_get_hermes_context",
         "investment_report_create_from_hermes_composition",
         "investment_stage_artifacts_ingest_from_hermes",
+        "investment_report_prepare_intraday_context",
     }
 
 
@@ -664,3 +666,136 @@ async def test_create_from_hermes_composition_zero_items_partial_data(_flag_on) 
 
     assert result["success"] is True
     assert result["items_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_prepare_intraday_context_disabled(monkeypatch) -> None:
+    from app.mcp_server.tooling import investment_hermes_handlers as h
+
+    monkeypatch.setattr(h.settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", False)
+    out = await h.investment_report_prepare_intraday_context_impl(
+        snapshot_bundle_uuid=str(uuid.uuid4()),
+        baseline_report_uuid=str(uuid.uuid4()),
+    )
+    assert out["success"] is False
+    assert out["error"] == "snapshot_backed_report_generator_disabled"
+
+
+def _fake_payload() -> object:
+    from app.schemas.hermes_composition import HermesContextPayload
+
+    return HermesContextPayload(
+        snapshot_bundle_uuid=uuid.uuid4(),
+        bundle_status="ready",
+        market="us",
+        policy_version="intraday_action_report_v1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_intraday_context_attaches_delta(monkeypatch) -> None:
+    from app.mcp_server.tooling import investment_hermes_handlers as h
+
+    monkeypatch.setattr(h.settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True)
+    base_uuid = uuid.uuid4()
+
+    class _FakeExporter:
+        def __init__(self, db): ...
+        async def export(self, *, snapshot_bundle_uuid):
+            return _fake_payload()
+
+    class _FakeDelta:
+        def __init__(self, db): ...
+        async def compute_delta(self, report_uuid, **kw):
+            return {"success": True, "baseline_report_uuid": str(report_uuid),
+                    "levels_delta": {"summary": {"target_hit": 1}}}
+
+    monkeypatch.setattr(h, "HermesContextExporter", _FakeExporter)
+    monkeypatch.setattr(h, "DeltaService", _FakeDelta)
+
+    out = await h.investment_report_prepare_intraday_context_impl(
+        snapshot_bundle_uuid=str(uuid.uuid4()),
+        baseline_report_uuid=str(base_uuid),
+    )
+    assert out["success"] is True
+    assert out["report_type_hint"] == "intraday_update_v1"
+    assert out["baseline_report_uuid"] == str(base_uuid)
+    assert out["intraday_delta_block"]["success"] is True
+    assert out["intraday_delta_block"]["levels_delta"]["summary"]["target_hit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_intraday_context_failopen_bad_baseline(monkeypatch) -> None:
+    from app.mcp_server.tooling import investment_hermes_handlers as h
+
+    monkeypatch.setattr(h.settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True)
+
+    class _FakeExporter:
+        def __init__(self, db): ...
+        async def export(self, *, snapshot_bundle_uuid):
+            return _fake_payload()
+
+    class _FakeDelta:
+        def __init__(self, db): ...
+        async def compute_delta(self, report_uuid, **kw):
+            return {"success": False, "error": "baseline_not_found"}
+
+    monkeypatch.setattr(h, "HermesContextExporter", _FakeExporter)
+    monkeypatch.setattr(h, "DeltaService", _FakeDelta)
+
+    out = await h.investment_report_prepare_intraday_context_impl(
+        snapshot_bundle_uuid=str(uuid.uuid4()),
+        baseline_report_uuid=str(uuid.uuid4()),
+    )
+    # fail-open: context still success, delta block carries the reason
+    assert out["success"] is True
+    assert out["intraday_delta_block"]["success"] is False
+    assert out["intraday_delta_block"]["error"] == "baseline_not_found"
+
+
+@pytest.mark.asyncio
+async def test_prepare_intraday_context_failopen_delta_raises(monkeypatch) -> None:
+    from app.mcp_server.tooling import investment_hermes_handlers as h
+
+    monkeypatch.setattr(h.settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True)
+
+    class _FakeExporter:
+        def __init__(self, db): ...
+        async def export(self, *, snapshot_bundle_uuid):
+            return _fake_payload()
+
+    class _FakeDelta:
+        def __init__(self, db): ...
+        async def compute_delta(self, report_uuid, **kw):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(h, "HermesContextExporter", _FakeExporter)
+    monkeypatch.setattr(h, "DeltaService", _FakeDelta)
+
+    out = await h.investment_report_prepare_intraday_context_impl(
+        snapshot_bundle_uuid=str(uuid.uuid4()),
+        baseline_report_uuid=str(uuid.uuid4()),
+    )
+    assert out["success"] is True
+    assert "unavailable" in out["intraday_delta_block"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_intraday_context_invalid_baseline_uuid(monkeypatch) -> None:
+    from app.mcp_server.tooling import investment_hermes_handlers as h
+
+    monkeypatch.setattr(h.settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True)
+
+    class _FakeExporter:
+        def __init__(self, db): ...
+        async def export(self, *, snapshot_bundle_uuid):
+            return _fake_payload()
+
+    monkeypatch.setattr(h, "HermesContextExporter", _FakeExporter)
+
+    out = await h.investment_report_prepare_intraday_context_impl(
+        snapshot_bundle_uuid=str(uuid.uuid4()),
+        baseline_report_uuid="not-a-uuid",
+    )
+    assert out["success"] is True
+    assert out["intraday_delta_block"]["error"] == "invalid_report_uuid"
