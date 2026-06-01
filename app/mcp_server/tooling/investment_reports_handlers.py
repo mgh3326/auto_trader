@@ -15,6 +15,16 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from app.core.db import AsyncSessionLocal
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from app.services import market_data as market_data_service
+from app.services.investment_reports.watch_recommendation_policy import (
+    ATR_PERIOD,
+    LOOKBACK_DAYS,
+    WatchPolicyInput,
+    compute_watch_recommendation,
+)
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
@@ -55,6 +65,7 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_activate_watch",
     "investment_report_context_get",
     "investment_report_generate_from_bundle",
+    "investment_watch_recommend",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -415,6 +426,107 @@ async def investment_report_activate_watch_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_watch_recommend (ROB-337 Slice 1)
+# ---------------------------------------------------------------------------
+_RECOMMEND_VERDICTS = {"watch_only", "limit_wait"}
+_MARKET_MAP = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
+
+
+def _normalize_recommend_symbol(symbol: str, market: str) -> str:
+    s = str(symbol or "").strip()
+    if market == "crypto":
+        up = s.upper()
+        return up if "-" in up else f"KRW-{up}"
+    if market == "us":
+        return s.upper()
+    return s
+
+
+async def investment_watch_recommend_impl(
+    symbol: str,
+    market: str,
+    item_uuid: str | None = None,
+    commit: bool = False,
+    actor: str | None = None,
+) -> dict:
+    """ROB-337 — compute advisory buy-review price thresholds for a watch.
+
+    Read-only by default (commit=False). Advisory only: NO order is created
+    or submitted. commit=True persists onto the item's watch_recommendation
+    column, gated on action_verdict in {watch_only, limit_wait} and a
+    non-data_gap result.
+    """
+    if market not in _MARKET_MAP:
+        return {"success": False, "error": "unsupported_market", "market": market}
+
+    md_symbol = _normalize_recommend_symbol(symbol, market)
+    md_market = _MARKET_MAP[market]
+
+    quote = await market_data_service.get_quote(symbol=md_symbol, market=md_market)
+    reference_price = (
+        Decimal(str(quote.price)) if getattr(quote, "price", None) is not None else None
+    )
+    candles = await market_data_service.get_ohlcv(
+        symbol=md_symbol,
+        market=md_market,
+        period="day",
+        count=LOOKBACK_DAYS + ATR_PERIOD + 6,
+    )
+    ordered = sorted(candles, key=lambda c: c.timestamp)
+    highs = [Decimal(str(c.high)) for c in ordered]
+    lows = [Decimal(str(c.low)) for c in ordered]
+    closes = [Decimal(str(c.close)) for c in ordered]
+
+    valid_until = None
+    async with AsyncSessionLocal() as db:
+        repo = InvestmentReportsRepository(db)
+        item = None
+        if item_uuid is not None:
+            item = await repo.get_item_by_uuid(UUID(item_uuid))
+            if item is not None:
+                valid_until = item.valid_until
+
+        payload = compute_watch_recommendation(
+            WatchPolicyInput(
+                reference_price=reference_price,
+                best_bid=None,
+                best_ask=None,
+                daily_highs=highs,
+                daily_lows=lows,
+                daily_closes=closes,
+            ),
+            computed_at=datetime.now(timezone.utc),
+            valid_until=valid_until,
+        )
+        rec_json = payload.model_dump(mode="json")
+
+        if not commit:
+            return {"success": True, "committed": False, "recommendation": rec_json}
+
+        if item_uuid is None or item is None:
+            raise ValueError("commit=True requires an existing item_uuid")
+        verdict = None
+        if isinstance(item.evidence_snapshot, dict):
+            verdict = item.evidence_snapshot.get("action_verdict")
+        if verdict not in _RECOMMEND_VERDICTS:
+            raise ValueError(
+                "commit requires item action_verdict in {watch_only, limit_wait}; "
+                f"got {verdict!r}"
+            )
+        if payload.data_state == "data_gap":
+            raise ValueError("refusing to commit a data_gap recommendation")
+
+        await repo.update_item_watch_recommendation(item.id, rec_json)
+        await db.commit()
+        return {
+            "success": True,
+            "committed": True,
+            "item_uuid": item_uuid,
+            "recommendation": rec_json,
+        }
+
+
+# ---------------------------------------------------------------------------
 # investment_report_context_get
 # ---------------------------------------------------------------------------
 async def investment_report_context_get_impl(
@@ -769,6 +881,18 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         name="investment_report_generate_from_bundle",
         description=GENERATE_FROM_BUNDLE_DESCRIPTION,
     )(investment_report_generate_from_bundle_impl)
+    mcp.tool(
+        name="investment_watch_recommend",
+        description=(
+            "ROB-337 — compute advisory buy-review price thresholds "
+            "(entry_review_below_price, suggested_limit_price_range, "
+            "max_chase_price, invalidation) for a symbol from deterministic "
+            "market evidence. Read-only by default; commit=True persists onto "
+            "an item's watch_recommendation (gated on action_verdict in "
+            "{watch_only, limit_wait}, refused on data_gap). Advisory only — "
+            "no order is created or submitted."
+        ),
+    )(investment_watch_recommend_impl)
 
 
 __all__ = [
@@ -780,5 +904,6 @@ __all__ = [
     "investment_report_generate_from_bundle_impl",
     "investment_report_get_impl",
     "investment_report_list_impl",
+    "investment_watch_recommend_impl",
     "register_investment_report_tools",
 ]

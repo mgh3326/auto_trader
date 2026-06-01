@@ -23,6 +23,7 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_generate_from_bundle_impl,
     investment_report_get_impl,
     investment_report_list_impl,
+    investment_watch_recommend_impl,
 )
 from tests._investment_reports_helpers import future_datetime
 
@@ -117,6 +118,7 @@ def test_tool_names_match_registered_set() -> None:
         "investment_report_context_get",
         # ROB-273 — opt-in snapshot-backed advisory generator.
         "investment_report_generate_from_bundle",
+        "investment_watch_recommend",
     }
 
 
@@ -644,3 +646,110 @@ async def test_context_get_draft_policy_advisory_only(
         market="kr", draft_policy="all"
     )
     assert len(ctx_unknown["prior_reports"]) == 0
+
+@pytest.fixture
+def _stub_market_data(monkeypatch):
+    """Stub market_data so the watch-recommend tool needs no live network and
+    we can assert it touches no broker/order client."""
+    from app.mcp_server.tooling import investment_reports_handlers as h
+    from app.services.market_data.contracts import Candle
+
+    async def fake_get_quote(symbol, market):
+        from app.services.market_data.contracts import Quote
+
+        return Quote(symbol=symbol, market=market, price=100.0, source="stub")
+
+    async def fake_get_ohlcv(symbol, market, period, count, end=None):
+        import datetime as _dt
+
+        return [
+            Candle(
+                symbol=symbol, market=market, source="stub", period="day",
+                timestamp=_dt.datetime(2026, 5, d + 1, tzinfo=_dt.timezone.utc),
+                open=100.0, high=102.0, low=98.0, close=100.0, volume=1.0,
+            )
+            for d in range(25)
+        ]
+
+    monkeypatch.setattr(h.market_data_service, "get_quote", fake_get_quote)
+    monkeypatch.setattr(h.market_data_service, "get_ohlcv", fake_get_ohlcv)
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_dry_run_does_not_persist(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    resp = await investment_watch_recommend_impl(symbol="005930", market="kr")
+    assert resp["success"] is True
+    assert resp["committed"] is False
+    assert resp["recommendation"]["data_state"] == "ok"
+    assert resp["recommendation"]["policy_version"] == "v1"
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_commit_persists_on_watch_only(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    # watch_only item via evidence_snapshot.action_verdict
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    item_uuid = bundle["items"][0]["item_uuid"]
+
+    resp = await investment_watch_recommend_impl(
+        symbol="005930", market="kr", item_uuid=item_uuid, commit=True, actor="op"
+    )
+    assert resp["committed"] is True
+
+    bundle_post = await investment_report_get_impl(created["report"]["report_uuid"])
+    rec = bundle_post["items"][0]["watch_recommendation"]
+    assert rec is not None
+    assert rec["data_state"] == "ok"
+    assert rec["entry_review_below_price"] is not None
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_commit_rejected_for_non_watch_verdict(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "buy_review"}  # not watch_only/limit_wait
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    item_uuid = bundle["items"][0]["item_uuid"]
+
+    with pytest.raises(ValueError) as exc:
+        await investment_watch_recommend_impl(
+            symbol="005930", market="kr", item_uuid=item_uuid, commit=True, actor="op"
+        )
+    assert "watch_only" in str(exc.value) or "limit_wait" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_commit_rejected_on_data_gap(
+    session: AsyncSession, monkeypatch
+) -> None:
+    from app.mcp_server.tooling import investment_reports_handlers as h
+    from app.services.market_data.contracts import Quote
+
+    async def fake_get_quote(symbol, market):
+        return Quote(symbol=symbol, market=market, price=100.0, source="stub")
+
+    async def few_candles(symbol, market, period, count, end=None):
+        return []  # data gap
+
+    monkeypatch.setattr(h.market_data_service, "get_quote", fake_get_quote)
+    monkeypatch.setattr(h.market_data_service, "get_ohlcv", few_candles)
+
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    item_uuid = bundle["items"][0]["item_uuid"]
+
+    with pytest.raises(ValueError) as exc:
+        await investment_watch_recommend_impl(
+            symbol="005930", market="kr", item_uuid=item_uuid, commit=True, actor="op"
+        )
+    assert "data_gap" in str(exc.value)
