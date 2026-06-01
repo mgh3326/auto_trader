@@ -698,3 +698,43 @@ class WatchOrderIntentLedger(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class TradeJournalReview(Base):
+    """ROB-405 Slice B — verdict (good/neutral/bad) for a trade_journal.
+
+    Separate from TradeReview (which FKs review.trades). auto verdicts come from
+    pnl_pct thresholds on closed mock journals; manual verdicts are overrides.
+    """
+
+    __tablename__ = "trade_journal_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('good','neutral','bad')",
+            name="ck_trade_journal_reviews_verdict",
+        ),
+        CheckConstraint(
+            "verdict_source IN ('auto','manual')",
+            name="ck_trade_journal_reviews_source",
+        ),
+        Index("ix_trade_journal_reviews_journal_id", "journal_id"),
+        Index(
+            "uq_trade_journal_reviews_auto",
+            "journal_id",
+            unique=True,
+            postgresql_where=text("verdict_source = 'auto'"),
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    journal_id: Mapped[int] = mapped_column(
+        ForeignKey("review.trade_journals.id", ondelete="CASCADE"), nullable=False
+    )
+    verdict: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_source: Mapped[str] = mapped_column(Text, nullable=False)
+    pnl_pct: Mapped[float | None] = mapped_column(Numeric(8, 4))
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
