@@ -180,3 +180,59 @@ def test_service_does_not_call_broker_or_live_paths():
     ]
     for tok in forbidden:
         assert tok not in src, f"forbidden import: {tok}"
+
+
+@pytest.mark.asyncio
+async def test_apply_lifecycle_transition_to_cancelled_persists(
+    db_session: AsyncSession, seeded_ledger_id: int
+):
+    svc = KISMockLifecycleService(db_session)
+    summary = await svc.apply_lifecycle_transition(
+        ledger_id=seeded_ledger_id,
+        next_state="cancelled",
+        reason_code="broker_cancel_confirmed",
+        detail={"broker_cancel_confirmed": True},
+        dry_run=False,
+    )
+    assert summary["applied"] is True
+    assert summary["next_state"] == "cancelled"
+
+    row = await db_session.get(KISMockOrderLedger, seeded_ledger_id)
+    assert row.lifecycle_state == "cancelled"
+    assert row.reconciled_at is not None  # terminal → stamped
+
+
+@pytest.mark.asyncio
+async def test_get_by_order_no_returns_row(
+    db_session: AsyncSession, seeded_ledger_id: int
+):
+    seeded = await db_session.get(KISMockOrderLedger, seeded_ledger_id)
+    svc = KISMockLifecycleService(db_session)
+    row = await svc.get_by_order_no(order_no=seeded.order_no)
+    assert row is not None
+    assert row.id == seeded_ledger_id
+
+
+@pytest.mark.asyncio
+async def test_get_by_order_no_missing_returns_none(db_session: AsyncSession):
+    svc = KISMockLifecycleService(db_session)
+    assert await svc.get_by_order_no(order_no="NO-SUCH-ORDER") is None
+
+
+@pytest.mark.asyncio
+async def test_update_order_terms_persists(
+    db_session: AsyncSession, seeded_ledger_id: int
+):
+    svc = KISMockLifecycleService(db_session)
+    await svc.update_order_terms(
+        ledger_id=seeded_ledger_id,
+        price=Decimal("71000"),
+        quantity=Decimal("8"),
+        detail={"modified_via": "test"},
+    )
+    row = await db_session.get(KISMockOrderLedger, seeded_ledger_id)
+    assert row.price == Decimal("71000")
+    assert row.quantity == Decimal("8")
+    assert row.last_reconcile_detail == {"modified_via": "test"}
+
+
