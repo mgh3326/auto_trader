@@ -35,7 +35,7 @@
 - Modify: `app/schemas/investment_snapshots_mcp.py:35-45` (`EnsureBundleRequest`)
 - Test: `tests/services/action_report/snapshot_backed/test_collectors.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/services/action_report/snapshot_backed/test_collectors.py` 끝에 추가:
 
@@ -61,12 +61,12 @@ def test_ensure_bundle_request_carries_market_session_default_none():
     assert req.market_session is None
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k market_session_default -v`
 Expected: FAIL — `pydantic ValidationError` (extra="forbid") on `market_session`, or AttributeError.
 
-- [ ] **Step 3: Add the field to `CollectorRequest`**
+- [x] **Step 3: Add the field to `CollectorRequest`**
 
 `app/services/investment_snapshots/collectors.py`, `CollectorRequest` 클래스에 `user_id` 필드 뒤에 추가:
 
@@ -79,7 +79,7 @@ Expected: FAIL — `pydantic ValidationError` (extra="forbid") on `market_sessio
 
 > `CollectorRequest`는 lock된 enum 의존을 피하려고 `str | None`을 쓴다(소비 측에서 `== "nxt"` 비교만 함).
 
-- [ ] **Step 4: Add the field to `EnsureBundleRequest`**
+- [x] **Step 4: Add the field to `EnsureBundleRequest`**
 
 `app/schemas/investment_snapshots_mcp.py` 상단 import에 (이미 없으면) 추가:
 
@@ -93,12 +93,12 @@ from app.schemas.investment_reports import MarketSessionLiteral
     market_session: MarketSessionLiteral | None = None
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k market_session_default -v`
 Expected: PASS (2 passed).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/services/investment_snapshots/collectors.py app/schemas/investment_snapshots_mcp.py tests/services/action_report/snapshot_backed/test_collectors.py
@@ -116,7 +116,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `app/services/action_report/common/snapshot_bundle.py:501` (`CollectorRequest(...)`)
 - Test: `tests/services/action_report/snapshot_backed/test_collectors.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/services/action_report/snapshot_backed/test_collectors.py` 끝에 추가 (bundle 빌더가 CollectorRequest로 market_session을 전달하는지 fake collector로 검증):
 
@@ -178,12 +178,12 @@ async def test_snapshot_bundle_threads_market_session_into_collector_request():
 
 > 위 테스트의 `_collect_for_kind` / `_market_kind_policy` / `SnapshotKindPolicy` 경로 이름은 구현 시 `snapshot_bundle.py`의 실제 메서드명·헬퍼와 맞춘다(라인 ~478의 `_collect_for_kind` 시그니처 확인). 핵심 단언은 `captured["market_session"] == "nxt"` 하나다. 만약 kind-policy 구성이 과도하면, 더 단순히 `service` 인스턴스를 정식 생성하지 않고 `_collect_for_kind`에 필요한 최소 `kind_policy` 객체(`snapshot_kind="market"`, `collector_timeout=dt.timedelta(seconds=5)`)를 `types.SimpleNamespace`로 만들어 주입한다.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k threads_market_session -v`
 Expected: FAIL — `captured["market_session"]` is `None` (snapshot_bundle still builds CollectorRequest without market_session).
 
-- [ ] **Step 3: Thread market_session in `snapshot_bundle.py`**
+- [x] **Step 3: Thread market_session in `snapshot_bundle.py`**
 
 `app/services/action_report/common/snapshot_bundle.py`, `CollectorRequest(...)` 생성(라인 ~501)에 한 줄 추가:
 
@@ -199,7 +199,7 @@ Expected: FAIL — `captured["market_session"]` is `None` (snapshot_bundle still
         )
 ```
 
-- [ ] **Step 4: Thread market_session in `generator.py`**
+- [x] **Step 4: Thread market_session in `generator.py`**
 
 `app/services/action_report/snapshot_backed/generator.py`, `EnsureBundleRequest(...)` 생성(라인 ~335)에 한 줄 추가:
 
@@ -213,12 +213,12 @@ Expected: FAIL — `captured["market_session"]` is `None` (snapshot_bundle still
 
 > `...` 부분은 기존 인자를 그대로 두고 `market_session=request.market_session`만 추가한다. `request`(SnapshotBacked report request)는 이미 `market_session`을 보유(라인 854에서 사용 중).
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k threads_market_session -v`
 Expected: PASS (1 passed).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/services/action_report/common/snapshot_bundle.py app/services/action_report/snapshot_backed/generator.py tests/services/action_report/snapshot_backed/test_collectors.py
@@ -236,7 +236,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `app/services/action_report/snapshot_backed/collectors/registry.py:73-131` (`_KISDomesticQuoteOrderbookAdapter`); `:133-164` (`_UpbitQuoteOrderbookAdapter`)
 - Test: `tests/services/action_report/snapshot_backed/test_collectors.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/services/action_report/snapshot_backed/test_collectors.py` 끝에 추가:
 
@@ -273,12 +273,12 @@ async def test_kis_adapter_maps_nxt_venue_to_market_code_nx():
     assert raw_krx["venue"] == "krx"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k maps_nxt_venue -v`
 Expected: FAIL — `fetch_quote_orderbook()` got an unexpected keyword argument `venue`.
 
-- [ ] **Step 3: Extend the protocol signature**
+- [x] **Step 3: Extend the protocol signature**
 
 `app/services/action_report/snapshot_backed/collectors/symbol.py`, `_QuoteOrderbookClient` protocol의 메서드 시그니처를 교체:
 
@@ -288,7 +288,7 @@ Expected: FAIL — `fetch_quote_orderbook()` got an unexpected keyword argument 
     ) -> dict[str, Any]: ...
 ```
 
-- [ ] **Step 4: Add venue mapping to the KIS adapter**
+- [x] **Step 4: Add venue mapping to the KIS adapter**
 
 `app/services/action_report/snapshot_backed/collectors/registry.py`, `_KISDomesticQuoteOrderbookAdapter` 클래스 위에 상수 추가:
 
@@ -313,7 +313,7 @@ _VENUE_TO_KIS_MARKET_CODE = {"krx": "J", "nxt": "NX"}
 
 그리고 반환 dict의 `"venue": "krx"`를 `"venue": venue if venue in _VENUE_TO_KIS_MARKET_CODE else "krx",`로 교체. 나머지 로직(`_num`, depth, session, nxt_eligible)은 그대로 유지.
 
-- [ ] **Step 5: Make the Upbit adapter accept (and ignore) venue**
+- [x] **Step 5: Make the Upbit adapter accept (and ignore) venue**
 
 `app/services/action_report/snapshot_backed/collectors/registry.py`, `_UpbitQuoteOrderbookAdapter.fetch_quote_orderbook` 시그니처를 교체(venue 인자만 추가, 본문 불변):
 
@@ -326,12 +326,12 @@ _VENUE_TO_KIS_MARKET_CODE = {"krx": "J", "nxt": "NX"}
 
 > 기존 본문 첫 줄 앞에 `_ = venue`만 넣고 나머지는 유지.
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k maps_nxt_venue -v`
 Expected: PASS (1 passed).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/services/action_report/snapshot_backed/collectors/symbol.py app/services/action_report/snapshot_backed/collectors/registry.py tests/services/action_report/snapshot_backed/test_collectors.py
@@ -348,7 +348,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `app/services/action_report/snapshot_backed/collectors/symbol.py:115-128` (`_quote_enrichment_plan`); `:317` (`_maybe_enrich_quote` 호출)
 - Test: `tests/services/action_report/snapshot_backed/test_collectors.py` (신규 + 기존 fake/assert 갱신)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/services/action_report/snapshot_backed/test_collectors.py` 끝에 추가:
 
@@ -393,12 +393,12 @@ async def test_symbol_collector_switches_to_nxt_venue_when_nxt_session():
     assert payload["quote"]["session"] == "nxt"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k switches_to_nxt_venue -v`
 Expected: FAIL — `captured["venue"] == "krx"` (plan still hardcodes krx and call passes no venue).
 
-- [ ] **Step 3: Make the enrichment plan venue session-aware**
+- [x] **Step 3: Make the enrichment plan venue session-aware**
 
 `app/services/action_report/snapshot_backed/collectors/symbol.py`, `_quote_enrichment_plan`의 KR 분기를 교체:
 
@@ -414,7 +414,7 @@ Expected: FAIL — `captured["venue"] == "krx"` (plan still hardcodes krx and ca
         return None
 ```
 
-- [ ] **Step 4: Pass the plan venue into the client call**
+- [x] **Step 4: Pass the plan venue into the client call**
 
 `app/services/action_report/snapshot_backed/collectors/symbol.py`, `_maybe_enrich_quote` 내부의 client 호출(라인 ~317)을 교체:
 
@@ -425,7 +425,7 @@ Expected: FAIL — `captured["venue"] == "krx"` (plan still hardcodes krx and ca
 
 > 단, crypto 경로의 `default_venue`는 `"upbit"`이고 Upbit 어댑터는 venue를 무시하므로 안전하다.
 
-- [ ] **Step 5: Update existing symbol-collector test fakes for the new signature**
+- [x] **Step 5: Update existing symbol-collector test fakes for the new signature**
 
 기존 fake quote client들이 `fetch_quote_orderbook(symbol, venue=...)` 호출로 깨지지 않도록 시그니처에 `venue` 인자를 추가한다. 다음 위치를 모두 수정:
 
@@ -455,12 +455,12 @@ Expected: FAIL — `captured["venue"] == "krx"` (plan still hardcodes krx and ca
 
 > `assert_not_called()`를 쓰는 테스트(no-kis-live / no-user-id)는 호출되지 않으므로 시그니처 수정 불필요. 단, `quote_enrichment_cap` 테스트가 `_fake_quote_client_ok`를 재사용하면 위 시그니처 수정으로 자동 호환된다.
 
-- [ ] **Step 6: Run the full symbol-collector suite**
+- [x] **Step 6: Run the full symbol-collector suite**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k "symbol_collector or switches_to_nxt" -v`
 Expected: 모두 PASS (신규 nxt 테스트 + 갱신된 기존 테스트).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/services/action_report/snapshot_backed/collectors/symbol.py tests/services/action_report/snapshot_backed/test_collectors.py
@@ -477,7 +477,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `app/services/action_report/snapshot_backed/collectors/market.py:114-126` (`collect`, payload 구성)
 - Test: `tests/services/action_report/snapshot_backed/test_collectors.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/services/action_report/snapshot_backed/test_collectors.py` 끝에 추가:
 
@@ -515,12 +515,12 @@ async def test_market_collector_kr_regular_session_has_no_frozen_note():
     assert "index_session" not in payload
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k "index_frozen or regular_session_has_no_frozen" -v`
 Expected: FAIL — `payload["index_session"]` KeyError (nxt 주석 미구현).
 
-- [ ] **Step 3: Add the frozen annotation in `market.py`**
+- [x] **Step 3: Add the frozen annotation in `market.py`**
 
 `app/services/action_report/snapshot_backed/collectors/market.py`, `collect` 메서드의 `indices` 첨부 직후(라인 ~123, `payload["indices"] = indices` 다음)에 추가:
 
@@ -536,12 +536,12 @@ Expected: FAIL — `payload["index_session"]` KeyError (nxt 주석 미구현).
             )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -k "index_frozen or regular_session_has_no_frozen" -v`
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/services/action_report/snapshot_backed/collectors/market.py tests/services/action_report/snapshot_backed/test_collectors.py
@@ -556,7 +556,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Files:** 없음 (검증 전용)
 
-- [ ] **Step 1: Run the collectors + threading suites**
+- [x] **Step 1: Run the collectors + threading suites**
 
 Run:
 ```bash
@@ -564,7 +564,7 @@ uv run pytest tests/services/action_report/snapshot_backed/test_collectors.py -v
 ```
 Expected: 모두 PASS (신규 + 기존 회귀 없음).
 
-- [ ] **Step 2: Run the mutation/import-guard regression (ROB-278)**
+- [x] **Step 2: Run the mutation/import-guard regression (ROB-278)**
 
 Run:
 ```bash
@@ -572,7 +572,7 @@ uv run pytest tests/services/action_report/snapshot_backed/test_generator_safety
 ```
 Expected: 모두 PASS — symbol/registry/market 변경 후에도 order placement/cancel/modify surface import 없음.
 
-- [ ] **Step 3: Lint (CLAUDE.md 게이트)**
+- [x] **Step 3: Lint (CLAUDE.md 게이트)**
 
 Run:
 ```bash
@@ -581,7 +581,7 @@ uv run ruff format --check app/ tests/
 ```
 Expected: 둘 다 통과. (format 위반이면 `uv run ruff format app/ tests/` 후 재확인·커밋 — `ruff check`만으로는 lint job이 떨어진다.)
 
-- [ ] **Step 4: Push branch and open PR (base: main)**
+- [x] **Step 4: Push branch and open PR (base: main)**
 
 Run:
 ```bash
@@ -611,7 +611,7 @@ EOF
 ```
 Expected: PR URL 출력. (출력된 URL 확인 후에만 PR 번호 인용.)
 
-- [ ] **Step 5: ROB-394 handoff 코멘트 작성**
+- [x] **Step 5: ROB-394 handoff 코멘트 작성**
 
 ROB-394에 ROB-390 결과(PR 링크 + 검증 결과 + 비목표: NXT 지수 소스/Hermes frozen 해석)를 남기고, 다음 순서가 ROB-392임을 명시한다. (Linear `save_comment`.)
 
