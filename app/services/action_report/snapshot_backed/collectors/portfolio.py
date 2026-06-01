@@ -65,6 +65,7 @@ from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
 )
+from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,24 @@ def _reader_holding_to_dict(h: Holding) -> dict[str, Any]:
         "pending_sell_quantity": h.pendingSellQuantity,
         "source": h.source,
     }
+
+
+def _apply_kr_name_fallback(
+    rows: list[dict[str, Any]], name_map: dict[str, str]
+) -> None:
+    """Fill ``display_name`` for rows whose name is missing or equals the code.
+
+    In-place. A row is fixed only when ``name_map`` has a real name for its
+    ``ticker``; otherwise the code is kept (never fabricate a name).
+    """
+    for row in rows:
+        ticker = row.get("ticker")
+        if not isinstance(ticker, str):
+            continue
+        current = row.get("display_name")
+        is_code_as_name = not current or current == ticker
+        if is_code_as_name and ticker in name_map:
+            row["display_name"] = name_map[ticker]
 
 
 class PortfolioSnapshotCollector:
@@ -416,6 +435,30 @@ class PortfolioSnapshotCollector:
             primary_source = "kis"
             holdings_out = kis_holdings_dicts
             freshness = "fresh" if kis_fetch_status == "ok" else "partial"
+
+        # ROB-392 — resolve KR rows whose ``display_name`` is missing or equals
+        # the code (e.g. "035420") to the universe name. Best-effort: a lookup
+        # failure keeps the code (never fabricate a name). In-place on the dicts
+        # shared by ``holdings_out`` / ``reference_holdings`` → reflected below.
+        if request.market == "kr":
+            name_rows = [*holdings_out, *reference_holdings]
+            need = sorted(
+                {
+                    r["ticker"]
+                    for r in name_rows
+                    if isinstance(r.get("ticker"), str)
+                    and (
+                        not r.get("display_name")
+                        or r.get("display_name") == r["ticker"]
+                    )
+                }
+            )
+            if need:
+                try:
+                    name_map = await get_kr_names_by_symbols(need, db=self._session)
+                except Exception:  # noqa: BLE001 — name fallback is best-effort
+                    name_map = {}
+                _apply_kr_name_fallback(name_rows, name_map)
 
         payload = {
             "holdings": holdings_out,
