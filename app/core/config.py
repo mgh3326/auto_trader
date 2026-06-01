@@ -476,6 +476,8 @@ class Settings(BaseSettings):
     MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED: bool = False
     # ROB-405 Slice B — auto journal verdict. Default off.
     JOURNAL_VERDICT_AUTO_ENABLED: bool = False
+    # ROB-405 Slice C — journal counterfactual sync. Default off.
+    JOURNAL_COUNTERFACTUAL_ENABLED: bool = False
 
     # ROB-269 Phase 2 — gates BOTH the 4 MCP snapshot tools AND the
     # /trading/api/investment-snapshots/* GET router. Default off: code is
