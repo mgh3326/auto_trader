@@ -529,3 +529,27 @@ def test_quality_grade_demotes_when_candidate_universe_stale_no_cross_check() ->
     assert out["grade"] == "informational_only"
     assert out["external_cross_check_status"] == "unavailable"
 
+
+def test_quality_grade_candidate_universe_stale_rescued_by_cross_check() -> None:
+    # ROB-415 / ROB-323: a usable external cross-check still corroborates a stale
+    # candidate_universe, so the bundle stays high_confidence. Guards the demotion
+    # from over-firing when there IS fresh external evidence.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+            "symbol": {"status": "fresh"},
+            "invest_page": {"status": "fresh"},
+            "candidate_universe": {"status": "soft_stale"},
+            "toss_remote_debug": {"status": "fresh"},  # usable cross-check
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "high_confidence"
+    assert out["external_cross_check_status"] == "fresh"
+
+
