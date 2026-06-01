@@ -9,8 +9,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.review import KISMockOrderLedger
 import app.mcp_server.tooling.kis_mock_ledger as kml
+import app.mcp_server.tooling.orders_modify_cancel as omc
+from app.models.review import KISMockOrderLedger
 
 
 async def _seed(db_session: AsyncSession, **overrides) -> KISMockOrderLedger:
@@ -66,9 +67,6 @@ async def test_mark_cancelled_sets_state_and_flag(db_session: AsyncSession):
     await db_session.refresh(row)
     assert row.lifecycle_state == "cancelled"
     assert row.last_reconcile_detail["broker_cancel_confirmed"] is False
-
-
-import app.mcp_server.tooling.orders_modify_cancel as omc
 
 
 class _FakeKisCancelOK:
@@ -151,9 +149,7 @@ async def test_mock_cancel_other_error_surfaces_no_soft_cancel(
 
 
 @pytest.mark.asyncio
-async def test_mock_cancel_unknown_order_fails(
-    db_session: AsyncSession, monkeypatch
-):
+async def test_mock_cancel_unknown_order_fails(db_session: AsyncSession, monkeypatch):
     monkeypatch.setattr(
         omc, "_create_kis_client", lambda *, is_mock: _FakeKisCancelOK()
     )
@@ -189,8 +185,13 @@ async def test_mock_modify_success_updates_ledger(
     monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: fake)
 
     result = await omc._modify_kis_domestic(
-        row.order_no, "005930", "equity_kr",
-        new_price=71000.0, new_quantity=8.0, dry_run=False, is_mock=True,
+        row.order_no,
+        "005930",
+        "equity_kr",
+        new_price=71000.0,
+        new_quantity=8.0,
+        dry_run=False,
+        is_mock=True,
     )
 
     assert result["success"] is True
@@ -210,8 +211,13 @@ async def test_mock_modify_unsupported_fails_closed(
     )
 
     result = await omc._modify_kis_domestic(
-        row.order_no, "005930", "equity_kr",
-        new_price=71000.0, new_quantity=None, dry_run=False, is_mock=True,
+        row.order_no,
+        "005930",
+        "equity_kr",
+        new_price=71000.0,
+        new_quantity=None,
+        dry_run=False,
+        is_mock=True,
     )
 
     assert result["success"] is False
@@ -219,3 +225,22 @@ async def test_mock_modify_unsupported_fails_closed(
     await db_session.refresh(row)
     assert row.lifecycle_state == "accepted"  # unchanged, not soft-modified
     assert row.price == Decimal("70000")  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_live_cancel_still_uses_inquire(monkeypatch):
+    """is_mock=False must keep using inquire_korea_orders (unchanged path)."""
+    called = {"inquire": False}
+
+    class _FakeLive:
+        async def inquire_korea_orders(self, *a, **k):
+            called["inquire"] = True
+            return []
+
+        async def cancel_korea_order(self, **kwargs):
+            return {"odno": "L-1", "ord_tmd": "0900"}
+
+    monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: _FakeLive())
+    # symbol 미제공 → live 경로는 inquire로 심볼 조회 시도
+    await omc._cancel_kis_domestic("LIVE-1", None, is_mock=False)
+    assert called["inquire"] is True
