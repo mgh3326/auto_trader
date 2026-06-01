@@ -48,9 +48,9 @@ class WatchPolicyInput:
 def _atr_pct(inp: WatchPolicyInput) -> Decimal:
     """ATR(14)/reference_price, floored at VOL_FLOOR. Inputs are guaranteed
     long enough by the data_gap gate (LOOKBACK_DAYS > ATR_PERIOD)."""
-    highs = inp.daily_highs[-(ATR_PERIOD + 1):]
-    lows = inp.daily_lows[-(ATR_PERIOD + 1):]
-    closes = inp.daily_closes[-(ATR_PERIOD + 1):]
+    highs = inp.daily_highs[-(ATR_PERIOD + 1) :]
+    lows = inp.daily_lows[-(ATR_PERIOD + 1) :]
+    closes = inp.daily_closes[-(ATR_PERIOD + 1) :]
     trs: list[Decimal] = []
     for i in range(1, len(highs)):
         prev_close = closes[i - 1]

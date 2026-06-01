@@ -647,6 +647,7 @@ async def test_context_get_draft_policy_advisory_only(
     )
     assert len(ctx_unknown["prior_reports"]) == 0
 
+
 @pytest.fixture
 def _stub_market_data(monkeypatch):
     """Stub market_data so the watch-recommend tool needs no live network and
@@ -664,9 +665,16 @@ def _stub_market_data(monkeypatch):
 
         return [
             Candle(
-                symbol=symbol, market=market, source="stub", period="day",
-                timestamp=_dt.datetime(2026, 5, d + 1, tzinfo=_dt.timezone.utc),
-                open=100.0, high=102.0, low=98.0, close=100.0, volume=1.0,
+                symbol=symbol,
+                market=market,
+                source="stub",
+                period="day",
+                timestamp=_dt.datetime(2026, 5, d + 1, tzinfo=_dt.UTC),
+                open=100.0,
+                high=102.0,
+                low=98.0,
+                close=100.0,
+                volume=1.0,
             )
             for d in range(25)
         ]
@@ -714,7 +722,9 @@ async def test_watch_recommend_commit_rejected_for_non_watch_verdict(
     session: AsyncSession, _stub_market_data
 ) -> None:
     item = dict(_review_watch_item_dict())
-    item["evidence_snapshot"] = {"action_verdict": "buy_review"}  # not watch_only/limit_wait
+    item["evidence_snapshot"] = {
+        "action_verdict": "buy_review"
+    }  # not watch_only/limit_wait
     created = await investment_report_create_impl(items=[item], **_create_kwargs())
     bundle = await investment_report_get_impl(created["report"]["report_uuid"])
     item_uuid = bundle["items"][0]["item_uuid"]

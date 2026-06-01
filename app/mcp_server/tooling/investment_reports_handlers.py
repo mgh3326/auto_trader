@@ -9,22 +9,14 @@ that surface.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import ValidationError
 
 from app.core.db import AsyncSessionLocal
-from datetime import datetime, timezone
-from decimal import Decimal
-
-from app.services import market_data as market_data_service
-from app.services.investment_reports.watch_recommendation_policy import (
-    ATR_PERIOD,
-    LOOKBACK_DAYS,
-    WatchPolicyInput,
-    compute_watch_recommendation,
-)
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
@@ -42,6 +34,7 @@ from app.schemas.investment_reports import (
     PreviousReportContextResponse,
     RecordDecisionRequest,
 )
+from app.services import market_data as market_data_service
 from app.services.investment_reports.decisions import (
     InvestmentReportDecisionService,
 )
@@ -53,6 +46,12 @@ from app.services.investment_reports.query_service import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
+from app.services.investment_reports.watch_recommendation_policy import (
+    ATR_PERIOD,
+    LOOKBACK_DAYS,
+    WatchPolicyInput,
+    compute_watch_recommendation,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -495,7 +494,7 @@ async def investment_watch_recommend_impl(
                 daily_lows=lows,
                 daily_closes=closes,
             ),
-            computed_at=datetime.now(timezone.utc),
+            computed_at=datetime.now(UTC),
             valid_until=valid_until,
         )
         rec_json = payload.model_dump(mode="json")
