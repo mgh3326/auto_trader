@@ -64,7 +64,9 @@ def _buy_zones(price: float, tech: TechnicalData | None) -> tuple[PriceLevel, ..
         return ()
     zones: list[PriceLevel] = []
     if tech.bb_lower is not None and tech.bb_lower < price:
-        zones.append(PriceLevel(float(tech.bb_lower), "bollinger_lower", "BB lower band"))
+        zones.append(
+            PriceLevel(float(tech.bb_lower), "bollinger_lower", "BB lower band")
+        )
     for s in tech.supports:
         if s < price:
             zones.append(PriceLevel(float(s), "support", f"Support at {s}"))

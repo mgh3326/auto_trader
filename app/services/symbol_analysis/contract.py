@@ -8,17 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Generic, Protocol, TypeVar
+from typing import Protocol
 from uuid import UUID
-
-T = TypeVar("T")
 
 # freshness.overall 허용값 (freshness.py 가 파생한다).
 FRESHNESS_OVERALL: tuple[str, ...] = ("fresh", "partial", "stale", "unavailable")
 
 
 @dataclass(frozen=True)
-class FieldBlock(Generic[T]):
+class FieldBlock[T]:
     """카테고리 값 + 출처/신선도. value=None 이면 부재."""
 
     value: T | None

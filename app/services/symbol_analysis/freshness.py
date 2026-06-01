@@ -43,8 +43,7 @@ def derive_freshness(blocks: dict[str, FieldBlock]) -> Freshness:
         return Freshness(overall="unavailable", stale_fields=stale_fields)
 
     core_stale = any(
-        cat in CORE_CATEGORIES
-        and (blocks[cat].value is None or blocks[cat].is_stale)
+        cat in CORE_CATEGORIES and (blocks[cat].value is None or blocks[cat].is_stale)
         for cat in blocks
     )
     if core_stale:

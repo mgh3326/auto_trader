@@ -4,18 +4,14 @@ from datetime import datetime
 import pytest
 
 from app.services.symbol_analysis.contract import (
-    ConsensusData,
     DerivedBlock,
     FieldBlock,
-    FlowData,
     Freshness,
     GetSymbolAnalysis,
     PriceData,
     PriceLevel,
     Provenance,
     SymbolAnalysis,
-    TechnicalData,
-    ValuationData,
 )
 
 
@@ -69,7 +65,11 @@ def test_symbol_analysis_construction_and_frozen():
 @pytest.mark.unit
 def test_price_level_holds_price_kind_reasoning():
     level = PriceLevel(price=950.0, kind="support", reasoning="Support at 950")
-    assert (level.price, level.kind, level.reasoning) == (950.0, "support", "Support at 950")
+    assert (level.price, level.kind, level.reasoning) == (
+        950.0,
+        "support",
+        "Support at 950",
+    )
 
 
 @pytest.mark.unit

@@ -21,11 +21,30 @@ def _fresh(value, source):
 
 def _blocks(*, price_stale=False, consensus_stale=False, valuation_stale=False):
     return {
-        "price": FieldBlock(PriceData(1000.0), "kis_live", datetime(2026, 6, 1, 9, 30), price_stale),
-        "consensus": FieldBlock(ConsensusData(buy=8, total=10), "kis_live", datetime(2026, 6, 1, 8, 0), consensus_stale),
-        "technicals": FieldBlock(TechnicalData(rsi14=40.0), "kis_live", datetime(2026, 6, 1, 8, 0), False),
-        "valuation": FieldBlock(ValuationData(per=12.0), "stock_info", datetime(2026, 6, 1, 8, 0), valuation_stale),
-        "flow": FieldBlock(FlowData(foreign_net=1.0), "investor_flow_snapshots", datetime(2026, 6, 1, 8, 0), False),
+        "price": FieldBlock(
+            PriceData(1000.0), "kis_live", datetime(2026, 6, 1, 9, 30), price_stale
+        ),
+        "consensus": FieldBlock(
+            ConsensusData(buy=8, total=10),
+            "kis_live",
+            datetime(2026, 6, 1, 8, 0),
+            consensus_stale,
+        ),
+        "technicals": FieldBlock(
+            TechnicalData(rsi14=40.0), "kis_live", datetime(2026, 6, 1, 8, 0), False
+        ),
+        "valuation": FieldBlock(
+            ValuationData(per=12.0),
+            "stock_info",
+            datetime(2026, 6, 1, 8, 0),
+            valuation_stale,
+        ),
+        "flow": FieldBlock(
+            FlowData(foreign_net=1.0),
+            "investor_flow_snapshots",
+            datetime(2026, 6, 1, 8, 0),
+            False,
+        ),
     }
 
 
@@ -33,7 +52,9 @@ def _blocks(*, price_stale=False, consensus_stale=False, valuation_stale=False):
 def test_prev_day_close_during_regular_session_is_stale_price():
     # ROB-396 증상2 회귀: 전일종가(as_of 날짜 < trading_date)는 정규장에서 stale.
     prev_close_as_of = datetime(2026, 5, 30, 15, 30)
-    assert compute_is_stale("price", prev_close_as_of, trading_date=TRADING_DATE) is True
+    assert (
+        compute_is_stale("price", prev_close_as_of, trading_date=TRADING_DATE) is True
+    )
     today_fill = datetime(2026, 6, 1, 9, 30)
     assert compute_is_stale("price", today_fill, trading_date=TRADING_DATE) is False
 

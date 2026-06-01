@@ -22,7 +22,9 @@ def _bullish_consensus():
 def test_action_always_in_verdicts_vocab():
     d = derive_recommendation(
         price=_block(PriceData(1000.0)),
-        technicals=_block(TechnicalData(rsi14=25.0, supports=(950.0,), resistances=(1100.0,))),
+        technicals=_block(
+            TechnicalData(rsi14=25.0, supports=(950.0,), resistances=(1100.0,))
+        ),
         consensus=_block(_bullish_consensus()),
     )
     assert d.action in VERDICTS
@@ -33,18 +35,21 @@ def test_action_always_in_verdicts_vocab():
 def test_deterministic_same_input_same_output():
     kwargs = {
         "price": _block(PriceData(1000.0)),
-        "technicals": _block(TechnicalData(rsi14=25.0, supports=(950.0, 900.0), resistances=(1100.0,))),
+        "technicals": _block(
+            TechnicalData(rsi14=25.0, supports=(950.0, 900.0), resistances=(1100.0,))
+        ),
         "consensus": _block(_bullish_consensus()),
     }
     assert derive_recommendation(**kwargs) == derive_recommendation(**kwargs)
-
 
 
 @pytest.mark.unit
 def test_bullish_inputs_yield_buy():
     d = derive_recommendation(
         price=_block(PriceData(1000.0)),
-        technicals=_block(TechnicalData(rsi14=25.0, supports=(950.0,), resistances=(1100.0,))),
+        technicals=_block(
+            TechnicalData(rsi14=25.0, supports=(950.0,), resistances=(1100.0,))
+        ),
         consensus=_block(_bullish_consensus()),
     )
     assert d.action == "buy"
