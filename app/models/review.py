@@ -738,3 +738,36 @@ class TradeJournalReview(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class TradeJournalCounterfactual(Base):
+    """ROB-405 Slice C — trigger vs actual fill vs no-action price for a
+    watch-driven mock roundtrip. Quantifies the rule's effect. One row per
+    correlation_id (idempotent)."""
+
+    __tablename__ = "trade_journal_counterfactuals"
+    __table_args__ = (
+        UniqueConstraint(
+            "correlation_id", name="uq_trade_journal_counterfactuals_correlation_id"
+        ),
+        Index("ix_trade_journal_counterfactuals_journal_id", "journal_id"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    journal_id: Mapped[int] = mapped_column(
+        ForeignKey("review.trade_journals.id", ondelete="CASCADE"), nullable=False
+    )
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    triggered_value: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    actual_fill_price: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    no_action_price: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    no_action_as_of: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    fill_vs_trigger_pct: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    no_action_vs_fill_pct: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
