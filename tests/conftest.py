@@ -720,6 +720,49 @@ async def db_session():
                         ")"
                     )
                 )
+                # ROB-321 — add missing scalping columns if they are not present
+                # on review.kis_mock_order_ledger in persistent test DB.
+                for col_name, col_type in (
+                    ("correlation_id", "TEXT"),
+                    ("scalping_role", "TEXT"),
+                    ("exit_reason", "TEXT"),
+                    ("gross_pnl", "NUMERIC(20, 4)"),
+                    ("net_pnl", "NUMERIC(20, 4)"),
+                ):
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.kis_mock_order_ledger "
+                            f"ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                        )
+                    )
+                # ROB-406 — extend kis_mock_order_ledger.lifecycle_state CHECK
+                # to include 'cancelled'. create_all is no-op on the persistent
+                # test table, so drop+recreate here; canonical schema lives in
+                # migration <rev>_rob406_kis_mock_cancelled_state.py.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.kis_mock_order_ledger "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "kis_mock_ledger_lifecycle_state_allowed"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.kis_mock_order_ledger "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.kis_mock_order_ledger "
+                        "ADD CONSTRAINT ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10 "
+                        "CHECK (lifecycle_state IN ("
+                        "'planned','previewed','submitted','accepted','pending',"
+                        "'fill','reconciled','stale','failed','anomaly','cancelled'"
+                        "))"
+                    )
+                )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so
