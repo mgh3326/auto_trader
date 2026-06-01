@@ -339,6 +339,7 @@ class SnapshotBackedReportGenerator:
                 policy_version=request.policy_version,
                 mode="ensure_fresh",
                 symbols=derivation.symbols or None,
+                market_session=request.market_session,
                 candidate_limit=request.candidate_limit,
                 requested_by=request.requested_by,
                 user_id=request.user_id,

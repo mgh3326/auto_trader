@@ -2365,3 +2365,61 @@ def test_ensure_bundle_request_carries_market_session_default_none():
     assert req.market_session is None
 
 
+@pytest.mark.asyncio
+async def test_snapshot_bundle_threads_market_session_into_collector_request():
+    import datetime as dt
+    import types
+
+    from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
+    from app.services.action_report.common.snapshot_bundle import (
+        SnapshotBundleEnsureService,
+    )
+    from app.services.investment_snapshots.collectors import (
+        CollectorRequest,
+        SnapshotCollectResult,
+    )
+
+    captured: dict = {}
+
+    class _CapturingCollector:
+        snapshot_kind = "market"
+
+        async def collect(self, request: CollectorRequest):
+            captured["market_session"] = request.market_session
+            return [
+                SnapshotCollectResult(
+                    snapshot_kind="market",
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    payload={"ok": True},
+                    origin="auto_trader_db",
+                    as_of=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+                    freshness_status="fresh",
+                    coverage={},
+                )
+            ]
+
+    service = SnapshotBundleEnsureService.__new__(SnapshotBundleEnsureService)
+    service._collectors = {"market": _CapturingCollector()}
+
+    kind_policy = types.SimpleNamespace(
+        snapshot_kind="market",
+        collector_timeout=dt.timedelta(seconds=5),
+    )
+
+    results, warnings, attempted = await service._collect_for_kind(
+        kind_policy=kind_policy,
+        request=EnsureBundleRequest(
+            market="kr",
+            account_scope="kis_live",
+            market_session="nxt",
+            purpose="testing",
+            policy_version="v1",
+        ),
+        policy_snapshot={},
+    )
+    assert attempted is True
+    assert captured["market_session"] == "nxt"
+
+
+
