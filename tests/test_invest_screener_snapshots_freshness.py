@@ -183,3 +183,32 @@ def test_format_kst_as_of_label_with_computed_at_uses_hhmm() -> None:
         computed_at=dt.datetime(2026, 5, 20, 0, 35, tzinfo=dt.UTC),  # 09:35 KST
     )
     assert label == "2026.05.20 09:35 기준"
+
+
+def test_classify_momentum_freshness_fresh_when_latest_matches_baseline():
+    from app.services.invest_screener_snapshots.freshness import (
+        classify_momentum_freshness,
+        expected_kr_baseline_date,
+    )
+
+    now = dt.datetime(2026, 6, 1, 9, 0, tzinfo=dt.UTC)  # 18:00 KST Mon
+    expected = expected_kr_baseline_date(now)
+    state, days_stale = classify_momentum_freshness(
+        latest_trading_date=expected, now=now
+    )
+    assert state == "fresh"
+    assert days_stale == 0
+
+
+def test_classify_momentum_freshness_stale_with_days_elapsed():
+    from app.services.invest_screener_snapshots.freshness import (
+        classify_momentum_freshness,
+        expected_kr_baseline_date,
+    )
+
+    now = dt.datetime(2026, 6, 1, 9, 0, tzinfo=dt.UTC)
+    expected = expected_kr_baseline_date(now)
+    old = expected - dt.timedelta(days=14)
+    state, days_stale = classify_momentum_freshness(latest_trading_date=old, now=now)
+    assert state == "stale"
+    assert days_stale == 14

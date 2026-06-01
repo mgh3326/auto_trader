@@ -342,6 +342,23 @@ def classify_investor_flow_partition(
     return "fresh"
 
 
+def classify_momentum_freshness(
+    *, latest_trading_date: dt.date, now: dt.datetime
+) -> tuple[DataState, int]:
+    """Classify a KR momentum partition by its trading date.
+
+    ``fresh`` when ``latest_trading_date`` is at or after the expected KR
+    baseline date for ``now``; otherwise ``stale``. The second tuple element is
+    ``days_stale`` — calendar days the partition lags the expected baseline
+    (``0`` when fresh). Callers must handle the empty-rows -> ``"missing"`` case
+    before calling this; this helper never returns ``"missing"``.
+    """
+    expected = expected_kr_baseline_date(now)
+    if latest_trading_date >= expected:
+        return "fresh", 0
+    return "stale", (expected - latest_trading_date).days
+
+
 def compute_overall_state(
     *,
     primary_state: DataState,
