@@ -718,6 +718,30 @@ async def _execute_and_record(
             holdings_baseline_qty=kis_mock_baseline_qty,
         )
 
+    # ROB-395: live KR orders record accepted-only to the live ledger; fills,
+    # journals, and realized_pnl are applied later by kis_live_reconcile_orders
+    # from order-id-keyed broker evidence. US/crypto live keep the legacy path.
+    if not is_mock and market_type == "equity_kr":
+        from app.mcp_server.tooling.kis_live_ledger import _record_kis_live_order
+
+        return await _record_kis_live_order(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+            side=side,
+            order_type=order_type,
+            dry_run_result=dry_run_result,
+            execution_result=execution_result,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+        )
+
     # Record phase: fills + journals
     record_result = await _record_fill_and_journals(
         side=side,

@@ -710,7 +710,16 @@ async def cancel_order_impl(
         if market_type == "crypto":
             return await _cancel_upbit(order_id)
         if market_type == "equity_kr":
-            return await _cancel_kis_domestic(order_id, symbol, is_mock=is_mock)
+            result = await _cancel_kis_domestic(order_id, symbol, is_mock=is_mock)
+            # ROB-395: keep the live ledger truthful — a cancelled live order must
+            # not stay accepted/pending (otherwise reconcile could still act on it).
+            if not is_mock and result.get("success"):
+                from app.mcp_server.tooling.kis_live_ledger import (
+                    _mark_ledger_cancelled,
+                )
+
+                await _mark_ledger_cancelled(order_id)
+            return result
         if market_type == "equity_us":
             return await _cancel_kis_overseas(order_id, symbol, is_mock=is_mock)
         return {
@@ -1157,7 +1166,7 @@ async def modify_order_impl(
             dry_run,
         )
     if market_type == "equity_kr":
-        return await _modify_kis_domestic(
+        result = await _modify_kis_domestic(
             order_id,
             normalized_symbol,
             market_type,
@@ -1166,6 +1175,20 @@ async def modify_order_impl(
             dry_run,
             is_mock=is_mock,
         )
+        # ROB-395: KIS 정정주문 issues a new odno; re-point the live ledger row so
+        # reconcile tracks the replacement instead of orphaning it.
+        if not is_mock and result.get("success"):
+            from app.mcp_server.tooling.kis_live_ledger import (
+                _repoint_ledger_after_modify,
+            )
+
+            await _repoint_ledger_after_modify(
+                old_order_no=order_id,
+                new_order_no=result.get("new_order_id"),
+                new_price=new_price,
+                new_quantity=new_quantity,
+            )
+        return result
     if market_type == "equity_us":
         return await _modify_kis_overseas(
             order_id,
