@@ -175,3 +175,55 @@ async def test_reconcile_cancelled_no_journal():
     assert after.journal_id is None
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_live_reconcile_impl_dry_run_empty():
+    from app.mcp_server.tooling import live_order_ledger as ll
+
+    out = await ll.live_reconcile_orders_impl(dry_run=True, limit=10)
+    assert out["success"] is True
+    assert out["dry_run"] is True
+    assert out["counts"] == {}
+    assert out["reconciled"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_record_live_order_inline_confirm_books_on_done():
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence, FillVerdict,
+    )
+
+    filled = FillEvidence(FillVerdict.FILLED, Decimal("0.01"), Decimal("50000000"), None, "filled", "")
+
+    class _Adapter:
+        broker = "upbit"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=222)),
+        patch.object(ll, "_create_trade_journal_for_buy",
+                     new=AsyncMock(return_value={"journal_created": True, "journal_id": 12})),
+        patch.object(ll, "_link_journal_to_fill", new=AsyncMock()),
+    ):
+        out = await ll._record_live_order(
+            broker="upbit", account_scope="upbit_live", market="crypto",
+            normalized_symbol="BTC", exchange=None, market_symbol="KRW-BTC",
+            side="buy", order_kind="market", currency="KRW",
+            order_no="U-INLINE-1", order_time=None, rt_cd="0", response_message=None,
+            dry_run_result={"price": 0.0, "quantity": 0.01, "estimated_value": 500000.0},
+            execution_result={"uuid": "U-INLINE-1"},
+            reason=None, exit_reason=None, thesis="t", strategy="s",
+            target_price=None, stop_loss=None, min_hold_days=None, notes=None,
+            indicators_snapshot=None, inline_confirm=True,
+        )
+    assert out["fill_recorded"] is True
+    assert out["inline_reconcile"]["action"] == "booked"
+
+
+
+
