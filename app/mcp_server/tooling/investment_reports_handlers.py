@@ -388,12 +388,16 @@ async def investment_report_activate_watch_impl(
     item_uuid: str,
     actor: str,
     idempotency_key: str | None = None,
+    watch_condition: dict | None = None,
+    valid_until: str | None = None,
 ) -> dict:
     request = ActivateWatchRequest.model_validate(
         {
             "item_uuid": item_uuid,
             "actor": actor,
             "idempotency_key": idempotency_key,
+            "watch_condition": watch_condition,
+            "valid_until": valid_until,
         }
     )
     async with AsyncSessionLocal() as db:
@@ -740,7 +744,11 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         name="investment_report_activate_watch",
         description=(
             "Activate an approved watch item into investment_watch_alerts "
-            "as an immutable activation snapshot. Idempotent per source item."
+            "as an immutable activation snapshot. Idempotent per source item. "
+            "For operation='review' watches created without a condition, pass "
+            "watch_condition (metric/operator/threshold) and valid_until to arm "
+            "them; activating such a watch without a condition fails with an "
+            "actionable error rather than 'corrupt state'."
         ),
     )(investment_report_activate_watch_impl)
     mcp.tool(
