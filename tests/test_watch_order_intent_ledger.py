@@ -13,23 +13,23 @@ from app.models.review import WatchOrderIntentLedger
 
 
 def _row(**over):
-    base = dict(
-        correlation_id=f"corr-{uuid4().hex}",
-        idempotency_key=f"idem-{uuid4().hex}",
-        market="kr",
-        target_kind="asset",
-        symbol="005930",
-        condition_type="below",
-        threshold=Decimal("55000"),
-        threshold_key="55000",
-        action="auto_execute_mock",
-        side="buy",
-        account_mode="kis_mock",
-        execution_source="watch",
-        lifecycle_state="previewed",
-        preview_line={"symbol": "005930", "side": "buy"},
-        kst_date="2026-06-01",
-    )
+    base = {
+        "correlation_id": f"corr-{uuid4().hex}",
+        "idempotency_key": f"idem-{uuid4().hex}",
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "condition_type": "below",
+        "threshold": Decimal("55000"),
+        "threshold_key": "55000",
+        "action": "auto_execute_mock",
+        "side": "buy",
+        "account_mode": "kis_mock",
+        "execution_source": "watch",
+        "lifecycle_state": "previewed",
+        "preview_line": {"symbol": "005930", "side": "buy"},
+        "kst_date": "2026-06-01",
+    }
     base.update(over)
     return WatchOrderIntentLedger(**base)
 

@@ -8,8 +8,9 @@ live/non-mock accounts before any insert. Default off via gate flag.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 

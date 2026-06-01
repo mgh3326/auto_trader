@@ -363,4 +363,3 @@ def test_auto_execute_mock_action_mode_flag_and_literal():
         metric="price", operator="below", threshold="5", action_mode="auto_execute_mock"
     )
     assert p.action_mode == "auto_execute_mock"
-

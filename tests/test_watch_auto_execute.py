@@ -74,7 +74,10 @@ async def test_global_flag_off_blocks(db_session: AsyncSession, monkeypatch):
     alert = _alert(_good_max_action())
     cid = f"corr-{uuid.uuid4().hex}"
     outcome = await watch_auto_execute.maybe_auto_execute(
-        db_session, alert=alert, correlation_id=cid, kst_date="2026-06-01",
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
         place_order_fn=spy,
     )
     assert outcome["executed"] is False
@@ -93,7 +96,10 @@ async def test_happy_path_places_order(db_session: AsyncSession, monkeypatch):
     alert = _alert(_good_max_action())
     cid = f"corr-{uuid.uuid4().hex}"
     outcome = await watch_auto_execute.maybe_auto_execute(
-        db_session, alert=alert, correlation_id=cid, kst_date="2026-06-01",
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
         place_order_fn=spy,
     )
     assert outcome["executed"] is True
@@ -117,11 +123,17 @@ async def test_idempotent_on_duplicate_correlation_id(db_session, monkeypatch):
     alert = _alert(_good_max_action())
     cid = f"corr-{uuid.uuid4().hex}"
     await watch_auto_execute.maybe_auto_execute(
-        db_session, alert=alert, correlation_id=cid, kst_date="2026-06-01",
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
         place_order_fn=spy,
     )
     second = await watch_auto_execute.maybe_auto_execute(
-        db_session, alert=alert, correlation_id=cid, kst_date="2026-06-01",
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
         place_order_fn=spy,
     )
     assert second["executed"] is False
@@ -138,7 +150,10 @@ async def test_live_account_blocked_no_order(db_session, monkeypatch):
     alert = _alert({**_good_max_action(), "account_mode": "kis_live"})
     cid = f"corr-{uuid.uuid4().hex}"
     outcome = await watch_auto_execute.maybe_auto_execute(
-        db_session, alert=alert, correlation_id=cid, kst_date="2026-06-01",
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
         place_order_fn=spy,
     )
     assert outcome["executed"] is False
@@ -159,7 +174,10 @@ async def test_missing_limit_price_blocks(db_session, monkeypatch):
     alert = _alert(ma)
     cid = f"corr-{uuid.uuid4().hex}"
     outcome = await watch_auto_execute.maybe_auto_execute(
-        db_session, alert=alert, correlation_id=cid, kst_date="2026-06-01",
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
         place_order_fn=spy,
     )
     assert outcome["executed"] is False

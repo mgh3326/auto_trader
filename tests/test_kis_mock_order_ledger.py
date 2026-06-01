@@ -740,10 +740,12 @@ async def test_shadow_exposure_unknown_on_db_error(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
     from app.mcp_server.tooling import order_execution
     from app.models.review import KISMockOrderLedger
-    from sqlalchemy import select
-    from unittest.mock import AsyncMock
 
     monkeypatch.setattr(
         "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
@@ -817,4 +819,3 @@ async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
         )
     ).scalar_one_or_none()
     assert row is not None
-

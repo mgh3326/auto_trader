@@ -595,9 +595,7 @@ async def test_scan_calls_auto_execute_for_auto_execute_mock(
         captured.append({"symbol": alert.symbol, "cid": correlation_id})
         return {"executed": False, "skipped": "stubbed"}
 
-    monkeypatch.setattr(
-        scanner_module, "maybe_auto_execute", _fake_maybe_auto_execute
-    )
+    monkeypatch.setattr(scanner_module, "maybe_auto_execute", _fake_maybe_auto_execute)
 
     stub = _StubHermesClient()
     scanner = InvestmentWatchScanner(hermes_client=stub)
@@ -606,4 +604,3 @@ async def test_scan_calls_auto_execute_for_auto_execute_mock(
     assert summary["triggered"] == 1, summary
     assert len(captured) == 1, captured
     assert captured[0]["symbol"] == "005930"
-
