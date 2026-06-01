@@ -569,6 +569,3 @@ def test_quality_grade_candidate_universe_fresh_stays_high() -> None:
         bundle_status="partial",
     )
     assert out["grade"] == "high_confidence"
-
-
-
