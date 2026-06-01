@@ -1557,23 +1557,14 @@ class TestScreenStocksFundamentalsExpansion:
         assert "results" in result
 
     @pytest.mark.asyncio
-    async def test_kr_sort_by_trade_amount_raises_error(
-        self, mock_krx_stocks, monkeypatch
-    ):
-        async def mock_fetch_stock_all_cached(market):
-            return mock_krx_stocks
-
-        monkeypatch.setattr(
-            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
-        )
-
+    async def test_us_sort_by_trade_amount_raises_error(self):
         tools = build_tools()
 
         with pytest.raises(
-            ValueError, match=".*trade_amount.*only supported for crypto.*"
+            ValueError, match=".*trade_amount.*supported for KR and crypto.*"
         ):
             await tools["screen_stocks"](
-                market="kr",
+                market="us",
                 asset_type="stock",
                 category=None,
                 min_market_cap=None,
