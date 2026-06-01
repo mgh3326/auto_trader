@@ -50,6 +50,7 @@ from app.services.hermes_client import (
 )
 from app.services.investment_reports.idempotency import watch_event_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.investment_reports.watch_auto_execute import maybe_auto_execute
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ _OUTCOME_BY_ACTION_MODE: dict[str, str] = {
     "notify_only": "notified",
     "preview_only": "preview_attached",
     "approval_required": "review_required",
+    "auto_execute_mock": "executed",
 }
 
 
@@ -185,6 +187,20 @@ class InvestmentWatchScanner:
                 if is_first_attempt:
                     stats.triggered += 1
                     stats.details.append(emission["detail"])
+                    if alert.action_mode == "auto_execute_mock":
+                        payload = emission["payload"]
+                        try:
+                            await maybe_auto_execute(
+                                db,
+                                alert=alert,
+                                correlation_id=payload.correlation_id,
+                                kst_date=payload.kst_date,
+                            )
+                        except Exception:  # noqa: BLE001 - never kill the scan loop
+                            logger.exception(
+                                "auto_execute_mock failed for alert %s",
+                                emission["alert_uuid"],
+                            )
                 else:
                     # No new event row this iteration — we found an
                     # existing pending/failed/skipped row from earlier

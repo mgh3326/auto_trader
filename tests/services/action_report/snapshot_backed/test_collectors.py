@@ -1529,6 +1529,178 @@ async def test_symbol_collector_query_failure_is_fail_open():
     assert results[0].freshness_status == "unavailable"
 
 
+def _us_universe_row(
+    symbol: str,
+    *,
+    name_kr: str = "",
+    name_en: str = "",
+    exchange: str = "NASD",
+    is_active: bool = True,
+):
+    class _Row:
+        def __init__(self) -> None:
+            self.symbol = symbol
+            self.name_kr = name_kr
+            self.name_en = name_en
+            self.exchange = exchange
+            self.is_active = is_active
+
+    return _Row()
+
+
+def _two_stage_session(stock_rows: list[Any], universe_rows: list[Any]) -> MagicMock:
+    """Session whose 1st execute() returns stock_info rows, 2nd returns
+    us_symbol_universe rows, and 3rd returns whether the universe is non-empty."""
+    session = MagicMock()
+
+    def _result(rows: list[Any]) -> MagicMock:
+        scalars = MagicMock(all=MagicMock(return_value=rows))
+        return MagicMock(scalars=MagicMock(return_value=scalars))
+
+    any_rows_mock = MagicMock()
+    any_rows_mock.scalar_one_or_none.return_value = 1 if universe_rows else None
+
+    session.execute = AsyncMock(
+        side_effect=[
+            _result(stock_rows),
+            _result(universe_rows),
+            any_rows_mock,
+        ]
+    )
+    return session
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_falls_back_to_universe_for_unheld():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # stock_info has the held name; the candidate is only in us_symbol_universe.
+    session = _two_stage_session(
+        stock_rows=[_stock_info_row("AAPL", "애플")],
+        universe_rows=[_us_universe_row("HCA", name_en="HCA Healthcare")],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["AAPL", "HCA"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    resolved = {r.symbol for r in results if r.symbol}
+    assert resolved == {"AAPL", "HCA"}
+    hca = next(r for r in results if r.symbol == "HCA")
+    assert hca.payload_json["instrument_type"] == "equity_us"
+    assert hca.payload_json["name"] == "HCA Healthcare"
+    assert hca.payload_json["exchange"] == "NASD"
+    # No partial/missing row when everything resolved.
+    assert all(r.freshness_status != "partial" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_prefers_stock_info_meta_no_dup():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # AAPL is in BOTH stock_info and the universe; stock_info must win and the
+    # universe row must NOT produce a duplicate.
+    session = _two_stage_session(
+        stock_rows=[_stock_info_row("AAPL", "애플")],
+        universe_rows=[_us_universe_row("AAPL", name_en="Apple Inc")],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["AAPL"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    aapl_rows = [r for r in results if r.symbol == "AAPL"]
+    assert len(aapl_rows) == 1
+    # stock_info meta preserved (sector/market_cap come only from stock_info).
+    assert aapl_rows[0].payload_json["sector"] == "Tech"
+    assert aapl_rows[0].payload_json["market_cap"] == 1_000_000.0
+    assert aapl_rows[0].payload_json["name"] == "애플"
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_unresolved_reason_codes():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # NOPE: absent everywhere → not_registered.
+    # DEAD: present in universe but inactive → inactive.
+    session = _two_stage_session(
+        stock_rows=[],
+        universe_rows=[_us_universe_row("DEAD", name_en="Dead Co", is_active=False)],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["NOPE", "DEAD"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    unresolved = {
+        u["symbol"]: u["reason_code"] for u in partial.payload_json["unresolved"]
+    }
+    assert unresolved == {"NOPE": "not_registered", "DEAD": "inactive"}
+    # back-compat bulk list still present.
+    assert set(partial.payload_json["missing_symbols"]) == {"NOPE", "DEAD"}
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_universe_empty_reason():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _two_stage_session(stock_rows=[], universe_rows=[])
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["NVDA"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    unresolved = {
+        u["symbol"]: u["reason_code"] for u in partial.payload_json["unresolved"]
+    }
+    assert unresolved == {"NVDA": "universe_empty"}
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_kr_missing_has_no_unresolved_field():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # KR uses the single-query stock_info path; missing rows stay bulk-only.
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930", "000660"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    assert partial.payload_json["missing_symbols"] == ["000660"]
+    assert "unresolved" not in partial.payload_json
+    # KR path issues exactly one query (no universe fallback).
+    assert session.execute.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Symbol collector quote/orderbook enrichment — ROB-278 Phase 2.
 #

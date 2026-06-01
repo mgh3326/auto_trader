@@ -127,3 +127,38 @@ async def test_symbol_stage_reports_unresolved_symbols_in_missing_data():
     assert payload.verdict == StageVerdict.NEUTRAL
     assert any("DOGECOIN" in m for m in payload.missing_data)
     assert "심볼 1건" in (payload.summary or "")
+
+
+@pytest.mark.asyncio
+async def test_symbol_stage_renders_unresolved_reason_codes():
+    ctx = _ctx(
+        [
+            {"symbol": "AAPL", "name": "애플"},
+            {
+                "missing_symbols": ["AZO", "DEAD"],
+                "unresolved": [
+                    {"symbol": "AZO", "reason_code": "not_registered"},
+                    {"symbol": "DEAD", "reason_code": "inactive"},
+                ],
+            },
+        ]
+    )
+    payload = await SymbolStage().run(ctx)
+    line = next(m for m in payload.missing_data if "unresolved_symbols" in m)
+    assert "AZO (not_registered)" in line
+    assert "DEAD (inactive)" in line
+
+
+@pytest.mark.asyncio
+async def test_symbol_stage_bulk_render_when_no_reason_codes():
+    # back-compat: missing_symbols without `unresolved` keeps bulk rendering.
+    ctx = _ctx(
+        [
+            {"symbol": "KRW-BTC", "name": "비트코인"},
+            {"missing_symbols": ["DOGECOIN", "FOO"]},
+        ]
+    )
+    payload = await SymbolStage().run(ctx)
+    line = next(m for m in payload.missing_data if "unresolved_symbols" in m)
+    assert "DOGECOIN" in line and "FOO" in line
+    assert "(" not in line  # no per-ticker reason parens

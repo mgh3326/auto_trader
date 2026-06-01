@@ -65,6 +65,39 @@ class KISMockLifecycleService:
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_by_order_no(self, *, order_no: str) -> KISMockOrderLedger | None:
+        """Look up a single ledger row by broker order number.
+
+        Used by cancel/modify so KIS mock never depends on the unsupported
+        TTTC8036R pending-orders inquiry.
+        """
+        stmt = select(KISMockOrderLedger).where(KISMockOrderLedger.order_no == order_no)
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def update_order_terms(
+        self,
+        *,
+        ledger_id: int,
+        price: Decimal | None = None,
+        quantity: Decimal | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """Reflect a broker-confirmed modify on the ledger row."""
+        row = await self._db.get(KISMockOrderLedger, ledger_id)
+        if row is None:
+            raise LedgerNotFoundError(str(ledger_id))
+        if price is not None:
+            row.price = price
+        if quantity is not None:
+            row.quantity = quantity
+        if detail is not None:
+            row.last_reconcile_detail = {
+                **(row.last_reconcile_detail or {}),
+                **detail,
+            }
+        await self._db.commit()
+
     async def record_holdings_baseline(
         self,
         *,

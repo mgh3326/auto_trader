@@ -321,6 +321,7 @@ async def _record_kis_mock_order(
     strategy: str | None,
     notes: str | None,
     holdings_baseline_qty: Decimal | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -366,6 +367,7 @@ async def _record_kis_mock_order(
         notes=notes,
         lifecycle_state=_status_to_lifecycle_state(status),
         holdings_baseline_qty=holdings_baseline_qty,
+        correlation_id=correlation_id,
     )
 
     return {
@@ -411,3 +413,63 @@ async def kis_mock_reconciliation_run_impl(
             "source": "mcp",
             "account_mode": "kis_mock",
         }
+
+
+async def resolve_mock_order_for_cancel(order_no: str) -> dict[str, Any] | None:
+    """Resolve cancel/modify inputs from the ledger (no TTTC8036R inquiry).
+
+    Returns ledger_id + the fields the KIS cancel/modify TR needs, or None
+    when no row matches ``order_no``.
+    """
+    async with _order_session_factory()() as db:
+        svc = KISMockLifecycleService(db)
+        row = await svc.get_by_order_no(order_no=order_no)
+        if row is None:
+            return None
+        return {
+            "ledger_id": row.id,
+            "symbol": row.symbol,
+            "side": row.side,
+            "quantity": _decimal_to_float(row.quantity),
+            "price": _decimal_to_float(row.price),
+            "krx_fwdg_ord_orgno": row.krx_fwdg_ord_orgno,
+            "instrument_type": row.instrument_type,
+            "lifecycle_state": row.lifecycle_state,
+        }
+
+
+async def mark_kis_mock_order_cancelled(
+    *,
+    ledger_id: int,
+    broker_confirmed: bool,
+    detail: dict[str, Any],
+) -> None:
+    """Transition a ledger row to 'cancelled' via the single write chokepoint."""
+    async with _order_session_factory()() as db:
+        svc = KISMockLifecycleService(db)
+        await svc.apply_lifecycle_transition(
+            ledger_id=ledger_id,
+            next_state="cancelled",
+            reason_code=(
+                "broker_cancel_confirmed"
+                if broker_confirmed
+                else "soft_cancel_broker_unsupported"
+            ),
+            detail={"broker_cancel_confirmed": broker_confirmed, **detail},
+            dry_run=False,
+        )
+
+
+async def update_kis_mock_order_terms(
+    *,
+    ledger_id: int,
+    price: Decimal | None = None,
+    quantity: Decimal | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    """Reflect a broker-confirmed modify on the ledger row."""
+    async with _order_session_factory()() as db:
+        svc = KISMockLifecycleService(db)
+        await svc.update_order_terms(
+            ledger_id=ledger_id, price=price, quantity=quantity, detail=detail
+        )
