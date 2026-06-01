@@ -30,13 +30,17 @@ async def sync_journal_verdicts(db, *, force: bool = False) -> dict[str, Any]:
         return {"status": "disabled", "created": 0}
 
     journals = (
-        await db.execute(
-            select(TradeJournal).where(
-                TradeJournal.status == "closed",
-                TradeJournal.account_type == "mock",
+        (
+            await db.execute(
+                select(TradeJournal).where(
+                    TradeJournal.status == "closed",
+                    TradeJournal.account_type == "mock",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     created = 0
     for j in journals:

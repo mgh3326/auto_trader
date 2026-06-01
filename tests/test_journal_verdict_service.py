@@ -7,17 +7,14 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+import pytest_asyncio
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import delete
-
 from app.models.review import TradeJournalReview
 from app.models.trade_journal import TradeJournal
-
-
-import pytest_asyncio
+from app.services.trade_journal import journal_verdict_service as svc
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -49,7 +46,6 @@ async def _closed_mock_journal(db, *, pnl_pct, cid=None):
     return j
 
 
-
 @pytest.mark.asyncio
 async def test_journal_review_inserts_and_checks(db_session: AsyncSession):
     j = await _closed_mock_journal(db_session, pnl_pct="10")
@@ -72,17 +68,18 @@ async def test_journal_review_verdict_check_rejects(db_session: AsyncSession):
     await db_session.rollback()
 
 
-from app.services.trade_journal import journal_verdict_service as svc
-
-
 async def _reviews_for(db, journal_id):
     return (
-        await db.execute(
-            select(TradeJournalReview).where(
-                TradeJournalReview.journal_id == journal_id
+        (
+            await db.execute(
+                select(TradeJournalReview).where(
+                    TradeJournalReview.journal_id == journal_id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
 
 @pytest.mark.asyncio
@@ -114,14 +111,24 @@ async def test_sync_ignores_non_closed_and_non_mock(db_session, monkeypatch):
     monkeypatch.setattr(svc.settings, "JOURNAL_VERDICT_AUTO_ENABLED", True)
     # active mock journal
     j_active = TradeJournal(
-        symbol="A", instrument_type="equity_kr", side="buy",
-        thesis="t", account_type="mock", account="kis_mock",
-        correlation_id=f"c-{uuid4().hex}", status="active",
+        symbol="A",
+        instrument_type="equity_kr",
+        side="buy",
+        thesis="t",
+        account_type="mock",
+        account="kis_mock",
+        correlation_id=f"c-{uuid4().hex}",
+        status="active",
     )
     # closed live journal
     j_live = TradeJournal(
-        symbol="B", instrument_type="equity_kr", side="buy",
-        thesis="t", account_type="live", status="closed", pnl_pct=Decimal("5"),
+        symbol="B",
+        instrument_type="equity_kr",
+        side="buy",
+        thesis="t",
+        account_type="live",
+        status="closed",
+        pnl_pct=Decimal("5"),
     )
     db_session.add_all([j_active, j_live])
     await db_session.commit()
@@ -150,4 +157,3 @@ async def test_record_manual_verdict(db_session):
     assert rows[0].verdict_source == "manual"
     with pytest.raises(ValueError):
         await svc.record_manual_verdict(db_session, journal_id=j.id, verdict="great")
-
