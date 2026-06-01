@@ -9,7 +9,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.investment_reports import InvestmentReportItem
+from app.models.investment_reports import InvestmentReportItem, InvestmentWatchAlert
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
@@ -263,3 +263,36 @@ async def test_caller_supplied_idempotency_key_cross_item_collision_rejected(
                 idempotency_key=shared_key,
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_alert_accepts_between_operator_and_conditions(
+    session: AsyncSession,
+) -> None:
+    alert = InvestmentWatchAlert(
+        alert_uuid=uuid.uuid4(),
+        idempotency_key=f"k-{uuid.uuid4()}",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="between",
+        threshold=Decimal("50000"),
+        threshold_high=Decimal("55000"),
+        threshold_key="and(price:between:50000-55000)",
+        conditions=[{"metric": "price", "op": "between", "low": "50000", "high": "55000"}],
+        combine="and",
+        intent="buy_review",
+        action_mode="notify_only",
+        rationale="zone buy",
+        valid_until=future_datetime(),
+    )
+    session.add(alert)
+    await session.commit()
+    fetched = await session.get(InvestmentWatchAlert, alert.id)
+    assert fetched.operator == "between"
+    assert fetched.conditions[0]["op"] == "between"
+    assert fetched.combine == "and"
+
