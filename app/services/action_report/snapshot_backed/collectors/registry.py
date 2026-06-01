@@ -19,6 +19,9 @@ from app.services.action_report.snapshot_backed.collectors.candidate_universe im
 from app.services.action_report.snapshot_backed.collectors.invest_page import (
     InvestPageSnapshotCollector,
 )
+from app.services.action_report.snapshot_backed.collectors.investor_flow import (
+    InvestorFlowSnapshotCollector,
+)
 from app.services.action_report.snapshot_backed.collectors.journal import (
     JournalSnapshotCollector,
 )
@@ -329,6 +332,7 @@ def production_collector_registry(session: AsyncSession) -> SnapshotCollectorReg
     )
     registry.register(CandidateUniverseSnapshotCollector(session))
     registry.register(KrMarketRankingSnapshotCollector(session))
+    registry.register(InvestorFlowSnapshotCollector(session))
     registry.register(InvestPageSnapshotCollector(session))
     # Remote-debug probes remain fail-open stubs — they are operator-driven
     # only, and automated wiring is intentionally out of scope.
