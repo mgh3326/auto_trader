@@ -771,4 +771,3 @@ class TradeJournalCounterfactual(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
-

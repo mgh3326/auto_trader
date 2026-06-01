@@ -10,9 +10,10 @@ Default off.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from sqlalchemy import select
 
@@ -41,14 +42,18 @@ async def sync_journal_counterfactuals(
         return {"status": "disabled", "created": 0}
 
     journals = (
-        await db.execute(
-            select(TradeJournal).where(
-                TradeJournal.status == "closed",
-                TradeJournal.account_type == "mock",
-                TradeJournal.correlation_id.is_not(None),
+        (
+            await db.execute(
+                select(TradeJournal).where(
+                    TradeJournal.status == "closed",
+                    TradeJournal.account_type == "mock",
+                    TradeJournal.correlation_id.is_not(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     created = 0
     for j in journals:
