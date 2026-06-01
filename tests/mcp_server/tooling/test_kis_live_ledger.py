@@ -138,4 +138,26 @@ async def test_record_kis_live_order_does_not_book_fill(db_session):
     assert out["ledger_id"] is not None
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_live_daily_rows_for_order():
+    from unittest.mock import AsyncMock, patch
+    from app.mcp_server.tooling import kis_live_ledger as kl
+
+    fake_rows = [{"odno": "0006366300", "ccld_qty": "10", "ord_qty": "10", "ccld_unpr": "250000"}]
+    fake_client = AsyncMock()
+    fake_client.inquire_daily_order_domestic = AsyncMock(return_value=fake_rows)
+
+    with patch.object(kl, "_create_live_kis_client", return_value=fake_client):
+        rows = await kl._fetch_live_daily_rows(
+            symbol="035420", order_no="0006366300"
+        )
+    assert rows == fake_rows
+    fake_client.inquire_daily_order_domestic.assert_awaited_once()
+    # must be a live (is_mock=False) call
+    _, kwargs = fake_client.inquire_daily_order_domestic.await_args
+    assert kwargs.get("is_mock") is False
+
+
+
 

@@ -7,6 +7,8 @@ isolated from the mock ledger (kis_live_order_ledger vs kis_mock_order_ledger).
 
 from __future__ import annotations
 
+import datetime
+
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
@@ -229,5 +231,32 @@ async def _record_kis_live_order(
             else f"KIS live order not accepted (broker_status={status})"
         ),
     }
+
+
+def _create_live_kis_client() -> Any:
+    from app.services.brokers.kis import KISClient
+
+    return KISClient()
+
+
+def _today_yyyymmdd() -> str:
+    return datetime.datetime.now().strftime("%Y%m%d")
+
+
+async def _fetch_live_daily_rows(
+    *, symbol: str, order_no: str | None
+) -> list[dict[str, Any]]:
+    """Fetch today's live daily-execution rows for a KR order (is_mock=False)."""
+    kis = _create_live_kis_client()
+    today = _today_yyyymmdd()
+    rows = await kis.inquire_daily_order_domestic(
+        start_date=today,
+        end_date=today,
+        stock_code=symbol,
+        order_number=order_no or "",
+        is_mock=False,
+    )
+    return rows or []
+
 
 
