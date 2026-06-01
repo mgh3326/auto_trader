@@ -124,7 +124,8 @@ class SymbolSnapshotCollector:
         * crypto + ``upbit_live`` → Upbit client, NO ``user_id`` (public data).
         """
         if request.market == "kr" and request.account_scope == "kis_live":
-            return (self._kis_quote_client, True, "krx", "kis_live")
+            venue = "nxt" if request.market_session == "nxt" else "krx"
+            return (self._kis_quote_client, True, venue, "kis_live")
         if request.market == "crypto" and request.account_scope == "upbit_live":
             return (self._upbit_quote_client, False, "upbit", "upbit_live")
         return None
@@ -317,7 +318,7 @@ class SymbolSnapshotCollector:
                 ),
             }
         try:
-            raw = await client.fetch_quote_orderbook(symbol)
+            raw = await client.fetch_quote_orderbook(symbol, venue=default_venue)
         except Exception as exc:  # noqa: BLE001 — optional, per-symbol fail-open
             return {
                 "status": "unavailable",

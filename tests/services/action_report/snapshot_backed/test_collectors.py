@@ -1564,7 +1564,7 @@ def _stock_info_session(rows: list[Any]) -> MagicMock:
 def _fake_quote_client_ok() -> MagicMock:
     """Fake KIS quote/orderbook client returning a full top-of-book."""
 
-    async def fetch_quote(symbol: str) -> dict[str, Any]:
+    async def fetch_quote(symbol: str, venue: str = "krx") -> dict[str, Any]:
         return {
             "last_price": 70_000.0,
             "best_bid": 69_900.0,
@@ -1619,7 +1619,7 @@ async def test_symbol_collector_enriches_with_kis_quote_when_kis_live():
     assert payload["quote"]["nxt_eligible"] is True
     assert payload["quote"]["session"] == "regular"
     assert payload["quote"]["status"] == "ok"
-    quote_client.fetch_quote_orderbook.assert_awaited_once_with("005930")
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with("005930", venue="krx")
 
 
 @pytest.mark.asyncio
@@ -1685,7 +1685,7 @@ async def test_symbol_collector_quote_exception_marks_unavailable():
     ]
     session = _stock_info_session(rows)
 
-    async def fetch(symbol: str):
+    async def fetch(symbol: str, venue: str = "krx"):
         if symbol == "005930":
             raise RuntimeError("session closed")
         return {
@@ -1729,7 +1729,7 @@ async def test_symbol_collector_quote_empty_book_marks_no_data_reason():
 
     session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
 
-    async def fetch(symbol: str):
+    async def fetch(symbol: str, venue: str = "krx"):
         return {
             "last_price": 0.0,
             "best_bid": 0.0,
@@ -1825,7 +1825,7 @@ def _upbit_universe_row(market: str = "KRW-BTC", korean_name: str = "비트코�
 def _fake_upbit_quote_client_ok() -> MagicMock:
     """Fake Upbit orderbook adapter returning a full top-of-book (no last_price)."""
 
-    async def fetch(symbol: str) -> dict[str, Any]:
+    async def fetch(symbol: str, venue: str = "upbit") -> dict[str, Any]:
         return {
             "last_price": None,
             "best_bid": 94_900_000.0,
@@ -1899,7 +1899,7 @@ async def test_symbol_collector_crypto_enriches_with_upbit_orderbook_no_user_id(
     assert q["spread_bps"] == pytest.approx(21.05, rel=0.05)
     assert q["venue"] == "upbit"
     assert q["last_price"] is None  # orderbook carries no last trade — honest
-    quote_client.fetch_quote_orderbook.assert_awaited_once_with("KRW-BTC")
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with("KRW-BTC", venue="upbit")
 
 
 @pytest.mark.asyncio
@@ -1941,7 +1941,7 @@ async def test_symbol_collector_crypto_orderbook_failure_is_fail_open():
         ]
     )
 
-    async def fetch(symbol: str):
+    async def fetch(symbol: str, venue: str = "upbit"):
         if symbol == "KRW-BTC":
             raise RuntimeError("upbit timeout")
         return {
@@ -2452,6 +2452,47 @@ async def test_kis_adapter_maps_nxt_venue_to_market_code_nx():
     raw_krx = await adapter.fetch_quote_orderbook("005930")  # default venue
     assert captured["market"] == "J"
     assert raw_krx["venue"] == "krx"
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_switches_to_nxt_venue_when_nxt_session():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+
+    captured: dict = {}
+
+    async def fetch_quote(symbol: str, venue: str = "krx") -> dict[str, Any]:
+        captured["venue"] = venue
+        return {
+            "last_price": 70_000.0,
+            "best_bid": 69_900.0,
+            "best_ask": 70_100.0,
+            "bid_depth": 100.0,
+            "ask_depth": 120.0,
+            "venue": venue,
+            "as_of": "2026-06-01T08:30:00+09:00",
+            "session": "nxt",
+            "nxt_eligible": True,
+        }
+
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(side_effect=fetch_quote)
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930"],
+        policy_snapshot={},
+        user_id=42,
+        market_session="nxt",
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert captured["venue"] == "nxt"
+    assert payload["quote"]["venue"] == "nxt"
+    assert payload["quote"]["session"] == "nxt"
+
 
 
 
