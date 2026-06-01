@@ -66,3 +66,97 @@ async def test_mark_cancelled_sets_state_and_flag(db_session: AsyncSession):
     await db_session.refresh(row)
     assert row.lifecycle_state == "cancelled"
     assert row.last_reconcile_detail["broker_cancel_confirmed"] is False
+
+
+import app.mcp_server.tooling.orders_modify_cancel as omc
+
+
+class _FakeKisCancelOK:
+    async def cancel_korea_order(self, **kwargs):
+        self.kwargs = kwargs
+        return {"odno": "REV-1", "ord_tmd": "0901", "msg": "ok"}
+
+    async def inquire_korea_orders(self, *a, **k):  # must NOT be called
+        raise AssertionError("inquire_korea_orders called in mock cancel path")
+
+
+class _FakeKisCancelUnsupported:
+    async def cancel_korea_order(self, **kwargs):
+        raise RuntimeError("APBK0918 not available in mock mode")
+
+    async def inquire_korea_orders(self, *a, **k):
+        raise AssertionError("inquire_korea_orders called in mock cancel path")
+
+
+class _FakeKisCancelError:
+    async def cancel_korea_order(self, **kwargs):
+        raise RuntimeError("APBK1234 already filled order")
+
+    async def inquire_korea_orders(self, *a, **k):
+        raise AssertionError("inquire_korea_orders called in mock cancel path")
+
+
+@pytest.mark.asyncio
+async def test_mock_cancel_success_confirms_and_cancels(
+    db_session: AsyncSession, monkeypatch
+):
+    row = await _seed(db_session, orgno="00950")
+    fake = _FakeKisCancelOK()
+    monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: fake)
+
+    result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
+
+    assert result["success"] is True
+    assert result["broker_cancel_confirmed"] is True
+    assert fake.kwargs["krx_fwdg_ord_orgno"] == "00950"
+    assert fake.kwargs["is_mock"] is True
+    await db_session.refresh(row)
+    assert row.lifecycle_state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_mock_cancel_unsupported_soft_cancels(
+    db_session: AsyncSession, monkeypatch
+):
+    row = await _seed(db_session, orgno="00950")
+    monkeypatch.setattr(
+        omc, "_create_kis_client", lambda *, is_mock: _FakeKisCancelUnsupported()
+    )
+
+    result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
+
+    assert result["success"] is True
+    assert result["broker_cancel_confirmed"] is False
+    assert result["mock_unsupported"] is True
+    assert "warning" in result
+    await db_session.refresh(row)
+    assert row.lifecycle_state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_mock_cancel_other_error_surfaces_no_soft_cancel(
+    db_session: AsyncSession, monkeypatch
+):
+    row = await _seed(db_session, orgno="00950")
+    monkeypatch.setattr(
+        omc, "_create_kis_client", lambda *, is_mock: _FakeKisCancelError()
+    )
+
+    result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
+
+    assert result["success"] is False
+    assert result.get("broker_cancel_confirmed") is False
+    await db_session.refresh(row)
+    assert row.lifecycle_state == "accepted"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_mock_cancel_unknown_order_fails(
+    db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setattr(
+        omc, "_create_kis_client", lambda *, is_mock: _FakeKisCancelOK()
+    )
+    result = await omc._cancel_kis_domestic("NO-SUCH", None, is_mock=True)
+    assert result["success"] is False
+    assert "ledger" in result["error"]
