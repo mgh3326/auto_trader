@@ -322,6 +322,9 @@ class InvestmentReportItem(Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     watch_condition: Mapped[dict | None] = mapped_column(JSONB)
+    # ROB-337 — advisory buy-review price thresholds (deterministic policy
+    # output). Distinct from watch_condition (the scanner trigger contract).
+    watch_recommendation: Mapped[dict | None] = mapped_column(JSONB)
     trigger_checklist: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
