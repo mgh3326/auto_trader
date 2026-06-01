@@ -100,6 +100,11 @@ class HermesContextPayload(BaseModel):
     constraints: HermesContextConstraints = Field(
         default_factory=HermesContextConstraints
     )
+    # ROB-376 item 2 — intraday_update report continuity. Optional/additive
+    # (no context_version bump). Populated only by the intraday context tool;
+    # the base get_hermes_context path leaves both None.
+    baseline_report_uuid: uuid.UUID | None = None
+    intraday_delta_block: dict[str, Any] | None = None
 
 
 class HermesCompositionResult(BaseModel):
