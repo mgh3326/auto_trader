@@ -96,6 +96,32 @@ def test_split_fill_rows_aggregate() -> None:
 
 
 @pytest.mark.unit
+def test_duplicate_daily_rows_are_not_double_counted() -> None:
+    rows = [
+        _row(
+            odno="123456",
+            ord_qty="10",
+            tot_ccld_qty="10",
+            avg_prvs="38500",
+            tot_ccld_amt="385000",
+            ord_tmd="085745",
+        ),
+        _row(
+            odno="123456",
+            ord_qty="10",
+            tot_ccld_qty="10",
+            avg_prvs="38500",
+            tot_ccld_amt="385000",
+            ord_tmd="085745",
+        ),
+    ]
+    ev = classify_fill_evidence(order_no="123456", rows=rows)
+    assert ev.verdict is FillVerdict.FILLED
+    assert ev.filled_qty == Decimal("10")
+    assert ev.avg_price == Decimal("38500")
+
+
+@pytest.mark.unit
 def test_uppercase_keys_resolved() -> None:
     rows = [
         {"ODNO": "123456", "ORD_QTY": "1", "TOT_CCLD_QTY": "1", "AVG_PRVS": "70000"}

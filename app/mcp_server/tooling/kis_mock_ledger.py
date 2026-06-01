@@ -94,8 +94,43 @@ def _decimal_to_float(value: Any) -> float:
     return _to_float(value, default=0.0)
 
 
+def _derive_shadow_fill(
+    row: KISMockOrderLedger, ordered_qty: float
+) -> tuple[float, float, str]:
+    """Derive (filled_qty, remaining_qty, status) consistent with lifecycle_state.
+
+    A row in ``fill`` must never report status=pending/filled_qty=0. When the
+    reconciler recorded ``attributed_fill_qty`` (ROB-400) we honor it; legacy
+    fill rows without it fall back to a full fill so lifecycle and status agree.
+    """
+    if row.lifecycle_state != "fill":
+        return 0.0, ordered_qty, "pending"
+
+    # Compare in Decimal so a fractional-share fill (e.g. 9.9999999 vs 10) is not
+    # mislabeled partial by float rounding; the reconciler emits Decimal values.
+    ordered_dec = Decimal(str(ordered_qty))
+    detail = row.last_reconcile_detail or {}
+    raw = detail.get("attributed_fill_qty")
+    if raw is None:
+        filled_dec = ordered_dec
+    else:
+        try:
+            filled_dec = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError):
+            filled_dec = ordered_dec
+        if filled_dec < 0:
+            filled_dec = Decimal("0")
+        elif filled_dec > ordered_dec:
+            filled_dec = ordered_dec
+    remaining_dec = ordered_dec - filled_dec
+    status = "filled" if filled_dec >= ordered_dec else "partial"
+    return float(filled_dec), float(remaining_dec), status
+
+
 def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:
     ordered_at = row.trade_date.isoformat() if row.trade_date else None
+    ordered_qty = _decimal_to_float(row.quantity)
+    filled_qty, remaining_qty, status = _derive_shadow_fill(row, ordered_qty)
     return {
         "order_id": row.order_no or f"ledger:{row.id}",
         "ledger_id": row.id,
@@ -104,11 +139,11 @@ def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:
         "instrument_type": row.instrument_type,
         "side": row.side,
         "order_type": row.order_type,
-        "status": "pending",
+        "status": status,
         "lifecycle_state": row.lifecycle_state,
-        "ordered_qty": _decimal_to_float(row.quantity),
-        "remaining_qty": _decimal_to_float(row.quantity),
-        "filled_qty": 0.0,
+        "ordered_qty": ordered_qty,
+        "remaining_qty": remaining_qty,
+        "filled_qty": filled_qty,
         "ordered_price": _decimal_to_float(row.price),
         "amount": _decimal_to_float(row.amount),
         "currency": row.currency,
@@ -286,6 +321,7 @@ async def _record_kis_mock_order(
     strategy: str | None,
     notes: str | None,
     holdings_baseline_qty: Decimal | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -331,6 +367,7 @@ async def _record_kis_mock_order(
         notes=notes,
         lifecycle_state=_status_to_lifecycle_state(status),
         holdings_baseline_qty=holdings_baseline_qty,
+        correlation_id=correlation_id,
     )
 
     return {
@@ -376,3 +413,63 @@ async def kis_mock_reconciliation_run_impl(
             "source": "mcp",
             "account_mode": "kis_mock",
         }
+
+
+async def resolve_mock_order_for_cancel(order_no: str) -> dict[str, Any] | None:
+    """Resolve cancel/modify inputs from the ledger (no TTTC8036R inquiry).
+
+    Returns ledger_id + the fields the KIS cancel/modify TR needs, or None
+    when no row matches ``order_no``.
+    """
+    async with _order_session_factory()() as db:
+        svc = KISMockLifecycleService(db)
+        row = await svc.get_by_order_no(order_no=order_no)
+        if row is None:
+            return None
+        return {
+            "ledger_id": row.id,
+            "symbol": row.symbol,
+            "side": row.side,
+            "quantity": _decimal_to_float(row.quantity),
+            "price": _decimal_to_float(row.price),
+            "krx_fwdg_ord_orgno": row.krx_fwdg_ord_orgno,
+            "instrument_type": row.instrument_type,
+            "lifecycle_state": row.lifecycle_state,
+        }
+
+
+async def mark_kis_mock_order_cancelled(
+    *,
+    ledger_id: int,
+    broker_confirmed: bool,
+    detail: dict[str, Any],
+) -> None:
+    """Transition a ledger row to 'cancelled' via the single write chokepoint."""
+    async with _order_session_factory()() as db:
+        svc = KISMockLifecycleService(db)
+        await svc.apply_lifecycle_transition(
+            ledger_id=ledger_id,
+            next_state="cancelled",
+            reason_code=(
+                "broker_cancel_confirmed"
+                if broker_confirmed
+                else "soft_cancel_broker_unsupported"
+            ),
+            detail={"broker_cancel_confirmed": broker_confirmed, **detail},
+            dry_run=False,
+        )
+
+
+async def update_kis_mock_order_terms(
+    *,
+    ledger_id: int,
+    price: Decimal | None = None,
+    quantity: Decimal | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    """Reflect a broker-confirmed modify on the ledger row."""
+    async with _order_session_factory()() as db:
+        svc = KISMockLifecycleService(db)
+        await svc.update_order_terms(
+            ledger_id=ledger_id, price=price, quantity=quantity, detail=detail
+        )

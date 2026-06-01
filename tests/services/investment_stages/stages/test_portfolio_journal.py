@@ -259,3 +259,35 @@ async def test_portfolio_journal_crypto_nested_upbit_payload_yields_live_nav():
     # not the pre-fix 0/0 artifact.
     assert payload.risk_evidence == ["buying_power < 5% NAV"]
     assert payload.confidence == 40
+
+
+@pytest.mark.asyncio
+async def test_portfolio_journal_surfaces_nav_scope_label_in_key_points():
+    """ROB-392 — portfolio collector's nav_scope_label is surfaced in
+    key_points so the report makes the NAV scope explicit. The byte-identical
+    KR summary string is unchanged (label rides only in key_points)."""
+    label = (
+        "NAV는 KIS 실거래(매도가능) 보유 + 현금 기준 · "
+        "ISA/Toss 참조분(reference_holdings)은 제외"
+    )
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "portfolio": [
+                _snap(
+                    "portfolio",
+                    {
+                        "nav_krw": 1_000_000,
+                        "buying_power_krw": 500_000,
+                        "nav_scope_label": label,
+                    },
+                )
+            ],
+            "journal": [
+                _snap("journal", {"entries": [{"symbol": "005930", "thesis": "tech"}]})
+            ],
+        },
+        bundle_metadata={},
+    )
+    artifact = await PortfolioJournalStage().run(ctx)
+    assert label in artifact.key_points

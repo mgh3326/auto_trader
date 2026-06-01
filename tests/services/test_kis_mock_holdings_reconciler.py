@@ -214,3 +214,207 @@ def test_reconciler_does_not_import_db_or_broker():
     ]
     for tok in forbidden:
         assert tok not in src, f"forbidden import in reconciler: {tok}"
+
+
+@pytest.mark.unit
+def test_ledger_order_input_has_price_default():
+    from app.services.kis_mock_holdings_reconciler import LedgerOrderInput
+
+    order = LedgerOrderInput(
+        ledger_id=1,
+        symbol="005930",
+        side="buy",
+        ordered_qty=Decimal("10"),
+        lifecycle_state="accepted",
+        holdings_baseline_qty=Decimal("0"),
+        accepted_at=_now(),
+    )
+    assert order.price == Decimal("0")  # default keeps existing call sites working
+
+    priced = LedgerOrderInput(
+        ledger_id=2,
+        symbol="005930",
+        side="buy",
+        ordered_qty=Decimal("10"),
+        lifecycle_state="accepted",
+        holdings_baseline_qty=Decimal("0"),
+        accepted_at=_now(),
+        price=Decimal("15900"),
+    )
+    assert priced.price == Decimal("15900")
+
+
+@pytest.mark.unit
+def test_proposal_attributed_fill_qty_defaults_none():
+    from app.services.kis_mock_holdings_reconciler import LifecycleTransitionProposal
+
+    p = LifecycleTransitionProposal(
+        ledger_id=1,
+        symbol="005930",
+        prior_state="accepted",
+        next_state="pending",
+        reason_code="pending_unconfirmed",
+        observed_holdings_qty=Decimal("0"),
+        observed_delta=Decimal("0"),
+    )
+    assert p.attributed_fill_qty is None
+
+
+def _buy(
+    *,
+    ledger_id: int,
+    price: Decimal,
+    ordered_qty: Decimal = Decimal("10"),
+    baseline: Decimal = Decimal("0"),
+    state: str = "accepted",
+    accepted_age_sec: int = 0,
+) -> LedgerOrderInput:
+    return LedgerOrderInput(
+        ledger_id=ledger_id,
+        symbol="0148J0",
+        side="buy",
+        ordered_qty=ordered_qty,
+        lifecycle_state=state,
+        holdings_baseline_qty=baseline,
+        accepted_at=_now() - timedelta(seconds=accepted_age_sec),
+        price=price,
+    )
+
+
+@pytest.mark.unit
+def test_same_symbol_double_buy_single_delta_attributed_to_higher_price():
+    # ROB-400 demo: ledger23 @15,500 / ledger24 @15,900, actual holdings +10 (one fill)
+    orders = [
+        _buy(ledger_id=23, price=Decimal("15500"), accepted_age_sec=120),
+        _buy(ledger_id=24, price=Decimal("15900"), accepted_age_sec=60),
+    ]
+    proposals = classify_orders(
+        orders=orders,
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
+            )
+        },
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    # higher price (15,900) wins the single +10 budget
+    assert by_id[24].next_state == "fill"
+    assert by_id[24].reason_code == "fill_detected"
+    assert by_id[24].attributed_fill_qty == Decimal("10")
+    # the other stays pending — no double count
+    assert by_id[23].next_state == "pending"
+    assert by_id[23].reason_code == "pending_unconfirmed"
+    assert by_id[23].attributed_fill_qty == Decimal("0")
+
+
+@pytest.mark.unit
+def test_same_price_tiebreak_oldest_order_wins():
+    orders = [
+        _buy(ledger_id=30, price=Decimal("15500"), accepted_age_sec=60),
+        _buy(ledger_id=31, price=Decimal("15500"), accepted_age_sec=600),  # older
+    ]
+    proposals = classify_orders(
+        orders=orders,
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
+            )
+        },
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    assert by_id[31].next_state == "fill"  # oldest wins the budget
+    assert by_id[30].next_state == "pending"
+
+
+@pytest.mark.unit
+def test_partial_budget_goes_to_priority_order_only():
+    orders = [
+        _buy(ledger_id=40, price=Decimal("15900")),
+        _buy(ledger_id=41, price=Decimal("15500")),
+    ]
+    proposals = classify_orders(
+        orders=orders,
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("6"), taken_at=_now()
+            )
+        },  # +6 budget, each ordered 10
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    assert by_id[40].next_state == "fill"
+    assert by_id[40].reason_code == "partial_fill_detected"
+    assert by_id[40].attributed_fill_qty == Decimal("6")
+    assert by_id[41].next_state == "pending"
+    assert by_id[41].attributed_fill_qty == Decimal("0")
+
+
+@pytest.mark.unit
+def test_external_holdings_excess_not_flagged_anomaly():
+    orders = [_buy(ledger_id=50, price=Decimal("15900"))]  # ordered 10
+    proposals = classify_orders(
+        orders=orders,
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("15"), taken_at=_now()
+            )
+        },  # +15 > ordered 10 (manual/external position)
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    assert proposals[0].next_state == "fill"
+    assert proposals[0].reason_code == "fill_detected"
+    assert proposals[0].attributed_fill_qty == Decimal("10")  # capped, leftover ignored
+
+
+@pytest.mark.unit
+def test_already_fill_pair_only_one_reconciles_other_anomaly():
+    orders = [
+        _buy(ledger_id=60, price=Decimal("15900"), state="fill"),
+        _buy(ledger_id=61, price=Decimal("15500"), state="fill"),
+    ]
+    proposals = classify_orders(
+        orders=orders,
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
+            )
+        },  # only +10 supports a single 10-share fill
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    assert by_id[60].next_state == "reconciled"
+    assert by_id[60].reason_code == "position_reconciled"
+    assert by_id[61].next_state == "anomaly"
+    assert by_id[61].reason_code == "holdings_mismatch"
+
+
+@pytest.mark.unit
+def test_sell_lower_price_wins_budget():
+    def _sell(ledger_id, price):
+        return LedgerOrderInput(
+            ledger_id=ledger_id,
+            symbol="005930",
+            side="sell",
+            ordered_qty=Decimal("10"),
+            lifecycle_state="accepted",
+            holdings_baseline_qty=Decimal("10"),  # held 10 before selling
+            accepted_at=_now(),
+            price=price,
+        )
+
+    proposals = classify_orders(
+        orders=[_sell(70, Decimal("16000")), _sell(71, Decimal("15500"))],
+        holdings={"005930": _snap(Decimal("0"))},  # sold 10 (delta -10)
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    assert by_id[71].next_state == "fill"  # lower ask (15,500) fills first
+    assert by_id[70].next_state == "pending"

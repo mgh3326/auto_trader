@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import logging
 from collections.abc import Callable, Hashable
 from typing import Any
 
@@ -29,6 +30,7 @@ from app.services.action_report.snapshot_backed.collectors._base import (
 from app.services.invest_crypto_screener_snapshots.repository import (
     InvestCryptoScreenerSnapshotsRepository,
 )
+from app.services.invest_screener_snapshots.freshness import expected_baseline_date
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
 )
@@ -39,6 +41,7 @@ from app.services.investment_snapshots.collectors import (
 from app.services.screener_evidence import CandidateEvidence, build_candidate_evidence
 
 TOP_N = 10
+logger = logging.getLogger(__name__)
 
 _FRESHNESS_BY_USEFULNESS = {
     "useful": "fresh",
@@ -212,13 +215,16 @@ def _source_coverage(evidence: list[CandidateEvidence]) -> dict[str, int]:
     return counts
 
 
-def _missing_data(market: str, usefulness: str) -> dict[str, str] | None:
+def _missing_data(
+    market: str, usefulness: str, *, days_stale: int = 0
+) -> dict[str, str] | None:
     if usefulness == "useful":
         return None
     market_ko = {"crypto": "암호화폐", "kr": "국내", "us": "미국"}.get(market, market)
     if usefulness == "stale_only":
+        lag = f"{days_stale}일 지연, " if days_stale > 0 else ""
         return {
-            "what": f"{market_ko} 스크리너 스냅샷이 최신 거래일 기준이 아닙니다 (stale).",
+            "what": f"{market_ko} 스크리너 스냅샷이 최신 거래일 기준이 아닙니다 ({lag}stale).",
             "why": "최신 모멘텀/거래대금 교차검증이 제한되어 신규 후보 판단 신뢰도가 낮아집니다.",
             "next": "스크리너 스냅샷 리프레시가 최신 거래일로 갱신되면 개선됩니다.",
             "confidence_impact": "cap 40",
@@ -296,9 +302,20 @@ class CandidateUniverseSnapshotCollector:
     async def _collect_top_gainers(
         self, request: CollectorRequest, now: dt.datetime, limit: int
     ) -> list[SnapshotCollectResult]:
+        baseline = expected_baseline_date(request.market, now=now)
         coverage = await self._equity_repo.coverage(
-            market=request.market, today_trading_date=now.date()
+            market=request.market, today_trading_date=baseline
         )
+        if coverage.fresh_count == 0 and coverage.stale_count > 0:
+            logger.warning(
+                "candidate_universe refresh gap: market=%s expected_baseline=%s "
+                "latest_computed_at=%s stale_count=%d (snapshot build produced no "
+                "partition for the expected baseline)",
+                request.market,
+                baseline.isoformat(),
+                coverage.last_computed_at,
+                coverage.stale_count,
+            )
         usefulness = _classify_usefulness(
             actionable=coverage.fresh_count, stale=coverage.stale_count
         )
@@ -306,6 +323,14 @@ class CandidateUniverseSnapshotCollector:
             market=request.market, limit=limit
         )
         rows = _dedupe_rows(rows, key=lambda r: to_db_symbol(r.symbol))
+        latest_partition_date = (
+            getattr(rows[0], "snapshot_date", None) if rows else None
+        )
+        days_stale = (
+            (baseline - latest_partition_date).days
+            if latest_partition_date is not None and baseline > latest_partition_date
+            else 0
+        )
         evidence = build_candidate_evidence(
             market=request.market,
             preset="top_gainers",
@@ -323,6 +348,9 @@ class CandidateUniverseSnapshotCollector:
                 stale_count=coverage.stale_count,
                 last_computed_at=coverage.last_computed_at,
                 usefulness=usefulness,
+                expected_baseline_date=baseline,
+                latest_partition_date=latest_partition_date,
+                days_stale=days_stale,
             )
         ]
 
@@ -451,6 +479,9 @@ class CandidateUniverseSnapshotCollector:
         stale_count: int,
         last_computed_at: dt.datetime | None,
         usefulness: str,
+        expected_baseline_date: dt.date | None = None,
+        latest_partition_date: dt.date | None = None,
+        days_stale: int = 0,
     ) -> SnapshotCollectResult:
         freshness_status = _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial")
         # ROB-359 Scope E — stamp universe-level lineage onto each candidate dict
@@ -485,8 +516,15 @@ class CandidateUniverseSnapshotCollector:
             "last_computed_at": last_computed_at.isoformat()
             if last_computed_at
             else None,
+            "expected_baseline_date": (
+                expected_baseline_date.isoformat() if expected_baseline_date else None
+            ),
+            "latest_partition_date": (
+                latest_partition_date.isoformat() if latest_partition_date else None
+            ),
+            "days_stale": days_stale,
             "usefulness": usefulness,
-            "missing_data": _missing_data(market, usefulness),
+            "missing_data": _missing_data(market, usefulness, days_stale=days_stale),
         }
         return build_result(
             snapshot_kind=self.snapshot_kind,
@@ -552,6 +590,9 @@ class CandidateUniverseSnapshotCollector:
             "actionable_count": fresh_count,
             "stale_count": stale_count,
             "last_computed_at": None,
+            "expected_baseline_date": expected_baseline_date("kr", now=now).isoformat(),
+            "latest_partition_date": None,
+            "days_stale": 0,
             "usefulness": usefulness,
             "missing_data": _missing_data("kr", usefulness),
         }

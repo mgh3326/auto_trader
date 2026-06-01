@@ -322,6 +322,9 @@ class InvestmentReportItem(Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     watch_condition: Mapped[dict | None] = mapped_column(JSONB)
+    # ROB-337 — advisory buy-review price thresholds (deterministic policy
+    # output). Distinct from watch_condition (the scanner trigger contract).
+    watch_recommendation: Mapped[dict | None] = mapped_column(JSONB)
     trigger_checklist: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
@@ -460,16 +463,21 @@ class InvestmentWatchAlert(Base):
             name="ck_investment_watch_alerts_target_kind",
         ),
         CheckConstraint(
-            "operator IN ('above','below')",
+            "operator IN ('above','below','between')",
             name="ck_investment_watch_alerts_operator",
         ),
         CheckConstraint(
-            "action_mode IN ('notify_only','preview_only','approval_required')",
+            "action_mode IN ('notify_only','preview_only','approval_required',"
+            "'auto_execute_mock')",
             name="ck_investment_watch_alerts_action_mode",
         ),
         CheckConstraint(
             "market IN ('kr','us','crypto')",
             name="ck_investment_watch_alerts_market",
+        ),
+        CheckConstraint(
+            "combine IN ('and')",
+            name="ck_investment_watch_alerts_combine",
         ),
         Index(
             "ix_investment_watch_alerts_market_status",
@@ -512,6 +520,13 @@ class InvestmentWatchAlert(Base):
     operator: Mapped[str] = mapped_column(Text, nullable=False)
     threshold: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
     threshold_key: Mapped[str] = mapped_column(Text, nullable=False)
+    threshold_high: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    conditions: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    combine: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'and'")
+    )
 
     intent: Mapped[str] = mapped_column(Text, nullable=False)
     action_mode: Mapped[str] = mapped_column(Text, nullable=False)
@@ -586,7 +601,7 @@ class InvestmentWatchEvent(Base):
         ),
         CheckConstraint(
             "outcome IN ('notified','review_required','preview_attached',"
-            "'expired','ignored','failed')",
+            "'executed','expired','ignored','failed')",
             name="ck_investment_watch_events_outcome",
         ),
         CheckConstraint(
@@ -598,11 +613,12 @@ class InvestmentWatchEvent(Base):
             name="ck_investment_watch_events_target_kind",
         ),
         CheckConstraint(
-            "operator IN ('above','below')",
+            "operator IN ('above','below','between')",
             name="ck_investment_watch_events_operator",
         ),
         CheckConstraint(
-            "action_mode IN ('notify_only','preview_only','approval_required')",
+            "action_mode IN ('notify_only','preview_only','approval_required',"
+            "'auto_execute_mock')",
             name="ck_investment_watch_events_action_mode",
         ),
         # Plan 4 hardening — Hermes delivery is auditable and the alert
@@ -664,6 +680,7 @@ class InvestmentWatchEvent(Base):
     metric: Mapped[str] = mapped_column(Text, nullable=False)
     operator: Mapped[str] = mapped_column(Text, nullable=False)
     threshold: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    threshold_high: Mapped[float | None] = mapped_column(Numeric(20, 8))
     threshold_key: Mapped[str] = mapped_column(Text, nullable=False)
     intent: Mapped[str] = mapped_column(Text, nullable=False)
     action_mode: Mapped[str] = mapped_column(Text, nullable=False)

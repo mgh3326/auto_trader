@@ -443,6 +443,122 @@ async def _cancel_upbit(order_id: str) -> dict[str, Any]:
     }
 
 
+_KIS_MOCK_UNSUPPORTED_MARKERS: tuple[str, ...] = (
+    "not available in mock",
+    "not supported",
+    "unsupported",
+    "미지원",
+    "tttc8036r",
+)
+
+
+def _is_kis_mock_unsupported(message: str) -> bool:
+    """True when a broker error indicates the TR is unsupported in mock mode.
+
+    Conservative: only soft-cancel on these markers. Any other broker error
+    (e.g. already-filled, invalid order) is surfaced as a genuine failure.
+    The exact marker set is refined after the operator VTTC0013U mock smoke.
+    """
+    lowered = message.lower()
+    return any(marker in lowered for marker in _KIS_MOCK_UNSUPPORTED_MARKERS)
+
+
+async def _cancel_kis_mock_domestic(
+    order_id: str,
+    symbol: str | None,
+) -> dict[str, Any]:
+    """Cancel a KIS *mock* domestic order via the ledger (no TTTC8036R)."""
+    from app.mcp_server.tooling.kis_mock_ledger import (
+        mark_kis_mock_order_cancelled,
+        resolve_mock_order_for_cancel,
+    )
+
+    market = _normalize_market_type_to_external("equity_kr")
+    resolved = await resolve_mock_order_for_cancel(order_id)
+    if resolved is None:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "error": "kis_mock: order not found in kis_mock_order_ledger",
+            "market": market,
+        }
+
+    resolved_symbol = symbol or resolved["symbol"]
+    orgno = resolved["krx_fwdg_ord_orgno"]
+    side = resolved["side"]
+    quantity = int(resolved["quantity"]) or 1
+    price = int(resolved["price"])
+
+    async def _soft_cancel(reason: str) -> dict[str, Any]:
+        await mark_kis_mock_order_cancelled(
+            ledger_id=resolved["ledger_id"],
+            broker_confirmed=False,
+            detail={"reason": reason, "order_no": order_id},
+        )
+        return {
+            "success": True,
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "broker_cancel_confirmed": False,
+            "mock_unsupported": True,
+            "soft_cancelled": True,
+            "warning": (
+                "kis_mock soft-cancel: ledger marked cancelled but the broker "
+                "resting order may still be live; a later fill is reconciled."
+            ),
+            "market": market,
+        }
+
+    if not orgno:
+        return await _soft_cancel("missing_krx_fwdg_ord_orgno")
+
+    try:
+        kis = _create_kis_client(is_mock=True)
+        result = await kis.cancel_korea_order(
+            order_number=order_id,
+            stock_code=resolved_symbol,
+            quantity=quantity,
+            price=price,
+            order_type=side,
+            krx_fwdg_ord_orgno=orgno,
+            is_mock=True,
+        )
+    except RuntimeError as exc:
+        if _is_kis_mock_unsupported(str(exc)):
+            return await _soft_cancel(f"broker_unsupported: {exc}")
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "broker_cancel_confirmed": False,
+            "error": str(exc),
+            "market": market,
+        }
+    except Exception as exc:  # noqa: BLE001 - surface unexpected broker errors
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "broker_cancel_confirmed": False,
+            "error": str(exc),
+            "market": market,
+        }
+
+    await mark_kis_mock_order_cancelled(
+        ledger_id=resolved["ledger_id"],
+        broker_confirmed=True,
+        detail={"order_no": order_id, "broker_response": result},
+    )
+    return {
+        "success": True,
+        "order_id": order_id,
+        "symbol": resolved_symbol,
+        "broker_cancel_confirmed": True,
+        "cancelled_at": result.get("ord_tmd", ""),
+        "market": market,
+    }
+
+
 async def _cancel_kis_domestic(
     order_id: str,
     symbol: str | None,
@@ -450,6 +566,8 @@ async def _cancel_kis_domestic(
     is_mock: bool = False,
 ) -> dict[str, Any]:
     """Cancel a KIS domestic (Korean equity) order."""
+    if is_mock:
+        return await _cancel_kis_mock_domestic(order_id, symbol)
     if not symbol:
         try:
             kis = _create_kis_client(is_mock=is_mock)
@@ -710,7 +828,16 @@ async def cancel_order_impl(
         if market_type == "crypto":
             return await _cancel_upbit(order_id)
         if market_type == "equity_kr":
-            return await _cancel_kis_domestic(order_id, symbol, is_mock=is_mock)
+            result = await _cancel_kis_domestic(order_id, symbol, is_mock=is_mock)
+            # ROB-395: keep the live ledger truthful — a cancelled live order must
+            # not stay accepted/pending (otherwise reconcile could still act on it).
+            if not is_mock and result.get("success"):
+                from app.mcp_server.tooling.kis_live_ledger import (
+                    _mark_ledger_cancelled,
+                )
+
+                await _mark_ledger_cancelled(order_id)
+            return result
         if market_type == "equity_us":
             return await _cancel_kis_overseas(order_id, symbol, is_mock=is_mock)
         return {
@@ -865,6 +992,138 @@ async def _modify_upbit(
         }
 
 
+async def _modify_kis_mock_domestic(
+    order_id: str,
+    normalized_symbol: str,
+    market_type: str,
+    new_price: float | None,
+    new_quantity: float | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Modify a KIS *mock* domestic order via the ledger (no TTTC8036R).
+
+    Fail-closed: if the broker rejects VTTC0013U as unsupported in mock, we do
+    NOT soft-modify (we cannot honestly claim a resting order was changed).
+    Use cancel + re-place instead.
+    """
+    from decimal import Decimal
+
+    from app.mcp_server.tooling.kis_mock_ledger import (
+        resolve_mock_order_for_cancel,
+        update_kis_mock_order_terms,
+    )
+
+    market = _normalize_market_type_to_external(market_type)
+    resolved = await resolve_mock_order_for_cancel(order_id)
+    if resolved is None:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "error": "kis_mock: order not found in kis_mock_order_ledger",
+            "market": market,
+            "dry_run": dry_run,
+        }
+
+    orgno = resolved["krx_fwdg_ord_orgno"]
+    side = resolved["side"]
+    original_price = int(resolved["price"])
+    original_quantity = int(resolved["quantity"])
+    final_price = int(
+        adjust_tick_size_kr(
+            float(new_price) if new_price is not None else original_price, side
+        )
+    )
+    final_quantity = (
+        int(new_quantity) if new_quantity is not None else original_quantity
+    )
+
+    if not orgno:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "mock_unsupported": True,
+            "error": "kis_mock: missing krx_fwdg_ord_orgno; use cancel + re-place",
+            "market": market,
+            "dry_run": dry_run,
+        }
+
+    try:
+        kis = _create_kis_client(is_mock=True)
+        result = await kis.modify_korea_order(
+            order_id,
+            normalized_symbol,
+            final_quantity,
+            final_price,
+            krx_fwdg_ord_orgno=orgno,
+            is_mock=True,
+        )
+    except RuntimeError as exc:
+        if _is_kis_mock_unsupported(str(exc)):
+            return {
+                "success": False,
+                "status": "failed",
+                "order_id": order_id,
+                "symbol": normalized_symbol,
+                "mock_unsupported": True,
+                "error": (
+                    "kis_mock modify unsupported by broker — use cancel + "
+                    f"re-place. ({exc})"
+                ),
+                "market": market,
+                "dry_run": dry_run,
+            }
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "error": str(exc),
+            "market": market,
+            "dry_run": dry_run,
+        }
+
+    if not result.get("odno"):
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "error": "kis_mock modify returned no order number",
+            "market": market,
+            "dry_run": dry_run,
+        }
+
+    await update_kis_mock_order_terms(
+        ledger_id=resolved["ledger_id"],
+        price=Decimal(str(final_price)),
+        quantity=Decimal(str(final_quantity)),
+        detail={"modified_to_order_no": result.get("odno")},
+    )
+    return {
+        "success": True,
+        "status": "modified",
+        "order_id": order_id,
+        "new_order_id": result["odno"],
+        "symbol": normalized_symbol,
+        "market": market,
+        "changes": {
+            "price": {"from": original_price, "to": final_price}
+            if final_price != original_price
+            else None,
+            "quantity": {"from": original_quantity, "to": final_quantity}
+            if final_quantity != original_quantity
+            else None,
+        },
+        "method": "api_modify",
+        "dry_run": dry_run,
+        "message": "KIS mock order modified via ledger-resolved orgno",
+    }
+
+
 async def _modify_kis_domestic(
     order_id: str,
     normalized_symbol: str,
@@ -876,6 +1135,10 @@ async def _modify_kis_domestic(
     is_mock: bool = False,
 ) -> dict[str, Any]:
     """Modify a KIS domestic (Korean equity) order."""
+    if is_mock:
+        return await _modify_kis_mock_domestic(
+            order_id, normalized_symbol, market_type, new_price, new_quantity, dry_run
+        )
     try:
         kis = _create_kis_client(is_mock=is_mock)
         try:
@@ -1157,7 +1420,7 @@ async def modify_order_impl(
             dry_run,
         )
     if market_type == "equity_kr":
-        return await _modify_kis_domestic(
+        result = await _modify_kis_domestic(
             order_id,
             normalized_symbol,
             market_type,
@@ -1166,6 +1429,20 @@ async def modify_order_impl(
             dry_run,
             is_mock=is_mock,
         )
+        # ROB-395: KIS 정정주문 issues a new odno; re-point the live ledger row so
+        # reconcile tracks the replacement instead of orphaning it.
+        if not is_mock and result.get("success"):
+            from app.mcp_server.tooling.kis_live_ledger import (
+                _repoint_ledger_after_modify,
+            )
+
+            await _repoint_ledger_after_modify(
+                old_order_no=order_id,
+                new_order_no=result.get("new_order_id"),
+                new_price=new_price,
+                new_quantity=new_quantity,
+            )
+        return result
     if market_type == "equity_us":
         return await _modify_kis_overseas(
             order_id,

@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import sentry_sdk
 import yfinance as yf
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
-from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
@@ -31,6 +29,7 @@ from app.mcp_server.tooling.fundamentals_sources_yfinance import (
 )
 from app.mcp_server.tooling.market_data_indicators import _fetch_ohlcv_for_indicators
 from app.mcp_server.tooling.market_data_quotes import (
+    _fetch_kr_live_quote,
     _fetch_quote_crypto,
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -42,8 +41,9 @@ from app.mcp_server.tooling.shared import (
     normalize_symbol_input as _normalize_symbol_input,
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
-from app.models.research_pipeline import ResearchSession, ResearchSummary
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
+from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
+from app.services.symbol_analysis.freshness import compute_is_stale
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,37 @@ def _build_kr_quote_from_ohlcv(
     }
 
 
+_KST = ZoneInfo("Asia/Seoul")
+
+
+async def _resolve_kr_quote(
+    symbol: str, ohlcv_df: pd.DataFrame
+) -> dict[str, Any] | None:
+    """KR analyze quote: 라이브 inquire_price 우선, 실패 시 일봉 종가 fallback.
+    두 경로 모두 price_as_of + is_stale_price 를 정직하게 태그한다."""
+    trading_date = datetime.now(_KST).date()
+
+    live = await _fetch_kr_live_quote(symbol)
+    if live is not None:
+        as_of_raw = live.get("price_as_of")
+        as_of_dt = datetime.fromisoformat(as_of_raw) if as_of_raw else None
+        live["is_stale_price"] = compute_is_stale(
+            "price", as_of_dt, trading_date=trading_date
+        )
+        return live
+
+    fallback = _build_kr_quote_from_ohlcv(symbol, ohlcv_df)
+    if fallback is None:
+        return None
+    last_idx = ohlcv_df.index[-1]
+    as_of_dt = pd.Timestamp(last_idx).to_pydatetime()
+    fallback["price_as_of"] = as_of_dt.isoformat()
+    fallback["is_stale_price"] = compute_is_stale(
+        "price", as_of_dt, trading_date=trading_date
+    )
+    return fallback
+
+
 async def _get_indicators_impl(
     symbol: str,
     indicators: list[str],
@@ -141,17 +172,13 @@ def _prepare_quote_tasks(
     named_tasks: list[tuple[str, asyncio.Task[Any]]] = []
 
     if market_type == "equity_kr":
-        preloaded_quote = _build_kr_quote_from_ohlcv(normalized_symbol, ohlcv_df)
-        if preloaded_quote is None:
-            named_tasks.append(
-                (
-                    "quote",
-                    asyncio.create_task(
-                        _get_quote_impl(normalized_symbol, market_type)
-                    ),
-                )
+        named_tasks.append(
+            (
+                "quote",
+                asyncio.create_task(_resolve_kr_quote(normalized_symbol, ohlcv_df)),
             )
-        return preloaded_quote, named_tasks
+        )
+        return None, named_tasks
 
     named_tasks.append(
         (
@@ -395,146 +422,39 @@ def _apply_recommendation(
 ) -> None:
     if market_type not in ("equity_kr", "equity_us"):
         return
+
     recommendation = _build_recommendation_for_equity(analysis, market_type)
-    if recommendation:
-        analysis["recommendation"] = recommendation
 
+    quote = analysis.get("quote") or {}
+    price_present = quote.get("price") is not None
+    consensus_present = bool((analysis.get("opinions") or {}).get("consensus"))
 
-def _map_confidence_score(score: int) -> str:
-    if score >= 70:
-        return "high"
-    if score >= 40:
-        return "medium"
-    return "low"
+    if recommendation is None:
+        # price/quote 부재 → unavailable floor 레코멘데이션을 정직하게 부착.
+        recommendation = {
+            "action": "hold",
+            "confidence": "low",
+            "rsi14": None,
+            "buy_zones": [],
+            "sell_targets": [],
+            "stop_loss": None,
+            "reasoning": "",
+        }
+    rsi_present = recommendation.get("rsi14") is not None
 
+    missing = insufficient_inputs(
+        price_present=price_present,
+        rsi_present=rsi_present,
+        consensus_present=consensus_present,
+    )
+    action, confidence = floored_action(
+        recommendation["action"], recommendation["confidence"], insufficient=missing
+    )
+    recommendation["action"] = action
+    recommendation["confidence"] = confidence
+    recommendation["insufficient_inputs"] = missing
 
-def _map_pipeline_to_analysis(
-    session: ResearchSession,
-    summary: ResearchSummary,
-    symbol: str,
-    market_type: str,
-) -> dict[str, Any]:
-    # Extract price analysis fields
-    pa = summary.price_analysis or {}
-
-    buy_zones = []
-    if (
-        pa.get("appropriate_buy_min") is not None
-        or pa.get("appropriate_buy_max") is not None
-    ):
-        buy_zones.append(
-            {
-                "price": pa.get("appropriate_buy_max") or pa.get("appropriate_buy_min"),
-                "type": "appropriate_buy",
-                "reasoning": f"Appropriate buy range: {pa.get('appropriate_buy_min')} - {pa.get('appropriate_buy_max')}",
-            }
-        )
-    if pa.get("buy_hope_min") is not None or pa.get("buy_hope_max") is not None:
-        buy_zones.append(
-            {
-                "price": pa.get("buy_hope_max") or pa.get("buy_hope_min"),
-                "type": "buy_hope",
-                "reasoning": f"Buy hope range: {pa.get('buy_hope_min')} - {pa.get('buy_hope_max')}",
-            }
-        )
-
-    sell_targets = []
-    if (
-        pa.get("appropriate_sell_min") is not None
-        or pa.get("appropriate_sell_max") is not None
-    ):
-        sell_targets.append(
-            {
-                "price": pa.get("appropriate_sell_min")
-                or pa.get("appropriate_sell_max"),
-                "type": "appropriate_sell",
-                "reasoning": f"Appropriate sell range: {pa.get('appropriate_sell_min')} - {pa.get('appropriate_sell_max')}",
-            }
-        )
-    if pa.get("sell_target_min") is not None or pa.get("sell_target_max") is not None:
-        sell_targets.append(
-            {
-                "price": pa.get("sell_target_min") or pa.get("sell_target_max"),
-                "type": "sell_target",
-                "reasoning": f"Sell target range: {pa.get('sell_target_min')} - {pa.get('sell_target_max')}",
-            }
-        )
-
-    # Sort and limit
-    buy_zones.sort(key=lambda x: x["price"] if x["price"] is not None else 0)
-    sell_targets.sort(key=lambda x: x["price"] if x["price"] is not None else 0)
-
-    # Recommendation
-    recommendation = {
-        "action": (
-            summary.decision.value
-            if hasattr(summary.decision, "value")
-            else str(summary.decision)
-        ),
-        "confidence": _map_confidence_score(summary.confidence),
-        "buy_zones": buy_zones[:3],
-        "sell_targets": sell_targets[:3],
-        "stop_loss": None,  # PriceAnalysis doesn't have it explicitly yet
-        "reasoning": "; ".join(summary.reasons) if summary.reasons else "",
-        "detailed_text": summary.detailed_text,
-        "bull_arguments": summary.bull_arguments,
-        "bear_arguments": summary.bear_arguments,
-    }
-
-    # Map stages back to indicators/news/etc if possible
-    analysis = {
-        "symbol": symbol,
-        "market_type": market_type,
-        "source": "research_pipeline",
-        "session_id": session.id,
-        "recommendation": recommendation,
-        "errors": summary.warnings or [],
-        "pipeline_metadata": {
-            "model_name": summary.model_name,
-            "prompt_version": summary.prompt_version,
-            "executed_at": (
-                summary.executed_at.isoformat() if summary.executed_at else None
-            ),
-        },
-    }
-
-    # Try to extract some quote/indicators from stages if available
-    for stage in session.stage_analyses:
-        if stage.stage_type == "market":
-            analysis["quote"] = {
-                "price": stage.signals.get("last_close"),
-                "change_pct": stage.signals.get("change_pct"),
-                "symbol": symbol,
-                "instrument_type": market_type,
-                "source": "research_pipeline",
-            }
-            analysis["indicators"] = stage.signals
-        elif stage.stage_type == "news":
-            analysis["news"] = stage.signals
-        elif stage.stage_type == "fundamentals":
-            analysis["valuation"] = stage.signals
-
-    return analysis
-
-
-async def _get_pipeline_result(
-    session_id: int, symbol: str, market_type: str
-) -> dict[str, Any]:
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(ResearchSession)
-            .where(ResearchSession.id == session_id)
-            .options(
-                selectinload(ResearchSession.summaries),
-                selectinload(ResearchSession.stage_analyses),
-            )
-        )
-        session = result.scalar_one_or_none()
-        if not session or not session.summaries:
-            return {}
-
-        summary = max(session.summaries, key=lambda s: s.executed_at)
-        return _map_pipeline_to_analysis(session, summary, symbol, market_type)
+    analysis["recommendation"] = recommendation
 
 
 async def analyze_stock_impl(
@@ -553,28 +473,6 @@ async def analyze_stock_impl(
             f"Unsupported symbol format: '{symbol}'. "
             "Use ticker codes (e.g., AAPL, 005930, KRW-BTC)."
         )
-
-    # ROB-112: Research Pipeline Integration
-    if (
-        settings.RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED
-        and settings.RESEARCH_PIPELINE_ENABLED
-    ):
-        try:
-            from app.analysis.pipeline import run_research_session
-
-            async with AsyncSessionLocal() as db:
-                session_id = await run_research_session(
-                    db=db,
-                    symbol=normalized_symbol,
-                    name=normalized_symbol,
-                    instrument_type=market_type,
-                )
-            return await _get_pipeline_result(
-                session_id, normalized_symbol, market_type
-            )
-        except Exception as exc:
-            logger.warning("research_pipeline.analyze_stock fallback: %s", exc)
-            # Fall through to legacy path
 
     analysis = _build_analysis_payload(normalized_symbol, market_type)
     loop = asyncio.get_running_loop()

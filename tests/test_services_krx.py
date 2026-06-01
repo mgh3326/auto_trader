@@ -1440,3 +1440,38 @@ class TestFetchWithDateFallback:
         )
 
         assert result == []
+
+
+class TestKRXSessionExpired:
+    """fetch_data raises a typed, classifiable error after re-auth LOGOUT."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_data_raises_typed_error_after_reauth_logout(self, monkeypatch):
+        import httpx
+
+        from app.services.krx import KRXSessionExpiredError, KRXSessionManager
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Always reply 400 + LOGOUT body to force re-auth then failure.
+            return httpx.Response(400, text="LOGOUT")
+
+        manager = KRXSessionManager()
+        manager._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        manager._authenticated = True  # skip real login in _ensure_session
+
+        async def _noop_login() -> None:
+            manager._authenticated = True
+
+        monkeypatch.setattr(manager, "_login", _noop_login)
+
+        with pytest.raises(KRXSessionExpiredError):
+            await manager.fetch_data(bld="dummy/bld")
+
+        await manager.close()
+
+    def test_session_expired_error_is_httpx_status_error(self):
+        import httpx
+
+        from app.services.krx import KRXSessionExpiredError
+
+        assert issubclass(KRXSessionExpiredError, httpx.HTTPStatusError)

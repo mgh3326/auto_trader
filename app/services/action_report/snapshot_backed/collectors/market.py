@@ -121,6 +121,11 @@ class MarketEventsSnapshotCollector:
         indices = await self._collect_indices(request.market)
         if indices:
             payload["indices"] = indices
+            if request.market == "kr" and request.market_session == "nxt":
+                payload["index_session"] = "regular_closed"
+                payload["index_session_note"] = (
+                    "KRX 정규장 미개장, 전일 종가 기준(frozen)"
+                )
         altseason = await self._collect_altseason(request.market)
         if altseason:
             payload["altseason"] = altseason

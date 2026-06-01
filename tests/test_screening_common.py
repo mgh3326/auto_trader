@@ -280,3 +280,63 @@ class TestComputeAvgTargetAndUpside:
         avg, upside = _compute_avg_target_and_upside({}, current_price=100.0)
         assert avg is None
         assert upside is None
+
+
+class TestTradeAmountValidation:
+    """trade_amount sorting is valid for KR/crypto, rejected for US with guidance."""
+
+    @pytest.mark.parametrize("market", ["kr", "kospi", "kosdaq", "konex", "all"])
+    def test_trade_amount_allowed_for_kr(self, market):
+        from app.mcp_server.tooling.screening.common import _validate_screen_filters
+
+        # Should not raise.
+        _validate_screen_filters(
+            market=market,
+            asset_type="stock",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+        )
+
+    def test_trade_amount_rejected_for_us_with_actionable_message(self):
+        from app.mcp_server.tooling.screening.common import _validate_screen_filters
+
+        with pytest.raises(ValueError) as exc:
+            _validate_screen_filters(
+                market="us",
+                asset_type="stock",
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="trade_amount",
+            )
+        message = str(exc.value)
+        assert "volume" in message  # points the caller at a supported US sort key
+
+
+class TestSortByTradeAmount:
+    """trade_amount sort falls back from trade_amount_24h (crypto) to trade_amount (KR)."""
+
+    def test_kr_rows_sorted_by_trade_amount_field(self):
+        from app.mcp_server.tooling.screening.common import _sort_and_limit
+
+        rows = [
+            {"symbol": "A", "trade_amount": 100.0},
+            {"symbol": "C", "trade_amount": 300.0},
+            {"symbol": "B", "trade_amount": 200.0},
+        ]
+        ordered = _sort_and_limit(rows, "trade_amount", "desc", 10)
+        assert [r["symbol"] for r in ordered] == ["C", "B", "A"]
+
+    def test_crypto_rows_sorted_by_trade_amount_24h(self):
+        from app.mcp_server.tooling.screening.common import _sort_and_limit
+
+        rows = [
+            {"symbol": "A", "trade_amount_24h": 10.0},
+            {"symbol": "B", "trade_amount_24h": 30.0},
+        ]
+        ordered = _sort_and_limit(rows, "trade_amount", "desc", 10)
+        assert [r["symbol"] for r in ordered] == ["B", "A"]

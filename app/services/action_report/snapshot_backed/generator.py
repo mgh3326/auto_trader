@@ -78,6 +78,13 @@ from app.services.investment_snapshots.repository import (
 )
 
 _MARKET_BASELINE_KEYS = ("market", "from_date", "to_date", "indices")
+_MARKET_ALTSEASON_BASELINE_KEYS = ("ubai_ubmi_ratio",)
+_MARKET_ALTSEASON_BREADTH_BASELINE_KEYS = (
+    "alts_beating_btc_pct",
+    "alts_beating_btc",
+    "alts_total",
+    "btc_change_24h",
+)
 _PORTFOLIO_BASELINE_KEYS = (
     "primary_source",
     "cash",
@@ -86,11 +93,46 @@ _PORTFOLIO_BASELINE_KEYS = (
 )
 
 
+def _is_json_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _altseason_numeric_baseline(altseason: Any) -> dict[str, Any]:
+    """Freeze only compact numeric altseason fields.
+
+    Upbit altseason payloads also carry provenance/source/as_of strings and
+    breadth method/window metadata. Those stay in snapshot provenance; the report
+    descriptor baseline keeps only delta-relevant numbers.
+    """
+    if not isinstance(altseason, Mapping):
+        return {}
+
+    base = {
+        key: altseason[key]
+        for key in _MARKET_ALTSEASON_BASELINE_KEYS
+        if _is_json_number(altseason.get(key))
+    }
+    breadth = altseason.get("breadth")
+    if isinstance(breadth, Mapping):
+        breadth_base = {
+            key: breadth[key]
+            for key in _MARKET_ALTSEASON_BREADTH_BASELINE_KEYS
+            if _is_json_number(breadth.get(key))
+        }
+        if breadth_base:
+            base["breadth"] = breadth_base
+    return base
+
+
 def _market_numeric_baseline(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Whitelist the small delta-relevant numerics from a market snapshot
     payload. Never copies the heavy ``events`` list. Missing keys are skipped
     (no fabrication)."""
-    return {k: payload[k] for k in _MARKET_BASELINE_KEYS if k in payload}
+    base = {k: payload[k] for k in _MARKET_BASELINE_KEYS if k in payload}
+    altseason = _altseason_numeric_baseline(payload.get("altseason"))
+    if altseason:
+        base["altseason"] = altseason
+    return base
 
 
 def _portfolio_numeric_baseline(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -297,6 +339,7 @@ class SnapshotBackedReportGenerator:
                 policy_version=request.policy_version,
                 mode="ensure_fresh",
                 symbols=derivation.symbols or None,
+                market_session=request.market_session,
                 candidate_limit=request.candidate_limit,
                 requested_by=request.requested_by,
                 user_id=request.user_id,

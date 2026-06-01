@@ -7,6 +7,10 @@ from app.core.db import AsyncSessionLocal
 from app.services.invest_momentum_events.repository import (
     InvestMomentumEventSnapshotsRepository,
 )
+from app.services.invest_screener_snapshots.freshness import (
+    classify_momentum_freshness,
+    expected_kr_baseline_date,
+)
 
 
 def _candidate_to_dict(candidate) -> dict[str, Any]:
@@ -63,10 +67,27 @@ async def get_momentum_candidates_impl(
             trading_date=snapshot_date,
             limit=limit,
         )
+    now = dt.datetime.now(dt.UTC)
+    if rows:
+        latest_trading_date = rows[0].trading_date
+        data_state, days_stale = classify_momentum_freshness(
+            latest_trading_date=latest_trading_date, now=now
+        )
+        empty_reason = None
+    else:
+        latest_trading_date = None
+        data_state, days_stale = "missing", 0
+        empty_reason = "no_naver_momentum_snapshots"
+
     return {
         "market": "kr",
-        "data_state": "fresh" if rows else "missing",
-        "empty_reason": None if rows else "no_naver_momentum_snapshots",
+        "data_state": data_state,
+        "days_stale": days_stale,
+        "expected_baseline_date": expected_kr_baseline_date(now).isoformat(),
+        "latest_trading_date": (
+            latest_trading_date.isoformat() if latest_trading_date else None
+        ),
+        "empty_reason": empty_reason,
         "items": [_candidate_to_dict(row) for row in rows],
         "scoring_notes": [
             "searchTop/quantTop/up/priceTop 동시 출현을 우대",

@@ -193,7 +193,9 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             "Screen stocks across markets (KR/US/Crypto) with filters. "
             "KR supports kospi/kosdaq/konex/all, 30-day ADV via adv_krw_min "
             "(1B KRW conservative, 5B KRW aggressive), instrument_types, "
-            "and exclude_sectors."
+            "and exclude_sectors. "
+            "sort_by='trade_amount' is supported for KR and crypto only; "
+            "for US use 'volume', 'market_cap', or 'change_rate'."
         ),
     )
     async def screen_stocks(

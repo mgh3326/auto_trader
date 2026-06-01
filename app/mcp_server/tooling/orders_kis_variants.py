@@ -36,6 +36,7 @@ KIS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "kis_live_cancel_order",
     "kis_live_modify_order",
     "kis_live_get_order_history",
+    "kis_live_reconcile_orders",
 }
 
 KIS_MOCK_ORDER_TOOL_NAMES: set[str] = {
@@ -278,6 +279,32 @@ async def _get_order_history_variant(
     )
 
 
+async def _reconcile_orders_variant(
+    *,
+    symbol: str | None,
+    order_id: str | None,
+    dry_run: bool,
+    limit: int,
+    account_mode: str | None,
+    account_type: str | None,
+) -> dict[str, Any]:
+    routing, early_response = _prepare_variant_call(
+        "kis_live_reconcile_orders", ACCOUNT_MODE_KIS_LIVE, account_mode, account_type
+    )
+    if early_response:
+        return early_response
+    from app.mcp_server.tooling.kis_live_ledger import (
+        kis_live_reconcile_orders_impl,
+    )
+
+    return apply_account_routing_metadata(
+        await kis_live_reconcile_orders_impl(
+            symbol=symbol, order_id=order_id, dry_run=dry_run, limit=limit
+        ),
+        routing,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Live variants (is_mock=False hard-pinned)
 # ---------------------------------------------------------------------------
@@ -438,6 +465,62 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             limit=limit,
             account_mode=account_mode,
             account_type=account_type,
+        )
+
+    @mcp.tool(
+        name="kis_live_reconcile_orders",
+        description=(
+            "Reconcile accepted/pending KIS live (real-money) KR orders against "
+            "order-id-keyed broker fill evidence (inquire_daily_order_domestic). "
+            "Books fills/journals/realized_pnl ONLY from confirmed fills; marks "
+            "unfilled/cancelled orders without journal side-effects. "
+            "dry_run=True by default for safety. KR domestic only."
+        ),
+    )
+    async def kis_live_reconcile_orders(
+        symbol: str | None = None,
+        order_id: str | None = None,
+        dry_run: bool = True,
+        limit: int = 100,
+        account_mode: str | None = None,
+        account_type: str | None = None,
+    ) -> dict[str, Any]:
+        return await _reconcile_orders_variant(
+            symbol=symbol,
+            order_id=order_id,
+            dry_run=dry_run,
+            limit=limit,
+            account_mode=account_mode,
+            account_type=account_type,
+        )
+
+    @mcp.tool(
+        name="live_reconcile_orders",
+        description=(
+            "Reconcile accepted/pending US/overseas + crypto live (real-money) orders "
+            "against broker fill evidence (overseas daily-order / Upbit order-state). "
+            "Books fills/journals/realized_pnl ONLY from confirmed fills (delta-idempotent); "
+            "marks unfilled/cancelled without journal side-effects. dry_run=True by default. "
+            "KR domestic uses kis_live_reconcile_orders instead."
+        ),
+    )
+    async def live_reconcile_orders(
+        market: str | None = None,
+        broker: str | None = None,
+        symbol: str | None = None,
+        order_id: str | None = None,
+        dry_run: bool = True,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        from app.mcp_server.tooling.live_order_ledger import live_reconcile_orders_impl
+
+        return await live_reconcile_orders_impl(
+            market=market,
+            broker=broker,
+            symbol=symbol,
+            order_id=order_id,
+            dry_run=dry_run,
+            limit=limit,
         )
 
 

@@ -58,6 +58,26 @@ def _lower_keys(row: dict[str, Any]) -> dict[str, Any]:
     return {str(k).lower(): v for k, v in row.items()}
 
 
+def _dedupe_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop byte-for-byte duplicate broker rows after key normalization.
+
+    KIS daily-order inquiry can return the same order row more than once across
+    pages / query shapes.  The filled-quantity fields are then cumulative for
+    the order, not independent fills, so counting exact duplicates would
+    overstate fills and could over-book live journals.
+    """
+
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        key = tuple(sorted((str(k), str(v)) for k, v in row.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
 def _get_field(lowered: dict[str, Any], candidates: tuple[str, ...]) -> Any:
     for c in candidates:
         if c in lowered and lowered[c] not in (None, ""):
@@ -108,11 +128,11 @@ def classify_fill_evidence(
             "no order number to match",
         )
 
-    matched = [
+    matched = _dedupe_rows(
         _lower_keys(r)
         for r in rows
         if _order_no_matches(target, _get_field(_lower_keys(r), _ORDER_NO_KEYS))
-    ]
+    )
     if not matched:
         return FillEvidence(
             FillVerdict.NONE,

@@ -493,3 +493,97 @@ def test_partial_parity_presets_report_partial_status():
     # full presets stay full; non-toss rankings stay not_toss_parity.
     assert _toss_parity_status("consecutive_gainers", "kr") == "full"
     assert _toss_parity_status("top_gainers", "kr") == "not_toss_parity"
+
+
+@pytest.mark.asyncio
+async def test_equity_coverage_uses_session_aware_baseline(db_session, monkeypatch):
+    import app.services.action_report.snapshot_backed.collectors.candidate_universe as cu
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
+    import app.services.invest_view_model.screener_service as ss
+    from app.services.invest_screener_snapshots.freshness import expected_baseline_date
+
+    async def _no_rows(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _no_rows)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", _no_rows)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", _no_rows)
+
+    fixed_now = dt.datetime(2026, 6, 1, 0, 30, tzinfo=dt.UTC)  # 09:30 KST Mon
+    monkeypatch.setattr(cu, "utcnow", lambda: fixed_now)
+
+    captured: dict = {}
+
+    class _CapturingRepo(_FakeEquityRepository):
+        async def coverage(self, *, market, today_trading_date):
+            captured["baseline"] = today_trading_date
+            return await super().coverage(
+                market=market, today_trading_date=today_trading_date
+            )
+
+    repo = _CapturingRepo()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+
+    # 09:30 KST is before the 16:20 preliminary, so baseline is the PRIOR weekday,
+    # NOT raw UTC now.date() (2026-05-31, a Sunday).
+    assert captured["baseline"] == expected_baseline_date("kr", now=fixed_now)
+    assert captured["baseline"] != fixed_now.date()
+
+
+@pytest.mark.asyncio
+async def test_stale_equity_payload_exposes_days_stale(db_session, monkeypatch):
+    import app.services.action_report.snapshot_backed.collectors.candidate_universe as cu
+
+    fixed_now = dt.datetime(2026, 6, 1, 11, 0, tzinfo=dt.UTC)  # 20:00 KST Mon
+    monkeypatch.setattr(cu, "utcnow", lambda: fixed_now)
+
+    class _StaleRepo(_FakeEquityRepository):
+        async def coverage(self, *, market, today_trading_date):
+            return CoverageCounts(
+                market=market,
+                today_trading_date=today_trading_date,
+                fresh_count=0,
+                stale_count=11638,
+                last_computed_at=None,
+            )
+
+        async def list_top_candidates(self, *, market, limit=10):
+            self.requested_limits.append(limit)
+            return [
+                InvestScreenerSnapshot(
+                    market=market,
+                    symbol="000050",
+                    snapshot_date=dt.date(2026, 5, 13),
+                    latest_close=Decimal("1000"),
+                    change_rate=Decimal("1.0"),
+                    source="kis",
+                )
+            ]
+
+    repo = _StaleRepo()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="us",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=5,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["latest_partition_date"] == "2026-05-13"
+    assert payload["days_stale"] >= 1
+    assert "expected_baseline_date" in payload
+    assert payload["usefulness"] == "stale_only"
+    assert "일 지연" in payload["missing_data"]["what"]
