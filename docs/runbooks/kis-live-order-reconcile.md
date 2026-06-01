@@ -8,9 +8,19 @@ at send time. A live KR order is recorded to `review.kis_live_order_ledger` as
 Fills/journals/realized_pnl are applied only by **`kis_live_reconcile_orders`**, from
 order-id-keyed `inquire_daily_order_domestic` evidence.
 
+## Cancel / modify keep the ledger truthful
+- `kis_live_cancel_order` (live KR, success) marks the matching ledger row
+  `cancelled` immediately — a cancelled order never stays `accepted/pending`, so a
+  later reconcile cannot re-book it.
+- `kis_live_modify_order` (live KR, success) re-points the ledger row to the new
+  odno issued by KIS 정정주문 (and updates price/quantity), so reconcile tracks the
+  replacement instead of orphaning it.
+
+These run only for live KR (`is_mock=False`); mock/US/crypto paths are untouched.
+
 ## Scope
 KR domestic live only. US/overseas live and crypto keep the legacy immediate-record
-path (same defect remains; tracked as follow-up).
+path (same defect remains; tracked as follow-up — ROB-407).
 
 ## Reconcile workflow
 1. Place order: `kis_live_place_order(..., dry_run=False)` → note `order_id` / `ledger_id`,

@@ -398,12 +398,13 @@ async def test_reconcile_orders_impl_aggregates_counts():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_mark_ledger_cancelled_only_touches_open_rows(db_session):
+    from sqlalchemy import select
+
     from app.mcp_server.tooling.kis_live_ledger import (
         _mark_ledger_cancelled,
         _order_session_factory,
         _save_kis_live_order_ledger,
     )
-    from sqlalchemy import select
 
     lid = await _save_kis_live_order_ledger(
         symbol="012450",
@@ -452,12 +453,13 @@ async def test_mark_ledger_cancelled_only_touches_open_rows(db_session):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_repoint_ledger_after_modify(db_session):
+    from sqlalchemy import select
+
     from app.mcp_server.tooling.kis_live_ledger import (
         _order_session_factory,
         _repoint_ledger_after_modify,
         _save_kis_live_order_ledger,
     )
-    from sqlalchemy import select
 
     await _save_kis_live_order_ledger(
         symbol="015760",
