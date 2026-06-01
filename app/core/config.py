@@ -474,6 +474,9 @@ class Settings(BaseSettings):
     # ROB-405 Slice A — mock roundtrip → trade_journal bridge. Default off:
     # no journals are created until an operator flips this.
     MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED: bool = False
+    # ROB-405 Slice B — auto journal verdict. Default off.
+    JOURNAL_VERDICT_AUTO_ENABLED: bool = False
+
     # ROB-269 Phase 2 — gates BOTH the 4 MCP snapshot tools AND the
     # /trading/api/investment-snapshots/* GET router. Default off: code is
     # importable but unreachable from caller surfaces until flipped post-merge.
