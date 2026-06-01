@@ -232,7 +232,7 @@ INVEST_DATA_SOURCE_CONTRACT: tuple[DataSourceContractEntry, ...] = (
         fallback_source=None,
         may_affect_ranking=True,
         unavailable_label="stale",
-        collector_snapshot_kind=None,  # read-model; folded into candidate_universe / future collector
+        collector_snapshot_kind="investor_flow",  # ROB-398 Slice 3: investor_flow collector wired
     ),
     DataSourceContractEntry(
         surface="screener",
