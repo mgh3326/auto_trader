@@ -2559,7 +2559,7 @@ def test_apply_kr_name_fallback_fills_code_as_name_rows():
     )
 
     rows = [
-        {"ticker": "035420", "display_name": None},      # missing
+        {"ticker": "035420", "display_name": None},  # missing
         {"ticker": "035720", "display_name": "035720"},  # code-as-name
         {"ticker": "005930", "display_name": "삼성전자"},  # already good
     ]
