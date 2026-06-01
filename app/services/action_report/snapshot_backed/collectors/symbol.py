@@ -50,11 +50,11 @@ from app.services.action_report.snapshot_backed.collectors._base import (
     unavailable_result,
     utcnow,
 )
-from app.services.symbol_universe_common import has_any_rows
 from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
 )
+from app.services.symbol_universe_common import has_any_rows
 
 _DEFAULT_QUOTE_ENRICHMENT_LIMIT = 25
 
@@ -181,13 +181,9 @@ class SymbolSnapshotCollector:
         us_reasons: dict[str, str] = {}
         if remaining:
             try:
-                extra, us_reasons = await self._resolve_us_universe_payloads(
-                    remaining
-                )
+                extra, us_reasons = await self._resolve_us_universe_payloads(remaining)
             except Exception as exc:  # noqa: BLE001 — fail-open, preserve stock_info
-                us_reasons = {
-                    s: _US_REASON_UNIVERSE_LOOKUP_ERROR for s in remaining
-                }
+                us_reasons = dict.fromkeys(remaining, _US_REASON_UNIVERSE_LOOKUP_ERROR)
                 _ = exc
             else:
                 payloads.extend(extra)
@@ -210,9 +206,7 @@ class SymbolSnapshotCollector:
 
         # Empty universe → every requested symbol is unresolvable for the same
         # reason (operator must run the sync). Distinguish from not_registered.
-        any_universe_rows = await has_any_rows(
-            self._session, USSymbolUniverse.symbol
-        )
+        any_universe_rows = await has_any_rows(self._session, USSymbolUniverse.symbol)
 
         payloads: list[dict[str, Any]] = []
         reasons: dict[str, str] = {}
