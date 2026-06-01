@@ -29,31 +29,36 @@ def mock_ohlcv_df():
 async def test_pipeline_flags_do_not_flip_source(mock_ohlcv_df):
     """RESEARCH_PIPELINE 플래그 True 라도 legacy source 로 결정적."""
 
-    with patch("app.mcp_server.tooling.analysis_analyze.settings") as mock_settings:
+    with patch("app.core.config.settings") as mock_settings:
         mock_settings.RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED = True
         mock_settings.RESEARCH_PIPELINE_ENABLED = True
 
-        with patch(
-            "app.mcp_server.tooling.analysis_analyze._fetch_ohlcv_for_indicators",
-            new_callable=AsyncMock,
-            return_value=mock_ohlcv_df,
-        ), patch(
-            "app.mcp_server.tooling.analysis_analyze._get_quote_impl",
-            new_callable=AsyncMock,
-            return_value={
-                "price": 105.0,
-                "symbol": "AAPL",
-                "instrument_type": "equity_us",
-                "source": "yahoo",
-            },
-        ), patch(
-            "app.mcp_server.tooling.analysis_analyze._get_indicators_impl",
-            new_callable=AsyncMock,
-            return_value={"rsi": {"value": 50}},
-        ), patch(
-            "app.mcp_server.tooling.analysis_analyze._get_support_resistance_impl",
-            new_callable=AsyncMock,
-            return_value={},
+        with (
+            patch(
+                "app.mcp_server.tooling.analysis_analyze._fetch_ohlcv_for_indicators",
+                new_callable=AsyncMock,
+                return_value=mock_ohlcv_df,
+            ),
+            patch(
+                "app.mcp_server.tooling.analysis_analyze._get_quote_impl",
+                new_callable=AsyncMock,
+                return_value={
+                    "price": 105.0,
+                    "symbol": "AAPL",
+                    "instrument_type": "equity_us",
+                    "source": "yahoo",
+                },
+            ),
+            patch(
+                "app.mcp_server.tooling.analysis_analyze._get_indicators_impl",
+                new_callable=AsyncMock,
+                return_value={"rsi": {"value": 50}},
+            ),
+            patch(
+                "app.mcp_server.tooling.analysis_analyze._get_support_resistance_impl",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
         ):
             first = await analyze_stock_impl("AAPL")
             second = await analyze_stock_impl("AAPL")

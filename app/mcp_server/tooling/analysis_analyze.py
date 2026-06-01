@@ -125,7 +125,6 @@ async def _resolve_kr_quote(
     return fallback
 
 
-
 async def _get_indicators_impl(
     symbol: str,
     indicators: list[str],
@@ -458,7 +457,6 @@ def _apply_recommendation(
     analysis["recommendation"] = recommendation
 
 
-
 async def analyze_stock_impl(
     symbol: str,
     market: str | None = None,
@@ -475,8 +473,6 @@ async def analyze_stock_impl(
             f"Unsupported symbol format: '{symbol}'. "
             "Use ticker codes (e.g., AAPL, 005930, KRW-BTC)."
         )
-
-
 
     analysis = _build_analysis_payload(normalized_symbol, market_type)
     loop = asyncio.get_running_loop()

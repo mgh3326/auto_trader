@@ -14,8 +14,14 @@ def _ohlcv():
     # 전일 일봉(어제 날짜) — fallback 경로용
     yesterday = pd.Timestamp(datetime.now(KST).date() - timedelta(days=1))
     return pd.DataFrame(
-        {"open": [100.0], "high": [110.0], "low": [90.0], "close": [105.0],
-         "volume": [1000], "value": [105000.0]},
+        {
+            "open": [100.0],
+            "high": [110.0],
+            "low": [90.0],
+            "close": [105.0],
+            "volume": [1000],
+            "value": [105000.0],
+        },
         index=[yesterday],
     )
 
@@ -26,10 +32,16 @@ async def test_kr_live_price_today_is_not_stale(monkeypatch):
 
     async def fake_live(symbol):
         return {
-            "symbol": symbol, "instrument_type": "equity_kr",
-            "price": 1225000.0, "open": 1200000.0, "high": 1230000.0,
-            "low": 1190000.0, "volume": 5, "value": 6,
-            "source": "kis", "price_as_of": today.isoformat(),
+            "symbol": symbol,
+            "instrument_type": "equity_kr",
+            "price": 1225000.0,
+            "open": 1200000.0,
+            "high": 1230000.0,
+            "low": 1190000.0,
+            "volume": 5,
+            "value": 6,
+            "source": "kis",
+            "price_as_of": today.isoformat(),
         }
 
     monkeypatch.setattr(analysis_analyze, "_fetch_kr_live_quote", fake_live)
@@ -44,9 +56,15 @@ async def test_kr_prev_day_quote_is_stale(monkeypatch):
 
     async def fake_live(symbol):
         return {
-            "symbol": symbol, "instrument_type": "equity_kr",
-            "price": 1173000.0, "open": 1.0, "high": 1.0, "low": 1.0,
-            "volume": 1, "value": 1, "source": "kis",
+            "symbol": symbol,
+            "instrument_type": "equity_kr",
+            "price": 1173000.0,
+            "open": 1.0,
+            "high": 1.0,
+            "low": 1.0,
+            "volume": 1,
+            "value": 1,
+            "source": "kis",
             "price_as_of": prev.isoformat(),
         }
 
