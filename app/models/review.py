@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
@@ -298,9 +298,7 @@ class KISLiveOrderLedger(Base):
     order_no: Mapped[str | None] = mapped_column(Text)
     order_time: Mapped[str | None] = mapped_column(Text)
     krx_fwdg_ord_orgno: Mapped[str | None] = mapped_column(Text)
-    account_mode: Mapped[str] = mapped_column(
-        Text, nullable=False, default="kis_live"
-    )
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False, default="kis_live")
     broker: Mapped[str] = mapped_column(Text, nullable=False, default="kis")
 
     # send-time status: accepted | rejected ; reconcile updates to
@@ -327,9 +325,7 @@ class KISLiveOrderLedger(Base):
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     trade_id: Mapped[int | None] = mapped_column(BigInteger)
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
-    reconciled_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True)
-    )
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()

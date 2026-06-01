@@ -8,7 +8,6 @@ isolated from the mock ledger (kis_live_order_ledger vs kis_mock_order_ledger).
 from __future__ import annotations
 
 import datetime
-
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
@@ -296,7 +295,9 @@ async def _update_ledger_outcome(
             )
             await db.commit()
     except Exception as exc:
-        logger.warning("Failed to update kis_live ledger outcome id=%s: %s", ledger_id, exc)
+        logger.warning(
+            "Failed to update kis_live ledger outcome id=%s: %s", ledger_id, exc
+        )
 
 
 async def _load_ledger_row(ledger_id: int) -> KISLiveOrderLedger:
@@ -347,8 +348,12 @@ async def _reconcile_one_ledger_row(
         "symbol": row.symbol,
         "side": row.side,
         "verdict": str(evidence.verdict),
-        "filled_qty": float(evidence.filled_qty) if evidence.filled_qty is not None else None,
-        "avg_price": float(evidence.avg_price) if evidence.avg_price is not None else None,
+        "filled_qty": float(evidence.filled_qty)
+        if evidence.filled_qty is not None
+        else None,
+        "avg_price": float(evidence.avg_price)
+        if evidence.avg_price is not None
+        else None,
     }
 
     if evidence.verdict == FillVerdict.PENDING:
@@ -398,7 +403,9 @@ async def _reconcile_one_ledger_row(
             preview=buy_preview,
             thesis=(row.thesis or "").strip() or "reconciled fill",
             strategy=(row.strategy or "").strip() or "reconciled fill",
-            target_price=float(row.target_price) if row.target_price is not None else None,
+            target_price=float(row.target_price)
+            if row.target_price is not None
+            else None,
             stop_loss=float(row.stop_loss) if row.stop_loss is not None else None,
             min_hold_days=row.min_hold_days,
             notes=row.notes,
@@ -408,7 +415,9 @@ async def _reconcile_one_ledger_row(
         )
         journal_id = journal_result.get("journal_id")
         if trade_id and journal_id:
-            await _link_journal_to_fill(row.symbol, trade_id, account_type="live", account="kis")
+            await _link_journal_to_fill(
+                row.symbol, trade_id, account_type="live", account="kis"
+            )
     else:  # sell
         close_result = await _close_journals_on_sell(
             symbol=row.symbol,
@@ -480,13 +489,6 @@ async def kis_live_reconcile_orders_impl(
         "counts": counts,
         "reconciled": reconciled,
         "message": (
-            f"Reconciled {len(reconciled)} live order(s) "
-            f"(dry_run={dry_run}): {counts}"
+            f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}"
         ),
     }
-
-
-
-
-
-

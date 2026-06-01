@@ -1,6 +1,7 @@
 # tests/mcp_server/tooling/test_order_execution_live_routing.py
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
 @pytest.mark.unit
@@ -10,13 +11,17 @@ async def test_live_kr_routes_to_ledger_not_record_fill():
 
     with (
         patch.object(
-            oe, "_execute_order", new=AsyncMock(return_value={"rt_cd": "0", "odno": "X1"})
+            oe,
+            "_execute_order",
+            new=AsyncMock(return_value={"rt_cd": "0", "odno": "X1"}),
         ),
         patch.object(oe, "_record_order_history", new=AsyncMock(return_value=None)),
         patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch(
             "app.mcp_server.tooling.kis_live_ledger._record_kis_live_order",
-            new=AsyncMock(return_value={"broker_status": "accepted", "fill_recorded": False}),
+            new=AsyncMock(
+                return_value={"broker_status": "accepted", "fill_recorded": False}
+            ),
         ) as mock_ledger,
         patch.object(oe, "_record_fill_and_journals", new=AsyncMock()) as mock_record,
     ):
@@ -29,7 +34,11 @@ async def test_live_kr_routes_to_ledger_not_record_fill():
             market_type="equity_kr",
             current_price=250000,
             avg_price=0.0,
-            dry_run_result={"price": 250000, "quantity": 10, "estimated_value": 2500000},
+            dry_run_result={
+                "price": 250000,
+                "quantity": 10,
+                "estimated_value": 2500000,
+            },
             order_amount=2500000,
             reason="r",
             exit_reason="take_profit",
@@ -57,12 +66,15 @@ async def test_live_us_still_uses_record_fill():
 
     with (
         patch.object(
-            oe, "_execute_order", new=AsyncMock(return_value={"rt_cd": "0", "odno": "U1"})
+            oe,
+            "_execute_order",
+            new=AsyncMock(return_value={"rt_cd": "0", "odno": "U1"}),
         ),
         patch.object(oe, "_record_order_history", new=AsyncMock(return_value=None)),
         patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch.object(
-            oe, "_record_fill_and_journals",
+            oe,
+            "_record_fill_and_journals",
             new=AsyncMock(return_value={"fill_recorded": True}),
         ) as mock_record,
     ):

@@ -467,7 +467,6 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             account_type=account_type,
         )
 
-
     @mcp.tool(
         name="kis_live_reconcile_orders",
         description=(
