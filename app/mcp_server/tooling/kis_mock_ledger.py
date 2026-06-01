@@ -94,7 +94,9 @@ def _decimal_to_float(value: Any) -> float:
     return _to_float(value, default=0.0)
 
 
-def _derive_shadow_fill(row: KISMockOrderLedger, ordered_qty: float) -> tuple[float, float, str]:
+def _derive_shadow_fill(
+    row: KISMockOrderLedger, ordered_qty: float
+) -> tuple[float, float, str]:
     """Derive (filled_qty, remaining_qty, status) consistent with lifecycle_state.
 
     A row in ``fill`` must never report status=pending/filled_qty=0. When the

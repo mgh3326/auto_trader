@@ -71,9 +71,7 @@ def test_fill_row_with_partial_attribution_reports_partial():
 def test_fill_row_without_attribution_falls_back_to_full_fill():
     # legacy/confirm-path fill rows lacking attributed_fill_qty must still not
     # contradict lifecycle="fill" (never status=pending with filled_qty=0).
-    out = _shadow_row_to_order(
-        _row(lifecycle_state="fill", quantity=10, detail=None)
-    )
+    out = _shadow_row_to_order(_row(lifecycle_state="fill", quantity=10, detail=None))
     assert out["status"] == "filled"
     assert out["filled_qty"] == 10.0
     assert out["remaining_qty"] == 0.0

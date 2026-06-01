@@ -151,16 +151,28 @@ async def test_reconciliation_job_no_open_orders(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_attributes_single_delta_and_records_attributed_qty(monkeypatch):
+async def test_reconciliation_attributes_single_delta_and_records_attributed_qty(
+    monkeypatch,
+):
     row23 = _ledger_row(
-        ledger_id=23, symbol="0148J0", side="buy", qty=Decimal("10"),
-        state="accepted", baseline=Decimal("0"), accepted_age_sec=120
+        ledger_id=23,
+        symbol="0148J0",
+        side="buy",
+        qty=Decimal("10"),
+        state="accepted",
+        baseline=Decimal("0"),
+        accepted_age_sec=120,
     )
     row23.price = Decimal("15500")
 
     row24 = _ledger_row(
-        ledger_id=24, symbol="0148J0", side="buy", qty=Decimal("10"),
-        state="accepted", baseline=Decimal("0"), accepted_age_sec=60
+        ledger_id=24,
+        symbol="0148J0",
+        side="buy",
+        qty=Decimal("10"),
+        state="accepted",
+        baseline=Decimal("0"),
+        accepted_age_sec=60,
     )
     row24.price = Decimal("15900")
 
@@ -186,4 +198,3 @@ async def test_reconciliation_attributes_single_delta_and_records_attributed_qty
     # attributed_fill_qty is recorded in the applied detail / event payload
     assert events[24]["detail"]["attributed_fill_qty"] == "10"
     assert events[23]["detail"]["attributed_fill_qty"] == "0"
-

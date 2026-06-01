@@ -290,9 +290,11 @@ def test_same_symbol_double_buy_single_delta_attributed_to_higher_price():
     ]
     proposals = classify_orders(
         orders=orders,
-        holdings={"0148J0": HoldingsSnapshot(
-            symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
-        )},
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
+            )
+        },
         thresholds=ReconcilerThresholds(),
         now=_now(),
     )
@@ -315,14 +317,16 @@ def test_same_price_tiebreak_oldest_order_wins():
     ]
     proposals = classify_orders(
         orders=orders,
-        holdings={"0148J0": HoldingsSnapshot(
-            symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
-        )},
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
+            )
+        },
         thresholds=ReconcilerThresholds(),
         now=_now(),
     )
     by_id = {p.ledger_id: p for p in proposals}
-    assert by_id[31].next_state == "fill"          # oldest wins the budget
+    assert by_id[31].next_state == "fill"  # oldest wins the budget
     assert by_id[30].next_state == "pending"
 
 
@@ -334,9 +338,11 @@ def test_partial_budget_goes_to_priority_order_only():
     ]
     proposals = classify_orders(
         orders=orders,
-        holdings={"0148J0": HoldingsSnapshot(
-            symbol="0148J0", quantity=Decimal("6"), taken_at=_now()
-        )},  # +6 budget, each ordered 10
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("6"), taken_at=_now()
+            )
+        },  # +6 budget, each ordered 10
         thresholds=ReconcilerThresholds(),
         now=_now(),
     )
@@ -353,9 +359,11 @@ def test_external_holdings_excess_not_flagged_anomaly():
     orders = [_buy(ledger_id=50, price=Decimal("15900"))]  # ordered 10
     proposals = classify_orders(
         orders=orders,
-        holdings={"0148J0": HoldingsSnapshot(
-            symbol="0148J0", quantity=Decimal("15"), taken_at=_now()
-        )},  # +15 > ordered 10 (manual/external position)
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("15"), taken_at=_now()
+            )
+        },  # +15 > ordered 10 (manual/external position)
         thresholds=ReconcilerThresholds(),
         now=_now(),
     )
@@ -372,9 +380,11 @@ def test_already_fill_pair_only_one_reconciles_other_anomaly():
     ]
     proposals = classify_orders(
         orders=orders,
-        holdings={"0148J0": HoldingsSnapshot(
-            symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
-        )},  # only +10 supports a single 10-share fill
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
+            )
+        },  # only +10 supports a single 10-share fill
         thresholds=ReconcilerThresholds(),
         now=_now(),
     )
@@ -406,8 +416,5 @@ def test_sell_lower_price_wins_budget():
         now=_now(),
     )
     by_id = {p.ledger_id: p for p in proposals}
-    assert by_id[71].next_state == "fill"          # lower ask (15,500) fills first
+    assert by_id[71].next_state == "fill"  # lower ask (15,500) fills first
     assert by_id[70].next_state == "pending"
-
-
-
