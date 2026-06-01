@@ -91,6 +91,23 @@ def _watch_item_dict(client_item_key: str = "watch-1") -> dict:
     }
 
 
+def _review_watch_item_dict(client_item_key: str = "review-watch-1") -> dict:
+    """operation='review' watch — 생성 시 watch_condition/valid_until 면제(ROB-274).
+
+    ROB-393 재현용: 이 항목은 condition 없이 approve까지 도달하지만 종전
+    activate_watch에서 'corrupt state'로 막혔다.
+    """
+    return {
+        "client_item_key": client_item_key,
+        "item_kind": "watch",
+        "operation": "review",
+        "symbol": "005930",
+        "intent": "trend_recovery_review",
+        "rationale": "r",
+    }
+
+
+
 def test_tool_names_match_registered_set() -> None:
     assert INVESTMENT_REPORT_TOOL_NAMES == {
         "investment_report_create",
@@ -235,6 +252,31 @@ async def test_activate_watch_copies_snapshot(session: AsyncSession) -> None:
     assert response["alert"]["metric"] == "rsi"
     assert response["alert"]["operator"] == "below"
     assert response["item"]["status"] == "activated"
+
+
+@pytest.mark.asyncio
+async def test_activate_review_watch_without_condition_is_actionable(
+    session: AsyncSession,
+) -> None:
+    """ROB-393 재현: operation='review' watch는 condition 없이 approve되지만,
+    인자 없이 activate하면 'corrupt state'가 아니라 actionable 에러여야 한다."""
+    created = await investment_report_create_impl(
+        items=[_review_watch_item_dict()], **_create_kwargs()
+    )
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        await investment_report_activate_watch_impl(
+            item_uuid=watch_uuid, actor="operator"
+        )
+    message = str(exc_info.value)
+    assert "corrupt state" not in message
+    assert "watch_condition not set" in message
+
 
 
 @pytest.mark.asyncio
