@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20260602_rob398s2"
-down_revision: str | None = "075d44e505b9"  # alembic heads 의 실제 결과값
+down_revision: str | None = "6e1ed781fc56"  # rebase 후 최신 main head로 재체이닝
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
