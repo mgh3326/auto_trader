@@ -11,6 +11,7 @@ in `reason_code`.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -102,6 +103,21 @@ _TERMINAL: frozenset[str] = frozenset({"reconciled", "failed", "stale"})
 _RECONCILABLE_INPUTS: frozenset[str] = frozenset({"accepted", "pending", "fill"})
 
 
+def _anomaly(
+    order: LedgerOrderInput, reason: ReasonCode
+) -> LifecycleTransitionProposal:
+    return LifecycleTransitionProposal(
+        ledger_id=order.ledger_id,
+        symbol=order.symbol,
+        prior_state=order.lifecycle_state,
+        next_state="anomaly",
+        reason_code=reason,
+        observed_holdings_qty=None,
+        observed_delta=None,
+        attributed_fill_qty=None,
+    )
+
+
 def classify_orders(
     *,
     orders: Sequence[LedgerOrderInput],
@@ -110,100 +126,114 @@ def classify_orders(
     now: datetime,
 ) -> list[LifecycleTransitionProposal]:
     proposals: list[LifecycleTransitionProposal] = []
+    groups: dict[tuple[str, str], list[LedgerOrderInput]] = defaultdict(list)
+
     for order in orders:
         if order.lifecycle_state in _TERMINAL:
             continue
         if order.lifecycle_state not in _RECONCILABLE_INPUTS:
             # planned/previewed/submitted/anomaly are out of scope here.
             continue
-
         if order.holdings_baseline_qty is None:
-            proposals.append(
-                LifecycleTransitionProposal(
-                    ledger_id=order.ledger_id,
-                    symbol=order.symbol,
-                    prior_state=order.lifecycle_state,
-                    next_state="anomaly",
-                    reason_code="baseline_missing",
-                    observed_holdings_qty=None,
-                    observed_delta=None,
-                )
-            )
+            proposals.append(_anomaly(order, "baseline_missing"))
             continue
-
-        snapshot = holdings.get(order.symbol)
-        if snapshot is None:
-            proposals.append(
-                LifecycleTransitionProposal(
-                    ledger_id=order.ledger_id,
-                    symbol=order.symbol,
-                    prior_state=order.lifecycle_state,
-                    next_state="anomaly",
-                    reason_code="holdings_snapshot_missing",
-                    observed_holdings_qty=None,
-                    observed_delta=None,
-                )
-            )
+        if holdings.get(order.symbol) is None:
+            proposals.append(_anomaly(order, "holdings_snapshot_missing"))
             continue
+        groups[(order.symbol, order.side)].append(order)
 
-        delta = snapshot.quantity - order.holdings_baseline_qty
-
-        if order.lifecycle_state == "fill":
-            expected = order.ordered_qty if order.side == "buy" else -order.ordered_qty
-            if (order.side == "buy" and delta >= expected) or (
-                order.side == "sell" and delta <= expected
-            ):
-                proposals.append(
-                    LifecycleTransitionProposal(
-                        ledger_id=order.ledger_id,
-                        symbol=order.symbol,
-                        prior_state=order.lifecycle_state,
-                        next_state="reconciled",
-                        reason_code="position_reconciled",
-                        observed_holdings_qty=snapshot.quantity,
-                        observed_delta=delta,
-                    )
-                )
-            else:
-                proposals.append(
-                    LifecycleTransitionProposal(
-                        ledger_id=order.ledger_id,
-                        symbol=order.symbol,
-                        prior_state=order.lifecycle_state,
-                        next_state="anomaly",
-                        reason_code="holdings_mismatch",
-                        observed_holdings_qty=snapshot.quantity,
-                        observed_delta=delta,
-                    )
-                )
-            continue
-
-        # accepted / pending paths — delegate the delta decision to the kernel.
-        decision = classify_fill_by_delta(
-            side=order.side,
-            ordered_qty=order.ordered_qty,
-            baseline_qty=order.holdings_baseline_qty,
-            observed_qty=snapshot.quantity,
-        )
-        if decision.verdict == "filled":
-            next_state, reason = "fill", "fill_detected"
-        elif decision.verdict == "partial":
-            next_state, reason = "fill", "partial_fill_detected"
-        else:
-            next_state, reason = _pending_or_stale(order, now, thresholds)
-
-        proposals.append(
-            LifecycleTransitionProposal(
-                ledger_id=order.ledger_id,
-                symbol=order.symbol,
-                prior_state=order.lifecycle_state,
-                next_state=next_state,
-                reason_code=reason,
-                observed_holdings_qty=snapshot.quantity,
-                observed_delta=delta,
+    for (symbol, side), group in groups.items():
+        snapshot = holdings[symbol]
+        proposals.extend(
+            _apportion_group(
+                group=group,
+                snapshot=snapshot,
+                side=side,
+                now=now,
+                thresholds=thresholds,
             )
         )
+
     return proposals
+
+
+def _apportion_group(
+    *,
+    group: list[LedgerOrderInput],
+    snapshot: HoldingsSnapshot,
+    side: str,
+    now: datetime,
+    thresholds: ReconcilerThresholds,
+) -> list[LifecycleTransitionProposal]:
+    # Reference = position just before this competing batch. Terminal orders
+    # already dropped out, so their fills are baked into later baselines.
+    reference = min(o.holdings_baseline_qty for o in group)  # type: ignore[type-var]
+    raw_budget = (
+        snapshot.quantity - reference
+        if side == "buy"
+        else reference - snapshot.quantity
+    )
+    budget = raw_budget if raw_budget > 0 else Decimal("0")
+
+    # Priority: already-fill first (consume prior attribution), then aggressive
+    # price (buy DESC / sell ASC), then oldest order (accepted_at, ledger_id).
+    def _key(o: LedgerOrderInput) -> tuple[int, Decimal, datetime, int]:
+        already_fill = 0 if o.lifecycle_state == "fill" else 1
+        price_key = -o.price if side == "buy" else o.price
+        return (already_fill, price_key, o.accepted_at, o.ledger_id)
+
+    out: list[LifecycleTransitionProposal] = []
+    for order in sorted(group, key=_key):
+        take = min(budget, order.ordered_qty) if budget > 0 else Decimal("0")
+        budget -= take
+        out.append(
+            _proposal_for(
+                order=order,
+                snapshot=snapshot,
+                take=take,
+                now=now,
+                thresholds=thresholds,
+            )
+        )
+    return out
+
+
+def _proposal_for(
+    *,
+    order: LedgerOrderInput,
+    snapshot: HoldingsSnapshot,
+    take: Decimal,
+    now: datetime,
+    thresholds: ReconcilerThresholds,
+) -> LifecycleTransitionProposal:
+    # Per-order diagnostic delta keeps its historical meaning; attributed_fill_qty
+    # is the authoritative apportioned quantity.
+    per_order_delta = snapshot.quantity - order.holdings_baseline_qty  # type: ignore[operator]
+
+    if order.lifecycle_state == "fill":
+        if take >= order.ordered_qty:
+            next_state: OrderLifecycleState = "reconciled"
+            reason: ReasonCode = "position_reconciled"
+        else:
+            next_state = "anomaly"
+            reason = "holdings_mismatch"
+    elif take >= order.ordered_qty:
+        next_state, reason = "fill", "fill_detected"
+    elif take > 0:
+        next_state, reason = "fill", "partial_fill_detected"
+    else:
+        next_state, reason = _pending_or_stale(order, now, thresholds)
+
+    return LifecycleTransitionProposal(
+        ledger_id=order.ledger_id,
+        symbol=order.symbol,
+        prior_state=order.lifecycle_state,
+        next_state=next_state,
+        reason_code=reason,
+        observed_holdings_qty=snapshot.quantity,
+        observed_delta=per_order_delta,
+        attributed_fill_qty=take,
+    )
 
 
 def _pending_or_stale(

@@ -259,3 +259,51 @@ def test_proposal_attributed_fill_qty_defaults_none():
     )
     assert p.attributed_fill_qty is None
 
+
+def _buy(
+    *,
+    ledger_id: int,
+    price: Decimal,
+    ordered_qty: Decimal = Decimal("10"),
+    baseline: Decimal = Decimal("0"),
+    state: str = "accepted",
+    accepted_age_sec: int = 0,
+) -> LedgerOrderInput:
+    return LedgerOrderInput(
+        ledger_id=ledger_id,
+        symbol="0148J0",
+        side="buy",
+        ordered_qty=ordered_qty,
+        lifecycle_state=state,
+        holdings_baseline_qty=baseline,
+        accepted_at=_now() - timedelta(seconds=accepted_age_sec),
+        price=price,
+    )
+
+
+@pytest.mark.unit
+def test_same_symbol_double_buy_single_delta_attributed_to_higher_price():
+    # ROB-400 demo: ledger23 @15,500 / ledger24 @15,900, actual holdings +10 (one fill)
+    orders = [
+        _buy(ledger_id=23, price=Decimal("15500"), accepted_age_sec=120),
+        _buy(ledger_id=24, price=Decimal("15900"), accepted_age_sec=60),
+    ]
+    proposals = classify_orders(
+        orders=orders,
+        holdings={"0148J0": HoldingsSnapshot(
+            symbol="0148J0", quantity=Decimal("10"), taken_at=_now()
+        )},
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    # higher price (15,900) wins the single +10 budget
+    assert by_id[24].next_state == "fill"
+    assert by_id[24].reason_code == "fill_detected"
+    assert by_id[24].attributed_fill_qty == Decimal("10")
+    # the other stays pending — no double count
+    assert by_id[23].next_state == "pending"
+    assert by_id[23].reason_code == "pending_unconfirmed"
+    assert by_id[23].attributed_fill_qty == Decimal("0")
+
+
