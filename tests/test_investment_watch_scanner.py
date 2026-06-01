@@ -575,3 +575,32 @@ async def test_scan_market_triggers_on_zone_inside(
     assert payload.operator == "between"
     assert payload.threshold == Decimal("50000")
     assert payload.threshold_high == Decimal("55000")
+
+
+@pytest.mark.asyncio
+async def test_scan_calls_auto_execute_for_auto_execute_mock(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed_active_kr_alert(session, action_mode="auto_execute_mock")
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0  # below 30 → triggered
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    captured: list = []
+
+    async def _fake_maybe_auto_execute(db, *, alert, correlation_id, kst_date, **kw):
+        captured.append({"symbol": alert.symbol, "cid": correlation_id})
+        return {"executed": False, "skipped": "stubbed"}
+
+    monkeypatch.setattr(scanner_module, "maybe_auto_execute", _fake_maybe_auto_execute)
+
+    stub = _StubHermesClient()
+    scanner = InvestmentWatchScanner(hermes_client=stub)
+    summary = await scanner.scan_market("kr")
+
+    assert summary["triggered"] == 1, summary
+    assert len(captured) == 1, captured
+    assert captured[0]["symbol"] == "005930"

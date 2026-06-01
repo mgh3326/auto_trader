@@ -642,6 +642,7 @@ async def _execute_and_record(
     defensive_trim_ctx: DefensiveTrimContext | None,
     order_error_fn: Any,
     is_mock: bool = False,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
@@ -716,6 +717,7 @@ async def _execute_and_record(
             strategy=strategy,
             notes=notes,
             holdings_baseline_qty=kis_mock_baseline_qty,
+            correlation_id=correlation_id,
         )
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,
@@ -915,6 +917,7 @@ async def _place_order_impl(
     scalping_exit: bool = False,
     scalping_strategy_id: str | None = None,
     scalping_exit_reason: str | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1087,6 +1090,7 @@ async def _place_order_impl(
             defensive_trim_ctx=defensive_trim_ctx,
             order_error_fn=_order_error,
             is_mock=is_mock,
+            correlation_id=correlation_id,
         )
     except Exception as exc:
         logger.exception(
