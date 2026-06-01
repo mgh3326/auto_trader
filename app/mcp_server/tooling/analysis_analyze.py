@@ -39,6 +39,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
+from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -390,9 +391,39 @@ def _apply_recommendation(
 ) -> None:
     if market_type not in ("equity_kr", "equity_us"):
         return
+
     recommendation = _build_recommendation_for_equity(analysis, market_type)
-    if recommendation:
-        analysis["recommendation"] = recommendation
+
+    quote = analysis.get("quote") or {}
+    price_present = quote.get("price") is not None
+    consensus_present = bool((analysis.get("opinions") or {}).get("consensus"))
+
+    if recommendation is None:
+        # price/quote 부재 → unavailable floor 레코멘데이션을 정직하게 부착.
+        recommendation = {
+            "action": "hold",
+            "confidence": "low",
+            "rsi14": None,
+            "buy_zones": [],
+            "sell_targets": [],
+            "stop_loss": None,
+            "reasoning": "",
+        }
+    rsi_present = recommendation.get("rsi14") is not None
+
+    missing = insufficient_inputs(
+        price_present=price_present,
+        rsi_present=rsi_present,
+        consensus_present=consensus_present,
+    )
+    action, confidence = floored_action(
+        recommendation["action"], recommendation["confidence"], insufficient=missing
+    )
+    recommendation["action"] = action
+    recommendation["confidence"] = confidence
+    recommendation["insufficient_inputs"] = missing
+
+    analysis["recommendation"] = recommendation
 
 
 
