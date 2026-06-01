@@ -63,6 +63,7 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_decide_item",
     "investment_report_activate_watch",
     "investment_report_context_get",
+    "investment_report_delta_get",
     "investment_report_generate_from_bundle",
     "investment_watch_recommend",
 }
@@ -564,6 +565,32 @@ async def investment_report_context_get_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_report_delta_get (ROB-376)
+# ---------------------------------------------------------------------------
+async def investment_report_delta_get_impl(
+    report_uuid: str,
+    near_pct: float = 1.0,
+    account_type: str = "live",
+) -> dict:
+    from app.core.timezone import now_kst
+    from app.services.investment_reports.delta_service import DeltaService
+
+    try:
+        parsed = UUID(report_uuid)
+    except (ValueError, AttributeError, TypeError):
+        return {"success": False, "error": "invalid_report_uuid"}
+
+    async with AsyncSessionLocal() as db:
+        service = DeltaService(db)
+        return await service.compute_delta(
+            parsed,
+            near_pct=near_pct,
+            account_type=account_type,
+            computed_at_kst=now_kst().isoformat(),
+        )
+
+
+# ---------------------------------------------------------------------------
 # investment_report_generate_from_bundle (ROB-273)
 # ---------------------------------------------------------------------------
 async def investment_report_generate_from_bundle_impl(
@@ -877,6 +904,19 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         ),
     )(investment_report_context_get_impl)
     mcp.tool(
+        name="investment_report_delta_get",
+        description=(
+            "Read-only intraday delta vs a baseline report. Given report_uuid "
+            "(the open/prior report), returns three deterministic deltas for Hermes "
+            "to compose: levels_delta (journal target/stop touch x live), "
+            "holdings_pnl_delta (per-symbol live P/L vs the baseline snapshot "
+            "bundle's portfolio P/L), and index_delta (live index vs the report's "
+            "frozen market baseline). Per-signal fail-open: a degraded signal is "
+            "null with a reason under 'unavailable'; missing data is never coerced "
+            "to zero. No broker/order/watch mutation."
+        ),
+    )(investment_report_delta_get_impl)
+    mcp.tool(
         name="investment_report_generate_from_bundle",
         description=GENERATE_FROM_BUNDLE_DESCRIPTION,
     )(investment_report_generate_from_bundle_impl)
@@ -900,6 +940,7 @@ __all__ = [
     "investment_report_context_get_impl",
     "investment_report_create_impl",
     "investment_report_decide_item_impl",
+    "investment_report_delta_get_impl",
     "investment_report_generate_from_bundle_impl",
     "investment_report_get_impl",
     "investment_report_list_impl",
