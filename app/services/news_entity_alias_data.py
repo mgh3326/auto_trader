@@ -24,11 +24,19 @@ class AliasEntry:
 
 
 KR_ALIASES: tuple[AliasEntry, ...] = (
-    AliasEntry("005930", "kr", "삼성전자", ("삼성전자", "삼전", "삼전닉스", "Samsung Electronics")),
+    AliasEntry(
+        "005930",
+        "kr",
+        "삼성전자",
+        ("삼성전자", "삼전", "삼전닉스", "Samsung Electronics"),
+    ),
     # ROB-130: "닉스" is a 2-char alias requested by the spec; accepts some
     # false-positive risk for higher recall on KR market chatter.
     AliasEntry(
-        "000660", "kr", "SK하이닉스", ("SK하이닉스", "하이닉스", "닉스", "삼전닉스", "SK Hynix")
+        "000660",
+        "kr",
+        "SK하이닉스",
+        ("SK하이닉스", "하이닉스", "닉스", "삼전닉스", "SK Hynix"),
     ),
     AliasEntry("035420", "kr", "NAVER", ("네이버", "NAVER")),
     AliasEntry("035720", "kr", "카카오", ("카카오",)),
