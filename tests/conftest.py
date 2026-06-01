@@ -763,6 +763,99 @@ async def db_session():
                         "))"
                     )
                 )
+                # ROB-403 — investment_watch_alerts: add conditions/combine/
+                # threshold_high columns + extend operator CHECK to 'between'.
+                # create_all is no-op on the persistent test table.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD COLUMN IF NOT EXISTS conditions JSONB "
+                        "NOT NULL DEFAULT '[]'::jsonb"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD COLUMN IF NOT EXISTS combine TEXT "
+                        "NOT NULL DEFAULT 'and'"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_watch_alerts_operator"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_watch_alerts_ck_investment_watch_alerts_operator"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD CONSTRAINT ck_investment_watch_alerts_operator "
+                        "CHECK (operator IN ('above','below','between'))"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_watch_alerts_combine"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_watch_alerts_ck_investment_watch_alerts_combine"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD CONSTRAINT ck_investment_watch_alerts_combine "
+                        "CHECK (combine IN ('and'))"
+                    )
+                )
+                # ROB-403 — investment_watch_events: between + threshold_high.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events "
+                        "ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_watch_events_operator"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_watch_events_ck_investment_watch_events_operator"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.investment_watch_events "
+                        "ADD CONSTRAINT ck_investment_watch_events_operator "
+                        "CHECK (operator IN ('above','below','between'))"
+                    )
+                )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so

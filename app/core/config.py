@@ -458,6 +458,12 @@ class Settings(BaseSettings):
 
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
+
+    # ROB-404 — kis_mock execution-event consumer + periodic reconcile.
+    # Default off: the consumer runs reconcile in dry-run preflight and the
+    # periodic taskiq task returns paused until an operator flips these.
+    KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED: bool = False
+    KIS_MOCK_RECONCILE_PERIODIC_ENABLED: bool = False
     # ROB-269 Phase 2 — gates BOTH the 4 MCP snapshot tools AND the
     # /trading/api/investment-snapshots/* GET router. Default off: code is
     # importable but unreachable from caller surfaces until flipped post-merge.

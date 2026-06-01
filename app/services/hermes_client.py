@@ -28,8 +28,8 @@ from app.schemas.investment_reports import (
     MarketLiteral,
     TargetKindLiteral,
     WatchActionModeLiteral,
+    WatchClauseOpLiteral,
     WatchMetricLiteral,
-    WatchOperatorLiteral,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,8 +63,9 @@ class ReviewTriggerPayload(BaseModel):
     target_kind: TargetKindLiteral
     symbol: str
     metric: WatchMetricLiteral
-    operator: WatchOperatorLiteral
+    operator: WatchClauseOpLiteral
     threshold: Decimal
+    threshold_high: Decimal | None = None
     threshold_key: str
     intent: ItemIntentLiteral
     action_mode: WatchActionModeLiteral

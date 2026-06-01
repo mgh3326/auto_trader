@@ -198,75 +198,11 @@ async def test_portfolio_holdings_mock_collection_does_not_fallback_to_live(
         await portfolio_holdings._collect_kis_positions(None, is_mock=True)
 
 
-@pytest.mark.asyncio
-async def test_cancel_order_kis_mock_uses_mock_client(monkeypatch):
-    from app.mcp_server.tooling import orders_modify_cancel
-
-    instances: list[bool] = []
-
-    class TrackedKISClient:
-        def __init__(self, *, is_mock: bool = False) -> None:
-            instances.append(is_mock)
-            self.is_mock = is_mock
-            self.inquire_korea_orders = AsyncMock(
-                return_value=[
-                    {
-                        "odno": "0001",
-                        "pdno": "005930",
-                        "sll_buy_dvsn_cd": "02",
-                        "ord_unpr": "70000",
-                        "ord_qty": "1",
-                    }
-                ]
-            )
-            self.cancel_korea_order = AsyncMock(return_value={"ord_tmd": "100000"})
-
-    monkeypatch.setattr(orders_modify_cancel, "KISClient", TrackedKISClient)
-
-    result = await orders_modify_cancel.cancel_order_impl(
-        order_id="0001", symbol="005930", market="kr", is_mock=True
-    )
-
-    assert result["success"] is True
-    assert all(flag is True for flag in instances), instances
-
-
-@pytest.mark.asyncio
-async def test_modify_order_kis_mock_uses_mock_client(monkeypatch):
-    from app.mcp_server.tooling import orders_modify_cancel
-
-    instances: list[bool] = []
-
-    class TrackedKISClient:
-        def __init__(self, *, is_mock: bool = False) -> None:
-            instances.append(is_mock)
-            self.inquire_korea_orders = AsyncMock(
-                return_value=[
-                    {
-                        "odno": "0001",
-                        "pdno": "005930",
-                        "sll_buy_dvsn_cd": "02",
-                        "ord_unpr": "70000",
-                        "ord_qty": "1",
-                    }
-                ]
-            )
-            self.modify_korea_order = AsyncMock(return_value={"odno": "0002"})
-
-    monkeypatch.setattr(orders_modify_cancel, "KISClient", TrackedKISClient)
-
-    result = await orders_modify_cancel.modify_order_impl(
-        order_id="0001",
-        symbol="005930",
-        market="kr",
-        new_price=70100.0,
-        dry_run=False,
-        is_mock=True,
-    )
-
-    assert result["success"] is True
-    assert result["new_order_id"] == "0002"
-    assert all(flag is True for flag in instances), instances
+# ROB-406 — the old inquire_korea_orders-based mock cancel/modify success path
+# was replaced by the ledger-resolver path (resolve_mock_order_for_cancel →
+# VTTC0013U). Mock-routing + success + soft-cancel behavior is now covered with
+# proper KISMockOrderLedger seeding in tests/test_kis_mock_cancel_modify.py.
+# The no-ledger-row contract is asserted below.
 
 
 def test_modify_order_kis_mock_dry_run_does_not_instantiate_kis(monkeypatch):
@@ -324,8 +260,15 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(
         )
 
 
+# ROB-406 — mock cancel/modify no longer depends on TTTC8036R pending-orders
+# inquiry. With no matching kis_mock_order_ledger row, the ledger resolver
+# returns "order not found" (success False) rather than the old
+# mock_unsupported flag. The injected KISClient is never consulted because the
+# resolver short-circuits before any broker call.
+
+
 @pytest.mark.asyncio
-async def test_cancel_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
+async def test_cancel_order_kis_mock_kr_no_ledger_row_not_found(monkeypatch):
     from app.mcp_server.tooling import orders_modify_cancel
 
     monkeypatch.setattr(
@@ -337,12 +280,12 @@ async def test_cancel_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
     )
 
     assert result["success"] is False
-    assert result.get("mock_unsupported") is True
-    assert "mock" in result["error"].lower()
+    assert result.get("mock_unsupported") is not True
+    assert "not found in kis_mock_order_ledger" in result["error"]
 
 
 @pytest.mark.asyncio
-async def test_cancel_order_kis_mock_kr_without_symbol_returns_mock_unsupported(
+async def test_cancel_order_kis_mock_kr_without_symbol_no_ledger_row_not_found(
     monkeypatch,
 ):
     from app.mcp_server.tooling import orders_modify_cancel
@@ -356,12 +299,12 @@ async def test_cancel_order_kis_mock_kr_without_symbol_returns_mock_unsupported(
     )
 
     assert result["success"] is False
-    assert result.get("mock_unsupported") is True
-    assert "mock" in result["error"].lower()
+    assert result.get("mock_unsupported") is not True
+    assert "not found in kis_mock_order_ledger" in result["error"]
 
 
 @pytest.mark.asyncio
-async def test_modify_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
+async def test_modify_order_kis_mock_kr_no_ledger_row_not_found(monkeypatch):
     from app.mcp_server.tooling import orders_modify_cancel
 
     monkeypatch.setattr(
@@ -378,8 +321,8 @@ async def test_modify_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
     )
 
     assert result["success"] is False
-    assert result.get("mock_unsupported") is True
-    assert "mock" in result["error"].lower()
+    assert result.get("mock_unsupported") is not True
+    assert "not found in kis_mock_order_ledger" in result["error"]
 
 
 @pytest.mark.asyncio

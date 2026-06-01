@@ -3647,8 +3647,8 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
 
     _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
-    quote_mock = AsyncMock(side_effect=AssertionError("unexpected KR quote fetch"))
-    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", quote_mock)
+    quote_mock = AsyncMock(return_value=None)
+    _patch_runtime_attr(monkeypatch, "_fetch_kr_live_quote", quote_mock)
 
     standalone_valuation_mock = AsyncMock(
         side_effect=AssertionError("unexpected standalone KR valuation fetch")
@@ -3738,7 +3738,7 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
     result = await tools["analyze_stock"]("005930", market="kr")
 
     assert ohlcv_fetches == [("005930", "equity_kr", 250)]
-    quote_mock.assert_not_awaited()
+    quote_mock.assert_awaited_once_with("005930")
     standalone_valuation_mock.assert_not_awaited()
     standalone_news_mock.assert_not_awaited()
     standalone_opinions_mock.assert_not_awaited()
@@ -3756,6 +3756,8 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
         "volume": 1000000,
         "value": 75000000000.0,
         "source": "kis",
+        "price_as_of": "1970-01-01T00:00:00",
+        "is_stale_price": True,
     }
     assert result["valuation"]["instrument_type"] == "equity_kr"
     assert result["news"]["source"] == "naver"
@@ -3788,9 +3790,10 @@ async def test_analyze_stock_kr_falls_back_to_quote_helper_when_ohlcv_empty(
             "volume": 1100000,
             "value": 76000000000.0,
             "source": "kis",
+            "price_as_of": pd.Timestamp.now().isoformat(),
         }
     )
-    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", quote_mock)
+    _patch_runtime_attr(monkeypatch, "_fetch_kr_live_quote", quote_mock)
 
     standalone_valuation_mock = AsyncMock(
         side_effect=AssertionError("unexpected standalone KR valuation fetch")
