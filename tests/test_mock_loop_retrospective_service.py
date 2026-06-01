@@ -59,8 +59,12 @@ async def _seed_cycle(db, *, day, cid, pnl="5", verdict="good", market="kr"):
     db.add(TradeJournalReview(journal_id=j.id, verdict=verdict, verdict_source="auto"))
     db.add(
         TradeJournalCounterfactual(
-            journal_id=j.id, correlation_id=cid, symbol="005930", market=market,
-            trigger_price=Decimal("49000"), actual_fill_price=Decimal("50000"),
+            journal_id=j.id,
+            correlation_id=cid,
+            symbol="005930",
+            market=market,
+            trigger_price=Decimal("49000"),
+            actual_fill_price=Decimal("50000"),
             fill_vs_trigger_pct=Decimal("2.0408"),
             no_action_vs_fill_pct=Decimal("4.0000"),
         )
@@ -69,9 +73,18 @@ async def _seed_cycle(db, *, day, cid, pnl="5", verdict="good", market="kr"):
     return j
 
 
+def _uniq_day(month: str) -> str:
+    """Return a unique far-future kst_date to avoid cross-test DB collision.
+    Uses a uuid-derived day (01-28) so it's always a valid ISO date.
+    """
+    day = int(uuid4().hex[:4], 16) % 28 + 1
+    return f"9100-{month}-{day:02d}"
+
+
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_cycle_summary_hit(db_session: AsyncSession):
-    day = "2026-06-02"
+    day = _uniq_day("01")
     cid = f"corr-{uuid4().hex}"
     await _seed_cycle(db_session, day=day, cid=cid, pnl="5", verdict="good")
     cycles = await build_mock_loop_retrospective(
@@ -92,8 +105,9 @@ async def test_cycle_summary_hit(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_cycle_summary_miss(db_session: AsyncSession):
-    day = "2026-06-03"
+    day = _uniq_day("02")
     cid = f"corr-{uuid4().hex}"
     await _seed_cycle(db_session, day=day, cid=cid, pnl="-3", verdict="bad")
     cycles = await build_mock_loop_retrospective(
@@ -106,8 +120,9 @@ async def test_cycle_summary_miss(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_market_filter_excludes(db_session: AsyncSession):
-    day = "2026-06-04"
+    day = _uniq_day("03")
     await _seed_cycle(db_session, day=day, cid=f"c-{uuid4().hex}", market="us")
     cycles = await build_mock_loop_retrospective(
         db_session, kst_date_from=day, kst_date_to=day, market="kr"
@@ -117,12 +132,15 @@ async def test_market_filter_excludes(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_multi_day_range_separates(db_session: AsyncSession):
-    await _seed_cycle(db_session, day="2026-06-05", cid=f"c-{uuid4().hex}", pnl="5")
-    await _seed_cycle(db_session, day="2026-06-06", cid=f"c-{uuid4().hex}", pnl="-1")
+    day1 = _uniq_day("04")
+    day2 = _uniq_day("05")
+    await _seed_cycle(db_session, day=day1, cid=f"c-{uuid4().hex}", pnl="5")
+    await _seed_cycle(db_session, day=day2, cid=f"c-{uuid4().hex}", pnl="-1")
     cycles = await build_mock_loop_retrospective(
-        db_session, kst_date_from="2026-06-05", kst_date_to="2026-06-06"
+        db_session, kst_date_from=day1, kst_date_to=day2
     )
     by_day = {c["kst_date"]: c for c in cycles}
-    assert by_day["2026-06-05"]["hits"] == 1
-    assert by_day["2026-06-06"]["misses"] == 1
+    assert by_day[day1]["hits"] == 1
+    assert by_day[day2]["misses"] == 1

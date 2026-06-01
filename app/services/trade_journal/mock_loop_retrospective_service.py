@@ -70,17 +70,19 @@ async def build_mock_loop_retrospective(
         journals: list[TradeJournal] = []
         if corr_ids:
             journals = (
-                await db.execute(
-                    select(TradeJournal).where(
-                        TradeJournal.account_type == "mock",
-                        TradeJournal.correlation_id.in_(corr_ids),
-                        TradeJournal.status.in_(("active", "closed")),
+                (
+                    await db.execute(
+                        select(TradeJournal).where(
+                            TradeJournal.account_type == "mock",
+                            TradeJournal.correlation_id.in_(corr_ids),
+                            TradeJournal.status.in_(("active", "closed")),
+                        )
                     )
                 )
-            ).scalars().all()
-        closed = [
-            j for j in journals if j.status == "closed" and j.pnl_pct is not None
-        ]
+                .scalars()
+                .all()
+            )
+        closed = [j for j in journals if j.status == "closed" and j.pnl_pct is not None]
         hits = sum(1 for j in closed if j.pnl_pct > 0)
         misses = sum(1 for j in closed if j.pnl_pct <= 0)
         hit_ratio = (hits / (hits + misses)) if (hits + misses) > 0 else None
@@ -103,12 +105,16 @@ async def build_mock_loop_retrospective(
         cf_count = 0
         if corr_ids:
             cfs = (
-                await db.execute(
-                    select(TradeJournalCounterfactual).where(
-                        TradeJournalCounterfactual.correlation_id.in_(corr_ids)
+                (
+                    await db.execute(
+                        select(TradeJournalCounterfactual).where(
+                            TradeJournalCounterfactual.correlation_id.in_(corr_ids)
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             cf_count = len(cfs)
             cf_ft = [c.fill_vs_trigger_pct for c in cfs]
             cf_naf = [c.no_action_vs_fill_pct for c in cfs]

@@ -34,7 +34,7 @@ async def test_tool_returns_cycles(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-    monkeypatch.setattr(mod, "_session_factory", lambda: (lambda: _Ctx()))
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _Ctx())
 
     tools = build_tools()
     result = await tools["get_mock_loop_retrospective"](
