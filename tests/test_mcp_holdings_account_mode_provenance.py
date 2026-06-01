@@ -217,8 +217,5 @@ async def test_get_holdings_impl_marks_manual_group_not_routable(monkeypatch):
     by_account = {a["account"]: a for a in result["accounts"]}
     # KIS subaccount is sellable via the order channel; toss is reference-only.
     assert by_account["kis"]["order_routable"] is True
-    toss_group = next(
-        a for k, a in by_account.items() if a["broker"] == "toss"
-    )
+    toss_group = next(a for k, a in by_account.items() if a["broker"] == "toss")
     assert toss_group["order_routable"] is False
-
