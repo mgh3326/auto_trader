@@ -776,8 +776,46 @@ async def _execute_and_record(
             min_hold_days=min_hold_days,
             notes=notes,
             indicators_snapshot=indicators_snapshot,
-            inline_confirm=False,
         )
+
+    # ROB-407: crypto live 주문. 지정가 pending은 accepted-only(reconcile 위임),
+    # 시장가는 전송 직후 inline evidence 확인으로 체결 반영.
+    if not is_mock and market_type == "crypto":
+        from app.mcp_server.tooling.live_order_ledger import _record_live_order
+
+        is_market = (order_type or "").lower() == "market" or price is None
+        market_symbol = (
+            execution_result.get("market")
+            or dry_run_result.get("market")
+        )
+        return await _record_live_order(
+            broker="upbit",
+            account_scope="upbit_live",
+            market="crypto",
+            normalized_symbol=normalized_symbol,
+            exchange=None,
+            market_symbol=str(market_symbol) if market_symbol else None,
+            side=side,
+            order_kind="market" if is_market else "limit",
+            currency="KRW",
+            order_no=execution_result.get("uuid"),
+            order_time=execution_result.get("created_at"),
+            rt_cd="0" if execution_result.get("uuid") else "1",
+            response_message=execution_result.get("error") or None,
+            dry_run_result=dry_run_result,
+            execution_result=execution_result,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+            inline_confirm=is_market,
+        )
+
 
 
     # Record phase: fills + journals
