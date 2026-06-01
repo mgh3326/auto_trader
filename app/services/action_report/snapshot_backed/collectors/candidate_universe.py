@@ -323,7 +323,9 @@ class CandidateUniverseSnapshotCollector:
             market=request.market, limit=limit
         )
         rows = _dedupe_rows(rows, key=lambda r: to_db_symbol(r.symbol))
-        latest_partition_date = getattr(rows[0], "snapshot_date", None) if rows else None
+        latest_partition_date = (
+            getattr(rows[0], "snapshot_date", None) if rows else None
+        )
         days_stale = (
             (baseline - latest_partition_date).days
             if latest_partition_date is not None and baseline > latest_partition_date
