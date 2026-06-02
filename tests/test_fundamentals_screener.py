@@ -379,3 +379,226 @@ async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
     assert "906401" in excluded_symbols
     assert "906402" not in excluded_symbols  # filtered at SQL candidate stage
     assert result.fundamentals_state == "missing"  # no fundamentals backfilled
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_valuation_filter_dividend_yield_excludes_null(db_session):
+    # spec §7 item 2: min_dividend_yield candidate filter must drop NULL dividend_yield
+    # rows (fail-closed). future_dividend_king sets min_dividend_yield=0.01.
+    import sqlalchemy as sa
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUTURE_DIVIDEND_KING_SPEC,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2026, 6, 2)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(["906411", "906412"])
+        )
+    )
+    await db_session.commit()
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906411",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("12"),
+                roe=Decimal("10"),
+                dividend_yield=Decimal("0.02"),
+                market_cap=Decimal("500000000000"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906412",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("12"),
+                roe=Decimal("10"),
+                dividend_yield=None,  # NULL → filtered
+                market_cap=Decimal("400000000000"),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="kr",
+        spec=FUTURE_DIVIDEND_KING_SPEC,
+        limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    excluded_symbols = {e["symbol"] for e in result.excluded}
+    assert (
+        "906411" in excluded_symbols
+    )  # dividend_yield 0.02 >= 0.01 → candidate (then no fundamentals)
+    assert "906412" not in excluded_symbols  # NULL dividend_yield filtered at SQL stage
+
+
+def _dividend_period(year, *, net_income, dps, payout_ratio, filing_date):
+    return FundamentalPeriod(
+        fiscal_period=f"{year}A",
+        period_type="annual",
+        period_end_date=dt.date(year, 12, 31),
+        filing_date=filing_date,
+        revenue=Decimal("1000"),
+        net_income=Decimal(net_income),
+        discrete_revenue=Decimal("1000"),
+        discrete_net_income=Decimal(net_income),
+        dividend_per_share=Decimal(dps),
+        payout_ratio=Decimal(payout_ratio),
+    )
+
+
+def _four_dividend_years(symbol, nis, dpss, payouts):
+    return {
+        symbol: [
+            _dividend_period(
+                2021 + i,
+                net_income=str(nis[i]),
+                dps=str(dpss[i]),
+                payout_ratio=str(payouts[i]),
+                filing_date=dt.date(2022 + i, 3, 20),
+            )
+            for i in range(4)
+        ]
+    }
+
+
+def _dividend_king_valuation(symbol="005930"):
+    return [
+        {
+            "symbol": symbol,
+            "roe": 12.0,
+            "per": 11.0,
+            "pbr": 1.0,
+            "market_cap": 5e11,
+            "dividend_yield": 0.02,
+        }
+    ]
+
+
+def test_future_dividend_king_includes_when_all_gates_met():
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUTURE_DIVIDEND_KING_SPEC,
+    )
+
+    # net income up 4y (streak 3); DPS up 4y (growth streak 3); payout latest 35 >= 30.
+    periods = _four_dividend_years(
+        "005930", [100, 120, 150, 200], [100, 110, 120, 130], [30, 32, 34, 35]
+    )
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=_dividend_king_valuation(),
+        periods_by_symbol=periods,
+        spec=FUTURE_DIVIDEND_KING_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert [r["symbol"] for r in rows] == ["005930"]
+    assert rows[0]["dividend_growth_streak_years"] == 3
+    assert rows[0]["earnings_increase_streak_years"] == 3
+    assert rows[0]["payout_ratio"] == 35.0
+
+
+def test_future_dividend_king_excludes_when_payout_below_threshold():
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUTURE_DIVIDEND_KING_SPEC,
+    )
+
+    # Same as include but latest payout 25 < 30 → excluded with payout reason.
+    periods = _four_dividend_years(
+        "005930", [100, 120, 150, 200], [100, 110, 120, 130], [30, 32, 34, 25]
+    )
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=_dividend_king_valuation(),
+        periods_by_symbol=periods,
+        spec=FUTURE_DIVIDEND_KING_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert rows == []
+    assert any("payout_ratio" in e["reason"] for e in excluded)
+
+
+def test_undervalued_growth_full_include_all_three_conditions():
+    from app.services.invest_view_model.fundamentals_screener import (
+        UNDERVALUED_GROWTH_SPEC,
+    )
+
+    # revenue +10%/yr (3y-avg 0.10+); net income +~20%/yr (3y-avg ~0.20+).
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 8.0,
+            "per": 12.0,
+            "pbr": 0.9,
+            "market_cap": 3e11,
+            "dividend_yield": 0.01,
+        }
+    ]
+    periods = _four_growth_years(
+        "005930", [1000, 1100, 1210, 1331], [100, 120, 144, 173]
+    )
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=UNDERVALUED_GROWTH_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert [r["symbol"] for r in rows] == ["005930"]
+    assert rows[0]["revenue_growth_3y_avg"] >= 0.10
+    assert rows[0]["earnings_growth_3y_avg"] >= 0.20
+
+
+def test_sort_by_non_roe_key_orders_desc():
+    from app.services.invest_view_model.fundamentals_screener import (
+        UNDERVALUED_GROWTH_SPEC,
+    )
+
+    # Two qualifiers with different earnings growth; sort_by='earnings_growth_3y_avg' desc.
+    valuation_rows = [
+        {
+            "symbol": "P",
+            "roe": 8.0,
+            "per": 12.0,
+            "pbr": 0.9,
+            "market_cap": 3e11,
+            "dividend_yield": 0.01,
+        },
+        {
+            "symbol": "Q",
+            "roe": 8.0,
+            "per": 12.0,
+            "pbr": 0.9,
+            "market_cap": 3e11,
+            "dividend_yield": 0.01,
+        },
+    ]
+    periods = {
+        **_four_growth_years(
+            "P", [1000, 1100, 1210, 1331], [100, 120, 144, 173]
+        ),  # eg ~0.20
+        **_four_growth_years(
+            "Q", [1000, 1100, 1210, 1331], [100, 150, 225, 338]
+        ),  # eg ~0.50
+    }
+    rows, _ = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=UNDERVALUED_GROWTH_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert [r["symbol"] for r in rows] == ["Q", "P"]  # higher earnings_growth first
