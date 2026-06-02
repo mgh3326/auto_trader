@@ -108,8 +108,9 @@ async def test_latest_periods_for_symbols_groups_by_symbol(db_session):
     await repo.upsert([FinancialFundamentalsUpsert(**other_dict)])
     await db_session.commit()
 
-    grouped = await repo.latest_periods_for_symbols(market="kr", symbols=["005930", "000660", "999999"])
+    grouped = await repo.latest_periods_for_symbols(
+        market="kr", symbols=["005930", "000660", "999999"]
+    )
     assert set(grouped) == {"005930", "000660"}  # missing symbol absent, not error
     assert [r.fiscal_period for r in grouped["005930"]] == ["2023A", "2024A"]  # asc
     assert len(grouped["000660"]) == 1
-

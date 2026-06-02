@@ -241,7 +241,9 @@ async def test_build_screener_results_forwards_us_market_and_formats_us_labels()
     resolver = _FakeResolver(watched={("us", "AAPL")})
 
     resp = await build_screener_results(
-        preset_id="cheap_value",
+        # growth_expectation routes via the generic provider (not KR-only, not
+        # snapshot-first); cheap_value is now KR-only/snapshot-only after ROB-422 PR2c-1.
+        preset_id="growth_expectation",
         screening_service=fake_screening,
         resolver=resolver,
         market="us",
@@ -1056,8 +1058,9 @@ async def test_build_screener_results_warns_when_only_market_cap_fallback_is_abs
 @pytest.mark.parametrize(
     ("preset_id", "field", "value", "expected"),
     [
-        ("cheap_value", "per", 8.25, "8.2"),
-        ("steady_dividend", "dividend_yield", 3.456, "3.46%"),
+        # cheap_value/steady_dividend are now snapshot-only (ROB-422 PR2c-1) and no
+        # longer route through the generic-provider stub this test drives. Their metric
+        # formatting (per / dividend_yield) is covered by other presets/tests.
         ("oversold_recovery", "rsi", 29.94, "29.9"),
         ("kr_high_volume_surge", "volume", 1_234_567, "1,234,567"),
     ],

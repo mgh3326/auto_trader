@@ -154,9 +154,15 @@ def test_earnings_increase_streak_breaks_on_fiscal_year_gap():
     # 2021,2022 present then 2024 (2023 row absent) — the gap means the run ending
     # at 2024 has no contiguous prior year → streak 0 (NOT a fabricated 2).
     periods = [
-        _annual(2021, revenue="1000", net_income="100", filing_date=dt.date(2022, 3, 20)),
-        _annual(2022, revenue="1100", net_income="120", filing_date=dt.date(2023, 3, 20)),
-        _annual(2024, revenue="1600", net_income="200", filing_date=dt.date(2025, 3, 20)),
+        _annual(
+            2021, revenue="1000", net_income="100", filing_date=dt.date(2022, 3, 20)
+        ),
+        _annual(
+            2022, revenue="1100", net_income="120", filing_date=dt.date(2023, 3, 20)
+        ),
+        _annual(
+            2024, revenue="1600", net_income="200", filing_date=dt.date(2025, 3, 20)
+        ),
     ]
     d = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 6, 1))
     assert d.earnings_increase_streak_years.value == 0
@@ -174,8 +180,13 @@ def test_dividend_streaks_unavailable_when_no_visible_periods():
 def test_dividend_paid_streak_breaks_on_fiscal_year_gap():
     # 2024 dividend present but 2023 dividend missing (None) → only 2024 counts.
     periods = _periods()
-    periods[2] = _annual(2023, revenue="1300", net_income="150",
-                         filing_date=dt.date(2024, 3, 20), dps=None, payout_ratio=None)
+    periods[2] = _annual(
+        2023,
+        revenue="1300",
+        net_income="150",
+        filing_date=dt.date(2024, 3, 20),
+        dps=None,
+        payout_ratio=None,
+    )
     d = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 6, 1))
     assert d.dividend_paid_streak_years.value == 1
-

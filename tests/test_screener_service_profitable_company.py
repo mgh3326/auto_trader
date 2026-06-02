@@ -190,24 +190,39 @@ async def test_cheap_value_empty_fundamentals_surfaces_missing_dependency(monkey
 
 
 @pytest.mark.asyncio
-async def test_undervalued_breakout_routes_snapshot_only_no_fundamentals_dependency(monkeypatch):
+async def test_undervalued_breakout_routes_snapshot_only_no_fundamentals_dependency(
+    monkeypatch,
+):
     monkeypatch.setattr(
         "app.services.invest_view_model.screener_service._should_use_snapshot_first",
         lambda service: True,
     )
+
     async def _fake_loader(session, *, market, limit, today_market_date=None):
-        return [{"symbol": "907001", "market": "kr", "name": "종목907001",
-                 "per": 8.0, "pbr": 0.8, "high_52w": 100.0, "high_52w_proximity": 0.96,
-                 "latest_close": 96.0, "snapshot_date": dt.date(2026, 6, 2),
-                 "_screener_snapshot_state": "fresh"}]
+        return [
+            {
+                "symbol": "907001",
+                "market": "kr",
+                "name": "종목907001",
+                "per": 8.0,
+                "pbr": 0.8,
+                "high_52w": 100.0,
+                "high_52w_proximity": 0.96,
+                "latest_close": 96.0,
+                "snapshot_date": dt.date(2026, 6, 2),
+                "_screener_snapshot_state": "fresh",
+            }
+        ]
 
     monkeypatch.setattr(
         "app.services.invest_view_model.undervalued_breakout_screener.load_undervalued_breakout_from_snapshots",
         _fake_loader,
     )
     result = await screener_service.build_screener_results(
-        preset_id="undervalued_breakout", market="kr",
-        session=_MockSession(), screening_service=_StubScreening(),
+        preset_id="undervalued_breakout",
+        market="kr",
+        session=_MockSession(),
+        screening_service=_StubScreening(),
         resolver=_MockResolver(),
     )
     assert [r.symbol for r in result.results] == ["907001"]
@@ -222,6 +237,7 @@ async def test_undervalued_breakout_missing_when_loader_none(monkeypatch):
         "app.services.invest_view_model.screener_service._should_use_snapshot_first",
         lambda service: True,
     )
+
     async def _none_loader(session, *, market, limit, today_market_date=None):
         return None
 
@@ -230,10 +246,11 @@ async def test_undervalued_breakout_missing_when_loader_none(monkeypatch):
         _none_loader,
     )
     result = await screener_service.build_screener_results(
-        preset_id="undervalued_breakout", market="kr",
-        session=_MockSession(), screening_service=_StubScreening(),
+        preset_id="undervalued_breakout",
+        market="kr",
+        session=_MockSession(),
+        screening_service=_StubScreening(),
         resolver=_MockResolver(),
     )
     assert result.results == []
     assert result.freshness.overallState == "missing"
-
