@@ -773,3 +773,59 @@ async def test_loader_dedups_symbol_across_multiple_sources(db_session):
     assert [e["symbol"] for e in result.excluded].count("906431") == 1
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_end_to_end_includes_and_excludes_with_fundamentals(db_session):
+    import sqlalchemy as sa
+
+    from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        CHEAP_VALUE_SPEC,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2026, 6, 2)
+    syms = ["906441", "906442"]
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms))
+    )
+    await db_session.commit()
+    # Both pass valuation (PER 12<=15, PBR 1.0<=1.5).
+    db_session.add_all([
+        MarketValuationSnapshot(market="kr", symbol=s, snapshot_date=vd, source="naver_finance",
+            per=Decimal("12"), pbr=Decimal("1.0"), roe=Decimal("8"),
+            dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000"))
+        for s in syms
+    ])
+    # 906441 earnings growing (eg >= 0 → included); 906442 declining (eg < 0 → excluded).
+    for s, nis in [("906441", [100, 110, 120, 130]), ("906442", [200, 180, 150, 120])]:
+        for i, ni in enumerate(nis):
+            db_session.add(FinancialFundamentalsSnapshot(
+                market="kr", symbol=s, fiscal_period=f"{2021 + i}A", period_type="annual",
+                period_end_date=dt.date(2021 + i, 12, 31), filing_date=dt.date(2022 + i, 3, 20),
+                effective_at=dt.date(2022 + i, 3, 20), source="dart",
+                source_collected_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+                revenue=Decimal("1000"), net_income=Decimal(ni), data_state="fresh"))
+    db_session.add_all([
+        KRSymbolUniverse(symbol=s, name=f"종목{s}", exchange="KOSPI", is_active=True) for s in syms
+    ])
+    await db_session.commit()
+
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session, market="kr", spec=CHEAP_VALUE_SPEC, limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == ["906441"]  # growing earnings included
+    assert result.fundamentals_state == "fresh"  # fundamentals rows exist
+    assert "906442" in {e["symbol"] for e in result.excluded}  # declining → excluded
+
+
+
