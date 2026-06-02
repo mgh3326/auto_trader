@@ -178,13 +178,21 @@ async def fetch_symbol_news(
             )
         else:
             return SymbolNewsFetchResult(
-                symbol, market, provider, "unavailable", limit, 0, [],
+                symbol,
+                market,
+                provider,
+                "unavailable",
+                limit,
+                0,
+                [],
                 "unsupported_market",
             )
     except Exception as exc:  # noqa: BLE001 — overlay evidence, fail soft
         logger.warning(
             "symbol_news_service.fetch_symbol_news failed: symbol=%s market=%s err=%s",
-            symbol, market, exc,
+            symbol,
+            market,
+            exc,
         )
         return SymbolNewsFetchResult(
             symbol, market, provider, "error", limit, 0, [], type(exc).__name__

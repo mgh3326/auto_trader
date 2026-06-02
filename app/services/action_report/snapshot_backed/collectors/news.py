@@ -171,9 +171,7 @@ class NewsSnapshotCollector:
         fetch_records: list[dict[str, Any]] = []
         for symbol in focus_symbols:
             try:
-                result = await self._news_fetch_fn(
-                    symbol, request.market, self._limit
-                )
+                result = await self._news_fetch_fn(symbol, request.market, self._limit)
             except Exception as exc:  # noqa: BLE001 — optional, fail open
                 fetch_records.append(
                     {
