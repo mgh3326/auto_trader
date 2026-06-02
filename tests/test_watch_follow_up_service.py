@@ -7,13 +7,13 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investment_reports import InvestmentReportItem, InvestmentWatchEvent
 from app.models.review import TradeJournalReview
 from app.models.trade_journal import TradeJournal
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.trade_journal import watch_follow_up_service as svc
 
 # Seeds + commits investment_reports / watch_events on the shared test DB —
 # hold the cleanup lock so a concurrent xdist TRUNCATE can't wipe rows mid-test
@@ -72,7 +72,7 @@ async def _closed_mock_journal_with_verdict(db, *, cid, pnl="5", verdict="good")
 @pytest.mark.asyncio
 async def test_repo_update_event_follow_up(db_session: AsyncSession):
     cid = f"corr-{uuid4().hex}"
-    j = await _closed_mock_journal_with_verdict(db_session, cid=cid)
+    await _closed_mock_journal_with_verdict(db_session, cid=cid)
     ev = await _event(db_session, cid=cid)
     # need any item id; reuse the journal's report-less context via a raw item is
     # not possible (report_id NOT NULL) — instead assert FK set to an existing
@@ -108,9 +108,6 @@ async def test_repo_update_event_follow_up(db_session: AsyncSession):
     await db_session.commit()
     await db_session.refresh(ev)
     assert ev.follow_up_report_item_id == item.id
-
-
-from app.services.trade_journal import watch_follow_up_service as svc
 
 
 async def _item_for_event(db, ev):
