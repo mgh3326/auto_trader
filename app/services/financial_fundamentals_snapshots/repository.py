@@ -102,3 +102,36 @@ class FinancialFundamentalsSnapshotsRepository:
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def latest_periods_for_symbols(
+        self,
+        *,
+        market: str,
+        symbols: Iterable[str],
+        period_type: str | None = None,
+    ) -> dict[str, list[FinancialFundamentalsSnapshot]]:
+        """symbol -> period_end_date-ascending rows. One query (no N+1).
+
+        Missing symbols are simply absent from the returned dict (no error).
+        """
+        norm_market = market.strip().lower()
+        norm_symbols = {s.strip().upper() for s in symbols if s.strip()}
+        if not norm_symbols:
+            return {}
+        stmt = select(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.market == norm_market,
+            FinancialFundamentalsSnapshot.symbol.in_(norm_symbols),
+        )
+        if period_type is not None:
+            stmt = stmt.where(FinancialFundamentalsSnapshot.period_type == period_type)
+        stmt = stmt.order_by(
+            FinancialFundamentalsSnapshot.symbol.asc(),
+            FinancialFundamentalsSnapshot.period_end_date.asc(),
+            FinancialFundamentalsSnapshot.fiscal_period.asc(),
+        )
+        result = await self._session.execute(stmt)
+        grouped: dict[str, list[FinancialFundamentalsSnapshot]] = {}
+        for row in result.scalars().all():
+            grouped.setdefault(row.symbol, []).append(row)
+        return grouped
+

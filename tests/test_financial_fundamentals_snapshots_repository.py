@@ -81,3 +81,35 @@ async def test_periods_for_symbol_returns_ascending_by_period_end(db_session):
 
     rows = await repo.periods_for_symbol(market="kr", symbol="005930")
     assert [r.fiscal_period for r in rows] == ["2023A", "2024A", "2025A"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_latest_periods_for_symbols_groups_by_symbol(db_session):
+    # Clean up first to avoid cross-test pollution in persistent test DB
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(["005930", "000660"])
+        )
+    )
+    await db_session.commit()
+
+    repo = FinancialFundamentalsSnapshotsRepository(db_session)
+    await repo.upsert(
+        [
+            _row("2023A", 100, filing_date=dt.date(2024, 3, 20)),
+            _row("2024A", 200, filing_date=dt.date(2025, 3, 20)),
+        ]
+    )
+    # a second symbol
+    other = _row("2024A", 50, filing_date=dt.date(2025, 3, 20))
+    other_dict = other.model_dump()
+    other_dict["symbol"] = "000660"
+    await repo.upsert([FinancialFundamentalsUpsert(**other_dict)])
+    await db_session.commit()
+
+    grouped = await repo.latest_periods_for_symbols(market="kr", symbols=["005930", "000660", "999999"])
+    assert set(grouped) == {"005930", "000660"}  # missing symbol absent, not error
+    assert [r.fiscal_period for r in grouped["005930"]] == ["2023A", "2024A"]  # asc
+    assert len(grouped["000660"]) == 1
+
