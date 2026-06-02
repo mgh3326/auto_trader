@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-import logging
 from typing import Any
-from collections.abc import Awaitable, Callable, Iterable
 
 import pandas as pd
 
@@ -70,10 +70,18 @@ def _pick_amount(
 def parse_income_statement_frame(df: pd.DataFrame) -> dict[str, Decimal | None]:
     """Extract revenue / net_income / gross_profit / cost_of_sales from a finstate_all frame."""
     return {
-        "revenue": _pick_amount(df, account_ids=_REVENUE_IDS, account_names=_REVENUE_NAMES),
-        "gross_profit": _pick_amount(df, account_ids=_GROSS_PROFIT_IDS, account_names=_GROSS_PROFIT_NAMES),
-        "cost_of_sales": _pick_amount(df, account_ids=_COST_OF_SALES_IDS, account_names=_COST_OF_SALES_NAMES),
-        "net_income": _pick_amount(df, account_ids=_NET_INCOME_IDS, account_names=_NET_INCOME_NAMES),
+        "revenue": _pick_amount(
+            df, account_ids=_REVENUE_IDS, account_names=_REVENUE_NAMES
+        ),
+        "gross_profit": _pick_amount(
+            df, account_ids=_GROSS_PROFIT_IDS, account_names=_GROSS_PROFIT_NAMES
+        ),
+        "cost_of_sales": _pick_amount(
+            df, account_ids=_COST_OF_SALES_IDS, account_names=_COST_OF_SALES_NAMES
+        ),
+        "net_income": _pick_amount(
+            df, account_ids=_NET_INCOME_IDS, account_names=_NET_INCOME_NAMES
+        ),
     }
 
 
@@ -145,7 +153,9 @@ class RawQuarterlyFiling:
     rcept_no: str
     reprt_code: str
     income_statement: pd.DataFrame  # cumulative YTD amounts
-    prior_income_statement: pd.DataFrame | None = None  # prior cumulative (for differencing)
+    prior_income_statement: pd.DataFrame | None = (
+        None  # prior cumulative (for differencing)
+    )
 
 
 @dataclass(frozen=True)
@@ -169,8 +179,13 @@ _REPRT_CODE_BY_QUARTER = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
 
 
 def _payload_from_annual(
-    *, market: str, symbol: str, filing: RawAnnualFiling, currency: str | None,
-    filing_date: dt.date | None, collected_at: dt.datetime,
+    *,
+    market: str,
+    symbol: str,
+    filing: RawAnnualFiling,
+    currency: str | None,
+    filing_date: dt.date | None,
+    collected_at: dt.datetime,
 ) -> FinancialFundamentalsUpsert:
     income = parse_income_statement_frame(filing.income_statement)
     dividend = (
@@ -205,7 +220,7 @@ def _payload_from_annual(
         cost_of_sales=income["cost_of_sales"],
         payout_ratio=dividend["payout_ratio"],
         dividend_per_share=dividend["dividend_per_share"],
-        discrete_revenue=income["revenue"],          # annual: discrete == reported
+        discrete_revenue=income["revenue"],  # annual: discrete == reported
         discrete_net_income=income["net_income"],
         data_state=row_data_state(filing_date=filing_date),
         raw_payload=redact_sensitive_payload(raw),
@@ -213,8 +228,13 @@ def _payload_from_annual(
 
 
 def _payload_from_quarterly(
-    *, market: str, symbol: str, filing: RawQuarterlyFiling, currency: str | None,
-    filing_date: dt.date | None, collected_at: dt.datetime,
+    *,
+    market: str,
+    symbol: str,
+    filing: RawQuarterlyFiling,
+    currency: str | None,
+    filing_date: dt.date | None,
+    collected_at: dt.datetime,
 ) -> FinancialFundamentalsUpsert:
     income = parse_income_statement_frame(filing.income_statement)
     prior = (
@@ -295,7 +315,9 @@ async def build_financial_fundamentals_for_symbols(
             for filing in bundle.annual:
                 collected.append(
                     _payload_from_annual(
-                        market=market_norm, symbol=symbol, filing=filing,
+                        market=market_norm,
+                        symbol=symbol,
+                        filing=filing,
                         currency=bundle.currency,
                         filing_date=filing_dates.get(filing.rcept_no),
                         collected_at=collected_at,
@@ -304,7 +326,9 @@ async def build_financial_fundamentals_for_symbols(
             for q_filing in bundle.quarterly:
                 collected.append(
                     _payload_from_quarterly(
-                        market=market_norm, symbol=symbol, filing=q_filing,
+                        market=market_norm,
+                        symbol=symbol,
+                        filing=q_filing,
                         currency=bundle.currency,
                         filing_date=filing_dates.get(q_filing.rcept_no),
                         collected_at=collected_at,
@@ -354,8 +378,10 @@ async def default_dart_fetcher(
                 rcept_no = str(stmt.iloc[0].get("rcept_no", "")).strip()
             annual.append(
                 RawAnnualFiling(
-                    bsns_year=year, rcept_no=rcept_no,
-                    income_statement=stmt, dividend=dividend,
+                    bsns_year=year,
+                    rcept_no=rcept_no,
+                    income_statement=stmt,
+                    dividend=dividend,
                 )
             )
         # Resolve filing dates via the disclosure-list endpoint (carries rcept_dt).
@@ -374,8 +400,11 @@ async def default_dart_fetcher(
             vals = annual[0].income_statement["currency"].dropna().unique().tolist()
             currency = str(vals[0]) if vals else None
         return RawFundamentalsBundle(
-            symbol=symbol, currency=currency,
-            annual=tuple(annual), quarterly=(), filing_dates=filing_dates,
+            symbol=symbol,
+            currency=currency,
+            annual=tuple(annual),
+            quarterly=(),
+            filing_dates=filing_dates,
         )
 
     return await asyncio.to_thread(fetch_sync)

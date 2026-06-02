@@ -18,26 +18,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--market", choices=["kr"], default="kr")
     parser.add_argument(
-        "--symbol", action="append", default=[],
+        "--symbol",
+        action="append",
+        default=[],
         help="Restrict to specific 6-digit KR symbols. Repeatable.",
     )
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Max active universe symbols. Defaults to 20 unless --all.",
     )
     parser.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="Iterate the full active KR universe. Exclusive with --symbol/--limit.",
     )
     parser.add_argument(
-        "--with-quarterly", dest="include_quarterly", action="store_true",
+        "--with-quarterly",
+        dest="include_quarterly",
+        action="store_true",
         help="Also build quarterly periods (annual-only by default; spec §2.3).",
     )
     parser.add_argument(
         "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
     )
     parser.add_argument(
-        "--commit", action="store_true",
+        "--commit",
+        action="store_true",
         help="Actually write to the database. Default is --dry-run/no writes.",
     )
     args = parser.parse_args(argv)

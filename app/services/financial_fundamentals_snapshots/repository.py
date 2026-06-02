@@ -95,9 +95,7 @@ class FinancialFundamentalsSnapshotsRepository:
             FinancialFundamentalsSnapshot.symbol == symbol.strip().upper(),
         )
         if period_type is not None:
-            stmt = stmt.where(
-                FinancialFundamentalsSnapshot.period_type == period_type
-            )
+            stmt = stmt.where(FinancialFundamentalsSnapshot.period_type == period_type)
         stmt = stmt.order_by(
             FinancialFundamentalsSnapshot.period_end_date.asc(),
             FinancialFundamentalsSnapshot.fiscal_period.asc(),

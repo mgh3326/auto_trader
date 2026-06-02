@@ -176,20 +176,29 @@ async def run_financial_fundamentals_snapshot_build(
     if not symbols:
         finished_at = dt.datetime.now(dt.UTC)
         return FinancialFundamentalsSnapshotBuildResult(
-            market=market, symbols_resolved=0, snapshots_built=0,
-            committed=request.commit, started_at=started_at, finished_at=finished_at,
+            market=market,
+            symbols_resolved=0,
+            snapshots_built=0,
+            committed=request.commit,
+            started_at=started_at,
+            finished_at=finished_at,
             idempotency={"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0},
             warnings=("no symbols resolved",),
         )
     build = await build_financial_fundamentals_for_symbols(
-        market=market, symbols=symbols, collected_at=collected_at,
-        fetcher=use_fetcher, include_quarterly=request.include_quarterly,
+        market=market,
+        symbols=symbols,
+        collected_at=collected_at,
+        fetcher=use_fetcher,
+        include_quarterly=request.include_quarterly,
         concurrency=request.concurrency,
     )
     payloads = list(build.payloads)
-    idempotency = await _classify_idempotency(payloads) if payloads else {
-        "wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0
-    }
+    idempotency = (
+        await _classify_idempotency(payloads)
+        if payloads
+        else {"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0}
+    )
     if request.commit and payloads:
         await _commit_payloads(payloads)
     finished_at = dt.datetime.now(dt.UTC)

@@ -1,1 +1,1 @@
-from . import financial_fundamentals_snapshots
+from . import financial_fundamentals_snapshots as financial_fundamentals_snapshots

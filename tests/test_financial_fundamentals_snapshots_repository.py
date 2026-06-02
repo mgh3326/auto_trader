@@ -13,7 +13,9 @@ from app.services.financial_fundamentals_snapshots.repository import (
 )
 
 
-def _row(fiscal_period: str, net_income: int, *, filing_date: dt.date | None) -> FinancialFundamentalsUpsert:
+def _row(
+    fiscal_period: str, net_income: int, *, filing_date: dt.date | None
+) -> FinancialFundamentalsUpsert:
     return FinancialFundamentalsUpsert(
         market="kr",
         symbol="005930",

@@ -9,8 +9,17 @@ from app.services.financial_fundamentals_snapshots.derive import (
 )
 
 
-def _annual(year: int, *, revenue, net_income, filing_date, gross_profit=None,
-            cost_of_sales=None, payout_ratio=None, dps=None) -> FundamentalPeriod:
+def _annual(
+    year: int,
+    *,
+    revenue,
+    net_income,
+    filing_date,
+    gross_profit=None,
+    cost_of_sales=None,
+    payout_ratio=None,
+    dps=None,
+) -> FundamentalPeriod:
     return FundamentalPeriod(
         fiscal_period=f"{year}A",
         period_type="annual",
@@ -30,10 +39,38 @@ def _annual(year: int, *, revenue, net_income, filing_date, gross_profit=None,
 
 def _periods():
     return [
-        _annual(2021, revenue="1000", net_income="100", filing_date=dt.date(2022, 3, 20), dps="10", payout_ratio="20"),
-        _annual(2022, revenue="1100", net_income="120", filing_date=dt.date(2023, 3, 20), dps="11", payout_ratio="21"),
-        _annual(2023, revenue="1300", net_income="150", filing_date=dt.date(2024, 3, 20), dps="12", payout_ratio="22"),
-        _annual(2024, revenue="1600", net_income="200", filing_date=dt.date(2025, 3, 20), dps="13", payout_ratio="25"),
+        _annual(
+            2021,
+            revenue="1000",
+            net_income="100",
+            filing_date=dt.date(2022, 3, 20),
+            dps="10",
+            payout_ratio="20",
+        ),
+        _annual(
+            2022,
+            revenue="1100",
+            net_income="120",
+            filing_date=dt.date(2023, 3, 20),
+            dps="11",
+            payout_ratio="21",
+        ),
+        _annual(
+            2023,
+            revenue="1300",
+            net_income="150",
+            filing_date=dt.date(2024, 3, 20),
+            dps="12",
+            payout_ratio="22",
+        ),
+        _annual(
+            2024,
+            revenue="1600",
+            net_income="200",
+            filing_date=dt.date(2025, 3, 20),
+            dps="13",
+            payout_ratio="25",
+        ),
     ]
 
 
@@ -57,14 +94,22 @@ def test_growth_3y_avg_computed_when_four_years_visible():
 
 def test_earnings_increase_streak_counts_consecutive():
     d = derive_fundamentals_metrics(_periods(), report_date=dt.date(2025, 6, 1))
-    assert d.earnings_increase_streak_years.value == 3  # 2021<2022<2023<2024 → 3 increases
+    assert (
+        d.earnings_increase_streak_years.value == 3
+    )  # 2021<2022<2023<2024 → 3 increases
 
 
 def test_dividend_streaks_missing_not_zero():
     periods = _periods()
     # Drop the 2023 dividend (None) → streak breaks, NOT counted as a 0-paid year.
-    periods[2] = _annual(2023, revenue="1300", net_income="150",
-                         filing_date=dt.date(2024, 3, 20), dps=None, payout_ratio=None)
+    periods[2] = _annual(
+        2023,
+        revenue="1300",
+        net_income="150",
+        filing_date=dt.date(2024, 3, 20),
+        dps=None,
+        payout_ratio=None,
+    )
     d = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 6, 1))
     # Most-recent consecutive paid run is just 2024 (2023 missing breaks it).
     assert d.dividend_paid_streak_years.value == 1
@@ -78,8 +123,13 @@ def test_gross_margin_partial_when_no_gross_profit_or_cogs():
 
 def test_gross_margin_uses_cost_of_sales_fallback():
     periods = [
-        _annual(2024, revenue="1000", net_income="100",
-                filing_date=dt.date(2025, 3, 20), cost_of_sales="700"),
+        _annual(
+            2024,
+            revenue="1000",
+            net_income="100",
+            filing_date=dt.date(2025, 3, 20),
+            cost_of_sales="700",
+        ),
     ]
     d = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 6, 1))
     # gross margin = (1000 - 700) / 1000 = 0.30
@@ -89,8 +139,12 @@ def test_gross_margin_uses_cost_of_sales_fallback():
 
 def test_negative_base_year_makes_growth_partial():
     periods = [
-        _annual(2023, revenue="1000", net_income="-50", filing_date=dt.date(2024, 3, 20)),
-        _annual(2024, revenue="1100", net_income="80", filing_date=dt.date(2025, 3, 20)),
+        _annual(
+            2023, revenue="1000", net_income="-50", filing_date=dt.date(2024, 3, 20)
+        ),
+        _annual(
+            2024, revenue="1100", net_income="80", filing_date=dt.date(2025, 3, 20)
+        ),
     ]
     d = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 6, 1))
     assert d.earnings_growth_3y_avg.state in {"partial", "unavailable"}

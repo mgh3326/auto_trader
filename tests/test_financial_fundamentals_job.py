@@ -30,11 +30,23 @@ def bind_job_session(monkeypatch, db_session):
     return db_session
 
 
-async def _fake_fetcher(symbol: str, *, include_quarterly: bool) -> RawFundamentalsBundle:
+async def _fake_fetcher(
+    symbol: str, *, include_quarterly: bool
+) -> RawFundamentalsBundle:
     df = pd.DataFrame(
         [
-            {"account_id": "ifrs-full_Revenue", "account_nm": "매출액", "sj_div": "IS", "thstrm_amount": "1,000"},
-            {"account_id": "ifrs-full_ProfitLoss", "account_nm": "당기순이익", "sj_div": "CIS", "thstrm_amount": "100"},
+            {
+                "account_id": "ifrs-full_Revenue",
+                "account_nm": "매출액",
+                "sj_div": "IS",
+                "thstrm_amount": "1,000",
+            },
+            {
+                "account_id": "ifrs-full_ProfitLoss",
+                "account_nm": "당기순이익",
+                "sj_div": "CIS",
+                "thstrm_amount": "100",
+            },
         ]
     )
     return RawFundamentalsBundle(
@@ -64,4 +76,5 @@ async def test_dry_run_builds_but_writes_nothing(bind_job_session, monkeypatch):
 def _async_return(value):
     async def _coro(*args, **kwargs):
         return value
+
     return _coro

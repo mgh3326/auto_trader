@@ -16,8 +16,18 @@ from app.services.financial_fundamentals_snapshots.builder import (
 def _is_frame(rev: str, ni: str) -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {"account_id": "ifrs-full_Revenue", "account_nm": "매출액", "sj_div": "IS", "thstrm_amount": rev},
-            {"account_id": "ifrs-full_ProfitLoss", "account_nm": "당기순이익", "sj_div": "CIS", "thstrm_amount": ni},
+            {
+                "account_id": "ifrs-full_Revenue",
+                "account_nm": "매출액",
+                "sj_div": "IS",
+                "thstrm_amount": rev,
+            },
+            {
+                "account_id": "ifrs-full_ProfitLoss",
+                "account_nm": "당기순이익",
+                "sj_div": "CIS",
+                "thstrm_amount": ni,
+            },
         ]
     )
 
@@ -31,7 +41,9 @@ def _div_frame(dps: str, payout: str) -> pd.DataFrame:
     )
 
 
-async def _fake_fetcher(symbol: str, *, include_quarterly: bool) -> RawFundamentalsBundle:
+async def _fake_fetcher(
+    symbol: str, *, include_quarterly: bool
+) -> RawFundamentalsBundle:
     return RawFundamentalsBundle(
         symbol=symbol,
         currency="KRW",
@@ -71,19 +83,21 @@ async def test_builder_emits_one_payload_per_annual_period_with_pit_filing_date(
     assert p25.market == "kr" and p25.symbol == "005930" and p25.source == "dart"
     assert p25.period_type == "annual"
     assert p25.period_end_date == dt.date(2025, 12, 31)
-    assert p25.filing_date == dt.date(2026, 3, 20)        # rcept_no→rcept_dt join
+    assert p25.filing_date == dt.date(2026, 3, 20)  # rcept_no→rcept_dt join
     assert p25.effective_at == dt.date(2026, 3, 20)
     assert p25.revenue == Decimal("3000000")
     assert p25.net_income == Decimal("300000")
     assert p25.payout_ratio == Decimal("25.10")
     assert p25.dividend_per_share == Decimal("1444")
-    assert p25.data_state == "fresh"                      # filing_date resolved
-    assert p25.raw_payload is not None                    # provenance retained
+    assert p25.data_state == "fresh"  # filing_date resolved
+    assert p25.raw_payload is not None  # provenance retained
 
 
 @pytest.mark.asyncio
 async def test_builder_marks_partial_when_filing_date_unresolved():
-    async def _fetcher(symbol: str, *, include_quarterly: bool) -> RawFundamentalsBundle:
+    async def _fetcher(
+        symbol: str, *, include_quarterly: bool
+    ) -> RawFundamentalsBundle:
         bundle = await _fake_fetcher(symbol, include_quarterly=include_quarterly)
         return RawFundamentalsBundle(
             symbol=bundle.symbol,

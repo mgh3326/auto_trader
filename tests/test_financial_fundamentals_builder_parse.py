@@ -16,10 +16,30 @@ from app.services.financial_fundamentals_snapshots.builder import (
 def test_parse_income_statement_prefers_account_id_then_name():
     df = pd.DataFrame(
         [
-            {"account_id": "ifrs-full_Revenue", "account_nm": "수익(매출액)", "sj_div": "IS", "thstrm_amount": "3,000,000"},
-            {"account_id": "ifrs-full_GrossProfit", "account_nm": "매출총이익", "sj_div": "IS", "thstrm_amount": "1,200,000"},
-            {"account_id": "ifrs-full_CostOfSales", "account_nm": "매출원가", "sj_div": "IS", "thstrm_amount": "1,800,000"},
-            {"account_id": "ifrs-full_ProfitLoss", "account_nm": "당기순이익", "sj_div": "CIS", "thstrm_amount": "500,000"},
+            {
+                "account_id": "ifrs-full_Revenue",
+                "account_nm": "수익(매출액)",
+                "sj_div": "IS",
+                "thstrm_amount": "3,000,000",
+            },
+            {
+                "account_id": "ifrs-full_GrossProfit",
+                "account_nm": "매출총이익",
+                "sj_div": "IS",
+                "thstrm_amount": "1,200,000",
+            },
+            {
+                "account_id": "ifrs-full_CostOfSales",
+                "account_nm": "매출원가",
+                "sj_div": "IS",
+                "thstrm_amount": "1,800,000",
+            },
+            {
+                "account_id": "ifrs-full_ProfitLoss",
+                "account_nm": "당기순이익",
+                "sj_div": "CIS",
+                "thstrm_amount": "500,000",
+            },
         ]
     )
     parsed = parse_income_statement_frame(df)
@@ -32,8 +52,18 @@ def test_parse_income_statement_prefers_account_id_then_name():
 def test_parse_income_statement_missing_gross_profit_is_none():
     df = pd.DataFrame(
         [
-            {"account_id": "ifrs-full_Revenue", "account_nm": "매출액", "sj_div": "IS", "thstrm_amount": "100"},
-            {"account_id": "ifrs-full_ProfitLoss", "account_nm": "당기순이익", "sj_div": "CIS", "thstrm_amount": "10"},
+            {
+                "account_id": "ifrs-full_Revenue",
+                "account_nm": "매출액",
+                "sj_div": "IS",
+                "thstrm_amount": "100",
+            },
+            {
+                "account_id": "ifrs-full_ProfitLoss",
+                "account_nm": "당기순이익",
+                "sj_div": "CIS",
+                "thstrm_amount": "10",
+            },
         ]
     )
     parsed = parse_income_statement_frame(df)
@@ -75,8 +105,15 @@ def test_parse_filing_dates_maps_rcept_no_to_date():
 
 def test_single_quarter_discrete_differences_cumulative():
     # Q3 cumulative (9-month) minus H1 cumulative (6-month) = standalone Q3.
-    assert single_quarter_discrete(cumulative=Decimal("900"), prior_cumulative=Decimal("600")) == Decimal("300")
+    assert single_quarter_discrete(
+        cumulative=Decimal("900"), prior_cumulative=Decimal("600")
+    ) == Decimal("300")
     # Q1 has no prior cumulative within the year → standalone = cumulative.
-    assert single_quarter_discrete(cumulative=Decimal("250"), prior_cumulative=None) == Decimal("250")
+    assert single_quarter_discrete(
+        cumulative=Decimal("250"), prior_cumulative=None
+    ) == Decimal("250")
     # Missing cumulative → cannot difference.
-    assert single_quarter_discrete(cumulative=None, prior_cumulative=Decimal("600")) is None
+    assert (
+        single_quarter_discrete(cumulative=None, prior_cumulative=Decimal("600"))
+        is None
+    )

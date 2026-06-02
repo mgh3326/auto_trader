@@ -50,7 +50,8 @@ _UNAVAILABLE = MetricResult(value=None, state="unavailable")
 
 def _visible_annual(periods, report_date):
     rows = [
-        p for p in periods
+        p
+        for p in periods
         if p.period_type == "annual"
         and p.filing_date is not None
         and p.filing_date <= report_date
@@ -60,7 +61,8 @@ def _visible_annual(periods, report_date):
 
 def _visible_quarterly(periods, report_date):
     rows = [
-        p for p in periods
+        p
+        for p in periods
         if p.period_type == "quarterly"
         and p.filing_date is not None
         and p.filing_date <= report_date
@@ -89,7 +91,9 @@ def _growth_3y_avg(values: list[Decimal | None]) -> MetricResult:
     avg = sum(deltas) / Decimal(len(deltas))
     if len(values) >= 4 and len(deltas) >= 3 and not undefined:
         return MetricResult(value=avg, state="ok")
-    return MetricResult(value=avg, state="partial", note="fewer than 3 usable YoY deltas")
+    return MetricResult(
+        value=avg, state="partial", note="fewer than 3 usable YoY deltas"
+    )
 
 
 def _payout_ratio(annual: list) -> MetricResult:
@@ -112,21 +116,29 @@ def _gross_margin_ttm(annual: list, quarterly: list) -> MetricResult:
     # Prefer trailing-4-quarter TTM when available.
     if len(quarterly) >= 4:
         last4 = quarterly[-4:]
-        rev = sum((q.discrete_revenue for q in last4 if q.discrete_revenue is not None), Decimal(0))
+        rev = sum(
+            (q.discrete_revenue for q in last4 if q.discrete_revenue is not None),
+            Decimal(0),
+        )
         gross_vals = [q.gross_profit for q in last4 if q.gross_profit is not None]
         cogs_vals = [q.cost_of_sales for q in last4 if q.cost_of_sales is not None]
         if rev > 0 and len(gross_vals) == 4:
             return MetricResult(value=sum(gross_vals, Decimal(0)) / rev, state="ok")
         if rev > 0 and len(cogs_vals) == 4:
-            return MetricResult(value=(rev - sum(cogs_vals, Decimal(0))) / rev, state="ok")
+            return MetricResult(
+                value=(rev - sum(cogs_vals, Decimal(0))) / rev, state="ok"
+            )
     # Fall back to the latest annual figure.
     if annual:
         latest = annual[-1]
         m = margin(latest.gross_profit, latest.cost_of_sales, latest.revenue)
         if m is not None:
             return MetricResult(value=m, state="ok")
-        return MetricResult(value=None, state="partial",
-                            note="no gross profit / cost of sales (IFRS single-step)")
+        return MetricResult(
+            value=None,
+            state="partial",
+            note="no gross profit / cost of sales (IFRS single-step)",
+        )
     return _UNAVAILABLE
 
 
@@ -137,7 +149,9 @@ def _earnings_growth_qoq(quarterly: list) -> MetricResult:
     curr, prev = usable[-1].discrete_net_income, usable[-2].discrete_net_income
     g = _yoy(curr, prev)
     if g is None:
-        return MetricResult(value=None, state="partial", note="non-positive base quarter")
+        return MetricResult(
+            value=None, state="partial", note="non-positive base quarter"
+        )
     return MetricResult(value=g, state="ok")
 
 
@@ -161,7 +175,7 @@ def _dividend_paid_streak(annual: list) -> MetricResult:
     streak = 0
     for p in reversed(annual):
         dps = p.dividend_per_share
-        if dps is None:          # missing != zero → cannot extend → stop
+        if dps is None:  # missing != zero → cannot extend → stop
             break
         if dps > 0:
             streak += 1
@@ -174,15 +188,18 @@ def _dividend_growth_streak(annual: list) -> MetricResult:
     dps = [(p.period_end_date, p.dividend_per_share) for p in annual]
     dps = [d for d in dps if d[1] is not None]
     if len(dps) < 2:
-        return MetricResult(value=0, state="partial", note="insufficient dividend history")
+        return MetricResult(
+            value=0, state="partial", note="insufficient dividend history"
+        )
     streak = 0
     for i in range(len(dps) - 1, 0, -1):
         if dps[i][1] > dps[i - 1][1]:
             streak += 1
         else:
             break
-    return MetricResult(value=streak, state="ok",
-                        note="DPS is split/par-value unadjusted (DART raw)")
+    return MetricResult(
+        value=streak, state="ok", note="DPS is split/par-value unadjusted (DART raw)"
+    )
 
 
 def derive_fundamentals_metrics(
@@ -197,9 +214,13 @@ def derive_fundamentals_metrics(
         payout_ratio=_payout_ratio(annual),
         gross_margin_ttm=_gross_margin_ttm(annual, quarterly),
         revenue_growth_3y_avg=_growth_3y_avg(revenues) if revenues else _UNAVAILABLE,
-        earnings_growth_3y_avg=_growth_3y_avg(net_incomes) if net_incomes else _UNAVAILABLE,
+        earnings_growth_3y_avg=_growth_3y_avg(net_incomes)
+        if net_incomes
+        else _UNAVAILABLE,
         earnings_growth_qoq=_earnings_growth_qoq(quarterly),
-        earnings_increase_streak_years=_increase_streak(net_incomes) if net_incomes else _UNAVAILABLE,
+        earnings_increase_streak_years=_increase_streak(net_incomes)
+        if net_incomes
+        else _UNAVAILABLE,
         dividend_paid_streak_years=_dividend_paid_streak(annual),
         dividend_growth_streak_years=_dividend_growth_streak(annual),
     )
