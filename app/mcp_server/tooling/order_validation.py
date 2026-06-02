@@ -23,13 +23,15 @@ from app.mcp_server.tooling.portfolio_cash import (
     extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
 )
 from app.mcp_server.tooling.portfolio_cash import (
+    get_cash_balance_impl,
+)
+from app.mcp_server.tooling.portfolio_cash import (
     select_usd_row_for_us_order as _select_usd_row_for_us_order,
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.services.brokers.kis import (
     KISClient,
-    extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
@@ -373,6 +375,20 @@ async def _get_holdings_for_order(
     return None
 
 
+async def _live_kis_orderable(account_token: str) -> float:
+    """live KIS 예약-차감 orderable (단일 소스 = get_available_capital의 소스).
+
+    ``account_token``: "kis_domestic" (KRW) | "kis_overseas" (USD).
+    ``get_cash_balance_impl``이 raw orderable에서 대기주문 예약을 차감(실패 시 raw
+    fallback)하므로 precheck가 get_available_capital과 동일 orderable을 본다.
+    """
+    result = await get_cash_balance_impl(account=account_token, is_mock=False)
+    for acc in result.get("accounts", []):
+        if acc.get("account") == account_token:
+            return float(acc.get("orderable") or 0.0)
+    raise RuntimeError(f"{account_token} orderable not found in cash balance")
+
+
 async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> float:
     if market_type == "crypto":
         coins = await upbit_service.fetch_my_coins()
@@ -382,22 +398,23 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
         return 0.0
 
     if market_type == "equity_kr":
-        kis = _create_kis_client(is_mock=is_mock)
         if is_mock:
+            kis = _create_kis_client(is_mock=is_mock)
             cash_summary = await _call_kis(
                 kis.inquire_domestic_cash_balance,
                 is_mock=is_mock,
             )
             return float(cash_summary.get("stck_cash_ord_psbl_amt") or 0)
-        margin_data = await _call_kis(
-            kis.inquire_integrated_margin,
-            is_mock=is_mock,
-        )
-        domestic_cash = extract_domestic_cash_summary_from_integrated_margin(
-            margin_data
-        )
-        return float(domestic_cash.get("orderable") or 0)
+        # ROB-419 — live: reservation-aware orderable (== get_available_capital),
+        # so pending-order cash reservations are not treated as spendable.
+        return await _live_kis_orderable("kis_domestic")
 
+    if not is_mock:
+        # ROB-419 — live US: reservation-aware orderable via the single source.
+        return await _live_kis_orderable("kis_overseas")
+
+    # mock US: KIS 모의투자엔 해외 orderable-cash 서비스가 없음(OPSQ0002). ROB-417
+    # 조기 가드가 _check_balance_and_warn에서 선제 차단하므로 여기 도달은 방어적.
     kis = _create_kis_client(is_mock=is_mock)
     margin_data = await _call_kis(kis.inquire_overseas_margin, is_mock=is_mock)
     usd_row = _select_usd_row_for_us_order(margin_data)
