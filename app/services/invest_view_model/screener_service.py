@@ -826,6 +826,7 @@ _METRIC_FIELD: dict[str, str] = {
     "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
     "high_yield_value": "roe",
+    "undervalued_breakout": "high_52w_proximity",
     "investor_flow_momentum": "foreign_net",
     "double_buy": "change_rate",  # NEW — placeholder; Task 3 wires snapshot-first branch
     "crypto_high_volume": "trade_amount_24h",
@@ -1556,6 +1557,20 @@ async def build_screener_results(
                 "최신 밸류에이션 스냅샷에서 고수익 저평가 조건(ROE 15%↑·PER 0~10)에 "
                 "맞는 종목이 없습니다."
             )
+        elif preset_id == "undervalued_breakout":
+            from app.services.invest_view_model.undervalued_breakout_screener import (
+                load_undervalued_breakout_from_snapshots,
+            )
+
+            _snapshot_check_result = await load_undervalued_breakout_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            _snapshot_empty_warning = (
+                "최신 밸류에이션/시세 스냅샷에서 저평가 탈출 조건"
+                "(PER 0~10·PBR 0~1·신고가 근접)에 맞는 종목이 없습니다."
+            )
         elif preset_id in FUNDAMENTALS_PRESET_SPECS:
             from app.services.invest_view_model.fundamentals_screener import (
                 load_fundamentals_preset_from_snapshots,
@@ -1613,6 +1628,12 @@ async def build_screener_results(
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "밸류에이션 스냅샷이 아직 적재되지 않아 고수익 저평가 후보를 표시할 수 없습니다."
+
+    if preset_id == "undervalued_breakout" and _snapshot_check_result is None:
+        # snapshot-only; the generic provider has no 52-week-high proximity filter.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = "밸류에이션/시세 스냅샷이 아직 적재되지 않아 저평가 탈출 후보를 표시할 수 없습니다."
 
     if preset_id in FUNDAMENTALS_PRESET_SPECS and _snapshot_check_result is None:
         # snapshot-only; the generic provider has neither a gross-margin nor a
@@ -1710,6 +1731,8 @@ async def build_screener_results(
         if preset_id == "investor_flow_momentum":
             primary_source = "investor_flow_snapshots"
         elif preset_id == "high_yield_value":
+            primary_source = "market_valuation_snapshots"
+        elif preset_id == "undervalued_breakout":
             primary_source = "market_valuation_snapshots"
         elif preset_id in FUNDAMENTALS_PRESET_SPECS:
             primary_source = "market_valuation_snapshots"
