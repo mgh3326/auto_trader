@@ -137,11 +137,19 @@ async def test_sync_skips_event_without_verdict(db_session, monkeypatch):
     cid = f"corr-{uuid4().hex}"
     # closed mock journal but NO review
     j = TradeJournal(
-        symbol="005930", instrument_type="equity_kr", side="buy",
-        entry_price=Decimal("50000"), quantity=Decimal("10"), thesis="t",
-        account_type="mock", account="kis_mock", correlation_id=cid,
-        status="closed", pnl_pct=Decimal("5"),
-        exit_price=Decimal("52500"), exit_date=datetime(2099, 1, 2, tzinfo=UTC),
+        symbol="005930",
+        instrument_type="equity_kr",
+        side="buy",
+        entry_price=Decimal("50000"),
+        quantity=Decimal("10"),
+        thesis="t",
+        account_type="mock",
+        account="kis_mock",
+        correlation_id=cid,
+        status="closed",
+        pnl_pct=Decimal("5"),
+        exit_price=Decimal("52500"),
+        exit_date=datetime(2099, 1, 2, tzinfo=UTC),
     )
     db_session.add(j)
     await db_session.commit()

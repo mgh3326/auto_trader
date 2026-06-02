@@ -28,47 +28,63 @@ async def sync_watch_follow_up_items(db, *, force: bool = False) -> dict[str, An
         return {"status": "disabled", "linked": 0}
 
     events = (
-        await db.execute(
-            select(InvestmentWatchEvent).where(
-                InvestmentWatchEvent.follow_up_report_item_id.is_(None),
-                InvestmentWatchEvent.correlation_id.is_not(None),
+        (
+            await db.execute(
+                select(InvestmentWatchEvent).where(
+                    InvestmentWatchEvent.follow_up_report_item_id.is_(None),
+                    InvestmentWatchEvent.correlation_id.is_not(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not events:
         return {"status": "ok", "linked": 0}
 
     cids = list({e.correlation_id for e in events})
     journals = (
-        await db.execute(
-            select(TradeJournal).where(
-                TradeJournal.account_type == "mock",
-                TradeJournal.status == "closed",
-                TradeJournal.correlation_id.in_(cids),
+        (
+            await db.execute(
+                select(TradeJournal).where(
+                    TradeJournal.account_type == "mock",
+                    TradeJournal.status == "closed",
+                    TradeJournal.correlation_id.in_(cids),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     journal_by_cid = {j.correlation_id: j for j in journals}
 
     verdict_by_jid: dict[int, str] = {}
     if journals:
         for r in (
-            await db.execute(
-                select(TradeJournalReview).where(
-                    TradeJournalReview.journal_id.in_([j.id for j in journals])
+            (
+                await db.execute(
+                    select(TradeJournalReview).where(
+                        TradeJournalReview.journal_id.in_([j.id for j in journals])
+                    )
                 )
             )
-        ).scalars().all():
+            .scalars()
+            .all()
+        ):
             verdict_by_jid.setdefault(r.journal_id, r.verdict)
 
     cf_by_cid: dict[str, TradeJournalCounterfactual] = {}
     for c in (
-        await db.execute(
-            select(TradeJournalCounterfactual).where(
-                TradeJournalCounterfactual.correlation_id.in_(cids)
+        (
+            await db.execute(
+                select(TradeJournalCounterfactual).where(
+                    TradeJournalCounterfactual.correlation_id.in_(cids)
+                )
             )
         )
-    ).scalars().all():
+        .scalars()
+        .all()
+    ):
         cf_by_cid[c.correlation_id] = c
 
     groups: dict[tuple[str, str], list] = defaultdict(list)
@@ -79,7 +95,9 @@ async def sync_watch_follow_up_items(db, *, force: bool = False) -> dict[str, An
         verdict = verdict_by_jid.get(j.id)
         if verdict is None:
             continue
-        groups[(e.kst_date, e.market)].append((e, j, verdict, cf_by_cid.get(e.correlation_id)))
+        groups[(e.kst_date, e.market)].append(
+            (e, j, verdict, cf_by_cid.get(e.correlation_id))
+        )
 
     if not groups:
         return {"status": "ok", "linked": 0}
