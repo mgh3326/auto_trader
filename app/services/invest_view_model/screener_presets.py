@@ -24,7 +24,15 @@ _MISMATCH: ScreenerParityStatus = "mismatch"
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
 CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
-_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy", "high_yield_value", "profitable_company"}
+_KR_ONLY_PRESET_IDS = {
+    "investor_flow_momentum",
+    "double_buy",
+    "high_yield_value",
+    "profitable_company",
+    "undervalued_growth",
+    "stable_growth",
+    "future_dividend_king",
+}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -194,6 +202,58 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
         metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="undervalued_growth",
+        name="저평가 성장주",
+        description="저평가(PER)면서 매출·순이익이 꾸준히 성장하는 기업",
+        badges=["국내"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="PER", detail="0~20"),
+            ScreenerFilterChip(label="매출증가율", detail="3년평균 10% 이상"),
+            ScreenerFilterChip(label="순이익증가율", detail="3년평균 20% 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="순이익증가율",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="stable_growth",
+        name="안정 성장주",
+        description="높은 ROE와 꾸준한 순이익 성장·연속증가를 갖춘 안정 성장 기업",
+        badges=["국내"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="ROE", detail="15% 이상"),
+            ScreenerFilterChip(label="순이익증가율", detail="3년평균 10% 이상"),
+            ScreenerFilterChip(label="순이익", detail="연속증가 3년 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="future_dividend_king",
+        name="미래의 배당왕",
+        description="배당을 꾸준히 늘리고 순이익도 연속 증가하는 미래 배당 성장 기업",
+        badges=["국내"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="배당수익률", detail="1% 이상"),
+            ScreenerFilterChip(label="배당", detail="연속성장 3년 이상"),
+            ScreenerFilterChip(label="순이익", detail="연속증가 3년 이상"),
+            ScreenerFilterChip(label="배당성향", detail="30% 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="배당수익률",
         market="kr",
         presetOrigin=_TOSS,
         parityStatus=_FULL,

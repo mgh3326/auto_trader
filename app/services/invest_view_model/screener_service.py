@@ -48,6 +48,7 @@ from app.services.invest_view_model.screener_presets import (
     preset_definitions,
     screening_filters_for,
 )
+from app.services.invest_view_model.fundamentals_screener import FUNDAMENTALS_PRESET_SPECS
 
 _VALID_MARKETS = {"kr", "us", "crypto"}
 _KR_ABSURD_MARKET_CAP_KRW = 10_000_000_000_000_000
@@ -1549,16 +1550,15 @@ async def build_screener_results(
                 "최신 밸류에이션 스냅샷에서 고수익 저평가 조건(ROE 15%↑·PER 0~10)에 "
                 "맞는 종목이 없습니다."
             )
-        elif preset_id == "profitable_company":
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS:
             from app.services.invest_view_model.fundamentals_screener import (
-                PROFITABLE_COMPANY_SPEC,
                 load_fundamentals_preset_from_snapshots,
             )
 
             _fundamentals_screen_result = await load_fundamentals_preset_from_snapshots(
                 session,
                 market=requested_market,
-                spec=PROFITABLE_COMPANY_SPEC,
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
                 now=now,
             )
@@ -1570,8 +1570,7 @@ async def build_screener_results(
                     partition_computed_at=None,
                 )
             _snapshot_empty_warning = (
-                "최신 밸류에이션/재무 스냅샷에서 돈 잘버는 회사 조건"
-                "(매출총이익률 TTM 20%↑·ROE 15%↑)에 맞는 종목이 없습니다."
+                "최신 밸류에이션/재무 스냅샷에서 해당 프리셋 조건에 맞는 종목이 없습니다."
             )
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
@@ -1611,12 +1610,12 @@ async def build_screener_results(
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "밸류에이션 스냅샷이 아직 적재되지 않아 고수익 저평가 후보를 표시할 수 없습니다."
 
-    if preset_id == "profitable_company" and _snapshot_check_result is None:
+    if preset_id in FUNDAMENTALS_PRESET_SPECS and _snapshot_check_result is None:
         # snapshot-only; the generic provider has neither a gross-margin nor a
         # fundamentals filter and could half-apply the rule — never fall through.
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
-        _snapshot_empty_warning = "밸류에이션/재무 스냅샷이 아직 적재되지 않아 돈 잘버는 회사 후보를 표시할 수 없습니다."
+        _snapshot_empty_warning = "밸류에이션/재무 스냅샷이 아직 적재되지 않아 해당 프리셋 후보를 표시할 수 없습니다."
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
@@ -1708,7 +1707,7 @@ async def build_screener_results(
             primary_source = "investor_flow_snapshots"
         elif preset_id == "high_yield_value":
             primary_source = "market_valuation_snapshots"
-        elif preset_id == "profitable_company":
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS:
             primary_source = "market_valuation_snapshots"
         elif requested_market == "crypto":
             primary_source = "invest_crypto_screener_snapshots"
