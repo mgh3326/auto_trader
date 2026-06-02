@@ -108,3 +108,72 @@ async def test_repo_update_event_follow_up(db_session: AsyncSession):
     await db_session.commit()
     await db_session.refresh(ev)
     assert ev.follow_up_report_item_id == item.id
+
+
+from app.services.trade_journal import watch_follow_up_service as svc
+
+
+async def _item_for_event(db, ev):
+    await db.refresh(ev)
+    if ev.follow_up_report_item_id is None:
+        return None
+    return await db.get(InvestmentReportItem, ev.follow_up_report_item_id)
+
+
+@pytest.mark.asyncio
+async def test_sync_links_eligible_event(db_session, monkeypatch):
+    monkeypatch.setattr(svc.settings, "WATCH_FOLLOW_UP_LINK_ENABLED", True)
+    cid = f"corr-{uuid4().hex}"
+    await _closed_mock_journal_with_verdict(db_session, cid=cid, verdict="good")
+    ev = await _event(db_session, cid=cid)
+    out = await svc.sync_watch_follow_up_items(db_session)
+    assert out["linked"] == 1
+    item = await _item_for_event(db_session, ev)
+    assert item is not None
+    assert item.operation == "review"
+    assert item.evidence_snapshot["correlation_id"] == cid
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_event_without_verdict(db_session, monkeypatch):
+    monkeypatch.setattr(svc.settings, "WATCH_FOLLOW_UP_LINK_ENABLED", True)
+    cid = f"corr-{uuid4().hex}"
+    # closed mock journal but NO review
+    j = TradeJournal(
+        symbol="005930", instrument_type="equity_kr", side="buy",
+        entry_price=Decimal("50000"), quantity=Decimal("10"), thesis="t",
+        account_type="mock", account="kis_mock", correlation_id=cid,
+        status="closed", pnl_pct=Decimal("5"),
+        exit_price=Decimal("52500"), exit_date=datetime(2099, 1, 2, tzinfo=UTC),
+    )
+    db_session.add(j)
+    await db_session.commit()
+    ev = await _event(db_session, cid=cid)
+    out = await svc.sync_watch_follow_up_items(db_session)
+    assert out["linked"] == 0
+    assert await _item_for_event(db_session, ev) is None
+
+
+@pytest.mark.asyncio
+async def test_sync_idempotent(db_session, monkeypatch):
+    monkeypatch.setattr(svc.settings, "WATCH_FOLLOW_UP_LINK_ENABLED", True)
+    cid = f"corr-{uuid4().hex}"
+    await _closed_mock_journal_with_verdict(db_session, cid=cid)
+    ev = await _event(db_session, cid=cid)
+    await svc.sync_watch_follow_up_items(db_session)
+    first_item = await _item_for_event(db_session, ev)
+    out2 = await svc.sync_watch_follow_up_items(db_session)
+    assert out2["linked"] == 0  # already linked → skipped
+    second_item = await _item_for_event(db_session, ev)
+    assert second_item.id == first_item.id
+
+
+@pytest.mark.asyncio
+async def test_flag_off_disables(db_session, monkeypatch):
+    monkeypatch.setattr(svc.settings, "WATCH_FOLLOW_UP_LINK_ENABLED", False)
+    cid = f"corr-{uuid4().hex}"
+    await _closed_mock_journal_with_verdict(db_session, cid=cid)
+    ev = await _event(db_session, cid=cid)
+    out = await svc.sync_watch_follow_up_items(db_session)
+    assert out["status"] == "disabled"
+    assert await _item_for_event(db_session, ev) is None
