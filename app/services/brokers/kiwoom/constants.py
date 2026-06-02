@@ -51,3 +51,10 @@ SUCCESS_RETURN_CODE = 0
 # Defaults
 DEFAULT_TIMEOUT = 5  # seconds
 TOKEN_REFRESH_LEEWAY_SECONDS = 30  # refresh slightly before expires_dt
+
+# ROB-418 — Kiwoom REST account-read 필수 파라미터 기본값.
+# Kiwoom enum 관례 기반 기본값. 정확한 값은 operator live mock smoke로 확정한다
+# (이 세션 creds 없음). 전건실패(필수입력 파라미터 누락, return_code 2)를 호출
+# 성립으로 회복하는 것이 1차 목표이며, 값의 scope 정확성은 smoke가 검증한다.
+ACCOUNT_BALANCE_QRY_TP_DEFAULT = "1"  # kt00018 조회구분
+ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
