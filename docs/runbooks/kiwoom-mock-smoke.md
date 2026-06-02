@@ -18,6 +18,14 @@ these boundaries:
   constant that no code path can select.
 - **KRX only.** `NXT`/`SOR` and any non-`KRX` exchange are rejected before any
   network call.
+- **US 미지원 (KRX 전용).** kiwoom_mock은 KRX 국내주식 전용이며 US/해외 주문은
+  지원하지 않는다(`_exchange_error`가 non-KRX를 네트워크 호출 전 거부). US는 별도
+  product decision(미활성).
+- **ROB-418 — account-read 필수 파라미터:** kt00018(잔고)는 `qry_tp`, kt00009(미체결/
+  이력)는 `stk_bond_tp`를 요구한다(누락 시 `return_code 2` 필수입력 파라미터 오류).
+  기본값(`qry_tp="1"`, `stk_bond_tp="0"`)은 Kiwoom enum 관례이며 **이 mock smoke로
+  값의 scope 정확성을 확정**한다. kt00010(주문가능, with-symbol)의 필수 파라미터는
+  smoke 확인 후 follow-up(추측 미추가). ROB-399와 동일 버그(이 fix로 covered).
 - **`dry_run=False` requires `confirm=True`** on every order-mutating tool.
 - **No live anything.** No KIS live, Kiwoom live, Alpaca live, or real-money
   calls. No scheduler / recurring automation.
