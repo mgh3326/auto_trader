@@ -117,3 +117,45 @@ def test_pit_gate_excludes_unfiled_period():
         name_map={},
     )
     assert rows == []  # period not yet filed as of report_date → unavailable → excluded
+
+
+def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
+    # All candidates pass the gross-margin gate (margin 0.30); ranking + trim is the SUT.
+    roes = {"A": 50.0, "B": 10.0, "C": 30.0, "D": None, "E": 20.0, "F": 40.0}
+    valuation_rows = [
+        {"symbol": s, "roe": r, "per": 8.0, "pbr": 1.0, "market_cap": 1e11}
+        for s, r in roes.items()
+    ]
+    periods = {
+        s: [
+            _period(
+                2024,
+                revenue="1000",
+                cost_of_sales="700",
+                filing_date=dt.date(2025, 3, 20),
+            )
+        ]
+        for s in roes
+    }
+
+    # limit trims to the top-N by ROE descending (NULL-ROE sorts last → not in top 4)
+    rows, _ = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=PROFITABLE_COMPANY_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=4,
+        name_map={},
+    )
+    assert [r["symbol"] for r in rows] == ["A", "F", "C", "E"]  # 50, 40, 30, 20
+
+    # full set: the NULL-ROE candidate (D) sorts last, never silently dropped or first
+    rows_all, _ = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=PROFITABLE_COMPANY_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert [r["symbol"] for r in rows_all] == ["A", "F", "C", "E", "B", "D"]
