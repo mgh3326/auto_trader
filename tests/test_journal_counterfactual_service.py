@@ -17,9 +17,20 @@ from app.models.review import TradeJournalCounterfactual
 from app.models.trade_journal import TradeJournal
 from app.services.trade_journal import journal_counterfactual_service as svc
 
+# These tests seed/read ``review.investment_watch_events`` on the shared test DB.
+# Hold the same advisory lock used by investment-report helper fixtures so a
+# concurrent xdist worker cannot TRUNCATE CASCADE the report/watch-event table
+# family while the counterfactual sync is selecting or inserting rows.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.usefixtures("investment_reports_cleanup_lock"),
+]
+
 
 @pytest_asyncio.fixture(autouse=True)
-async def cleanup_journal_tables(db_session: AsyncSession):
+async def cleanup_journal_tables(
+    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+):
     await db_session.execute(delete(TradeJournalCounterfactual))
     await db_session.execute(delete(TradeJournal))
     await db_session.execute(delete(InvestmentWatchEvent))
