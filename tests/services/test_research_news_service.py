@@ -36,8 +36,13 @@ async def test_shim_maps_seam_to_normalized_article(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = SymbolNewsFetchResult(
-        symbol="005930", market="kr", provider="naver", status="ok",
-        requested_limit=20, returned_count=1, articles=[_seam_article()],
+        symbol="005930",
+        market="kr",
+        provider="naver",
+        status="ok",
+        requested_limit=20,
+        returned_count=1,
+        articles=[_seam_article()],
     )
     monkeypatch.setattr(
         symbol_news_service,
@@ -45,9 +50,7 @@ async def test_shim_maps_seam_to_normalized_article(
         AsyncMock(return_value=result),
     )
 
-    out = await research_news_service.fetch_symbol_news(
-        "005930", "equity_kr", limit=20
-    )
+    out = await research_news_service.fetch_symbol_news("005930", "equity_kr", limit=20)
 
     assert len(out) == 1
     first = out[0]
@@ -64,8 +67,13 @@ async def test_shim_maps_seam_to_normalized_article(
 async def test_shim_passes_market_for_us(monkeypatch: pytest.MonkeyPatch) -> None:
     seam = AsyncMock(
         return_value=SymbolNewsFetchResult(
-            symbol="AAPL", market="us", provider="finnhub", status="empty",
-            requested_limit=20, returned_count=0, articles=[],
+            symbol="AAPL",
+            market="us",
+            provider="finnhub",
+            status="empty",
+            requested_limit=20,
+            returned_count=0,
+            articles=[],
         )
     )
     monkeypatch.setattr(symbol_news_service, "fetch_symbol_news", seam)

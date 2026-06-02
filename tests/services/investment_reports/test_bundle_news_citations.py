@@ -3,21 +3,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import uuid
+from datetime import UTC, datetime
+
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.base import Base
 from app.services.investment_reports.query_service import InvestmentReportQueryService
 from app.services.investment_reports.repository import InvestmentReportsRepository
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_get_bundle_includes_news_citations(session: AsyncSession) -> None:
     repo = InvestmentReportsRepository(session)
-    
+
     # 1. Seed a report row
     report = await repo.insert_report(
         idempotency_key="rob423:detail:1",
@@ -37,7 +36,7 @@ async def test_get_bundle_includes_news_citations(session: AsyncSession) -> None
     await session.commit()
 
     # 2. Seed a citation row via repo
-    citation = await repo.insert_news_citation(
+    await repo.insert_news_citation(
         report_uuid=report.report_uuid,
         market="us",
         symbol="AAPL",
@@ -48,7 +47,7 @@ async def test_get_bundle_includes_news_citations(session: AsyncSession) -> None
         relevance="direct",
         role="catalyst",
         decision_impact="strengthen_buy",
-        fetched_at=datetime.now(tz=timezone.utc),
+        fetched_at=datetime.now(tz=UTC),
     )
     await session.commit()
 

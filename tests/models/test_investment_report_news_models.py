@@ -13,8 +13,13 @@ def test_news_models_importable_and_in_review_schema() -> None:
         InvestmentReportNewsFetchRun,
     )
 
-    assert InvestmentReportNewsFetchRun.__tablename__ == "investment_report_news_fetch_runs"
-    assert InvestmentReportNewsCitation.__tablename__ == "investment_report_news_citations"
+    assert (
+        InvestmentReportNewsFetchRun.__tablename__
+        == "investment_report_news_fetch_runs"
+    )
+    assert (
+        InvestmentReportNewsCitation.__tablename__ == "investment_report_news_citations"
+    )
     assert InvestmentReportNewsFetchRun.__table__.schema == "review"
     assert InvestmentReportNewsCitation.__table__.schema == "review"
     # citation references fetch_run (nullable FK) and carries judgment fields

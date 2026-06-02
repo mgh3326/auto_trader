@@ -48,7 +48,11 @@ from app.services.action_report.snapshot_backed.collectors.watch_context import 
 from app.services.investment_snapshots.collectors import CollectorRequest
 
 
-def _request(market: str = "kr", account_scope: str = "kis_live", symbols: list[str] | None = None) -> CollectorRequest:
+def _request(
+    market: str = "kr",
+    account_scope: str = "kis_live",
+    symbols: list[str] | None = None,
+) -> CollectorRequest:
     return CollectorRequest(
         market=market,  # type: ignore[arg-type]
         account_scope=account_scope,  # type: ignore[arg-type]
@@ -1270,16 +1274,19 @@ async def test_news_collector_articles_per_symbol_from_seam():
     async def fake_fetch(symbol: str, market: str, limit: int):
         captured.append((symbol, market, limit))
         art = SymbolNewsArticle(
-            provider="finnhub", market=market, symbol=symbol,
-            external_article_id=f"id-{symbol}", title=f"{symbol} up",
-            source_name="Reuters", canonical_url=f"https://x/{symbol}",
-            summary="s", published_at=None,
+            provider="finnhub",
+            market=market,
+            symbol=symbol,
+            external_article_id=f"id-{symbol}",
+            title=f"{symbol} up",
+            source_name="Reuters",
+            canonical_url=f"https://x/{symbol}",
+            summary="s",
+            published_at=None,
             fetched_at=dt.datetime(2026, 5, 5, tzinfo=dt.UTC),
             provider_metadata={"sentiment": "positive"},
         )
-        return SymbolNewsFetchResult(
-            symbol, market, "finnhub", "ok", limit, 1, [art]
-        )
+        return SymbolNewsFetchResult(symbol, market, "finnhub", "ok", limit, 1, [art])
 
     collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
     results = await collector.collect(_request(market="us", symbols=["AAPL", "MSFT"]))
@@ -1315,7 +1322,6 @@ async def test_news_collector_per_symbol_failure_is_fail_open():
 
 @pytest.mark.asyncio
 async def test_news_collector_no_symbols_is_partial():
-    from app.services.symbol_news_service import SymbolNewsFetchResult
 
     async def fake_fetch(symbol: str, market: str, limit: int):  # pragma: no cover
         raise AssertionError("should not fetch without symbols")

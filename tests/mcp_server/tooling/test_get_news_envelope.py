@@ -24,9 +24,14 @@ def _naver_article() -> SymbolNewsArticle:
         "datetime": "2026-05-05",
     }
     return SymbolNewsArticle(
-        provider="naver", market="kr", symbol="005930",
-        external_article_id="2:1", title=raw["title"], source_name=raw["source"],
-        canonical_url=raw["url"], summary=None,
+        provider="naver",
+        market="kr",
+        symbol="005930",
+        external_article_id="2:1",
+        title=raw["title"],
+        source_name=raw["source"],
+        canonical_url=raw["url"],
+        summary=None,
         published_at=datetime(2026, 5, 5, tzinfo=UTC),
         fetched_at=datetime(2026, 5, 5, 1, tzinfo=UTC),
         provider_metadata={"source_item": raw},
@@ -44,13 +49,22 @@ def _finnhub_article() -> SymbolNewsArticle:
         "related": "AAPL",
     }
     return SymbolNewsArticle(
-        provider="finnhub", market="us", symbol="AAPL",
-        external_article_id="abc", title=raw["title"], source_name=raw["source"],
-        canonical_url=raw["url"], summary=raw["summary"],
+        provider="finnhub",
+        market="us",
+        symbol="AAPL",
+        external_article_id="abc",
+        title=raw["title"],
+        source_name=raw["source"],
+        canonical_url=raw["url"],
+        summary=raw["summary"],
         published_at=datetime(2026, 5, 5, 12, tzinfo=UTC),
         fetched_at=datetime(2026, 5, 5, 13, tzinfo=UTC),
         related_symbols=["AAPL"],
-        provider_metadata={"sentiment": "positive", "related": "AAPL", "source_item": raw},
+        provider_metadata={
+            "sentiment": "positive",
+            "related": "AAPL",
+            "source_item": raw,
+        },
     )
 
 
@@ -89,7 +103,9 @@ async def test_get_news_us_envelope_keys_preserved(
         symbol_news_service,
         "fetch_symbol_news",
         AsyncMock(
-            return_value=SymbolNewsFetchResult("AAPL", "us", "finnhub", "ok", 10, 1, [art])
+            return_value=SymbolNewsFetchResult(
+                "AAPL", "us", "finnhub", "ok", 10, 1, [art]
+            )
         ),
     )
 
@@ -98,7 +114,13 @@ async def test_get_news_us_envelope_keys_preserved(
     assert out["source"] == "finnhub"
     assert out["count"] == 1
     assert set(out["news"][0].keys()) == {
-        "title", "source", "datetime", "url", "summary", "sentiment", "related",
+        "title",
+        "source",
+        "datetime",
+        "url",
+        "summary",
+        "sentiment",
+        "related",
     }
     assert out["news"][0]["sentiment"] == "positive"
 

@@ -3,14 +3,10 @@
 
 from __future__ import annotations
 
-import decimal
-import uuid
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.base import Base
-from app.models.investment_reports import InvestmentReport
 from app.schemas.hermes_composition import (
     HermesCompositionIngestRequest,
     HermesCompositionResult,
@@ -41,13 +37,14 @@ async def test_composition_news_citations_persisted_and_unmatched_dropped(
     session: AsyncSession,
 ) -> None:
     # 2. Arrange: Seed a snapshot bundle with a news snapshot
+    from datetime import UTC, datetime
+
     from app.schemas.investment_snapshots import (
         BundleCreate,
         BundleItemCreate,
         SnapshotCreate,
         SnapshotRunCreate,
     )
-    from datetime import UTC, datetime
 
     now = datetime.now(tz=UTC)
     snapshots_repo = InvestmentSnapshotsRepository(session)
@@ -72,7 +69,7 @@ async def test_composition_news_citations_persisted_and_unmatched_dropped(
             status="complete",
         )
     )
-    
+
     # News payload mimicking PR1/collector payloads
     news_payload = {
         "articles": [
@@ -99,7 +96,7 @@ async def test_composition_news_citations_persisted_and_unmatched_dropped(
         ],
         "market": "us",
     }
-    
+
     # Insert news snapshot
     snap = await snapshots_repo.insert_snapshot(
         SnapshotCreate(
@@ -113,7 +110,7 @@ async def test_composition_news_citations_persisted_and_unmatched_dropped(
             freshness_status="fresh",
         )
     )
-    
+
     # Link snap to bundle
     await snapshots_repo.link_bundle_item(
         bundle_uuid=bundle.bundle_uuid,
@@ -165,7 +162,7 @@ async def test_composition_news_citations_persisted_and_unmatched_dropped(
 
     # 5. Assert:
     reports_repo = InvestmentReportsRepository(session)
-    
+
     # Check citations written (only 1, real one)
     cites = await reports_repo.list_news_citations_for_report(report.report_uuid)
     assert len(cites) == 1
@@ -177,7 +174,7 @@ async def test_composition_news_citations_persisted_and_unmatched_dropped(
     assert c.decision_impact == "strengthen_buy"
     assert c.relevance == "direct"
     assert c.confidence is None
-    
+
     # Check bogus ref dropped and recorded in unavailable_sources
     refreshed_report = await reports_repo.get_report_by_id(report.id)
     assert refreshed_report.unavailable_sources == {
@@ -186,8 +183,10 @@ async def test_composition_news_citations_persisted_and_unmatched_dropped(
 
     # Check fetch_runs used_count tally
     fetch_runs_res = await session.execute(
-        text("SELECT symbol, provider, used_count, returned_count FROM review.investment_report_news_fetch_runs WHERE report_uuid = :report_uuid"),
-        {"report_uuid": report.report_uuid}
+        text(
+            "SELECT symbol, provider, used_count, returned_count FROM review.investment_report_news_fetch_runs WHERE report_uuid = :report_uuid"
+        ),
+        {"report_uuid": report.report_uuid},
     )
     fetch_runs = fetch_runs_res.all()
     assert len(fetch_runs) == 1
@@ -202,8 +201,9 @@ async def test_empty_news_citations_is_noop(
     session: AsyncSession,
 ) -> None:
     # Seed bundle
-    from app.schemas.investment_snapshots import BundleCreate
     from datetime import UTC, datetime
+
+    from app.schemas.investment_snapshots import BundleCreate
 
     now = datetime.now(tz=UTC)
     snapshots_repo = InvestmentSnapshotsRepository(session)

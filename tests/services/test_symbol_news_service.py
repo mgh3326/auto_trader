@@ -23,7 +23,12 @@ async def test_kr_returns_normalized_articles_with_external_id(
             "source": "한국경제",
             "datetime": "2026-05-05T09:30",
         },
-        {"title": "", "url": "", "source": "", "datetime": None},  # dropped (no url/title)
+        {
+            "title": "",
+            "url": "",
+            "source": "",
+            "datetime": None,
+        },  # dropped (no url/title)
     ]
     monkeypatch.setattr(
         symbol_news_service.naver_finance,
