@@ -24,7 +24,7 @@ _MISMATCH: ScreenerParityStatus = "mismatch"
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
 CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
-_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy", "high_yield_value"}
+_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy", "high_yield_value", "profitable_company"}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -175,6 +175,22 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             ScreenerFilterChip(label="국내", detail=None),
             ScreenerFilterChip(label="ROE", detail="15% 이상"),
             ScreenerFilterChip(label="PER", detail="0~10"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="profitable_company",
+        name="돈 잘버는 회사",
+        description="매출총이익률(TTM)과 ROE가 모두 높은 고수익성 기업 (지연 스냅샷 기반)",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="매출총이익률", detail="TTM 20% 이상"),
+            ScreenerFilterChip(label="ROE", detail="15% 이상"),
             ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
         metricLabel="ROE",
