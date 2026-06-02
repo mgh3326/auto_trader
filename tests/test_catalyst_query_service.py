@@ -26,21 +26,25 @@ def _row(symbol, category, *, days, title="t", raw_payload=None, source="manual"
 def _service_with_rows(rows):
     async def reader(*, categories, from_date, to_date, market, symbols):
         out = [
-            r for r in rows
+            r
+            for r in rows
             if r.category in categories
             and from_date <= r.event_date <= to_date
             and (symbols is None or r.symbol in symbols)
         ]
         return out
+
     return CatalystQueryService(session=None, reader=reader)
 
 
 @pytest.mark.asyncio
 async def test_within_days_filter_and_days_until_and_polarity():
-    svc = _service_with_rows([
-        _row("035420", "conference", days=3),       # in range, positive
-        _row("005930", "lockup_expiry", days=30),    # out of range (>7)
-    ])
+    svc = _service_with_rows(
+        [
+            _row("035420", "conference", days=3),  # in range, positive
+            _row("005930", "lockup_expiry", days=30),  # out of range (>7)
+        ]
+    )
     out = await svc.get_upcoming_catalysts(within_days=7, now=KST_NOW)
     assert [e.symbol for e in out.rows] == ["035420"]
     e = out.rows[0]
@@ -52,18 +56,24 @@ async def test_within_days_filter_and_days_until_and_polarity():
 
 @pytest.mark.asyncio
 async def test_raw_payload_polarity_override():
-    svc = _service_with_rows([_row("035420", "conference", days=1, raw_payload={"impact_hint": "negative"})])
+    svc = _service_with_rows(
+        [_row("035420", "conference", days=1, raw_payload={"impact_hint": "negative"})]
+    )
     out = await svc.get_upcoming_catalysts(within_days=7, now=KST_NOW)
     assert out.rows[0].polarity == "negative"
 
 
 @pytest.mark.asyncio
 async def test_symbols_filter():
-    svc = _service_with_rows([
-        _row("035420", "conference", days=2),
-        _row("005930", "conference", days=2),
-    ])
-    out = await svc.get_upcoming_catalysts(symbols=["035420"], within_days=7, now=KST_NOW)
+    svc = _service_with_rows(
+        [
+            _row("035420", "conference", days=2),
+            _row("005930", "conference", days=2),
+        ]
+    )
+    out = await svc.get_upcoming_catalysts(
+        symbols=["035420"], within_days=7, now=KST_NOW
+    )
     assert [e.symbol for e in out.rows] == ["035420"]
 
 
@@ -88,6 +98,8 @@ async def test_default_orm_reader_queries_catalyst_categories():
     session.execute = AsyncMock(return_value=result)
 
     svc = CatalystQueryService(session=session)  # reader 없음 → default ORM reader
-    out = await svc.get_upcoming_catalysts(symbols=["035420"], within_days=7, now=KST_NOW)
+    out = await svc.get_upcoming_catalysts(
+        symbols=["035420"], within_days=7, now=KST_NOW
+    )
     assert out.rows[0].symbol == "035420"
     assert session.execute.await_count == 1

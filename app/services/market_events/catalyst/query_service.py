@@ -57,7 +57,9 @@ def _to_event(row: object, *, now_date: dt.date) -> CatalystEvent:
         title=getattr(row, "title", None),
         event_date=getattr(row, "event_date", now_date),
         days_until=(getattr(row, "event_date", now_date) - now_date).days,
-        polarity=resolve_polarity(getattr(row, "category", "unknown"), getattr(row, "raw_payload_json", None)),
+        polarity=resolve_polarity(
+            getattr(row, "category", "unknown"), getattr(row, "raw_payload_json", None)
+        ),
         source=getattr(row, "source", None),
     )
 

@@ -17,7 +17,9 @@ def test_category_default_polarity():
 @pytest.mark.unit
 def test_raw_payload_impact_hint_overrides_category():
     assert resolve_polarity("conference", {"impact_hint": "negative"}) == "negative"
-    assert resolve_polarity("policy_regulation", {"impact_hint": "positive"}) == "positive"
+    assert (
+        resolve_polarity("policy_regulation", {"impact_hint": "positive"}) == "positive"
+    )
 
 
 @pytest.mark.unit

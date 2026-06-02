@@ -7,8 +7,14 @@ from app.services.market_events.taxonomy import CATEGORIES, validate_category
 
 @pytest.mark.unit
 def test_catalyst_categories_added_to_taxonomy():
-    for cat in ("conference", "corporate_event", "product_launch",
-                "policy_regulation", "lockup_expiry", "index_rebalance"):
+    for cat in (
+        "conference",
+        "corporate_event",
+        "product_launch",
+        "policy_regulation",
+        "lockup_expiry",
+        "index_rebalance",
+    ):
         assert cat in CATEGORIES
         validate_category(cat)  # 검증 통과(예외 없음)
 
