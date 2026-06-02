@@ -65,7 +65,9 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             ScreenerFilterChip(label="순이익증가율", detail="3년평균 0% 이상"),
             ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
-        metricLabel="PER",
+        # metricLabel matches the result-ordering metric (sort_by=earnings_growth_3y_avg);
+        # PER/PBR remain the headline filter conditions, shown via filterChips above.
+        metricLabel="순이익증가율",
         market="kr",
         presetOrigin=_TOSS,
         parityStatus=_FULL,
