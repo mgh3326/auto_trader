@@ -54,6 +54,12 @@ from app.services.investment_dimensions.dimension_report_repository import (
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
+from app.services.investment_reports.investment_report_news_service import (
+    InvestmentReportNewsService,
+)
+from app.services.investment_reports.repository import (
+    InvestmentReportsRepository,
+)
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
 )
@@ -326,6 +332,7 @@ class HermesCompositionIngestService:
         stages_repository: InvestmentStagesRepository | None = None,
         symbol_reports_repository: SymbolIntermediateReportRepository | None = None,
         dimension_reports_repository: DimensionReportRepository | None = None,
+        news_service: InvestmentReportNewsService | None = None,
     ) -> None:
         self._session = session
         self._ingestion = ingestion_service or InvestmentReportIngestionService(session)
@@ -336,6 +343,9 @@ class HermesCompositionIngestService:
         )
         self._dimension_reports = (
             dimension_reports_repository or DimensionReportRepository(session)
+        )
+        self._news_service = news_service or InvestmentReportNewsService(
+            InvestmentReportsRepository(session)
         )
 
     async def ingest_composition(
@@ -411,6 +421,20 @@ class HermesCompositionIngestService:
         )
 
         report = await self._ingestion.ingest(ingest_request)
+
+        # ROB-423 — persist Hermes-marked news citations from the bundle's news
+        # snapshot. Fail-open: matching gaps never block report creation.
+        news_payloads = [
+            (snap.payload_json or {})
+            for _item, snap in await self._snapshots.list_bundle_items_with_snapshots(
+                bundle.id
+            )
+            if snap.snapshot_kind == "news"
+        ]
+        await self._news_service.persist_from_composition(
+            report=report, composition=composition, news_payloads=news_payloads
+        )
+
         await self._maybe_finalize_stage_run(composition.metadata)
         return report
 

@@ -33,8 +33,10 @@ Lockdown invariants:
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from app.schemas.investment_reports import IngestReportItem
 from app.schemas.validated_run_card import (
@@ -46,6 +48,15 @@ from app.services.action_report.snapshot_backed.action_verdict import (
     classify_candidate_symbol,
     classify_held_symbol,
 )
+from app.services.market_events.catalyst.contract import CatalystEvent
+from app.services.market_events.catalyst.guard import evaluate_catalyst_guard
+from app.services.market_events.catalyst.polarity import (
+    CATALYST_CATEGORIES,
+    resolve_polarity,
+)
+
+_KST = ZoneInfo("Asia/Seoul")
+CATALYST_GUARD_WITHIN_DAYS = 7
 
 
 def _stamp(item: IngestReportItem, verdict: str) -> IngestReportItem:
@@ -81,6 +92,96 @@ def _make_evidence(
     if extra:
         evidence.update(extra)
     return evidence
+
+
+def _catalyst_events_for_symbol(
+    market_payload: dict[str, Any] | None,
+    symbol: str,
+    *,
+    now_date: dt.date,
+    within_days: int,
+) -> list[CatalystEvent]:
+    """frozen market 스냅샷 events → 해당 symbol의 catalyst CatalystEvent 리스트.
+
+    category ∈ CATALYST_CATEGORIES, event_date ∈ [now_date, now_date+within_days].
+    frozen 이벤트엔 raw_payload 없음 → polarity는 category-default. 파싱 실패는 skip.
+    """
+    if not market_payload:
+        return []
+    events = market_payload.get("events") or []
+    horizon = now_date + dt.timedelta(days=within_days)
+    out: list[CatalystEvent] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("symbol") != symbol:
+            continue
+        category = ev.get("category")
+        if category not in CATALYST_CATEGORIES:
+            continue
+        raw_date = ev.get("event_date")
+        try:
+            event_date = (
+                raw_date
+                if isinstance(raw_date, dt.date)
+                else dt.date.fromisoformat(str(raw_date))
+            )
+        except ValueError:
+            continue
+        if not (now_date <= event_date <= horizon):
+            continue
+        out.append(
+            CatalystEvent(
+                symbol=symbol,
+                category=category,
+                title=ev.get("title"),
+                event_date=event_date,
+                days_until=(event_date - now_date).days,
+                polarity=resolve_polarity(category, None),
+                source=ev.get("source"),
+            )
+        )
+    out.sort(key=lambda e: (e.days_until, e.category))
+    return out
+
+
+def _catalyst_brief(e: CatalystEvent) -> dict[str, Any]:
+    return {
+        "symbol": e.symbol,
+        "category": e.category,
+        "event_date": e.event_date.isoformat(),
+        "days_until": e.days_until,
+    }
+
+
+def _attach_catalyst_guard(
+    item: IngestReportItem,
+    *,
+    market_payload: dict[str, Any] | None,
+    side: str,
+    now_date: dt.date,
+    within_days: int = CATALYST_GUARD_WITHIN_DAYS,
+) -> None:
+    """item.symbol의 frozen catalyst에 가드 적용 — flag 있으면 evidence_snapshot에 부착.
+    verdict/side/intent 불변(경고만)."""
+    symbol = item.symbol
+    if not symbol or not market_payload:
+        return
+    events = _catalyst_events_for_symbol(
+        market_payload, symbol, now_date=now_date, within_days=within_days
+    )
+    if not events:
+        return
+    guard = evaluate_catalyst_guard(events, side=side, within_days=within_days)
+    if guard.flag is None:
+        return
+    item.evidence_snapshot["upcoming_catalyst"] = {
+        "flag": guard.flag,
+        "nearest_days": guard.nearest_days,
+        "reason": guard.reason,
+        "positive": [_catalyst_brief(e) for e in guard.positive],
+        "negative": [_catalyst_brief(e) for e in guard.negative],
+    }
 
 
 def _quote_is_actionable(quote: dict[str, Any]) -> bool:
@@ -235,11 +336,15 @@ class EvidenceAutoEmitter:
         snapshots: list[Any],
         request_market: str,
         account_scope: str | None,
+        now: dt.datetime | None = None,
     ) -> list[IngestReportItem]:
         """Emit review-only ``IngestReportItem`` drafts from the bundle's
         evidence. Returns an empty list when no evidence supports an
         actionable proposal — never fabricates candidates."""
+        now_dt = now or dt.datetime.now(_KST)
+        now_date = now_dt.astimezone(_KST).date() if now_dt.tzinfo else now_dt.date()
         portfolio_payload: dict[str, Any] = {}
+        market_payload: dict[str, Any] = {}
         symbol_quotes: dict[str, tuple[Any, dict[str, Any]]] = {}
         news_matches: dict[str, int] = {}
         candidate_usefulness: str | None = None
@@ -278,6 +383,8 @@ class EvidenceAutoEmitter:
                         )
                         candidate_by_symbol[ranked_cand["symbol"]] = ranked_cand
                         candidate_order.append(ranked_cand)
+            elif kind == "market":
+                market_payload = payload
             elif kind == "news":
                 news_snapshot = snapshot
                 matches = payload.get("symbol_matches") or {}
@@ -323,26 +430,31 @@ class EvidenceAutoEmitter:
                     "proposer": "auto_emit/sell_from_held",
                 },
             )
-            items.append(
-                _stamp(
-                    IngestReportItem(
-                        client_item_key=f"auto-sell-{ticker}",
-                        item_kind="action",
-                        symbol=ticker,
-                        side="sell",
-                        intent="sell_review",
-                        rationale=(
-                            f"보유 종목 {ticker} sell 검토 — sellable {sellable}, "
-                            f"best_bid {quote.get('best_bid')}, "
-                            f"spread_bps {quote.get('spread_bps')}"
-                        ),
-                        operation="review",
-                        apply_policy="requires_user_approval",
-                        evidence_snapshot=evidence,
+            sell_item = _stamp(
+                IngestReportItem(
+                    client_item_key=f"auto-sell-{ticker}",
+                    item_kind="action",
+                    symbol=ticker,
+                    side="sell",
+                    intent="sell_review",
+                    rationale=(
+                        f"보유 종목 {ticker} sell 검토 — sellable {sellable}, "
+                        f"best_bid {quote.get('best_bid')}, "
+                        f"spread_bps {quote.get('spread_bps')}"
                     ),
-                    "sell_review",
-                )
+                    operation="review",
+                    apply_policy="requires_user_approval",
+                    evidence_snapshot=evidence,
+                ),
+                "sell_review",
             )
+            _attach_catalyst_guard(
+                sell_item,
+                market_payload=market_payload,
+                side="trim",
+                now_date=now_date,
+            )
+            items.append(sell_item)
 
         # Candidate classification — every non-held screener candidate gets
         # exactly ONE honest verdict (buy_review / watch_only / data_gap). No
@@ -379,25 +491,31 @@ class EvidenceAutoEmitter:
 
             candidate_rank = _candidate_rank(cand)
             priority = candidate_rank if candidate_rank is not None else buy_emitted
-            items.append(
-                _stamp(
-                    _candidate_item(
-                        symbol_snapshot=(
-                            symbol_pair[0] if symbol_pair else candidate_snapshot
-                        ),
-                        candidate_snapshot=candidate_snapshot,
-                        sym=sym,
-                        cand=cand,
-                        quote=quote,
-                        verdict=verdict,
-                        priority=priority,
-                        reject_or_wait_reason=reject_or_wait_reason,
-                        candidate_usefulness=candidate_usefulness,
-                        news_match_count=news_matches.get(sym, 0),
+            cand_item = _stamp(
+                _candidate_item(
+                    symbol_snapshot=(
+                        symbol_pair[0] if symbol_pair else candidate_snapshot
                     ),
-                    verdict,
-                )
+                    candidate_snapshot=candidate_snapshot,
+                    sym=sym,
+                    cand=cand,
+                    quote=quote,
+                    verdict=verdict,
+                    priority=priority,
+                    reject_or_wait_reason=reject_or_wait_reason,
+                    candidate_usefulness=candidate_usefulness,
+                    news_match_count=news_matches.get(sym, 0),
+                ),
+                verdict,
             )
+            if verdict == "buy_review":
+                _attach_catalyst_guard(
+                    cand_item,
+                    market_payload=market_payload,
+                    side="buy",
+                    now_date=now_date,
+                )
+            items.append(cand_item)
 
         # Watch candidates — news-active symbols whose quote evidence is
         # missing or whose candidate evidence is stale/empty (action

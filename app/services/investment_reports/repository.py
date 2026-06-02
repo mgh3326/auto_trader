@@ -23,6 +23,8 @@ from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
     InvestmentReportItemDecision,
+    InvestmentReportNewsCitation,
+    InvestmentReportNewsFetchRun,
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
@@ -423,3 +425,51 @@ class InvestmentReportsRepository:
             .limit(limit)
         )
         return list(result.all())
+
+    async def list_items_for_report_ordered_by_id(
+        self, report_id: int
+    ) -> list[InvestmentReportItem]:
+        """Insertion-order items (id.asc()). Use for composition-index mapping —
+        ``created_at`` ties (single-transaction inserts share ``now()``) make
+        the created_at-ordered query non-deterministic for this purpose."""
+        result = await self._session.scalars(
+            sa.select(InvestmentReportItem)
+            .where(InvestmentReportItem.report_id == report_id)
+            .order_by(InvestmentReportItem.id.asc())
+        )
+        return list(result.all())
+
+    async def insert_news_fetch_run(
+        self, **fields: Any
+    ) -> InvestmentReportNewsFetchRun:
+        row = InvestmentReportNewsFetchRun(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def insert_news_citation(self, **fields: Any) -> InvestmentReportNewsCitation:
+        row = InvestmentReportNewsCitation(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def list_news_citations_for_report(
+        self, report_uuid: UUID
+    ) -> list[InvestmentReportNewsCitation]:
+        result = await self._session.scalars(
+            sa.select(InvestmentReportNewsCitation)
+            .where(InvestmentReportNewsCitation.report_uuid == report_uuid)
+            .order_by(InvestmentReportNewsCitation.id.asc())
+        )
+        return list(result.all())
+
+    async def merge_report_unavailable_sources(
+        self, report_id: int, extra: dict[str, Any]
+    ) -> None:
+        row = await self._session.get(InvestmentReport, report_id)
+        if row is None:
+            return
+        merged = {**(row.unavailable_sources or {}), **extra}
+        row.unavailable_sources = merged
+        await self._session.flush()

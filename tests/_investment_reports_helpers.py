@@ -29,6 +29,8 @@ from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
     InvestmentReportItemDecision,
+    InvestmentReportNewsCitation,
+    InvestmentReportNewsFetchRun,
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
@@ -37,6 +39,8 @@ INVESTMENT_REPORTS_TABLES = [
     InvestmentReport.__table__,
     InvestmentReportItem.__table__,
     InvestmentReportItemDecision.__table__,
+    InvestmentReportNewsCitation.__table__,
+    InvestmentReportNewsFetchRun.__table__,
     InvestmentWatchAlert.__table__,
     InvestmentWatchEvent.__table__,
 ]

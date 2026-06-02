@@ -1,12 +1,11 @@
-"""Handler for get_news tool."""
+# app/mcp_server/tooling/fundamentals/_news.py
+"""Handler for get_news tool (routes through symbol_news_service, ROB-423)."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from app.mcp_server.tooling.fundamentals._helpers import normalize_market_with_crypto
-from app.mcp_server.tooling.fundamentals_sources_finnhub import _fetch_news_finnhub
-from app.mcp_server.tooling.fundamentals_sources_naver import _fetch_news_naver
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
 )
@@ -19,6 +18,9 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     normalize_symbol_input as _normalize_symbol_input,
 )
+from app.services import symbol_news_service
+
+_INSTRUMENT_BY_MARKET = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 
 
 async def handle_get_news(
@@ -40,21 +42,25 @@ async def handle_get_news(
 
     normalized_market = normalize_market_with_crypto(market)
     capped_limit = min(max(limit, 1), 50)
+    instrument_type = _INSTRUMENT_BY_MARKET.get(normalized_market, "equity_us")
 
-    try:
-        if normalized_market == "kr":
-            return await _fetch_news_naver(symbol, capped_limit)
-        return await _fetch_news_finnhub(symbol, normalized_market, capped_limit)
-    except Exception as exc:
-        source = "naver" if normalized_market == "kr" else "finnhub"
-        instrument_type = {
-            "kr": "equity_kr",
-            "us": "equity_us",
-            "crypto": "crypto",
-        }.get(normalized_market, "equity_us")
+    result = await symbol_news_service.fetch_symbol_news(
+        symbol, normalized_market, instrument_type, limit=capped_limit
+    )
+
+    if result.status in ("error", "unavailable"):
         return _error_payload(
-            source=source,
-            message=str(exc),
+            source=result.provider,
+            message=result.error_code or "news_unavailable",
             symbol=symbol,
             instrument_type=instrument_type,
         )
+
+    news = [a.provider_metadata.get("source_item", {}) for a in result.articles]
+    return {
+        "symbol": symbol,
+        "market": normalized_market,
+        "source": result.provider,
+        "count": len(news),
+        "news": news,
+    }

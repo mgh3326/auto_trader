@@ -1,18 +1,20 @@
+from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
 
 
 def test_build_position_detail_url_for_supported_markets() -> None:
+    base_url = settings.public_base_url.rstrip("/")
     assert (
         build_position_detail_url("035720", "kr")
-        == "https://mgh3326.duckdns.org/portfolio/positions/kr/035720"
+        == f"{base_url}/portfolio/positions/kr/035720"
     )
     assert (
         build_position_detail_url("NVDA", "us")
-        == "https://mgh3326.duckdns.org/portfolio/positions/us/NVDA"
+        == f"{base_url}/portfolio/positions/us/NVDA"
     )
     assert (
         build_position_detail_url("KRW-BTC", "crypto")
-        == "https://mgh3326.duckdns.org/portfolio/positions/crypto/KRW-BTC"
+        == f"{base_url}/portfolio/positions/crypto/KRW-BTC"
     )
 
 

@@ -1,142 +1,99 @@
-"""Tests for app.services.research_news_service (ROB-115)."""
+# tests/services/test_research_news_service.py
+"""Tests for research_news_service shim over symbol_news_service (ROB-423)."""
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services import research_news_service
+from app.services import research_news_service, symbol_news_service
+from app.services.symbol_news_service import (
+    SymbolNewsArticle,
+    SymbolNewsFetchResult,
+)
 
 
-class TestFetchSymbolNewsKR:
-    @pytest.mark.asyncio
-    async def test_returns_normalized_articles_for_kr_symbol(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        fake_naver_payload = [
-            {
-                "title": "삼성전자 호실적 발표",
-                "url": "https://finance.naver.com/item/news_read.naver?code=005930&id=1",
-                "source": "한국경제",
-                "datetime": "2026-05-05T09:30",
-            },
-            {
-                "title": "반도체 업황 회복",
-                "url": "https://finance.naver.com/item/news_read.naver?code=005930&id=2",
-                "source": "매일경제",
-                "datetime": "2026-05-04",
-            },
-        ]
-        monkeypatch.setattr(
-            research_news_service,
-            "_naver_fetch_news",
-            AsyncMock(return_value=fake_naver_payload),
+def _seam_article(provider: str = "naver") -> SymbolNewsArticle:
+    return SymbolNewsArticle(
+        provider=provider,
+        market="kr",
+        symbol="005930",
+        external_article_id="001:123",
+        title="삼성전자 호실적",
+        source_name="한국경제",
+        canonical_url="https://finance.naver.com/x",
+        summary="요약" if provider == "finnhub" else None,
+        published_at=datetime(2026, 5, 5, 9, 0, tzinfo=UTC),
+        fetched_at=datetime(2026, 5, 5, 10, 0, tzinfo=UTC),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shim_maps_seam_to_normalized_article(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = SymbolNewsFetchResult(
+        symbol="005930",
+        market="kr",
+        provider="naver",
+        status="ok",
+        requested_limit=20,
+        returned_count=1,
+        articles=[_seam_article()],
+    )
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(return_value=result),
+    )
+
+    out = await research_news_service.fetch_symbol_news("005930", "equity_kr", limit=20)
+
+    assert len(out) == 1
+    first = out[0]
+    assert first.url == "https://finance.naver.com/x"
+    assert first.title == "삼성전자 호실적"
+    assert first.source == "한국경제"
+    assert first.provider == "naver"
+    assert first.summary is None
+    assert isinstance(first.published_at, datetime)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shim_passes_market_for_us(monkeypatch: pytest.MonkeyPatch) -> None:
+    seam = AsyncMock(
+        return_value=SymbolNewsFetchResult(
+            symbol="AAPL",
+            market="us",
+            provider="finnhub",
+            status="empty",
+            requested_limit=20,
+            returned_count=0,
+            articles=[],
         )
-        result = await research_news_service.fetch_symbol_news(
-            "005930", "equity_kr", limit=20
-        )
-        assert len(result) == 2
-        first = result[0]
-        assert first.title == "삼성전자 호실적 발표"
-        assert first.url.startswith("https://finance.naver.com/")
-        assert first.source == "한국경제"
-        assert first.provider == "naver"
-        assert isinstance(first.published_at, datetime)
-        assert first.summary is None
+    )
+    monkeypatch.setattr(symbol_news_service, "fetch_symbol_news", seam)
+
+    out = await research_news_service.fetch_symbol_news("AAPL", "equity_us", limit=20)
+
+    assert out == []
+    seam.assert_awaited_once()
+    assert seam.await_args.args[1] == "us"  # market derived from instrument_type
 
 
-class TestFetchSymbolNewsUS:
-    @pytest.mark.asyncio
-    async def test_returns_normalized_articles_for_us_symbol(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        fake_finnhub_payload = {
-            "symbol": "AMZN",
-            "market": "us",
-            "source": "finnhub",
-            "count": 1,
-            "news": [
-                {
-                    "title": "Amazon beats Q1 earnings",
-                    "source": "Reuters",
-                    "datetime": "2026-05-05T13:30:00",
-                    "url": "https://reuters.com/amzn-q1",
-                    "summary": "Amazon reported revenue of $X.",
-                    "sentiment": None,
-                    "related": "AMZN",
-                }
-            ],
-        }
-        monkeypatch.setattr(
-            research_news_service,
-            "_finnhub_fetch_news",
-            AsyncMock(return_value=fake_finnhub_payload),
-        )
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shim_returns_empty_for_unknown_instrument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seam = AsyncMock()
+    monkeypatch.setattr(symbol_news_service, "fetch_symbol_news", seam)
 
-        result = await research_news_service.fetch_symbol_news(
-            "AMZN", "equity_us", limit=20
-        )
+    out = await research_news_service.fetch_symbol_news("X", "crypto", limit=20)
 
-        assert len(result) == 1
-        first = result[0]
-        assert first.title == "Amazon beats Q1 earnings"
-        assert first.url == "https://reuters.com/amzn-q1"
-        assert first.source == "Reuters"
-        assert first.summary == "Amazon reported revenue of $X."
-        assert first.provider == "finnhub"
-        assert first.published_at == datetime(2026, 5, 5, 13, 30, 0)
-
-
-class TestFetchSymbolNewsDegrade:
-    @pytest.mark.asyncio
-    async def test_naver_exception_returns_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            research_news_service,
-            "_naver_fetch_news",
-            AsyncMock(side_effect=RuntimeError("scrape blocked")),
-        )
-        result = await research_news_service.fetch_symbol_news("005930", "equity_kr")
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_finnhub_value_error_returns_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            research_news_service,
-            "_finnhub_fetch_news",
-            AsyncMock(
-                side_effect=ValueError(
-                    "FINNHUB_API_KEY environment variable is not set"
-                )
-            ),
-        )
-        result = await research_news_service.fetch_symbol_news("AMZN", "equity_us")
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_timeout_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def _slow(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
-            await asyncio.sleep(2.0)
-            return []
-
-        monkeypatch.setattr(research_news_service, "_naver_fetch_news", _slow)
-        result = await research_news_service.fetch_symbol_news(
-            "005930", "equity_kr", timeout_s=0.05
-        )
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_crypto_returns_empty(self) -> None:
-        result = await research_news_service.fetch_symbol_news("BTC", "crypto")
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_unknown_instrument_type_returns_empty(self) -> None:
-        result = await research_news_service.fetch_symbol_news("X", "equity_unknown")
-        assert result == []
+    assert out == []
+    seam.assert_not_awaited()

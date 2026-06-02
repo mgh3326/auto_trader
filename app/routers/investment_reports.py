@@ -27,6 +27,7 @@ from app.schemas.investment_reports import (
     InvestmentReportItemDecisionResponse,
     InvestmentReportItemResponse,
     InvestmentReportListResponse,
+    InvestmentReportNewsCitationResponse,
     InvestmentReportResponse,
     InvestmentWatchAlertResponse,
     InvestmentWatchEventResponse,
@@ -100,6 +101,10 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         decision_rollup=rollup,
         review_sections=review_sections,
         action_packet=action_packet,
+        news_citations=[
+            InvestmentReportNewsCitationResponse.model_validate(c)
+            for c in bundle["news_citations"]
+        ],
     )
 
 
