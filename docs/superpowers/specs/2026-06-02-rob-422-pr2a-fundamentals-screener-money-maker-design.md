@@ -101,3 +101,12 @@ class FundamentalsPresetSpec:
 - **PR2b**: 저평가성장주(revenue_growth_3y_avg/earnings_growth_3y_avg + PER), 안정성장주(ROE+earnings_growth_3y_avg+earnings_increase_streak), 미래의배당왕(dividend_yield+dividend_growth_streak+earnings_increase_streak+payout_ratio) — `FundamentalsPresetSpec` 확장 슬롯에 임계값만 추가. streak/배당 지표 본격 사용(§3 가드 필수).
 - **PR2c**: cheap_value 보강(+earnings_growth_3y_avg≥0%), steady_dividend 보강(2%→3% + payout_ratio/dividend_paid_streak/earnings_increase_streak), 저평가탈출-Toss(PER0~10+PBR0~1+high_52w) 신규 + 성장기대주-Toss(earnings_growth_3y_avg≥3%+earnings_growth_qoq≥10%) 신규, 기존 oversold_recovery/growth_expectation을 `auto_trader_original`로 재분류(parityStatus mismatch 제거, 이름/note 자체 스크린 명확화), 파리티 매트릭스 전체 갱신 + 프론트 칩 polish.
 - **operator-gated**: 프로덕션 fundamentals backfill(연간 우선 페이싱) + scheduler.
+
+### 10.1 PR2a 구현 리뷰 후속 (12-agent adversarial, 2026-06-02)
+
+PR2a 구현은 wired 코드 blocker 0 / faithful·safe(전부 PRAISE)로 검증됨. fix-now(랭킹/limit 회귀 테스트)는 PR2a에서 처리 완료(`44e1123b`). 아래는 PR2b/c에서 처리:
+1. **(방어) 멀티소스 symbol dedup**: `fundamentals_screener` candidate 쿼리가 `source` 미필터 → KR이 다중 valuation source가 되면 symbol 중복. 현재는 KR=`naver_finance` 단일소스라 live 버그 아님(검증됨), 그러나 sibling `high_yield_value_screener`엔 `seen` 가드 있음. `DISTINCT ON (symbol)` 또는 source 우선순위/`seen` 가드 추가(PR2b가 다중 metric/소스 도입 시 필수).
+2. **loader DB 통합 테스트**: `load_fundamentals_preset_from_snapshots`의 오케스트레이션(valuation max-date + min_roe SQL + KRSymbolUniverse name join + `_to_period` 매핑 + derive PIT)이 e2e 미테스트(순수 core + repo leaf만 테스트). `high_yield_value` 선례엔 db_session 통합 테스트 존재 → 동일 패턴으로 3테이블 seed 후 loader 호출 테스트 추가.
+3. **empty-fundamentals→missing dependency 테스트(Path B)**: valuation 존재+fundamentals 빈 → `fundamentals_state='missing'` dependency가 freshness에 노출되는 경로 미테스트(현재 backfill 전 *기본 동작*이라 중요). mock loader가 `FundamentalsScreenResult(rows=[], fundamentals_state='missing')` 반환 시 `freshness.dependencies`에 `kind='fundamentals', dataState='missing'` 단언.
+4. **dependency 메타데이터 값 단언**: 현 service 테스트는 `kind='fundamentals'` 존재만 확인 → snapshotDate/collectedAt/dataState 값까지 단언 보강.
+5. **(선택) fundamentals_state 'stale' 분류**: 현재 fresh/missing만 — 최신 period_end가 cadence보다 오래되면 stale 분류(honesty 보강). row-level `_screener_snapshot_state`는 valuation만 반영하므로 fundamentals staleness는 dependency로만 노출됨을 문서화 or 보강.
