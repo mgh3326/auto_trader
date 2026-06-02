@@ -4,6 +4,9 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
+import pytest
+
+
 from app.services.financial_fundamentals_snapshots.derive import FundamentalPeriod
 from app.services.invest_view_model.fundamentals_screener import (
     PROFITABLE_COMPANY_SPEC,
@@ -302,5 +305,66 @@ def test_undervalued_growth_excludes_when_growth_metric_unavailable_never_silent
     )
     assert rows == []
     assert excluded  # never silently included
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
+    import sqlalchemy as sa
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        load_fundamentals_preset_from_snapshots,
+        UNDERVALUED_GROWTH_SPEC,
+    )
+
+    vd = dt.date(2026, 6, 2)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(["906401", "906402"])
+        )
+    )
+    await db_session.commit()
+
+    db_session.add_all([
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="906401",
+            snapshot_date=vd,
+            source="naver_finance",
+            per=Decimal("15"),
+            roe=Decimal("10"),
+            dividend_yield=Decimal("0.01"),
+            market_cap=Decimal("500000000000"),
+        ),
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="906402",
+            snapshot_date=vd,
+            source="naver_finance",
+            per=Decimal("40"),
+            roe=Decimal("10"),
+            dividend_yield=Decimal("0.01"),
+            market_cap=Decimal("400000000000"),
+        ),  # PER 40 > 20 → excluded from candidates
+    ])
+    await db_session.commit()
+
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="kr",
+        spec=UNDERVALUED_GROWTH_SPEC,
+        limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    # both lack fundamentals rows → both excluded from results, but candidate filtering
+    # is observable via excluded list: only the PER<=20 symbol reaches derive (then excluded
+    # for missing fundamentals); the PER>20 symbol never becomes a candidate.
+    excluded_symbols = {e["symbol"] for e in result.excluded}
+    assert "906401" in excluded_symbols
+    assert "906402" not in excluded_symbols  # filtered at SQL candidate stage
+    assert result.fundamentals_state == "missing"  # no fundamentals backfilled
+
+
 
 

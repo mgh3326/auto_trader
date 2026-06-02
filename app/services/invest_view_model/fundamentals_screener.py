@@ -245,16 +245,36 @@ async def load_fundamentals_preset_from_snapshots(
         MarketValuationSnapshot.per,
         MarketValuationSnapshot.pbr,
         MarketValuationSnapshot.market_cap,
+        MarketValuationSnapshot.dividend_yield,
     ).where(
         MarketValuationSnapshot.market == "kr",
         MarketValuationSnapshot.snapshot_date == val_date,
     )
     if spec.min_roe is not None:
         cand_stmt = cand_stmt.where(MarketValuationSnapshot.roe >= spec.min_roe)
+    if spec.max_per is not None:
+        cand_stmt = cand_stmt.where(
+            MarketValuationSnapshot.per > 0,
+            MarketValuationSnapshot.per <= spec.max_per,
+        )
+    if spec.min_dividend_yield is not None:
+        cand_stmt = cand_stmt.where(
+            MarketValuationSnapshot.dividend_yield >= spec.min_dividend_yield
+        )
+    # Cap the candidate universe by market_cap (prefer liquid names); ranking by the
+    # preset's sort_by happens AFTER derive. Surface truncation honestly (no silent cap).
+    _cand_cap = max(limit * 8, 200)
     cand_stmt = cand_stmt.order_by(
-        MarketValuationSnapshot.roe.desc().nullslast()
-    ).limit(max(limit * 6, limit + 60))
+        MarketValuationSnapshot.market_cap.desc().nullslast()
+    ).limit(_cand_cap)
     cand_mappings = list((await session.execute(cand_stmt)).mappings().all())
+    if len(cand_mappings) >= _cand_cap:
+        logger.warning(
+            "fundamentals_screener: candidate universe capped at %d for preset=%s "
+            "(some lower-market-cap candidates not evaluated)",
+            _cand_cap,
+            spec.preset_id,
+        )
 
     val_state = "fresh" if val_date == today_market_date else "stale"
     symbols = [m["symbol"] for m in cand_mappings]
