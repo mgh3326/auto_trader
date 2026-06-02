@@ -602,3 +602,99 @@ def test_sort_by_non_roe_key_orders_desc():
         name_map={},
     )
     assert [r["symbol"] for r in rows] == ["Q", "P"]  # higher earnings_growth first
+
+
+def _div_paid_period(year, *, net_income, dps, payout_ratio, filing_date):
+    return FundamentalPeriod(
+        fiscal_period=f"{year}A", period_type="annual",
+        period_end_date=dt.date(year, 12, 31), filing_date=filing_date,
+        revenue=Decimal("1000"), net_income=Decimal(net_income),
+        discrete_revenue=Decimal("1000"), discrete_net_income=Decimal(net_income),
+        dividend_per_share=Decimal(dps), payout_ratio=Decimal(payout_ratio),
+    )
+
+
+def test_pr2c1_registry_has_cheap_value_and_steady_dividend():
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUNDAMENTALS_PRESET_SPECS,
+    )
+
+    assert {"cheap_value", "steady_dividend"} <= set(FUNDAMENTALS_PRESET_SPECS)
+    cv = FUNDAMENTALS_PRESET_SPECS["cheap_value"]
+    assert cv.max_per == Decimal("15") and cv.max_pbr == Decimal("1.5")
+    assert cv.min_earnings_growth_3y_avg == Decimal("0")
+    sd = FUNDAMENTALS_PRESET_SPECS["steady_dividend"]
+    assert sd.min_dividend_yield == Decimal("0.03") and sd.min_payout_ratio == Decimal("30")
+    assert sd.min_dividend_paid_streak_years == 3 and sd.min_earnings_increase_streak_years == 3
+
+
+def test_steady_dividend_includes_when_all_dividend_gates_met():
+    from app.services.invest_view_model.fundamentals_screener import STEADY_DIVIDEND_SPEC
+
+    # net income up 4y (increase streak 3); DPS > 0 each year (paid streak 3); payout latest 40.
+    periods = {
+        "005930": [
+            _div_paid_period(2021 + i, net_income=str(ni), dps=str(d), payout_ratio="40",
+                             filing_date=dt.date(2022 + i, 3, 20))
+            for i, (ni, d) in enumerate([(100, 50), (120, 55), (150, 60), (200, 65)])
+        ]
+    }
+    valuation_rows = [{"symbol": "005930", "roe": 9.0, "per": 8.0, "pbr": 1.0,
+                       "market_cap": 5e11, "dividend_yield": 0.04}]
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows, periods_by_symbol=periods,
+        spec=STEADY_DIVIDEND_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+    )
+    assert [r["symbol"] for r in rows] == ["005930"]
+    assert rows[0]["dividend_paid_streak_years"] == 4
+
+
+def test_steady_dividend_excludes_when_dividend_paid_streak_below_threshold():
+    from app.services.invest_view_model.fundamentals_screener import STEADY_DIVIDEND_SPEC
+
+    # 2023 DPS = 0 → paid streak ending 2024 is only 1 (< 3) → excluded.
+    periods = {
+        "005930": [
+            _div_paid_period(2021 + i, net_income=str(ni), dps=str(d), payout_ratio="40",
+                             filing_date=dt.date(2022 + i, 3, 20))
+            for i, (ni, d) in enumerate([(100, 50), (120, 55), (150, 0), (200, 65)])
+        ]
+    }
+    valuation_rows = [{"symbol": "005930", "roe": 9.0, "per": 8.0, "pbr": 1.0,
+                       "market_cap": 5e11, "dividend_yield": 0.04}]
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows, periods_by_symbol=periods,
+        spec=STEADY_DIVIDEND_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+    )
+    assert rows == []
+    assert any("dividend_paid_streak_years" in e["reason"] for e in excluded)
+
+
+def test_cheap_value_includes_when_earnings_growth_non_negative():
+    from app.services.invest_view_model.fundamentals_screener import CHEAP_VALUE_SPEC
+
+    # revenue flat-ish, net income non-decreasing → earnings_growth_3y_avg >= 0.
+    periods = _four_growth_years("005930", [1000, 1010, 1020, 1030], [100, 100, 110, 120])
+    valuation_rows = [{"symbol": "005930", "roe": 5.0, "per": 10.0, "pbr": 0.8,
+                       "market_cap": 3e11, "dividend_yield": 0.01}]
+    rows, _ = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows, periods_by_symbol=periods,
+        spec=CHEAP_VALUE_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+    )
+    assert [r["symbol"] for r in rows] == ["005930"]
+
+
+def test_cheap_value_excludes_when_earnings_growth_negative():
+    from app.services.invest_view_model.fundamentals_screener import CHEAP_VALUE_SPEC
+
+    # net income declining → earnings_growth_3y_avg < 0 → excluded.
+    periods = _four_growth_years("005930", [1000, 1010, 1020, 1030], [200, 180, 150, 120])
+    valuation_rows = [{"symbol": "005930", "roe": 5.0, "per": 10.0, "pbr": 0.8,
+                       "market_cap": 3e11, "dividend_yield": 0.01}]
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows, periods_by_symbol=periods,
+        spec=CHEAP_VALUE_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+    )
+    assert rows == []
+    assert any("earnings_growth_3y_avg" in e["reason"] for e in excluded)
+
