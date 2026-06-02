@@ -137,6 +137,16 @@ financial_fundamentals_snapshots
 - **operator-gated(별도)**: 프로덕션 backfill(연간 우선 페이싱) + scheduler/Prefect 등록.
 - **(선택) dart-fss 견고성 스파이크**: PR2에서 gross_margin/growth XBRL 견고성이 부족하면 §2.1 dart-fss를 uv.lock 해석 스파이크(arelle vs pinned pandas/lxml) 후 default-off 어댑터로 추가 검토. PIT·배당은 여전히 OpenDartReader 소관(displace 아님).
 
+### 10.1 PR1 구현 리뷰에서 확정된 PR2 must-do (12-agent adversarial review, 2026-06-02)
+
+PR1 구현은 wired 코드 기준 blocker 0 / faithful·safe(전부 PRAISE)로 검증됨. 아래는 **미배선 derive 헬퍼/분기 경로**에 한정된 항목으로, `derive.py`를 screener read-path에 배선할 때(=PR2) 반드시 함께 처리한다:
+
+1. **(실 latent 버그) streak 연-인접성 가드**: `_increase_streak`/`_dividend_paid_streak`/`_dividend_growth_streak`가 리스트-인접만 보고 회계연도-인접을 확인하지 않음 → 누락 연도(예: 2021→2022→2024, 2023 결측 행)가 연속으로 오집계되어 streak 부풀림. 배선 전 `int(period[i].fiscal_period[:4]) != int(period[i-1].fiscal_period[:4]) + 1`이면 break하는 연-연속성 가드 추가 + 회귀 테스트. (DART per-year fetch 루프가 결측 연도를 그냥 skip하므로 현실적 시나리오.)
+2. **dividend-on-empty 시맨틱 결정**: 0 visible periods일 때 `dividend_paid_streak_years`=`(ok, 0)`, `dividend_growth_streak_years`=`(partial, 0)` 반환(나머지 6개는 `unavailable`). 의도된 비대칭이나, missing≠zero 정신상 배선 시점에 "0 vs unavailable" 명시 결정 + 테스트.
+3. **derive 테스트 커버리지 보강(배선과 함께)**: (a) `earnings_growth_qoq` 분기 2개 ok-path, (b) streak 연-gap break, (c) `gross_margin_ttm` 4-분기 TTM rollup(gross_profit/cost_of_sales 양 경로), (d) 0-visible-periods 전부-unavailable(단, 위 #2 결정 반영), (e) `_payload_from_quarterly` 오케스트레이션 e2e(`RawQuarterlyFiling`→differenced `discrete_*`). *주의: PR1 리뷰가 제안한 일부 단언은 틀렸음 — 결측-연도-행은 streak break가 아니라 리스트 압축이라 값이 다름; None-중간값만 break.*
+4. **`default_dart_fetcher` 운영 하드닝(--commit/스케줄 승격 시)**: rate-limit/backoff/retry 부재 — `--all` 전 종목 backfill 시 DART ~20k/일 한도 초과 가능. PIT join 실패(정정/amended 보고서의 상이한 rcept_no)는 이미 fail-closed(`filing_date=None`→`partial`)지만 mismatch 로깅 추가 권장. (현재는 dry-run 기본·operator-gated라 PR1 비차단.)
+5. **(선택 polish) repository 주석**: `_UPSERTABLE_COLUMNS`가 `computed_at`/`updated_at`를 제외하는 이유 1줄 주석(이 둘은 `set_`에서 명시적으로 `func.now()` — `on_conflict_do_update`는 ORM `onupdate` 미발화라 필수). 동작 변경 아님.
+
 ## 11. 비목표 (YAGNI)
 
 - KIS/Naver 재무 배선(DART로 충분; KIS는 PR2+ 선택적 cross-check, Naver는 회피).
