@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import logging
 from typing import Any
+from collections.abc import Awaitable, Callable, Iterable
 
 import pandas as pd
+
+from app.services.financial_fundamentals_snapshots.freshness import row_data_state
+from app.services.financial_fundamentals_snapshots.repository import (
+    FinancialFundamentalsUpsert,
+)
+from app.services.market_quote_snapshots.builder import redact_sensitive_payload
+
+logger = logging.getLogger(__name__)
 
 # XBRL account_id codes (preferred) with Korean account_nm contains-fallbacks.
 _REVENUE_IDS = ("ifrs-full_Revenue", "ifrs-full_RevenueFromContractsWithCustomers")
@@ -116,3 +128,254 @@ def single_quarter_discrete(
     if prior_cumulative is None:
         return cumulative
     return cumulative - prior_cumulative
+
+
+@dataclass(frozen=True)
+class RawAnnualFiling:
+    bsns_year: int
+    rcept_no: str
+    income_statement: pd.DataFrame
+    dividend: pd.DataFrame | None = None
+
+
+@dataclass(frozen=True)
+class RawQuarterlyFiling:
+    bsns_year: int
+    quarter: int  # 1..4
+    rcept_no: str
+    reprt_code: str
+    income_statement: pd.DataFrame  # cumulative YTD amounts
+    prior_income_statement: pd.DataFrame | None = None  # prior cumulative (for differencing)
+
+
+@dataclass(frozen=True)
+class RawFundamentalsBundle:
+    symbol: str
+    currency: str | None = None
+    annual: tuple[RawAnnualFiling, ...] = ()
+    quarterly: tuple[RawQuarterlyFiling, ...] = ()
+    filing_dates: dict[str, dt.date] | None = None
+
+
+@dataclass(frozen=True)
+class FinancialFundamentalsBuildResult:
+    payloads: tuple[FinancialFundamentalsUpsert, ...]
+    warnings: tuple[str, ...] = ()
+
+
+FundamentalsFetcher = Callable[..., Awaitable[RawFundamentalsBundle]]
+
+_REPRT_CODE_BY_QUARTER = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
+
+
+def _payload_from_annual(
+    *, market: str, symbol: str, filing: RawAnnualFiling, currency: str | None,
+    filing_date: dt.date | None, collected_at: dt.datetime,
+) -> FinancialFundamentalsUpsert:
+    income = parse_income_statement_frame(filing.income_statement)
+    dividend = (
+        parse_dividend_frame(filing.dividend)
+        if filing.dividend is not None
+        else {"payout_ratio": None, "dividend_per_share": None}
+    )
+    raw = {
+        "income_statement": filing.income_statement.to_dict(orient="records"),
+        "dividend": (
+            filing.dividend.to_dict(orient="records")
+            if filing.dividend is not None
+            else None
+        ),
+        "rcept_no": filing.rcept_no,
+        "bsns_year": filing.bsns_year,
+    }
+    return FinancialFundamentalsUpsert(
+        market=market,
+        symbol=symbol,
+        fiscal_period=f"{filing.bsns_year}A",
+        period_type="annual",
+        period_end_date=dt.date(filing.bsns_year, 12, 31),
+        filing_date=filing_date,
+        effective_at=filing_date,
+        source="dart",
+        source_collected_at=collected_at,
+        currency=currency,
+        revenue=income["revenue"],
+        net_income=income["net_income"],
+        gross_profit=income["gross_profit"],
+        cost_of_sales=income["cost_of_sales"],
+        payout_ratio=dividend["payout_ratio"],
+        dividend_per_share=dividend["dividend_per_share"],
+        discrete_revenue=income["revenue"],          # annual: discrete == reported
+        discrete_net_income=income["net_income"],
+        data_state=row_data_state(filing_date=filing_date),
+        raw_payload=redact_sensitive_payload(raw),
+    )
+
+
+def _payload_from_quarterly(
+    *, market: str, symbol: str, filing: RawQuarterlyFiling, currency: str | None,
+    filing_date: dt.date | None, collected_at: dt.datetime,
+) -> FinancialFundamentalsUpsert:
+    income = parse_income_statement_frame(filing.income_statement)
+    prior = (
+        parse_income_statement_frame(filing.prior_income_statement)
+        if filing.prior_income_statement is not None
+        else {"revenue": None, "net_income": None}
+    )
+    discrete_revenue = single_quarter_discrete(
+        cumulative=income["revenue"], prior_cumulative=prior["revenue"]
+    )
+    discrete_net_income = single_quarter_discrete(
+        cumulative=income["net_income"], prior_cumulative=prior["net_income"]
+    )
+    raw = {
+        "income_statement": filing.income_statement.to_dict(orient="records"),
+        "rcept_no": filing.rcept_no,
+        "bsns_year": filing.bsns_year,
+        "quarter": filing.quarter,
+        "reprt_code": filing.reprt_code,
+    }
+    return FinancialFundamentalsUpsert(
+        market=market,
+        symbol=symbol,
+        fiscal_period=f"{filing.bsns_year}Q{filing.quarter}",
+        period_type="quarterly",
+        period_end_date=_quarter_end_date(filing.bsns_year, filing.quarter),
+        filing_date=filing_date,
+        effective_at=filing_date,
+        source="dart",
+        source_collected_at=collected_at,
+        currency=currency,
+        revenue=income["revenue"],
+        net_income=income["net_income"],
+        gross_profit=income["gross_profit"],
+        cost_of_sales=income["cost_of_sales"],
+        discrete_revenue=discrete_revenue,
+        discrete_net_income=discrete_net_income,
+        data_state=row_data_state(filing_date=filing_date),
+        raw_payload=redact_sensitive_payload(raw),
+    )
+
+
+def _quarter_end_date(year: int, quarter: int) -> dt.date:
+    return {
+        1: dt.date(year, 3, 31),
+        2: dt.date(year, 6, 30),
+        3: dt.date(year, 9, 30),
+        4: dt.date(year, 12, 31),
+    }[quarter]
+
+
+async def build_financial_fundamentals_for_symbols(
+    *,
+    market: str,
+    symbols: Iterable[str],
+    collected_at: dt.datetime,
+    fetcher: FundamentalsFetcher,
+    include_quarterly: bool = False,
+    concurrency: int = 4,
+) -> FinancialFundamentalsBuildResult:
+    market_norm = market.strip().lower()
+    if market_norm != "kr":
+        raise ValueError(f"PR1 supports market='kr' only, got: {market}")
+    sem = asyncio.Semaphore(max(1, concurrency))
+    symbols_list = [s.strip().upper() for s in symbols if s.strip()]
+    collected: list[FinancialFundamentalsUpsert] = []
+    warnings: list[str] = []
+
+    async def _one(symbol: str) -> None:
+        async with sem:
+            try:
+                bundle = await fetcher(symbol, include_quarterly=include_quarterly)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("fundamentals fetch failed symbol=%s: %s", symbol, exc)
+                warnings.append(f"{symbol}: fetch failed ({exc})")
+                return
+            filing_dates = bundle.filing_dates or {}
+            for filing in bundle.annual:
+                collected.append(
+                    _payload_from_annual(
+                        market=market_norm, symbol=symbol, filing=filing,
+                        currency=bundle.currency,
+                        filing_date=filing_dates.get(filing.rcept_no),
+                        collected_at=collected_at,
+                    )
+                )
+            for q_filing in bundle.quarterly:
+                collected.append(
+                    _payload_from_quarterly(
+                        market=market_norm, symbol=symbol, filing=q_filing,
+                        currency=bundle.currency,
+                        filing_date=filing_dates.get(q_filing.rcept_no),
+                        collected_at=collected_at,
+                    )
+                )
+
+    await asyncio.gather(*(_one(symbol) for symbol in symbols_list))
+    return FinancialFundamentalsBuildResult(
+        payloads=tuple(collected), warnings=tuple(warnings)
+    )
+
+
+async def default_dart_fetcher(
+    symbol: str, *, include_quarterly: bool, years_back: int = 5
+) -> RawFundamentalsBundle:
+    """Live DART fetcher: activates the dormant finstate_all + report('배당') methods.
+
+    fs_div='CFS' (consolidated) first, falling back to 'OFS' (separate) when CFS is empty.
+    filing dates resolved by joining each rcept_no to the disclosure-list endpoint.
+    """
+    from app.core.config import settings
+    from app.services.disclosures.dart import _get_client
+
+    if not settings.opendart_api_key:
+        raise RuntimeError("OPENDART_API_KEY not set")
+    client = await _get_client()
+    if client is None:
+        raise RuntimeError("DART functionality not available")
+
+    today = dt.date.today()
+    years = list(range(today.year - 1, today.year - 1 - years_back, -1))
+
+    def fetch_sync() -> RawFundamentalsBundle:
+        annual: list[RawAnnualFiling] = []
+        for year in years:
+            stmt = client.finstate_all(symbol, year, "11011", fs_div="CFS")
+            if stmt is None or stmt.empty:
+                stmt = client.finstate_all(symbol, year, "11011", fs_div="OFS")
+            if stmt is None or stmt.empty:
+                continue
+            try:
+                dividend = client.report(symbol, "배당", year, "11011")
+            except Exception:  # noqa: BLE001
+                dividend = None
+            rcept_no = ""
+            if "rcept_no" in stmt.columns and not stmt.empty:
+                rcept_no = str(stmt.iloc[0].get("rcept_no", "")).strip()
+            annual.append(
+                RawAnnualFiling(
+                    bsns_year=year, rcept_no=rcept_no,
+                    income_statement=stmt, dividend=dividend,
+                )
+            )
+        # Resolve filing dates via the disclosure-list endpoint (carries rcept_dt).
+        listing = client.list(
+            corp=symbol,
+            start=(today - dt.timedelta(days=365 * (years_back + 1))).isoformat(),
+            end=today.isoformat(),
+            kind="A",  # 정기보고서
+            final=True,
+        )
+        filing_dates = parse_filing_dates_frame(
+            listing if listing is not None else pd.DataFrame()
+        )
+        currency = None
+        if annual and "currency" in annual[0].income_statement.columns:
+            vals = annual[0].income_statement["currency"].dropna().unique().tolist()
+            currency = str(vals[0]) if vals else None
+        return RawFundamentalsBundle(
+            symbol=symbol, currency=currency,
+            annual=tuple(annual), quarterly=(), filing_dates=filing_dates,
+        )
+
+    return await asyncio.to_thread(fetch_sync)
