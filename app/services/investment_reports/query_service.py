@@ -119,6 +119,7 @@ class InvestmentReportQueryService:
         decisions = await self._repo.list_decisions_for_items(item_ids)
         alerts = await self._repo.list_alerts_for_source_reports([report.report_uuid])
         events = await self._repo.list_events_for_source_reports([report.report_uuid])
+        citations = await self._repo.list_news_citations_for_report(report.report_uuid)
 
         decisions_by_item: dict[int, list[InvestmentReportItemDecision]] = {
             it.id: [] for it in items
@@ -132,6 +133,7 @@ class InvestmentReportQueryService:
             "decisions_by_item": decisions_by_item,
             "alerts": alerts,
             "events": events,
+            "news_citations": citations,
         }
 
     # ------------------------------------------------------------------
