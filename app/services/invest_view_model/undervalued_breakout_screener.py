@@ -56,17 +56,19 @@ async def load_undervalued_breakout_from_snapshots(
     if session is None or market != "kr":
         return None
 
-    latest_val_stmt = sa.select(sa.func.max(MarketValuationSnapshot.snapshot_date)).where(
-        MarketValuationSnapshot.market == "kr"
-    )
-    latest_price_stmt = sa.select(sa.func.max(InvestScreenerSnapshot.snapshot_date)).where(
-        InvestScreenerSnapshot.market == "kr"
-    )
+    latest_val_stmt = sa.select(
+        sa.func.max(MarketValuationSnapshot.snapshot_date)
+    ).where(MarketValuationSnapshot.market == "kr")
+    latest_price_stmt = sa.select(
+        sa.func.max(InvestScreenerSnapshot.snapshot_date)
+    ).where(InvestScreenerSnapshot.market == "kr")
     try:
         val_date = (await session.execute(latest_val_stmt)).scalar_one_or_none()
         price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("undervalued_breakout: date lookup failed: %s", exc, exc_info=True)
+        logger.warning(
+            "undervalued_breakout: date lookup failed: %s", exc, exc_info=True
+        )
         return None
     if val_date is None:
         return None
@@ -109,7 +111,9 @@ async def load_undervalued_breakout_from_snapshots(
     try:
         cand_rows = list((await session.execute(cand_stmt)).mappings().all())
     except Exception as exc:  # noqa: BLE001
-        logger.warning("undervalued_breakout: candidate query failed: %s", exc, exc_info=True)
+        logger.warning(
+            "undervalued_breakout: candidate query failed: %s", exc, exc_info=True
+        )
         return None
 
     symbols = [r["symbol"] for r in cand_rows]
@@ -124,7 +128,9 @@ async def load_undervalued_breakout_from_snapshots(
             )
             name_map = {row.symbol: row.name for row in names.all()}
         except Exception as exc:  # noqa: BLE001
-            logger.warning("undervalued_breakout: name lookup failed: %s", exc, exc_info=True)
+            logger.warning(
+                "undervalued_breakout: name lookup failed: %s", exc, exc_info=True
+            )
 
     from app.services.invest_view_model.screener_service import _is_kr_toss_common_stock
 
@@ -155,14 +161,20 @@ async def load_undervalued_breakout_from_snapshots(
                 "symbol": sym,
                 "market": "kr",
                 "name": name,
-                "latest_close": float(r["latest_close"]) if r["latest_close"] is not None else None,
-                "change_rate": float(r["change_rate"]) if r["change_rate"] is not None else None,
+                "latest_close": float(r["latest_close"])
+                if r["latest_close"] is not None
+                else None,
+                "change_rate": float(r["change_rate"])
+                if r["change_rate"] is not None
+                else None,
                 "volume": r["daily_volume"],
                 "per": float(r["per"]) if r["per"] is not None else None,
                 "pbr": float(r["pbr"]) if r["pbr"] is not None else None,
                 "high_52w": float(r["high_52w"]) if r["high_52w"] is not None else None,
                 "high_52w_proximity": float(prox) if prox is not None else None,
-                "market_cap": float(r["market_cap"]) if r["market_cap"] is not None else None,
+                "market_cap": float(r["market_cap"])
+                if r["market_cap"] is not None
+                else None,
                 "snapshot_date": val_date,
                 "_screener_snapshot_state": state,
             }

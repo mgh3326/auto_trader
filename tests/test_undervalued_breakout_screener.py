@@ -5,6 +5,7 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
@@ -15,6 +16,33 @@ from app.services.invest_view_model.undervalued_breakout_screener import (
     _passes_near_high,
     load_undervalued_breakout_from_snapshots,
 )
+
+_TEST_SYMBOLS = ["907001", "907002", "907003", "907004"]
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_rows(db_session):
+    async def _purge() -> None:
+        await db_session.execute(
+            sa.delete(MarketValuationSnapshot).where(
+                MarketValuationSnapshot.symbol.in_(_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            sa.delete(InvestScreenerSnapshot).where(
+                InvestScreenerSnapshot.symbol.in_(_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol.in_(_TEST_SYMBOLS)
+            )
+        )
+        await db_session.commit()
+
+    await _purge()
+    yield
+    await _purge()
 
 
 def test_near_high_proximity_and_pass():
@@ -37,7 +65,9 @@ async def test_loader_filters_per_pbr_and_near_high(db_session):
     vd = dt.date(2099, 12, 31)
     syms = ["907001", "907002", "907003", "907004"]
     await db_session.execute(
-        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms))
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(syms)
+        )
     )
     await db_session.execute(
         sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms))
@@ -50,31 +80,95 @@ async def test_loader_filters_per_pbr_and_near_high(db_session):
     # 907002: per 8, pbr 0.8, close 80/high 100 → 0.80 < 0.95 → excluded (not near high)
     # 907003: per 20 (> 10) → excluded at SQL candidate stage
     # 907004: per 8, pbr 0.8, NO price row → close NULL → fail-closed excluded
-    db_session.add_all([
-        MarketValuationSnapshot(market="kr", symbol="907001", snapshot_date=vd, source="naver_finance",
-            per=Decimal("8"), pbr=Decimal("0.8"), high_52w=Decimal("100"), market_cap=Decimal("5e11")),
-        MarketValuationSnapshot(market="kr", symbol="907002", snapshot_date=vd, source="naver_finance",
-            per=Decimal("8"), pbr=Decimal("0.8"), high_52w=Decimal("100"), market_cap=Decimal("4e11")),
-        MarketValuationSnapshot(market="kr", symbol="907003", snapshot_date=vd, source="naver_finance",
-            per=Decimal("20"), pbr=Decimal("0.8"), high_52w=Decimal("100"), market_cap=Decimal("3e11")),
-        MarketValuationSnapshot(market="kr", symbol="907004", snapshot_date=vd, source="naver_finance",
-            per=Decimal("8"), pbr=Decimal("0.8"), high_52w=Decimal("100"), market_cap=Decimal("2e11")),
-    ])
-    db_session.add_all([
-        InvestScreenerSnapshot(market="kr", symbol="907001", snapshot_date=vd, latest_close=Decimal("96"), closes_window=[], source="kis"),
-        InvestScreenerSnapshot(market="kr", symbol="907002", snapshot_date=vd, latest_close=Decimal("80"), closes_window=[], source="kis"),
-        InvestScreenerSnapshot(market="kr", symbol="907003", snapshot_date=vd, latest_close=Decimal("99"), closes_window=[], source="kis"),
-    ])
-    db_session.add_all([
-        KRSymbolUniverse(symbol=s, name=f"종목{s}", exchange="KOSPI", is_active=True) for s in syms
-    ])
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="907001",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("8"),
+                pbr=Decimal("0.8"),
+                high_52w=Decimal("100"),
+                market_cap=Decimal("5e11"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="907002",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("8"),
+                pbr=Decimal("0.8"),
+                high_52w=Decimal("100"),
+                market_cap=Decimal("4e11"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="907003",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("20"),
+                pbr=Decimal("0.8"),
+                high_52w=Decimal("100"),
+                market_cap=Decimal("3e11"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="907004",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("8"),
+                pbr=Decimal("0.8"),
+                high_52w=Decimal("100"),
+                market_cap=Decimal("2e11"),
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol="907001",
+                snapshot_date=vd,
+                latest_close=Decimal("96"),
+                closes_window=[],
+                source="kis",
+            ),
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol="907002",
+                snapshot_date=vd,
+                latest_close=Decimal("80"),
+                closes_window=[],
+                source="kis",
+            ),
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol="907003",
+                snapshot_date=vd,
+                latest_close=Decimal("99"),
+                closes_window=[],
+                source="kis",
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol=s, name=f"종목{s}", exchange="KOSPI", is_active=True
+            )
+            for s in syms
+        ]
+    )
     await db_session.commit()
 
     rows = await load_undervalued_breakout_from_snapshots(
         db_session, market="kr", limit=20, today_market_date=vd
     )
     assert rows is not None
-    assert [r["symbol"] for r in rows] == ["907001"]  # only near-high cheap value survives
+    assert [r["symbol"] for r in rows] == [
+        "907001"
+    ]  # only near-high cheap value survives
 
 
 @pytest.mark.integration
