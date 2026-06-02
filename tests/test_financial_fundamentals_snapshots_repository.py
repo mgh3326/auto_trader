@@ -4,7 +4,9 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
 
+from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsSnapshotsRepository,
     FinancialFundamentalsUpsert,
@@ -31,6 +33,14 @@ def _row(fiscal_period: str, net_income: int, *, filing_date: dt.date | None) ->
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_upsert_is_idempotent_on_unique_key(db_session):
+    # Clean up first to avoid cross-test pollution in persistent test DB
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol == "005930"
+        )
+    )
+    await db_session.commit()
+
     repo = FinancialFundamentalsSnapshotsRepository(db_session)
 
     n = await repo.upsert([_row("2025A", 100, filing_date=dt.date(2026, 3, 20))])
@@ -49,6 +59,14 @@ async def test_upsert_is_idempotent_on_unique_key(db_session):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_periods_for_symbol_returns_ascending_by_period_end(db_session):
+    # Clean up first to avoid cross-test pollution in persistent test DB
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol == "005930"
+        )
+    )
+    await db_session.commit()
+
     repo = FinancialFundamentalsSnapshotsRepository(db_session)
     await repo.upsert(
         [
