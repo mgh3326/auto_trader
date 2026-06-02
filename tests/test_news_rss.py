@@ -521,7 +521,9 @@ class TestMCPNewsTools:
         async def _empty(**kwargs):
             return ([], 0)
 
-        monkeypatch.setattr(news_handlers, "get_news_articles", AsyncMock(side_effect=_empty))
+        monkeypatch.setattr(
+            news_handlers, "get_news_articles", AsyncMock(side_effect=_empty)
+        )
         result = await news_handlers._get_market_news_impl(hours=24, limit=20)
         assert result["surface"] == "legacy_market_briefing"
         assert "investment-decision evidence" in result["advisory"]
@@ -629,8 +631,6 @@ class TestMCPNewsTools:
         assert mock_get.call_args.kwargs["market"] == "crypto"
 
 
-
-
 class TestGetMarketNewsNoneDefaults:
     """Test that FastMCP passing None for defaulted params is handled."""
 
@@ -653,9 +653,6 @@ class TestGetMarketNewsNoneDefaults:
         assert call_kwargs["hours"] == 24
         assert call_kwargs["limit"] == 20
         assert result["count"] == 0
-
-
-
 
 
 class TestGetNewsArticlesKeywordJsonbCast:
@@ -725,8 +722,6 @@ class TestMCPNewsRuntimeRegression:
 
         assert result["count"] == 1
         assert result["news"][0]["title"] == "Test"
-
-
 
 
 class TestAnalyzeEndpointDefense:
@@ -964,8 +959,6 @@ class TestKstNaiveCutoffQueries:
 
         # Verify at least one query was executed (the main query + count query)
         assert len(captured_queries) >= 2
-
-
 
     @pytest.mark.asyncio
     async def test_get_market_news_impl_no_tz_error(self):

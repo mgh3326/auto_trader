@@ -87,7 +87,9 @@ class TestNewsStageOnDemandFirst:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            news_stage, "fetch_symbol_news", AsyncMock(return_value=_result("empty", []))
+            news_stage,
+            "fetch_symbol_news",
+            AsyncMock(return_value=_result("empty", [])),
         )
         out = await NewsStageAnalyzer().analyze(_ctx())
         assert out.verdict == StageVerdict.NEUTRAL
@@ -98,7 +100,9 @@ class TestNewsStageOnDemandFirst:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            news_stage, "fetch_symbol_news", AsyncMock(return_value=_result("error", []))
+            news_stage,
+            "fetch_symbol_news",
+            AsyncMock(return_value=_result("error", [])),
         )
         out = await NewsStageAnalyzer().analyze(_ctx())
         assert out.verdict == StageVerdict.UNAVAILABLE
@@ -110,5 +114,7 @@ class TestNewsStageOnDemandFirst:
     ) -> None:
         fetch = AsyncMock(return_value=_result("empty", []))
         monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
-        await NewsStageAnalyzer().analyze(_ctx(symbol="005930", instrument_type="equity_kr"))
+        await NewsStageAnalyzer().analyze(
+            _ctx(symbol="005930", instrument_type="equity_kr")
+        )
         assert fetch.await_args.args[1] == "kr"
