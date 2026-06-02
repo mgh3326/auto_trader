@@ -131,6 +131,12 @@ INTRADAY_ACTION_REPORT_V1 = BundlePolicy(
             collector_timeout=_seconds(15),
         ),
         SnapshotKindPolicy(
+            snapshot_kind="investor_flow",
+            freshness=FreshnessPolicy(soft_ttl=_seconds(900), hard_ttl=_seconds(86400)),
+            required=False,
+            collector_timeout=_seconds(10),
+        ),
+        SnapshotKindPolicy(
             snapshot_kind="news",
             freshness=FreshnessPolicy(soft_ttl=_seconds(900), hard_ttl=_seconds(7200)),
             required=False,

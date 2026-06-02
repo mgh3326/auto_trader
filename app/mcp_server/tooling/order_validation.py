@@ -313,6 +313,24 @@ async def _get_current_price_for_order(symbol: str, market_type: str) -> float |
     return float(quote.get("price")) if quote.get("price") else None
 
 
+def _no_holdings_sell_message(symbol: str, market_type: str, is_mock: bool) -> str:
+    """Disambiguate a sell-side holdings miss (ROB-420).
+
+    For equities the order tools route only to the KIS subaccount, so a miss may
+    mean the symbol is held in another (reference-only) broker subaccount rather
+    than not held at all. Crypto routes to Upbit, so keep an Upbit-specific note.
+    """
+    if market_type == "crypto":
+        return f"No holdings found for {symbol} on Upbit"
+    channel = "kis_mock" if is_mock else "kis_live"
+    return (
+        f"No sellable holdings for {symbol} in the KIS subaccount that "
+        f"{channel} routes to. Holdings in other broker subaccounts "
+        f"(e.g. toss/samsung) are reference-only and cannot be sold via this "
+        f"channel — check get_holdings 'order_routable'/'account_mode'."
+    )
+
+
 async def _get_holdings_for_order(
     symbol: str, market_type: str, is_mock: bool = False
 ) -> dict[str, Any] | None:
@@ -554,7 +572,7 @@ async def _preview_sell(
 
     holdings = await _get_holdings_for_order(symbol, market_type, is_mock=is_mock)
     if not holdings:
-        result["error"] = "No holdings found"
+        result["error"] = _no_holdings_sell_message(symbol, market_type, is_mock)
         return result
 
     avg_price = holdings["avg_price"]
@@ -728,7 +746,11 @@ async def _validate_sell_side(
         is_mock=is_mock,
     )
     if not holdings:
-        return 0.0, 0.0, order_error_fn(f"No holdings found for {symbol}")
+        return (
+            0.0,
+            0.0,
+            order_error_fn(_no_holdings_sell_message(symbol, market_type, is_mock)),
+        )
 
     available_quantity = _to_float(holdings.get("quantity"), default=0.0)
     locked_quantity = _to_float(holdings.get("locked"), default=0.0)
