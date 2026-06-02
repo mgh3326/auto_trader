@@ -235,40 +235,17 @@ def _build_altseason_fn() -> AltseasonFn:
 
 
 def _build_news_fetch_fn() -> NewsFetchFn:
-    """Read-only adapter over the deterministic, market-aware news source.
+    """Per-symbol on-demand news adapter over ``symbol_news_service`` (ROB-423).
 
-    ROB-366 B8: given (market, hours, limit), returns recent market-scoped
-    ``NewsArticle`` rows mapped to plain dicts in the shape NewsStage reads
-    (``articles``). ``get_news_articles`` is imported lazily and uses its own
-    read-only session; this stays a thin pass-through with no order/mutation
-    surface. The collector wraps the call so a fetch error degrades the
-    optional ``news`` kind to ``unavailable``.
+    Given (symbol, market, limit) returns a normalized ``SymbolNewsFetchResult``.
+    Imported lazily; no MCP/LLM/order surface. The collector wraps the call so a
+    fetch error degrades the optional ``news`` kind without blocking the bundle.
     """
 
-    async def _news_fetch_fn(
-        market: str, hours: int, limit: int
-    ) -> list[dict[str, Any]]:
-        from app.services.llm_news_service import get_news_articles
+    async def _news_fetch_fn(symbol: str, market: str, limit: int):
+        from app.services.symbol_news_service import fetch_symbol_news
 
-        articles, _total = await get_news_articles(
-            market=market, hours=hours, limit=limit
-        )
-        out: list[dict[str, Any]] = []
-        for a in articles:
-            published = getattr(a, "article_published_at", None)
-            out.append(
-                {
-                    "title": a.title,
-                    "url": a.url,
-                    "source": a.source,
-                    "feed_source": a.feed_source,
-                    "summary": a.summary,
-                    "stock_symbol": a.stock_symbol,
-                    "stock_name": a.stock_name,
-                    "published_at": published.isoformat() if published else None,
-                }
-            )
-        return out
+        return await fetch_symbol_news(symbol, market, limit=limit)
 
     return _news_fetch_fn
 

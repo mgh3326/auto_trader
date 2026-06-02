@@ -18,6 +18,8 @@ from .investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
     InvestmentReportItemDecision,
+    InvestmentReportNewsCitation,
+    InvestmentReportNewsFetchRun,
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
@@ -143,6 +145,8 @@ __all__ = [
     "InvestmentReport",
     "InvestmentReportItem",
     "InvestmentReportItemDecision",
+    "InvestmentReportNewsCitation",
+    "InvestmentReportNewsFetchRun",
     "InvestmentWatchAlert",
     "InvestmentWatchEvent",
     "InvestmentSnapshot",

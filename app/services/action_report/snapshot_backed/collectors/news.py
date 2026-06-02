@@ -31,11 +31,12 @@ from app.services.investment_snapshots.collectors import (
     SnapshotCollectResult,
 )
 from app.services.research_reports.query_service import ResearchReportsQueryService
+from app.services.symbol_news_service import SymbolNewsFetchResult
 
-# ROB-366 B8 — read-only market-scoped news article fetch (market, hours, limit)
-# → list of article dicts. Wired in registry.py over the deterministic
-# get_news_articles source so this module imports no MCP tooling.
-NewsFetchFn = Callable[[str, int, int], Awaitable[list[dict[str, Any]]]]
+# ROB-423 — per-symbol on-demand news fetch (symbol, market, limit) →
+# SymbolNewsFetchResult. Wired in registry.py over symbol_news_service so this
+# module imports no MCP tooling and no LLM provider.
+NewsFetchFn = Callable[[str, str, int], Awaitable[SymbolNewsFetchResult]]
 
 
 def _citation_symbols(citation: Any) -> set[str]:
@@ -159,33 +160,65 @@ class NewsSnapshotCollector:
     async def _collect_articles(
         self, request: CollectorRequest, *, now: dt.datetime, since: dt.datetime
     ) -> list[SnapshotCollectResult]:
-        """Market-scoped news articles path (ROB-366 B8). Fail-open like the
-        research path: a fetch error degrades the optional ``news`` kind to
-        ``unavailable`` rather than blocking the bundle. An empty result is
-        ``partial`` (queried, nothing within the window) — never fabricated."""
+        """Per-symbol on-demand news (ROB-423). Fail-open: per-symbol fetch
+        errors are recorded in ``fetch_records`` and never raise. Each article
+        keeps NewsStage-compatible keys (``title``/``sentiment``) plus citation
+        provenance (``symbol``/``external_article_id``/``canonical_url``)."""
         assert self._news_fetch_fn is not None
-        try:
-            articles = await self._news_fetch_fn(
-                request.market, self._lookback_hours, self._limit
-            )
-        except Exception as exc:  # noqa: BLE001 — optional, fail open
-            return [
-                unavailable_result(
-                    snapshot_kind=self.snapshot_kind,
-                    market=request.market,
-                    account_scope=request.account_scope,
-                    origin="news",
-                    reason=f"news article fetch failed: {type(exc).__name__}: {exc}",
-                    as_of=now,
-                )
-            ]
+        focus_symbols = [s for s in (request.symbols or []) if s]
 
-        articles_payload = [a for a in (articles or []) if isinstance(a, dict)]
+        articles_payload: list[dict[str, Any]] = []
+        fetch_records: list[dict[str, Any]] = []
+        for symbol in focus_symbols:
+            try:
+                result = await self._news_fetch_fn(symbol, request.market, self._limit)
+            except Exception as exc:  # noqa: BLE001 — optional, fail open
+                fetch_records.append(
+                    {
+                        "symbol": symbol,
+                        "provider": "unknown",
+                        "requested_limit": self._limit,
+                        "returned_count": 0,
+                        "status": "error",
+                        "error_code": type(exc).__name__,
+                    }
+                )
+                continue
+
+            fetch_records.append(
+                {
+                    "symbol": symbol,
+                    "provider": result.provider,
+                    "requested_limit": result.requested_limit,
+                    "returned_count": result.returned_count,
+                    "status": result.status,
+                    "error_code": result.error_code,
+                }
+            )
+            for a in result.articles:
+                articles_payload.append(
+                    {
+                        "title": a.title,
+                        "url": a.canonical_url,
+                        "source": a.source_name,
+                        "summary": a.summary,
+                        "published_at": a.published_at.isoformat()
+                        if a.published_at
+                        else None,
+                        "symbol": a.symbol,
+                        "provider": a.provider,
+                        "external_article_id": a.external_article_id,
+                        "sentiment": a.provider_metadata.get("sentiment"),
+                        "related": a.related_symbols,
+                    }
+                )
+
         payload: dict[str, Any] = {
             "since": since.isoformat(),
             "count": len(articles_payload),
             "articles": articles_payload,
-            "source": "news_articles",
+            "fetch_records": fetch_records,
+            "source": "symbol_news_service",
             "market": request.market,
         }
         return [

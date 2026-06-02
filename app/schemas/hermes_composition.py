@@ -19,9 +19,10 @@ Hard invariants:
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.investment_reports import IngestReportItem
 from app.schemas.investment_stages import StageArtifactPayload
@@ -107,6 +108,50 @@ class HermesContextPayload(BaseModel):
     intraday_delta_block: dict[str, Any] | None = None
 
 
+NewsRelevanceLiteral = Literal["direct", "related", "market_context", "crypto_context"]
+NewsRoleLiteral = Literal[
+    "catalyst", "risk", "confirmation", "contradiction", "neutral", "noise"
+]
+NewsDecisionImpactLiteral = Literal[
+    "strengthen_buy",
+    "weaken_buy",
+    "strengthen_sell",
+    "weaken_sell",
+    "hold_watch",
+    "no_action",
+]
+
+
+class HermesNewsCitation(BaseModel):
+    """A news article Hermes actually used, with its judgment annotations.
+
+    auto_trader matches this against the bundle's news snapshot articles by
+    ``external_article_id`` (preferred) or ``canonical_url`` and persists only
+    matches. At least one of the two refs is required. ``client_item_key`` links
+    the citation to a specific report item (the same key used in the composed
+    ``IngestReportItem``); ``section_key`` is for report-level citations.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_article_id: str | None = None
+    canonical_url: str | None = None
+    symbol: str = Field(min_length=1)
+    relevance: NewsRelevanceLiteral
+    role: NewsRoleLiteral
+    decision_impact: NewsDecisionImpactLiteral
+    selection_reason: str | None = None
+    confidence: Decimal | None = None
+    client_item_key: str | None = None
+    section_key: str | None = None
+
+    @model_validator(mode="after")
+    def _require_ref(self) -> HermesNewsCitation:
+        if not self.external_article_id and not self.canonical_url:
+            raise ValueError("news citation needs external_article_id or canonical_url")
+        return self
+
+
 class HermesCompositionResult(BaseModel):
     """Structured composition returned by Hermes for ingestion.
 
@@ -140,6 +185,10 @@ class HermesCompositionResult(BaseModel):
     # ROB-308: dimension reports (ROB-306) this composition consumed. Empty for
     # legacy composition. Validated for existence + run membership on ingest.
     dimension_report_uuids: list[uuid.UUID] = Field(default_factory=list)
+    # ROB-423 — news articles Hermes used as overlay evidence. Empty for legacy
+    # composition (byte-identical path). Matched against the bundle's news
+    # snapshot on ingest; unmatched refs are dropped + recorded (fail-open).
+    news_citations: list[HermesNewsCitation] = Field(default_factory=list)
 
     @field_validator("items")
     @classmethod
