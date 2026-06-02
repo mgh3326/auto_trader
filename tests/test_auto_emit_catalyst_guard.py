@@ -57,8 +57,12 @@ def test_filters_by_category_symbol_and_window():
 
 @pytest.mark.unit
 def test_empty_when_no_market_payload_or_no_events():
-    assert _catalyst_events_for_symbol(None, "035420", now_date=TODAY, within_days=7) == []
-    assert _catalyst_events_for_symbol({}, "035420", now_date=TODAY, within_days=7) == []
+    assert (
+        _catalyst_events_for_symbol(None, "035420", now_date=TODAY, within_days=7) == []
+    )
+    assert (
+        _catalyst_events_for_symbol({}, "035420", now_date=TODAY, within_days=7) == []
+    )
 
 
 @pytest.mark.unit
