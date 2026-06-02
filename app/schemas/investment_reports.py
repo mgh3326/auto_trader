@@ -803,6 +803,31 @@ class ActionPacket(BaseModel):
     data_gaps_for_next_cycle: list[DataGapEntry] = Field(default_factory=list)
 
 
+class InvestmentReportNewsCitationResponse(BaseModel):
+    """ROB-423 — one cited news article on a report (read-side)."""
+
+    citation_uuid: UUID
+    report_item_uuid: UUID | None = None
+    section_key: str | None = None
+    market: str
+    symbol: str
+    provider: str
+    external_article_id: str | None = None
+    canonical_url: str
+    source_name: str | None = None
+    title: str
+    summary_snapshot: str | None = None
+    published_at: datetime | None = None
+    fetched_at: datetime
+    relevance: str
+    role: str
+    decision_impact: str
+    selection_reason: str | None = None
+    confidence: Decimal | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InvestmentReportBundle(BaseModel):
     """``investment_report_get`` / ``GET /.../investment-reports/{uuid}``.
 
@@ -828,6 +853,11 @@ class InvestmentReportBundle(BaseModel):
     # ROB-335 — additive intraday ActionPacket projection. Null for legacy /
     # non-intraday reports; existing items / review_sections remain the fallback.
     action_packet: ActionPacket | None = None
+    # ROB-423 — additive news citations (articles the report actually used).
+    # Empty for reports with no Hermes-marked news.
+    news_citations: list[InvestmentReportNewsCitationResponse] = Field(
+        default_factory=list
+    )
 
 
 class InvestmentReportListResponse(BaseModel):

@@ -48,11 +48,15 @@ from app.services.action_report.snapshot_backed.collectors.watch_context import 
 from app.services.investment_snapshots.collectors import CollectorRequest
 
 
-def _request(market: str = "kr", account_scope: str = "kis_live") -> CollectorRequest:
+def _request(
+    market: str = "kr",
+    account_scope: str = "kis_live",
+    symbols: list[str] | None = None,
+) -> CollectorRequest:
     return CollectorRequest(
         market=market,  # type: ignore[arg-type]
         account_scope=account_scope,  # type: ignore[arg-type]
-        symbols=None,
+        symbols=symbols,
         candidate_limit=None,
         policy_snapshot={},
     )
@@ -1259,50 +1263,74 @@ async def test_news_collector_failure_is_fail_open():
 
 # --- ROB-366 B8: market-scoped news articles via injected fetch fn ----------
 @pytest.mark.asyncio
-async def test_news_collector_articles_from_news_fetch_fn():
-    captured: dict = {}
+async def test_news_collector_articles_per_symbol_from_seam():
+    from app.services.symbol_news_service import (
+        SymbolNewsArticle,
+        SymbolNewsFetchResult,
+    )
 
-    async def fake_news_fn(market, hours, limit):
-        captured["market"] = market
-        return [
-            {"title": "Apple beats earnings", "url": "u1", "stock_symbol": "AAPL"},
-            {"title": "Fed holds rates", "url": "u2", "stock_symbol": None},
-        ]
+    captured: list[tuple[str, str, int]] = []
 
-    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
-    results = await collector.collect(_request(market="us"))
+    async def fake_fetch(symbol: str, market: str, limit: int):
+        captured.append((symbol, market, limit))
+        art = SymbolNewsArticle(
+            provider="finnhub",
+            market=market,
+            symbol=symbol,
+            external_article_id=f"id-{symbol}",
+            title=f"{symbol} up",
+            source_name="Reuters",
+            canonical_url=f"https://x/{symbol}",
+            summary="s",
+            published_at=None,
+            fetched_at=dt.datetime(2026, 5, 5, tzinfo=dt.UTC),
+            provider_metadata={"sentiment": "positive"},
+        )
+        return SymbolNewsFetchResult(symbol, market, "finnhub", "ok", limit, 1, [art])
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
+    results = await collector.collect(_request(market="us", symbols=["AAPL", "MSFT"]))
+
     payload = results[0].payload_json
-    # The articles key (what NewsStage reads) is populated, market-scoped.
     assert payload["count"] == 2
-    assert [a["title"] for a in payload["articles"]] == [
-        "Apple beats earnings",
-        "Fed holds rates",
-    ]
-    assert captured["market"] == "us"
+    assert {a["symbol"] for a in payload["articles"]} == {"AAPL", "MSFT"}
+    assert payload["articles"][0]["sentiment"] == "positive"
+    assert payload["articles"][0]["external_article_id"] == "id-AAPL"
+    assert [r["symbol"] for r in payload["fetch_records"]] == ["AAPL", "MSFT"]
+    assert {c[0] for c in captured} == {"AAPL", "MSFT"}
     assert results[0].freshness_status == "fresh"
 
 
 @pytest.mark.asyncio
-async def test_news_collector_articles_empty_is_partial():
-    async def fake_news_fn(market, hours, limit):
-        return []
+async def test_news_collector_per_symbol_failure_is_fail_open():
+    from app.services.symbol_news_service import SymbolNewsFetchResult
 
-    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
-    results = await collector.collect(_request(market="us"))
-    assert results[0].payload_json["count"] == 0
-    assert results[0].payload_json["articles"] == []
+    async def fake_fetch(symbol: str, market: str, limit: int):
+        return SymbolNewsFetchResult(
+            symbol, market, "finnhub", "error", limit, 0, [], "RuntimeError"
+        )
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
+    results = await collector.collect(_request(market="us", symbols=["AAPL"]))
+
+    payload = results[0].payload_json
+    assert payload["count"] == 0
+    assert payload["fetch_records"][0]["status"] == "error"
+    # fail-open: never raises, degrades to partial
     assert results[0].freshness_status == "partial"
 
 
 @pytest.mark.asyncio
-async def test_news_collector_articles_fetch_failure_is_fail_open():
-    async def fake_news_fn(market, hours, limit):
-        raise RuntimeError("news feed down")
+async def test_news_collector_no_symbols_is_partial():
 
-    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
-    results = await collector.collect(_request(market="us"))
-    assert len(results) == 1
-    assert results[0].freshness_status == "unavailable"
+    async def fake_fetch(symbol: str, market: str, limit: int):  # pragma: no cover
+        raise AssertionError("should not fetch without symbols")
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
+    results = await collector.collect(_request(market="us", symbols=[]))
+
+    assert results[0].payload_json["count"] == 0
+    assert results[0].freshness_status == "partial"
 
 
 def _make_citation(*, report_uuid: str, symbols: list[str]):

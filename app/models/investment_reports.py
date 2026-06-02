@@ -24,6 +24,7 @@ from sqlalchemy import (
     ARRAY,
     TIMESTAMP,
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -711,6 +712,136 @@ class InvestmentWatchEvent(Base):
         Integer, nullable=False, server_default=text("0")
     )
 
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class InvestmentReportNewsFetchRun(Base):
+    """ROB-423 — per (report, symbol, provider) news fetch audit row.
+
+    Append-only. ``report_uuid`` is a logical reference to
+    ``review.investment_reports.report_uuid`` (no FK — items relate by
+    integer ``report_id``, so we keep this membership-only). Never stores raw
+    provider payloads (``raw_response_stored`` is an audit flag only).
+    """
+
+    __tablename__ = "investment_report_news_fetch_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_uuid", name="uq_investment_report_news_fetch_runs_run_uuid"
+        ),
+        CheckConstraint(
+            "status IN ('ok','empty','unavailable','error')",
+            name="ck_investment_report_news_fetch_runs_status",
+        ),
+        Index(
+            "ix_investment_report_news_fetch_runs_report_uuid",
+            "report_uuid",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    report_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    returned_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    used_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    freshness_policy: Mapped[str | None] = mapped_column(Text)
+    ttl_seconds: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    raw_response_stored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class InvestmentReportNewsCitation(Base):
+    """ROB-423 — a news article the report actually cited (Hermes-marked).
+
+    Only articles Hermes flagged as used land here (never fetched-but-unused).
+    Judgment fields (``role``/``decision_impact``/``relevance``/
+    ``selection_reason``/``confidence``) are Hermes-authored — auto_trader only
+    validates + persists. Article fields are a snapshot copy (immutable audit).
+    """
+
+    __tablename__ = "investment_report_news_citations"
+    __table_args__ = (
+        UniqueConstraint(
+            "citation_uuid", name="uq_investment_report_news_citations_citation_uuid"
+        ),
+        CheckConstraint(
+            "relevance IN ('direct','related','market_context','crypto_context')",
+            name="ck_investment_report_news_citations_relevance",
+        ),
+        CheckConstraint(
+            "role IN ('catalyst','risk','confirmation','contradiction','neutral','noise')",
+            name="ck_investment_report_news_citations_role",
+        ),
+        CheckConstraint(
+            "decision_impact IN ('strengthen_buy','weaken_buy','strengthen_sell',"
+            "'weaken_sell','hold_watch','no_action')",
+            name="ck_investment_report_news_citations_decision_impact",
+        ),
+        Index(
+            "ix_investment_report_news_citations_report_uuid",
+            "report_uuid",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    citation_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    report_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    section_key: Mapped[str | None] = mapped_column(Text)
+    fetch_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("review.investment_report_news_fetch_runs.id", ondelete="SET NULL")
+    )
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    external_article_id: Mapped[str | None] = mapped_column(Text)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_name: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_snapshot: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    relevance: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_impact: Mapped[str] = mapped_column(Text, nullable=False)
+    selection_reason: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    metadata_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

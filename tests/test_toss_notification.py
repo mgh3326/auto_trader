@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.models.manual_holdings import MarketType
 from app.monitoring.trade_notifier import (
     TradeNotifier,
@@ -602,10 +603,8 @@ class TestTossNotificationService:
         assert result is True
         mock_trade_notifier.notify_toss_buy_recommendation.assert_called_once()
         kwargs = mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
-        assert (
-            kwargs["detail_url"]
-            == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
-        )
+        base_url = settings.public_base_url.rstrip("/")
+        assert kwargs["detail_url"] == f"{base_url}/portfolio/positions/kr/005930"
 
     @pytest.mark.asyncio
     async def test_process_analysis_result_sell_with_toss(
