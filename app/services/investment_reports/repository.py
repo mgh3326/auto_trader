@@ -345,6 +345,16 @@ class InvestmentReportsRepository:
             )
         )
 
+    async def update_event_follow_up(
+        self, event_id: int, *, follow_up_report_item_id: int
+    ) -> None:
+        """ROB-405 Slice E — link a watch event to its follow-up report item."""
+        await self._session.execute(
+            sa.update(InvestmentWatchEvent)
+            .where(InvestmentWatchEvent.id == event_id)
+            .values(follow_up_report_item_id=follow_up_report_item_id)
+        )
+
     async def update_event_delivery(
         self,
         event_id: int,
