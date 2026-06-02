@@ -155,16 +155,19 @@ def _earnings_growth_qoq(quarterly: list) -> MetricResult:
     return MetricResult(value=g, state="ok")
 
 
-def _increase_streak(values: list[Decimal | None]) -> MetricResult:
-    # Count consecutive YoY increases ending at the most recent year.
-    if len(values) < 2:
+def _increase_streak(annual: list) -> MetricResult:
+    # Consecutive YoY net-income increases ending at the most recent year.
+    # A fiscal-year gap (non-contiguous year) or a None value breaks the run.
+    if len(annual) < 2:
         return MetricResult(value=0, state="partial", note="insufficient history")
     streak = 0
-    for i in range(len(values) - 1, 0, -1):
-        a, b = values[i], values[i - 1]
-        if a is None or b is None:
+    for i in range(len(annual) - 1, 0, -1):
+        cur, prev = annual[i], annual[i - 1]
+        if cur.net_income is None or prev.net_income is None:
             break
-        if a > b:
+        if cur.period_end_date.year != prev.period_end_date.year + 1:
+            break  # fiscal-year gap → not consecutive
+        if cur.net_income > prev.net_income:
             streak += 1
         else:
             break
@@ -172,28 +175,35 @@ def _increase_streak(values: list[Decimal | None]) -> MetricResult:
 
 
 def _dividend_paid_streak(annual: list) -> MetricResult:
+    # Consecutive years with DPS > 0 ending at the most recent year. A None DPS
+    # (no filing) or a fiscal-year gap breaks the run (missing != zero).
     streak = 0
+    prev_year: int | None = None
     for p in reversed(annual):
-        dps = p.dividend_per_share
-        if dps is None:  # missing != zero → cannot extend → stop
+        if p.dividend_per_share is None:
             break
-        if dps > 0:
+        if prev_year is not None and p.period_end_date.year != prev_year - 1:
+            break  # fiscal-year gap
+        if p.dividend_per_share > 0:
             streak += 1
+            prev_year = p.period_end_date.year
         else:
             break
     return MetricResult(value=streak, state="ok")
 
 
 def _dividend_growth_streak(annual: list) -> MetricResult:
-    dps = [(p.period_end_date, p.dividend_per_share) for p in annual]
-    dps = [d for d in dps if d[1] is not None]
-    if len(dps) < 2:
-        return MetricResult(
-            value=0, state="partial", note="insufficient dividend history"
-        )
+    # Consecutive YoY DPS increases ending at the most recent year. A non-contiguous
+    # year (incl. one created by a None-DPS year) breaks the run.
+    dps_rows = [p for p in annual if p.dividend_per_share is not None]
+    if len(dps_rows) < 2:
+        return MetricResult(value=0, state="partial", note="insufficient dividend history")
     streak = 0
-    for i in range(len(dps) - 1, 0, -1):
-        if dps[i][1] > dps[i - 1][1]:
+    for i in range(len(dps_rows) - 1, 0, -1):
+        cur, prev = dps_rows[i], dps_rows[i - 1]
+        if cur.period_end_date.year != prev.period_end_date.year + 1:
+            break
+        if cur.dividend_per_share > prev.dividend_per_share:
             streak += 1
         else:
             break
@@ -218,9 +228,8 @@ def derive_fundamentals_metrics(
         if net_incomes
         else _UNAVAILABLE,
         earnings_growth_qoq=_earnings_growth_qoq(quarterly),
-        earnings_increase_streak_years=_increase_streak(net_incomes)
-        if net_incomes
-        else _UNAVAILABLE,
-        dividend_paid_streak_years=_dividend_paid_streak(annual),
-        dividend_growth_streak_years=_dividend_growth_streak(annual),
+        earnings_increase_streak_years=_increase_streak(annual) if annual else _UNAVAILABLE,
+        dividend_paid_streak_years=_dividend_paid_streak(annual) if annual else _UNAVAILABLE,
+        dividend_growth_streak_years=_dividend_growth_streak(annual) if annual else _UNAVAILABLE,
     )
+
