@@ -38,6 +38,7 @@ from .manual_holdings import (
 from .market_quote_snapshot import MarketQuoteSnapshot
 from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
+from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
 from .paper_trading import PaperAccount, PaperPosition, PaperTrade
 from .portfolio_decision_run import PortfolioDecisionRun
@@ -170,6 +171,7 @@ __all__ = [
     "MarketReport",
     "MarketQuoteSnapshot",
     "MarketValuationSnapshot",
+    "FinancialFundamentalsSnapshot",
     "Trade",
     "TradeSnapshot",
     "TradeReview",
