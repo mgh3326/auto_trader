@@ -11,15 +11,9 @@ from app.schemas.research_pipeline import (
     StageOutput,
     StageVerdict,
 )
-from app.services.llm_news_service import (
-    bulk_create_news_articles,
-    get_news_articles_with_fallback,
-)
-from app.services.research_news_service import NormalizedArticle, fetch_symbol_news
+from app.services.symbol_news_service import SymbolNewsArticle, fetch_symbol_news
 
 logger = logging.getLogger(__name__)
-
-MIN_DB_ARTICLES_BEFORE_ON_DEMAND_FETCH = 3
 
 
 def _market_from_instrument(instrument_type: str) -> str:
@@ -31,24 +25,6 @@ def _market_from_instrument(instrument_type: str) -> str:
 
 
 @dataclass
-class _OnDemandArticlePayload:
-    """Shape compatible with bulk_create_news_articles input contract."""
-
-    url: str
-    title: str
-    content: str | None
-    summary: str | None
-    source: str | None
-    author: str | None
-    stock_symbol: str | None
-    stock_name: str | None
-    published_at: datetime | None
-    market: str
-    feed_source: str
-    keywords: list[str] | None
-
-
-@dataclass
 class _SignalArticle:
     """Minimal article shape consumed by _compute_signals_from_articles."""
 
@@ -57,86 +33,36 @@ class _SignalArticle:
     keywords: list[str]
 
 
-def _to_persist_payloads(
-    articles: list[NormalizedArticle],
-    *,
-    symbol: str,
-    stock_name: str | None,
-    market: str,
-) -> list[_OnDemandArticlePayload]:
-    payloads: list[_OnDemandArticlePayload] = []
-    for art in articles:
-        payloads.append(
-            _OnDemandArticlePayload(
-                url=art.url,
-                title=art.title,
-                content=None,
-                summary=art.summary,
-                source=art.source,
-                author=None,
-                stock_symbol=symbol,
-                stock_name=stock_name,
-                published_at=art.published_at,
-                market=market,
-                feed_source=f"research_on_demand_{art.provider}",
-                keywords=None,
-            )
-        )
-    return payloads
-
-
-def _to_signal_articles(articles: list[NormalizedArticle]) -> list[_SignalArticle]:
+def _to_signal_articles(articles: list[SymbolNewsArticle]) -> list[_SignalArticle]:
+    # SymbolNewsArticle carries no keyword field; KR Naver / US+Crypto Finnhub
+    # on-demand items provide none, so themes stay empty (already true for the
+    # prior on-demand fallback path).
     return [
         _SignalArticle(
-            title=art.title,
-            article_published_at=art.published_at,
+            title=a.title,
+            article_published_at=a.published_at,
             keywords=[],
         )
-        for art in articles
+        for a in articles
     ]
 
 
 async def _fetch_recent_headlines(
     symbol: str,
     instrument_type: str,
-    *,
-    stock_name: str | None,
 ) -> dict[str, Any]:
-    """Fetch recent headlines, augmenting DB with on-demand provider fetch
-    when symbol-tagged news is below threshold."""
+    """On-demand-first headlines via get_news/symbol_news_service (ROB-424).
+
+    The broad ``news_articles`` DB is no longer read or written here, so the
+    research-pipeline news verdict cannot be driven by the broad ingestor feed.
+    The provider seam is fail-soft; ``status`` is carried in the returned dict so
+    ``analyze`` can tell a provider error/unavailable from a genuine empty window.
+    """
     market = _market_from_instrument(instrument_type)
-
-    lookup = await get_news_articles_with_fallback(
-        symbol=symbol, market=market, hours=24, limit=20
-    )
-    articles = lookup.articles
-
-    if len(articles) < MIN_DB_ARTICLES_BEFORE_ON_DEMAND_FETCH:
-        fetched = await fetch_symbol_news(symbol, instrument_type, limit=20)
-        if fetched:
-            payloads = _to_persist_payloads(
-                fetched, symbol=symbol, stock_name=stock_name, market=market
-            )
-            try:
-                await bulk_create_news_articles(payloads)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "news_stage: bulk_create_news_articles failed: symbol=%s err=%s",
-                    symbol,
-                    exc,
-                )
-            lookup = await get_news_articles_with_fallback(
-                symbol=symbol, market=market, hours=24, limit=20
-            )
-            articles = lookup.articles
-            if not articles:
-                logger.info(
-                    "news_stage: using fetched headlines as signal fallback: symbol=%s",
-                    symbol,
-                )
-                return _compute_signals_from_articles(_to_signal_articles(fetched))
-
-    return _compute_signals_from_articles(articles)
+    result = await fetch_symbol_news(symbol, market, limit=20)
+    signals = _compute_signals_from_articles(_to_signal_articles(result.articles))
+    signals["status"] = result.status
+    return signals
 
 
 def _compute_signals_from_articles(articles: list[Any]) -> dict[str, Any]:
@@ -250,25 +176,18 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
 
     async def analyze(self, ctx: StageContext) -> StageOutput:
         try:
-            raw = await _fetch_recent_headlines(
-                ctx.symbol,
-                ctx.instrument_type,
-                stock_name=ctx.symbol_name,
-            )
-        except Exception as exc:
+            raw = await _fetch_recent_headlines(ctx.symbol, ctx.instrument_type)
+        except Exception as exc:  # defensive — symbol_news_service is fail-soft
             logger.error(f"News analysis failed for {ctx.symbol}: {exc}")
-            return StageOutput(
-                stage_type=self.stage_type,
-                verdict=StageVerdict.UNAVAILABLE,
-                confidence=0,
-                signals=NewsSignals(
-                    headline_count=0,
-                    sentiment_score=0.0,
-                    top_themes=[],
-                    urgent_flags=[],
-                ),
-                snapshot_at=datetime.now(UTC),
+            return self._unavailable()
+
+        if raw.get("status") in ("error", "unavailable"):
+            logger.info(
+                "news_stage: provider status=%s for %s -> UNAVAILABLE",
+                raw.get("status"),
+                ctx.symbol,
             )
+            return self._unavailable()
 
         signals = NewsSignals(
             headline_count=raw["headline_count"],
@@ -277,10 +196,10 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
             urgent_flags=raw["urgent_flags"],
         )
 
-        # Verdict mapping rule:
+        # Verdict mapping rule (status="ok"/"empty"):
         # BULL: sentiment_score > 0.15 and headline_count > 0
         # BEAR: sentiment_score < -0.15 and headline_count > 0
-        # NEUTRAL: otherwise
+        # NEUTRAL: otherwise (includes empty window)
         verdict = StageVerdict.NEUTRAL
         if signals.headline_count > 0:
             if signals.sentiment_score > 0.15:
@@ -299,4 +218,18 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
                 oldest_age_minutes=0,
                 source_count=1,
             ),
+        )
+
+    def _unavailable(self) -> StageOutput:
+        return StageOutput(
+            stage_type=self.stage_type,
+            verdict=StageVerdict.UNAVAILABLE,
+            confidence=0,
+            signals=NewsSignals(
+                headline_count=0,
+                sentiment_score=0.0,
+                top_themes=[],
+                urgent_flags=[],
+            ),
+            snapshot_at=datetime.now(UTC),
         )
