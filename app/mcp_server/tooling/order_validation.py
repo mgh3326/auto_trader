@@ -823,6 +823,18 @@ async def _validate_sell_side(
     return order_quantity, avg_price, None
 
 
+def _kis_mock_us_orderable_unsupported() -> bool:
+    """KIS 모의투자가 해외(USD) orderable-cash 서비스를 제공하지 않는지 여부.
+
+    OPSQ0002 "없는 서비스 코드" — 2026-05-27 live smoke로 확정. capability_matrix를
+    권위 소스로 사용하므로, 미래에 US mock cash 어댑터가 생겨 account_cash_read=True가
+    되면 이 가드는 자동으로 완화된다.
+    """
+    from app.services.us_dual_paper.capability_matrix import get_capability_matrix
+
+    return get_capability_matrix().get("kis_mock", {}).get("account_cash_read") is False
+
+
 async def _check_balance_and_warn(
     *,
     market_type: str,
@@ -838,6 +850,27 @@ async def _check_balance_and_warn(
     Returns (warning_message_or_None, error_dict_or_None).
     If error_dict is not None, the caller should return it immediately.
     """
+    # ROB-417 — KIS 모의투자는 해외 orderable-cash 서비스가 없어(OPSQ0002) US mock
+    # 매수의 주문가능현금을 검증할 수 없다. capability_matrix 기반으로 KIS 호출 전
+    # 결정적으로 fail-closed 처리하고, 구조적 미지원을 mock_unsupported로 명시한다.
+    if (
+        is_mock
+        and market_type == "equity_us"
+        and side == "buy"
+        and _kis_mock_us_orderable_unsupported()
+    ):
+        message = (
+            "US mock buy unsupported: KIS 모의투자 provides no overseas "
+            "orderable-cash service (OPSQ0002), so orderable cash cannot be "
+            "verified. Use alpaca_paper for US paper buys; kis_mock supports KR."
+        )
+        if dry_run:
+            return f"Preview warning: {message}", None
+        err = order_error_fn(message)
+        err["mock_unsupported"] = True
+        err["capability"] = "kis_mock_us_orderable_cash_unsupported"
+        return None, err
+
     try:
         balance = await _get_balance_for_order(market_type, is_mock=is_mock)
     except Exception as balance_exc:
