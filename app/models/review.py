@@ -698,3 +698,76 @@ class WatchOrderIntentLedger(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class TradeJournalReview(Base):
+    """ROB-405 Slice B — verdict (good/neutral/bad) for a trade_journal.
+
+    Separate from TradeReview (which FKs review.trades). auto verdicts come from
+    pnl_pct thresholds on closed mock journals; manual verdicts are overrides.
+    """
+
+    __tablename__ = "trade_journal_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('good','neutral','bad')",
+            name="ck_trade_journal_reviews_verdict",
+        ),
+        CheckConstraint(
+            "verdict_source IN ('auto','manual')",
+            name="ck_trade_journal_reviews_source",
+        ),
+        Index("ix_trade_journal_reviews_journal_id", "journal_id"),
+        Index(
+            "uq_trade_journal_reviews_auto",
+            "journal_id",
+            unique=True,
+            postgresql_where=text("verdict_source = 'auto'"),
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    journal_id: Mapped[int] = mapped_column(
+        ForeignKey("review.trade_journals.id", ondelete="CASCADE"), nullable=False
+    )
+    verdict: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_source: Mapped[str] = mapped_column(Text, nullable=False)
+    pnl_pct: Mapped[float | None] = mapped_column(Numeric(8, 4))
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TradeJournalCounterfactual(Base):
+    """ROB-405 Slice C — trigger vs actual fill vs no-action price for a
+    watch-driven mock roundtrip. Quantifies the rule's effect. One row per
+    correlation_id (idempotent)."""
+
+    __tablename__ = "trade_journal_counterfactuals"
+    __table_args__ = (
+        UniqueConstraint(
+            "correlation_id", name="uq_trade_journal_counterfactuals_correlation_id"
+        ),
+        Index("ix_trade_journal_counterfactuals_journal_id", "journal_id"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    journal_id: Mapped[int] = mapped_column(
+        ForeignKey("review.trade_journals.id", ondelete="CASCADE"), nullable=False
+    )
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    triggered_value: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    actual_fill_price: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    no_action_price: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    no_action_as_of: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    fill_vs_trigger_pct: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    no_action_vs_fill_pct: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )

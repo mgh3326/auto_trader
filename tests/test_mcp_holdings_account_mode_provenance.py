@@ -165,3 +165,57 @@ async def test_get_holdings_tool_kr_kis_live_unchanged(monkeypatch):
     )
 
     assert result["account_mode"] == "kis_live"
+
+
+def _manual_position(symbol: str = "AAPL", broker: str = "toss") -> dict:
+    return {
+        "account": f"{broker}:기본 계좌",
+        "account_name": "기본 계좌",
+        "broker": broker,
+        "source": "manual",
+        "instrument_type": "equity_us",
+        "market": "us",
+        "symbol": symbol,
+        "name": symbol,
+        "quantity": 2.0,
+        "avg_buy_price": 100.0,
+        "current_price": None,
+        "evaluation_amount": None,
+        "profit_loss": None,
+        "profit_rate": None,
+    }
+
+
+def test_account_order_routable_manual_is_false():
+    assert portfolio_holdings._account_order_routable(source="manual") is False
+
+
+def test_account_order_routable_brokered_sources_true():
+    assert portfolio_holdings._account_order_routable(source="kis_api") is True
+    assert portfolio_holdings._account_order_routable(source="upbit_api") is True
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_impl_marks_manual_group_not_routable(monkeypatch):
+    async def fake_collect(**_kwargs):
+        return (
+            [_kis_position("005930"), _manual_position("AAPL", broker="toss")],
+            [],
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_portfolio_positions", fake_collect
+    )
+
+    result = await portfolio_holdings._get_holdings_impl(
+        include_current_price=False,
+        routing_account_mode="kis_live",
+    )
+
+    by_account = {a["account"]: a for a in result["accounts"]}
+    # KIS subaccount is sellable via the order channel; toss is reference-only.
+    assert by_account["kis"]["order_routable"] is True
+    toss_group = next(a for k, a in by_account.items() if a["broker"] == "toss")
+    assert toss_group["order_routable"] is False

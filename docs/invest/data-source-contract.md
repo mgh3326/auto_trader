@@ -68,8 +68,9 @@ Phase 4  push (ingest)
 | reports | invest_page_db | supplementary | — | pre_collected | — | no | unavailable | invest_page |
 | reports | investment_snapshots | primary | investment_snapshots | frozen_in_bundle | — | no | unavailable | — |
 | reports | market_events_db | primary | market_events | pre_collected | — | no | unavailable | market |
+| screener | invest_momentum_events | supplementary | invest_momentum_event_snapshots | pre_collected | — | yes | stale | kr_market_ranking |
 | screener | invest_screener_snapshots | primary | invest_screener_snapshots | pre_collected | — | yes | stale | candidate_universe |
-| screener | investor_flow_snapshots | supplementary | investor_flow_snapshots | pre_collected | — | yes | stale | — |
+| screener | investor_flow_snapshots | supplementary | investor_flow_snapshots | pre_collected | — | yes | stale | investor_flow |
 | screener | upbit_live | primary | invest_crypto_screener_snapshots | pre_collected | — | yes | stale | — |
 | stocks | kis_live | primary | — | report_time_on_demand | — | yes | 확인 불가 | symbol |
 | stocks | naver_finance | low_trust_attention | — | report_time_on_demand | — | no | 확인 불가 | naver_remote_debug |

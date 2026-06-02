@@ -149,6 +149,18 @@ def _provenance_account_mode(
     return routing_mode
 
 
+def _account_order_routable(*, source: str | None) -> bool:
+    """Whether an account group's holdings are routable by an automated order tool.
+
+    Manual holdings (toss/samsung/수동 입력, ``source="manual"``) are reference-only
+    and cannot be sold via kis_live/kis_mock (or any) order tool. Everything else
+    (``kis_api`` / ``upbit_api`` / paper sources) sells via its own channel. This is
+    the authoritative sellability signal; ``account_mode`` stays a provenance label
+    (ROB-357) and is intentionally left unchanged.
+    """
+    return source != "manual"
+
+
 def _build_crypto_strategy_signal(
     position: dict[str, Any],
     *,
@@ -1018,6 +1030,11 @@ async def _get_holdings_impl(
                     broker=position.get("broker"),
                     source=position.get("source"),
                     routing_mode=routing_account_mode,
+                ),
+                # ROB-420 — authoritative sellability: manual (toss/samsung)
+                # holdings are reference-only and not routable by order tools.
+                "order_routable": _account_order_routable(
+                    source=position.get("source")
                 ),
                 "positions": [],
             },
