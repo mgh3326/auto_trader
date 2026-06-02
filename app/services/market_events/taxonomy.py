@@ -14,6 +14,13 @@ CATEGORIES: frozenset[str] = frozenset(
         "crypto_protocol",
         "tokenomics",
         "regulatory",
+        # ROB-408: 비실적 촉매 카테고리
+        "conference",
+        "corporate_event",
+        "product_launch",
+        "policy_regulation",
+        "lockup_expiry",
+        "index_rebalance",
     }
 )
 
