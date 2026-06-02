@@ -831,6 +831,10 @@ _METRIC_FIELD: dict[str, str] = {
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
+    "profitable_company": "roe",
+    "undervalued_growth": "earnings_growth_3y_avg",
+    "stable_growth": "roe",
+    "future_dividend_king": "dividend_yield",
 }
 
 
