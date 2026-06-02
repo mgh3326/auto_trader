@@ -45,9 +45,10 @@ def test_all_kr_presets_present_in_matrix(matrix_text: str) -> None:
     """Every KR preset id in code must appear in the matrix so none drifts
     out of the gap analysis silently."""
     kr_ids = [p.id for p in SCREENER_PRESETS if p.market == "kr"]
-    # Guard the count the matrix was written against (9 KR presets:
-    # 8 original + high_yield_value added in ROB-359 PR4).
-    assert len(kr_ids) == 9, kr_ids
+    # Guard the count the matrix was written against (9 KR presets originally,
+    # plus high_yield_value in ROB-359 PR4, 4 fundamentals presets in ROB-422
+    # PR2a/PR2b, and undervalued_breakout in ROB-422 PR2c-2).
+    assert len(kr_ids) == 14, kr_ids
     missing = [pid for pid in kr_ids if pid not in matrix_text]
     assert not missing, f"preset ids absent from parity matrix: {missing}"
 

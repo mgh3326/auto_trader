@@ -426,9 +426,12 @@ async def test_kr_priority_full_fresh_outranks_partial_and_stale(db_session):
         (ev("A", "consecutive_gainers", 6.0), "stale"),  # full but stale
         (ev("B", "high_yield_value", 5.0), "fresh"),  # full + fresh, lower score
         (ev("C", "high_yield_value", 9.0), "fresh"),  # full + fresh, top score
-        # partial parity + fresh + top score must still rank BELOW any full-parity
-        # candidate (parity dominates freshness and score in the sort key).
-        (ev("D", "cheap_value", 10.0), "fresh"),  # partial parity
+        # lower-parity (non-Toss-parity) + fresh + top score must still rank BELOW any
+        # full-parity candidate (parity dominates freshness and score in the sort key).
+        # NOTE: cheap_value was promoted partial→full in ROB-422 PR2c-1 (and no partial
+        # Toss-parity presets remain), so a not_toss_parity source is used to exercise
+        # the "lower parity ranks last regardless of score" path.
+        (ev("D", "top_gainers", 10.0), "fresh"),  # not_toss_parity (rank 3)
     ]
     ordered = sorted(rows, key=lambda pair: _priority_sort_key(pair[0], pair[1]))
     assert [p[0].symbol for p in ordered] == ["C", "B", "A", "D"]
@@ -481,15 +484,18 @@ async def test_kr_stale_only_preset_not_overstated(db_session, monkeypatch):
     assert results[0].coverage_json["usefulness"] == "stale_only"
 
 
-def test_partial_parity_presets_report_partial_status():
-    """ROB-363 — partial Toss-parity presets (cheap_value, steady_dividend) must
-    derive a 'partial' status, never be inflated to 'full' (honesty criterion)."""
+def test_toss_parity_status_reflects_live_catalog():
+    """_toss_parity_status reads the live catalog parityStatus (not a hardcoded map).
+    ROB-422 PR2c-1 promoted cheap_value/steady_dividend partial→full once their
+    fundamentals conditions became implementable, so they now report 'full' (no partial
+    Toss-parity presets remain). Honesty is still enforced upstream via dataState/missing
+    when the backing fundamentals snapshots are absent — not via a forced 'partial' label."""
     from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
         _toss_parity_status,
     )
 
-    assert _toss_parity_status("cheap_value", "kr") == "partial"
-    assert _toss_parity_status("steady_dividend", "kr") == "partial"
+    assert _toss_parity_status("cheap_value", "kr") == "full"
+    assert _toss_parity_status("steady_dividend", "kr") == "full"
     # full presets stay full; non-toss rankings stay not_toss_parity.
     assert _toss_parity_status("consecutive_gainers", "kr") == "full"
     assert _toss_parity_status("top_gainers", "kr") == "not_toss_parity"

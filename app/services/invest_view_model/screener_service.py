@@ -38,6 +38,9 @@ from app.schemas.invest_screener import (
     ScreenerSourceContext,
 )
 from app.schemas.investor_flow import InvestorFlowItem
+from app.services.invest_view_model.fundamentals_screener import (
+    FUNDAMENTALS_PRESET_SPECS,
+)
 from app.services.invest_view_model.investor_flow_service import (
     latest_items_for_symbols as _latest_investor_flow_items,
 )
@@ -823,11 +826,16 @@ _METRIC_FIELD: dict[str, str] = {
     "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
     "high_yield_value": "roe",
+    "undervalued_breakout": "high_52w_proximity",
     "investor_flow_momentum": "foreign_net",
     "double_buy": "change_rate",  # NEW — placeholder; Task 3 wires snapshot-first branch
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
+    "profitable_company": "roe",
+    "undervalued_growth": "earnings_growth_3y_avg",
+    "stable_growth": "roe",
+    "future_dividend_king": "dividend_yield",
 }
 
 
@@ -1496,6 +1504,7 @@ async def build_screener_results(
     _snapshot_load_result: _SnapshotLoadResult | None = None
     _snapshot_check_result: list[dict[str, Any]] | None = None
     _snapshot_state_override: str | None = None
+    _fundamentals_screen_result = None
     _snapshot_empty_warning = (
         "스크리너 스냅샷 업데이트가 필요해 최신 연속 상승세 결과를 표시하지 못했습니다."
     )
@@ -1548,6 +1557,40 @@ async def build_screener_results(
                 "최신 밸류에이션 스냅샷에서 고수익 저평가 조건(ROE 15%↑·PER 0~10)에 "
                 "맞는 종목이 없습니다."
             )
+        elif preset_id == "undervalued_breakout":
+            from app.services.invest_view_model.undervalued_breakout_screener import (
+                load_undervalued_breakout_from_snapshots,
+            )
+
+            _snapshot_check_result = await load_undervalued_breakout_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            _snapshot_empty_warning = (
+                "최신 밸류에이션/시세 스냅샷에서 저평가 탈출 조건"
+                "(PER 0~10·PBR 0~1·신고가 근접)에 맞는 종목이 없습니다."
+            )
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS:
+            from app.services.invest_view_model.fundamentals_screener import (
+                load_fundamentals_preset_from_snapshots,
+            )
+
+            _fundamentals_screen_result = await load_fundamentals_preset_from_snapshots(
+                session,
+                market=requested_market,
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                now=now,
+            )
+            if _fundamentals_screen_result is not None:
+                _snapshot_check_result = _fundamentals_screen_result.rows
+                _snapshot_load_result = _SnapshotLoadResult(
+                    rows=_fundamentals_screen_result.rows,
+                    partition_date=_fundamentals_screen_result.valuation_partition_date,
+                    partition_computed_at=None,
+                )
+            _snapshot_empty_warning = "최신 밸류에이션/재무 스냅샷에서 해당 프리셋 조건에 맞는 종목이 없습니다."
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
                 session,
@@ -1585,6 +1628,19 @@ async def build_screener_results(
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "밸류에이션 스냅샷이 아직 적재되지 않아 고수익 저평가 후보를 표시할 수 없습니다."
+
+    if preset_id == "undervalued_breakout" and _snapshot_check_result is None:
+        # snapshot-only; the generic provider has no 52-week-high proximity filter.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = "밸류에이션/시세 스냅샷이 아직 적재되지 않아 저평가 탈출 후보를 표시할 수 없습니다."
+
+    if preset_id in FUNDAMENTALS_PRESET_SPECS and _snapshot_check_result is None:
+        # snapshot-only; the generic provider has neither a gross-margin nor a
+        # fundamentals filter and could half-apply the rule — never fall through.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = "밸류에이션/재무 스냅샷이 아직 적재되지 않아 해당 프리셋 후보를 표시할 수 없습니다."
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
@@ -1676,6 +1732,10 @@ async def build_screener_results(
             primary_source = "investor_flow_snapshots"
         elif preset_id == "high_yield_value":
             primary_source = "market_valuation_snapshots"
+        elif preset_id == "undervalued_breakout":
+            primary_source = "market_valuation_snapshots"
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS:
+            primary_source = "market_valuation_snapshots"
         elif requested_market == "crypto":
             primary_source = "invest_crypto_screener_snapshots"
         else:
@@ -1755,6 +1815,17 @@ async def build_screener_results(
                     "source": "investor_flow_snapshots",
                 }
             )
+
+    if requested_market == "kr" and _fundamentals_screen_result is not None:
+        dependency_specs.append(
+            {
+                "kind": "fundamentals",
+                "snapshot_date": _fundamentals_screen_result.fundamentals_partition_date,
+                "collected_at": _fundamentals_screen_result.fundamentals_collected_at,
+                "data_state": _fundamentals_screen_result.fundamentals_state,
+                "source": "financial_fundamentals_snapshots",
+            }
+        )
 
     freshness = _build_freshness(
         raw_timestamp=raw.get("timestamp"),

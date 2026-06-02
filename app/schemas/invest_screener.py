@@ -147,7 +147,7 @@ class ScreenerFreshnessPrimary(BaseModel):
 
 class ScreenerFreshnessDependency(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["investor_flow"]
+    kind: Literal["investor_flow", "fundamentals"]
     snapshotDate: str | None = None
     collectedAt: str | None = None
     lagLabel: str | None = None
