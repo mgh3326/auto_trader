@@ -54,6 +54,9 @@ from app.mcp_server.tooling.market_data_registration import register_market_data
 from app.mcp_server.tooling.market_report_registration import (
     register_market_report_tools,
 )
+from app.mcp_server.tooling.mock_loop_retro_registration import (
+    register_mock_loop_retro_tools,
+)
 from app.mcp_server.tooling.news_registration import register_news_tools
 from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
@@ -122,6 +125,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_paper_account_tools(mcp)
     register_paper_analytics_tools(mcp)
     register_paper_journal_tools(mcp)
+    register_mock_loop_retro_tools(mcp)
 
     # ROB-269 Phase 2 — investment-snapshot MCP surface. Gated by
     # ``settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED`` so the 4 tools are

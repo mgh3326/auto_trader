@@ -55,6 +55,7 @@ AVAILABLE_TOOL_NAMES = [
     # ROB-359: recommend_stocks is registry-hidden (parked); not on the tool surface.
     "get_asset_profile",
     "set_asset_profile",
+    "get_mock_loop_retrospective",
 ]
 
 
