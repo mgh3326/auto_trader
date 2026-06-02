@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class FundamentalsPresetSpec:
     preset_id: str
-    min_roe: Decimal | None = None              # valuation.roe, percent (e.g. 15)
+    min_roe: Decimal | None = None  # valuation.roe, percent (e.g. 15)
     min_gross_margin_ttm: Decimal | None = None  # derive ratio (e.g. 0.20)
-    sort_by: str = "roe"                          # 'roe' | 'gross_margin_ttm'
+    sort_by: str = "roe"  # 'roe' | 'gross_margin_ttm'
     # PR2b extension slots (unused in PR2a):
     # min_revenue_growth_3y_avg / min_earnings_growth_3y_avg / min_payout_ratio /
     # min_dividend_yield / min_earnings_increase_streak_years / ... / max_per / max_pbr
@@ -100,10 +100,14 @@ def evaluate_fundamentals_candidates(
         if spec.min_gross_margin_ttm is not None:
             gm = derivation.gross_margin_ttm
             if gm.state != "ok" or gm.value is None:
-                excluded.append({"symbol": symbol, "reason": "gross_margin_ttm unavailable"})
+                excluded.append(
+                    {"symbol": symbol, "reason": "gross_margin_ttm unavailable"}
+                )
                 continue
             if Decimal(str(gm.value)) < spec.min_gross_margin_ttm:
-                excluded.append({"symbol": symbol, "reason": "gross_margin_ttm below threshold"})
+                excluded.append(
+                    {"symbol": symbol, "reason": "gross_margin_ttm below threshold"}
+                )
                 continue
         gm_value = (
             float(derivation.gross_margin_ttm.value)
@@ -118,13 +122,17 @@ def evaluate_fundamentals_candidates(
                 "roe": float(v["roe"]) if v.get("roe") is not None else None,
                 "per": float(v["per"]) if v.get("per") is not None else None,
                 "pbr": float(v["pbr"]) if v.get("pbr") is not None else None,
-                "market_cap": float(v["market_cap"]) if v.get("market_cap") is not None else None,
+                "market_cap": float(v["market_cap"])
+                if v.get("market_cap") is not None
+                else None,
                 "gross_margin_ttm": gm_value,
                 "_screener_snapshot_state": v.get("_screener_snapshot_state", "fresh"),
             }
         )
     sort_key = "roe" if spec.sort_by == "roe" else "gross_margin_ttm"
-    included.sort(key=lambda r: (r.get(sort_key) is None, -(r.get(sort_key) or 0.0), r["symbol"]))
+    included.sort(
+        key=lambda r: (r.get(sort_key) is None, -(r.get(sort_key) or 0.0), r["symbol"])
+    )
     return included[:limit], excluded
 
 
@@ -156,7 +164,9 @@ async def load_fundamentals_preset_from_snapshots(
             )
         ).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("fundamentals_screener: val date lookup failed: %s", exc, exc_info=True)
+        logger.warning(
+            "fundamentals_screener: val date lookup failed: %s", exc, exc_info=True
+        )
         return None
     if val_date is None:
         return None
@@ -173,9 +183,9 @@ async def load_fundamentals_preset_from_snapshots(
     )
     if spec.min_roe is not None:
         cand_stmt = cand_stmt.where(MarketValuationSnapshot.roe >= spec.min_roe)
-    cand_stmt = cand_stmt.order_by(MarketValuationSnapshot.roe.desc().nullslast()).limit(
-        max(limit * 6, limit + 60)
-    )
+    cand_stmt = cand_stmt.order_by(
+        MarketValuationSnapshot.roe.desc().nullslast()
+    ).limit(max(limit * 6, limit + 60))
     cand_mappings = list((await session.execute(cand_stmt)).mappings().all())
 
     val_state = "fresh" if val_date == today_market_date else "stale"
@@ -185,7 +195,8 @@ async def load_fundamentals_preset_from_snapshots(
     if symbols:
         names = await session.execute(
             sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
-                KRSymbolUniverse.symbol.in_(symbols), KRSymbolUniverse.is_active.is_(True)
+                KRSymbolUniverse.symbol.in_(symbols),
+                KRSymbolUniverse.is_active.is_(True),
             )
         )
         name_map = {r.symbol: r.name for r in names.all()}
@@ -201,7 +212,9 @@ async def load_fundamentals_preset_from_snapshots(
     period_rows = await repo.latest_periods_for_symbols(
         market="kr", symbols=[v["symbol"] for v in valuation_rows]
     )
-    periods_by_symbol = {sym: [_to_period(r) for r in rows] for sym, rows in period_rows.items()}
+    periods_by_symbol = {
+        sym: [_to_period(r) for r in rows] for sym, rows in period_rows.items()
+    }
 
     # fundamentals partition metadata + state (missing when nothing backfilled)
     fund_date = None

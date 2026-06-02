@@ -134,4 +134,3 @@ class FinancialFundamentalsSnapshotsRepository:
         for row in result.scalars().all():
             grouped.setdefault(row.symbol, []).append(row)
         return grouped
-

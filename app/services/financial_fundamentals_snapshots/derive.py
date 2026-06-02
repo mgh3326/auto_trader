@@ -197,7 +197,9 @@ def _dividend_growth_streak(annual: list) -> MetricResult:
     # year (incl. one created by a None-DPS year) breaks the run.
     dps_rows = [p for p in annual if p.dividend_per_share is not None]
     if len(dps_rows) < 2:
-        return MetricResult(value=0, state="partial", note="insufficient dividend history")
+        return MetricResult(
+            value=0, state="partial", note="insufficient dividend history"
+        )
     streak = 0
     for i in range(len(dps_rows) - 1, 0, -1):
         cur, prev = dps_rows[i], dps_rows[i - 1]
@@ -228,8 +230,13 @@ def derive_fundamentals_metrics(
         if net_incomes
         else _UNAVAILABLE,
         earnings_growth_qoq=_earnings_growth_qoq(quarterly),
-        earnings_increase_streak_years=_increase_streak(annual) if annual else _UNAVAILABLE,
-        dividend_paid_streak_years=_dividend_paid_streak(annual) if annual else _UNAVAILABLE,
-        dividend_growth_streak_years=_dividend_growth_streak(annual) if annual else _UNAVAILABLE,
+        earnings_increase_streak_years=_increase_streak(annual)
+        if annual
+        else _UNAVAILABLE,
+        dividend_paid_streak_years=_dividend_paid_streak(annual)
+        if annual
+        else _UNAVAILABLE,
+        dividend_growth_streak_years=_dividend_growth_streak(annual)
+        if annual
+        else _UNAVAILABLE,
     )
-
