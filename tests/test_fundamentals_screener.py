@@ -698,3 +698,78 @@ def test_cheap_value_excludes_when_earnings_growth_negative():
     assert rows == []
     assert any("earnings_growth_3y_avg" in e["reason"] for e in excluded)
 
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_valuation_filter_max_pbr_excludes_high_pbr(db_session):
+    import sqlalchemy as sa
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        CHEAP_VALUE_SPEC,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2026, 6, 2)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(["906421", "906422"])
+        )
+    )
+    await db_session.commit()
+    db_session.add_all([
+        MarketValuationSnapshot(market="kr", symbol="906421", snapshot_date=vd,
+            source="naver_finance", per=Decimal("12"), pbr=Decimal("1.0"),
+            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000")),
+        MarketValuationSnapshot(market="kr", symbol="906422", snapshot_date=vd,
+            source="naver_finance", per=Decimal("12"), pbr=Decimal("3.0"),  # PBR 3.0 > 1.5 → excluded
+            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("400000000000")),
+    ])
+    await db_session.commit()
+
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session, market="kr", spec=CHEAP_VALUE_SPEC, limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    excluded_symbols = {e["symbol"] for e in result.excluded}
+    assert "906421" in excluded_symbols       # PBR 1.0 <= 1.5 → candidate (then no fundamentals)
+    assert "906422" not in excluded_symbols   # PBR 3.0 filtered at SQL stage
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_dedups_symbol_across_multiple_sources(db_session):
+    import sqlalchemy as sa
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        CHEAP_VALUE_SPEC,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2026, 6, 2)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == "906431")
+    )
+    await db_session.commit()
+    # Same KR symbol under two sources at the same date (defensive — KR is single-source today).
+    db_session.add_all([
+        MarketValuationSnapshot(market="kr", symbol="906431", snapshot_date=vd,
+            source="naver_finance", per=Decimal("10"), pbr=Decimal("1.0"),
+            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000")),
+        MarketValuationSnapshot(market="kr", symbol="906431", snapshot_date=vd,
+            source="yahoo", per=Decimal("10"), pbr=Decimal("1.0"),
+            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000")),
+    ])
+    await db_session.commit()
+
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session, market="kr", spec=CHEAP_VALUE_SPEC, limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    # 906431 reaches derive at most ONCE (deduped), not twice.
+    assert [e["symbol"] for e in result.excluded].count("906431") == 1
+
+

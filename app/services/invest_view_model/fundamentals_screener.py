@@ -293,6 +293,11 @@ async def load_fundamentals_preset_from_snapshots(
             MarketValuationSnapshot.per > 0,
             MarketValuationSnapshot.per <= spec.max_per,
         )
+    if spec.max_pbr is not None:
+        cand_stmt = cand_stmt.where(
+            MarketValuationSnapshot.pbr > 0,
+            MarketValuationSnapshot.pbr <= spec.max_pbr,
+        )
     if spec.min_dividend_yield is not None:
         cand_stmt = cand_stmt.where(
             MarketValuationSnapshot.dividend_yield >= spec.min_dividend_yield
@@ -325,12 +330,18 @@ async def load_fundamentals_preset_from_snapshots(
         )
         name_map = {r.symbol: r.name for r in names.all()}
 
-    # common-stock filter (drop ETF/preferred) before fundamentals work
-    valuation_rows = [
-        {**dict(m), "_screener_snapshot_state": val_state}
-        for m in cand_mappings
-        if _is_kr_toss_common_stock(m["symbol"], name_map.get(m["symbol"]))
-    ]
+    # common-stock filter (drop ETF/preferred) + symbol dedup (defensive: KR is single-source
+    # today, but a future second valuation source must not produce duplicate candidates).
+    valuation_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for m in cand_mappings:
+        sym = m["symbol"]
+        if sym in seen:
+            continue
+        if not _is_kr_toss_common_stock(sym, name_map.get(sym)):
+            continue
+        seen.add(sym)
+        valuation_rows.append({**dict(m), "_screener_snapshot_state": val_state})
 
     repo = FinancialFundamentalsSnapshotsRepository(session)
     period_rows = await repo.latest_periods_for_symbols(
