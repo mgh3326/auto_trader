@@ -159,3 +159,26 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
         name_map={},
     )
     assert [r["symbol"] for r in rows_all] == ["A", "F", "C", "E", "B", "D"]
+
+
+def test_registry_has_four_specs_with_expected_thresholds():
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUNDAMENTALS_PRESET_SPECS,
+    )
+
+    assert set(FUNDAMENTALS_PRESET_SPECS) == {
+        "profitable_company",
+        "undervalued_growth",
+        "stable_growth",
+        "future_dividend_king",
+    }
+    ug = FUNDAMENTALS_PRESET_SPECS["undervalued_growth"]
+    assert ug.max_per == Decimal("20") and ug.min_revenue_growth_3y_avg == Decimal("0.10")
+    assert ug.min_earnings_growth_3y_avg == Decimal("0.20")
+    sg = FUNDAMENTALS_PRESET_SPECS["stable_growth"]
+    assert sg.min_roe == Decimal("15") and sg.min_earnings_growth_3y_avg == Decimal("0.10")
+    assert sg.min_earnings_increase_streak_years == 3
+    dk = FUNDAMENTALS_PRESET_SPECS["future_dividend_king"]
+    assert dk.min_dividend_yield == Decimal("0.01") and dk.min_payout_ratio == Decimal("30")
+    assert dk.min_dividend_growth_streak_years == 3 and dk.min_earnings_increase_streak_years == 3
+

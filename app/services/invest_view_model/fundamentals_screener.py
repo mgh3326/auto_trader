@@ -37,12 +37,18 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class FundamentalsPresetSpec:
     preset_id: str
-    min_roe: Decimal | None = None  # valuation.roe, percent (e.g. 15)
-    min_gross_margin_ttm: Decimal | None = None  # derive ratio (e.g. 0.20)
-    sort_by: str = "roe"  # 'roe' | 'gross_margin_ttm'
-    # PR2b extension slots (unused in PR2a):
-    # min_revenue_growth_3y_avg / min_earnings_growth_3y_avg / min_payout_ratio /
-    # min_dividend_yield / min_earnings_increase_streak_years / ... / max_per / max_pbr
+    # valuation filters (applied in the SQL candidate query):
+    min_roe: Decimal | None = None              # percent (e.g. 15)
+    max_per: Decimal | None = None              # 0 < per <= max_per
+    min_dividend_yield: Decimal | None = None   # ratio (e.g. 0.01 == 1%), KR naver stores /100
+    # derive thresholds (applied in evaluate_fundamentals_candidates):
+    min_gross_margin_ttm: Decimal | None = None         # ratio (0.20)
+    min_revenue_growth_3y_avg: Decimal | None = None    # ratio (0.10)
+    min_earnings_growth_3y_avg: Decimal | None = None   # ratio (0.10 / 0.20)
+    min_earnings_increase_streak_years: int | None = None   # years (3)
+    min_dividend_growth_streak_years: int | None = None     # years (3)
+    min_payout_ratio: Decimal | None = None             # percent (30) — DART 현금배당성향%
+    sort_by: str = "roe"  # any metric key carried on the output row
 
 
 PROFITABLE_COMPANY_SPEC = FundamentalsPresetSpec(
@@ -51,6 +57,41 @@ PROFITABLE_COMPANY_SPEC = FundamentalsPresetSpec(
     min_gross_margin_ttm=Decimal("0.20"),
     sort_by="roe",
 )
+
+UNDERVALUED_GROWTH_SPEC = FundamentalsPresetSpec(
+    preset_id="undervalued_growth",
+    max_per=Decimal("20"),
+    min_revenue_growth_3y_avg=Decimal("0.10"),
+    min_earnings_growth_3y_avg=Decimal("0.20"),
+    sort_by="earnings_growth_3y_avg",
+)
+
+STABLE_GROWTH_SPEC = FundamentalsPresetSpec(
+    preset_id="stable_growth",
+    min_roe=Decimal("15"),
+    min_earnings_growth_3y_avg=Decimal("0.10"),
+    min_earnings_increase_streak_years=3,
+    sort_by="roe",
+)
+
+FUTURE_DIVIDEND_KING_SPEC = FundamentalsPresetSpec(
+    preset_id="future_dividend_king",
+    min_dividend_yield=Decimal("0.01"),
+    min_dividend_growth_streak_years=3,
+    min_earnings_increase_streak_years=3,
+    min_payout_ratio=Decimal("30"),
+    sort_by="dividend_yield",
+)
+
+FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {
+    s.preset_id: s
+    for s in (
+        PROFITABLE_COMPANY_SPEC,
+        UNDERVALUED_GROWTH_SPEC,
+        STABLE_GROWTH_SPEC,
+        FUTURE_DIVIDEND_KING_SPEC,
+    )
+}
 
 
 @dataclass(frozen=True)
