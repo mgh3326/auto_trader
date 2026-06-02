@@ -1,5 +1,14 @@
 # Runbook: News Ingestor KR Scheduled Push
 
+## Role (ROB-424)
+
+`news-ingestor` is a **broad market-wide feed collector** populating `news_articles`.
+It is NOT a report freshness gate or a citation/evidence source for investment
+decisions. Symbol-level investment evidence comes exclusively from `get_news` /
+`symbol_news_service` (on-demand). Production Prefect pause/unpause for
+`news-ingestor` remains **operator-gated**; this PR does not change scheduler state.
+Existing `news_articles` rows are preserved (no deletion/backfill).
+
 ## Purpose
 
 Keep `/trading/decisions/preopen` `news` readiness fresh by running KR News Ingestor crawl + bulk push on a schedule, with bounded blast radius and a clear rollback.

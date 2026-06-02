@@ -1,14 +1,7 @@
 from __future__ import annotations
 
-import json
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import cast, func, or_, select
-from sqlalchemy.dialects.postgresql import JSONB
-
-from app.core.db import AsyncSessionLocal
-from app.core.timezone import now_kst_naive
 from app.models.news import NewsArticle
 from app.services.crypto_news_relevance_service import (
     rank_crypto_news_for_briefing,
@@ -23,7 +16,7 @@ from app.services.market_news_briefing_formatter import (
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-NEWS_TOOL_NAMES = ["get_market_news", "search_news", "get_market_issues"]
+NEWS_TOOL_NAMES = ["get_market_news", "get_market_issues"]
 
 
 def _article_to_dict(
@@ -158,6 +151,11 @@ async def _get_market_news_impl(
     )
 
     return {
+        "surface": "legacy_market_briefing",
+        "advisory": (
+            "Legacy broad-market DB-backed surface for briefing only; "
+            "NOT investment-decision evidence. Use get_news for symbol-level decisions."
+        ),
         "market": market,
         "count": len(news_list),
         "total": total,
@@ -171,62 +169,12 @@ async def _get_market_news_impl(
     }
 
 
-async def _search_news_db(
-    query: str,
-    days: int = 7,
-    limit: int = 20,
-) -> tuple[list[NewsArticle], int]:
-    cutoff = now_kst_naive() - timedelta(days=days)
-    like_pattern = f"%{query}%"
-
-    async with AsyncSessionLocal() as db:
-        base_filter = [
-            NewsArticle.article_published_at >= cutoff,
-            or_(
-                NewsArticle.title.ilike(like_pattern),
-                NewsArticle.keywords.op("@>")(cast(json.dumps([query]), JSONB)),
-            ),
-        ]
-
-        q = (
-            select(NewsArticle)
-            .where(*base_filter)
-            .order_by(NewsArticle.article_published_at.desc().nulls_last())
-            .limit(limit)
-        )
-        result = await db.execute(q)
-        articles = list(result.scalars().all())
-
-        count_q = select(func.count(NewsArticle.id)).where(*base_filter)
-        count_result = await db.execute(count_q)
-        total = count_result.scalar_one()
-
-    return articles, total
-
-
-async def _search_news_impl(
-    query: str,
-    days: int | None = 7,
-    limit: int | None = 20,
-) -> dict[str, Any]:
-    days = days or 7
-    limit = limit or 20
-
-    articles, total = await _search_news_db(query=query, days=days, limit=limit)
-    news_list = [_article_to_dict(a) for a in articles]
-
-    return {
-        "query": query,
-        "count": len(news_list),
-        "total": total,
-        "news": news_list,
-    }
-
-
 def _register_news_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_market_news",
         description=(
+            "[LEGACY: broad market DB-backed briefing surface; NOT investment-decision "
+            "evidence — use get_news for symbol-level decisions] "
             "Get recent market news. Supports filtering by market, publisher (source), "
             "collection path (feed_source), and keyword. Returns both publisher names "
             "and collection paths for briefing segmentation. briefing_filter=True "
@@ -252,17 +200,6 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
             limit=limit,
             briefing_filter=briefing_filter,
         )
-
-    @mcp.tool(
-        name="search_news",
-        description="Search news articles by keyword. Searches title and keywords field.",
-    )
-    async def search_news(
-        query: str,
-        days: int = 7,
-        limit: int = 20,
-    ) -> dict[str, Any]:
-        return await _search_news_impl(query=query, days=days, limit=limit)
 
     @mcp.tool(
         name="get_market_issues",

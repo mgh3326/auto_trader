@@ -1,0 +1,156 @@
+# ROB-422 PR1 — KR 다기간 재무제표/배당 snapshot read-model (DART foundation) 설계
+
+- **이슈**: ROB-422 ([수집] /invest/screener Toss fundamentals 프리셋 parity) — parent ROB-359
+- **상태**: design (브레인스토밍 승인 완료 — 접근 B + PR1 데이터 기반만)
+- **날짜**: 2026-06-02
+- **선행/관련**: ROB-330(fundamentals PIT 패널, **설계만/코드0** — 컬럼 의미 정합), ROB-280(screener freshness policy), ROB-398(KR collector 라인, snapshot 패턴 템플릿), ROB-363(reports 후보 전환, 후속 소비자).
+- **범위 결정**: ROB-422 전체(source audit + read-model + collector + screener catalog + reports)는 한 spec에 과대. 이 spec은 **PR1 = 데이터 기반만**. 화면/프리셋/리포트 배선은 PR2/PR3(§10).
+
+---
+
+## 1. 배경 — 검증된 사실 (코드 교차검증 완료)
+
+- **`/invest/screener`는 이미 자체 스냅샷 기반**: preset 결과는 `invest_screener_snapshots`(OHLCV)·`market_valuation_snapshots`(PER/PBR/ROE/배당수익률)·`investor_flow_snapshots`(수급)에서 계산. Toss 피드는 경로에 없음.
+- **Toss는 코드 전체에서 reference-only**: `invest_data_source_contract.py:161-171` `toss_screen` = `authority_tier="low_trust_attention"`, `may_affect_ranking=False`; `invest_coverage_service.py:119` "Toss is used only as a parity benchmark/reference, not as a data source." Toss API 클라이언트 부재(공식 스크리너 API 없음, 내부 엔드포인트는 비공식·쿠키인증·ToS 리스크). → **접근 B 확정**: Toss 출력 미러링이 아니라 Toss 프리셋 *기준(criteria)* 을 우리 데이터로 재현.
+- **8개 지표 전부 부재**: `payout_ratio`, `gross_margin_ttm`, `revenue_growth_3y_avg`, `earnings_growth_3y_avg`, `earnings_growth_qoq`, `earnings_increase_streak_years`, `dividend_paid_streak_years`, `dividend_growth_streak_years` — 모델/스키마/KIS/collector 어디에도 없음.
+- **DART 클라이언트는 이미 존재(공시 목록 전용)**: `app/services/disclosures/dart.py` — `OpenDartReader` lazy 빌드(`_get_client()` 155-170), corp_codes 일일 캐시+flock(99-152), `list_filings()`(공시 list만). `OPENDART_API_KEY` config 기존(`config.py:311`). **필요한 `finstate_all`(재무제표)·`report('배당')`(배당) 메서드는 vendored `opendartreader>=0.2.3`에 이미 포함, 현재 미사용**(repo-wide grep `finstate_all`/`report(`/`alotMatter` = 0 consumer).
+
+## 2. 소스 결정 — DART/OpenDART = PRIMARY
+
+| 소스 | 판정 | 근거 |
+|------|------|------|
+| **DART** | **PRIMARY** | 8개 전부 깨끗한 경로(2 direct: `payout_ratio`/원시 시리즈, 6 computed). 규제 원천, FY2015+ 깊은 이력, 배당 공시(`alotMatter`) 포함. 클라이언트 70% 기배선(신규 HTTP 클라이언트 불필요). |
+| KIS | supplement만(PR1 제외) | 5개 계산 가능하나 기간 얕음(~3-5), **배당 3개 불가**, **PIT 없음**(`stac_yymm`만), 재무 TR 6개 신규구현 HIGH effort. |
+| Naver | source-of-truth 회피 | `finance.naver.com/robots.txt`가 `/item/` Disallow + FnGuide 라이선스 → ROB-422 Non-goal 직격. depth ~3년, PIT 없음. (배당성향은 사실 페이지에 있으나 파서 allowlist `company.py:152`가 드롭 — PR1 무관.) |
+
+**DART 도입 타협 불가 3가지(검증됨):**
+1. **PIT 조인** — `finstate_all`/`alotMatter` 페이로드는 `rcept_dt`(공시일)를 안 줌. `alotMatter`의 `stlm_dt`는 결산기준일(기간말)이라 부족(45–90일 공시 지연). 각 행의 `rcept_no`를 **이미 호출 중인 공시목록 엔드포인트**(`client.list`)에 조인해 `filing_date`를 복원. → lookahead 방지의 핵심.
+2. **분기 누적치 차분** — KR 분기보고서는 YTD 누적(`thstrm_add_amount`). 단일분기 값은 연속분기 차분(예: Q3누적 − 반기누적)으로 도출 후 저장(`discrete_*`). 미차분 시 QoQ/TTM 오류.
+3. **백필 페이싱** — 키당 ~20k req/일. 전 종목 분기 일괄(≈2,500×4 reprt×N년×2 endpoint)은 한도 초과. **연간 우선(`reprt_code=11011`) + 분기 on-demand를 며칠 분산**. (PR1은 dry-run/소량이라 무관하나 설계에 반영.)
+
+### 2.1 평가한 대안 라이브러리 (사용자 제공 5개) — 결론: PR1 새 의존성 0
+
+| 라이브러리 | 판정 | 사유 |
+|-----------|------|------|
+| **OpenDartReader** | **PR1 primary** | 이미 vendored(`pyproject.toml:48`)+70% 배선. `finstate_all`/`report('배당')`/`find_corp_code`/`list`(PIT 조인) 전부 존재, 활성화만. 8개 전부 도달. |
+| **dart-fss** | PR2 후속(문서화) | arelle XBRL concept-aligned 다기간 IS/BS로 `gross_margin`·growth·streak가 더 견고(5/8 향상). **그러나** PIT 미해결(`merge_fs`가 `rcept_dt` 드롭), **배당 0 커버**(3/8 여전히 OpenDartReader 필요), gross_margin 갭은 §4/§7 Revenue−COGS fallback+partial로 이미 완화. arelle/fake-useragent/yaspin 등 **무거운 신규 의존성** + pinned `pandas>=3.0,<3.1`/`lxml>=6`와 uv.lock 해석 미검증. → **displace 아님**. PR2에서 uv.lock 스파이크 통과 시 default-off 어댑터(`dataset='xbrl'`, post-2011 한정으로 HTML-scrape fallback 회피), 기존 `OPENDART_API_KEY` 재사용. |
+| **pykrx** | 반려 | **설치 불가**: pykrx 1.2.8가 `pandas<3.0,>=2.2` 요구 → 레포 `pandas>=3.0.0,<3.1.0`(3.0.2 설치) 핀과 **해소 불가 충돌**(레포 전체 다운그레이드 없이는 불가). + 재무제표 0 커버, 배당 DPS는 filing-date 없는 거래일 스냅샷(PIT 불가, split-미조정, missing≠zero 위반 위험), KRX 브라우저-스푸핑 스크래핑(ToS/rate-limit, DART-primary 결정 및 §11 Non-goal과 상충). reference-only current-snapshot cross-check가 최대치. |
+| **FinanceDataReader** | 반려 | 배당 API 0(2개 streak+payout 분자 미서빙). 유일 fundamentals(`SnapDataReader NAVER/FINSTATE`)는 Naver 스크래핑 period-end-only(PIT 불가, restatement 노출). 심볼(`kr_symbol_universe` KIS DWS master)·가격(KIS+yfinance)은 이미 in-repo 커버 → 고유 가치 0 + Naver ToS 위험. |
+| **KIS open-trading-api** | supplement(PR2+) | 재무 TR 4개(FHKST66430300/200/100/800)가 6/8 커버, 기존 KIS credential/async 재사용(신규 의존성 0). 그러나 **무라이선스 샘플코드**(vendoring 금지, 기존 KIS 클라이언트에 재구현), 예제가 output 필드 미열거(KIS 포털에서 TR별 스키마 전사=실 effort), 배당은 market-wide `/ranking/dividend-rate`만(per-symbol DPS history 없음), **PIT 없음**(stac_yymm only). |
+
+## 3. 목표·범위 (PR1)
+
+기존 3개 snapshot 패밀리와 **동일 패턴**으로 신규 `financial_fundamentals_snapshots` 적재 경로 + PIT-aware 파생 헬퍼(unit-tested, **미배선**)를 추가한다.
+
+**포함**: 신규 테이블/migration/ORM/repository/builder/freshness, DART 잠자는 메서드 활성화(`finstate_all`+`report('배당')`), `rcept_no→rcept_dt` PIT 조인, 분기 누적 차분, dry-run 기본 CLI, PIT-게이트 파생 헬퍼(순수 함수), TDD.
+
+**제외(PR2/PR3 §10)**: screener preset/카탈로그/`parityStatus` 변경, `/invest/screener` API·프론트, `screen_stocks(kr)`/`/invest/reports` candidate lineage, 프로덕션 backfill·migration apply·scheduler 활성화, KIS/Naver 배선.
+
+**안전 경계(ROB-422 Non-goal 상속)**: broker/order/watch/order-intent/trade-journal mutation 0. 주문 preview/submit/cancel/modify 0. 프로덕션 DB write는 `--commit` + operator. Toss/Naver scraping을 source-of-truth로 격상 안 함. missing metric을 heuristic으로 `full` 위장 금지. raw payload는 저장 전 `_redact_sensitive_keys` 적용(market-events 패턴).
+
+## 4. Read-model 계약 — 신규 테이블 `financial_fundamentals_snapshots`
+
+기존 `market_valuation_snapshots`(일별 grain, 현재 full-3 preset을 `fundamentals_evidence.py:29` 경유 구동 중)를 **확장하지 않는다** — fundamentals는 **회계기간(연/분기) grain + 공시 지연**으로 결이 다르고, 일별 키에 `filing_date`/`fiscal_period`를 얹으면 unique 키가 깨지거나 일별 행이 대부분-NULL로 오염되어 working preset 회귀 위험.
+
+```
+financial_fundamentals_snapshots
+  id                  BigInteger PK
+  market              String(8)   NOT NULL  CHECK IN ('kr','us')   -- PR1=kr만 적재, 컬럼은 market-agnostic
+  symbol              String(20)  NOT NULL
+  fiscal_period       String(10)  NOT NULL  -- 정규 라벨 '2025A' | '2025Q1'
+  period_type         String(10)  NOT NULL  CHECK IN ('annual','quarterly')
+  period_end_date     Date        NOT NULL  -- = as_of: 수치가 설명하는 회계기간말
+  filing_date         Date        NULL      -- 공시일 = lookahead 경계. NULL이면 read-path에서 fail-closed
+  effective_at        Date        NULL      -- 인용 가능 최초일(기본 = filing_date, ROB-330 위해 분리 보유)
+  source              String(16)  NOT NULL  CHECK IN ('dart')      -- PR1=dart만. PR2+에서 kis/finnhub 확장
+  source_collected_at TIMESTAMPtz NOT NULL  -- provenance fetch 시각(게이트 아님)
+  currency            String(8)   NULL
+  -- 저장 = 원시 기간 사실 + 차분 단일분기값 (집계는 저장 안 함):
+  revenue             Numeric(30,2) NULL
+  net_income          Numeric(30,2) NULL
+  gross_profit        Numeric(30,2) NULL    -- ifrs-full_GrossProfit (없으면 NULL)
+  cost_of_sales       Numeric(30,2) NULL    -- gross_profit 부재 시 매출액-매출원가 fallback용
+  roe                 Numeric(20,4) NULL
+  payout_ratio        Numeric(10,6) NULL    -- alotMatter 직접 (현금배당성향%)
+  dividend_per_share  Numeric(20,4) NULL    -- alotMatter 주당현금배당금
+  discrete_revenue    Numeric(30,2) NULL    -- 분기행: 누적 차분 단일분기 매출 (annual행=revenue)
+  discrete_net_income Numeric(30,2) NULL    -- 분기행: 누적 차분 단일분기 순이익
+  data_state          String(12)  NOT NULL DEFAULT 'fresh' CHECK IN ('fresh','stale','partial','unavailable')
+  raw_payload         JSONB       NULL      -- redact 후 source 원본
+  schema_version      Integer     NOT NULL DEFAULT 1
+  computed_at, created_at, updated_at  TIMESTAMPtz  (server_default now(), updated_at onupdate now())
+  UniqueConstraint(market, symbol, fiscal_period, source)  name uq_financial_fundamentals_snapshots_msfs
+  Index(market, symbol, period_end_date)
+  Index(market, symbol, filing_date)        -- "report_date 이하 최신 공시" PIT 쿼리용
+```
+
+**집계 지표는 컬럼으로 저장하지 않는다** — `revenue_growth_3y_avg`, `earnings_growth_3y_avg`, `earnings_growth_qoq`, `gross_margin_ttm`, `earnings_increase_streak_years`, `dividend_paid/growth_streak_years`는 **read-path에서 report_date 시점에 보이는(`filing_date <= report_date`) per-period 행들로 파생**. 미리 집계해 저장하면 최신 공시가 과거에 새어들어가 lookahead를 깬다(ROB-330 금지).
+
+**ROB-330 정합**: 4개 시간 의미를 **별도 컬럼으로 분리**(period_end=as_of / filing=경계 / effective / collected). lookahead 규칙 `report_date >= filing_date(/effective_at) ⇒ visible, else unavailable`이 표현 가능. 배당은 동일 grain/키/소스라 **단일 테이블에 배당 컬럼 포함**(별도 `dividend_*` 테이블은 배당 소스가 갈릴 때만 — PR1 불필요).
+
+## 5. Collector/loader — `app/services/financial_fundamentals_snapshots/` (신규)
+
+기존 `app/services/{invest_screener,market_valuation,investor_flow}_snapshots/` 패턴 미러:
+
+- **`builder.py`** — symbol(6자리) → `_get_client().find_corp_code` → corp_code. 연간 `finstate_all(corp, year, '11011', fs_div='CFS')` + `report(corp,'배당',year,'11011')`. 분기 필요 시 `reprt_code` 11013/11012/11014. **fs_div는 `CFS`(연결) 우선, CFS list가 비면 `OFS`(별도) fallback**(연결 미작성 별도-only 발행사 대응). account_id(XBRL: `ifrs-full_Revenue`/`ifrs-full_GrossProfit`/`ifrs-full_ProfitLoss`/`CostOfSales`) 우선, `account_nm` fallback. **분기 누적 차분**으로 `discrete_*` 산출. `alotMatter`의 `se` 라벨(`주당 현금배당금(원)`/`현금배당성향(%)`)은 DART가 구두점을 바꾼 전례가 있어 **정규화/contains 매칭**(정확 일치 금지). `FinancialFundamentalsUpsert` 페이로드 반환.
+- **PIT 조인** — 각 `rcept_no`를 `client.list`(공시목록)에 조인해 `rcept_dt → filing_date`(`effective_at` 기본 동일). 조인 실패 시 `filing_date=NULL`(read-path fail-closed, 날조 금지).
+- **`repository.py`** — `FinancialFundamentalsSnapshotsRepository` (서비스 내부 전용). `insert().on_conflict_do_update`(uq 제약), `latest_periods_for_symbols(...)`, `coverage_counts(...)`. `market_valuation_snapshots/repository.py:55-76` idiom 미러.
+- **`freshness.py`** — `data_state` 분류(§7).
+- **`derive.py`** (순수 함수, **미배선**) — per-period 행 + `report_date` → 8개 지표 + per-metric `data_state`. PIT 게이트(`filing_date<=report_date`), 음수/0 base 가드, missing≠zero, gross_margin IFRS 단일식 부재 시 `partial`.
+- **`app/jobs/financial_fundamentals_snapshots.py`** — symbol 해석(`kr_symbol_universe.is_active`), 배치, dry-run-first + guards + idempotency dict(기존 job 패턴), 결과 dataclass(samples/distribution/warnings/committed).
+- **`scripts/build_financial_fundamentals_snapshots.py`** — `--market kr --limit N | --all`, `--annual-only`(기본)/`--with-quarterly`, **`args.dry_run = not args.commit`**(dry-run 기본), `_print_result()`.
+
+## 6. 심볼 매핑
+
+`kr_symbol_universe.symbol`(6자리 PK) → `OpenDartReader.find_corp_code`(6자리/사명/8자리 corp_code 수용) → corp_code. **신규 매핑 테이블 불필요**, 기존 `_get_client()` corp_codes 일일 캐시 재사용. 미해석 코드(상장폐지/특수)는 `find_corp_code` None → fail-open(행 skip, 날조 금지).
+
+## 7. freshness / data_state (회계기간 grain)
+
+- 0행/조회 실패 → `unavailable`.
+- 행 존재하나 `filing_date IS NULL` → `partial`(공시일 미상 → read-path에서 미인용).
+- 최신 `period_end_date`가 직전 정기보고 기대 분기보다 오래됨 → `stale`(연 4회 발표 cadence 기준; 임계는 plan에서 확정, `now` 주입으로 테스트 결정성).
+- 그 외 → `fresh`.
+- gross_margin: gross_profit·cost_of_sales 모두 NULL(IFRS 단일식) → 해당 지표만 `partial`(행 전체는 정상).
+
+## 8. 테스트 (TDD)
+
+1. **builder 파싱**: `finstate_all` 픽스처 → revenue/net_income/gross_profit/roe; account_id 우선·account_nm fallback; gross_profit 부재 시 NULL(cost_of_sales fallback 표식).
+2. **분기 누적 차분**: Q1/반기/Q3/사업보고서 누적 픽스처 → `discrete_*` 정확(Q3=Q3누적−반기누적); annual행 discrete=원값.
+3. **PIT 조인**: `rcept_no→rcept_dt` 매핑 성공→`filing_date` 세팅; 조인 실패→`filing_date=NULL`(`partial`).
+4. **repository**: fake/in-memory로 upsert 멱등(동일 (market,symbol,fiscal_period,source) 재실행=update), `latest_periods_for_symbols` 반환.
+5. **derive (핵심)**: report_date 게이트 — `report_date < filing_date`인 행은 미가시(지표 `unavailable`); `>=`면 가시. `revenue_growth_3y_avg`/`earnings_*` 계산값; 음수 base 가드; `earnings_increase_streak`/배당 streak 카운트; **missing≠zero**(미신고 배당→빈 시리즈→streak 미산출, 0-streak 날조 금지); gross_margin IFRS 단일식→`partial`; dividend_growth split-미조정 caveat 표식.
+6. **freshness**: 당분기→fresh; 오래됨→stale; filing_date NULL→partial; 0행→unavailable.
+7. **CLI dry-run**: `--commit` 없으면 write 0(샘플/분포만 출력), `--commit`만 repository upsert.
+8. **회귀**: `market_valuation_snapshots`/`fundamentals_evidence.py` 경로 무변경(full-3 preset 비회귀); 신규 source CHECK가 기존 테이블에 영향 없음.
+
+## 9. Migration 동기
+
+- additive: 신규 테이블 1개 생성(`alembic revision --autogenerate` 후 검토). `down_revision` = 구현 시점 `alembic heads` 실값(2-head 시 merge 우선). **operator가 `alembic upgrade head` 별도 실행**(PR1은 apply 안 함).
+- `app/models/financial_fundamentals_snapshot.py` ORM 신규.
+- `INVEST_DATA_SOURCE_CONTRACT`(`invest_data_source_contract.py`)에 `financial_fundamentals_snapshots` 엔트리 추가 검토(authority_tier 등) — contract drift-guard 테스트 충족. doc matrix 재렌더 필요 시 `docs/invest/data-source-contract.md` 동기.
+- **의존성 핀**: 신규 의존성 추가 없음(OpenDartReader 기존 vendored). uv.lock은 현재 `opendartreader==0.2.3`(2026-05-09 재업로드) 해석, PyPI 최신은 0.3.x(`requires_python>=3.13`, 최신 deps). 설계가 쓰는 `finstate_all`/`report`/`alotMatter` 시그니처는 0.2.3↔0.3.x 동일 → 둘 다 PR1 충족. 0.2.3 유지 vs 유지보수 라인(0.3.x) 승급은 plan에서 결정(스코프 외 변경 회피 위해 기본 유지 권장).
+
+## 10. 후속 (PR2/PR3 — 이 spec 범위 아님)
+
+- **PR2 (read-path/catalog)**: `derive.py`를 screener read-path에 배선 → 4 missing preset(저평가 성장주/돈 잘버는 회사/미래의 배당왕/안정 성장주) 구현 + `cheap_value`/`steady_dividend` partial 보강 + `oversold_recovery`/`growth_expectation` mismatch 의미 정정. `parityStatus`/`parityNote`/`dataState` 정직 갱신. `docs/invest-screener-toss-parity-matrix.md` 갱신.
+- **PR3 (consumption)**: `screen_stocks(market="kr")`·`/invest/reports` 후보에 `candidate_data_state`/`candidate_toss_parity_status`/missing-condition note 보존(ROB-363).
+- **operator-gated(별도)**: 프로덕션 backfill(연간 우선 페이싱) + scheduler/Prefect 등록.
+- **(선택) dart-fss 견고성 스파이크**: PR2에서 gross_margin/growth XBRL 견고성이 부족하면 §2.1 dart-fss를 uv.lock 해석 스파이크(arelle vs pinned pandas/lxml) 후 default-off 어댑터로 추가 검토. PIT·배당은 여전히 OpenDartReader 소관(displace 아님).
+
+### 10.1 PR1 구현 리뷰에서 확정된 PR2 must-do (12-agent adversarial review, 2026-06-02)
+
+PR1 구현은 wired 코드 기준 blocker 0 / faithful·safe(전부 PRAISE)로 검증됨. 아래는 **미배선 derive 헬퍼/분기 경로**에 한정된 항목으로, `derive.py`를 screener read-path에 배선할 때(=PR2) 반드시 함께 처리한다:
+
+1. **(실 latent 버그) streak 연-인접성 가드**: `_increase_streak`/`_dividend_paid_streak`/`_dividend_growth_streak`가 리스트-인접만 보고 회계연도-인접을 확인하지 않음 → 누락 연도(예: 2021→2022→2024, 2023 결측 행)가 연속으로 오집계되어 streak 부풀림. 배선 전 `int(period[i].fiscal_period[:4]) != int(period[i-1].fiscal_period[:4]) + 1`이면 break하는 연-연속성 가드 추가 + 회귀 테스트. (DART per-year fetch 루프가 결측 연도를 그냥 skip하므로 현실적 시나리오.)
+2. **dividend-on-empty 시맨틱 결정**: 0 visible periods일 때 `dividend_paid_streak_years`=`(ok, 0)`, `dividend_growth_streak_years`=`(partial, 0)` 반환(나머지 6개는 `unavailable`). 의도된 비대칭이나, missing≠zero 정신상 배선 시점에 "0 vs unavailable" 명시 결정 + 테스트.
+3. **derive 테스트 커버리지 보강(배선과 함께)**: (a) `earnings_growth_qoq` 분기 2개 ok-path, (b) streak 연-gap break, (c) `gross_margin_ttm` 4-분기 TTM rollup(gross_profit/cost_of_sales 양 경로), (d) 0-visible-periods 전부-unavailable(단, 위 #2 결정 반영), (e) `_payload_from_quarterly` 오케스트레이션 e2e(`RawQuarterlyFiling`→differenced `discrete_*`). *주의: PR1 리뷰가 제안한 일부 단언은 틀렸음 — 결측-연도-행은 streak break가 아니라 리스트 압축이라 값이 다름; None-중간값만 break.*
+4. **`default_dart_fetcher` 운영 하드닝(--commit/스케줄 승격 시)**: rate-limit/backoff/retry 부재 — `--all` 전 종목 backfill 시 DART ~20k/일 한도 초과 가능. PIT join 실패(정정/amended 보고서의 상이한 rcept_no)는 이미 fail-closed(`filing_date=None`→`partial`)지만 mismatch 로깅 추가 권장. (현재는 dry-run 기본·operator-gated라 PR1 비차단.)
+5. **(선택 polish) repository 주석**: `_UPSERTABLE_COLUMNS`가 `computed_at`/`updated_at`를 제외하는 이유 1줄 주석(이 둘은 `set_`에서 명시적으로 `func.now()` — `on_conflict_do_update`는 ORM `onupdate` 미발화라 필수). 동작 변경 아님.
+
+## 11. 비목표 (YAGNI)
+
+- KIS/Naver 재무 배선(DART로 충분; KIS는 PR2+ 선택적 cross-check, Naver는 회피).
+- 집계 지표 컬럼 저장(lookahead 위험 — read-path 파생).
+- 별도 dividend 테이블(단일 테이블로 충분).
+- US 적재(컬럼은 market-agnostic이나 PR1은 kr만; US는 Finnhub `filed_date` 보유로 후속).
+- screener/리포트/프론트 배선, 프로덕션 backfill, scheduler 활성화.

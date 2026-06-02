@@ -91,7 +91,10 @@ def test_screener_presets_endpoint_returns_catalog() -> None:
     assert by_id["consecutive_gainers"]["presetOrigin"] == "toss_parity"
     assert by_id["consecutive_gainers"]["parityStatus"] == "full"
     assert by_id["kr_high_volume_surge"]["presetOrigin"] == "auto_trader_original"
-    assert by_id["oversold_recovery"]["parityStatus"] == "mismatch"
+    # ROB-422 PR2c-1 — oversold_recovery reclassified from a 'mismatch' Toss-parity
+    # attempt to its own auto_trader screen (RSI), so parityStatus is now None.
+    assert by_id["oversold_recovery"]["presetOrigin"] == "auto_trader_original"
+    assert by_id["oversold_recovery"]["parityStatus"] is None
     assert by_id["oversold_recovery"]["parityNote"]
 
 
@@ -179,7 +182,9 @@ def test_screener_results_endpoint_forwards_market_query() -> None:
         }
     )
     client = TestClient(_build_app(stub_screening=stub))
-    r = client.get("/invest/api/screener/results?preset=cheap_value&market=us")
+    # growth_expectation is a generic-provider preset (not KR-only, not snapshot-first),
+    # so it forwards to list_screening for US. (cheap_value is now KR-only/snapshot-only.)
+    r = client.get("/invest/api/screener/results?preset=growth_expectation&market=us")
 
     assert r.status_code == 200
     body = r.json()

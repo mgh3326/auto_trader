@@ -172,7 +172,7 @@ async def test_build_news_evidence_prefers_snapshot_articles_over_db(db_session)
         "Nvidia rallies",
     }
     assert all(c["title"] != "DB-only report" for c in bundle["citations"])
-    assert bundle["data_health"]["source"] == "news_articles"
+    assert bundle["data_health"]["source"] == "symbol_news"
     assert bundle["freshness"]["status"] == "fresh"
 
 
@@ -197,7 +197,7 @@ async def test_build_news_evidence_empty_snapshot_is_authoritative_no_db_bleed(
     )
     assert bundle["count"] == 0
     assert bundle["freshness"]["status"] == "unavailable"
-    assert bundle["data_health"]["source"] == "news_articles"
+    assert bundle["data_health"]["source"] == "symbol_news"
 
 
 @pytest.mark.asyncio

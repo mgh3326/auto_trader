@@ -7,6 +7,7 @@ from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .crypto_instrument_health import CryptoInstrumentHealth
 from .crypto_instruments import CryptoInstrument
 from .execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
+from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from .invest_momentum_event_snapshot import (
     InvestMomentumEventSnapshot,
@@ -174,6 +175,7 @@ __all__ = [
     "MarketReport",
     "MarketQuoteSnapshot",
     "MarketValuationSnapshot",
+    "FinancialFundamentalsSnapshot",
     "Trade",
     "TradeSnapshot",
     "TradeReview",

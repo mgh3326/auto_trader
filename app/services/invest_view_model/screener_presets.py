@@ -24,7 +24,18 @@ _MISMATCH: ScreenerParityStatus = "mismatch"
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
 CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
-_KR_ONLY_PRESET_IDS = {"investor_flow_momentum", "double_buy", "high_yield_value"}
+_KR_ONLY_PRESET_IDS = {
+    "investor_flow_momentum",
+    "double_buy",
+    "high_yield_value",
+    "undervalued_breakout",
+    "profitable_company",
+    "undervalued_growth",
+    "stable_growth",
+    "future_dividend_king",
+    "cheap_value",
+    "steady_dividend",
+}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -46,44 +57,44 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
     ScreenerPreset(
         id="cheap_value",
         name="아직 저렴한 가치주",
-        description="PER, PBR 모두 낮은 저평가 종목",
+        description="PER·PBR이 낮으면서 순이익이 역성장하지 않는 저평가 종목 (지연 스냅샷 기반)",
         badges=[],
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
-            ScreenerFilterChip(label="PER", detail="15 이하"),
-            ScreenerFilterChip(label="PBR", detail="1.5 이하"),
+            ScreenerFilterChip(label="PER", detail="0~15"),
+            ScreenerFilterChip(label="PBR", detail="0~1.5"),
+            ScreenerFilterChip(label="순이익증가율", detail="3년평균 0% 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
-        metricLabel="PER",
+        # metricLabel matches the result-ordering metric (sort_by=earnings_growth_3y_avg);
+        # PER/PBR remain the headline filter conditions, shown via filterChips above.
+        metricLabel="순이익증가율",
         market="kr",
         presetOrigin=_TOSS,
-        parityStatus=_PARTIAL,
-        parityNote=(
-            "Toss '아직 저렴한 가치주'의 PER·PBR 조건만 반영. "
-            "3년 평균 순이익 증감률(≥0%) 조건은 재무제표 데이터 소스 부재로 미적용(확인 불가)."
-        ),
+        parityStatus=_FULL,
     ),
     ScreenerPreset(
         id="steady_dividend",
         name="꾸준한 배당주",
-        description="배당수익률이 일정 수준 이상인 종목",
+        description="배당수익률·배당성향이 높고 배당 연속지급·순이익 연속증가를 갖춘 종목 (지연 스냅샷 기반)",
         badges=["인기"],
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
-            ScreenerFilterChip(label="배당수익률", detail="2% 이상"),
+            ScreenerFilterChip(label="배당수익률", detail="3% 이상"),
+            ScreenerFilterChip(label="배당성향", detail="30% 이상"),
+            ScreenerFilterChip(label="배당", detail="연속지급 3년 이상"),
+            ScreenerFilterChip(label="순이익", detail="연속증가 3년 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
         metricLabel="배당수익률",
         market="kr",
         presetOrigin=_TOSS,
-        parityStatus=_PARTIAL,
-        parityNote=(
-            "배당수익률 임계가 Toss(3% 이상)와 달리 2% 이상이며, "
-            "배당성향·배당 연속지급·순이익 연속증가 조건은 재무제표 데이터 소스 부재로 미적용(확인 불가)."
-        ),
+        parityStatus=_FULL,
     ),
     ScreenerPreset(
         id="oversold_recovery",
-        name="저평가 탈출",
-        description="RSI가 낮은 구간으로 들어온 종목",
+        name="과매도 반등 (RSI)",
+        description="RSI가 30 이하 과매도 구간에 들어온 종목 (auto_trader 자체 스크린)",
         badges=["인기"],
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
@@ -91,11 +102,11 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="RSI",
         market="kr",
-        presetOrigin=_TOSS,
-        parityStatus=_MISMATCH,
+        presetOrigin=_AT_OWN,
         parityNote=(
-            "현재 구현은 RSI ≤ 30 과매도 기반. "
-            "Toss '저평가 탈출'(PER 0~10 + PBR 0~1 + 신고가)과 의미가 다름."
+            "auto_trader 자체 스크린(RSI ≤ 30 과매도 반등). "
+            "Toss '저평가 탈출'(PER 0~10 + PBR 0~1 + 신고가)과는 별개이며, "
+            "Toss 의미 프리셋은 별도(PR2c-2)로 추가 예정."
         ),
     ),
     ScreenerPreset(
@@ -149,8 +160,8 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
     ),
     ScreenerPreset(
         id="growth_expectation",
-        name="성장 기대주",
-        description="시가총액이 충분하고 등락률 상위인 성장 기대 종목",
+        name="대형 모멘텀 (시총·등락률)",
+        description="시가총액이 충분하고 등락률 상위인 대형 모멘텀 종목 (auto_trader 자체 스크린)",
         badges=[],
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
@@ -159,11 +170,11 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="주가등락률",
         market="kr",
-        presetOrigin=_TOSS,
-        parityStatus=_MISMATCH,
+        presetOrigin=_AT_OWN,
         parityNote=(
-            "현재 구현은 시가총액(≥1조)·등락률 상위 기반. "
-            "Toss '성장 기대주'(3년 평균 순이익 증감률 + 직전분기 대비 순이익 증감률)와 의미가 다름."
+            "auto_trader 자체 스크린(시가총액 ≥ 1조 + 등락률 상위). "
+            "Toss '성장 기대주'(순이익 3년 성장 + 직전분기 순이익 성장)와는 별개이며, "
+            "Toss 의미 프리셋은 분기 재무 수집 후 별도 이슈로 추가 예정."
         ),
     ),
     ScreenerPreset(
@@ -178,6 +189,91 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
         metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="undervalued_breakout",
+        name="저평가 탈출",
+        description="PER·PBR이 낮으면서 주가가 52주 고가에 근접한 저평가 탈출 종목 (지연 스냅샷 기반)",
+        badges=["인기"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="PER", detail="0~10"),
+            ScreenerFilterChip(label="PBR", detail="0~1"),
+            ScreenerFilterChip(label="신고가", detail="52주 고가 5% 이내"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="신고가 대비",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="profitable_company",
+        name="돈 잘버는 회사",
+        description="매출총이익률(TTM)과 ROE가 모두 높은 고수익성 기업 (지연 스냅샷 기반)",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="매출총이익률", detail="TTM 20% 이상"),
+            ScreenerFilterChip(label="ROE", detail="15% 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="undervalued_growth",
+        name="저평가 성장주",
+        description="저평가(PER)면서 매출·순이익이 꾸준히 성장하는 기업",
+        badges=["국내"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="PER", detail="0~20"),
+            ScreenerFilterChip(label="매출증가율", detail="3년평균 10% 이상"),
+            ScreenerFilterChip(label="순이익증가율", detail="3년평균 20% 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="순이익증가율",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="stable_growth",
+        name="안정 성장주",
+        description="높은 ROE와 꾸준한 순이익 성장·연속증가를 갖춘 안정 성장 기업",
+        badges=["국내"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="ROE", detail="15% 이상"),
+            ScreenerFilterChip(label="순이익증가율", detail="3년평균 10% 이상"),
+            ScreenerFilterChip(label="순이익", detail="연속증가 3년 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="ROE",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="future_dividend_king",
+        name="미래의 배당왕",
+        description="배당을 꾸준히 늘리고 순이익도 연속 증가하는 미래 배당 성장 기업",
+        badges=["국내"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="배당수익률", detail="1% 이상"),
+            ScreenerFilterChip(label="배당", detail="연속성장 3년 이상"),
+            ScreenerFilterChip(label="순이익", detail="연속증가 3년 이상"),
+            ScreenerFilterChip(label="배당성향", detail="30% 이상"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="배당수익률",
         market="kr",
         presetOrigin=_TOSS,
         parityStatus=_FULL,
@@ -302,6 +398,19 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "min_roe": 15.0,
         "min_per": 0.01,
         "max_per": 10.0,
+        "limit": 20,
+    },
+    # undervalued_breakout is snapshot-only (market_valuation_snapshots); the generic
+    # screening provider has no 52-week-high proximity filter.
+    "undervalued_breakout": {
+        "market": "kr",
+        "asset_type": "stock",
+        "sort_by": "high_52w_proximity",
+        "sort_order": "desc",
+        "min_per": 0.01,
+        "max_per": 10.0,
+        "min_pbr": 0.01,
+        "max_pbr": 1.0,
         "limit": 20,
     },
     "investor_flow_momentum": {
