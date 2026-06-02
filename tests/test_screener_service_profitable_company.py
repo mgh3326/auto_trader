@@ -152,7 +152,9 @@ async def test_stable_growth_routes_to_fundamentals_loader(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cheap_value_empty_fundamentals_surfaces_missing_dependency(monkeypatch):
-    from app.services.invest_view_model.fundamentals_screener import FundamentalsScreenResult
+    from app.services.invest_view_model.fundamentals_screener import (
+        FundamentalsScreenResult,
+    )
 
     monkeypatch.setattr(
         "app.services.invest_view_model.screener_service._should_use_snapshot_first",
@@ -162,8 +164,10 @@ async def test_cheap_value_empty_fundamentals_surfaces_missing_dependency(monkey
     async def _empty_fundamentals_loader(session, *, market, spec, limit, now):
         # valuation partition exists, but no fundamentals rows backfilled (Path B).
         return FundamentalsScreenResult(
-            rows=[], valuation_partition_date=dt.date(2026, 6, 2),
-            fundamentals_partition_date=None, fundamentals_collected_at=None,
+            rows=[],
+            valuation_partition_date=dt.date(2026, 6, 2),
+            fundamentals_partition_date=None,
+            fundamentals_collected_at=None,
             fundamentals_state="missing",
         )
 
@@ -172,11 +176,14 @@ async def test_cheap_value_empty_fundamentals_surfaces_missing_dependency(monkey
         _empty_fundamentals_loader,
     )
     result = await screener_service.build_screener_results(
-        preset_id="cheap_value", market="kr",
-        session=_MockSession(), screening_service=_StubScreening(),
+        preset_id="cheap_value",
+        market="kr",
+        session=_MockSession(),
+        screening_service=_StubScreening(),
         resolver=_MockResolver(),
     )
     assert result.results == []
-    fundamentals_deps = [d for d in result.freshness.dependencies if d.kind == "fundamentals"]
+    fundamentals_deps = [
+        d for d in result.freshness.dependencies if d.kind == "fundamentals"
+    ]
     assert fundamentals_deps and fundamentals_deps[0].dataState == "missing"
-

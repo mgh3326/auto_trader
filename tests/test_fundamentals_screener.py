@@ -163,7 +163,7 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
     assert [r["symbol"] for r in rows_all] == ["A", "F", "C", "E", "B", "D"]
 
 
-def test_registry_has_four_specs_with_expected_thresholds():
+def test_registry_has_six_specs_with_expected_thresholds():
     from app.services.invest_view_model.fundamentals_screener import (
         FUNDAMENTALS_PRESET_SPECS,
     )
@@ -173,6 +173,8 @@ def test_registry_has_four_specs_with_expected_thresholds():
         "undervalued_growth",
         "stable_growth",
         "future_dividend_king",
+        "cheap_value",
+        "steady_dividend",
     }
     ug = FUNDAMENTALS_PRESET_SPECS["undervalued_growth"]
     assert ug.max_per == Decimal("20") and ug.min_revenue_growth_3y_avg == Decimal(
@@ -319,9 +321,26 @@ def test_undervalued_growth_excludes_when_growth_metric_unavailable_never_silent
     assert excluded  # never silently included
 
 
+async def _cleanup_db(db_session):
+    import sqlalchemy as sa
+
+    from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    for model in (
+        FinancialFundamentalsSnapshot,
+        MarketValuationSnapshot,
+        KRSymbolUniverse,
+    ):
+        await db_session.execute(sa.delete(model).where(model.symbol.like("9064%")))
+    await db_session.commit()
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
+    await _cleanup_db(db_session)
     import sqlalchemy as sa
 
     from app.models.market_valuation_snapshot import MarketValuationSnapshot
@@ -384,6 +403,7 @@ async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_loader_valuation_filter_dividend_yield_excludes_null(db_session):
+    await _cleanup_db(db_session)
     # spec §7 item 2: min_dividend_yield candidate filter must drop NULL dividend_yield
     # rows (fail-closed). future_dividend_king sets min_dividend_yield=0.01.
     import sqlalchemy as sa
@@ -606,11 +626,16 @@ def test_sort_by_non_roe_key_orders_desc():
 
 def _div_paid_period(year, *, net_income, dps, payout_ratio, filing_date):
     return FundamentalPeriod(
-        fiscal_period=f"{year}A", period_type="annual",
-        period_end_date=dt.date(year, 12, 31), filing_date=filing_date,
-        revenue=Decimal("1000"), net_income=Decimal(net_income),
-        discrete_revenue=Decimal("1000"), discrete_net_income=Decimal(net_income),
-        dividend_per_share=Decimal(dps), payout_ratio=Decimal(payout_ratio),
+        fiscal_period=f"{year}A",
+        period_type="annual",
+        period_end_date=dt.date(year, 12, 31),
+        filing_date=filing_date,
+        revenue=Decimal("1000"),
+        net_income=Decimal(net_income),
+        discrete_revenue=Decimal("1000"),
+        discrete_net_income=Decimal(net_income),
+        dividend_per_share=Decimal(dps),
+        payout_ratio=Decimal(payout_ratio),
     )
 
 
@@ -624,47 +649,90 @@ def test_pr2c1_registry_has_cheap_value_and_steady_dividend():
     assert cv.max_per == Decimal("15") and cv.max_pbr == Decimal("1.5")
     assert cv.min_earnings_growth_3y_avg == Decimal("0")
     sd = FUNDAMENTALS_PRESET_SPECS["steady_dividend"]
-    assert sd.min_dividend_yield == Decimal("0.03") and sd.min_payout_ratio == Decimal("30")
-    assert sd.min_dividend_paid_streak_years == 3 and sd.min_earnings_increase_streak_years == 3
+    assert sd.min_dividend_yield == Decimal("0.03") and sd.min_payout_ratio == Decimal(
+        "30"
+    )
+    assert (
+        sd.min_dividend_paid_streak_years == 3
+        and sd.min_earnings_increase_streak_years == 3
+    )
 
 
 def test_steady_dividend_includes_when_all_dividend_gates_met():
-    from app.services.invest_view_model.fundamentals_screener import STEADY_DIVIDEND_SPEC
+    from app.services.invest_view_model.fundamentals_screener import (
+        STEADY_DIVIDEND_SPEC,
+    )
 
     # net income up 4y (increase streak 3); DPS > 0 each year (paid streak 3); payout latest 40.
     periods = {
         "005930": [
-            _div_paid_period(2021 + i, net_income=str(ni), dps=str(d), payout_ratio="40",
-                             filing_date=dt.date(2022 + i, 3, 20))
+            _div_paid_period(
+                2021 + i,
+                net_income=str(ni),
+                dps=str(d),
+                payout_ratio="40",
+                filing_date=dt.date(2022 + i, 3, 20),
+            )
             for i, (ni, d) in enumerate([(100, 50), (120, 55), (150, 60), (200, 65)])
         ]
     }
-    valuation_rows = [{"symbol": "005930", "roe": 9.0, "per": 8.0, "pbr": 1.0,
-                       "market_cap": 5e11, "dividend_yield": 0.04}]
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 9.0,
+            "per": 8.0,
+            "pbr": 1.0,
+            "market_cap": 5e11,
+            "dividend_yield": 0.04,
+        }
+    ]
     rows, excluded = evaluate_fundamentals_candidates(
-        valuation_rows=valuation_rows, periods_by_symbol=periods,
-        spec=STEADY_DIVIDEND_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=STEADY_DIVIDEND_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
     )
     assert [r["symbol"] for r in rows] == ["005930"]
     assert rows[0]["dividend_paid_streak_years"] == 4
 
 
 def test_steady_dividend_excludes_when_dividend_paid_streak_below_threshold():
-    from app.services.invest_view_model.fundamentals_screener import STEADY_DIVIDEND_SPEC
+    from app.services.invest_view_model.fundamentals_screener import (
+        STEADY_DIVIDEND_SPEC,
+    )
 
     # 2023 DPS = 0 → paid streak ending 2024 is only 1 (< 3) → excluded.
     periods = {
         "005930": [
-            _div_paid_period(2021 + i, net_income=str(ni), dps=str(d), payout_ratio="40",
-                             filing_date=dt.date(2022 + i, 3, 20))
+            _div_paid_period(
+                2021 + i,
+                net_income=str(ni),
+                dps=str(d),
+                payout_ratio="40",
+                filing_date=dt.date(2022 + i, 3, 20),
+            )
             for i, (ni, d) in enumerate([(100, 50), (120, 55), (150, 0), (200, 65)])
         ]
     }
-    valuation_rows = [{"symbol": "005930", "roe": 9.0, "per": 8.0, "pbr": 1.0,
-                       "market_cap": 5e11, "dividend_yield": 0.04}]
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 9.0,
+            "per": 8.0,
+            "pbr": 1.0,
+            "market_cap": 5e11,
+            "dividend_yield": 0.04,
+        }
+    ]
     rows, excluded = evaluate_fundamentals_candidates(
-        valuation_rows=valuation_rows, periods_by_symbol=periods,
-        spec=STEADY_DIVIDEND_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=STEADY_DIVIDEND_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
     )
     assert rows == []
     assert any("dividend_paid_streak_years" in e["reason"] for e in excluded)
@@ -674,12 +742,26 @@ def test_cheap_value_includes_when_earnings_growth_non_negative():
     from app.services.invest_view_model.fundamentals_screener import CHEAP_VALUE_SPEC
 
     # revenue flat-ish, net income non-decreasing → earnings_growth_3y_avg >= 0.
-    periods = _four_growth_years("005930", [1000, 1010, 1020, 1030], [100, 100, 110, 120])
-    valuation_rows = [{"symbol": "005930", "roe": 5.0, "per": 10.0, "pbr": 0.8,
-                       "market_cap": 3e11, "dividend_yield": 0.01}]
+    periods = _four_growth_years(
+        "005930", [1000, 1010, 1020, 1030], [100, 100, 110, 120]
+    )
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 5.0,
+            "per": 10.0,
+            "pbr": 0.8,
+            "market_cap": 3e11,
+            "dividend_yield": 0.01,
+        }
+    ]
     rows, _ = evaluate_fundamentals_candidates(
-        valuation_rows=valuation_rows, periods_by_symbol=periods,
-        spec=CHEAP_VALUE_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=CHEAP_VALUE_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
     )
     assert [r["symbol"] for r in rows] == ["005930"]
 
@@ -688,12 +770,26 @@ def test_cheap_value_excludes_when_earnings_growth_negative():
     from app.services.invest_view_model.fundamentals_screener import CHEAP_VALUE_SPEC
 
     # net income declining → earnings_growth_3y_avg < 0 → excluded.
-    periods = _four_growth_years("005930", [1000, 1010, 1020, 1030], [200, 180, 150, 120])
-    valuation_rows = [{"symbol": "005930", "roe": 5.0, "per": 10.0, "pbr": 0.8,
-                       "market_cap": 3e11, "dividend_yield": 0.01}]
+    periods = _four_growth_years(
+        "005930", [1000, 1010, 1020, 1030], [200, 180, 150, 120]
+    )
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 5.0,
+            "per": 10.0,
+            "pbr": 0.8,
+            "market_cap": 3e11,
+            "dividend_yield": 0.01,
+        }
+    ]
     rows, excluded = evaluate_fundamentals_candidates(
-        valuation_rows=valuation_rows, periods_by_symbol=periods,
-        spec=CHEAP_VALUE_SPEC, report_date=dt.date(2025, 6, 1), limit=20, name_map={},
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=CHEAP_VALUE_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
     )
     assert rows == []
     assert any("earnings_growth_3y_avg" in e["reason"] for e in excluded)
@@ -702,6 +798,7 @@ def test_cheap_value_excludes_when_earnings_growth_negative():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_loader_valuation_filter_max_pbr_excludes_high_pbr(db_session):
+    await _cleanup_db(db_session)
     import sqlalchemy as sa
 
     from app.models.market_valuation_snapshot import MarketValuationSnapshot
@@ -717,29 +814,53 @@ async def test_loader_valuation_filter_max_pbr_excludes_high_pbr(db_session):
         )
     )
     await db_session.commit()
-    db_session.add_all([
-        MarketValuationSnapshot(market="kr", symbol="906421", snapshot_date=vd,
-            source="naver_finance", per=Decimal("12"), pbr=Decimal("1.0"),
-            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000")),
-        MarketValuationSnapshot(market="kr", symbol="906422", snapshot_date=vd,
-            source="naver_finance", per=Decimal("12"), pbr=Decimal("3.0"),  # PBR 3.0 > 1.5 → excluded
-            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("400000000000")),
-    ])
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906421",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("12"),
+                pbr=Decimal("1.0"),
+                roe=Decimal("8"),
+                dividend_yield=Decimal("0.01"),
+                market_cap=Decimal("500000000000"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906422",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("12"),
+                pbr=Decimal("3.0"),  # PBR 3.0 > 1.5 → excluded
+                roe=Decimal("8"),
+                dividend_yield=Decimal("0.01"),
+                market_cap=Decimal("400000000000"),
+            ),
+        ]
+    )
     await db_session.commit()
 
     result = await load_fundamentals_preset_from_snapshots(
-        db_session, market="kr", spec=CHEAP_VALUE_SPEC, limit=20,
+        db_session,
+        market="kr",
+        spec=CHEAP_VALUE_SPEC,
+        limit=20,
         now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
     )
     assert result is not None
     excluded_symbols = {e["symbol"] for e in result.excluded}
-    assert "906421" in excluded_symbols       # PBR 1.0 <= 1.5 → candidate (then no fundamentals)
-    assert "906422" not in excluded_symbols   # PBR 3.0 filtered at SQL stage
+    assert (
+        "906421" in excluded_symbols
+    )  # PBR 1.0 <= 1.5 → candidate (then no fundamentals)
+    assert "906422" not in excluded_symbols  # PBR 3.0 filtered at SQL stage
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_loader_dedups_symbol_across_multiple_sources(db_session):
+    await _cleanup_db(db_session)
     import sqlalchemy as sa
 
     from app.models.market_valuation_snapshot import MarketValuationSnapshot
@@ -750,22 +871,45 @@ async def test_loader_dedups_symbol_across_multiple_sources(db_session):
 
     vd = dt.date(2026, 6, 2)
     await db_session.execute(
-        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == "906431")
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol == "906431"
+        )
     )
     await db_session.commit()
     # Same KR symbol under two sources at the same date (defensive — KR is single-source today).
-    db_session.add_all([
-        MarketValuationSnapshot(market="kr", symbol="906431", snapshot_date=vd,
-            source="naver_finance", per=Decimal("10"), pbr=Decimal("1.0"),
-            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000")),
-        MarketValuationSnapshot(market="kr", symbol="906431", snapshot_date=vd,
-            source="yahoo", per=Decimal("10"), pbr=Decimal("1.0"),
-            roe=Decimal("8"), dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000")),
-    ])
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906431",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("10"),
+                pbr=Decimal("1.0"),
+                roe=Decimal("8"),
+                dividend_yield=Decimal("0.01"),
+                market_cap=Decimal("500000000000"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906431",
+                snapshot_date=vd,
+                source="yahoo",
+                per=Decimal("10"),
+                pbr=Decimal("1.0"),
+                roe=Decimal("8"),
+                dividend_yield=Decimal("0.01"),
+                market_cap=Decimal("500000000000"),
+            ),
+        ]
+    )
     await db_session.commit()
 
     result = await load_fundamentals_preset_from_snapshots(
-        db_session, market="kr", spec=CHEAP_VALUE_SPEC, limit=20,
+        db_session,
+        market="kr",
+        spec=CHEAP_VALUE_SPEC,
+        limit=20,
         now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
     )
     assert result is not None
@@ -776,6 +920,7 @@ async def test_loader_dedups_symbol_across_multiple_sources(db_session):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_loader_end_to_end_includes_and_excludes_with_fundamentals(db_session):
+    await _cleanup_db(db_session)
     import sqlalchemy as sa
 
     from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
@@ -794,38 +939,65 @@ async def test_loader_end_to_end_includes_and_excludes_with_fundamentals(db_sess
         )
     )
     await db_session.execute(
-        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms))
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(syms)
+        )
     )
     await db_session.commit()
     # Both pass valuation (PER 12<=15, PBR 1.0<=1.5).
-    db_session.add_all([
-        MarketValuationSnapshot(market="kr", symbol=s, snapshot_date=vd, source="naver_finance",
-            per=Decimal("12"), pbr=Decimal("1.0"), roe=Decimal("8"),
-            dividend_yield=Decimal("0.01"), market_cap=Decimal("500000000000"))
-        for s in syms
-    ])
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol=s,
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("12"),
+                pbr=Decimal("1.0"),
+                roe=Decimal("8"),
+                dividend_yield=Decimal("0.01"),
+                market_cap=Decimal("500000000000"),
+            )
+            for s in syms
+        ]
+    )
     # 906441 earnings growing (eg >= 0 → included); 906442 declining (eg < 0 → excluded).
     for s, nis in [("906441", [100, 110, 120, 130]), ("906442", [200, 180, 150, 120])]:
         for i, ni in enumerate(nis):
-            db_session.add(FinancialFundamentalsSnapshot(
-                market="kr", symbol=s, fiscal_period=f"{2021 + i}A", period_type="annual",
-                period_end_date=dt.date(2021 + i, 12, 31), filing_date=dt.date(2022 + i, 3, 20),
-                effective_at=dt.date(2022 + i, 3, 20), source="dart",
-                source_collected_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
-                revenue=Decimal("1000"), net_income=Decimal(ni), data_state="fresh"))
-    db_session.add_all([
-        KRSymbolUniverse(symbol=s, name=f"종목{s}", exchange="KOSPI", is_active=True) for s in syms
-    ])
+            db_session.add(
+                FinancialFundamentalsSnapshot(
+                    market="kr",
+                    symbol=s,
+                    fiscal_period=f"{2021 + i}A",
+                    period_type="annual",
+                    period_end_date=dt.date(2021 + i, 12, 31),
+                    filing_date=dt.date(2022 + i, 3, 20),
+                    effective_at=dt.date(2022 + i, 3, 20),
+                    source="dart",
+                    source_collected_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+                    revenue=Decimal("1000"),
+                    net_income=Decimal(ni),
+                    data_state="fresh",
+                )
+            )
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol=s, name=f"종목{s}", exchange="KOSPI", is_active=True
+            )
+            for s in syms
+        ]
+    )
     await db_session.commit()
 
     result = await load_fundamentals_preset_from_snapshots(
-        db_session, market="kr", spec=CHEAP_VALUE_SPEC, limit=20,
+        db_session,
+        market="kr",
+        spec=CHEAP_VALUE_SPEC,
+        limit=20,
         now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
     )
     assert result is not None
     assert [r["symbol"] for r in result.rows] == ["906441"]  # growing earnings included
     assert result.fundamentals_state == "fresh"  # fundamentals rows exist
     assert "906442" in {e["symbol"] for e in result.excluded}  # declining → excluded
-
-
-
