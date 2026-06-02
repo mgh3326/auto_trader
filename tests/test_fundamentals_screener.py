@@ -6,7 +6,6 @@ from decimal import Decimal
 
 import pytest
 
-
 from app.services.financial_fundamentals_snapshots.derive import FundamentalPeriod
 from app.services.invest_view_model.fundamentals_screener import (
     PROFITABLE_COMPANY_SPEC,
@@ -176,14 +175,23 @@ def test_registry_has_four_specs_with_expected_thresholds():
         "future_dividend_king",
     }
     ug = FUNDAMENTALS_PRESET_SPECS["undervalued_growth"]
-    assert ug.max_per == Decimal("20") and ug.min_revenue_growth_3y_avg == Decimal("0.10")
+    assert ug.max_per == Decimal("20") and ug.min_revenue_growth_3y_avg == Decimal(
+        "0.10"
+    )
     assert ug.min_earnings_growth_3y_avg == Decimal("0.20")
     sg = FUNDAMENTALS_PRESET_SPECS["stable_growth"]
-    assert sg.min_roe == Decimal("15") and sg.min_earnings_growth_3y_avg == Decimal("0.10")
+    assert sg.min_roe == Decimal("15") and sg.min_earnings_growth_3y_avg == Decimal(
+        "0.10"
+    )
     assert sg.min_earnings_increase_streak_years == 3
     dk = FUNDAMENTALS_PRESET_SPECS["future_dividend_king"]
-    assert dk.min_dividend_yield == Decimal("0.01") and dk.min_payout_ratio == Decimal("30")
-    assert dk.min_dividend_growth_streak_years == 3 and dk.min_earnings_increase_streak_years == 3
+    assert dk.min_dividend_yield == Decimal("0.01") and dk.min_payout_ratio == Decimal(
+        "30"
+    )
+    assert (
+        dk.min_dividend_growth_streak_years == 3
+        and dk.min_earnings_increase_streak_years == 3
+    )
 
 
 def _growth_period(year, *, revenue, net_income, filing_date):
@@ -228,7 +236,9 @@ def test_stable_growth_includes_when_growth_and_streak_met():
             "dividend_yield": 0.02,
         }
     ]
-    periods = _four_growth_years("005930", [1000, 1100, 1300, 1600], [100, 120, 150, 200])
+    periods = _four_growth_years(
+        "005930", [1000, 1100, 1300, 1600], [100, 120, 150, 200]
+    )
     rows, excluded = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
@@ -256,7 +266,9 @@ def test_stable_growth_excludes_when_streak_below_threshold():
             "dividend_yield": 0.02,
         }
     ]
-    periods = _four_growth_years("005930", [1000, 1100, 1300, 1600], [100, 120, 90, 200])
+    periods = _four_growth_years(
+        "005930", [1000, 1100, 1300, 1600], [100, 120, 90, 200]
+    )
     rows, excluded = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
@@ -311,10 +323,11 @@ def test_undervalued_growth_excludes_when_growth_metric_unavailable_never_silent
 @pytest.mark.asyncio
 async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
     import sqlalchemy as sa
+
     from app.models.market_valuation_snapshot import MarketValuationSnapshot
     from app.services.invest_view_model.fundamentals_screener import (
-        load_fundamentals_preset_from_snapshots,
         UNDERVALUED_GROWTH_SPEC,
+        load_fundamentals_preset_from_snapshots,
     )
 
     vd = dt.date(2026, 6, 2)
@@ -325,28 +338,30 @@ async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
     )
     await db_session.commit()
 
-    db_session.add_all([
-        MarketValuationSnapshot(
-            market="kr",
-            symbol="906401",
-            snapshot_date=vd,
-            source="naver_finance",
-            per=Decimal("15"),
-            roe=Decimal("10"),
-            dividend_yield=Decimal("0.01"),
-            market_cap=Decimal("500000000000"),
-        ),
-        MarketValuationSnapshot(
-            market="kr",
-            symbol="906402",
-            snapshot_date=vd,
-            source="naver_finance",
-            per=Decimal("40"),
-            roe=Decimal("10"),
-            dividend_yield=Decimal("0.01"),
-            market_cap=Decimal("400000000000"),
-        ),  # PER 40 > 20 → excluded from candidates
-    ])
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906401",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("15"),
+                roe=Decimal("10"),
+                dividend_yield=Decimal("0.01"),
+                market_cap=Decimal("500000000000"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="906402",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("40"),
+                roe=Decimal("10"),
+                dividend_yield=Decimal("0.01"),
+                market_cap=Decimal("400000000000"),
+            ),  # PER 40 > 20 → excluded from candidates
+        ]
+    )
     await db_session.commit()
 
     result = await load_fundamentals_preset_from_snapshots(
@@ -364,7 +379,3 @@ async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
     assert "906401" in excluded_symbols
     assert "906402" not in excluded_symbols  # filtered at SQL candidate stage
     assert result.fundamentals_state == "missing"  # no fundamentals backfilled
-
-
-
-

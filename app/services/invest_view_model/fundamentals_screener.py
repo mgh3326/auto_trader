@@ -38,16 +38,18 @@ logger = logging.getLogger(__name__)
 class FundamentalsPresetSpec:
     preset_id: str
     # valuation filters (applied in the SQL candidate query):
-    min_roe: Decimal | None = None              # percent (e.g. 15)
-    max_per: Decimal | None = None              # 0 < per <= max_per
-    min_dividend_yield: Decimal | None = None   # ratio (e.g. 0.01 == 1%), KR naver stores /100
+    min_roe: Decimal | None = None  # percent (e.g. 15)
+    max_per: Decimal | None = None  # 0 < per <= max_per
+    min_dividend_yield: Decimal | None = (
+        None  # ratio (e.g. 0.01 == 1%), KR naver stores /100
+    )
     # derive thresholds (applied in evaluate_fundamentals_candidates):
-    min_gross_margin_ttm: Decimal | None = None         # ratio (0.20)
-    min_revenue_growth_3y_avg: Decimal | None = None    # ratio (0.10)
-    min_earnings_growth_3y_avg: Decimal | None = None   # ratio (0.10 / 0.20)
-    min_earnings_increase_streak_years: int | None = None   # years (3)
-    min_dividend_growth_streak_years: int | None = None     # years (3)
-    min_payout_ratio: Decimal | None = None             # percent (30) — DART 현금배당성향%
+    min_gross_margin_ttm: Decimal | None = None  # ratio (0.20)
+    min_revenue_growth_3y_avg: Decimal | None = None  # ratio (0.10)
+    min_earnings_growth_3y_avg: Decimal | None = None  # ratio (0.10 / 0.20)
+    min_earnings_increase_streak_years: int | None = None  # years (3)
+    min_dividend_growth_streak_years: int | None = None  # years (3)
+    min_payout_ratio: Decimal | None = None  # percent (30) — DART 현금배당성향%
     sort_by: str = "roe"  # any metric key carried on the output row
 
 
@@ -174,11 +176,15 @@ def evaluate_fundamentals_candidates(
                 continue
             metric = getattr(derivation, metric_attr)
             if metric.state != "ok" or metric.value is None:
-                excluded.append({"symbol": symbol, "reason": f"{metric_attr} unavailable"})
+                excluded.append(
+                    {"symbol": symbol, "reason": f"{metric_attr} unavailable"}
+                )
                 rejected = True
                 break
             if Decimal(str(metric.value)) < Decimal(str(threshold)):
-                excluded.append({"symbol": symbol, "reason": f"{metric_attr} below threshold"})
+                excluded.append(
+                    {"symbol": symbol, "reason": f"{metric_attr} below threshold"}
+                )
                 rejected = True
                 break
         if rejected:
@@ -190,18 +196,25 @@ def evaluate_fundamentals_candidates(
             "roe": float(v["roe"]) if v.get("roe") is not None else None,
             "per": float(v["per"]) if v.get("per") is not None else None,
             "pbr": float(v["pbr"]) if v.get("pbr") is not None else None,
-            "market_cap": float(v["market_cap"]) if v.get("market_cap") is not None else None,
-            "dividend_yield": float(v["dividend_yield"]) if v.get("dividend_yield") is not None else None,
+            "market_cap": float(v["market_cap"])
+            if v.get("market_cap") is not None
+            else None,
+            "dividend_yield": float(v["dividend_yield"])
+            if v.get("dividend_yield") is not None
+            else None,
             "_screener_snapshot_state": v.get("_screener_snapshot_state", "fresh"),
         }
         for metric_attr in _CARRIED_DERIVE_METRICS:
             row[metric_attr] = _metric_float(getattr(derivation, metric_attr))
         included.append(row)
     included.sort(
-        key=lambda r: (r.get(spec.sort_by) is None, -(r.get(spec.sort_by) or 0.0), r["symbol"])
+        key=lambda r: (
+            r.get(spec.sort_by) is None,
+            -(r.get(spec.sort_by) or 0.0),
+            r["symbol"],
+        )
     )
     return included[:limit], excluded
-
 
 
 async def load_fundamentals_preset_from_snapshots(

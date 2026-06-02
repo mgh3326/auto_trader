@@ -125,6 +125,7 @@ async def test_stable_growth_routes_to_fundamentals_loader(monkeypatch):
         from app.services.invest_view_model.fundamentals_screener import (
             FundamentalsScreenResult,
         )
+
         return FundamentalsScreenResult(
             rows=[],
             valuation_partition_date=dt.date(2026, 6, 2),
@@ -147,4 +148,3 @@ async def test_stable_growth_routes_to_fundamentals_loader(monkeypatch):
     assert captured["preset_id"] == "stable_growth"  # registry routed the right spec
     assert result.freshness.primary.source == "market_valuation_snapshots"
     assert "fundamentals" in {d.kind for d in result.freshness.dependencies}
-

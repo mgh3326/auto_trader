@@ -38,6 +38,9 @@ from app.schemas.invest_screener import (
     ScreenerSourceContext,
 )
 from app.schemas.investor_flow import InvestorFlowItem
+from app.services.invest_view_model.fundamentals_screener import (
+    FUNDAMENTALS_PRESET_SPECS,
+)
 from app.services.invest_view_model.investor_flow_service import (
     latest_items_for_symbols as _latest_investor_flow_items,
 )
@@ -48,7 +51,6 @@ from app.services.invest_view_model.screener_presets import (
     preset_definitions,
     screening_filters_for,
 )
-from app.services.invest_view_model.fundamentals_screener import FUNDAMENTALS_PRESET_SPECS
 
 _VALID_MARKETS = {"kr", "us", "crypto"}
 _KR_ABSURD_MARKET_CAP_KRW = 10_000_000_000_000_000
@@ -1569,9 +1571,7 @@ async def build_screener_results(
                     partition_date=_fundamentals_screen_result.valuation_partition_date,
                     partition_computed_at=None,
                 )
-            _snapshot_empty_warning = (
-                "최신 밸류에이션/재무 스냅샷에서 해당 프리셋 조건에 맞는 종목이 없습니다."
-            )
+            _snapshot_empty_warning = "최신 밸류에이션/재무 스냅샷에서 해당 프리셋 조건에 맞는 종목이 없습니다."
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
                 session,
@@ -1789,10 +1789,7 @@ async def build_screener_results(
                 }
             )
 
-    if (
-        requested_market == "kr"
-        and _fundamentals_screen_result is not None
-    ):
+    if requested_market == "kr" and _fundamentals_screen_result is not None:
         dependency_specs.append(
             {
                 "kind": "fundamentals",
