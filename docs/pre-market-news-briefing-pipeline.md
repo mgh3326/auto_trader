@@ -106,7 +106,10 @@ Response includes:
 - `discord_title` - Pre-formatted title
 - `discord_body` - Pre-formatted body with quotes and links
 
-### MCP get_market_news
+### MCP get_market_news (Legacy - Briefing Only)
+
+> [!NOTE]
+> `get_market_news` is a legacy broad-market briefing surface. It is kept solely to support the pre-market briefing pipeline and must NOT be used for investment-decision evidence. The dead `search_news` MCP tool has been entirely removed as part of ROB-424.
 
 ```python
 # Example MCP call

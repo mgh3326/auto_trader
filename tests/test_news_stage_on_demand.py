@@ -1,9 +1,8 @@
-"""ROB-115 — NewsStageAnalyzer on-demand fetch behavior."""
+"""ROB-424 — NewsStageAnalyzer on-demand-first behavior (get_news canonical)."""
 
 from __future__ import annotations
 
-from datetime import datetime
-from types import SimpleNamespace
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,178 +10,111 @@ import pytest
 from app.analysis.stages import news_stage
 from app.analysis.stages.base import StageContext
 from app.analysis.stages.news_stage import NewsStageAnalyzer
-from app.services.llm_news_service import NewsLookupResult
-from app.services.research_news_service import NormalizedArticle
+from app.schemas.research_pipeline import StageVerdict
+from app.services.symbol_news_service import SymbolNewsArticle, SymbolNewsFetchResult
 
 
-def _fake_db_article(
-    *,
-    title: str = "기존기사",
-    published_at: datetime | None = None,
-    keywords: list[str] | None = None,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+def _article(*, title: str, published_at: datetime | None = None) -> SymbolNewsArticle:
+    return SymbolNewsArticle(
+        provider="finnhub",
+        market="us",
+        symbol="AMZN",
+        external_article_id=None,
         title=title,
-        article_published_at=published_at,
-        keywords=keywords or [],
+        source_name="Reuters",
+        canonical_url="https://example.com/x",
+        summary=None,
+        published_at=published_at,
+        fetched_at=datetime(2026, 5, 5, 13, 30, tzinfo=UTC),
     )
 
 
-class TestNewsStageOnDemandFetch:
+def _result(status: str, articles: list[SymbolNewsArticle]) -> SymbolNewsFetchResult:
+    return SymbolNewsFetchResult(
+        symbol="AMZN",
+        market="us",
+        provider="finnhub",
+        status=status,
+        requested_limit=20,
+        returned_count=len(articles),
+        articles=articles,
+    )
+
+
+def _ctx(symbol: str = "AMZN", instrument_type: str = "equity_us") -> StageContext:
+    return StageContext(
+        session_id=1,
+        symbol=symbol,
+        instrument_type=instrument_type,
+        symbol_name="Amazon.com Inc.",
+    )
+
+
+class TestNewsStageOnDemandFirst:
     @pytest.mark.asyncio
-    async def test_skips_fetch_when_db_has_enough_rows(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        existing = [
-            _fake_db_article(title="기존1"),
-            _fake_db_article(title="기존2"),
-            _fake_db_article(title="기존3"),
-        ]
-        get_articles = AsyncMock(return_value=NewsLookupResult(articles=existing))
-        fetch = AsyncMock(return_value=[])
-        bulk_create = AsyncMock(return_value=(0, 0, []))
-        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
-        monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
-        monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
-
-        analyzer = NewsStageAnalyzer()
-        out = await analyzer.analyze(
-            StageContext(
-                session_id=1,
-                symbol="005930",
-                instrument_type="equity_kr",
-                symbol_name="삼성전자",
-            )
-        )
-
-        assert out.signals.headline_count == 3
-        fetch.assert_not_awaited()
-        bulk_create.assert_not_awaited()
+    async def test_no_broad_db_seam_on_module(self) -> None:
+        # ROB-424 AC1: the broad-DB helpers must no longer be imported here.
+        assert not hasattr(news_stage, "get_news_articles_with_fallback")
+        assert not hasattr(news_stage, "bulk_create_news_articles")
 
     @pytest.mark.asyncio
-    async def test_triggers_fetch_when_db_below_threshold(
+    async def test_ok_positive_headline_is_bull(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        first_call_articles: list[SimpleNamespace] = []
-        second_call_articles = [
-            _fake_db_article(
-                title="삼성전자 호실적",
-                published_at=datetime(2026, 5, 5, 9, 0, 0),
-                keywords=["earnings"],
-            ),
-        ]
-        get_articles = AsyncMock(
-            side_effect=[
-                NewsLookupResult(articles=first_call_articles),
-                NewsLookupResult(articles=second_call_articles),
-            ]
-        )
         fetch = AsyncMock(
-            return_value=[
-                NormalizedArticle(
-                    url="https://finance.naver.com/x",
-                    title="삼성전자 호실적",
-                    source="한국경제",
-                    summary=None,
-                    published_at=datetime(2026, 5, 5, 9, 0, 0),
-                    provider="naver",
-                )
-            ]
-        )
-        bulk_create = AsyncMock(return_value=(1, 0, []))
-        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
-        monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
-        monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
-
-        analyzer = NewsStageAnalyzer()
-        out = await analyzer.analyze(
-            StageContext(
-                session_id=1,
-                symbol="005930",
-                instrument_type="equity_kr",
-                symbol_name="삼성전자",
+            return_value=_result(
+                "ok",
+                [
+                    _article(
+                        title="Amazon earnings beat soaring growth",
+                        published_at=datetime(2026, 5, 5, 13, 0, tzinfo=UTC),
+                    )
+                ],
             )
         )
+        monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
+
+        out = await NewsStageAnalyzer().analyze(_ctx())
 
         fetch.assert_awaited_once()
-        bulk_create.assert_awaited_once()
-        # bulk_create payload tags symbol/name and uses on-demand feed_source
-        payload = bulk_create.await_args.args[0]
-        assert payload[0].stock_symbol == "005930"
-        assert payload[0].stock_name == "삼성전자"
-        assert payload[0].feed_source == "research_on_demand_naver"
-        assert payload[0].market == "kr"
-        # signals reflect the refetched DB state
+        assert fetch.await_args.args[0] == "AMZN"
+        assert fetch.await_args.args[1] == "us"
         assert out.signals.headline_count == 1
+        assert out.verdict == StageVerdict.BULL
 
     @pytest.mark.asyncio
-    async def test_fetch_failure_degrades_to_neutral(
+    async def test_empty_status_is_neutral_zero_headlines(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        get_articles = AsyncMock(return_value=NewsLookupResult(articles=[]))
-        fetch = AsyncMock(return_value=[])  # service returns [] on failure
-        bulk_create = AsyncMock(return_value=(0, 0, []))
-        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
-        monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
-        monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
-
-        analyzer = NewsStageAnalyzer()
-        out = await analyzer.analyze(
-            StageContext(
-                session_id=1,
-                symbol="AMZN",
-                instrument_type="equity_us",
-                symbol_name="Amazon.com Inc.",
-            )
+        monkeypatch.setattr(
+            news_stage,
+            "fetch_symbol_news",
+            AsyncMock(return_value=_result("empty", [])),
         )
-
-        # No raise. Stage stays NEUTRAL with 0 headlines.
-        from app.schemas.research_pipeline import StageVerdict
-
+        out = await NewsStageAnalyzer().analyze(_ctx())
         assert out.verdict == StageVerdict.NEUTRAL
         assert out.signals.headline_count == 0
-        # bulk_create skipped because fetched=[]
-        bulk_create.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_uses_fetched_headlines_when_persisted_requery_is_empty(
+    async def test_error_status_is_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        get_articles = AsyncMock(
-            side_effect=[
-                NewsLookupResult(articles=[]),
-                NewsLookupResult(articles=[]),
-            ]
+        monkeypatch.setattr(
+            news_stage,
+            "fetch_symbol_news",
+            AsyncMock(return_value=_result("error", [])),
         )
-        fetch = AsyncMock(
-            return_value=[
-                NormalizedArticle(
-                    url="https://reuters.com/amzn-q1",
-                    title="Amazon beats Q1 earnings",
-                    source="Reuters",
-                    summary="Amazon reported revenue of $X.",
-                    published_at=datetime(2026, 5, 5, 13, 30, 0),
-                    provider="finnhub",
-                )
-            ]
-        )
-        bulk_create = AsyncMock(return_value=(0, 1, ["https://reuters.com/amzn-q1"]))
-        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
+        out = await NewsStageAnalyzer().analyze(_ctx())
+        assert out.verdict == StageVerdict.UNAVAILABLE
+        assert out.confidence == 0
+
+    @pytest.mark.asyncio
+    async def test_kr_routes_to_kr_market(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fetch = AsyncMock(return_value=_result("empty", []))
         monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
-        monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
-
-        analyzer = NewsStageAnalyzer()
-        out = await analyzer.analyze(
-            StageContext(
-                session_id=1,
-                symbol="AMZN",
-                instrument_type="equity_us",
-                symbol_name="Amazon.com Inc.",
-            )
+        await NewsStageAnalyzer().analyze(
+            _ctx(symbol="005930", instrument_type="equity_kr")
         )
-
-        fetch.assert_awaited_once()
-        bulk_create.assert_awaited_once()
-        assert get_articles.await_count == 2
-        assert out.signals.headline_count == 1
-        assert out.signals.sentiment_score > 0
+        assert fetch.await_args.args[1] == "kr"
