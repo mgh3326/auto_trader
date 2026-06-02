@@ -178,3 +178,141 @@ async def test_loader_returns_none_without_valuation_partition(db_session):
         db_session, market="us", limit=20, today_market_date=dt.date(2026, 6, 2)
     )
     assert rows is None  # non-KR short-circuits
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_ranks_by_proximity_desc_then_per_asc(db_session):
+    # spec §5.2: rank by 신고가 근접도(close/high_52w) desc, tiebreak per asc.
+    vd = dt.date(2099, 12, 31)
+    syms = ["907021", "907022", "907023", "907024"]
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms))
+    )
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_(syms))
+    )
+    await db_session.commit()
+    # proximity = close/high(=100): A 0.99, B 0.96, C 0.97 (per 8), D 0.97 (per 5)
+    # expected order: A(0.99) > {D,C both 0.97 → per asc: D(5) then C(8)} > B(0.96)
+    specs = [
+        ("907021", "8", "99"),
+        ("907022", "8", "96"),
+        ("907023", "8", "97"),
+        ("907024", "5", "97"),
+    ]
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol=s,
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal(per),
+                pbr=Decimal("0.8"),
+                high_52w=Decimal("100"),
+                market_cap=Decimal("5e11"),
+            )
+            for s, per, _close in specs
+        ]
+    )
+    db_session.add_all(
+        [
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol=s,
+                snapshot_date=vd,
+                latest_close=Decimal(close),
+                closes_window=[],
+                source="kis",
+            )
+            for s, _per, close in specs
+        ]
+    )
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol=s, name=f"종목{s}", exchange="KOSPI", is_active=True
+            )
+            for s in syms
+        ]
+    )
+    await db_session.commit()
+
+    rows = await load_undervalued_breakout_from_snapshots(
+        db_session, market="kr", limit=20, today_market_date=vd
+    )
+    assert rows is not None
+    assert [r["symbol"] for r in rows] == ["907021", "907024", "907023", "907022"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_dedups_symbol_across_multiple_sources(db_session):
+    # Defensive: same KR symbol under two valuation sources must yield ONE row.
+    vd = dt.date(2099, 12, 31)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol == "907031"
+        )
+    )
+    await db_session.execute(
+        sa.delete(InvestScreenerSnapshot).where(
+            InvestScreenerSnapshot.symbol == "907031"
+        )
+    )
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "907031")
+    )
+    await db_session.commit()
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="907031",
+                snapshot_date=vd,
+                source="naver_finance",
+                per=Decimal("8"),
+                pbr=Decimal("0.8"),
+                high_52w=Decimal("100"),
+                market_cap=Decimal("5e11"),
+            ),
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="907031",
+                snapshot_date=vd,
+                source="yahoo",
+                per=Decimal("8"),
+                pbr=Decimal("0.8"),
+                high_52w=Decimal("100"),
+                market_cap=Decimal("5e11"),
+            ),
+        ]
+    )
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol="907031",
+            snapshot_date=vd,
+            latest_close=Decimal("99"),
+            closes_window=[],
+            source="kis",
+        )
+    )
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="907031", name="종목907031", exchange="KOSPI", is_active=True
+        )
+    )
+    await db_session.commit()
+
+    rows = await load_undervalued_breakout_from_snapshots(
+        db_session, market="kr", limit=20, today_market_date=vd
+    )
+    assert rows is not None
+    assert [r["symbol"] for r in rows].count("907031") == 1  # deduped
