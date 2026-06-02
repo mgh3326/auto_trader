@@ -103,9 +103,14 @@ needs the immediately-prior cumulative within the same fiscal year:
 - `rcept_no` comes from the per-quarter filing; PIT `filing_date` is resolved by
   the existing `filing_dates` dict (`parse_filing_dates_frame`, `:113-123`,
   consumed in `_payload_from_quarterly`) — **no new PIT code**.
-- A quarter whose cumulative frame is `None`/empty is **skipped** (not faked); a
-  missing `prior` yields `discrete=None` via `single_quarter_discrete` — that is
-  already the correct fail-soft.
+- A quarter whose cumulative frame is `None`/empty is **skipped** (not faked).
+  **CORRECTION (impl review):** `single_quarter_discrete(prior=None)` returns the
+  cumulative *verbatim* (correct only for Q1 standalone), NOT `None`. So for `q>1`
+  the fetcher must **skip emitting a quarter whose immediate prior is missing** —
+  otherwise the YTD cumulative is mislabeled as the standalone discrete, and the
+  D3 adjacency guard (which checks period *labels*, not differencing) would pass a
+  faked QoQ. Skipping makes the remaining usable quarters non-adjacent → QoQ
+  `unavailable` (fail-closed).
 - `include_quarterly=False` keeps `quarterly=()` (annual-only default preserved).
 
 ## A2. DART daily-limit pacing (D2)
@@ -116,7 +121,7 @@ No pacing exists today. Add a **request counter + hard cap**, no throttle.
   fundamentals collection path so the job tallies real requests per run. Put the
   counter where both annual and quarterly calls funnel (the fetcher / job runner),
   not in the vendored `OpenDartReader`.
-- **Budget:** `DART_DAILY_REQUEST_BUDGET` env (settings), **default `18000`**
+- **Budget:** `OPENDART_DAILY_REQUEST_BUDGET` env (settings), **default `18000`**
   (~90% of the 20,000/day limit, headroom for other DART consumers). `0` or
   negative = explicitly disabled. Document in `env.example` and the runbook.
 - **Fail-stop:** before a request that would push the run's tally over the budget,
@@ -145,7 +150,7 @@ annual rows coexist, no schema change.
 | Unit | Fetcher builds `RawQuarterlyFiling` Q1–Q4 with correct `prior_income_statement` wiring (Q1 prior=None; Q4 cumulative=annual FY, prior=Q3 9M) | +2 |
 | Unit | Discrete differencing end-to-end through `_payload_from_quarterly` (H1−Q1, 9M−H1, FY−9M); missing prior → `discrete=None` | +2 |
 | Unit | `include_quarterly=False` → `quarterly=()`; `True` → populated | +1 |
-| Unit | Budget fail-stop: run exceeding `DART_DAILY_REQUEST_BUDGET` raises before the over-limit call; partial reported not committed | +2 |
+| Unit | Budget fail-stop: run exceeding `OPENDART_DAILY_REQUEST_BUDGET` raises before the over-limit call; partial reported not committed | +2 |
 | Unit | dry-run logs a projected request-count estimate; `--commit` not required for estimate | +1 |
 
 Use the existing fetcher-mock pattern (inject a fake fetcher / stub
@@ -157,7 +162,7 @@ Use the existing fetcher-mock pattern (inject a fake fetcher / stub
    Q1–Q4 with `prior_income_statement` wired so `_payload_from_quarterly` produces
    non-null `discrete_*` where the prior cumulative exists; PIT `filing_date` is
    populated from `rcept_no → rcept_dt`.
-2. A backfill run that would exceed `DART_DAILY_REQUEST_BUDGET` (default 18000)
+2. A backfill run that would exceed `OPENDART_DAILY_REQUEST_BUDGET` (default 18000)
    fail-stops with `DartDailyRequestBudgetExceeded` before the over-limit request;
    dry-run reports the projected request count.
 3. Annual-only behavior is unchanged when `--with-quarterly` is omitted; no
@@ -286,7 +291,7 @@ gate). Build quarterly fixtures with `period_type="quarterly"` +
 |---|---|---|
 | `app/services/financial_fundamentals_snapshots/builder.py:344-410` | PR1 | Quarterly branch in `default_dart_fetcher`; build `RawQuarterlyFiling` Q1–Q4 with `prior_income_statement` |
 | `app/jobs/financial_fundamentals_snapshots.py` | PR1 | Request counter + budget fail-stop; dry-run estimate |
-| `app/core/config` (settings) + `env.example` | PR1 | `DART_DAILY_REQUEST_BUDGET` (default 18000) |
+| `app/core/config` (settings) + `env.example` | PR1 | `OPENDART_DAILY_REQUEST_BUDGET` (default 18000) |
 | `scripts/build_financial_fundamentals_snapshots.py` | PR1 | Surface estimate/budget in output (args already exist) |
 | `docs/runbooks/*fundamentals*` | PR1 | Document quarterly readiness + budget pacing |
 | `app/services/financial_fundamentals_snapshots/derive.py:145-155` | PR2 | Adjacency + freshness guard in `_earnings_growth_qoq` |
@@ -306,7 +311,7 @@ gate). Build quarterly fixtures with `period_type="quarterly"` +
 ## Rollback
 
 Revert the PR(s). No data migration to undo. Quarterly collection is gated by
-`--with-quarterly` (default off) + `DART_DAILY_REQUEST_BUDGET`; the preset
+`--with-quarterly` (default off) + `OPENDART_DAILY_REQUEST_BUDGET`; the preset
 fail-closes to `missing` if no quarterly snapshots exist, so a PR2-only revert
 leaves no half-applied filter.
 

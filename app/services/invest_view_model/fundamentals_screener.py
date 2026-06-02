@@ -52,6 +52,7 @@ class FundamentalsPresetSpec:
     min_dividend_growth_streak_years: int | None = None  # years (3)
     min_dividend_paid_streak_years: int | None = None  # years (3)
     min_payout_ratio: Decimal | None = None  # percent (30) — DART 현금배당성향%
+    min_earnings_growth_qoq: Decimal | None = None  # ratio (0.10)
     sort_by: str = "roe"  # any metric key carried on the output row
 
 
@@ -104,6 +105,13 @@ STEADY_DIVIDEND_SPEC = FundamentalsPresetSpec(
     sort_by="dividend_yield",
 )
 
+GROWTH_EXPECTATION_TOSS_SPEC = FundamentalsPresetSpec(
+    preset_id="growth_expectation_toss",
+    min_earnings_growth_3y_avg=Decimal("0.03"),
+    min_earnings_growth_qoq=Decimal("0.10"),
+    sort_by="earnings_growth_qoq",
+)
+
 FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {
     s.preset_id: s
     for s in (
@@ -113,6 +121,7 @@ FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {
         FUTURE_DIVIDEND_KING_SPEC,
         CHEAP_VALUE_SPEC,
         STEADY_DIVIDEND_SPEC,
+        GROWTH_EXPECTATION_TOSS_SPEC,
     )
 }
 
@@ -154,6 +163,7 @@ _DERIVE_CHECKS: tuple[tuple[str, str], ...] = (
     ("min_earnings_increase_streak_years", "earnings_increase_streak_years"),
     ("min_dividend_growth_streak_years", "dividend_growth_streak_years"),
     ("min_dividend_paid_streak_years", "dividend_paid_streak_years"),
+    ("min_earnings_growth_qoq", "earnings_growth_qoq"),
 )
 
 _CARRIED_DERIVE_METRICS = (
@@ -164,6 +174,7 @@ _CARRIED_DERIVE_METRICS = (
     "earnings_increase_streak_years",
     "dividend_growth_streak_years",
     "dividend_paid_streak_years",
+    "earnings_growth_qoq",
 )
 
 

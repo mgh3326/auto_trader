@@ -142,11 +142,42 @@ def _gross_margin_ttm(annual: list, quarterly: list) -> MetricResult:
     return _UNAVAILABLE
 
 
-def _earnings_growth_qoq(quarterly: list) -> MetricResult:
+_QOQ_MAX_STALENESS_DAYS = 183
+
+
+def _quarter_idx(fiscal_period: str | None) -> int | None:
+    if not fiscal_period:
+        return None
+    try:
+        parts = fiscal_period.split("Q")
+        if len(parts) == 2:
+            return int(parts[0]) * 4 + (int(parts[1]) - 1)
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def _earnings_growth_qoq(quarterly: list, report_date: dt.date) -> MetricResult:
     usable = [q for q in quarterly if q.discrete_net_income is not None]
     if len(usable) < 2:
         return _UNAVAILABLE
-    curr, prev = usable[-1].discrete_net_income, usable[-2].discrete_net_income
+
+    curr_period = usable[-1]
+    prev_period = usable[-2]
+
+    if (
+        curr_period.period_end_date is None
+        or (report_date - curr_period.period_end_date).days > _QOQ_MAX_STALENESS_DAYS
+    ):
+        return _UNAVAILABLE
+
+    curr_idx = _quarter_idx(curr_period.fiscal_period)
+    prev_idx = _quarter_idx(prev_period.fiscal_period)
+
+    if curr_idx is None or prev_idx is None or curr_idx - prev_idx != 1:
+        return _UNAVAILABLE
+
+    curr, prev = curr_period.discrete_net_income, prev_period.discrete_net_income
     g = _yoy(curr, prev)
     if g is None:
         return MetricResult(
@@ -229,7 +260,7 @@ def derive_fundamentals_metrics(
         earnings_growth_3y_avg=_growth_3y_avg(net_incomes)
         if net_incomes
         else _UNAVAILABLE,
-        earnings_growth_qoq=_earnings_growth_qoq(quarterly),
+        earnings_growth_qoq=_earnings_growth_qoq(quarterly, report_date),
         earnings_increase_streak_years=_increase_streak(annual)
         if annual
         else _UNAVAILABLE,

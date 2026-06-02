@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -136,6 +137,43 @@ def single_quarter_discrete(
     if prior_cumulative is None:
         return cumulative
     return cumulative - prior_cumulative
+
+
+class DartDailyRequestBudgetExceeded(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        payloads: tuple[FinancialFundamentalsUpsert, ...] = (),
+        warnings: tuple[str, ...] = (),
+    ):
+        super().__init__(message)
+        self.payloads = payloads
+        self.warnings = warnings
+
+
+_request_count = 0
+# Guards the module-global counter: fetch_sync runs under asyncio.to_thread and
+# symbols fan out via gather + Semaphore, so concurrent threads mutate the count.
+_request_lock = threading.Lock()
+
+
+def reset_request_count() -> None:
+    global _request_count
+    with _request_lock:
+        _request_count = 0
+
+
+def increment_and_check_budget(delta: int = 1) -> None:
+    global _request_count
+    from app.core.config import settings
+
+    budget = settings.opendart_daily_request_budget
+    with _request_lock:
+        if budget > 0 and _request_count + delta > budget:
+            raise DartDailyRequestBudgetExceeded(
+                f"DART daily request budget of {budget} exceeded (attempted to make {_request_count + delta} requests)"
+            )
+        _request_count += delta
 
 
 @dataclass(frozen=True)
@@ -307,6 +345,8 @@ async def build_financial_fundamentals_for_symbols(
         async with sem:
             try:
                 bundle = await fetcher(symbol, include_quarterly=include_quarterly)
+            except DartDailyRequestBudgetExceeded:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fundamentals fetch failed symbol=%s: %s", symbol, exc)
                 warnings.append(f"{symbol}: fetch failed ({exc})")
@@ -335,7 +375,14 @@ async def build_financial_fundamentals_for_symbols(
                     )
                 )
 
-    await asyncio.gather(*(_one(symbol) for symbol in symbols_list))
+    try:
+        await asyncio.gather(*(_one(symbol) for symbol in symbols_list))
+    except DartDailyRequestBudgetExceeded as exc:
+        raise DartDailyRequestBudgetExceeded(
+            str(exc),
+            payloads=tuple(collected),
+            warnings=tuple(warnings) + (str(exc),),
+        ) from exc
     return FinancialFundamentalsBuildResult(
         payloads=tuple(collected), warnings=tuple(warnings)
     )
@@ -362,15 +409,34 @@ async def default_dart_fetcher(
     years = list(range(today.year - 1, today.year - 1 - years_back, -1))
 
     def fetch_sync() -> RawFundamentalsBundle:
+        class BudgetedClient:
+            def __init__(self, original_client):
+                self._client = original_client
+
+            def finstate_all(self, *args, **kwargs):
+                increment_and_check_budget()
+                return self._client.finstate_all(*args, **kwargs)
+
+            def report(self, *args, **kwargs):
+                increment_and_check_budget()
+                return self._client.report(*args, **kwargs)
+
+            def list(self, *args, **kwargs):
+                increment_and_check_budget()
+                return self._client.list(*args, **kwargs)
+
+        b_client = BudgetedClient(client)
+        client_to_use = b_client
+
         annual: list[RawAnnualFiling] = []
         for year in years:
-            stmt = client.finstate_all(symbol, year, "11011", fs_div="CFS")
+            stmt = client_to_use.finstate_all(symbol, year, "11011", fs_div="CFS")
             if stmt is None or stmt.empty:
-                stmt = client.finstate_all(symbol, year, "11011", fs_div="OFS")
+                stmt = client_to_use.finstate_all(symbol, year, "11011", fs_div="OFS")
             if stmt is None or stmt.empty:
                 continue
             try:
-                dividend = client.report(symbol, "배당", year, "11011")
+                dividend = client_to_use.report(symbol, "배당", year, "11011")
             except Exception:  # noqa: BLE001
                 dividend = None
             rcept_no = ""
@@ -384,8 +450,65 @@ async def default_dart_fetcher(
                     dividend=dividend,
                 )
             )
+
+        quarterly: list[RawQuarterlyFiling] = []
+        if include_quarterly:
+            annual_by_year = {a.bsns_year: a for a in annual}
+            for year in years:
+                stmts_by_q: dict[int, tuple[str, pd.DataFrame]] = {}
+                for q in (1, 2, 3, 4):
+                    reprt_code = _REPRT_CODE_BY_QUARTER[q]
+                    if q == 4:
+                        if year in annual_by_year:
+                            ann_filing = annual_by_year[year]
+                            stmts_by_q[4] = (
+                                ann_filing.rcept_no,
+                                ann_filing.income_statement,
+                            )
+                    else:
+                        q_stmt = client_to_use.finstate_all(
+                            symbol, year, reprt_code, fs_div="CFS"
+                        )
+                        if q_stmt is None or q_stmt.empty:
+                            q_stmt = client_to_use.finstate_all(
+                                symbol, year, reprt_code, fs_div="OFS"
+                            )
+                        if q_stmt is not None and not q_stmt.empty:
+                            r_no = ""
+                            if "rcept_no" in q_stmt.columns:
+                                r_no = str(q_stmt.iloc[0].get("rcept_no", "")).strip()
+                            stmts_by_q[q] = (r_no, q_stmt)
+
+                for q in (1, 2, 3, 4):
+                    if q not in stmts_by_q:
+                        continue
+                    rcept_no, stmt = stmts_by_q[q]
+                    prior_stmt = None
+                    if q > 1:
+                        # A KR interim/annual statement is YTD-cumulative, so the
+                        # standalone quarter needs the immediately-prior cumulative
+                        # to difference against. If that prior is missing we cannot
+                        # produce a correct discrete — skip this quarter rather than
+                        # emit the YTD cumulative mislabeled as the standalone value
+                        # (single_quarter_discrete returns the cumulative verbatim
+                        # when prior is None, which is only correct for Q1).
+                        if (q - 1) not in stmts_by_q:
+                            continue
+                        _, prior_stmt = stmts_by_q[q - 1]
+
+                    quarterly.append(
+                        RawQuarterlyFiling(
+                            bsns_year=year,
+                            quarter=q,
+                            rcept_no=rcept_no,
+                            reprt_code=_REPRT_CODE_BY_QUARTER[q],
+                            income_statement=stmt,
+                            prior_income_statement=prior_stmt,
+                        )
+                    )
+
         # Resolve filing dates via the disclosure-list endpoint (carries rcept_dt).
-        listing = client.list(
+        listing = client_to_use.list(
             corp=symbol,
             start=(today - dt.timedelta(days=365 * (years_back + 1))).isoformat(),
             end=today.isoformat(),
@@ -403,7 +526,7 @@ async def default_dart_fetcher(
             symbol=symbol,
             currency=currency,
             annual=tuple(annual),
-            quarterly=(),
+            quarterly=tuple(quarterly),
             filing_dates=filing_dates,
         )
 

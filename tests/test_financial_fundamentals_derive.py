@@ -190,3 +190,66 @@ def test_dividend_paid_streak_breaks_on_fiscal_year_gap():
     )
     d = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 6, 1))
     assert d.dividend_paid_streak_years.value == 1
+
+
+def _quarterly(
+    year: int,
+    quarter: int,
+    *,
+    net_income,
+    filing_date,
+    period_end_date=None,
+) -> FundamentalPeriod:
+    if period_end_date is None:
+        period_end_date = {
+            1: dt.date(year, 3, 31),
+            2: dt.date(year, 6, 30),
+            3: dt.date(year, 9, 30),
+            4: dt.date(year, 12, 31),
+        }[quarter]
+    return FundamentalPeriod(
+        fiscal_period=f"{year}Q{quarter}",
+        period_type="quarterly",
+        period_end_date=period_end_date,
+        filing_date=filing_date,
+        revenue=None,
+        net_income=Decimal(net_income) if net_income is not None else None,
+        gross_profit=None,
+        cost_of_sales=None,
+        discrete_revenue=None,
+        discrete_net_income=Decimal(net_income) if net_income is not None else None,
+        payout_ratio=None,
+        dividend_per_share=None,
+        roe=None,
+    )
+
+
+def test_earnings_growth_qoq_scenarios():
+    # 1. Adjacent + fresh -> ok
+    periods = [
+        _quarterly(2025, 2, net_income="100", filing_date=dt.date(2025, 8, 14)),
+        _quarterly(2025, 3, net_income="110", filing_date=dt.date(2025, 11, 14)),
+    ]
+    d = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 11, 15))
+    assert d.earnings_growth_qoq.state == "ok"
+    assert round(float(d.earnings_growth_qoq.value), 2) == 0.10
+
+    # 2. Non-adjacent (gap Q1 to Q3) -> unavailable
+    periods_gap = [
+        _quarterly(2025, 1, net_income="100", filing_date=dt.date(2025, 5, 15)),
+        _quarterly(2025, 3, net_income="110", filing_date=dt.date(2025, 11, 14)),
+    ]
+    d_gap = derive_fundamentals_metrics(periods_gap, report_date=dt.date(2025, 11, 15))
+    assert d_gap.earnings_growth_qoq.state == "unavailable"
+
+    # 3. Stale latest quarter (> 183 days) -> unavailable
+    d_stale = derive_fundamentals_metrics(periods, report_date=dt.date(2026, 6, 1))
+    assert d_stale.earnings_growth_qoq.state == "unavailable"
+
+    # 4. Non-positive base quarter -> partial
+    periods_neg = [
+        _quarterly(2025, 2, net_income="-50", filing_date=dt.date(2025, 8, 14)),
+        _quarterly(2025, 3, net_income="10", filing_date=dt.date(2025, 11, 14)),
+    ]
+    d_neg = derive_fundamentals_metrics(periods_neg, report_date=dt.date(2025, 11, 15))
+    assert d_neg.earnings_growth_qoq.state == "partial"
