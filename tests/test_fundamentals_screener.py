@@ -182,3 +182,125 @@ def test_registry_has_four_specs_with_expected_thresholds():
     assert dk.min_dividend_yield == Decimal("0.01") and dk.min_payout_ratio == Decimal("30")
     assert dk.min_dividend_growth_streak_years == 3 and dk.min_earnings_increase_streak_years == 3
 
+
+def _growth_period(year, *, revenue, net_income, filing_date):
+    return FundamentalPeriod(
+        fiscal_period=f"{year}A",
+        period_type="annual",
+        period_end_date=dt.date(year, 12, 31),
+        filing_date=filing_date,
+        revenue=Decimal(revenue),
+        net_income=Decimal(net_income),
+        discrete_revenue=Decimal(revenue),
+        discrete_net_income=Decimal(net_income),
+    )
+
+
+def _four_growth_years(symbol, revs, nis):
+    # revs/nis are 4 ascending-year values (2021..2024); filed the following March.
+    return {
+        symbol: [
+            _growth_period(
+                2021 + i,
+                revenue=str(revs[i]),
+                net_income=str(nis[i]),
+                filing_date=dt.date(2022 + i, 3, 20),
+            )
+            for i in range(4)
+        ]
+    }
+
+
+def test_stable_growth_includes_when_growth_and_streak_met():
+    from app.services.invest_view_model.fundamentals_screener import STABLE_GROWTH_SPEC
+
+    # net income 100→120→150→200 (all increases → streak 3; 3y-avg growth well above 10%)
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 20.0,
+            "per": 9.0,
+            "pbr": 1.1,
+            "market_cap": 5e11,
+            "dividend_yield": 0.02,
+        }
+    ]
+    periods = _four_growth_years("005930", [1000, 1100, 1300, 1600], [100, 120, 150, 200])
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=STABLE_GROWTH_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert [r["symbol"] for r in rows] == ["005930"]
+    assert rows[0]["earnings_increase_streak_years"] == 3
+    assert rows[0]["earnings_growth_3y_avg"] is not None
+
+
+def test_stable_growth_excludes_when_streak_below_threshold():
+    from app.services.invest_view_model.fundamentals_screener import STABLE_GROWTH_SPEC
+
+    # net income dips in 2023 → streak ending 2024 is only 1 (< 3) → excluded.
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 20.0,
+            "per": 9.0,
+            "pbr": 1.1,
+            "market_cap": 5e11,
+            "dividend_yield": 0.02,
+        }
+    ]
+    periods = _four_growth_years("005930", [1000, 1100, 1300, 1600], [100, 120, 90, 200])
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=STABLE_GROWTH_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert rows == []
+    assert any("earnings_increase_streak_years" in e["reason"] for e in excluded)
+
+
+def test_undervalued_growth_excludes_when_growth_metric_unavailable_never_silent():
+    from app.services.invest_view_model.fundamentals_screener import (
+        UNDERVALUED_GROWTH_SPEC,
+    )
+
+    # Only 1 annual period → 3y-avg growth is 'partial'/'unavailable' → excluded, not passed.
+    valuation_rows = [
+        {
+            "symbol": "005930",
+            "roe": 8.0,
+            "per": 12.0,
+            "pbr": 0.9,
+            "market_cap": 3e11,
+            "dividend_yield": 0.01,
+        }
+    ]
+    periods = {
+        "005930": [
+            _growth_period(
+                2024,
+                revenue="1600",
+                net_income="200",
+                filing_date=dt.date(2025, 3, 20),
+            )
+        ]
+    }
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=UNDERVALUED_GROWTH_SPEC,
+        report_date=dt.date(2025, 6, 1),
+        limit=20,
+        name_map={},
+    )
+    assert rows == []
+    assert excluded  # never silently included
+
+

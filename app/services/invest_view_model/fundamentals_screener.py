@@ -122,6 +122,30 @@ def _to_period(row: FinancialFundamentalsSnapshot) -> FundamentalPeriod:
     )
 
 
+# (spec field, derivation attribute) — each non-None spec field is checked.
+_DERIVE_CHECKS: tuple[tuple[str, str], ...] = (
+    ("min_gross_margin_ttm", "gross_margin_ttm"),
+    ("min_revenue_growth_3y_avg", "revenue_growth_3y_avg"),
+    ("min_earnings_growth_3y_avg", "earnings_growth_3y_avg"),
+    ("min_payout_ratio", "payout_ratio"),
+    ("min_earnings_increase_streak_years", "earnings_increase_streak_years"),
+    ("min_dividend_growth_streak_years", "dividend_growth_streak_years"),
+)
+
+_CARRIED_DERIVE_METRICS = (
+    "gross_margin_ttm",
+    "revenue_growth_3y_avg",
+    "earnings_growth_3y_avg",
+    "payout_ratio",
+    "earnings_increase_streak_years",
+    "dividend_growth_streak_years",
+)
+
+
+def _metric_float(m: Any) -> float | None:
+    return float(m.value) if m is not None and m.value is not None else None
+
+
 def evaluate_fundamentals_candidates(
     *,
     valuation_rows: list[dict[str, Any]],
@@ -131,50 +155,53 @@ def evaluate_fundamentals_candidates(
     limit: int,
     name_map: dict[str, str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Pure: apply the preset spec to candidates. Returns (included_rows, excluded)."""
+    """Pure: apply the preset spec to candidates. Returns (included_rows, excluded).
+
+    Each active derive threshold (non-None spec field) must be 'ok' AND meet the
+    threshold; state != 'ok' or value None excludes the candidate (never a silent pass).
+    """
     included: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     for v in valuation_rows:
         symbol = v["symbol"]
-        periods = periods_by_symbol.get(symbol, [])
-        derivation = derive_fundamentals_metrics(periods, report_date=report_date)
-        if spec.min_gross_margin_ttm is not None:
-            gm = derivation.gross_margin_ttm
-            if gm.state != "ok" or gm.value is None:
-                excluded.append(
-                    {"symbol": symbol, "reason": "gross_margin_ttm unavailable"}
-                )
-                continue
-            if Decimal(str(gm.value)) < spec.min_gross_margin_ttm:
-                excluded.append(
-                    {"symbol": symbol, "reason": "gross_margin_ttm below threshold"}
-                )
-                continue
-        gm_value = (
-            float(derivation.gross_margin_ttm.value)
-            if derivation.gross_margin_ttm.value is not None
-            else None
+        derivation = derive_fundamentals_metrics(
+            periods_by_symbol.get(symbol, []), report_date=report_date
         )
-        included.append(
-            {
-                "symbol": symbol,
-                "market": "kr",
-                "name": name_map.get(symbol),
-                "roe": float(v["roe"]) if v.get("roe") is not None else None,
-                "per": float(v["per"]) if v.get("per") is not None else None,
-                "pbr": float(v["pbr"]) if v.get("pbr") is not None else None,
-                "market_cap": float(v["market_cap"])
-                if v.get("market_cap") is not None
-                else None,
-                "gross_margin_ttm": gm_value,
-                "_screener_snapshot_state": v.get("_screener_snapshot_state", "fresh"),
-            }
-        )
-    sort_key = "roe" if spec.sort_by == "roe" else "gross_margin_ttm"
+        rejected = False
+        for spec_field, metric_attr in _DERIVE_CHECKS:
+            threshold = getattr(spec, spec_field)
+            if threshold is None:
+                continue
+            metric = getattr(derivation, metric_attr)
+            if metric.state != "ok" or metric.value is None:
+                excluded.append({"symbol": symbol, "reason": f"{metric_attr} unavailable"})
+                rejected = True
+                break
+            if Decimal(str(metric.value)) < Decimal(str(threshold)):
+                excluded.append({"symbol": symbol, "reason": f"{metric_attr} below threshold"})
+                rejected = True
+                break
+        if rejected:
+            continue
+        row = {
+            "symbol": symbol,
+            "market": "kr",
+            "name": name_map.get(symbol),
+            "roe": float(v["roe"]) if v.get("roe") is not None else None,
+            "per": float(v["per"]) if v.get("per") is not None else None,
+            "pbr": float(v["pbr"]) if v.get("pbr") is not None else None,
+            "market_cap": float(v["market_cap"]) if v.get("market_cap") is not None else None,
+            "dividend_yield": float(v["dividend_yield"]) if v.get("dividend_yield") is not None else None,
+            "_screener_snapshot_state": v.get("_screener_snapshot_state", "fresh"),
+        }
+        for metric_attr in _CARRIED_DERIVE_METRICS:
+            row[metric_attr] = _metric_float(getattr(derivation, metric_attr))
+        included.append(row)
     included.sort(
-        key=lambda r: (r.get(sort_key) is None, -(r.get(sort_key) or 0.0), r["symbol"])
+        key=lambda r: (r.get(spec.sort_by) is None, -(r.get(spec.sort_by) or 0.0), r["symbol"])
     )
     return included[:limit], excluded
+
 
 
 async def load_fundamentals_preset_from_snapshots(
