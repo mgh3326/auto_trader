@@ -17,7 +17,21 @@ from app.services.invest_view_model.undervalued_breakout_screener import (
     load_undervalued_breakout_from_snapshots,
 )
 
-_TEST_SYMBOLS = ["907001", "907002", "907003", "907004"]
+# All symbols used in this file's integration tests. They MUST all be in the
+# autouse purge list — these tests seed a far-future snapshot_date (2099-12-31),
+# so any leaked row poisons MAX(snapshot_date) for KR valuation-partition queries
+# in OTHER test files (persistent shared test DB).
+_TEST_SYMBOLS = [
+    "907001",
+    "907002",
+    "907003",
+    "907004",
+    "907021",
+    "907022",
+    "907023",
+    "907024",
+    "907031",
+]
 
 
 @pytest_asyncio.fixture(autouse=True)
