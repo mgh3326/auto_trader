@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -22,6 +23,8 @@ from app.services.market_valuation_snapshots.repository import (
     MarketValuationSnapshotUpsert,
 )
 from app.services.snapshot_commit_guard import assert_min_coverage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -272,5 +275,11 @@ async def run_market_valuation_snapshot_build_guarded(
     if dry.market in ("kr", "us"):
         async with AsyncSessionLocal() as session:
             universe_count = await active_universe_count(session, market=dry.market)
+        if universe_count <= 0:
+            logger.warning(
+                "%s valuation commit guard disabled: active universe count is 0 "
+                "(coverage could not be verified)",
+                dry.market,
+            )
         assert_min_coverage(dry.snapshots_built, universe_count, market=dry.market)
     return await run_market_valuation_snapshot_build(request)
