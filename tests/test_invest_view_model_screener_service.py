@@ -54,6 +54,39 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def mock_screener_service_resolve_healthy(monkeypatch):
+    import sqlalchemy as sa
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition, resolve_healthy_partition
+
+    orig_resolve = resolve_healthy_partition
+
+    async def _fake_resolve(session, **kwargs):
+        if hasattr(session, "results"):
+            # It's a _FakeSession! Consume the first result
+            partition_date = None
+            if session.results:
+                first_res = session.results.pop(0)
+                partition_date = first_res.scalar_one_or_none()
+            return HealthyPartition(
+                partition_date=partition_date,
+                row_count=9999,
+                coverage_ratio=1.0,
+                is_fallback=False,
+                healthy=True,
+            )
+        else:
+            # It's a real db session! Run the original resolver
+            return await orig_resolve(session, **kwargs)
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _fake_resolve,
+    )
+
+
 class _FakeScalarResult:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
