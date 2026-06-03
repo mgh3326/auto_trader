@@ -32,34 +32,18 @@ Design decisions (locked in ROB-329):
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.core.json_safe import sanitize_non_finite
 
 RUN_CARD_SCHEMA = "validated_run_card.v1"
 GATE_SCHEMA = "validated_signal_gate.v1"
 
 #: Source label stamped on a report item's ``evidence_snapshot`` entry.
 EVIDENCE_SOURCE = "validated_run_card"
-
-
-def sanitize_non_finite(value: Any) -> Any:
-    """Recursively replace non-finite floats (``inf``/``-inf``/``nan``) with
-    ``None`` so the result is strict-JSON / Postgres-jsonb / JS-JSON.parse
-    safe. Returns a new structure; the input is not mutated. Booleans and
-    integers are left untouched (``bool`` is intentionally not treated as a
-    float here)."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Mapping):
-        return {k: sanitize_non_finite(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [sanitize_non_finite(v) for v in value]
-    return value
 
 
 class RunCardCitation(BaseModel):
