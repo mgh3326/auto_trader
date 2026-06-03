@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+from app.core.json_safe import sanitize_non_finite
 from app.services.financial_fundamentals_snapshots.freshness import row_data_state
 from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsUpsert,
@@ -261,7 +262,7 @@ def _payload_from_annual(
         discrete_revenue=income["revenue"],  # annual: discrete == reported
         discrete_net_income=income["net_income"],
         data_state=row_data_state(filing_date=filing_date),
-        raw_payload=redact_sensitive_payload(raw),
+        raw_payload=redact_sensitive_payload(sanitize_non_finite(raw)),
     )
 
 
@@ -311,7 +312,7 @@ def _payload_from_quarterly(
         discrete_revenue=discrete_revenue,
         discrete_net_income=discrete_net_income,
         data_state=row_data_state(filing_date=filing_date),
-        raw_payload=redact_sensitive_payload(raw),
+        raw_payload=redact_sensitive_payload(sanitize_non_finite(raw)),
     )
 
 
