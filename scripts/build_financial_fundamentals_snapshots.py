@@ -61,6 +61,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "with --dry-run, which fetches to validate and DOES consume budget."
         ),
     )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Acknowledge and commit a partial fundamentals backfill (required "
+            "for any --commit, since fundamentals is incremental by DART budget)."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
         parser.error("--all is mutually exclusive with --symbol and --limit")
@@ -131,18 +139,25 @@ async def run(args: argparse.Namespace) -> int:
             f"and consumes ~{projected} requests."
         )
 
-    result = await snapshot_job.run_financial_fundamentals_snapshot_build(
-        snapshot_job.FinancialFundamentalsSnapshotBuildRequest(
-            market=args.market,
-            symbols=tuple(args.symbol),
-            limit=args.limit,
-            all_symbols=args.all,
-            include_quarterly=args.include_quarterly,
-            concurrency=args.concurrency,
-            commit=args.commit,
-            estimate_only=args.estimate_only,
+    from app.services.snapshot_commit_guard import PartialCommitBlocked
+
+    try:
+        result = await snapshot_job.run_financial_fundamentals_snapshot_build(
+            snapshot_job.FinancialFundamentalsSnapshotBuildRequest(
+                market=args.market,
+                symbols=tuple(args.symbol),
+                limit=args.limit,
+                all_symbols=args.all,
+                include_quarterly=args.include_quarterly,
+                concurrency=args.concurrency,
+                commit=args.commit,
+                estimate_only=args.estimate_only,
+                allow_partial=args.allow_partial,
+            )
         )
-    )
+    except PartialCommitBlocked as exc:
+        print(f"\nCOMMIT BLOCKED: {exc}\n")
+        return 2
     _print_result(result)
     return 0
 

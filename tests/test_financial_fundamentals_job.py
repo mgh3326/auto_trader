@@ -142,7 +142,7 @@ async def test_job_budget_exceeded_fail_stops_and_does_not_commit(
 
     result = await job.run_financial_fundamentals_snapshot_build(
         job.FinancialFundamentalsSnapshotBuildRequest(
-            market="kr", symbols=("005930",), commit=True
+            market="kr", symbols=("005930",), commit=True, allow_partial=True
         ),
         fetcher=_fake_fetcher,
     )
