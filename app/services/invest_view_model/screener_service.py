@@ -600,20 +600,22 @@ async def _load_investor_flow_discovery_from_snapshots(
         return None
 
     from app.models.investor_flow_snapshot import InvestorFlowSnapshot
-
-    latest_date_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
-        InvestorFlowSnapshot.market == "kr"
+    from app.services.invest_screener_snapshots.partition_health import (
+        cap_degraded,
+        resolve_healthy_partition,
     )
-    try:
-        latest_date_result = await session.execute(latest_date_stmt)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "failed to read investor_flow_snapshots max date: %s", exc, exc_info=True
-        )
-        return None
-    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+
+    hp = await resolve_healthy_partition(
+        session,
+        model=InvestorFlowSnapshot,
+        date_col=InvestorFlowSnapshot.snapshot_date,
+        market_col=InvestorFlowSnapshot.market,
+        market="kr",
+    )
+    latest_snapshot_date = hp.partition_date if hp else None
     if latest_snapshot_date is None:
         return None
+    partition_degraded = bool(hp and (hp.is_fallback or not hp.healthy))
 
     candidate_limit = max(limit * 5, limit + 60)
     stmt = (
@@ -686,6 +688,8 @@ async def _load_investor_flow_discovery_from_snapshots(
             today_trading_date_value=today,
             now=now_utc,
         )
+        if partition_degraded:
+            state = cap_degraded(state)
         rows.append(
             {
                 "symbol": snap.symbol,
