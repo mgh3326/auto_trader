@@ -415,6 +415,10 @@ async def _load_consecutive_gainers_from_snapshots(
         classify_state,
         expected_baseline_date,
     )
+    from app.services.invest_screener_snapshots.partition_health import (
+        cap_degraded,
+        resolve_healthy_partition,
+    )
 
     # ROB-281: session-aware baseline. In the KR 07:40–16:19 KST pre-market
     # window (or US pre-17:20 ET window), the expected baseline is the prior
@@ -423,22 +427,20 @@ async def _load_consecutive_gainers_from_snapshots(
     now_utc = now()
     today = expected_baseline_date(market, now=now_utc)
 
-    # Step 1: resolve the latest snapshot partition date.
-    # This prevents older qualifying partitions from leaking into current results
-    # when the latest partition has zero qualifiers (the known stale-data bug).
-    latest_date_stmt = sa.select(
-        sa.func.max(InvestScreenerSnapshot.snapshot_date)
-    ).where(InvestScreenerSnapshot.market == market)
-    try:
-        latest_date_result = await session.execute(latest_date_stmt)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "failed to read invest_screener_snapshots max date: %s", exc, exc_info=True
-        )
-        return None
-    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+    # Step 1: resolve the latest *healthy* snapshot partition (ROB-426 PR2a).
+    # A thin smoke partition must not shadow a healthy older one; the resolver
+    # falls back to the newest healthy partition and is fail-open internally.
+    hp = await resolve_healthy_partition(
+        session,
+        model=InvestScreenerSnapshot,
+        date_col=InvestScreenerSnapshot.snapshot_date,
+        market_col=InvestScreenerSnapshot.market,
+        market=market,
+    )
+    latest_snapshot_date = hp.partition_date if hp else None
     if latest_snapshot_date is None:
         return None  # no snapshots in the table; fall through to external
+    partition_degraded = bool(hp and (hp.is_fallback or not hp.healthy))
 
     # Step 2: qualify rows only within that one partition.  KR rows are
     # over-fetched because the Toss-compatible common-stock guard runs after
@@ -510,6 +512,8 @@ async def _load_consecutive_gainers_from_snapshots(
             today_trading_date_value=today,
             now=now_utc,
         )
+        if partition_degraded:
+            state = cap_degraded(state)
         rows.append(
             {
                 "symbol": snap.symbol,
@@ -596,20 +600,22 @@ async def _load_investor_flow_discovery_from_snapshots(
         return None
 
     from app.models.investor_flow_snapshot import InvestorFlowSnapshot
-
-    latest_date_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
-        InvestorFlowSnapshot.market == "kr"
+    from app.services.invest_screener_snapshots.partition_health import (
+        cap_degraded,
+        resolve_healthy_partition,
     )
-    try:
-        latest_date_result = await session.execute(latest_date_stmt)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "failed to read investor_flow_snapshots max date: %s", exc, exc_info=True
-        )
-        return None
-    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+
+    hp = await resolve_healthy_partition(
+        session,
+        model=InvestorFlowSnapshot,
+        date_col=InvestorFlowSnapshot.snapshot_date,
+        market_col=InvestorFlowSnapshot.market,
+        market="kr",
+    )
+    latest_snapshot_date = hp.partition_date if hp else None
     if latest_snapshot_date is None:
         return None
+    partition_degraded = bool(hp and (hp.is_fallback or not hp.healthy))
 
     candidate_limit = max(limit * 5, limit + 60)
     stmt = (
@@ -682,6 +688,8 @@ async def _load_investor_flow_discovery_from_snapshots(
             today_trading_date_value=today,
             now=now_utc,
         )
+        if partition_degraded:
+            state = cap_degraded(state)
         rows.append(
             {
                 "symbol": snap.symbol,

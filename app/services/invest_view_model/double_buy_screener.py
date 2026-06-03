@@ -38,20 +38,35 @@ async def load_double_buy_from_snapshots(
     if session is None or market != "kr":
         return None
 
-    latest_flow_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
-        InvestorFlowSnapshot.market == "kr"
+    from app.services.invest_screener_snapshots.partition_health import (
+        active_universe_count,
+        resolve_healthy_partition,
     )
-    latest_price_stmt = sa.select(
-        sa.func.max(InvestScreenerSnapshot.snapshot_date)
-    ).where(InvestScreenerSnapshot.market == "kr")
-    try:
-        flow_date = (await session.execute(latest_flow_stmt)).scalar_one_or_none()
-        price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("double_buy: latest dates lookup failed: %s", exc, exc_info=True)
-        return None
+
+    universe_count = await active_universe_count(session, market="kr")
+    flow_hp = await resolve_healthy_partition(
+        session,
+        model=InvestorFlowSnapshot,
+        date_col=InvestorFlowSnapshot.snapshot_date,
+        market_col=InvestorFlowSnapshot.market,
+        market="kr",
+        universe_count=universe_count,
+    )
+    price_hp = await resolve_healthy_partition(
+        session,
+        model=InvestScreenerSnapshot,
+        date_col=InvestScreenerSnapshot.snapshot_date,
+        market_col=InvestScreenerSnapshot.market,
+        market="kr",
+        universe_count=universe_count,
+    )
+    flow_date = flow_hp.partition_date if flow_hp else None
+    price_date = price_hp.partition_date if price_hp else None
     if flow_date is None or price_date is None:
         return None
+    partition_degraded = bool(
+        flow_hp and (flow_hp.is_fallback or not flow_hp.healthy)
+    ) or bool(price_hp and (price_hp.is_fallback or not price_hp.healthy))
 
     candidate_stmt = (
         sa.select(
@@ -136,6 +151,12 @@ async def load_double_buy_from_snapshots(
         state = (
             "fresh" if r["price_snapshot_date"] == r["flow_snapshot_date"] else "stale"
         )
+        if partition_degraded:
+            from app.services.invest_screener_snapshots.partition_health import (
+                cap_degraded,
+            )
+
+            state = cap_degraded(state)
         rows.append(
             {
                 "symbol": sym,

@@ -270,19 +270,18 @@ async def load_fundamentals_preset_from_snapshots(
     now_dt = now() if callable(now) else datetime.now(UTC)
     today_market_date = today_trading_date("kr", now=now_dt)
 
-    try:
-        val_date = (
-            await session.execute(
-                sa.select(sa.func.max(MarketValuationSnapshot.snapshot_date)).where(
-                    MarketValuationSnapshot.market == "kr"
-                )
-            )
-        ).scalar_one_or_none()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "fundamentals_screener: val date lookup failed: %s", exc, exc_info=True
-        )
-        return None
+    from app.services.invest_screener_snapshots.partition_health import (
+        resolve_healthy_partition,
+    )
+
+    val_hp = await resolve_healthy_partition(
+        session,
+        model=MarketValuationSnapshot,
+        date_col=MarketValuationSnapshot.snapshot_date,
+        market_col=MarketValuationSnapshot.market,
+        market="kr",
+    )
+    val_date = val_hp.partition_date if val_hp else None
     if val_date is None:
         return None
 
@@ -329,6 +328,14 @@ async def load_fundamentals_preset_from_snapshots(
         )
 
     val_state = "fresh" if val_date == today_market_date else "stale"
+    # ROB-426 PR2a: a thin/fallback valuation partition must not be labeled fresh
+    # even when its date matches today (consistency with the other screener loaders).
+    if val_hp and (val_hp.is_fallback or not val_hp.healthy):
+        from app.services.invest_screener_snapshots.partition_health import (
+            cap_degraded,
+        )
+
+        val_state = cap_degraded(val_state)
     symbols = [m["symbol"] for m in cand_mappings]
 
     name_map: dict[str, str] = {}
