@@ -102,7 +102,7 @@ async def active_universe_count(session, *, market) -> int
 
 async def resolve_healthy_partition(
     session, *, model, date_col, market_col, market,
-    universe_count: int,
+    universe_count: int | None = None,   # None -> computed via active_universe_count(session, market)
     min_ratio: float = _MIN_HEALTHY_COVERAGE_RATIO,
     max_scan_back: int = _MAX_PARTITION_SCAN_BACK,
 ) -> HealthyPartition | None
@@ -134,20 +134,23 @@ live at module top with a "change = separate PR" note.
 
 ### 3.2 Loader wiring (sites 1, 2, 4, 5, 6, 7; site 10 deferred — see below)
 
-Each replaces its bare `max(snapshot_date)` resolution with:
-1. `universe_count = await active_universe_count(session, market=market)`
-2. `hp = await resolve_healthy_partition(session, model=<Table>, date_col=<Table>.snapshot_date, market_col=<Table>.market, market=market, universe_count=universe_count)`
-3. `chosen_date = hp.partition_date if hp else None`; if `None` (empty table) →
+Each replaces its bare `max(snapshot_date)` resolution with a **single**
+module-level call (so existing tests can monkeypatch one function — see §6):
+1. `hp = await resolve_healthy_partition(session, model=<Table>, date_col=<Table>.snapshot_date, market_col=<Table>.market, market=market)`
+   (resolver computes `active_universe_count` internally when `universe_count` is
+   omitted).
+2. `chosen_date = hp.partition_date if hp else None`; if `None` (empty table) →
    return `None` (same as pre-2a). Else use `chosen_date` for the existing row
    query (qualifier filtering unchanged) and compute
    `degraded = hp.is_fallback or not hp.healthy`.
-4. When `degraded`, wrap each row's freshness with `cap_degraded(...)` so a thin
+3. When `degraded`, wrap each row's freshness with `cap_degraded(...)` so a thin
    *today-dated* partition (which `classify_state` would otherwise call `fresh`)
    is not mislabeled. (For an older fallback partition, `classify_state` already
    returns `stale` because `snapshot_date != today` — `cap_degraded` is a no-op
    there.)
-- `double_buy` (site 4) resolves each of its two tables independently;
-  `degraded` is the OR across both.
+- `double_buy` (site 4) resolves each of its two tables independently
+  (computing `universe_count` once and passing it to both calls to avoid a
+  duplicate count query); `degraded` is the OR across both.
 - The `MarketValuationSnapshot`-primary presets (5/6/7): in current prod there is
   **no** healthy valuation partition (only 20 rows ever), so `hp.healthy` is
   `False` and 2a serves the same thin latest partition as today **but labeled
@@ -191,11 +194,12 @@ loader
 
 ## 5. Error handling / fail-open
 
-- Resolver query exception → log + fall back to `max(snapshot_date)` (pre-2a),
-  mirroring the existing `try/except` at `screener_service.py:431+`. The loader
-  wraps the `active_universe_count` + `resolve_healthy_partition` calls in a
-  `try/except` that, on error, recomputes `chosen_date` via the original
-  `max(snapshot_date)` query (no `degraded` cap) so availability is preserved.
+- **Fail-open lives inside the resolver (DRY — one place, not 6 loaders).** The
+  resolver wraps its body in `try/except`; on any query error it logs and falls
+  back to a plain `max(date_col)` query, returning that partition as
+  `healthy=True, is_fallback=False` (pre-2a behavior). If even the `max()` query
+  fails or the table is empty it returns `None`. Loaders therefore call the
+  resolver plainly and treat `None` exactly like the old `max() is None` case.
 - `universe_count == 0` (universe table empty / new market) → gate disabled,
   newest partition returned (no behavioral change).
 - No healthy partition within scan-back → newest partition still served (degraded
@@ -217,8 +221,29 @@ loader
 | **T8** | fail-open | resolver raising → loader still returns latest-partition rows (no exception bubbles) |
 | **T9** | `cap_degraded` thin today-latest | a thin *today-dated* partition (no healthy older) is served but `dataState == "stale"` (not `fresh`) |
 
-Tests are service/repo-layer with seeded partitions (DB fixture). No live
-provider, no network.
+Tests are service/repo-layer with seeded partitions (real `db_session` fixture).
+No live provider, no network.
+
+**Existing-test compatibility (must-fix).** Several current loader tests use a
+low-level `_FakeSession` that returns a fixed *sequence* of `execute()` results
+(`tests/test_invest_view_model_screener_service.py`,
+`tests/test_invest_view_model_double_buy_screener.py`,
+`tests/test_invest_view_model_high_yield_value_screener.py`,
+`tests/test_undervalued_breakout_screener.py`). Routing through
+`resolve_healthy_partition` adds `execute()` calls and would desync that
+sequence. Because each loader calls **one** module-level
+`resolve_healthy_partition`, the fix is a single monkeypatch per affected test:
+```python
+from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+monkeypatch.setattr(
+    screener_service, "resolve_healthy_partition",
+    AsyncMock(return_value=HealthyPartition(
+        partition_date=<the date the fake session used>,
+        row_count=9999, coverage_ratio=1.0, is_fallback=False, healthy=True)),
+)
+```
+The plan's verification step runs these four files and applies the patch wherever
+a snapshot-loader test breaks.
 
 ## 7. Non-goals / safety
 
