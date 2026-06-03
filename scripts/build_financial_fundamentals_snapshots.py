@@ -46,11 +46,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--commit",
         action="store_true",
-        help="Actually write to the database. Default is --dry-run/no writes.",
+        help=(
+            "Actually write to the database (fetches from DART). Default is "
+            "--dry-run: fetch-validate, no writes (still consumes DART budget). "
+            "Use --estimate-only for a no-fetch projection."
+        ),
+    )
+    parser.add_argument(
+        "--estimate-only",
+        action="store_true",
+        help=(
+            "Print the projected DART request count and exit WITHOUT fetching "
+            "(0 budget consumed). Mutually exclusive with --commit. Contrast "
+            "with --dry-run, which fetches to validate and DOES consume budget."
+        ),
     )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
         parser.error("--all is mutually exclusive with --symbol and --limit")
+    if args.estimate_only and args.commit:
+        parser.error("--estimate-only is mutually exclusive with --commit")
     if args.limit is None:
         args.limit = 20
     if args.concurrency < 1:
@@ -60,6 +75,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _print_result(result) -> None:
+    if result.projected_requests is not None:
+        print(
+            f"\n--estimate-only: projected {result.projected_requests} DART "
+            f"requests for {result.symbols_resolved} {result.market.upper()} "
+            f"symbols; no fetch, no rows written.\n"
+        )
+        for warning in result.warnings:
+            print(f"  - {warning}")
+        return
     print(
         f"\nbuilt {result.snapshots_built} fundamentals snapshots "
         f"for {result.symbols_resolved} {result.market.upper()} symbols "
@@ -95,9 +119,17 @@ async def run(args: argparse.Namespace) -> int:
     )
     projected = len(symbols) * (41 if args.include_quarterly else 11)
     budget = settings.opendart_daily_request_budget
-    print(
-        f"Projected DART requests for {len(symbols)} symbols: {projected} (daily budget: {budget})"
-    )
+    if args.estimate_only:
+        print(
+            f"--estimate-only: projected {projected} DART requests for "
+            f"{len(symbols)} symbols (daily budget: {budget}); no fetch performed."
+        )
+    else:
+        print(
+            f"Projected DART requests for {len(symbols)} symbols: {projected} "
+            f"(daily budget: {budget}). NOTE: --dry-run still fetches from DART "
+            f"and consumes ~{projected} requests."
+        )
 
     result = await snapshot_job.run_financial_fundamentals_snapshot_build(
         snapshot_job.FinancialFundamentalsSnapshotBuildRequest(
@@ -108,6 +140,7 @@ async def run(args: argparse.Namespace) -> int:
             include_quarterly=args.include_quarterly,
             concurrency=args.concurrency,
             commit=args.commit,
+            estimate_only=args.estimate_only,
         )
     )
     _print_result(result)
