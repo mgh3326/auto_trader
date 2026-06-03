@@ -224,3 +224,61 @@ def test_screener_freshness_is_backwards_compatible_without_new_fields() -> None
     assert payload.primary is None
     assert payload.dependencies == []
     assert payload.overallState is None
+
+
+@pytest.mark.unit
+def test_freshness_primary_accepts_degradation_reason_and_coverage_label():
+    from app.schemas.invest_screener import ScreenerFreshnessPrimary
+
+    primary = ScreenerFreshnessPrimary(
+        kind="screener_snapshot",
+        asOfLabel="2026.06.03 15:30 기준",
+        dataState="stale",
+        degradationReason="coverage_below_floor",
+        coverageLabel="20 / 3,800 (0.5%)",
+    )
+    assert primary.degradationReason == "coverage_below_floor"
+    assert primary.coverageLabel == "20 / 3,800 (0.5%)"
+    # defaults remain optional/None
+    bare = ScreenerFreshnessPrimary(kind="live", asOfLabel="x", dataState="missing")
+    assert bare.degradationReason is None
+    assert bare.coverageLabel is None
+
+
+@pytest.mark.unit
+def test_result_row_accepts_market_cap_source():
+    from app.schemas.invest_screener import ScreenerResultRow
+
+    row = ScreenerResultRow(
+        rank=1,
+        symbol="005930",
+        market="kr",
+        name="삼성전자",
+        priceLabel="70,000원",
+        changePctLabel="+1.0%",
+        changeAmountLabel="+700원",
+        changeDirection="up",
+        category="-",
+        marketCapLabel="418조원",
+        volumeLabel="1,000,000",
+        analystLabel="-",
+        metricValueLabel="-",
+        marketCapSource="fallback",
+    )
+    assert row.marketCapSource == "fallback"
+    bare = ScreenerResultRow(
+        rank=1,
+        symbol="x",
+        market="kr",
+        name="x",
+        priceLabel="-",
+        changePctLabel="-",
+        changeAmountLabel="-",
+        changeDirection="flat",
+        category="-",
+        marketCapLabel="-",
+        volumeLabel="-",
+        analystLabel="-",
+        metricValueLabel="-",
+    )
+    assert bare.marketCapSource is None

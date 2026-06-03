@@ -14,7 +14,10 @@ plan Decision 1):
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.invest_view_model.screener_service import _SnapshotLoadResult
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,13 +25,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
+from app.models.market_valuation_snapshot import MarketValuationSnapshot
 
 logger = logging.getLogger(__name__)
 
 
 async def load_double_buy_from_snapshots(
     session: AsyncSession | None, *, market: str, limit: int = 50
-) -> list[dict[str, Any]] | None:
+) -> _SnapshotLoadResult | None:
     """Return Toss-parity 쌍끌이 매수 rows or None when no snapshot partition exists.
 
     None  -> caller should report dataState=missing and warn that snapshots are absent.
@@ -38,20 +42,35 @@ async def load_double_buy_from_snapshots(
     if session is None or market != "kr":
         return None
 
-    latest_flow_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
-        InvestorFlowSnapshot.market == "kr"
+    from app.services.invest_screener_snapshots.partition_health import (
+        active_universe_count,
+        resolve_healthy_partition,
     )
-    latest_price_stmt = sa.select(
-        sa.func.max(InvestScreenerSnapshot.snapshot_date)
-    ).where(InvestScreenerSnapshot.market == "kr")
-    try:
-        flow_date = (await session.execute(latest_flow_stmt)).scalar_one_or_none()
-        price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("double_buy: latest dates lookup failed: %s", exc, exc_info=True)
-        return None
+
+    universe_count = await active_universe_count(session, market="kr")
+    flow_hp = await resolve_healthy_partition(
+        session,
+        model=InvestorFlowSnapshot,
+        date_col=InvestorFlowSnapshot.snapshot_date,
+        market_col=InvestorFlowSnapshot.market,
+        market="kr",
+        universe_count=universe_count,
+    )
+    price_hp = await resolve_healthy_partition(
+        session,
+        model=InvestScreenerSnapshot,
+        date_col=InvestScreenerSnapshot.snapshot_date,
+        market_col=InvestScreenerSnapshot.market,
+        market="kr",
+        universe_count=universe_count,
+    )
+    flow_date = flow_hp.partition_date if flow_hp else None
+    price_date = price_hp.partition_date if price_hp else None
     if flow_date is None or price_date is None:
         return None
+    partition_degraded = bool(
+        flow_hp and (flow_hp.is_fallback or not flow_hp.healthy)
+    ) or bool(price_hp and (price_hp.is_fallback or not price_hp.healthy))
 
     candidate_stmt = (
         sa.select(
@@ -112,10 +131,50 @@ async def load_double_buy_from_snapshots(
         except Exception as exc:  # noqa: BLE001
             logger.warning("double_buy: name lookup failed: %s", exc, exc_info=True)
 
+    market_cap_map: dict[str, float] = {}
+    market_cap_source: str | None = None
+    if symbols:
+        from app.services.invest_screener_snapshots.partition_health import (
+            resolve_healthy_partition as _resolve_val_hp,
+        )
+
+        val_hp = await _resolve_val_hp(
+            session,
+            model=MarketValuationSnapshot,
+            date_col=MarketValuationSnapshot.snapshot_date,
+            market_col=MarketValuationSnapshot.market,
+            market="kr",
+            universe_count=universe_count,
+        )
+        if val_hp is not None:
+            market_cap_source = "fallback" if val_hp.is_fallback else "primary"
+            try:
+                _mc = await session.execute(
+                    sa.select(
+                        MarketValuationSnapshot.symbol,
+                        MarketValuationSnapshot.market_cap,
+                    ).where(
+                        MarketValuationSnapshot.market == "kr",
+                        MarketValuationSnapshot.snapshot_date == val_hp.partition_date,
+                        MarketValuationSnapshot.symbol.in_(symbols),
+                    )
+                )
+                market_cap_map = {
+                    r.symbol: float(r.market_cap)
+                    for r in _mc.all()
+                    if r.market_cap is not None
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "double_buy: market_cap lookup failed: %s", exc, exc_info=True
+                )
+
     # Imported inside the function to avoid a circular import at module load
     # (screener_service imports from this module's neighborhood).
     from app.services.invest_view_model.screener_service import (
         _is_kr_toss_common_stock,
+        _partition_degradation,
+        _SnapshotLoadResult,
     )
 
     rows: list[dict[str, Any]] = []
@@ -136,6 +195,12 @@ async def load_double_buy_from_snapshots(
         state = (
             "fresh" if r["price_snapshot_date"] == r["flow_snapshot_date"] else "stale"
         )
+        if partition_degraded:
+            from app.services.invest_screener_snapshots.partition_health import (
+                cap_degraded,
+            )
+
+            state = cap_degraded(state)
         rows.append(
             {
                 "symbol": sym,
@@ -162,8 +227,35 @@ async def load_double_buy_from_snapshots(
                 "snapshot_date": r["price_snapshot_date"],
                 "flow_snapshot_date": r["flow_snapshot_date"],
                 "_screener_snapshot_state": state,
+                "market_cap": market_cap_map.get(sym),
+                "_market_cap_source": (
+                    market_cap_source if sym in market_cap_map else None
+                ),
             }
         )
         if len(rows) >= limit:
             break
-    return rows
+
+    # ROB-426 PR3: reason from the worst of the two partitions. Priority order
+    # snapshot_missing > coverage_below_floor > older_fallback > healthy_no_matches.
+    _priority = {
+        "snapshot_missing": 0,
+        "coverage_below_floor": 1,
+        "older_fallback": 2,
+        "healthy_no_matches": 3,
+        None: 4,
+    }
+    flow_reason, flow_cov = _partition_degradation(flow_hp, rows_empty=not rows)
+    price_reason, price_cov = _partition_degradation(price_hp, rows_empty=not rows)
+    if _priority[flow_reason] <= _priority[price_reason]:
+        reason, coverage_label = flow_reason, flow_cov
+    else:
+        reason, coverage_label = price_reason, price_cov
+
+    return _SnapshotLoadResult(
+        rows=rows,
+        partition_date=price_date,
+        partition_computed_at=None,
+        degradation_reason=reason,
+        coverage_label=coverage_label,
+    )

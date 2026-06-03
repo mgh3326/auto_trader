@@ -142,7 +142,7 @@ async def test_job_budget_exceeded_fail_stops_and_does_not_commit(
 
     result = await job.run_financial_fundamentals_snapshot_build(
         job.FinancialFundamentalsSnapshotBuildRequest(
-            market="kr", symbols=("005930",), commit=True
+            market="kr", symbols=("005930",), commit=True, allow_partial=True
         ),
         fetcher=_fake_fetcher,
     )
@@ -160,3 +160,29 @@ def _async_return(value):
         return value
 
     return _coro
+
+
+@pytest.mark.asyncio
+async def test_estimate_only_does_not_fetch_or_commit():
+    # No bind_job_session fixture on purpose: estimate-only must short-circuit
+    # BEFORE any AsyncSessionLocal use, so this test proves it never touches DB.
+    calls: list[str] = []
+
+    async def _spy_fetcher(symbol: str, *, include_quarterly: bool):
+        calls.append(symbol)
+        raise AssertionError("fetcher must not be called in estimate-only mode")
+
+    result = await job.run_financial_fundamentals_snapshot_build(
+        job.FinancialFundamentalsSnapshotBuildRequest(
+            market="kr",
+            symbols=("005930",),
+            estimate_only=True,
+            include_quarterly=False,
+        ),
+        fetcher=_spy_fetcher,
+    )
+    assert calls == []
+    assert result.projected_requests == 11  # 1 symbol * 11 (annual-only)
+    assert result.committed is False
+    assert result.snapshots_built == 0
+    assert any("estimate-only" in w for w in result.warnings)

@@ -69,6 +69,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Actually write to the database. Default is --dry-run.",
     )
     parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Acknowledge and commit a partial/thin screener build, bypassing the "
+            "row-count + dominant-partition guards (for small --symbol/--limit "
+            "backfills)."
+        ),
+    )
+    parser.add_argument(
         "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
     )
     parser.add_argument(
@@ -135,18 +144,30 @@ def _print_result(result) -> None:
 
 
 async def run(args: argparse.Namespace) -> int:
-    result = await snapshot_job.run_snapshot_build(
-        snapshot_job.SnapshotBuildRequest(
-            market=args.market,
-            symbols=tuple(args.symbol),
-            limit=args.limit,
-            all_symbols=args.all,
-            batch_size=args.batch_size,
-            concurrency=args.concurrency,
-            commit=args.commit,
-            common_stocks_only=args.common_stocks_only,
-        )
+    from app.services.invest_screener_snapshots.guards import (
+        InsufficientRowsError,
+        SuspiciousDistributionError,
     )
+
+    request = snapshot_job.SnapshotBuildRequest(
+        market=args.market,
+        symbols=tuple(args.symbol),
+        limit=args.limit,
+        all_symbols=args.all,
+        batch_size=args.batch_size,
+        concurrency=args.concurrency,
+        commit=args.commit,
+        common_stocks_only=args.common_stocks_only,
+    )
+    use_guarded = args.commit and not args.allow_partial
+    try:
+        if use_guarded:
+            result = await snapshot_job.run_snapshot_build_guarded(request)
+        else:
+            result = await snapshot_job.run_snapshot_build(request)
+    except (SuspiciousDistributionError, InsufficientRowsError) as exc:
+        print(f"\nCOMMIT BLOCKED: {exc}\n")
+        return 2
     _print_result(result)
     return 0
 

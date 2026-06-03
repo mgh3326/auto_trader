@@ -246,3 +246,34 @@ describe("ScreenerFreshness type shape", () => {
     expect(f.dependencies?.[0]?.kind).toBe("investor_flow");
   });
 });
+
+describe("ROB-426 degraded partition details", () => {
+  test("renders coverageLabel when the primary partition is coverage_below_floor", () => {
+    render(
+      <ScreenerFreshnessLine
+        freshness={{
+          fetchedAt: "2026-06-03T06:00:00Z",
+          asOfLabel: "2026.05.22 15:30 기준",
+          relativeLabel: "방금",
+          cacheHit: true,
+          source: "cached",
+          dataState: "stale",
+          primary: {
+            kind: "screener_snapshot",
+            snapshotDate: "2026-05-22",
+            computedAt: null,
+            asOfLabel: "2026.05.22 15:30 기준",
+            dataState: "stale",
+            source: "invest_screener_snapshots",
+            degradationReason: "coverage_below_floor",
+            coverageLabel: "20 / 3,800 (0.5%)",
+          },
+          dependencies: [],
+          overallState: "stale",
+        }}
+      />,
+    );
+    expect(screen.getByText(/20 \/ 3,800 \(0\.5%\)/)).toBeInTheDocument();
+  });
+});
+

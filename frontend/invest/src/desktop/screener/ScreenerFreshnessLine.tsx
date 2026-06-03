@@ -77,6 +77,12 @@ export function ScreenerFreshnessLine({
         data-testid="screener-freshness-data"
       >
         {dataLineText}
+        {freshness.primary?.degradationReason === "coverage_below_floor" &&
+        freshness.primary?.coverageLabel ? (
+          <span className="screener-freshness__coverage">
+            스냅샷 적재 {freshness.primary.coverageLabel}
+          </span>
+        ) : null}
       </span>
       <span
         className="screener-freshness-served"

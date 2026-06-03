@@ -273,3 +273,31 @@ test("switches to the crypto market", async () => {
   expect(screenerApi.fetchScreenerPresets).toHaveBeenCalledWith("crypto");
   expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("crypto_high_volume", "crypto");
 });
+
+
+test("renders the coverage degraded empty-state when the partition is thin", async () => {
+  vi.spyOn(screenerApi, "fetchScreenerResults").mockResolvedValue({
+    ...RESULTS_GAINERS,
+    results: [],
+    freshness: {
+      ...RESULTS_GAINERS.freshness,
+      primary: {
+        kind: "screener_snapshot" as const,
+        snapshotDate: "2026-05-22",
+        computedAt: null,
+        asOfLabel: "2026.05.22 15:30 기준",
+        dataState: "stale" as const,
+        source: "invest_screener_snapshots",
+        degradationReason: "coverage_below_floor" as const,
+        coverageLabel: "20 / 3,800 (0.5%)",
+      },
+    },
+  });
+  render(wrap(<DesktopScreenerPage />));
+  await waitFor(() => {
+    expect(
+      screen.getAllByText(/20 \/ 3,800 \(0\.5%\)/).length,
+    ).toBeGreaterThan(0);
+  });
+});
+

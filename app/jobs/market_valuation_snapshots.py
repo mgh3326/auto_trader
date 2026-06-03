@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
+from app.services.invest_screener_snapshots.partition_health import (
+    active_universe_count,
+)
 from app.services.market_valuation_snapshots.builder import (
     build_valuation_snapshots_for_market,
 )
@@ -18,6 +22,9 @@ from app.services.market_valuation_snapshots.repository import (
     MarketValuationSnapshotsRepository,
     MarketValuationSnapshotUpsert,
 )
+from app.services.snapshot_commit_guard import assert_min_coverage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -255,3 +262,24 @@ async def run_market_valuation_snapshot_build(
         samples=tuple(samples),
         warnings=tuple(warnings),
     )
+
+
+async def run_market_valuation_snapshot_build_guarded(
+    request: MarketValuationSnapshotBuildRequest,
+) -> MarketValuationSnapshotBuildResult:
+    """Two-pass coverage-guarded commit (ROB-426 PR2b). Mirrors the quote wrapper:
+    dry no-commit pass → assert >= 60% of active KR/US universe → commit pass.
+    Crypto/other markets are skipped. Raises PartialCommitBlocked on a thin build.
+    """
+    dry = await run_market_valuation_snapshot_build(replace(request, commit=False))
+    if dry.market in ("kr", "us"):
+        async with AsyncSessionLocal() as session:
+            universe_count = await active_universe_count(session, market=dry.market)
+        if universe_count <= 0:
+            logger.warning(
+                "%s valuation commit guard disabled: active universe count is 0 "
+                "(coverage could not be verified)",
+                dry.market,
+            )
+        assert_min_coverage(dry.snapshots_built, universe_count, market=dry.market)
+    return await run_market_valuation_snapshot_build(request)

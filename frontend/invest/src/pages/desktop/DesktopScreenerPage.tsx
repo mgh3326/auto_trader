@@ -126,7 +126,11 @@ export function DesktopScreenerPage() {
                   ))}
                 </ul>
               )}
-              <ScreenerResultsTable rows={results.results} metricLabel={results.metricLabel} />
+              <ScreenerResultsTable
+                rows={results.results}
+                metricLabel={results.metricLabel}
+                freshness={results.freshness}
+              />
             </>
           ) : (
             !err && <div style={{ padding: 16, color: "var(--fg-3)" }}>불러오는 중...</div>

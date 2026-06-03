@@ -20,6 +20,7 @@ from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsSnapshotsRepository,
     FinancialFundamentalsUpsert,
 )
+from app.services.snapshot_commit_guard import PartialCommitBlocked
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,8 @@ class FinancialFundamentalsSnapshotBuildRequest:
     concurrency: int = 4
     commit: bool = False
     collected_at: dt.datetime | None = None
+    estimate_only: bool = False
+    allow_partial: bool = False
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,7 @@ class FinancialFundamentalsSnapshotBuildResult:
     idempotency: dict[str, int] = field(default_factory=dict)
     samples: tuple[FinancialFundamentalsSnapshotSample, ...] = ()
     warnings: tuple[str, ...] = ()
+    projected_requests: int | None = None
 
 
 def _validate_market(market: str) -> str:
@@ -204,6 +208,33 @@ async def run_financial_fundamentals_snapshot_build(
         projected,
         settings.opendart_daily_request_budget,
     )
+
+    if request.estimate_only:
+        finished_at = dt.datetime.now(dt.UTC)
+        return FinancialFundamentalsSnapshotBuildResult(
+            market=market,
+            symbols_resolved=len(symbols),
+            snapshots_built=0,
+            committed=False,
+            started_at=started_at,
+            finished_at=finished_at,
+            idempotency={"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0},
+            warnings=(
+                f"estimate-only: projected {projected} DART requests; "
+                "no fetch performed",
+            ),
+            projected_requests=projected,
+        )
+
+    if request.commit and not request.allow_partial:
+        raise PartialCommitBlocked(
+            "fundamentals commit blocked: fundamentals is an incremental "
+            "backfill (DART budget); pass --allow-partial to commit a partial "
+            "backfill",
+            market=market,
+            metric="symbols",
+            reason="incremental_backfill",
+        )
 
     reset_request_count()
     should_commit = request.commit

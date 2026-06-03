@@ -47,6 +47,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Actually write to the database. Default is --dry-run/no writes.",
     )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Acknowledge and commit a partial/thin build that is below the "
+            "coverage floor (skips the commit guard). Use for small "
+            "--symbol/--limit backfills."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
         parser.error("--all is mutually exclusive with --symbol and --limit")
@@ -90,18 +99,26 @@ def _print_result(result) -> None:
 
 async def run(args: argparse.Namespace) -> int:
     from app.jobs import market_quote_snapshots as snapshot_job
+    from app.services.snapshot_commit_guard import PartialCommitBlocked
 
-    result = await snapshot_job.run_market_quote_snapshot_build(
-        snapshot_job.MarketQuoteSnapshotBuildRequest(
-            market=args.market,
-            symbols=tuple(args.symbol),
-            limit=args.limit,
-            all_symbols=args.all,
-            batch_size=args.batch_size,
-            concurrency=args.concurrency,
-            commit=args.commit,
-        )
+    request = snapshot_job.MarketQuoteSnapshotBuildRequest(
+        market=args.market,
+        symbols=tuple(args.symbol),
+        limit=args.limit,
+        all_symbols=args.all,
+        batch_size=args.batch_size,
+        concurrency=args.concurrency,
+        commit=args.commit,
     )
+    use_guarded = args.commit and not args.allow_partial
+    try:
+        if use_guarded:
+            result = await snapshot_job.run_market_quote_snapshot_build_guarded(request)
+        else:
+            result = await snapshot_job.run_market_quote_snapshot_build(request)
+    except PartialCommitBlocked as exc:
+        print(f"\nCOMMIT BLOCKED: {exc}\n")
+        return 2
     _print_result(result)
     return 0
 
