@@ -238,3 +238,55 @@ def test_fundamentals_cli_allow_partial_arg():
         is True
     )
     assert fund_cli.parse_args(["--symbol", "005930"]).allow_partial is False
+
+
+from app.jobs import invest_screener_snapshots as screener_job  # noqa: E402
+from scripts import build_invest_screener_snapshots as screener_cli  # noqa: E402
+
+
+def _screener_result(*, built, committed):
+    return screener_job.SnapshotBuildResult(
+        market="kr",
+        symbols_resolved=built,
+        snapshots_built=built,
+        skipped=0,
+        committed=committed,
+        batches=1,
+        started_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC),
+        finished_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC),
+    )
+
+
+def test_screener_cli_allow_partial_arg():
+    # The screener CLI requires --market (no default), unlike the quote/valuation
+    # CLIs, so include it here.
+    assert (
+        screener_cli.parse_args(
+            ["--market", "kr", "--all", "--commit", "--allow-partial"]
+        ).allow_partial
+        is True
+    )
+    assert screener_cli.parse_args(["--market", "kr", "--all"]).allow_partial is False
+
+
+@pytest.mark.asyncio
+async def test_screener_cli_routes_guarded_by_default(monkeypatch):
+    guarded = AsyncMock(return_value=_screener_result(built=3000, committed=True))
+    plain = AsyncMock(return_value=_screener_result(built=20, committed=True))
+    monkeypatch.setattr(
+        screener_cli.snapshot_job, "run_snapshot_build_guarded", guarded
+    )
+    monkeypatch.setattr(screener_cli.snapshot_job, "run_snapshot_build", plain)
+
+    await screener_cli.run(
+        screener_cli.parse_args(["--market", "kr", "--all", "--commit"])
+    )
+    assert guarded.await_count == 1 and plain.await_count == 0
+    guarded.reset_mock()
+    plain.reset_mock()
+    await screener_cli.run(
+        screener_cli.parse_args(
+            ["--market", "kr", "--all", "--commit", "--allow-partial"]
+        )
+    )
+    assert plain.await_count == 1 and guarded.await_count == 0
