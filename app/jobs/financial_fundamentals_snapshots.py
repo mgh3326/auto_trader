@@ -164,6 +164,16 @@ async def run_financial_fundamentals_snapshot_build(
     *,
     fetcher: FundamentalsFetcher | None = None,
 ) -> FinancialFundamentalsSnapshotBuildResult:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    from app.core.config import settings
+    from app.services.financial_fundamentals_snapshots.builder import (
+        DartDailyRequestBudgetExceeded,
+        reset_request_count,
+    )
+
     market = _validate_market(request.market)
     started_at = dt.datetime.now(dt.UTC)
     collected_at = request.collected_at or started_at
@@ -185,31 +195,51 @@ async def run_financial_fundamentals_snapshot_build(
             idempotency={"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0},
             warnings=("no symbols resolved",),
         )
-    build = await build_financial_fundamentals_for_symbols(
-        market=market,
-        symbols=symbols,
-        collected_at=collected_at,
-        fetcher=use_fetcher,
-        include_quarterly=request.include_quarterly,
-        concurrency=request.concurrency,
+
+    projected = len(symbols) * (41 if request.include_quarterly else 11)
+    logger.info(
+        "Projected DART requests for %d symbols (include_quarterly=%s): %d (budget: %d)",
+        len(symbols),
+        request.include_quarterly,
+        projected,
+        settings.opendart_daily_request_budget,
     )
-    payloads = list(build.payloads)
+
+    reset_request_count()
+    should_commit = request.commit
+    try:
+        build = await build_financial_fundamentals_for_symbols(
+            market=market,
+            symbols=symbols,
+            collected_at=collected_at,
+            fetcher=use_fetcher,
+            include_quarterly=request.include_quarterly,
+            concurrency=request.concurrency,
+        )
+        payloads = list(build.payloads)
+        warnings = build.warnings
+    except DartDailyRequestBudgetExceeded as exc:
+        logger.warning("DART daily request budget exceeded during build: %s", exc)
+        payloads = list(exc.payloads)
+        warnings = exc.warnings
+        should_commit = False
+
     idempotency = (
         await _classify_idempotency(payloads)
         if payloads
         else {"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0}
     )
-    if request.commit and payloads:
+    if should_commit and payloads:
         await _commit_payloads(payloads)
     finished_at = dt.datetime.now(dt.UTC)
     return FinancialFundamentalsSnapshotBuildResult(
         market=market,
         symbols_resolved=len(symbols),
         snapshots_built=len(payloads),
-        committed=request.commit,
+        committed=should_commit,
         started_at=started_at,
         finished_at=finished_at,
         idempotency=idempotency,
         samples=tuple(_sample(p) for p in payloads[:10]),
-        warnings=build.warnings,
+        warnings=warnings,
     )

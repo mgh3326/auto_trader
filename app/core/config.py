@@ -309,6 +309,7 @@ class Settings(BaseSettings):
         return url
 
     opendart_api_key: str
+    opendart_daily_request_budget: int = 18000
     DATABASE_URL: str
     upbit_access_key: str
     upbit_secret_key: str

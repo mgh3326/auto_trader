@@ -83,7 +83,21 @@ def _print_result(result) -> None:
 
 
 async def run(args: argparse.Namespace) -> int:
+    from app.core.config import settings
     from app.jobs import financial_fundamentals_snapshots as snapshot_job
+
+    symbols = await (
+        snapshot_job.resolve_active_universe(args.market)
+        if args.all
+        else snapshot_job.resolve_symbols(
+            args.market, list(args.symbol), args.limit or 20
+        )
+    )
+    projected = len(symbols) * (41 if args.include_quarterly else 11)
+    budget = settings.opendart_daily_request_budget
+    print(
+        f"Projected DART requests for {len(symbols)} symbols: {projected} (daily budget: {budget})"
+    )
 
     result = await snapshot_job.run_financial_fundamentals_snapshot_build(
         snapshot_job.FinancialFundamentalsSnapshotBuildRequest(
