@@ -1923,6 +1923,11 @@ async def test_double_buy_preset_missing_snapshot_reports_missing_state() -> Non
     assert resp.results == []
     assert resp.freshness.dataState == "missing"
     assert any("스냅샷" in w for w in resp.warnings)
+    # ROB-426 PR3: the snapshot-only preset has no partition, but freshness.primary
+    # must still carry degradationReason="snapshot_missing" so the UI renders the
+    # "스냅샷 준비중" empty-state instead of the generic fallback message.
+    assert resp.freshness.primary is not None
+    assert resp.freshness.primary.degradationReason == "snapshot_missing"
 
 
 @pytest.mark.asyncio

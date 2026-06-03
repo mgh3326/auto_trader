@@ -1550,6 +1550,23 @@ def _build_freshness(
             degradationReason=primary_degradation_reason,  # type: ignore[arg-type]
             coverageLabel=primary_coverage_label,
         )
+    elif primary_kind == "screener_snapshot":
+        # ROB-426 PR3: a snapshot-only preset whose partition is absent. There is
+        # no date to label, but we must still emit a primary carrying
+        # degradationReason (snapshot_missing) so the UI renders the
+        # "스냅샷 준비중" empty-state instead of the generic fallback message.
+        # primary.dataState equals the passed dataState ("missing"), so the
+        # overall-state aggregation below is unchanged vs the prior primary=None.
+        primary = ScreenerFreshnessPrimary(
+            kind="screener_snapshot",
+            snapshotDate=None,
+            computedAt=None,
+            asOfLabel=data_basis_kst.strftime("%Y.%m.%d %H:%M 기준"),
+            dataState=dataState,  # type: ignore[arg-type]
+            source=primary_source,
+            degradationReason=primary_degradation_reason,  # type: ignore[arg-type]
+            coverageLabel=primary_coverage_label,
+        )
     elif primary_kind in {"live", "fallback"}:
         primary = ScreenerFreshnessPrimary(
             kind=primary_kind,
