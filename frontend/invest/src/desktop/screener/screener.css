@@ -47,7 +47,16 @@
 .screener-change-amount { color: inherit; opacity: 0.7; font-size: 11px; margin-left: 4px; }
 .screener-heart-on { color: var(--gain); }
 .screener-heart-off { color: var(--fg-4); }
-.screener-empty { padding: 32px; text-align: center; color: var(--fg-3); }
+.screener-empty { padding: 32px 16px; text-align: center; color: var(--fg-3); }
+.screener-empty--degraded .screener-empty__title { color: var(--warn); }
+.screener-empty--neutral .screener-empty__title { color: var(--fg-3); }
+.screener-empty__coverage { margin-top: 6px; font-size: 12px; color: var(--fg-3); opacity: 0.8; }
+.screener-freshness__coverage { margin-left: 8px; font-size: 12px; color: var(--fg-3); opacity: 0.8; }
+.screener-cell__cap-badge {
+  margin-left: 6px; padding: 0 4px; font-size: 10px; border-radius: 4px;
+  background: var(--surface-2); color: var(--fg-3); opacity: 0.8;
+}
+
 
 .screener-modal-backdrop { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .screener-modal { background: var(--surface); width: 720px; max-width: 90vw; max-height: 80vh; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; color: var(--fg); box-shadow: var(--shadow-3); }

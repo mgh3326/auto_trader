@@ -452,9 +452,21 @@ def test_consecutive_gainers_endpoint_separates_served_from_data_basis() -> None
             _RouterFakeExecuteResult(scalar_rows=[stale_date]),  # 1: MAX(snapshot_date)
             _RouterFakeExecuteResult(scalar_rows=[snap]),  # 2: qualifying rows
             _RouterFakeExecuteResult(rows=[name_row]),  # 3: KR symbol names (filter)
-            _RouterFakeExecuteResult(scalar_rows=[snap]),  # 4: enrichment get_fresh
-            _RouterFakeExecuteResult(rows=[name_row]),  # 5: bulk KR names
-            _RouterFakeExecuteResult(scalar_rows=[]),  # 6: no investor-flow chip
+            _RouterFakeExecuteResult(
+                scalar_rows=[stale_date]
+            ),  # 4: MAX(snapshot_date) for MarketValuationSnapshot
+            _RouterFakeExecuteResult(
+                rows=[
+                    type(
+                        "Row",
+                        (),
+                        {"symbol": "005930", "market_cap": 418_000_000_000_000},
+                    )()
+                ]
+            ),  # 5: MarketValuationSnapshot select query
+            _RouterFakeExecuteResult(scalar_rows=[snap]),  # 6: enrichment get_fresh
+            _RouterFakeExecuteResult(rows=[name_row]),  # 7: bulk KR names
+            _RouterFakeExecuteResult(scalar_rows=[]),  # 8: no investor-flow chip
         ]
     )
 

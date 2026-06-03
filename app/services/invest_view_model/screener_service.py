@@ -38,6 +38,7 @@ from app.schemas.invest_screener import (
     ScreenerSourceContext,
 )
 from app.schemas.investor_flow import InvestorFlowItem
+from app.services.invest_screener_snapshots.partition_health import HealthyPartition
 from app.services.invest_view_model.fundamentals_screener import (
     FUNDAMENTALS_PRESET_SPECS,
 )
@@ -113,11 +114,43 @@ logger = logging.getLogger(__name__)
 class _SnapshotLoadResult:
     """ROB-277 follow-up: snapshot loaders must surface latest-partition metadata
     even when no rows qualified, so freshness.primary can still report the
-    correct snapshot date."""
+    correct snapshot date. ROB-426 PR3 adds the degradation reason + coverage
+    label derived from the served HealthyPartition."""
 
     rows: list[dict[str, Any]]
     partition_date: dt.date | None
     partition_computed_at: datetime | None = None
+    # ROB-426 PR3
+    degradation_reason: str | None = None
+    coverage_label: str | None = None
+
+
+def _partition_degradation(
+    hp: HealthyPartition | None, *, rows_empty: bool
+) -> tuple[str | None, str | None]:
+    """Map a served HealthyPartition to (degradation_reason, coverage_label).
+
+    The five HealthyPartition shapes from resolve_healthy_partition are mutually
+    exclusive: (is_fallback=False, healthy=True) newest-healthy; (is_fallback=True,
+    healthy=True) older-fallback; (is_fallback=False, healthy=False) thin-newest.
+    """
+    if hp is None:
+        return ("snapshot_missing", None)
+    if not hp.healthy:
+        universe = (
+            round(hp.row_count / hp.coverage_ratio) if hp.coverage_ratio > 0 else 0
+        )
+        label = (
+            f"{hp.row_count:,} / {universe:,} ({hp.coverage_ratio * 100:.1f}%)"
+            if universe > 0
+            else None
+        )
+        return ("coverage_below_floor", label)
+    if hp.is_fallback:
+        return ("older_fallback", None)
+    if rows_empty:
+        return ("healthy_no_matches", None)
+    return (None, None)
 
 
 def _investor_flow_chip_for_item(
@@ -495,6 +528,48 @@ async def _load_consecutive_gainers_from_snapshots(
                 exc_info=True,
             )
 
+    # ROB-426 PR3: market_cap for this non-valuation preset — look up the healthy
+    # KR valuation partition by symbol (mirrors the symbol-name lookup above; does
+    # not disturb the InvestScreenerSnapshot scalar query).
+    market_cap_map: dict[str, float] = {}
+    market_cap_source: str | None = None
+    if market == "kr" and candidate_snaps:
+        from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+        val_hp = await resolve_healthy_partition(
+            session,
+            model=MarketValuationSnapshot,
+            date_col=MarketValuationSnapshot.snapshot_date,
+            market_col=MarketValuationSnapshot.market,
+            market="kr",
+        )
+        if val_hp is not None:
+            market_cap_source = "fallback" if val_hp.is_fallback else "primary"
+            try:
+                _mc = await session.execute(
+                    sa.select(
+                        MarketValuationSnapshot.symbol,
+                        MarketValuationSnapshot.market_cap,
+                    ).where(
+                        MarketValuationSnapshot.market == "kr",
+                        MarketValuationSnapshot.snapshot_date == val_hp.partition_date,
+                        MarketValuationSnapshot.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        ),
+                    )
+                )
+                market_cap_map = {
+                    r.symbol: float(r.market_cap)
+                    for r in _mc.all()
+                    if r.market_cap is not None
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "consecutive_gainers: market_cap lookup failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for snap in candidate_snaps:
@@ -537,6 +612,10 @@ async def _load_consecutive_gainers_from_snapshots(
                 "snapshot_date": snap.snapshot_date,  # ROB-277
                 "computed_at": snap.computed_at,  # ROB-277
                 "_screener_snapshot_state": state,
+                "market_cap": market_cap_map.get(snap.symbol),
+                "_market_cap_source": (
+                    market_cap_source if snap.symbol in market_cap_map else None
+                ),
             }
         )
         if len(rows) >= limit:
@@ -551,10 +630,13 @@ async def _load_consecutive_gainers_from_snapshots(
         # No qualifying rows after filtering, but we can grab computed_at from
         # any snap in the partition (they share the same snapshot_date).
         partition_computed_at = getattr(candidate_snaps[0], "computed_at", None)
+    reason, coverage_label = _partition_degradation(hp, rows_empty=not rows)
     return _SnapshotLoadResult(
         rows=rows,
         partition_date=latest_snapshot_date,
         partition_computed_at=partition_computed_at,
+        degradation_reason=reason,
+        coverage_label=coverage_label,
     )
 
 
@@ -666,6 +748,44 @@ async def _load_investor_flow_discovery_from_snapshots(
                 exc_info=True,
             )
 
+    # ROB-426 PR3: market_cap via the healthy KR valuation partition.
+    market_cap_map: dict[str, float] = {}
+    market_cap_source: str | None = None
+    if candidate_snaps:
+        from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+        val_hp = await resolve_healthy_partition(
+            session,
+            model=MarketValuationSnapshot,
+            date_col=MarketValuationSnapshot.snapshot_date,
+            market_col=MarketValuationSnapshot.market,
+            market="kr",
+        )
+        if val_hp is not None:
+            market_cap_source = "fallback" if val_hp.is_fallback else "primary"
+            try:
+                _mc = await session.execute(
+                    sa.select(
+                        MarketValuationSnapshot.symbol,
+                        MarketValuationSnapshot.market_cap,
+                    ).where(
+                        MarketValuationSnapshot.market == "kr",
+                        MarketValuationSnapshot.snapshot_date == val_hp.partition_date,
+                        MarketValuationSnapshot.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        ),
+                    )
+                )
+                market_cap_map = {
+                    r.symbol: float(r.market_cap)
+                    for r in _mc.all()
+                    if r.market_cap is not None
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "investor_flow: market_cap lookup failed: %s", exc, exc_info=True
+                )
+
     from app.services.invest_screener_snapshots.freshness import (
         classify_investor_flow_partition,
         today_trading_date,
@@ -704,6 +824,10 @@ async def _load_investor_flow_discovery_from_snapshots(
                 "snapshot_date": snap.snapshot_date,
                 "collected_at": snap.collected_at,
                 "_screener_snapshot_state": state,
+                "market_cap": market_cap_map.get(snap.symbol),
+                "_market_cap_source": (
+                    market_cap_source if snap.symbol in market_cap_map else None
+                ),
             }
         )
         if len(rows) >= limit:
@@ -715,10 +839,13 @@ async def _load_investor_flow_discovery_from_snapshots(
         partition_collected_at = rows[0].get("collected_at")
     elif candidate_snaps:
         partition_collected_at = getattr(candidate_snaps[0], "collected_at", None)
+    reason, coverage_label = _partition_degradation(hp, rows_empty=not rows)
     return _SnapshotLoadResult(
         rows=rows,
         partition_date=latest_snapshot_date,
         partition_computed_at=partition_collected_at,  # investor_flow has no computed_at; use collected_at
+        degradation_reason=reason,
+        coverage_label=coverage_label,
     )
 
 
@@ -1319,6 +1446,9 @@ def _build_freshness(
     primary_computed_at: datetime | None = None,
     primary_source: str | None = None,
     dependency_specs: list[dict[str, Any]] | None = None,
+    # ROB-426 PR3
+    primary_degradation_reason: str | None = None,
+    primary_coverage_label: str | None = None,
 ) -> ScreenerFreshness:
     """ROB-277: split served time vs data 기준.
 
@@ -1417,6 +1547,8 @@ def _build_freshness(
             asOfLabel=as_of_label,
             dataState=dataState,  # type: ignore[arg-type]
             source=primary_source,
+            degradationReason=primary_degradation_reason,  # type: ignore[arg-type]
+            coverageLabel=primary_coverage_label,
         )
     elif primary_kind in {"live", "fallback"}:
         primary = ScreenerFreshnessPrimary(
@@ -1426,6 +1558,8 @@ def _build_freshness(
             asOfLabel=data_basis_kst.strftime("%Y.%m.%d %H:%M 기준"),
             dataState=dataState,  # type: ignore[arg-type]
             source=primary_source,
+            degradationReason=primary_degradation_reason,  # type: ignore[arg-type]
+            coverageLabel=primary_coverage_label,
         )
 
     # Build dependencies list
@@ -1544,11 +1678,13 @@ async def build_screener_results(
                 load_double_buy_from_snapshots,
             )
 
-            _snapshot_check_result = await load_double_buy_from_snapshots(
+            _snapshot_load_result = await load_double_buy_from_snapshots(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
             )
+            if _snapshot_load_result is not None:
+                _snapshot_check_result = _snapshot_load_result.rows
             _snapshot_empty_warning = (
                 "최신 수급/시세 스냅샷에서 쌍끌이 매수 조건에 맞는 종목이 없습니다."
             )
@@ -1699,11 +1835,26 @@ async def build_screener_results(
     from app.services.invest_screener_snapshots.freshness import aggregate_states
 
     if _snapshot_was_checked and not rows:
-        # Latest snapshot partition was found but had no qualifying rows —
-        # the data exists, but this preset has no current qualifiers.  Stock
-        # snapshot semantics keep the historical stale warning; crypto snapshots
-        # can still be fresh/partial 24/7 even when a preset returns zero rows.
-        _aggregated_data_state = _snapshot_state_override or "stale"
+        # Latest snapshot partition was found but had no qualifying rows.
+        _load_reason = (
+            _snapshot_load_result.degradation_reason
+            if _snapshot_load_result is not None
+            else None
+        )
+        if _load_reason == "healthy_no_matches":
+            # ROB-426 PR3: the served partition is the newest *healthy* one — zero
+            # qualifiers is a filter outcome, not staleness. Reflect the
+            # partition's date-based freshness instead of flooring to "stale".
+            from app.services.invest_screener_snapshots.freshness import (
+                expected_baseline_date,
+            )
+
+            _baseline = expected_baseline_date(requested_market, now=now())
+            _pd = _snapshot_load_result.partition_date
+            _aggregated_data_state = "fresh" if _pd == _baseline else "stale"
+        else:
+            # missing / degraded / crypto override paths keep prior behavior.
+            _aggregated_data_state = _snapshot_state_override or "stale"
     else:
         _row_states: list[str] = [
             str(r.get("_screener_snapshot_state") or "missing") for r in rows
@@ -1761,6 +1912,17 @@ async def build_screener_results(
     else:
         primary_kind = "live"
         primary_source = "screening_service"
+
+    # ROB-426 PR3: structured degradation reason for freshness.primary.
+    primary_degradation_reason: str | None = None
+    primary_coverage_label: str | None = None
+    if _snapshot_load_result is not None and _snapshot_load_result.degradation_reason:
+        primary_degradation_reason = _snapshot_load_result.degradation_reason
+        primary_coverage_label = _snapshot_load_result.coverage_label
+    elif _snapshot_state_override == "missing":
+        primary_degradation_reason = "snapshot_missing"
+    elif primary_kind == "live":
+        primary_degradation_reason = "live"
 
     # Bulk-lookup Korean names for KR rows from kr_symbol_universe
     _kr_names: dict[str, str] = {}
@@ -1847,6 +2009,8 @@ async def build_screener_results(
         primary_computed_at=primary_computed_at,
         primary_source=primary_source,
         dependency_specs=dependency_specs,
+        primary_degradation_reason=primary_degradation_reason,
+        primary_coverage_label=primary_coverage_label,
     )
     response_sources = _screen_response_sources(
         requested_market=requested_market,
@@ -1921,6 +2085,7 @@ async def build_screener_results(
                 candidateContext=_crypto_candidate_context(row, preset_id)
                 if market == "crypto"
                 else None,
+                marketCapSource=row.get("_market_cap_source"),
             )
         )
 

@@ -127,6 +127,8 @@ class ScreenerResultRow(BaseModel):
     sourceContext: list[ScreenerSourceContext] = Field(default_factory=list)
     riskContext: list[ScreenerRiskContext] = Field(default_factory=list)
     candidateContext: ScreenerCandidateContext | None = None
+    # ROB-426 PR3: provenance of marketCapLabel for the non-valuation KR presets.
+    marketCapSource: Literal["primary", "fallback"] | None = None
 
 
 class ScreenerPresetsResponse(BaseModel):
@@ -143,6 +145,19 @@ class ScreenerFreshnessPrimary(BaseModel):
     asOfLabel: str
     dataState: Literal["fresh", "partial", "stale", "missing", "fallback"]
     source: str | None = None
+    # ROB-426 PR3: structured degraded-state context. dataState (the chip) stays
+    # frozen; these carry the *why* and a coverage label for the thin-partition case.
+    degradationReason: (
+        Literal[
+            "snapshot_missing",
+            "coverage_below_floor",
+            "older_fallback",
+            "healthy_no_matches",
+            "live",
+        ]
+        | None
+    ) = None
+    coverageLabel: str | None = None
 
 
 class ScreenerFreshnessDependency(BaseModel):
