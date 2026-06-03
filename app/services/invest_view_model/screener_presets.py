@@ -35,6 +35,7 @@ _KR_ONLY_PRESET_IDS = {
     "future_dividend_king",
     "cheap_value",
     "steady_dividend",
+    "growth_expectation_toss",
 }
 
 
@@ -176,6 +177,22 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             "Toss '성장 기대주'(순이익 3년 성장 + 직전분기 순이익 성장)와는 별개이며, "
             "Toss 의미 프리셋은 분기 재무 수집 후 별도 이슈로 추가 예정."
         ),
+    ),
+    ScreenerPreset(
+        id="growth_expectation_toss",
+        name="성장 기대주",
+        description="3년 평균 순이익 증감률 3% 이상 및 직전분기 대비 순이익 증감률(QoQ) 10% 이상 종목 (지연 스냅샷 기반)",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="순이익증가율", detail="3년평균 3%+"),
+            ScreenerFilterChip(label="순이익", detail="직전분기 대비 10%+"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="순이익증가율",
+        market="kr",
+        presetOrigin=_TOSS,
+        parityStatus=_FULL,
     ),
     ScreenerPreset(
         id="high_yield_value",

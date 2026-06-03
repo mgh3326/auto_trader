@@ -73,6 +73,88 @@ async def test_dry_run_builds_but_writes_nothing(bind_job_session, monkeypatch):
     assert any(s.fiscal_period == "2024A" for s in result.samples)
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_dry_run_logs_projected_request_estimate(
+    bind_job_session, monkeypatch, caplog
+):
+    import logging
+
+    monkeypatch.setattr(job, "resolve_symbols", _async_return(["005930"]))
+    with caplog.at_level(
+        logging.INFO, logger="app.jobs.financial_fundamentals_snapshots"
+    ):
+        await job.run_financial_fundamentals_snapshot_build(
+            job.FinancialFundamentalsSnapshotBuildRequest(
+                market="kr",
+                symbols=("005930",),
+                commit=False,
+                include_quarterly=True,
+            ),
+            fetcher=_fake_fetcher,
+        )
+    msgs = [r.getMessage() for r in caplog.records]
+    # 1 symbol * 41 (quarterly multiplier) — pins the estimate formula.
+    assert any("Projected DART requests" in m and "41" in m for m in msgs)
+
+
+@pytest.mark.asyncio
+async def test_job_budget_exceeded_fail_stops_and_does_not_commit(
+    bind_job_session, monkeypatch
+):
+    from decimal import Decimal
+
+    from app.services.financial_fundamentals_snapshots.builder import (
+        DartDailyRequestBudgetExceeded,
+        FinancialFundamentalsUpsert,
+    )
+
+    dummy_payload = FinancialFundamentalsUpsert(
+        market="kr",
+        symbol="005930",
+        fiscal_period="2024A",
+        period_type="annual",
+        period_end_date=dt.date(2024, 12, 31),
+        filing_date=dt.date(2025, 3, 20),
+        effective_at=dt.date(2025, 3, 20),
+        source="dart",
+        source_collected_at=dt.datetime.now(dt.UTC),
+        currency="KRW",
+        revenue=Decimal("1000"),
+        net_income=Decimal("100"),
+        gross_profit=None,
+        cost_of_sales=None,
+        payout_ratio=None,
+        dividend_per_share=None,
+        discrete_revenue=Decimal("1000"),
+        discrete_net_income=Decimal("100"),
+        data_state="fresh",
+        raw_payload=None,
+    )
+
+    async def mock_build(*args, **kwargs):
+        raise DartDailyRequestBudgetExceeded(
+            "Budget Exceeded", payloads=(dummy_payload,), warnings=("Budget limit hit",)
+        )
+
+    monkeypatch.setattr(job, "resolve_symbols", _async_return(["005930"]))
+    monkeypatch.setattr(job, "build_financial_fundamentals_for_symbols", mock_build)
+
+    result = await job.run_financial_fundamentals_snapshot_build(
+        job.FinancialFundamentalsSnapshotBuildRequest(
+            market="kr", symbols=("005930",), commit=True
+        ),
+        fetcher=_fake_fetcher,
+    )
+
+    assert result.committed is False
+    assert result.snapshots_built == 1
+    assert any(s.fiscal_period == "2024A" for s in result.samples)
+    assert any(
+        "Budget Exceeded" in w or "Budget limit hit" in w for w in result.warnings
+    )
+
+
 def _async_return(value):
     async def _coro(*args, **kwargs):
         return value

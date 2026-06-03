@@ -836,6 +836,7 @@ _METRIC_FIELD: dict[str, str] = {
     "undervalued_growth": "earnings_growth_3y_avg",
     "stable_growth": "roe",
     "future_dividend_king": "dividend_yield",
+    "growth_expectation_toss": "earnings_growth_qoq",
 }
 
 

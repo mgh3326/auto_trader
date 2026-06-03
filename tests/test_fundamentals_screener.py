@@ -163,7 +163,7 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
     assert [r["symbol"] for r in rows_all] == ["A", "F", "C", "E", "B", "D"]
 
 
-def test_registry_has_six_specs_with_expected_thresholds():
+def test_registry_has_seven_specs_with_expected_thresholds():
     from app.services.invest_view_model.fundamentals_screener import (
         FUNDAMENTALS_PRESET_SPECS,
     )
@@ -175,6 +175,7 @@ def test_registry_has_six_specs_with_expected_thresholds():
         "future_dividend_king",
         "cheap_value",
         "steady_dividend",
+        "growth_expectation_toss",
     }
     ug = FUNDAMENTALS_PRESET_SPECS["undervalued_growth"]
     assert ug.max_per == Decimal("20") and ug.min_revenue_growth_3y_avg == Decimal(
@@ -1001,3 +1002,169 @@ async def test_loader_end_to_end_includes_and_excludes_with_fundamentals(db_sess
     assert [r["symbol"] for r in result.rows] == ["906441"]  # growing earnings included
     assert result.fundamentals_state == "fresh"  # fundamentals rows exist
     assert "906442" in {e["symbol"] for e in result.excluded}  # declining → excluded
+
+
+def _annual_period(year: int, *, net_income, filing_date) -> FundamentalPeriod:
+    return FundamentalPeriod(
+        fiscal_period=f"{year}A",
+        period_type="annual",
+        period_end_date=dt.date(year, 12, 31),
+        filing_date=filing_date,
+        revenue=Decimal("1000"),
+        net_income=Decimal(net_income),
+        gross_profit=None,
+        cost_of_sales=None,
+        discrete_revenue=Decimal("1000"),
+        discrete_net_income=Decimal(net_income),
+    )
+
+
+def _quarterly_period(
+    year: int, quarter: int, *, net_income, filing_date
+) -> FundamentalPeriod:
+    return FundamentalPeriod(
+        fiscal_period=f"{year}Q{quarter}",
+        period_type="quarterly",
+        period_end_date={
+            1: dt.date(year, 3, 31),
+            2: dt.date(year, 6, 30),
+            3: dt.date(year, 9, 30),
+            4: dt.date(year, 12, 31),
+        }[quarter],
+        filing_date=filing_date,
+        revenue=Decimal("1000"),
+        net_income=Decimal(net_income),
+        gross_profit=None,
+        cost_of_sales=None,
+        discrete_revenue=Decimal("250"),
+        discrete_net_income=Decimal(net_income),
+    )
+
+
+def test_toss_growth_expectation_includes_matching_symbols():
+    from app.services.invest_view_model.fundamentals_screener import (
+        GROWTH_EXPECTATION_TOSS_SPEC,
+    )
+
+    valuation_rows = [{"symbol": "005930", "roe": 10.0}]
+
+    periods = {
+        "005930": [
+            _annual_period(2021, net_income="100", filing_date=dt.date(2022, 3, 20)),
+            _annual_period(2022, net_income="110", filing_date=dt.date(2023, 3, 20)),
+            _annual_period(2023, net_income="120", filing_date=dt.date(2024, 3, 20)),
+            _annual_period(2024, net_income="130", filing_date=dt.date(2025, 3, 20)),
+            _quarterly_period(
+                2025, 2, net_income="100", filing_date=dt.date(2025, 8, 14)
+            ),
+            _quarterly_period(
+                2025, 3, net_income="110", filing_date=dt.date(2025, 11, 14)
+            ),
+        ]
+    }
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=GROWTH_EXPECTATION_TOSS_SPEC,
+        report_date=dt.date(2025, 11, 15),
+        limit=20,
+        name_map={"005930": "삼성전자"},
+    )
+    assert [r["symbol"] for r in rows] == ["005930"]
+    assert rows[0]["earnings_growth_qoq"] == 0.10
+
+
+def test_toss_growth_expectation_excludes_when_qoq_growth_insufficient():
+    from app.services.invest_view_model.fundamentals_screener import (
+        GROWTH_EXPECTATION_TOSS_SPEC,
+    )
+
+    valuation_rows = [{"symbol": "005930", "roe": 10.0}]
+
+    periods = {
+        "005930": [
+            _annual_period(2021, net_income="100", filing_date=dt.date(2022, 3, 20)),
+            _annual_period(2022, net_income="110", filing_date=dt.date(2023, 3, 20)),
+            _annual_period(2023, net_income="120", filing_date=dt.date(2024, 3, 20)),
+            _annual_period(2024, net_income="130", filing_date=dt.date(2025, 3, 20)),
+            _quarterly_period(
+                2025, 2, net_income="100", filing_date=dt.date(2025, 8, 14)
+            ),
+            _quarterly_period(
+                2025, 3, net_income="105", filing_date=dt.date(2025, 11, 14)
+            ),
+        ]
+    }
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=GROWTH_EXPECTATION_TOSS_SPEC,
+        report_date=dt.date(2025, 11, 15),
+        limit=20,
+        name_map={},
+    )
+    assert rows == []
+    assert excluded[0]["symbol"] == "005930"
+    assert "earnings_growth_qoq" in excluded[0]["reason"]
+
+
+def test_toss_growth_expectation_excludes_when_3y_avg_growth_insufficient():
+    from app.services.invest_view_model.fundamentals_screener import (
+        GROWTH_EXPECTATION_TOSS_SPEC,
+    )
+
+    valuation_rows = [{"symbol": "005930", "roe": 10.0}]
+
+    periods = {
+        "005930": [
+            _annual_period(2021, net_income="100", filing_date=dt.date(2022, 3, 20)),
+            _annual_period(2022, net_income="95", filing_date=dt.date(2023, 3, 20)),
+            _annual_period(2023, net_income="90", filing_date=dt.date(2024, 3, 20)),
+            _annual_period(2024, net_income="85", filing_date=dt.date(2025, 3, 20)),
+            _quarterly_period(
+                2025, 2, net_income="100", filing_date=dt.date(2025, 8, 14)
+            ),
+            _quarterly_period(
+                2025, 3, net_income="110", filing_date=dt.date(2025, 11, 14)
+            ),
+        ]
+    }
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=GROWTH_EXPECTATION_TOSS_SPEC,
+        report_date=dt.date(2025, 11, 15),
+        limit=20,
+        name_map={},
+    )
+    assert rows == []
+    assert excluded[0]["symbol"] == "005930"
+    assert "earnings_growth_3y_avg" in excluded[0]["reason"]
+
+
+def test_toss_growth_expectation_fail_closed_on_missing_quarterly_data():
+    from app.services.invest_view_model.fundamentals_screener import (
+        GROWTH_EXPECTATION_TOSS_SPEC,
+    )
+
+    valuation_rows = [{"symbol": "005930", "roe": 10.0}]
+
+    periods = {
+        "005930": [
+            _annual_period(2021, net_income="100", filing_date=dt.date(2022, 3, 20)),
+            _annual_period(2022, net_income="110", filing_date=dt.date(2023, 3, 20)),
+            _annual_period(2023, net_income="120", filing_date=dt.date(2024, 3, 20)),
+            _annual_period(2024, net_income="130", filing_date=dt.date(2025, 3, 20)),
+        ]
+    }
+    rows, excluded = evaluate_fundamentals_candidates(
+        valuation_rows=valuation_rows,
+        periods_by_symbol=periods,
+        spec=GROWTH_EXPECTATION_TOSS_SPEC,
+        report_date=dt.date(2025, 11, 15),
+        limit=20,
+        name_map={},
+    )
+    assert rows == []
+    assert excluded[0]["symbol"] == "005930"
+    assert "earnings_growth_qoq unavailable" in excluded[0]["reason"]
