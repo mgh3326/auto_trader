@@ -40,9 +40,7 @@ async def _nan_fetcher(
     return RawFundamentalsBundle(
         symbol=symbol,
         currency="KRW",
-        annual=(
-            RawAnnualFiling(bsns_year=2024, rcept_no="r1", income_statement=df),
-        ),
+        annual=(RawAnnualFiling(bsns_year=2024, rcept_no="r1", income_statement=df),),
         quarterly=(),
         filing_dates={"r1": dt.date(2025, 3, 20)},
     )
