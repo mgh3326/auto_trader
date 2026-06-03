@@ -79,7 +79,9 @@ async def load_undervalued_breakout_from_snapshots(
         price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "undervalued_breakout: latest price date lookup failed: %s", exc, exc_info=True
+            "undervalued_breakout: latest price date lookup failed: %s",
+            exc,
+            exc_info=True,
         )
         return None
 

@@ -87,7 +87,12 @@ async def active_universe_count(session: AsyncSession, *, market: str) -> int:
 
 
 async def _partition_row_count(
-    session: AsyncSession, *, model: Any, market_col: Any, market: str, date_col: Any,
+    session: AsyncSession,
+    *,
+    model: Any,
+    market_col: Any,
+    market: str,
+    date_col: Any,
     partition_date: dt.date,
 ) -> int:
     return int(
@@ -139,36 +144,52 @@ async def resolve_healthy_partition(
             universe_count = await active_universe_count(session, market=market)
         if universe_count <= 0:
             return HealthyPartition(
-                partition_date=newest, row_count=0, coverage_ratio=0.0,
-                is_fallback=False, healthy=True,
+                partition_date=newest,
+                row_count=0,
+                coverage_ratio=0.0,
+                is_fallback=False,
+                healthy=True,
             )
 
         floor = math.ceil(universe_count * min_ratio)
         for d in dates:
             count = await _partition_row_count(
-                session, model=model, market_col=market_col, market=market,
-                date_col=date_col, partition_date=d,
+                session,
+                model=model,
+                market_col=market_col,
+                market=market,
+                date_col=date_col,
+                partition_date=d,
             )
             if count >= floor:
                 return HealthyPartition(
-                    partition_date=d, row_count=count,
+                    partition_date=d,
+                    row_count=count,
                     coverage_ratio=count / universe_count,
-                    is_fallback=(d != newest), healthy=True,
+                    is_fallback=(d != newest),
+                    healthy=True,
                 )
 
         newest_count = await _partition_row_count(
-            session, model=model, market_col=market_col, market=market,
-            date_col=date_col, partition_date=newest,
+            session,
+            model=model,
+            market_col=market_col,
+            market=market,
+            date_col=date_col,
+            partition_date=newest,
         )
         return HealthyPartition(
-            partition_date=newest, row_count=newest_count,
+            partition_date=newest,
+            row_count=newest_count,
             coverage_ratio=newest_count / universe_count,
-            is_fallback=False, healthy=False,
+            is_fallback=False,
+            healthy=False,
         )
     except Exception as exc:  # noqa: BLE001  — fail-open, never reduce availability
         logger.warning(
             "resolve_healthy_partition failed; falling back to max(): %s",
-            exc, exc_info=True,
+            exc,
+            exc_info=True,
         )
         try:
             newest = (
@@ -181,6 +202,9 @@ async def resolve_healthy_partition(
         if newest is None:
             return None
         return HealthyPartition(
-            partition_date=newest, row_count=0, coverage_ratio=0.0,
-            is_fallback=False, healthy=True,
+            partition_date=newest,
+            row_count=0,
+            coverage_ratio=0.0,
+            is_fallback=False,
+            healthy=True,
         )

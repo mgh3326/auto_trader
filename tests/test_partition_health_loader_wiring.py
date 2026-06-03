@@ -32,6 +32,7 @@ async def _seed_two_partitions(session, *, healthy_n: int, thin_n: int):
     older, newer = dt.date(2040, 5, 19), dt.date(2040, 5, 22)
 
     from app.models.kr_symbol_universe import KRSymbolUniverse
+
     # Clean up first
     await session.execute(
         sa.delete(InvestScreenerSnapshot).where(
@@ -46,7 +47,11 @@ async def _seed_two_partitions(session, *, healthy_n: int, thin_n: int):
     # Seed active universe (200 symbols)
     for i in range(200):
         sym = f"99{i:04d}"
-        session.add(KRSymbolUniverse(symbol=sym, name=f"TestName{i}", exchange="KRX", is_active=True))
+        session.add(
+            KRSymbolUniverse(
+                symbol=sym, name=f"TestName{i}", exchange="KRX", is_active=True
+            )
+        )
     await session.flush()
 
     # Seed snapshots
@@ -75,6 +80,7 @@ async def test_thin_newer_partition_does_not_shadow_healthy_older(db_session):
 
     # Clean up after test
     from app.models.kr_symbol_universe import KRSymbolUniverse
+
     await db_session.execute(
         sa.delete(InvestScreenerSnapshot).where(
             InvestScreenerSnapshot.snapshot_date.in_({older, newer})
@@ -84,7 +90,6 @@ async def test_thin_newer_partition_does_not_shadow_healthy_older(db_session):
         sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.like("99%"))
     )
     await db_session.flush()
-
 
 
 def _flow(symbol: str, d: dt.date) -> InvestorFlowSnapshot:
@@ -106,6 +111,7 @@ async def _seed_two_flow_partitions(session, *, healthy_n: int, thin_n: int):
     older, newer = dt.date(2040, 5, 19), dt.date(2040, 5, 22)
 
     from app.models.kr_symbol_universe import KRSymbolUniverse
+
     # Clean up first
     await session.execute(
         sa.delete(InvestorFlowSnapshot).where(
@@ -120,7 +126,11 @@ async def _seed_two_flow_partitions(session, *, healthy_n: int, thin_n: int):
     # Seed active universe (200 symbols)
     for i in range(200):
         sym = f"99{i:04d}"
-        session.add(KRSymbolUniverse(symbol=sym, name=f"TestName{i}", exchange="KRX", is_active=True))
+        session.add(
+            KRSymbolUniverse(
+                symbol=sym, name=f"TestName{i}", exchange="KRX", is_active=True
+            )
+        )
     await session.flush()
 
     # Seed snapshots
@@ -149,6 +159,7 @@ async def test_investor_flow_thin_newer_falls_back_to_healthy_older(db_session):
 
     # Clean up after test
     from app.models.kr_symbol_universe import KRSymbolUniverse
+
     await db_session.execute(
         sa.delete(InvestorFlowSnapshot).where(
             InvestorFlowSnapshot.snapshot_date.in_({older, newer})

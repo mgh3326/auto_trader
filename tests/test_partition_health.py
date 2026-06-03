@@ -147,18 +147,26 @@ async def test_active_universe_count_counts_active_kr(db_session):
 
     # Cleanup these symbols in case they exist from aborted runs
     await db_session.execute(
-        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_({symbol_1, symbol_2}))
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.in_({symbol_1, symbol_2})
+        )
     )
     await db_session.flush()
 
-    db_session.add(KRSymbolUniverse(symbol=symbol_1, name="A", exchange="KRX", is_active=True))
-    db_session.add(KRSymbolUniverse(symbol=symbol_2, name="B", exchange="KRX", is_active=False))
+    db_session.add(
+        KRSymbolUniverse(symbol=symbol_1, name="A", exchange="KRX", is_active=True)
+    )
+    db_session.add(
+        KRSymbolUniverse(symbol=symbol_2, name="B", exchange="KRX", is_active=False)
+    )
     await db_session.flush()
 
     assert await active_universe_count(db_session, market="kr") == initial_count + 1
 
     # Cleanup after test
     await db_session.execute(
-        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_({symbol_1, symbol_2}))
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.in_({symbol_1, symbol_2})
+        )
     )
     await db_session.flush()

@@ -64,10 +64,9 @@ async def load_double_buy_from_snapshots(
     price_date = price_hp.partition_date if price_hp else None
     if flow_date is None or price_date is None:
         return None
-    partition_degraded = (
-        bool(flow_hp and (flow_hp.is_fallback or not flow_hp.healthy))
-        or bool(price_hp and (price_hp.is_fallback or not price_hp.healthy))
-    )
+    partition_degraded = bool(
+        flow_hp and (flow_hp.is_fallback or not flow_hp.healthy)
+    ) or bool(price_hp and (price_hp.is_fallback or not price_hp.healthy))
 
     candidate_stmt = (
         sa.select(

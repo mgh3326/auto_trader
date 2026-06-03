@@ -328,6 +328,14 @@ async def load_fundamentals_preset_from_snapshots(
         )
 
     val_state = "fresh" if val_date == today_market_date else "stale"
+    # ROB-426 PR2a: a thin/fallback valuation partition must not be labeled fresh
+    # even when its date matches today (consistency with the other screener loaders).
+    if val_hp and (val_hp.is_fallback or not val_hp.healthy):
+        from app.services.invest_screener_snapshots.partition_health import (
+            cap_degraded,
+        )
+
+        val_state = cap_degraded(val_state)
     symbols = [m["symbol"] for m in cand_mappings]
 
     name_map: dict[str, str] = {}
