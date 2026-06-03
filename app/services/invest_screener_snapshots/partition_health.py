@@ -59,23 +59,31 @@ def cap_degraded(state: DataState) -> DataState:
 
 async def active_universe_count(session: AsyncSession, *, market: str) -> int:
     """Count active symbols for the market (the coverage denominator)."""
-    if market == "kr":
-        from app.models.kr_symbol_universe import KRSymbolUniverse
+    try:
+        if market == "kr":
+            from app.models.kr_symbol_universe import KRSymbolUniverse
 
-        stmt = (
-            sa.select(sa.func.count())
-            .select_from(KRSymbolUniverse)
-            .where(KRSymbolUniverse.is_active.is_(True))
-        )
-    else:
-        from app.models.us_symbol_universe import USSymbolUniverse
+            stmt = (
+                sa.select(sa.func.count())
+                .select_from(KRSymbolUniverse)
+                .where(KRSymbolUniverse.is_active.is_(True))
+            )
+        else:
+            from app.models.us_symbol_universe import USSymbolUniverse
 
-        stmt = (
-            sa.select(sa.func.count())
-            .select_from(USSymbolUniverse)
-            .where(USSymbolUniverse.is_active.is_(True))
+            stmt = (
+                sa.select(sa.func.count())
+                .select_from(USSymbolUniverse)
+                .where(USSymbolUniverse.is_active.is_(True))
+            )
+        return int((await session.execute(stmt)).scalar() or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "active_universe_count failed; falling back to 0: %s",
+            exc,
+            exc_info=True,
         )
-    return int((await session.execute(stmt)).scalar() or 0)
+        return 0
 
 
 async def _partition_row_count(

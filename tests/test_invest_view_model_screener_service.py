@@ -56,18 +56,22 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
 
 @pytest.fixture(autouse=True)
 def mock_screener_service_resolve_healthy(monkeypatch):
-    import sqlalchemy as sa
     from app.services.invest_screener_snapshots import partition_health
-    from app.services.invest_screener_snapshots.partition_health import HealthyPartition, resolve_healthy_partition
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+        resolve_healthy_partition,
+    )
 
     orig_resolve = resolve_healthy_partition
 
     async def _fake_resolve(session, **kwargs):
-        if hasattr(session, "results"):
-            # It's a _FakeSession! Consume the first result
+        if type(session).__name__ in ("_FakeSession", "_RouterFakeSession"):
+            # It's a fake session! Consume the first result
             partition_date = None
-            if session.results:
-                first_res = session.results.pop(0)
+            results_attr = "_results" if hasattr(session, "_results") else "results"
+            results_list = getattr(session, results_attr, [])
+            if results_list:
+                first_res = results_list.pop(0)
                 partition_date = first_res.scalar_one_or_none()
             return HealthyPartition(
                 partition_date=partition_date,
@@ -78,7 +82,16 @@ def mock_screener_service_resolve_healthy(monkeypatch):
             )
         else:
             # It's a real db session! Run the original resolver
-            return await orig_resolve(session, **kwargs)
+            hp = await orig_resolve(session, **kwargs)
+            if hp:
+                return HealthyPartition(
+                    partition_date=hp.partition_date,
+                    row_count=hp.row_count,
+                    coverage_ratio=hp.coverage_ratio,
+                    is_fallback=hp.is_fallback,
+                    healthy=True,
+                )
+            return None
 
     monkeypatch.setattr(
         partition_health,
