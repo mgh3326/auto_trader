@@ -20,6 +20,7 @@ from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsSnapshotsRepository,
     FinancialFundamentalsUpsert,
 )
+from app.services.snapshot_commit_guard import PartialCommitBlocked
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class FinancialFundamentalsSnapshotBuildRequest:
     commit: bool = False
     collected_at: dt.datetime | None = None
     estimate_only: bool = False
+    allow_partial: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,6 +224,16 @@ async def run_financial_fundamentals_snapshot_build(
                 "no fetch performed",
             ),
             projected_requests=projected,
+        )
+
+    if request.commit and not request.allow_partial:
+        raise PartialCommitBlocked(
+            "fundamentals commit blocked: fundamentals is an incremental "
+            "backfill (DART budget); pass --allow-partial to commit a partial "
+            "backfill",
+            market=market,
+            metric="symbols",
+            reason="incremental_backfill",
         )
 
     reset_request_count()

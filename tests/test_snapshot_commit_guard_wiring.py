@@ -182,3 +182,59 @@ async def test_valuation_cli_routes_guarded_by_default(monkeypatch):
     plain.reset_mock()
     await val_cli.run(val_cli.parse_args(["--all", "--commit", "--allow-partial"]))
     assert plain.await_count == 1 and guarded.await_count == 0
+
+
+# Reuse the existing fundamentals test helpers from the fundamentals job test
+# module: an async-return monkeypatch helper, a fake DART fetcher, and a
+# DB-binding pytest fixture (`bind_job_session`, consumed by parameter name in
+# the allow-partial test below — the re-export looks like a redefinition to
+# ruff, hence the F811 noqa).
+import tests.test_financial_fundamentals_job as _fund_test  # noqa: E402
+from app.jobs import financial_fundamentals_snapshots as fund_job  # noqa: E402
+
+_async_return = _fund_test._async_return
+_fund_fake_fetcher = _fund_test._fake_fetcher
+bind_job_session = _fund_test.bind_job_session  # noqa: F811  (re-exported fixture)
+
+
+@pytest.mark.asyncio
+async def test_fundamentals_commit_blocked_without_allow_partial():
+    calls: list[str] = []
+
+    async def _spy_fetcher(symbol, *, include_quarterly):
+        calls.append(symbol)
+        raise AssertionError("fetcher must not run when commit is blocked")
+
+    with pytest.raises(PartialCommitBlocked):
+        await fund_job.run_financial_fundamentals_snapshot_build(
+            fund_job.FinancialFundamentalsSnapshotBuildRequest(
+                market="kr", symbols=("005930",), commit=True, allow_partial=False
+            ),
+            fetcher=_spy_fetcher,
+        )
+    assert calls == []  # blocked BEFORE any DART fetch (0 budget)
+
+
+@pytest.mark.asyncio
+async def test_fundamentals_allow_partial_permits_commit(bind_job_session, monkeypatch):
+    monkeypatch.setattr(fund_job, "resolve_symbols", _async_return(["005930"]))
+
+    result = await fund_job.run_financial_fundamentals_snapshot_build(
+        fund_job.FinancialFundamentalsSnapshotBuildRequest(
+            market="kr", symbols=("005930",), commit=True, allow_partial=True
+        ),
+        fetcher=_fund_fake_fetcher,
+    )
+    assert result.committed is True
+    assert result.snapshots_built >= 1
+
+
+from scripts import build_financial_fundamentals_snapshots as fund_cli  # noqa: E402
+
+
+def test_fundamentals_cli_allow_partial_arg():
+    assert (
+        fund_cli.parse_args(["--symbol", "005930", "--allow-partial"]).allow_partial
+        is True
+    )
+    assert fund_cli.parse_args(["--symbol", "005930"]).allow_partial is False
