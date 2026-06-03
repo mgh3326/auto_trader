@@ -94,25 +94,40 @@ class HealthyPartition:
     partition_date: date
     row_count: int
     coverage_ratio: float        # row_count / universe_count
-    is_fallback: bool            # True if older than the latest partition
+    is_fallback: bool            # True if older than the newest partition
+    healthy: bool                # True if row_count met the coverage floor
 
 async def active_universe_count(session, *, market) -> int
     # KR/US is_active=TRUE count (shared helper; replaces inline duplication going forward)
 
 async def resolve_healthy_partition(
-    session, *, model, date_col, market,
+    session, *, model, date_col, market_col, market,
     universe_count: int,
     min_ratio: float = _MIN_HEALTHY_COVERAGE_RATIO,
     max_scan_back: int = _MAX_PARTITION_SCAN_BACK,
-    market_col=None,             # None for crypto-style single-market tables
 ) -> HealthyPartition | None
+
+def cap_degraded(state: DataState) -> DataState
+    # never claim better than stale: fresh/partial -> stale; missing/fallback/stale kept
 ```
 
 Behaviour: select up to `max_scan_back` distinct `date_col` values DESC for
-`(model[, market])`; for each, `count()` its rows; return the first whose
-`row_count >= ceil(universe_count * min_ratio)` with `is_fallback = (date != latest)`.
-Return `None` if none qualify (or `universe_count == 0` → return the latest
-partition as healthy, gate disabled).
+`(model, market_col == market)`; for each, `count()` its rows; return the first
+whose `row_count >= ceil(universe_count * min_ratio)` as
+`HealthyPartition(healthy=True, is_fallback=(date != newest))`.
+
+**Never reduce availability (D4):** if no scanned partition meets the floor,
+return the **newest** partition as a last resort —
+`HealthyPartition(healthy=False, is_fallback=False)` — so the loader still serves
+whatever data exists (the pre-2a behavior) rather than hiding it. `universe_count
+<= 0` likewise returns the newest as `healthy=True` (gate disabled). Return
+`None` **only** when the table has no partitions at all (empty) — identical to
+pre-2a `max() is None`.
+
+So 2a only ever *prefers a healthy older partition over a thin newer one*; it
+never serves *nothing* when data exists. The headline win (3.8k older beats
+20-row newer) comes from the scan-back; the valuation-primary presets (no healthy
+partition anywhere) keep serving their thin latest but labeled degraded.
 
 Constants `_MIN_HEALTHY_COVERAGE_RATIO = 0.50`, `_MAX_PARTITION_SCAN_BACK = 10`
 live at module top with a "change = separate PR" note.
@@ -121,14 +136,23 @@ live at module top with a "change = separate PR" note.
 
 Each replaces its bare `max(snapshot_date)` resolution with:
 1. `universe_count = await active_universe_count(session, market=market)`
-2. `hp = await resolve_healthy_partition(session, model=<Table>, date_col=<Table>.snapshot_date, market=market, market_col=<Table>.market, universe_count=universe_count)`
-3. If `hp is None`: empty result + honest `stale`/`missing` freshness (no rows).
-   Else use `hp.partition_date` for the existing row query (qualifier filtering
-   unchanged).
-- `double_buy` (site 4) resolves each of its two tables independently.
+2. `hp = await resolve_healthy_partition(session, model=<Table>, date_col=<Table>.snapshot_date, market_col=<Table>.market, market=market, universe_count=universe_count)`
+3. `chosen_date = hp.partition_date if hp else None`; if `None` (empty table) →
+   return `None` (same as pre-2a). Else use `chosen_date` for the existing row
+   query (qualifier filtering unchanged) and compute
+   `degraded = hp.is_fallback or not hp.healthy`.
+4. When `degraded`, wrap each row's freshness with `cap_degraded(...)` so a thin
+   *today-dated* partition (which `classify_state` would otherwise call `fresh`)
+   is not mislabeled. (For an older fallback partition, `classify_state` already
+   returns `stale` because `snapshot_date != today` — `cap_degraded` is a no-op
+   there.)
+- `double_buy` (site 4) resolves each of its two tables independently;
+  `degraded` is the OR across both.
 - The `MarketValuationSnapshot`-primary presets (5/6/7): in current prod there is
-  **no** healthy valuation partition (only 20 rows ever), so 2a correctly yields
-  honest degraded — conjuring data is an operator/data-recovery concern, not 2a.
+  **no** healthy valuation partition (only 20 rows ever), so `hp.healthy` is
+  `False` and 2a serves the same thin latest partition as today **but labeled
+  degraded** — it does not hide the rows, and conjuring real data is an
+  operator/data-recovery concern, not 2a.
 - **Repo chokepoint 10 (`latest_partition`) is DEFERRED.** Site 1
   (`consecutive_gainers`) inlines its own `max()` and does **not** call
   `repo.latest_partition`; that method's consumers are `list_top_candidates` /
@@ -140,30 +164,42 @@ Each replaces its bare `max(snapshot_date)` resolution with:
 
 ### 3.3 Freshness honesty
 
-When `hp.is_fallback`, the loader forces the primary `dataState` to at least
-`stale` (compose with `classify_state`/`compute_overall_state`; never upgrade a
-fallback to `fresh`), sets `asOf` to `hp.partition_date`, and the existing
-coverage metadata reflects `hp.row_count`/`hp.coverage_ratio`. No new schema
-field; `ScreenerFreshness.dataState` already carries `stale`.
+When `degraded` (`hp.is_fallback or not hp.healthy`), the loader caps each row's
+`dataState` at `stale` via `cap_degraded` (never claims better than `stale`),
+and `asOf` follows the served `snapshot_date` (= `hp.partition_date`). Two cases:
+- **Older fallback** (`is_fallback`): `classify_state` already returns `stale`
+  (date ≠ today), so `cap_degraded` is a no-op — correct by construction.
+- **Thin today-latest** (`not healthy`, not fallback): `classify_state` could
+  return `fresh`/`partial` despite low partition coverage; `cap_degraded` forces
+  `stale` so the badge is honest. This is the one case the existing classifiers
+  miss (they key on the row's closes-window / date, not partition row count).
+
+No new schema field; `ScreenerFreshness.dataState` already carries `stale`.
 
 ## 4. Data flow
 
 ```
 loader
   └─ universe_count = active_universe_count(market)
-  └─ resolve_healthy_partition(model, date_col, market, universe_count, ratio=0.5)
-       ├─ latest healthy        → rows@latest,  dataState = classify_state(...)        (fresh/stale as today)
-       ├─ latest thin → scanback→ rows@older,   dataState = stale (forced), asOf=older
-       └─ no healthy in N back  → None → empty rows, dataState = stale/missing (honest)
+  └─ resolve_healthy_partition(model, date_col, market_col, market, universe_count, ratio=0.5)
+       ├─ latest healthy           → rows@latest,  classify_state(...)              (fresh/stale as today)
+       ├─ latest thin → scanback    → rows@older,   classify_state → stale (asOf=older)
+       ├─ no healthy in N back      → rows@latest (last resort), cap_degraded → stale  (NOT hidden)
+       └─ table empty (max is None) → None → caller's existing missing path
   └─ qualifier filtering on the chosen partition  (UNCHANGED)
 ```
 
 ## 5. Error handling / fail-open
 
 - Resolver query exception → log + fall back to `max(snapshot_date)` (pre-2a),
-  mirroring the existing `try/except` at `screener_service.py:431+`.
+  mirroring the existing `try/except` at `screener_service.py:431+`. The loader
+  wraps the `active_universe_count` + `resolve_healthy_partition` calls in a
+  `try/except` that, on error, recomputes `chosen_date` via the original
+  `max(snapshot_date)` query (no `degraded` cap) so availability is preserved.
 - `universe_count == 0` (universe table empty / new market) → gate disabled,
-  latest partition returned (no behavioral change).
+  newest partition returned (no behavioral change).
+- No healthy partition within scan-back → newest partition still served (degraded
+  label), **never** hidden — consistent with D4.
 - Resolver is pure read; no writes, no broker/order/watch touch.
 
 ## 6. Testing
@@ -171,13 +207,15 @@ loader
 | ID | Test | Asserts |
 | -- | ---- | ------- |
 | **T1** | **headline regression**: 20-row newer vs 3.8k-row older | Seed `InvestScreenerSnapshot` partitions D1=3800 rows, D2(>D1)=20 rows; `consecutive_gainers` loader serves D1 rows, `dataState == "stale"`, `asOf == D1` |
-| **T2** | resolver: latest healthy | latest partition ≥ floor → returned, `is_fallback False` |
-| **T3** | resolver: thin latest → fallback | latest < floor, older ≥ floor → older returned, `is_fallback True` |
-| **T4** | resolver: all thin within scan-back | all < floor → `None` |
-| **T5** | resolver: bound respected | only scans ≤ `max_scan_back` partitions (older healthy beyond bound is NOT served) |
-| **T6** | resolver: `universe_count == 0` disables gate | returns latest unchanged |
-| **T7** | investor_flow + double_buy loaders route through resolver | thin latest investor_flow partition → fallback served, `dataState stale` |
+| **T2** | resolver: latest healthy | latest partition ≥ floor → returned, `is_fallback False`, `healthy True` |
+| **T3** | resolver: thin latest → fallback | latest < floor, older ≥ floor → older returned, `is_fallback True`, `healthy True` |
+| **T4** | resolver: all thin within scan-back → last resort | all < floor → returns the **newest** partition, `healthy False`, `is_fallback False` (NOT `None`) |
+| **T4b** | resolver: empty table | no partitions → `None` |
+| **T5** | resolver: bound respected | only scans ≤ `max_scan_back` partitions (older healthy beyond bound is NOT reached → newest returned as last resort) |
+| **T6** | resolver: `universe_count == 0` disables gate | returns newest, `healthy True` |
+| **T7** | investor_flow + double_buy loaders route through resolver | thin latest investor_flow partition + healthy older → fallback served, `dataState stale` |
 | **T8** | fail-open | resolver raising → loader still returns latest-partition rows (no exception bubbles) |
+| **T9** | `cap_degraded` thin today-latest | a thin *today-dated* partition (no healthy older) is served but `dataState == "stale"` (not `fresh`) |
 
 Tests are service/repo-layer with seeded partitions (DB fixture). No live
 provider, no network.
@@ -204,6 +242,9 @@ provider, no network.
 2. The health bar is `active_universe_count × 0.50`, derived per market from a
    live `is_active` count; no hardcoded universe constant.
 3. Fallback scan-back is bounded (`≤ 10` partitions); unbounded scans impossible.
-4. Resolver errors / empty universe fail open to pre-2a behavior — 2a never
-   reduces availability.
-5. Tests T1–T8 pass; existing screener tests stay green; no migration.
+4. 2a never reduces availability: resolver errors / empty universe / no-healthy
+   all serve the newest partition (degraded-labeled when thin); `None` only when
+   the table is empty (identical to pre-2a `max() is None`).
+5. A thin *today-dated* partition with no healthy older fallback is still served
+   but labeled `stale` (not `fresh`) via `cap_degraded`.
+6. Tests T1–T9 pass; existing screener tests stay green; no migration.
