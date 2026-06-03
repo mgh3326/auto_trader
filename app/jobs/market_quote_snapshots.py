@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
+from app.services.invest_screener_snapshots.partition_health import (
+    active_universe_count,
+)
 from app.services.market_quote_snapshots.builder import build_quote_snapshots_for_market
 from app.services.market_quote_snapshots.repository import (
     MarketQuoteSnapshotsRepository,
     MarketQuoteSnapshotUpsert,
 )
+from app.services.snapshot_commit_guard import assert_min_coverage
 
 
 @dataclass(frozen=True)
@@ -269,3 +273,22 @@ async def run_market_quote_snapshot_build(
         samples=tuple(samples),
         warnings=tuple(warnings),
     )
+
+
+async def run_market_quote_snapshot_build_guarded(
+    request: MarketQuoteSnapshotBuildRequest,
+) -> MarketQuoteSnapshotBuildResult:
+    """Two-pass coverage-guarded commit (ROB-426 PR2b).
+
+    Runs a no-commit pass to count rows, asserts the build covers >= 60% of the
+    active KR/US universe, then runs the committing pass. Crypto is skipped (no
+    KR/US universe denominator). Raises PartialCommitBlocked on a thin build —
+    the committing pass never runs. Callers wanting to bypass the guard call
+    run_market_quote_snapshot_build directly (the --allow-partial path).
+    """
+    dry = await run_market_quote_snapshot_build(replace(request, commit=False))
+    if dry.market in ("kr", "us"):
+        async with AsyncSessionLocal() as session:
+            universe_count = await active_universe_count(session, market=dry.market)
+        assert_min_coverage(dry.snapshots_built, universe_count, market=dry.market)
+    return await run_market_quote_snapshot_build(request)
