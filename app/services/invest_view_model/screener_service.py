@@ -1866,6 +1866,14 @@ async def build_screener_results(
                 expected_baseline_date,
             )
 
+            # KNOWN MINOR (ROB-426 PR3): this uses expected_baseline_date for all
+            # presets, which matches the consecutive_gainers row classifier but NOT
+            # investor_flow's (it classifies rows with today_trading_date). In the
+            # KR pre-market window the two diverge, so an empty investor_flow page
+            # may show "fresh" here while a populated one would show "stale". Impact
+            # is a cosmetic chip on an already-empty page; expected_baseline_date is
+            # the more-correct baseline (avoids the prior-day-labeled-stale
+            # regression). Aligning investor_flow's row classifier is a follow-up.
             _baseline = expected_baseline_date(requested_market, now=now())
             _pd = _snapshot_load_result.partition_date
             _aggregated_data_state = "fresh" if _pd == _baseline else "stale"
