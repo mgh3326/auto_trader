@@ -105,10 +105,19 @@ export interface ScreenerResultRow {
   sourceContext?: ScreenerSourceContext[];
   riskContext?: ScreenerRiskContext[];
   candidateContext?: ScreenerCandidateContext | null;
+  // ROB-426 PR3
+  marketCapSource?: "primary" | "fallback" | null;
 }
 
 export type ScreenerFreshnessSource = "live" | "cached" | "previous_session";
 export type ScreenerDataState = "fresh" | "partial" | "stale" | "missing" | "fallback";
+
+export type ScreenerDegradationReason =
+  | "snapshot_missing"
+  | "coverage_below_floor"
+  | "older_fallback"
+  | "healthy_no_matches"
+  | "live";
 
 export interface ScreenerFreshnessPrimary {
   kind: "screener_snapshot" | "live" | "fallback";
@@ -117,6 +126,9 @@ export interface ScreenerFreshnessPrimary {
   asOfLabel: string;
   dataState: ScreenerDataState;
   source: string | null;
+  // ROB-426 PR3
+  degradationReason?: ScreenerDegradationReason | null;
+  coverageLabel?: string | null;
 }
 
 export interface ScreenerFreshnessDependency {

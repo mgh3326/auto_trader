@@ -125,9 +125,10 @@ async def test_returns_rows_filtered_by_double_buy_and_positive_change_rate(
     )
     await db_session.commit()
 
-    rows = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
+    result = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
 
-    assert rows is not None
+    assert result is not None
+    rows = result.rows
     # Cross-test contamination guard: if other test data exists in the same
     # snapshot date partition, we still expect 911000 to be present and
     # 910001 (negative change_rate) to be filtered out.
@@ -155,8 +156,8 @@ async def test_returns_none_when_no_snapshots():
     session = MagicMock()
     session.execute = AsyncMock(return_value=null_scalar)
 
-    rows = await load_double_buy_from_snapshots(session, market="kr", limit=20)
-    assert rows is None
+    result = await load_double_buy_from_snapshots(session, market="kr", limit=20)
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -199,8 +200,9 @@ async def test_excludes_non_common_stock_by_name_heuristic(db_session):
     )
     await db_session.commit()
 
-    rows = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
-    assert rows is not None
+    result = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
+    assert result is not None
+    rows = result.rows
     # ETF must not appear; other symbols already in the DB are allowed but
     # 919999 must be excluded by the name heuristic.
     assert all(r["symbol"] != "919999" for r in rows)
@@ -209,8 +211,8 @@ async def test_excludes_non_common_stock_by_name_heuristic(db_session):
 @pytest.mark.asyncio
 async def test_returns_none_when_market_is_not_kr(db_session):
     # No DB hit expected — short-circuits at the market guard
-    rows = await load_double_buy_from_snapshots(db_session, market="us", limit=20)
-    assert rows is None
+    result = await load_double_buy_from_snapshots(db_session, market="us", limit=20)
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -255,12 +257,70 @@ async def test_state_is_stale_when_price_snapshot_date_differs_from_flow_snapsho
     )
     await db_session.commit()
 
-    rows = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
+    result = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
 
-    assert rows is not None
+    assert result is not None
+    rows = result.rows
     # find our test symbol (shared DB may have other rows)
     target = next((r for r in rows if r["symbol"] == symbol), None)
     assert target is not None, (
         f"expected {symbol} in results, got {[r['symbol'] for r in rows]}"
     )
     assert target["_screener_snapshot_state"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_double_buy_returns_snapshot_load_result_with_reason(monkeypatch):
+    """Drive flow_hp healthy/non-fallback + price_hp healthy/non-fallback, but
+    candidate query yields 0 qualifiers -> healthy_no_matches."""
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+    from app.services.invest_view_model.double_buy_screener import (
+        load_double_buy_from_snapshots,
+    )
+    from tests.test_invest_view_model_screener_service import (
+        _FakeExecuteResult,
+        _FakeSession,
+    )
+
+    flow_hp = HealthyPartition(
+        partition_date=dt.date(2026, 6, 3),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+    price_hp = HealthyPartition(
+        partition_date=dt.date(2026, 6, 3),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestorFlowSnapshot:
+            return flow_hp
+        elif model == InvestScreenerSnapshot:
+            return price_hp
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    # session execute returns 2000 count for universe_count, and then empty list for candidate_stmt
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[2000]),  # active_universe_count
+            _FakeExecuteResult(rows=[]),  # candidate query (empty)
+        ]
+    )
+
+    result = await load_double_buy_from_snapshots(session, market="kr", limit=10)
+    assert result is not None
+    assert result.rows == []
+    assert result.partition_date == dt.date(2026, 6, 3)
+    assert result.degradation_reason == "healthy_no_matches"
+    assert result.coverage_label is None
