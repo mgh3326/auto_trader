@@ -49,21 +49,31 @@ async def load_high_yield_value_from_snapshots(
     if session is None or market != "kr":
         return None
 
-    latest_val_stmt = sa.select(
-        sa.func.max(MarketValuationSnapshot.snapshot_date)
-    ).where(MarketValuationSnapshot.market == "kr")
+    from app.services.invest_screener_snapshots.partition_health import (
+        resolve_healthy_partition,
+    )
+
+    val_hp = await resolve_healthy_partition(
+        session,
+        model=MarketValuationSnapshot,
+        date_col=MarketValuationSnapshot.snapshot_date,
+        market_col=MarketValuationSnapshot.market,
+        market="kr",
+    )
+    val_date = val_hp.partition_date if val_hp else None
+    if val_date is None:
+        return None
+    partition_degraded = bool(val_hp and (val_hp.is_fallback or not val_hp.healthy))
+
     latest_price_stmt = sa.select(
         sa.func.max(InvestScreenerSnapshot.snapshot_date)
     ).where(InvestScreenerSnapshot.market == "kr")
     try:
-        val_date = (await session.execute(latest_val_stmt)).scalar_one_or_none()
         price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "high_yield_value: latest dates lookup failed: %s", exc, exc_info=True
+            "high_yield_value: latest price date lookup failed: %s", exc, exc_info=True
         )
-        return None
-    if val_date is None:
         return None
 
     candidate_stmt = (
@@ -144,6 +154,12 @@ async def load_high_yield_value_from_snapshots(
 
         today_market_date = today_trading_date("kr", now=datetime.now(UTC))
     state = "fresh" if val_date == today_market_date else "stale"
+    if partition_degraded:
+        from app.services.invest_screener_snapshots.partition_health import (
+            cap_degraded,
+        )
+
+        state = cap_degraded(state)
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()

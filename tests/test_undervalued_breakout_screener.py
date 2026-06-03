@@ -34,6 +34,35 @@ _TEST_SYMBOLS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def mock_partition_health_always_healthy(monkeypatch):
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+        resolve_healthy_partition,
+    )
+
+    orig_resolve = resolve_healthy_partition
+
+    async def _fake_resolve(*args, **kwargs):
+        hp = await orig_resolve(*args, **kwargs)
+        if hp:
+            return HealthyPartition(
+                partition_date=hp.partition_date,
+                row_count=hp.row_count,
+                coverage_ratio=hp.coverage_ratio,
+                is_fallback=hp.is_fallback,
+                healthy=True,
+            )
+        return None
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _fake_resolve,
+    )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_rows(db_session):
     async def _purge() -> None:
