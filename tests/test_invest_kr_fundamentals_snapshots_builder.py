@@ -8,6 +8,7 @@ import pytest
 
 from app.services.invest_kr_fundamentals_snapshots.builder import (
     KrFundamentalsProviderRow,
+    _date_from_epoch_seconds,
     build_kr_fundamentals_snapshot_payloads,
     build_kr_fundamentals_snapshots,
     provider_row_from_mapping,
@@ -149,6 +150,7 @@ def test_provider_row_from_mapping_maps_normalized_keys() -> None:
             "continuous_dividend_payout": 38,
             "continuous_dividend_growth": 2,
             "52_week_high": 370000.0,
+            "price_52_week_high_date": 1780358400,  # epoch seconds → 2026-06-02 UTC
             "relative_strength_index_14": 75.5192,
             "sector": "Electronic Technology",
             "industry": "Telecommunications Equipment",
@@ -175,9 +177,24 @@ def test_provider_row_from_mapping_maps_normalized_keys() -> None:
     assert row.continuous_dividend_payout == Decimal("38")
     assert row.continuous_dividend_growth == Decimal("2")
     assert row.week_high_52 == Decimal("370000.0")
+    assert row.week_high_52_date == dt.date(2026, 6, 2)
     assert row.rsi14 == Decimal("75.5192")
     assert row.sector == "Electronic Technology"
     assert row.industry == "Telecommunications Equipment"
+
+
+def test_date_from_epoch_seconds_parses_and_fails_soft() -> None:
+    # ROB-430 PR-②: tvscreener PRICE_52_WEEK_HIGH_DATE arrives as epoch seconds.
+    assert _date_from_epoch_seconds(1780358400) == dt.date(2026, 6, 2)
+    assert _date_from_epoch_seconds(1704067200) == dt.date(2024, 1, 1)
+    assert _date_from_epoch_seconds(1780358400.0) == dt.date(2026, 6, 2)
+    # Fail-soft: missing / non-positive / non-finite / unparseable → None.
+    assert _date_from_epoch_seconds(None) is None
+    assert _date_from_epoch_seconds(0) is None
+    assert _date_from_epoch_seconds(-5) is None
+    assert _date_from_epoch_seconds(float("nan")) is None
+    assert _date_from_epoch_seconds("not-a-number") is None
+    assert _date_from_epoch_seconds(True) is None  # bool is not a real timestamp
 
 
 def test_provider_row_from_mapping_missing_keys_become_none() -> None:
@@ -194,6 +211,7 @@ def test_provider_row_from_mapping_missing_keys_become_none() -> None:
     assert row.roe_ttm is None
     assert row.continuous_dividend_payout is None
     assert row.week_high_52 is None
+    assert row.week_high_52_date is None
     assert row.industry is None
 
 

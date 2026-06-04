@@ -106,6 +106,11 @@ class InvestKrFundamentalsSnapshot(Base):
 
     # Technical / categorisation columns
     week_high_52: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    # ROB-430 PR-②: the DATE the 52-week high was set (tvscreener
+    # PRICE_52_WEEK_HIGH_DATE). undervalued_breakout's Toss "신고가" = a NEW 52w-high
+    # made within ~20 days (a breakout event), NOT proximity to the high. nullable
+    # because coverage is sparse / the column was added after initial rows.
+    week_high_52_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     rsi14: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     sector: Mapped[str | None] = mapped_column(String(120), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(120), nullable=True)
