@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 
 _LOOKBACK = 10
 
+#: ROB-430 PR-①: consecutive_gainers filters ``consecutive_up_days >= 5``, which
+#: requires at least 6 daily closes to even be possible (6 closes → 5 up-moves).
+#: When the OHLCV window is shorter than this, a trailing-streak count is a
+#: truncated lower bound (the start of the run is off-screen), so we record
+#: ``consecutive_up_days = None`` (insufficient data) rather than a misleadingly
+#: small number that would silently fail the >= 5 filter. The fix that actually
+#: surfaces streaks is an operator re-build over a full daily-candle history.
+_MIN_SESSIONS_FOR_RELIABLE_STREAK = 6
+
 
 @dataclass(frozen=True)
 class DerivedMetrics:
@@ -40,7 +49,10 @@ def derive_metrics(closes: Sequence[Decimal]) -> DerivedMetrics:
         change_rate = (change_amount / prev * Decimal("100")) if prev != 0 else None
 
     streak: int | None
-    if len(closes) < 2:
+    if len(closes) < _MIN_SESSIONS_FOR_RELIABLE_STREAK:
+        # ROB-430 PR-①: too few sessions to establish a streak the >= 5 filter
+        # needs; a trailing count here is a truncated lower bound, so report None
+        # (insufficient) instead of a misleadingly small, silently-excluded value.
         streak = None
     else:
         streak = 0
@@ -172,4 +184,25 @@ async def build_snapshots_for_market(
             )
 
     await asyncio.gather(*(_one(i, s) for i, s in enumerate(symbols_list)))
-    return [r for r in results if r is not None]
+    built = [r for r in results if r is not None]
+
+    # ROB-430 PR-①: operator diagnostic. If a large share of rows have an OHLCV
+    # window shorter than _MIN_SESSIONS_FOR_RELIABLE_STREAK, consecutive_up_days is
+    # None for them and consecutive_gainers (>= 5) will be empty regardless of the
+    # market — the partition needs a re-build over a fuller daily-candle history.
+    thin = sum(
+        1
+        for r in built
+        if len(r.closes_window or []) < _MIN_SESSIONS_FOR_RELIABLE_STREAK
+    )
+    if thin:
+        logger.warning(
+            "invest_screener_snapshots[%s]: %d/%d rows have < %d OHLCV sessions "
+            "(consecutive_up_days unreliable → consecutive_gainers may be empty; "
+            "re-build over a fuller daily-candle history)",
+            market,
+            thin,
+            len(built),
+            _MIN_SESSIONS_FOR_RELIABLE_STREAK,
+        )
+    return built
