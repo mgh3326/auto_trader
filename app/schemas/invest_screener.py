@@ -47,6 +47,13 @@ ScreenerRiskSeverity = Literal["info", "warning", "danger"]
 # preset matches Toss semantics (auto_trader_original presets leave it None).
 ScreenerPresetOrigin = Literal["toss_parity", "auto_trader_original"]
 ScreenerParityStatus = Literal["full", "partial", "mismatch"]
+# ROB-427: per-preset × market availability. Orthogonal to parityStatus (Toss
+# semantic closeness): availability says whether this preset can RUN in the
+# requested market right now. "active" runs; "data_pending" is catalogued but
+# disabled until a US data source/backfill exists; "unsupported" has no market
+# equivalent (e.g. KR-only investor flow). data_pending/unsupported never
+# fabricate rows — build_screener_results fail-closes with availabilityReason.
+ScreenerPresetAvailability = Literal["active", "data_pending", "unsupported"]
 
 
 class ScreenerInvestorFlowChip(BaseModel):
@@ -79,6 +86,11 @@ class ScreenerPreset(BaseModel):
     presetOrigin: ScreenerPresetOrigin | None = None
     parityStatus: ScreenerParityStatus | None = None
     parityNote: str | None = None
+    # ROB-427: per-market availability. Default "active" keeps every existing
+    # construction (KR/crypto) valid; preset_definitions(market="us") sets
+    # data_pending/unsupported with availabilityReason instead of hiding presets.
+    availability: ScreenerPresetAvailability = "active"
+    availabilityReason: str | None = None
 
 
 class ScreenerSourceContext(BaseModel):

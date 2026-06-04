@@ -38,6 +38,49 @@ _KR_ONLY_PRESET_IDS = {
     "growth_expectation_toss",
 }
 
+# ROB-427: per-market availability. Instead of HIDING the KR-only presets for US
+# (the old hard-filter), the US catalog now exposes them with an honest status.
+# unsupported = no US equivalent (KR 외국인·기관 수급); data_pending = catalogued
+# but disabled until a US data source exists (Yahoo valuation / US fundamentals).
+# The remaining KR-only presets default to data_pending via _KR_ONLY_PRESET_IDS.
+# ROB-427 PR3: KR-only presets that ARE active for US (backed by US data now).
+# high_yield_value (ROE+PER) runs on Yahoo valuation snapshots — see
+# high_yield_value_screener.load_high_yield_value_from_snapshots(market="us").
+_US_ACTIVE_PRESET_IDS = {"high_yield_value"}
+_US_UNSUPPORTED_PRESET_IDS = {"double_buy", "investor_flow_momentum"}
+_US_UNSUPPORTED_REASON = "외국인·기관 수급은 국내 전용 지표입니다"
+_US_DATA_PENDING_REASON: dict[str, str] = {
+    "high_yield_value": "미국 가치형(ROE·PER) 활성화 준비중",
+    "undervalued_breakout": "미국 신고가(52주) 데이터 소스 준비중",
+    "profitable_company": "미국 펀더멘털(매출총이익률) 데이터 준비중",
+    "undervalued_growth": "미국 펀더멘털(연평균 매출·순이익 증감률) 데이터 준비중",
+    "cheap_value": "미국 펀더멘털(연평균 순이익 증감률) 데이터 준비중",
+    "growth_expectation_toss": "미국 펀더멘털(연평균 순이익 증감률) 데이터 준비중",
+    "stable_growth": "미국 펀더멘털(증감률·순이익 연속증가) 데이터 준비중",
+    "steady_dividend": "미국 배당·순이익 연속 데이터 준비중",
+    "future_dividend_king": "미국 배당·순이익 연속 데이터 준비중",
+}
+
+
+def _preset_availability(preset_id: str, market: str) -> tuple[str, str | None]:
+    """(availability, reason) for a preset in a market (ROB-427).
+
+    KR/crypto: every catalogued preset is ``active``. US: ``unsupported`` for
+    KR-only flow presets, ``data_pending`` for the rest of the KR-only set
+    (disabled with an honest reason, never fabricated), ``active`` otherwise.
+    """
+    if market != "us":
+        return "active", None
+    if preset_id in _US_ACTIVE_PRESET_IDS:  # ROB-427 PR3: Yahoo-backed US activation
+        return "active", None
+    if preset_id in _US_UNSUPPORTED_PRESET_IDS:
+        return "unsupported", _US_UNSUPPORTED_REASON
+    if preset_id in _KR_ONLY_PRESET_IDS:
+        return "data_pending", _US_DATA_PENDING_REASON.get(
+            preset_id, "미국 데이터 준비중"
+        )
+    return "active", None
+
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
     ScreenerPreset(
@@ -477,7 +520,15 @@ def _with_market(preset: ScreenerPreset, market: str) -> ScreenerPreset:
         chips[0] = _market_chip(market)
     else:
         chips = [_market_chip(market)]
-    return preset.model_copy(update={"market": market, "filterChips": chips})
+    availability, reason = _preset_availability(preset.id, market)
+    return preset.model_copy(
+        update={
+            "market": market,
+            "filterChips": chips,
+            "availability": availability,
+            "availabilityReason": reason,
+        }
+    )
 
 
 def _normalize_requested_market(market: str) -> str:
@@ -489,10 +540,10 @@ def preset_definitions(market: str = "kr") -> list[ScreenerPreset]:
     normalized_market = _normalize_requested_market(market)
     if normalized_market == "crypto":
         return [_with_market(p, "crypto") for p in CRYPTO_SCREENER_PRESETS]
-    presets = SCREENER_PRESETS
-    if normalized_market != "kr":
-        presets = [p for p in SCREENER_PRESETS if p.id not in _KR_ONLY_PRESET_IDS]
-    return [_with_market(p, normalized_market) for p in presets]
+    # ROB-427: no longer hide KR-only presets for US — expose the full catalog and
+    # let _with_market stamp per-market availability (active/data_pending/unsupported)
+    # so the US tab is honest instead of artificially sparse.
+    return [_with_market(p, normalized_market) for p in SCREENER_PRESETS]
 
 
 def get_preset(preset_id: str, market: str = "kr") -> ScreenerPreset | None:

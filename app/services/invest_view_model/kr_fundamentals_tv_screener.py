@@ -48,6 +48,12 @@ from app.services.market_events.session_calendar import trading_sessions_in_rang
 logger = logging.getLogger(__name__)
 
 EARNINGS_STREAK_SKIP_WARNING = "순이익 연속증가 조건은 tvscreener 미제공으로 미적용"
+# ROB-433: shown when some displayed rows fell back to the tvscreener 1yr-YoY proxy
+# for a 3년평균 증감률 condition because DART (financial_fundamentals_snapshots) was
+# not backfilled for them. Exact 3y-avg rises as the operator backfills DART.
+GROWTH_PROXY_WARNING = (
+    "일부 종목의 3년평균 증감률은 근사치(연간 YoY)로 평가됨 (DART 미적재)"
+)
 
 #: Mirror partition_health._MIN_HEALTHY_COVERAGE_RATIO so a thin tvscreener smoke
 #: partition cannot shadow a healthy one. Locked here; change = telemetry-backed PR.
@@ -70,11 +76,19 @@ _THRESHOLD_CHECKS: tuple[tuple[str, str, bool], ...] = (
     ("min_dividend_yield", "dividend_yield", False),
     ("min_gross_margin_ttm", "gross_margin_ttm", False),
     ("min_payout_ratio", "payout_ratio_ttm", False),
-    ("min_revenue_growth_3y_avg", "revenue_yoy", False),  # PROXY: YoY not 3y-avg
-    ("min_earnings_growth_3y_avg", "eps_yoy", False),  # PROXY: YoY not 3y-avg
     ("min_earnings_growth_qoq", "eps_qoq", False),
     ("min_dividend_paid_streak_years", "continuous_dividend_payout", False),
     ("min_dividend_growth_streak_years", "continuous_dividend_growth", False),
+)
+
+# ROB-433: 3-year-average growth thresholds are evaluated DART-first. Each entry is
+# (spec_field, tvscreener_proxy_col, dart_metric_attr). When the DART derivation
+# (financial_fundamentals_snapshots) has the exact 3y-avg metric (state == "ok") we
+# use it (growth_source="dart"); otherwise we fall back to the tvscreener 1yr-YoY
+# PROXY column (growth_source="proxy"), surfaced honestly per row + via a warning.
+_GROWTH_3Y_AVG_CHECKS: tuple[tuple[str, str, str], ...] = (
+    ("min_revenue_growth_3y_avg", "revenue_yoy", "revenue_growth_3y_avg"),
+    ("min_earnings_growth_3y_avg", "eps_yoy", "earnings_growth_3y_avg"),
 )
 
 #: ``min_*`` thresholds are lower bounds (column >= threshold); ``max_*`` are
@@ -252,28 +266,69 @@ def _passes_thresholds(
     spec: FundamentalsPresetSpec,
     *,
     partition_date: dt.date,
-) -> tuple[bool, str | None]:
-    """Apply the spec's active thresholds against tvscreener columns (fail-closed).
+    dart: Any = None,
+) -> tuple[bool, str | None, dict[str, str | None]]:
+    """Apply the spec's active thresholds (fail-closed). Returns
+    ``(passes, reject_reason, provenance)``.
 
-    Returns (passes, reject_reason). ``min_earnings_increase_streak_years`` is
-    intentionally NOT in _THRESHOLD_CHECKS — it has no tvscreener column and is
-    skipped (the caller surfaces EARNINGS_STREAK_SKIP_WARNING instead).
+    ROB-433: the 3y-avg growth thresholds and the net-income streak are evaluated
+    DART-first (``dart`` = the FundamentalsDerivation for this symbol, or None) and
+    fall back to the tvscreener YoY proxy (growth) / SKIP (streak) when DART is
+    absent. provenance = ``{"growth_source": "dart"|"proxy"|None,
+    "streak_source": "dart"|"skipped"|None}`` and is only meaningful when passes.
     """
+    provenance: dict[str, str | None] = {"growth_source": None, "streak_source": None}
+
     for spec_field, col_attr, require_positive in _THRESHOLD_CHECKS:
         threshold = getattr(spec, spec_field)
         if threshold is None:
             continue
         value = getattr(snap, col_attr)
         if value is None:
-            return False, f"{col_attr} unavailable"
+            return False, f"{col_attr} unavailable", provenance
         if require_positive and value <= 0:
-            return False, f"{col_attr} not positive"
+            return False, f"{col_attr} not positive", provenance
         if spec_field in _MAX_FIELDS:
             if Decimal(str(value)) > Decimal(str(threshold)):
-                return False, f"{col_attr} above max"
+                return False, f"{col_attr} above max", provenance
         else:
             if Decimal(str(value)) < Decimal(str(threshold)):
-                return False, f"{col_attr} below min"
+                return False, f"{col_attr} below min", provenance
+
+    # ROB-433: 3y-avg growth — DART (exact 3년평균) first, tvscreener YoY proxy fallback.
+    for spec_field, proxy_col, dart_attr in _GROWTH_3Y_AVG_CHECKS:
+        threshold = getattr(spec, spec_field)
+        if threshold is None:
+            continue
+        dm = getattr(dart, dart_attr, None) if dart is not None else None
+        if dm is not None and dm.state == "ok" and dm.value is not None:
+            value, source = dm.value, "dart"
+        else:
+            value, source = getattr(snap, proxy_col), "proxy"
+        if value is None:
+            return False, f"{dart_attr} unavailable", provenance
+        if Decimal(str(value)) < Decimal(str(threshold)):
+            return False, f"{dart_attr} below min", provenance
+        # "proxy" wins (least-precise): if ANY growth metric fell back, mark proxy.
+        if provenance["growth_source"] != "proxy":
+            provenance["growth_source"] = source
+
+    # ROB-433: 순이익 연속증가 streak — DART first; SKIP (fail-open) when DART absent
+    # (no tvscreener column). Skipped rows still pass; the caller warns.
+    if spec.min_earnings_increase_streak_years is not None:
+        dm = (
+            getattr(dart, "earnings_increase_streak_years", None)
+            if dart is not None
+            else None
+        )
+        if dm is not None and dm.state == "ok" and dm.value is not None:
+            if Decimal(str(dm.value)) < Decimal(
+                str(spec.min_earnings_increase_streak_years)
+            ):
+                return False, "earnings_increase_streak_years below min", provenance
+            provenance["streak_source"] = "dart"
+        else:
+            provenance["streak_source"] = "skipped"
 
     # ROB-430 PR-② / ROB-432: 신고가 = a NEW 52-week high made within
     # max_new_high_age_trading_days KRX trading sessions of the partition (a breakout
@@ -283,18 +338,18 @@ def _passes_thresholds(
     if spec.max_new_high_age_trading_days is not None:
         high_date = snap.week_high_52_date
         if high_date is None:
-            return False, "52w-high date unavailable"
+            return False, "52w-high date unavailable", provenance
         if high_date > partition_date:
-            return False, "52w-high date in future"
+            return False, "52w-high date in future", provenance
         age = _new_high_age_trading_days(snap, partition_date=partition_date)
         if age is None:
             # date present & not future, yet no sessions in (high, partition] →
             # the date is outside the XKRX calendar's range (or a calendar error).
-            return False, "52w-high recency unavailable (calendar range)"
+            return False, "52w-high recency unavailable (calendar range)", provenance
         if age > spec.max_new_high_age_trading_days:
-            return False, "52w high not recent"
+            return False, "52w high not recent", provenance
 
-    return True, None
+    return True, None, provenance
 
 
 def _build_row(
@@ -303,12 +358,18 @@ def _build_row(
     name: str | None,
     state: str,
     partition_date: dt.date,
+    provenance: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Row dict using the metric keys the screener renderer + _METRIC_FIELD expect."""
+    prov = provenance or {}
     return {
         "symbol": snap.symbol,
         "market": "kr",
         "name": name,  # from KRSymbolUniverse — NOT snap.name (ticker for KR)
+        # ROB-433: per-row provenance for the DART-first growth/streak metrics —
+        # "dart" (exact 3년평균/연속증가) vs "proxy" (tvscreener YoY) / "skipped".
+        "growth_source": prov.get("growth_source"),
+        "streak_source": prov.get("streak_source"),
         "close": _to_float(snap.price),
         "change_rate": _to_float(snap.change_rate),
         "volume": _to_float(snap.volume),
@@ -420,6 +481,44 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         )
         name_map = {r.symbol: r.name for r in names.all()}
 
+    # ROB-433: DART-first growth/streak. Only fetch the financial_fundamentals
+    # derivation when this preset uses a 3년평균 growth or 순이익 연속증가 threshold
+    # (valuation-only presets skip the extra query). DART coverage is sparse
+    # (operator backfill), so most symbols fall back to the tvscreener proxy / SKIP,
+    # surfaced honestly per row (growth_source/streak_source) + via the warning below.
+    dart_by_symbol: dict[str, Any] = {}
+    if symbols and (
+        spec.min_revenue_growth_3y_avg is not None
+        or spec.min_earnings_growth_3y_avg is not None
+        or spec.min_earnings_increase_streak_years is not None
+    ):
+        from app.services.financial_fundamentals_snapshots.derive import (
+            derive_fundamentals_metrics,
+        )
+        from app.services.financial_fundamentals_snapshots.repository import (
+            FinancialFundamentalsSnapshotsRepository,
+        )
+        from app.services.invest_view_model.fundamentals_screener import _to_period
+
+        try:
+            period_rows = await FinancialFundamentalsSnapshotsRepository(
+                session
+            ).latest_periods_for_symbols(market="kr", symbols=symbols)
+            dart_by_symbol = {
+                sym: derive_fundamentals_metrics(
+                    [_to_period(r) for r in rows], report_date=today_market_date
+                )
+                for sym, rows in period_rows.items()
+            }
+        except Exception as exc:  # noqa: BLE001 — DART optional; proxy fallback on error
+            logger.warning(
+                "kr_fundamentals_tv_screener: DART derivation failed (proxy "
+                "fallback) for preset=%s: %s",
+                spec.preset_id,
+                exc,
+                exc_info=True,
+            )
+
     included: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -433,7 +532,9 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         if not _is_kr_toss_common_stock(sym, name):
             continue
         seen.add(sym)
-        passes, reason = _passes_thresholds(snap, spec, partition_date=partition_date)
+        passes, reason, prov = _passes_thresholds(
+            snap, spec, partition_date=partition_date, dart=dart_by_symbol.get(sym)
+        )
         if not passes:
             excluded.append({"symbol": sym, "reason": reason})
             continue
@@ -442,7 +543,13 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         ):
             last_computed_at = snap.computed_at
         included.append(
-            _build_row(snap, name=name, state=state, partition_date=partition_date)
+            _build_row(
+                snap,
+                name=name,
+                state=state,
+                partition_date=partition_date,
+                provenance=prov,
+            )
         )
 
     # ROB-429 B2: full-partition match total BEFORE the display limit.
@@ -470,9 +577,17 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         )
     included = included[:limit]
 
+    # ROB-433: warnings reflect the DISPLAYED rows' provenance. The streak warning
+    # now fires only when some displayed row actually fell back to SKIP (DART
+    # applied it elsewhere); the growth warning fires when any displayed row used
+    # the YoY proxy. Both shrink automatically as the operator backfills DART.
     warnings: list[str] = []
-    if spec.min_earnings_increase_streak_years is not None:
+    if spec.min_earnings_increase_streak_years is not None and any(
+        r.get("streak_source") == "skipped" for r in included
+    ):
         warnings.append(EARNINGS_STREAK_SKIP_WARNING)
+    if any(r.get("growth_source") == "proxy" for r in included):
+        warnings.append(GROWTH_PROXY_WARNING)
 
     return FundamentalsScreenResult(
         rows=included,

@@ -169,8 +169,11 @@ def test_high_yield_value_preset_is_full_toss_parity_kr_only() -> None:
     assert preset.presetOrigin == "toss_parity"
     assert preset.parityStatus == "full"
     assert preset.metricLabel == "ROE"
-    # KR-only: must not surface in the US catalog.
-    assert "high_yield_value" not in {p.id for p in preset_definitions("us")}
+    # ROB-427 PR3: exposed AND active for US (Yahoo valuation backs ROE+PER).
+    us_by_id = {p.id: p for p in preset_definitions("us")}
+    assert "high_yield_value" in us_by_id
+    assert us_by_id["high_yield_value"].availability == "active"
+    assert us_by_id["high_yield_value"].availabilityReason is None
 
 
 @pytest.mark.unit
