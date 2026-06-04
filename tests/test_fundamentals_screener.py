@@ -9,6 +9,7 @@ import pytest
 from app.services.financial_fundamentals_snapshots.derive import FundamentalPeriod
 from app.services.invest_view_model.fundamentals_screener import (
     PROFITABLE_COMPANY_SPEC,
+    FundamentalsPresetSpec,
     evaluate_fundamentals_candidates,
 )
 
@@ -122,6 +123,14 @@ def test_pit_gate_excludes_unfiled_period():
 
 
 def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
+    # Generic sort mechanism (roe desc, nulls last, limit trim) — uses a synthetic
+    # roe-sort spec so it stays valid regardless of any real preset's sort_by
+    # (ROB-432 changed profitable_company to gross_margin_ttm).
+    spec = FundamentalsPresetSpec(
+        preset_id="_test_roe_sort",
+        min_gross_margin_ttm=Decimal("0.20"),
+        sort_by="roe",
+    )
     # All candidates pass the gross-margin gate (margin 0.30); ranking + trim is the SUT.
     roes = {"A": 50.0, "B": 10.0, "C": 30.0, "D": None, "E": 20.0, "F": 40.0}
     valuation_rows = [
@@ -144,7 +153,7 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
     rows, _ = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
-        spec=PROFITABLE_COMPANY_SPEC,
+        spec=spec,
         report_date=dt.date(2025, 6, 1),
         limit=4,
         name_map={},
@@ -155,7 +164,7 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
     rows_all, _ = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
-        spec=PROFITABLE_COMPANY_SPEC,
+        spec=spec,
         report_date=dt.date(2025, 6, 1),
         limit=20,
         name_map={},
@@ -603,8 +612,15 @@ def test_undervalued_growth_full_include_all_three_conditions():
 
 
 def test_sort_by_non_roe_key_orders_desc():
-    from app.services.invest_view_model.fundamentals_screener import (
-        UNDERVALUED_GROWTH_SPEC,
+    # Generic non-roe-key desc sort mechanism — synthetic spec sorting by
+    # earnings_growth_3y_avg, so it stays valid regardless of any real preset's
+    # sort_by (ROB-432 changed undervalued_growth to revenue_growth_3y_avg).
+    spec = FundamentalsPresetSpec(
+        preset_id="_test_earnings_sort",
+        max_per=Decimal("20"),
+        min_revenue_growth_3y_avg=Decimal("0.10"),
+        min_earnings_growth_3y_avg=Decimal("0.20"),
+        sort_by="earnings_growth_3y_avg",
     )
 
     # Two qualifiers with different earnings growth; sort_by='earnings_growth_3y_avg' desc.
@@ -637,7 +653,7 @@ def test_sort_by_non_roe_key_orders_desc():
     rows, _ = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
-        spec=UNDERVALUED_GROWTH_SPEC,
+        spec=spec,
         report_date=dt.date(2025, 6, 1),
         limit=20,
         name_map={},
