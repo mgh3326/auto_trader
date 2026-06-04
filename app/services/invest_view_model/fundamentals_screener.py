@@ -134,6 +134,10 @@ class FundamentalsScreenResult:
     fundamentals_collected_at: dt.datetime | None
     fundamentals_state: str  # 'fresh' | 'stale' | 'missing'
     excluded: list[dict[str, Any]] = field(default_factory=list)
+    # ROB-428 PR-B: honest-divergence warnings the caller surfaces to the user
+    # (e.g. the earnings-streak condition skipped because tvscreener omits it).
+    # The DART loader leaves this empty; the tvscreener KR loader populates it.
+    warnings: list[str] = field(default_factory=list)
 
 
 def _to_period(row: FinancialFundamentalsSnapshot) -> FundamentalPeriod:
