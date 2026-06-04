@@ -43,6 +43,7 @@ from app.services.invest_view_model.fundamentals_screener import (
     FundamentalsPresetSpec,
     FundamentalsScreenResult,
 )
+from app.services.market_events.session_calendar import trading_sessions_in_range
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,8 @@ _SORT_KEY_TO_ROW_KEY: dict[str, str] = {
     "payout_ratio": "payout_ratio",
     # ROB-428 PR-C: 52w-high proximity remains an emitted (informational) row key.
     "high_52w_proximity": "high_52w_proximity",
-    # ROB-430 PR-②: undervalued_breakout sorts by market cap (Toss default, liquid
-    # names first) now that the filter is a recent-new-high event, not proximity.
+    # market_cap is a valid sort key (generic). NOTE (ROB-432): undervalued_breakout
+    # now sorts by PER ascending (Toss 저평가 탈출 default), not market_cap.
     "market_cap": "market_cap",
 }
 
@@ -220,22 +221,30 @@ async def _partition_row_count(
     )
 
 
-def _new_high_age_days(
+def _new_high_age_trading_days(
     snap: InvestKrFundamentalsSnapshot, *, partition_date: dt.date
 ) -> int | None:
-    """Days from the 52-week-high date to the snapshot partition date.
+    """KRX *trading* sessions from the 52-week-high date to the partition date.
 
-    ROB-430 PR-②: a smaller value = a more recent new 52-week high. Returns None
-    when week_high_52_date is missing or in the future relative to the partition
-    (defensive: a future high-date is treated as unavailable, not recent).
+    ROB-432: counts holiday-aware KRX sessions (XKRX via session_calendar) in the
+    half-open range ``(week_high_52_date, partition_date]`` — a smaller value = a
+    more recent new 52-week high. Toss's "20일" is 20 거래일, so trading days (not
+    calendar days) are the correct unit.
+
+    Returns None (fail-closed → excluded) when:
+    * week_high_52_date is missing, or in the future relative to the partition
+      (a future high-date is treated as unavailable, not recent); or
+    * the range is outside the XKRX calendar's precomputed bounds / any calendar
+      error (``trading_sessions_in_range`` returns [] → never mis-included).
     """
     high_date = snap.week_high_52_date
-    if high_date is None:
+    if high_date is None or high_date > partition_date:
         return None
-    age = (partition_date - high_date).days
-    if age < 0:
+    sessions = trading_sessions_in_range("kr", high_date, partition_date)
+    if not sessions:
+        # Out of XKRX range or calendar error → cannot confirm recency → fail-closed.
         return None
-    return age
+    return sum(1 for s in sessions if s > high_date)
 
 
 def _passes_thresholds(
@@ -266,14 +275,23 @@ def _passes_thresholds(
             if Decimal(str(value)) < Decimal(str(threshold)):
                 return False, f"{col_attr} below min"
 
-    # ROB-430 PR-②: 신고가 = a NEW 52-week high made within max_new_high_age_days
-    # days of the partition (a breakout event), checked via week_high_52_date
-    # recency (fail-closed: NULL or future high-date excludes the row).
-    if spec.max_new_high_age_days is not None:
-        age = _new_high_age_days(snap, partition_date=partition_date)
+    # ROB-430 PR-② / ROB-432: 신고가 = a NEW 52-week high made within
+    # max_new_high_age_trading_days KRX trading sessions of the partition (a breakout
+    # event), checked via week_high_52_date recency. Fail-closed with DISTINCT reasons
+    # so an operator can tell a missing-data exclude from a calendar-range one:
+    #   NULL date / future date / out-of-XKRX-range each get their own reason.
+    if spec.max_new_high_age_trading_days is not None:
+        high_date = snap.week_high_52_date
+        if high_date is None:
+            return False, "52w-high date unavailable"
+        if high_date > partition_date:
+            return False, "52w-high date in future"
+        age = _new_high_age_trading_days(snap, partition_date=partition_date)
         if age is None:
-            return False, "week_high_52_date unavailable"
-        if age > spec.max_new_high_age_days:
+            # date present & not future, yet no sessions in (high, partition] →
+            # the date is outside the XKRX calendar's range (or a calendar error).
+            return False, "52w-high recency unavailable (calendar range)"
+        if age > spec.max_new_high_age_trading_days:
             return False, "52w high not recent"
 
     return True, None
@@ -312,17 +330,20 @@ def _build_row(
         "dividend_growth_streak_years": _to_float(snap.continuous_dividend_growth),
         "earnings_increase_streak_years": None,  # tvscreener does not provide it
         "rsi": _to_float(snap.rsi14),
-        # ROB-430 PR-②: undervalued_breakout's signal is a recent NEW 52w high.
-        # week_high_52_date (the high date) + new_high_age_days (days since, smaller =
-        # more recent) are the honest fields; high_52w_proximity stays as an
-        # informational column. None when the date / 52w-high cannot be derived.
+        # ROB-430 PR-② / ROB-432: undervalued_breakout's signal is a recent NEW 52w
+        # high. week_high_52_date (the high date) + new_high_age_trading_days (KRX
+        # trading sessions since, smaller = more recent) are the honest fields;
+        # high_52w_proximity stays as an informational column. None when the date /
+        # 52w-high cannot be derived or the date is out of the XKRX calendar range.
         "week_high_52": _to_float(snap.week_high_52),
         "week_high_52_date": (
             snap.week_high_52_date.isoformat()
             if snap.week_high_52_date is not None
             else None
         ),
-        "new_high_age_days": _new_high_age_days(snap, partition_date=partition_date),
+        "new_high_age_trading_days": _new_high_age_trading_days(
+            snap, partition_date=partition_date
+        ),
         "high_52w_proximity": (
             float(prox) if (prox := _high_52w_proximity(snap)) is not None else None
         ),
@@ -428,13 +449,25 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
     total_matched = len(included)
 
     sort_row_key = _SORT_KEY_TO_ROW_KEY.get(spec.sort_by, spec.sort_by)
-    included.sort(
-        key=lambda r: (
-            r.get(sort_row_key) is None,
-            -(r.get(sort_row_key) or 0.0),
-            r["symbol"],
+    # ROB-432: nulls always last; direction from spec.sort_descending. Ascending
+    # (sort_descending=False) puts the smallest metric first — e.g. undervalued_breakout
+    # sorts by PER ascending (cheapest first) to mirror Toss's 저평가 탈출 order.
+    if spec.sort_descending:
+        included.sort(
+            key=lambda r: (
+                r.get(sort_row_key) is None,
+                -(r.get(sort_row_key) or 0.0),
+                r["symbol"],
+            )
         )
-    )
+    else:
+        included.sort(
+            key=lambda r: (
+                r.get(sort_row_key) is None,
+                (r.get(sort_row_key) or 0.0),
+                r["symbol"],
+            )
+        )
     included = included[:limit]
 
     warnings: list[str] = []

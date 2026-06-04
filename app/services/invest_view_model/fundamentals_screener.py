@@ -55,17 +55,26 @@ class FundamentalsPresetSpec:
     min_earnings_growth_qoq: Decimal | None = None  # ratio (0.10)
     # ROB-430 PR-②: Toss "신고가" = a NEW 52-week high made within N days (a breakout
     # event), NOT proximity to the high. Implemented in the tvscreener KR loader via
-    # week_high_52_date recency: (partition_date - week_high_52_date).days <= N.
+    # week_high_52_date recency. ROB-432: N counts KRX *trading* sessions (XKRX,
+    # holiday-aware via session_calendar), not calendar days — Toss's "20일" = 20 거래일.
     # The DART loader ignores it (no DART preset uses it).
-    max_new_high_age_days: int | None = None  # 52w-high set within this many days
+    max_new_high_age_trading_days: int | None = (
+        None  # 52w-high set within N KRX sessions
+    )
     sort_by: str = "roe"  # any metric key carried on the output row
+    # ROB-432: display sort direction. Default desc (highest metric first, e.g. ROE).
+    # undervalued_breakout uses ascending PER (cheapest first) to mirror Toss's
+    # 저평가 탈출 default order (lowest PER on top).
+    sort_descending: bool = True
 
 
 PROFITABLE_COMPANY_SPEC = FundamentalsPresetSpec(
     preset_id="profitable_company",
     min_roe=Decimal("15"),
     min_gross_margin_ttm=Decimal("0.20"),
-    sort_by="roe",
+    # ROB-432: Toss 돈 잘버는 회사 default order = 매출총이익률 desc (observed 100.00 >
+    # 99.09 > 99.02 ... strictly; ROE jumps around → not the key).
+    sort_by="gross_margin_ttm",
 )
 
 UNDERVALUED_GROWTH_SPEC = FundamentalsPresetSpec(
@@ -73,7 +82,9 @@ UNDERVALUED_GROWTH_SPEC = FundamentalsPresetSpec(
     max_per=Decimal("20"),
     min_revenue_growth_3y_avg=Decimal("0.10"),
     min_earnings_growth_3y_avg=Decimal("0.20"),
-    sort_by="earnings_growth_3y_avg",
+    # ROB-432: Toss 저평가 성장주 default order = 연평균 매출액 증감률 desc (observed
+    # 1806 > 333 > 290 ... strictly; the earnings-growth column is not monotonic).
+    sort_by="revenue_growth_3y_avg",
 )
 
 STABLE_GROWTH_SPEC = FundamentalsPresetSpec(
@@ -98,7 +109,10 @@ CHEAP_VALUE_SPEC = FundamentalsPresetSpec(
     max_per=Decimal("15"),
     max_pbr=Decimal("1.5"),
     min_earnings_growth_3y_avg=Decimal("0"),  # 3y-avg net income growth >= 0%
-    sort_by="earnings_growth_3y_avg",
+    # ROB-432: Toss 아직 저렴한 가치주 default order = PBR ascending (cheapest first;
+    # observed 0.02 < 0.05 ... ; PER and earnings-growth columns are not monotonic).
+    sort_by="pbr",
+    sort_descending=False,
 )
 
 STEADY_DIVIDEND_SPEC = FundamentalsPresetSpec(
@@ -114,7 +128,9 @@ GROWTH_EXPECTATION_TOSS_SPEC = FundamentalsPresetSpec(
     preset_id="growth_expectation_toss",
     min_earnings_growth_3y_avg=Decimal("0.03"),
     min_earnings_growth_qoq=Decimal("0.10"),
-    sort_by="earnings_growth_qoq",
+    # ROB-432: Toss 성장 기대주 default order = 연평균 순이익 증감률 desc (observed
+    # 700 > 687 > 550 ... strictly; the QoQ column is not monotonic).
+    sort_by="earnings_growth_3y_avg",
 )
 
 # ROB-428 PR-C: the last 2 KR Toss valuation presets, rerouted onto the tvscreener
@@ -134,17 +150,23 @@ HIGH_YIELD_VALUE_SPEC = FundamentalsPresetSpec(
 # PBR<=1) sit far below their 52w high (probe: max proximity 0.94 → 0 matches under
 # the old 0.95 rule), yet many DID set a new 52w high recently.
 #
-# Toss's "20일" is 20 KRX *trading* days; we only have calendar high-dates, so we use
-# 30 calendar days as the (documented) approximation of ~20 trading days. Live probe
-# vs the full universe: PER<=10 & PBR<=1 = 580 (matches Toss); +new-high <=30d = 73
-# (≈ Toss 77), whereas <=20 *calendar* days = only 35. Comparable, not byte-identical.
-_NEW_HIGH_RECENCY_TRADING_DAYS_AS_CALENDAR = 30
+# Toss's "20일" is 20 KRX *trading* days. ROB-432: we now count exact trading
+# sessions between week_high_52_date and the partition via XKRX (session_calendar,
+# holiday-aware), replacing the earlier 30-calendar-day approximation. Earlier probe:
+# PER<=10 & PBR<=1 = 580 (matches Toss); the new-high recency narrows it toward Toss's
+# 77 (the trading-day window is tighter than 30 calendar days; comparable, not
+# byte-identical). Out-of-XKRX-range dates fail closed (excluded), never mis-included.
+_NEW_HIGH_RECENCY_TRADING_DAYS = 20
 UNDERVALUED_BREAKOUT_SPEC = FundamentalsPresetSpec(
     preset_id="undervalued_breakout",
     max_per=Decimal("10"),
     max_pbr=Decimal("1"),
-    max_new_high_age_days=_NEW_HIGH_RECENCY_TRADING_DAYS_AS_CALENDAR,
-    sort_by="market_cap",
+    max_new_high_age_trading_days=_NEW_HIGH_RECENCY_TRADING_DAYS,
+    # ROB-432: Toss 저평가 탈출 default order = PER ascending (cheapest PER first;
+    # observed PER 0.66 < 1.36 < 1.54 < 2.84). Was market_cap desc (ROB-430 PR-②
+    # wrong assumption) → visible top-N mismatched Toss.
+    sort_by="per",
+    sort_descending=False,
 )
 
 FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {
@@ -285,13 +307,25 @@ def evaluate_fundamentals_candidates(
         for metric_attr in _CARRIED_DERIVE_METRICS:
             row[metric_attr] = _metric_float(getattr(derivation, metric_attr))
         included.append(row)
-    included.sort(
-        key=lambda r: (
-            r.get(spec.sort_by) is None,
-            -(r.get(spec.sort_by) or 0.0),
-            r["symbol"],
+    # ROB-432: honor spec.sort_descending (mirror the tvscreener KR loader) so an
+    # ascending preset (e.g. cheap_value sorts PBR ascending) is consistent on both
+    # the DART (report/PIT) path and the display path. Nulls always last.
+    if spec.sort_descending:
+        included.sort(
+            key=lambda r: (
+                r.get(spec.sort_by) is None,
+                -(r.get(spec.sort_by) or 0.0),
+                r["symbol"],
+            )
         )
-    )
+    else:
+        included.sort(
+            key=lambda r: (
+                r.get(spec.sort_by) is None,
+                (r.get(spec.sort_by) or 0.0),
+                r["symbol"],
+            )
+        )
     return included[:limit], excluded
 
 

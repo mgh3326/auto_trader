@@ -9,6 +9,7 @@ import pytest
 from app.services.financial_fundamentals_snapshots.derive import FundamentalPeriod
 from app.services.invest_view_model.fundamentals_screener import (
     PROFITABLE_COMPANY_SPEC,
+    FundamentalsPresetSpec,
     evaluate_fundamentals_candidates,
 )
 
@@ -122,6 +123,14 @@ def test_pit_gate_excludes_unfiled_period():
 
 
 def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
+    # Generic sort mechanism (roe desc, nulls last, limit trim) — uses a synthetic
+    # roe-sort spec so it stays valid regardless of any real preset's sort_by
+    # (ROB-432 changed profitable_company to gross_margin_ttm).
+    spec = FundamentalsPresetSpec(
+        preset_id="_test_roe_sort",
+        min_gross_margin_ttm=Decimal("0.20"),
+        sort_by="roe",
+    )
     # All candidates pass the gross-margin gate (margin 0.30); ranking + trim is the SUT.
     roes = {"A": 50.0, "B": 10.0, "C": 30.0, "D": None, "E": 20.0, "F": 40.0}
     valuation_rows = [
@@ -144,7 +153,7 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
     rows, _ = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
-        spec=PROFITABLE_COMPANY_SPEC,
+        spec=spec,
         report_date=dt.date(2025, 6, 1),
         limit=4,
         name_map={},
@@ -155,7 +164,7 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
     rows_all, _ = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
-        spec=PROFITABLE_COMPANY_SPEC,
+        spec=spec,
         report_date=dt.date(2025, 6, 1),
         limit=20,
         name_map={},
@@ -204,14 +213,17 @@ def test_registry_has_nine_specs_with_expected_thresholds():
     hyv = FUNDAMENTALS_PRESET_SPECS["high_yield_value"]
     assert hyv.min_roe == Decimal("15") and hyv.max_per == Decimal("10")
     assert hyv.sort_by == "roe"
-    assert hyv.max_new_high_age_days is None  # not a breakout preset
-    # ROB-430 PR-②: undervalued_breakout 신고가 = NEW 52w high within 20 days (a
-    # breakout event), not price/52w-high proximity.
+    assert hyv.max_new_high_age_trading_days is None  # not a breakout preset
+    # ROB-430 PR-②: undervalued_breakout 신고가 = NEW 52w high within 20 trading days
+    # (a breakout event), not price/52w-high proximity.
     ub = FUNDAMENTALS_PRESET_SPECS["undervalued_breakout"]
     assert ub.max_per == Decimal("10") and ub.max_pbr == Decimal("1")
-    # 30 calendar days ≈ Toss's "20 거래일" 신고가 window (see spec comment).
-    assert ub.max_new_high_age_days == 30
-    assert ub.sort_by == "market_cap"
+    # ROB-432: Toss's "20 거래일" 신고가 window = 20 KRX trading sessions (XKRX),
+    # replacing the earlier 30-calendar-day approximation.
+    assert ub.max_new_high_age_trading_days == 20
+    # ROB-432: Toss 저평가 탈출 default order = PER ascending (cheapest first).
+    assert ub.sort_by == "per"
+    assert ub.sort_descending is False
 
 
 def _growth_period(year, *, revenue, net_income, filing_date):
@@ -600,8 +612,15 @@ def test_undervalued_growth_full_include_all_three_conditions():
 
 
 def test_sort_by_non_roe_key_orders_desc():
-    from app.services.invest_view_model.fundamentals_screener import (
-        UNDERVALUED_GROWTH_SPEC,
+    # Generic non-roe-key desc sort mechanism — synthetic spec sorting by
+    # earnings_growth_3y_avg, so it stays valid regardless of any real preset's
+    # sort_by (ROB-432 changed undervalued_growth to revenue_growth_3y_avg).
+    spec = FundamentalsPresetSpec(
+        preset_id="_test_earnings_sort",
+        max_per=Decimal("20"),
+        min_revenue_growth_3y_avg=Decimal("0.10"),
+        min_earnings_growth_3y_avg=Decimal("0.20"),
+        sort_by="earnings_growth_3y_avg",
     )
 
     # Two qualifiers with different earnings growth; sort_by='earnings_growth_3y_avg' desc.
@@ -634,7 +653,7 @@ def test_sort_by_non_roe_key_orders_desc():
     rows, _ = evaluate_fundamentals_candidates(
         valuation_rows=valuation_rows,
         periods_by_symbol=periods,
-        spec=UNDERVALUED_GROWTH_SPEC,
+        spec=spec,
         report_date=dt.date(2025, 6, 1),
         limit=20,
         name_map={},
