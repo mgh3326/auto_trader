@@ -16,7 +16,17 @@ from app.services.invest_view_model.double_buy_screener import (
 
 # Test symbols use a 9-prefix range to stay isolated from real KR symbols and
 # from sibling tests that already claim "900xxx" ranges.
-_TEST_SYMBOLS = ["911000", "910001", "919999", "912000"]
+_TEST_SYMBOLS = [
+    "911000",
+    "910001",
+    "919999",
+    "912000",
+    "913000",
+    "913001",
+    "913002",
+    "913003",
+    "914000",
+]
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -73,14 +83,27 @@ async def test_returns_rows_filtered_by_double_buy_and_positive_change_rate(
             ),
         ]
     )
+    prior = dt.date(2099, 12, 30)  # ROB-431: prior flow partition for the DoD delta
     db_session.add_all(
         [
+            # today: both flows higher than the prior session → qualifies (DoD ↑).
             InvestorFlowSnapshot(
                 market="kr",
                 symbol="911000",
                 snapshot_date=today,
                 foreign_net=1_000_000,
                 institution_net=2_000_000,
+                double_buy=True,
+                double_sell=False,
+                source="naver_finance",
+            ),
+            # prior session: lower net-buy so today's > prior.
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol="911000",
+                snapshot_date=prior,
+                foreign_net=500_000,
+                institution_net=1_000_000,
                 double_buy=True,
                 double_sell=False,
                 source="naver_finance",
@@ -230,17 +253,30 @@ async def test_state_is_stale_when_price_snapshot_date_differs_from_flow_snapsho
             symbol=symbol, name="테스트종목", is_active=True, exchange="KOSPI"
         )
     )
-    db_session.add(
-        InvestorFlowSnapshot(
-            market="kr",
-            symbol=symbol,
-            snapshot_date=flow_date,
-            foreign_net=1,
-            institution_net=1,
-            double_buy=True,
-            double_sell=False,
-            source="naver_finance",
-        )
+    db_session.add_all(
+        [
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=flow_date,
+                foreign_net=1,
+                institution_net=1,
+                double_buy=True,
+                double_sell=False,
+                source="naver_finance",
+            ),
+            # ROB-431: prior flow partition with lower net so the DoD delta passes.
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=dt.date(2099, 12, 29),
+                foreign_net=0,
+                institution_net=0,
+                double_buy=False,
+                double_sell=False,
+                source="naver_finance",
+            ),
+        ]
     )
     db_session.add(
         InvestScreenerSnapshot(
@@ -324,3 +360,112 @@ async def test_double_buy_returns_snapshot_load_result_with_reason(monkeypatch):
     assert result.partition_date == dt.date(2026, 6, 3)
     assert result.degradation_reason == "healthy_no_matches"
     assert result.coverage_label is None
+
+
+@pytest.mark.asyncio
+async def test_dod_delta_includes_only_both_sides_increasing(db_session):
+    """ROB-431: only symbols whose foreign AND institution net-buy BOTH rose vs the
+    prior session qualify; flat/decrease/one-side-only are excluded (fail-closed)."""
+    today = dt.date(2099, 12, 31)
+    prior = dt.date(2099, 12, 30)
+    cases = {
+        "913000": ((100, 100), (200, 200)),  # both ↑ → include
+        "913001": ((100, 100), (100, 200)),  # foreign flat → exclude
+        "913002": ((100, 100), (200, 50)),  # institution ↓ → exclude
+        "913003": ((100, 100), (200, 100)),  # institution flat → exclude
+    }
+    for sym, ((pf, pi), (tf, ti)) in cases.items():
+        db_session.add(
+            KRSymbolUniverse(
+                symbol=sym, name=f"종목{sym}", exchange="KOSPI", is_active=True
+            )
+        )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=sym,
+                    snapshot_date=prior,
+                    foreign_net=pf,
+                    institution_net=pi,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=sym,
+                    snapshot_date=today,
+                    foreign_net=tf,
+                    institution_net=ti,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+            ]
+        )
+        db_session.add(
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol=sym,
+                snapshot_date=today,
+                latest_close=decimal.Decimal("11000"),
+                prev_close=decimal.Decimal("10000"),
+                change_rate=decimal.Decimal("10.0"),
+                daily_volume=1,
+                closes_window=[10000, 11000],
+                source="kis",
+            )
+        )
+    await db_session.commit()
+
+    result = await load_double_buy_from_snapshots(db_session, market="kr", limit=50)
+    assert result is not None
+    got = {r["symbol"] for r in result.rows}
+    assert "913000" in got  # both increased
+    assert {"913001", "913002", "913003"}.isdisjoint(got)  # flat/decrease/one-side
+
+
+@pytest.mark.asyncio
+async def test_dod_delta_excluded_when_no_prior_flow_partition(db_session):
+    """ROB-431: with no prior flow partition the DoD delta can't be computed →
+    fail-closed (no qualifiers), never a level-only fallback."""
+    today = dt.date(2099, 12, 31)
+    sym = "914000"
+    db_session.add(
+        KRSymbolUniverse(
+            symbol=sym, name="단일파티션주", exchange="KOSPI", is_active=True
+        )
+    )
+    db_session.add(
+        InvestorFlowSnapshot(
+            market="kr",
+            symbol=sym,
+            snapshot_date=today,
+            foreign_net=1_000_000,
+            institution_net=1_000_000,
+            double_buy=True,
+            double_sell=False,
+            source="naver_finance",
+        )
+    )
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol=sym,
+            snapshot_date=today,
+            latest_close=decimal.Decimal("11000"),
+            prev_close=decimal.Decimal("10000"),
+            change_rate=decimal.Decimal("10.0"),
+            daily_volume=1,
+            closes_window=[10000, 11000],
+            source="kis",
+        )
+    )
+    await db_session.commit()
+
+    result = await load_double_buy_from_snapshots(db_session, market="kr", limit=20)
+    assert result is not None
+    # No prior flow partition for this symbol's date → level-only would have
+    # included it (net>0); DoD must NOT.
+    assert all(r["symbol"] != sym for r in result.rows)

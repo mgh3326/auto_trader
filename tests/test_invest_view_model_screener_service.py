@@ -2034,6 +2034,27 @@ async def test_double_buy_preset_returns_snapshot_filtered_rows(db_session) -> N
                     double_sell=True,
                     source="naver_finance",
                 ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today's > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol="921100",
+                    snapshot_date=today - _dt.timedelta(days=1),
+                    foreign_net=500_000,
+                    institution_net=1_000_000,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol="921200",
+                    snapshot_date=today - _dt.timedelta(days=1),
+                    foreign_net=100_000,
+                    institution_net=100_000,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
             ]
         )
         db_session.add_all(
@@ -2155,17 +2176,30 @@ async def test_double_buy_preset_stale_when_price_snapshot_older_than_flow(
                 is_active=True,
             )
         )
-        db_session.add(
-            InvestorFlowSnapshot(
-                market="kr",
-                symbol=symbol,
-                snapshot_date=flow_date,
-                foreign_net=1,
-                institution_net=1,
-                double_buy=True,
-                double_sell=False,
-                source="naver_finance",
-            )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=flow_date,
+                    foreign_net=1,
+                    institution_net=1,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=flow_date - _dt.timedelta(days=1),
+                    foreign_net=0,
+                    institution_net=0,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+            ]
         )
         db_session.add(
             InvestScreenerSnapshot(
@@ -2263,17 +2297,30 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
                 is_active=True,
             )
         )
-        db_session.add(
-            InvestorFlowSnapshot(
-                market="kr",
-                symbol=symbol,
-                snapshot_date=past_dt,
-                foreign_net=1,
-                institution_net=1,
-                double_buy=True,
-                double_sell=False,
-                source="naver_finance",
-            )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=past_dt,
+                    foreign_net=1,
+                    institution_net=1,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=past_dt - _dt.timedelta(days=1),
+                    foreign_net=0,
+                    institution_net=0,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+            ]
         )
         db_session.add(
             InvestScreenerSnapshot(
@@ -2370,17 +2417,30 @@ async def test_double_buy_flow_stale_warning_reports_actual_multiday_lag(
                 symbol=symbol, name="다일지연주", exchange="KOSPI", is_active=True
             )
         )
-        db_session.add(
-            InvestorFlowSnapshot(
-                market="kr",
-                symbol=symbol,
-                snapshot_date=snap_dt,
-                foreign_net=1,
-                institution_net=1,
-                double_buy=True,
-                double_sell=False,
-                source="naver_finance",
-            )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=snap_dt,
+                    foreign_net=1,
+                    institution_net=1,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=snap_dt - _dt.timedelta(days=1),
+                    foreign_net=0,
+                    institution_net=0,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+            ]
         )
         db_session.add(
             InvestScreenerSnapshot(
