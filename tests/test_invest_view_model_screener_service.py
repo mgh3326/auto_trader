@@ -1884,7 +1884,14 @@ def test_build_freshness_no_change_to_existing_callsite_with_defaults() -> None:
 # ---------------------------------------------------------------------------
 
 
-_DOUBLE_BUY_TEST_SYMBOLS = ["921100", "921200", "921300", "922100", "923000"]
+_DOUBLE_BUY_TEST_SYMBOLS = [
+    "921100",
+    "921200",
+    "921300",
+    "922100",
+    "923000",
+    "923100",
+]
 
 
 @pytest.mark.unit
@@ -2300,8 +2307,10 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
         )
 
         fake_screening.list_screening.assert_not_called()
+        # ROB-430 트랙 B: flow stale by exactly 1 calendar day (12-30 vs 12-31) →
+        # the warning states the actual snapshot date + lag (not a hardcoded "1일").
         flow_warning = (
-            "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."
+            "수급 스냅샷이 2099-12-30 기준이라 외인/기관 정보가 1일 지연되었습니다."
         )
         assert flow_warning in resp.warnings, (
             f"expected flow-side stale warning in {resp.warnings}"
@@ -2312,6 +2321,103 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
             f"price-stale warning must not appear when price==flow date: {resp.warnings}"
         )
         # state_override from helper bumps fresh → stale.
+        assert resp.freshness.dataState in {"stale", "fallback"}
+    finally:
+        await _purge()
+
+
+@pytest.mark.asyncio
+async def test_double_buy_flow_stale_warning_reports_actual_multiday_lag(
+    db_session,
+) -> None:
+    """ROB-430 트랙 B: a multi-day-old investor-flow partition must report the real
+    lag (e.g. 3일), not a hardcoded "1일" that understated the staleness.
+    """
+    import datetime as _dt
+    import decimal as _dec
+
+    import sqlalchemy as _sa
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
+    snap_dt = _dt.date(2099, 12, 28)  # both partitions; market date will be 12-31
+    symbol = "923100"
+
+    async def _purge() -> None:
+        await db_session.execute(
+            _sa.delete(InvestorFlowSnapshot).where(
+                InvestorFlowSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(InvestScreenerSnapshot).where(
+                InvestScreenerSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.commit()
+
+    await _purge()
+    try:
+        db_session.add(
+            KRSymbolUniverse(
+                symbol=symbol, name="다일지연주", exchange="KOSPI", is_active=True
+            )
+        )
+        db_session.add(
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=snap_dt,
+                foreign_net=1,
+                institution_net=1,
+                double_buy=True,
+                double_sell=False,
+                source="naver_finance",
+            )
+        )
+        db_session.add(
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=snap_dt,
+                latest_close=_dec.Decimal("10000"),
+                prev_close=_dec.Decimal("9000"),
+                change_rate=_dec.Decimal("11.0"),
+                daily_volume=1,
+                closes_window=[9000, 9500, 9800, 9900, 10000],
+                source="kis",
+            )
+        )
+        await db_session.commit()
+
+        fake_screening = type(
+            "ScreenerService",
+            (_FakeProductionScreening,),
+            {"__module__": "app.services.screener_service"},
+        )()
+
+        # market date = 12-31; flow date = 12-28 → 3 calendar days behind.
+        resp = await build_screener_results(
+            preset_id="double_buy",
+            screening_service=fake_screening,
+            resolver=_FakeResolver(watched=set()),
+            session=db_session,
+            now=lambda: datetime(2099, 12, 31, 6, 0, tzinfo=UTC),
+        )
+
+        assert any(r.symbol == symbol for r in resp.results)
+        # The actual lag (3일) + snapshot date must appear — never a flat "1일".
+        assert (
+            "수급 스냅샷이 2099-12-28 기준이라 외인/기관 정보가 3일 지연되었습니다."
+            in resp.warnings
+        ), f"expected actual 3-day flow lag in {resp.warnings}"
         assert resp.freshness.dataState in {"stale", "fallback"}
     finally:
         await _purge()
