@@ -165,4 +165,9 @@ export interface ScreenerResultsResponse {
   warnings: string[];
   freshness: ScreenerFreshness;
   sources?: ScreenerSourceContext[];
+  // ROB-429 B2: full-partition predicate match total + returned (post-limit) count.
+  // Populated only on the KR fundamentals presets; null/undefined elsewhere.
+  // UI rendering is a follow-up — this is the type only.
+  totalCount?: number | null;
+  returnedCount?: number | null;
 }

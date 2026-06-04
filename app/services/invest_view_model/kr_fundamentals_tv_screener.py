@@ -53,6 +53,11 @@ EARNINGS_STREAK_SKIP_WARNING = "순이익 연속증가 조건은 tvscreener 미�
 _MIN_HEALTHY_COVERAGE_RATIO = 0.50
 _MAX_PARTITION_SCAN_BACK = 10
 
+#: ROB-429 B1: the read-path now evaluates the FULL healthy partition (no market-cap
+#: cand_cap that excluded small caps). This is a pathological safety bound only —
+#: a KR partition is ~4,250 rows, so hitting it signals a corrupt partition.
+_MAX_PARTITION_ROWS = 20_000
+
 
 # (spec threshold field, snapshot column attr, require_positive) — each non-None
 # spec field is applied fail-closed against the tvscreener column. PROXY mappings
@@ -334,22 +339,21 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
     if hp and (hp.is_fallback or not hp.healthy):
         state = cap_degraded(state)
 
-    # Candidate universe: latest healthy partition, capped by market cap (prefer
-    # liquid names); preset ranking happens AFTER. Mirror fundamentals_screener
-    # cap = max(limit*8, 200).
-    cand_cap = max(limit * 8, 200)
+    # ROB-429 B1: evaluate the FULL healthy partition (no market-cap cand_cap that
+    # excluded small caps). ~4,250 rows in-memory is cheap. A generous safety bound
+    # only guards a pathological partition; hitting it is logged (not a normal cap).
     cand_stmt = (
         sa.select(InvestKrFundamentalsSnapshot)
         .where(InvestKrFundamentalsSnapshot.snapshot_date == partition_date)
-        .order_by(InvestKrFundamentalsSnapshot.market_cap.desc().nullslast())
-        .limit(cand_cap)
+        .order_by(InvestKrFundamentalsSnapshot.symbol)
+        .limit(_MAX_PARTITION_ROWS)
     )
     snaps = list((await session.execute(cand_stmt)).scalars().all())
-    if len(snaps) >= cand_cap:
+    if len(snaps) >= _MAX_PARTITION_ROWS:
         logger.warning(
-            "kr_fundamentals_tv_screener: candidate universe capped at %d for "
-            "preset=%s (lower-market-cap candidates not evaluated)",
-            cand_cap,
+            "kr_fundamentals_tv_screener: partition row load hit the safety bound "
+            "%d for preset=%s (partition may be corrupt; some rows not evaluated)",
+            _MAX_PARTITION_ROWS,
             spec.preset_id,
         )
 
@@ -389,6 +393,9 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
             _build_row(snap, name=name, state=state, partition_date=partition_date)
         )
 
+    # ROB-429 B2: full-partition match total BEFORE the display limit.
+    total_matched = len(included)
+
     sort_row_key = _SORT_KEY_TO_ROW_KEY.get(spec.sort_by, spec.sort_by)
     included.sort(
         key=lambda r: (
@@ -411,4 +418,5 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         fundamentals_state="fresh" if snaps else "missing",
         excluded=excluded,
         warnings=warnings,
+        total_matched=total_matched,
     )

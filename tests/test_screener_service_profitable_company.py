@@ -338,6 +338,76 @@ async def test_high_yield_value_routes_to_fundamentals_loader(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fundamentals_response_carries_total_and_returned_counts(monkeypatch):
+    """ROB-429 B2: the fundamentals path sets totalCount = full-partition match
+    total and returnedCount = number actually returned (post display limit)."""
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service._should_use_snapshot_first",
+        lambda service: True,
+    )
+
+    rows = [
+        {
+            "symbol": f"90{i:04d}",
+            "market": "kr",
+            "name": f"종목{i}",
+            "close": 1000.0 + i,
+            "roe": 20.0 + i,
+            "gross_margin_ttm": 0.30,
+            "snapshot_date": dt.date(2026, 6, 4),
+            "_screener_snapshot_state": "fresh",
+        }
+        for i in range(3)
+    ]
+
+    async def _fake_loader(session, *, market, spec, limit, now):
+        # total_matched (181) intentionally exceeds the 3 displayed rows so the
+        # distinction between totalCount and returnedCount is exercised.
+        return FundamentalsScreenResult(
+            rows=rows,
+            valuation_partition_date=dt.date(2026, 6, 4),
+            fundamentals_partition_date=dt.date(2026, 6, 4),
+            fundamentals_collected_at=dt.datetime(2026, 6, 4, tzinfo=dt.UTC),
+            fundamentals_state="fresh",
+            total_matched=181,
+        )
+
+    monkeypatch.setattr(_TV_LOADER_PATH, _fake_loader)
+    result = await screener_service.build_screener_results(
+        preset_id="profitable_company",
+        market="kr",
+        session=_MockSession(),
+        screening_service=_StubScreening(),
+        resolver=_MockResolver(),
+    )
+    assert result.totalCount == 181
+    assert result.returnedCount == len(result.results) == 3
+
+
+@pytest.mark.asyncio
+async def test_non_fundamentals_preset_leaves_counts_none(monkeypatch):
+    """A non-fundamentals preset must NOT get totalCount/returnedCount set (they
+    stay None so the additive fields are inert for every other preset path)."""
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service._should_use_snapshot_first",
+        lambda service: True,
+    )
+
+    # A fundamentals-shaped result returned for a NON-fundamentals preset must not
+    # leak counts onto the response, because the wiring is gated on the preset id
+    # being in FUNDAMENTALS_PRESET_SPECS (consecutive_gainers is not).
+    result = await screener_service.build_screener_results(
+        preset_id="__unknown_preset__",
+        market="kr",
+        session=_MockSession(),
+        screening_service=_StubScreening(),
+        resolver=_MockResolver(),
+    )
+    assert result.totalCount is None
+    assert result.returnedCount is None
+
+
+@pytest.mark.asyncio
 async def test_undervalued_breakout_missing_when_loader_none(monkeypatch):
     # ROB-428 PR-C: None from the TV loader → dataState=missing (handled by the
     # shared FUNDAMENTALS_PRESET_SPECS None branch, never falls through to the

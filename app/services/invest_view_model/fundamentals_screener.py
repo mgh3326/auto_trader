@@ -164,6 +164,9 @@ class FundamentalsScreenResult:
     # (e.g. the earnings-streak condition skipped because tvscreener omits it).
     # The DART loader leaves this empty; the tvscreener KR loader populates it.
     warnings: list[str] = field(default_factory=list)
+    # ROB-429 B2: full-partition predicate match count BEFORE the display limit is
+    # applied (the tvscreener KR loader sets it; the DART loader leaves 0).
+    total_matched: int = 0
 
 
 def _to_period(row: FinancialFundamentalsSnapshot) -> FundamentalPeriod:
@@ -425,4 +428,7 @@ async def load_fundamentals_preset_from_snapshots(
         fundamentals_collected_at=fund_collected,
         fundamentals_state=fundamentals_state,
         excluded=excluded,
+        # The DART loader isn't the screener display path; total_matched mirrors
+        # the displayed rows here (B2 consistency, not full-partition).
+        total_matched=len(included),
     )
