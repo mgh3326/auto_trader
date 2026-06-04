@@ -49,6 +49,23 @@ _STOCK_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
         "DIVIDEND_YIELD_CURRENT",
     ),
     "sector": ("SECTOR",),
+    # ROB-428: KR fundamentals snapshot capabilities (tvscreener-backed).
+    "roe_ttm": ("RETURN_ON_EQUITY_TTM", "RETURN_ON_EQUITY_FY"),
+    "payout_ratio_ttm": (
+        "DIVIDEND_PAYOUT_RATIO_TTM",
+        "DIVIDEND_PAYOUT_RATIO_PERCENT_TTM",
+        "DIVIDEND_PAYOUT_RATIO_FY",
+    ),
+    "gross_margin_ttm": ("GROSS_MARGIN_TTM", "GROSS_MARGIN_PERCENT_TTM"),
+    "revenue_yoy": ("REVENUE_ANNUAL_YOY_GROWTH",),
+    "eps_yoy": ("EPS_DILUTED_ANNUAL_YOY_GROWTH",),
+    "eps_qoq": ("EPS_DILUTED_QUARTERLY_QOQ_GROWTH",),
+    "net_income_yoy": ("NET_INCOME_ANNUAL_YOY_GROWTH",),
+    "net_income_cagr_5y": ("NET_INCOME_CAGR_5Y",),
+    "continuous_dividend_payout": ("CONTINUOUS_DIVIDEND_PAYOUT",),
+    "continuous_dividend_growth": ("CONTINUOUS_DIVIDEND_GROWTH",),
+    "week_high_52": ("WEEK_HIGH_52",),
+    "industry": ("INDUSTRY",),
 }
 
 _CRYPTO_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
