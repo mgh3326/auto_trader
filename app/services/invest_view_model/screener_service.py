@@ -1668,6 +1668,30 @@ async def build_screener_results(
             freshness=freshness,
         )
 
+    # ROB-427: a preset that is catalogued for this market but not `active`
+    # (data_pending / unsupported) must fail-closed — never run a loader or
+    # fabricate rows. Surface the honest availabilityReason as a warning.
+    if preset.availability != "active":
+        freshness = _build_freshness(
+            raw_timestamp=None,
+            cache_hit=False,
+            market=requested_market,
+            now=now,
+        )
+        return ScreenerResultsResponse(
+            presetId=preset_id,
+            title=preset.name,
+            description=preset.description,
+            filterChips=preset.filterChips,
+            metricLabel=preset.metricLabel,
+            results=[],
+            warnings=[
+                preset.availabilityReason
+                or "이 시장에서는 아직 제공되지 않는 프리셋입니다."
+            ],
+            freshness=freshness,
+        )
+
     filters = screening_filters_for(preset_id, requested_market)
     # ROB-277 follow-up: loaders for consecutive_gainers and investor_flow_momentum
     # now return _SnapshotLoadResult so partition metadata threads through even when
