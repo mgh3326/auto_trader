@@ -1,14 +1,19 @@
 """Read-only loader for the 쌍끌이 매수 (Toss screenId=18 parity) preset.
 
 Joins the latest investor_flow_snapshots row with the latest
-invest_screener_snapshots row per symbol and applies the Toss-parity filter
-(Interpretation A, locked 2026-05-20 under Task 0 safer-fallback rule — see
-plan Decision 1):
+invest_screener_snapshots row per symbol AND the prior flow partition (self-join)
+and applies the Toss-parity filter (ROB-431: redefined from the level rule to the
+day-over-day net-buy increase Toss actually uses):
 
     market = kr
-    foreign_net  > 0   AND institution_net  > 0
+    foreign_net(today)     > foreign_net(prior session)      (외국인 순매수 전일比 증가)
+    institution_net(today) > institution_net(prior session)  (기관 순매수 전일比 증가)
     change_rate >= 0
     sort by change_rate desc, symbol asc
+
+When no prior flow partition exists (investor_flow has no recurring refresh,
+ROB-205) the delta cannot be computed → no qualifiers (fail-closed, never a
+level-only fallback).
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ if TYPE_CHECKING:
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
@@ -72,6 +78,22 @@ async def load_double_buy_from_snapshots(
         flow_hp and (flow_hp.is_fallback or not flow_hp.healthy)
     ) or bool(price_hp and (price_hp.is_fallback or not price_hp.healthy))
 
+    # ROB-431: 쌍끌이 = 외국인·기관 순매수가 전일보다 늘어난(day-over-day 증가) 종목
+    # (Toss screenId=18). The latest flow partition supplies today's net-buy; the
+    # most-recent flow partition strictly before it supplies the prior session for
+    # a self-join delta. investor_flow_snapshots has no recurring refresh
+    # (ROB-205), so a prior partition may be absent → fail-closed (no comparison →
+    # no qualifiers, never a fabricated level-only result).
+    prior_flow_date = (
+        await session.execute(
+            sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+                InvestorFlowSnapshot.market == "kr",
+                InvestorFlowSnapshot.snapshot_date < flow_date,
+            )
+        )
+    ).scalar_one_or_none()
+
+    prior_flow = aliased(InvestorFlowSnapshot)
     candidate_stmt = (
         sa.select(
             InvestorFlowSnapshot.symbol,
@@ -96,11 +118,26 @@ async def load_double_buy_from_snapshots(
                 InvestScreenerSnapshot.snapshot_date == price_date,
             ),
         )
+        # ROB-431: self-join the prior flow partition on the same (market, symbol,
+        # source) to compare today's net-buy against the previous session's.
+        .join(
+            prior_flow,
+            sa.and_(
+                prior_flow.market == InvestorFlowSnapshot.market,
+                prior_flow.symbol == InvestorFlowSnapshot.symbol,
+                prior_flow.source == InvestorFlowSnapshot.source,
+                prior_flow.snapshot_date == prior_flow_date,
+            ),
+        )
         .where(
             InvestorFlowSnapshot.market == "kr",
             InvestorFlowSnapshot.snapshot_date == flow_date,
-            InvestorFlowSnapshot.foreign_net > 0,
-            InvestorFlowSnapshot.institution_net > 0,
+            # ROB-431: day-over-day INCREASE in net-buy for BOTH foreign and
+            # institution (Toss "전일보다 순매수량이 늘어난"). Literal increase,
+            # sign-agnostic; a NULL on either side makes the comparison NULL →
+            # excluded (fail-closed). Replaces the prior level rule (net > 0).
+            InvestorFlowSnapshot.foreign_net > prior_flow.foreign_net,
+            InvestorFlowSnapshot.institution_net > prior_flow.institution_net,
             sa.func.coalesce(InvestScreenerSnapshot.change_rate, 0) >= 0,
         )
         .order_by(
@@ -110,12 +147,24 @@ async def load_double_buy_from_snapshots(
         )
         .limit(max(limit * 4, limit + 40))
     )
-    try:
-        result = await session.execute(candidate_stmt)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("double_buy: candidate query failed: %s", exc, exc_info=True)
-        return None
-    candidate_rows = list(result.mappings().all())
+    if prior_flow_date is None:
+        # No prior flow partition → cannot compute the DoD delta → no qualifiers
+        # (honest empty, never a level-only fallback). The empty result is flagged
+        # via the normal partition-degradation reason below.
+        logger.warning(
+            "double_buy: no prior flow partition before %s; day-over-day delta "
+            "unavailable → no qualifiers (investor_flow has no recurring refresh, "
+            "see ROB-205)",
+            flow_date,
+        )
+        candidate_rows: list[Any] = []
+    else:
+        try:
+            result = await session.execute(candidate_stmt)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("double_buy: candidate query failed: %s", exc, exc_info=True)
+            return None
+        candidate_rows = list(result.mappings().all())
 
     symbols = [r["symbol"] for r in candidate_rows]
     name_map: dict[str, str] = {}
