@@ -72,7 +72,9 @@ PROFITABLE_COMPANY_SPEC = FundamentalsPresetSpec(
     preset_id="profitable_company",
     min_roe=Decimal("15"),
     min_gross_margin_ttm=Decimal("0.20"),
-    sort_by="roe",
+    # ROB-432: Toss 돈 잘버는 회사 default order = 매출총이익률 desc (observed 100.00 >
+    # 99.09 > 99.02 ... strictly; ROE jumps around → not the key).
+    sort_by="gross_margin_ttm",
 )
 
 UNDERVALUED_GROWTH_SPEC = FundamentalsPresetSpec(
@@ -80,7 +82,9 @@ UNDERVALUED_GROWTH_SPEC = FundamentalsPresetSpec(
     max_per=Decimal("20"),
     min_revenue_growth_3y_avg=Decimal("0.10"),
     min_earnings_growth_3y_avg=Decimal("0.20"),
-    sort_by="earnings_growth_3y_avg",
+    # ROB-432: Toss 저평가 성장주 default order = 연평균 매출액 증감률 desc (observed
+    # 1806 > 333 > 290 ... strictly; the earnings-growth column is not monotonic).
+    sort_by="revenue_growth_3y_avg",
 )
 
 STABLE_GROWTH_SPEC = FundamentalsPresetSpec(
@@ -105,7 +109,10 @@ CHEAP_VALUE_SPEC = FundamentalsPresetSpec(
     max_per=Decimal("15"),
     max_pbr=Decimal("1.5"),
     min_earnings_growth_3y_avg=Decimal("0"),  # 3y-avg net income growth >= 0%
-    sort_by="earnings_growth_3y_avg",
+    # ROB-432: Toss 아직 저렴한 가치주 default order = PBR ascending (cheapest first;
+    # observed 0.02 < 0.05 ... ; PER and earnings-growth columns are not monotonic).
+    sort_by="pbr",
+    sort_descending=False,
 )
 
 STEADY_DIVIDEND_SPEC = FundamentalsPresetSpec(
@@ -121,7 +128,9 @@ GROWTH_EXPECTATION_TOSS_SPEC = FundamentalsPresetSpec(
     preset_id="growth_expectation_toss",
     min_earnings_growth_3y_avg=Decimal("0.03"),
     min_earnings_growth_qoq=Decimal("0.10"),
-    sort_by="earnings_growth_qoq",
+    # ROB-432: Toss 성장 기대주 default order = 연평균 순이익 증감률 desc (observed
+    # 700 > 687 > 550 ... strictly; the QoQ column is not monotonic).
+    sort_by="earnings_growth_3y_avg",
 )
 
 # ROB-428 PR-C: the last 2 KR Toss valuation presets, rerouted onto the tvscreener
@@ -298,13 +307,25 @@ def evaluate_fundamentals_candidates(
         for metric_attr in _CARRIED_DERIVE_METRICS:
             row[metric_attr] = _metric_float(getattr(derivation, metric_attr))
         included.append(row)
-    included.sort(
-        key=lambda r: (
-            r.get(spec.sort_by) is None,
-            -(r.get(spec.sort_by) or 0.0),
-            r["symbol"],
+    # ROB-432: honor spec.sort_descending (mirror the tvscreener KR loader) so an
+    # ascending preset (e.g. cheap_value sorts PBR ascending) is consistent on both
+    # the DART (report/PIT) path and the display path. Nulls always last.
+    if spec.sort_descending:
+        included.sort(
+            key=lambda r: (
+                r.get(spec.sort_by) is None,
+                -(r.get(spec.sort_by) or 0.0),
+                r["symbol"],
+            )
         )
-    )
+    else:
+        included.sort(
+            key=lambda r: (
+                r.get(spec.sort_by) is None,
+                (r.get(spec.sort_by) or 0.0),
+                r["symbol"],
+            )
+        )
     return included[:limit], excluded
 
 

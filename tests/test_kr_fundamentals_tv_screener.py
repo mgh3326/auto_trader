@@ -621,8 +621,10 @@ async def test_total_matched_counts_all_before_display_limit(db_session):
             _bulk_snap(
                 sym,
                 market_cap=Decimal(str((5 - i) * 1_000_000_000_000)),
-                roe_ttm=Decimal(str(20 + i)),  # all pass profitable_company
-                gross_margin_ttm=Decimal("0.30"),
+                roe_ttm=Decimal(str(20 + i)),  # all pass profitable_company (ROE >= 15)
+                # ROB-432: profitable_company sorts by gross_margin_ttm desc, so vary it
+                # (0.20..0.24, all >= 0.20) → the two highest are 004, 003.
+                gross_margin_ttm=Decimal(str(round(0.20 + i * 0.01, 2))),
             )
         )
         universe.append(_universe(sym, f"종목{i}"))
@@ -640,7 +642,7 @@ async def test_total_matched_counts_all_before_display_limit(db_session):
         assert result is not None
         assert result.total_matched == 5  # all 5 matched the predicate
         assert len(result.rows) == 2  # display limit applied after counting
-        # sort_by="roe" desc → the two highest-ROE symbols are shown.
+        # ROB-432: sort_by="gross_margin_ttm" desc → the two highest-margin shown.
         assert [r["symbol"] for r in result.rows] == [
             f"{_BULK_PREFIX}004",
             f"{_BULK_PREFIX}003",
