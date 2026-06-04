@@ -199,3 +199,8 @@ class ScreenerResultsResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     freshness: ScreenerFreshness
     sources: list[ScreenerSourceContext] = Field(default_factory=list)
+    # ROB-429 B2: full-partition predicate match total (totalCount) and the number
+    # actually returned after the display limit (returnedCount). Set on the KR
+    # fundamentals (FUNDAMENTALS_PRESET_SPECS) path only; None for other presets.
+    totalCount: int | None = None
+    returnedCount: int | None = None

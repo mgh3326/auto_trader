@@ -53,6 +53,10 @@ class FundamentalsPresetSpec:
     min_dividend_paid_streak_years: int | None = None  # years (3)
     min_payout_ratio: Decimal | None = None  # percent (30) — DART 현금배당성향%
     min_earnings_growth_qoq: Decimal | None = None  # ratio (0.10)
+    # ROB-428 PR-C: 52-week-high proximity = price / week_high_52 (e.g. 0.95).
+    # Derive-style threshold for the tvscreener KR loader ONLY; the DART loader
+    # ignores it (no DART preset uses it).
+    min_high_52w_proximity: Decimal | None = None  # price / week_high_52 >= threshold
     sort_by: str = "roe"  # any metric key carried on the output row
 
 
@@ -112,6 +116,26 @@ GROWTH_EXPECTATION_TOSS_SPEC = FundamentalsPresetSpec(
     sort_by="earnings_growth_qoq",
 )
 
+# ROB-428 PR-C: the last 2 KR Toss valuation presets, rerouted onto the tvscreener
+# KR snapshot (replicates the OLD load_high_yield_value/undervalued_breakout rules
+# exactly so display fills category + uses tvscreener's 100% ROE coverage).
+# high_yield_value: ROE >= 15 + 0 < PER <= 10.
+HIGH_YIELD_VALUE_SPEC = FundamentalsPresetSpec(
+    preset_id="high_yield_value",
+    min_roe=Decimal("15"),
+    max_per=Decimal("10"),
+    sort_by="roe",
+)
+
+# undervalued_breakout: 0 < PER <= 10 + 0 < PBR <= 1 + 52w-high proximity >= 0.95.
+UNDERVALUED_BREAKOUT_SPEC = FundamentalsPresetSpec(
+    preset_id="undervalued_breakout",
+    max_per=Decimal("10"),
+    max_pbr=Decimal("1"),
+    min_high_52w_proximity=Decimal("0.95"),
+    sort_by="high_52w_proximity",
+)
+
 FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {
     s.preset_id: s
     for s in (
@@ -122,6 +146,8 @@ FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {
         CHEAP_VALUE_SPEC,
         STEADY_DIVIDEND_SPEC,
         GROWTH_EXPECTATION_TOSS_SPEC,
+        HIGH_YIELD_VALUE_SPEC,
+        UNDERVALUED_BREAKOUT_SPEC,
     )
 }
 
@@ -138,6 +164,9 @@ class FundamentalsScreenResult:
     # (e.g. the earnings-streak condition skipped because tvscreener omits it).
     # The DART loader leaves this empty; the tvscreener KR loader populates it.
     warnings: list[str] = field(default_factory=list)
+    # ROB-429 B2: full-partition predicate match count BEFORE the display limit is
+    # applied (the tvscreener KR loader sets it; the DART loader leaves 0).
+    total_matched: int = 0
 
 
 def _to_period(row: FinancialFundamentalsSnapshot) -> FundamentalPeriod:
@@ -399,4 +428,7 @@ async def load_fundamentals_preset_from_snapshots(
         fundamentals_collected_at=fund_collected,
         fundamentals_state=fundamentals_state,
         excluded=excluded,
+        # The DART loader isn't the screener display path; total_matched mirrors
+        # the displayed rows here (B2 consistency, not full-partition).
+        total_matched=len(included),
     )

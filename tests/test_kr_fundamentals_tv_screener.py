@@ -25,9 +25,11 @@ from app.services.invest_view_model.fundamentals_screener import (
     CHEAP_VALUE_SPEC,
     FUTURE_DIVIDEND_KING_SPEC,
     GROWTH_EXPECTATION_TOSS_SPEC,
+    HIGH_YIELD_VALUE_SPEC,
     PROFITABLE_COMPANY_SPEC,
     STABLE_GROWTH_SPEC,
     STEADY_DIVIDEND_SPEC,
+    UNDERVALUED_BREAKOUT_SPEC,
     UNDERVALUED_GROWTH_SPEC,
 )
 from app.services.invest_view_model.kr_fundamentals_tv_screener import (
@@ -506,3 +508,373 @@ async def test_stable_growth_includes_via_roe_and_yoy_skips_streak(db_session):
     assert result is not None
     assert [r["symbol"] for r in result.rows] == [sym]
     assert EARNINGS_STREAK_SKIP_WARNING in result.warnings
+
+
+# ---------------------------------------------------------------------------
+# ROB-429 B1 — full-partition evaluation (cand_cap removed) + total_matched
+# ---------------------------------------------------------------------------
+
+
+_BULK_PREFIX = "991"  # 3 chars; + 3-digit index = 6-char KR-shaped synthetic codes
+# Isolated partition date (distinct from _SD = 2026-06-04) so full-partition
+# evaluation sees ONLY this suite's rows, not sibling-suite residue on _SD. The
+# resolver picks the newest date, so this future date is selected deterministically.
+_BULK_SD = dt.date(2026, 6, 5)
+
+
+async def _cleanup_bulk(db_session) -> None:
+    await db_session.execute(
+        sa.delete(InvestKrFundamentalsSnapshot).where(
+            InvestKrFundamentalsSnapshot.symbol.like(f"{_BULK_PREFIX}%")
+        )
+    )
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.like(f"{_BULK_PREFIX}%")
+        )
+    )
+    await db_session.commit()
+
+
+def _bulk_snap(symbol: str, **kw) -> InvestKrFundamentalsSnapshot:
+    base = {
+        "symbol": symbol,
+        "snapshot_date": _BULK_SD,
+        "name": symbol,
+        "source": "tvscreener_kr",
+        "raw_payload": {},
+    }
+    base.update(kw)
+    return InvestKrFundamentalsSnapshot(**base)
+
+
+async def test_full_partition_includes_low_market_cap_small_cap(db_session):
+    """ROB-429 B1: a small (low-market-cap) symbol that passes the preset predicate
+    must appear in results. Under the OLD cand_cap = max(limit*8, 200) market-cap-
+    ordered cap, a small cap ranked beyond the top 200 by market_cap was never
+    evaluated. We seed 200 large-cap passers + 1 tiny passer (rank 201) and assert
+    the tiny one IS included now."""
+    await _cleanup_bulk(db_session)
+    snaps = []
+    universe = []
+    # 200 large-cap passers (market_cap descends, all pass undervalued_growth).
+    # Symbols 991000..991199 keep the largest caps; the small cap is 991999.
+    for i in range(200):
+        sym = f"{_BULK_PREFIX}{i:03d}"
+        snaps.append(
+            _bulk_snap(
+                sym,
+                # huge caps so the small cap sorts to the very bottom by market_cap
+                market_cap=Decimal(str((10_000 - i) * 1_000_000_000_000)),
+                per=Decimal("15"),  # <= 20
+                revenue_yoy=Decimal("0.15"),  # >= 0.10
+                eps_yoy=Decimal("0.30"),  # >= 0.20 (proxy)
+            )
+        )
+        universe.append(_universe(sym, f"대형주{i}"))
+    # The tiny small cap (rank 201 by market_cap) — excluded by the OLD cap.
+    sym_small = f"{_BULK_PREFIX}999"
+    snaps.append(
+        _bulk_snap(
+            sym_small,
+            market_cap=Decimal("1000000000"),  # 1B — far below the top 200
+            per=Decimal("10"),
+            revenue_yoy=Decimal("0.20"),
+            eps_yoy=Decimal("0.40"),
+        )
+    )
+    universe.append(_universe(sym_small, "소형성장주"))
+    try:
+        await _seed(db_session, snaps, universe)
+
+        # Use a high universe_count so the 201-row partition is judged healthy.
+        result = await load_kr_fundamentals_preset_from_tv_snapshot(
+            db_session,
+            market="kr",
+            spec=UNDERVALUED_GROWTH_SPEC,
+            limit=300,  # large display limit so all matches show
+            now=_now,
+            universe_count=201,
+        )
+        assert result is not None
+        matched_syms = {r["symbol"] for r in result.rows}
+        # The small cap the OLD market-cap cand_cap would have excluded is present.
+        assert sym_small in matched_syms
+        # All 201 seeded passers matched the predicate (isolated partition date).
+        assert result.total_matched == 201
+        # The display limit (300) is high enough to show them all.
+        assert len(result.rows) == 201
+    finally:
+        await _cleanup_bulk(db_session)
+
+
+async def test_total_matched_counts_all_before_display_limit(db_session):
+    """total_matched = full-partition predicate matches BEFORE the display limit;
+    len(rows) is capped to the display limit. Uses the isolated bulk partition date
+    so total_matched is exact (no sibling-suite residue on _SD)."""
+    await _cleanup_bulk(db_session)
+    snaps = []
+    universe = []
+    for i in range(5):
+        sym = f"{_BULK_PREFIX}{i:03d}"
+        snaps.append(
+            _bulk_snap(
+                sym,
+                market_cap=Decimal(str((5 - i) * 1_000_000_000_000)),
+                roe_ttm=Decimal(str(20 + i)),  # all pass profitable_company
+                gross_margin_ttm=Decimal("0.30"),
+            )
+        )
+        universe.append(_universe(sym, f"종목{i}"))
+    try:
+        await _seed(db_session, snaps, universe)
+
+        result = await load_kr_fundamentals_preset_from_tv_snapshot(
+            db_session,
+            market="kr",
+            spec=PROFITABLE_COMPANY_SPEC,
+            limit=2,  # display only 2
+            now=_now,
+            universe_count=5,
+        )
+        assert result is not None
+        assert result.total_matched == 5  # all 5 matched the predicate
+        assert len(result.rows) == 2  # display limit applied after counting
+        # sort_by="roe" desc → the two highest-ROE symbols are shown.
+        assert [r["symbol"] for r in result.rows] == [
+            f"{_BULK_PREFIX}004",
+            f"{_BULK_PREFIX}003",
+        ]
+    finally:
+        await _cleanup_bulk(db_session)
+
+
+# ---------------------------------------------------------------------------
+# ROB-428 PR-C: high_yield_value + undervalued_breakout (rerouted valuation presets)
+# ---------------------------------------------------------------------------
+
+
+async def test_high_yield_value_roe_and_per_bounds(db_session):
+    """high_yield_value: ROE >= 15 AND 0 < PER <= 10 (replicates the OLD loader)."""
+    await _cleanup(db_session)
+    sym_pass = f"{_PREFIX}A0"
+    sym_low_roe = f"{_PREFIX}A1"
+    sym_high_per = f"{_PREFIX}A2"
+    sym_neg_per = f"{_PREFIX}A3"
+    sym_null_roe = f"{_PREFIX}A4"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_pass,
+                price=Decimal("8000"),
+                change_rate=Decimal("0.5"),
+                volume=Decimal("500000"),
+                market_cap=Decimal("9000000000000"),
+                roe_ttm=Decimal("18"),  # >= 15
+                per=Decimal("8"),  # 0 < per <= 10
+                sector="Financials",
+                industry="Banks",
+            ),
+            _snap(
+                sym_low_roe,
+                market_cap=Decimal("8000000000000"),
+                roe_ttm=Decimal("9"),  # < 15 → excluded
+                per=Decimal("5"),
+            ),
+            _snap(
+                sym_high_per,
+                market_cap=Decimal("7000000000000"),
+                roe_ttm=Decimal("25"),
+                per=Decimal("12"),  # > 10 → excluded
+            ),
+            _snap(
+                sym_neg_per,
+                market_cap=Decimal("6000000000000"),
+                roe_ttm=Decimal("20"),
+                per=Decimal("-3"),  # per <= 0 → excluded (require_positive)
+            ),
+            _snap(
+                sym_null_roe,
+                market_cap=Decimal("5000000000000"),
+                roe_ttm=None,  # NULL roe → fail-closed exclude
+                per=Decimal("6"),
+            ),
+        ],
+        [
+            _universe(sym_pass, "고수익저평가"),
+            _universe(sym_low_roe, "낮은ROE"),
+            _universe(sym_high_per, "고PER"),
+            _universe(sym_neg_per, "적자기업"),
+            _universe(sym_null_roe, "ROE없음"),
+        ],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session,
+        market="kr",
+        spec=HIGH_YIELD_VALUE_SPEC,
+        limit=20,
+        now=_now,
+        universe_count=5,
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_pass]
+    row = result.rows[0]
+    # high_yield_value metric is ROE (must be emitted) + category filled.
+    assert row["roe"] == 18.0
+    assert row["per"] == 8.0
+    assert row["category"] == "Banks"
+    assert row["name"] == "고수익저평가"
+    assert row["close"] == 8000.0
+    assert row["_screener_snapshot_state"] == "fresh"
+
+
+async def test_high_yield_value_sorts_by_roe_desc(db_session):
+    await _cleanup(db_session)
+    sym_hi = f"{_PREFIX}A5"
+    sym_lo = f"{_PREFIX}A6"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_lo,
+                market_cap=Decimal("9000000000000"),  # bigger cap, lower ROE
+                roe_ttm=Decimal("16"),
+                per=Decimal("9"),
+            ),
+            _snap(
+                sym_hi,
+                market_cap=Decimal("3000000000000"),
+                roe_ttm=Decimal("35"),
+                per=Decimal("7"),
+            ),
+        ],
+        [_universe(sym_hi, "고ROE"), _universe(sym_lo, "저ROE")],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session, market="kr", spec=HIGH_YIELD_VALUE_SPEC, limit=20, now=_now
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_hi, sym_lo]
+
+
+async def test_undervalued_breakout_per_pbr_and_proximity(db_session):
+    """undervalued_breakout: 0<PER<=10, 0<PBR<=1, price/week_high_52 >= 0.95."""
+    await _cleanup(db_session)
+    sym_pass = f"{_PREFIX}B0"
+    sym_far_from_high = f"{_PREFIX}B1"
+    sym_high_pbr = f"{_PREFIX}B2"
+    sym_null_high = f"{_PREFIX}B3"
+    sym_zero_high = f"{_PREFIX}B4"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_pass,
+                price=Decimal("9700"),
+                change_rate=Decimal("1.0"),
+                volume=Decimal("700000"),
+                market_cap=Decimal("9000000000000"),
+                per=Decimal("8"),  # 0 < per <= 10
+                pbr=Decimal("0.8"),  # 0 < pbr <= 1
+                week_high_52=Decimal("10000"),  # 9700/10000 = 0.97 >= 0.95
+                sector="Industrials",
+                industry="Machinery",
+            ),
+            _snap(
+                sym_far_from_high,
+                market_cap=Decimal("8000000000000"),
+                per=Decimal("6"),
+                pbr=Decimal("0.7"),
+                price=Decimal("9000"),
+                week_high_52=Decimal("10000"),  # 0.90 < 0.95 → excluded
+            ),
+            _snap(
+                sym_high_pbr,
+                market_cap=Decimal("7000000000000"),
+                per=Decimal("5"),
+                pbr=Decimal("1.5"),  # > 1 → excluded
+                price=Decimal("9900"),
+                week_high_52=Decimal("10000"),
+            ),
+            _snap(
+                sym_null_high,
+                market_cap=Decimal("6000000000000"),
+                per=Decimal("4"),
+                pbr=Decimal("0.5"),
+                price=Decimal("5000"),
+                week_high_52=None,  # NULL high → proximity unavailable → excluded
+            ),
+            _snap(
+                sym_zero_high,
+                market_cap=Decimal("5000000000000"),
+                per=Decimal("4"),
+                pbr=Decimal("0.5"),
+                price=Decimal("5000"),
+                week_high_52=Decimal("0"),  # high <= 0 → proximity unavailable → excl
+            ),
+        ],
+        [
+            _universe(sym_pass, "저평가탈출"),
+            _universe(sym_far_from_high, "고가멀음"),
+            _universe(sym_high_pbr, "고PBR"),
+            _universe(sym_null_high, "고가없음"),
+            _universe(sym_zero_high, "고가0"),
+        ],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session,
+        market="kr",
+        spec=UNDERVALUED_BREAKOUT_SPEC,
+        limit=20,
+        now=_now,
+        universe_count=5,
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_pass]
+    row = result.rows[0]
+    # undervalued_breakout metric is high_52w_proximity (must be emitted) + category.
+    assert row["high_52w_proximity"] == pytest.approx(0.97)
+    assert row["week_high_52"] == 10000.0
+    assert row["per"] == 8.0
+    assert row["pbr"] == 0.8
+    assert row["category"] == "Machinery"
+    assert row["name"] == "저평가탈출"
+    # The excluded rows record a reason (fail-closed, never silent pass).
+    excluded_syms = {e["symbol"] for e in result.excluded}
+    assert {sym_far_from_high, sym_high_pbr, sym_null_high, sym_zero_high} <= (
+        excluded_syms
+    )
+
+
+async def test_undervalued_breakout_sorts_by_proximity_desc(db_session):
+    await _cleanup(db_session)
+    sym_closer = f"{_PREFIX}B5"
+    sym_further = f"{_PREFIX}B6"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_further,
+                market_cap=Decimal("9000000000000"),  # bigger cap, lower proximity
+                per=Decimal("6"),
+                pbr=Decimal("0.6"),
+                price=Decimal("9600"),  # 0.96
+                week_high_52=Decimal("10000"),
+            ),
+            _snap(
+                sym_closer,
+                market_cap=Decimal("3000000000000"),
+                per=Decimal("7"),
+                pbr=Decimal("0.7"),
+                price=Decimal("9990"),  # 0.999
+                week_high_52=Decimal("10000"),
+            ),
+        ],
+        [_universe(sym_closer, "근접"), _universe(sym_further, "덜근접")],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session, market="kr", spec=UNDERVALUED_BREAKOUT_SPEC, limit=20, now=_now
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_closer, sym_further]

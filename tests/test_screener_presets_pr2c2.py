@@ -18,7 +18,10 @@ def test_undervalued_breakout_preset_full_toss_parity_kr_only():
     assert p.presetOrigin == "toss_parity"
     assert p.parityStatus == "full"
     assert "undervalued_breakout" in _KR_ONLY_PRESET_IDS
-    # valuation-only: NOT a fundamentals-registry preset
-    assert "undervalued_breakout" not in FUNDAMENTALS_PRESET_SPECS
+    # ROB-428 PR-C: undervalued_breakout's DISPLAY read-path was rerouted onto the
+    # tvscreener KR snapshot, so it is now a fundamentals-registry preset (the OLD
+    # market_valuation loader is kept only for reports/PIT). Its Toss-parity preset
+    # definition (KR-only, full parity, filter chips) is unchanged.
+    assert "undervalued_breakout" in FUNDAMENTALS_PRESET_SPECS
     chip_labels = {c.label for c in p.filterChips}
     assert {"PER", "PBR", "신고가"} <= chip_labels

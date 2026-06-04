@@ -163,11 +163,14 @@ def test_ranking_by_roe_desc_nulls_last_and_limit_trim():
     assert [r["symbol"] for r in rows_all] == ["A", "F", "C", "E", "B", "D"]
 
 
-def test_registry_has_seven_specs_with_expected_thresholds():
+def test_registry_has_nine_specs_with_expected_thresholds():
     from app.services.invest_view_model.fundamentals_screener import (
         FUNDAMENTALS_PRESET_SPECS,
     )
 
+    # ROB-428 PR-C: high_yield_value + undervalued_breakout (the last 2 KR Toss
+    # valuation presets) were rerouted onto the tvscreener KR loader, so they now
+    # live in this registry alongside the 7 fundamentals presets.
     assert set(FUNDAMENTALS_PRESET_SPECS) == {
         "profitable_company",
         "undervalued_growth",
@@ -176,6 +179,8 @@ def test_registry_has_seven_specs_with_expected_thresholds():
         "cheap_value",
         "steady_dividend",
         "growth_expectation_toss",
+        "high_yield_value",
+        "undervalued_breakout",
     }
     ug = FUNDAMENTALS_PRESET_SPECS["undervalued_growth"]
     assert ug.max_per == Decimal("20") and ug.min_revenue_growth_3y_avg == Decimal(
@@ -195,6 +200,15 @@ def test_registry_has_seven_specs_with_expected_thresholds():
         dk.min_dividend_growth_streak_years == 3
         and dk.min_earnings_increase_streak_years == 3
     )
+    # ROB-428 PR-C: replicate the OLD valuation loaders' thresholds exactly.
+    hyv = FUNDAMENTALS_PRESET_SPECS["high_yield_value"]
+    assert hyv.min_roe == Decimal("15") and hyv.max_per == Decimal("10")
+    assert hyv.sort_by == "roe"
+    assert hyv.min_high_52w_proximity is None  # not a breakout preset
+    ub = FUNDAMENTALS_PRESET_SPECS["undervalued_breakout"]
+    assert ub.max_per == Decimal("10") and ub.max_pbr == Decimal("1")
+    assert ub.min_high_52w_proximity == Decimal("0.95")
+    assert ub.sort_by == "high_52w_proximity"
 
 
 def _growth_period(year, *, revenue, net_income, filing_date):
