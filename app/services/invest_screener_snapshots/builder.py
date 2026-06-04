@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.mcp_server.tooling.market_data_indicators import _fetch_ohlcv_for_indicators
+from app.services.invest_screener_snapshots.freshness import expected_baseline_date
 from app.services.invest_screener_snapshots.repository import SnapshotUpsert
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def _coerce_snapshot_date(value: Any, fallback: dt.date) -> dt.date:
 
 
 async def build_snapshot_for_symbol(
-    *, market: str, symbol: str, today: dt.date
+    *, market: str, symbol: str, today: dt.date, now: dt.datetime | None = None
 ) -> SnapshotUpsert | None:
     market_type, source = _market_type_and_source(market)
     try:
@@ -133,6 +134,21 @@ async def build_snapshot_for_symbol(
     if df is None or df.empty or "close" not in df.columns:
         return None
     df = df.sort_values("date").reset_index(drop=True) if "date" in df.columns else df
+    if "date" in df.columns:
+        # ROB-430 트랙B follow-up: compute the streak on COMPLETED daily closes only
+        # (Toss "종가 기준"). The KIS daily endpoint returns a forming bar for the
+        # current session intraday; including it would let an intraday/down move
+        # prematurely break a streak. expected_baseline_date returns the prior
+        # session before KR close (or today once closed), so an incomplete today-bar
+        # is dropped only when present — a no-op for an end-of-day build.
+        completed_through = expected_baseline_date(market, now=now)
+        df = df[
+            df["date"].map(
+                lambda d: _coerce_snapshot_date(d, today) <= completed_through
+            )
+        ].reset_index(drop=True)
+        if df.empty:
+            return None
     closes_raw: list[Any] = list(df["close"].tolist())
     closes = [Decimal(str(c)) for c in closes_raw if c is not None]
     if not closes:
