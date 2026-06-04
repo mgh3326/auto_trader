@@ -15,6 +15,14 @@ from app.services.tvscreener_service import (
 
 logger = logging.getLogger(__name__)
 
+# TradingView/tvscreener defaults to a tiny range (150 rows) when no explicit
+# range is set. ROB-429 full-universe builds must therefore pass an explicit
+# large range instead of treating ``limit=None`` as the previous 200-row smoke
+# default. The job layer may choose an even larger value from the active KR
+# universe count + buffer; this floor keeps direct provider use broad as well.
+KR_FUNDAMENTALS_FULL_FETCH_MIN_LIMIT = 6_000
+KR_FUNDAMENTALS_FULL_FETCH_UNIVERSE_BUFFER = 1_000
+
 # (model_key, [StockField name fallbacks]) — version-safe field resolution.
 # Probe-validated against tvscreener KOREA market (ROB-428, 2026-06-04).
 _KR_STOCK_FIELD_SPECS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -92,7 +100,11 @@ class TvScreenerKrFundamentalsProvider:
     async def fetch_rows(
         self, *, limit: int | None = None
     ) -> list[KrFundamentalsProviderRow]:
-        query_limit = limit or 200
+        query_limit = (
+            KR_FUNDAMENTALS_FULL_FETCH_MIN_LIMIT if limit is None else int(limit)
+        )
+        if query_limit <= 0:
+            return []
         tvscreener = _import_tvscreener()
         stock_field = tvscreener.StockField
         market = tvscreener.Market

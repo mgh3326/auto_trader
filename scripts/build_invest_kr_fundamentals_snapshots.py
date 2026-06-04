@@ -16,7 +16,9 @@ from app.core.cli import setup_logging_and_sentry
 from app.jobs.invest_kr_fundamentals_snapshots import (
     KrFundamentalsSnapshotBuildRequest,
     run_kr_fundamentals_snapshot_build,
+    run_kr_fundamentals_snapshot_build_guarded,
 )
+from app.services.snapshot_commit_guard import PartialCommitBlocked
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -34,6 +36,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Actually write to the database. Default is dry-run/no writes.",
     )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Acknowledge and commit a partial/thin KR fundamentals build, "
+            "bypassing the active-universe coverage guard. Use only for "
+            "small backfills with explicit operator approval."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and args.limit != 200:
         parser.error("--all is mutually exclusive with --limit")
@@ -41,13 +52,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def run(args: argparse.Namespace) -> int:
-    result = await run_kr_fundamentals_snapshot_build(
-        KrFundamentalsSnapshotBuildRequest(
-            limit=args.limit,
-            all_symbols=args.all,
-            commit=args.commit,
-        )
+    request = KrFundamentalsSnapshotBuildRequest(
+        limit=args.limit,
+        all_symbols=args.all,
+        commit=args.commit,
     )
+    try:
+        if args.commit and not args.allow_partial:
+            result = await run_kr_fundamentals_snapshot_build_guarded(request)
+        else:
+            result = await run_kr_fundamentals_snapshot_build(request)
+    except PartialCommitBlocked as exc:
+        print(f"\nCOMMIT BLOCKED: {exc}\n")
+        return 2
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     if not args.commit:
         print(
