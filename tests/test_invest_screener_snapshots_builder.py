@@ -89,6 +89,59 @@ async def test_build_snapshot_for_symbol_kr(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_build_snapshot_drops_forming_intraday_bar(monkeypatch):
+    """ROB-430 트랙B f/u: a forming (intraday) current-session bar is excluded so
+    consecutive_up_days is computed on COMPLETED closes only (Toss "종가 기준").
+
+    7 rising completed closes through 2026-06-03, then a DOWN forming 2026-06-04 bar.
+    Intraday (before 16:20 KST) → drop 06-04 → streak intact (6). Post-close → keep
+    the completed 06-04 down close → streak breaks (0).
+    """
+    df = pd.DataFrame(
+        {
+            "date": [
+                dt.date(2026, 5, 26),
+                dt.date(2026, 5, 27),
+                dt.date(2026, 5, 28),
+                dt.date(2026, 5, 29),
+                dt.date(2026, 6, 1),
+                dt.date(2026, 6, 2),
+                dt.date(2026, 6, 3),
+                dt.date(2026, 6, 4),
+            ],
+            "close": [100, 101, 102, 103, 104, 105, 106, 90],
+            "volume": [1_000_000] * 8,
+        }
+    )
+    monkeypatch.setattr(
+        "app.services.invest_screener_snapshots.builder._fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    # 06-04 10:00 KST (01:00 UTC) — before 16:20 KST → forming 06-04 bar dropped.
+    intraday = await build_snapshot_for_symbol(
+        market="kr",
+        symbol="005930",
+        today=dt.date(2026, 6, 4),
+        now=dt.datetime(2026, 6, 4, 1, 0, tzinfo=dt.UTC),
+    )
+    assert intraday is not None
+    assert intraday.snapshot_date == dt.date(2026, 6, 3)
+    assert intraday.consecutive_up_days == 6  # streak intact through the last close
+
+    # 06-04 17:00 KST (08:00 UTC) — after 16:20 KST → completed 06-04 down close kept.
+    post_close = await build_snapshot_for_symbol(
+        market="kr",
+        symbol="005930",
+        today=dt.date(2026, 6, 4),
+        now=dt.datetime(2026, 6, 4, 8, 0, tzinfo=dt.UTC),
+    )
+    assert post_close is not None
+    assert post_close.snapshot_date == dt.date(2026, 6, 4)
+    assert post_close.consecutive_up_days == 0  # the down close ends the run
+
+
+@pytest.mark.asyncio
 async def test_build_snapshot_for_symbol_accepts_python_date_cells(monkeypatch):
     df = pd.DataFrame(
         {
