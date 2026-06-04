@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
+import numbers
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -76,6 +78,49 @@ def _decimal_or_none(value: Any) -> Decimal | None:
     return result
 
 
+def _is_missing_scalar(value: Any) -> bool:
+    """Return true for values that must not be persisted to JSONB as scalars."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, Decimal):
+        return value.is_nan() or value.is_infinite()
+    if isinstance(value, numbers.Real):
+        try:
+            return not math.isfinite(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return True
+    try:
+        return bool(value != value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert provider/raw values into strict JSON-compatible values.
+
+    PostgreSQL JSONB rejects bare ``NaN``/``Infinity`` tokens. tvscreener rows
+    can contain pandas/numpy NaN values for optional text columns such as sector
+    and industry, so sanitize the raw audit payload at the source.
+    """
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (str, bool)):
+        return value
+    return str(value)
+
+
 def _extract_kr_symbol(raw: Any) -> str:
     """Strip a ``KRX:`` exchange prefix and uppercase the bare code."""
     text = str(raw or "").strip().upper()
@@ -87,7 +132,11 @@ def _extract_kr_symbol(raw: Any) -> str:
 
 
 def _str_or_none(value: Any) -> str | None:
+    if _is_missing_scalar(value):
+        return None
     text = str(value or "").strip()
+    if text.lower() in {"nan", "nat", "<na>"}:
+        return None
     return text or None
 
 
@@ -125,7 +174,7 @@ def build_kr_fundamentals_snapshot_payloads(
                 rsi14=row.rsi14,
                 sector=row.sector,
                 industry=row.industry,
-                raw_payload=row.raw_payload,
+                raw_payload=_json_safe(row.raw_payload),
                 source="tvscreener_kr",
             )
         )
@@ -258,5 +307,7 @@ def provider_row_from_mapping(row: dict[str, Any]) -> KrFundamentalsProviderRow 
         rsi14=_decimal_or_none(row.get("relative_strength_index_14")),
         sector=_str_or_none(row.get("sector")),
         industry=_str_or_none(row.get("industry")),
-        raw_payload={k: v for k, v in row.items() if k in _RAW_PAYLOAD_KEYS},
+        raw_payload={
+            k: _json_safe(v) for k, v in row.items() if k in _RAW_PAYLOAD_KEYS
+        },
     )
