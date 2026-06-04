@@ -54,7 +54,11 @@ from app.services.invest_view_model.screener_presets import (
 )
 
 _VALID_MARKETS = {"kr", "us", "crypto"}
-_KR_ABSURD_MARKET_CAP_KRW = 10_000_000_000_000_000
+# ROB-436 C-1: single-stock display-plausibility ceiling. The largest KR listing
+# (삼성전자) is ~500조 KRW, so anything above ~2,000조 is a bad/mis-unit row (e.g. the
+# tvscreener fundamentals snapshot rendered SG&G as 3,468.8조원). Was 10,000조 (1e16),
+# too lenient to catch it. Above this → hide the label (never render absurd values).
+_KR_ABSURD_MARKET_CAP_KRW = 2_000_000_000_000_000
 
 _KST = ZoneInfo("Asia/Seoul")
 _KR_OPEN = _time(9, 0)
@@ -82,6 +86,12 @@ _KR_TOSS_ETF_PREFIXES = (
     "WON ",
     "마이티 ",
     "히어로즈 ",
+    # ROB-435 A: KIWOOM (키움) + 1Q (한화) ETF issuer brands — these slipped into
+    # 연속상승세 (KIWOOM 미국S&P500모멘텀, 1Q 미국배당TOP30) because no KR common
+    # stock starts with these brand prefixes. (Long-term: kr_symbol_universe
+    # instrument_type from KRX master — see ROB-435.)
+    "KIWOOM ",
+    "1Q ",
 )
 _KR_TOSS_EXCLUDED_NAME_TOKENS = (
     " ETF",
