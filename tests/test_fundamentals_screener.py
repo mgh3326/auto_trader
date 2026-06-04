@@ -211,7 +211,9 @@ def test_registry_has_nine_specs_with_expected_thresholds():
     assert ub.max_per == Decimal("10") and ub.max_pbr == Decimal("1")
     # 30 calendar days ≈ Toss's "20 거래일" 신고가 window (see spec comment).
     assert ub.max_new_high_age_days == 30
-    assert ub.sort_by == "market_cap"
+    # ROB-432: Toss 저평가 탈출 default order = PER ascending (cheapest first).
+    assert ub.sort_by == "per"
+    assert ub.sort_descending is False
 
 
 def _growth_period(year, *, revenue, net_income, filing_date):
