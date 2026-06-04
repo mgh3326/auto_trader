@@ -55,9 +55,12 @@ class FundamentalsPresetSpec:
     min_earnings_growth_qoq: Decimal | None = None  # ratio (0.10)
     # ROB-430 PR-②: Toss "신고가" = a NEW 52-week high made within N days (a breakout
     # event), NOT proximity to the high. Implemented in the tvscreener KR loader via
-    # week_high_52_date recency: (partition_date - week_high_52_date).days <= N.
+    # week_high_52_date recency. ROB-432: N counts KRX *trading* sessions (XKRX,
+    # holiday-aware via session_calendar), not calendar days — Toss's "20일" = 20 거래일.
     # The DART loader ignores it (no DART preset uses it).
-    max_new_high_age_days: int | None = None  # 52w-high set within this many days
+    max_new_high_age_trading_days: int | None = (
+        None  # 52w-high set within N KRX sessions
+    )
     sort_by: str = "roe"  # any metric key carried on the output row
     # ROB-432: display sort direction. Default desc (highest metric first, e.g. ROE).
     # undervalued_breakout uses ascending PER (cheapest first) to mirror Toss's
@@ -138,16 +141,18 @@ HIGH_YIELD_VALUE_SPEC = FundamentalsPresetSpec(
 # PBR<=1) sit far below their 52w high (probe: max proximity 0.94 → 0 matches under
 # the old 0.95 rule), yet many DID set a new 52w high recently.
 #
-# Toss's "20일" is 20 KRX *trading* days; we only have calendar high-dates, so we use
-# 30 calendar days as the (documented) approximation of ~20 trading days. Live probe
-# vs the full universe: PER<=10 & PBR<=1 = 580 (matches Toss); +new-high <=30d = 73
-# (≈ Toss 77), whereas <=20 *calendar* days = only 35. Comparable, not byte-identical.
-_NEW_HIGH_RECENCY_TRADING_DAYS_AS_CALENDAR = 30
+# Toss's "20일" is 20 KRX *trading* days. ROB-432: we now count exact trading
+# sessions between week_high_52_date and the partition via XKRX (session_calendar,
+# holiday-aware), replacing the earlier 30-calendar-day approximation. Earlier probe:
+# PER<=10 & PBR<=1 = 580 (matches Toss); the new-high recency narrows it toward Toss's
+# 77 (the trading-day window is tighter than 30 calendar days; comparable, not
+# byte-identical). Out-of-XKRX-range dates fail closed (excluded), never mis-included.
+_NEW_HIGH_RECENCY_TRADING_DAYS = 20
 UNDERVALUED_BREAKOUT_SPEC = FundamentalsPresetSpec(
     preset_id="undervalued_breakout",
     max_per=Decimal("10"),
     max_pbr=Decimal("1"),
-    max_new_high_age_days=_NEW_HIGH_RECENCY_TRADING_DAYS_AS_CALENDAR,
+    max_new_high_age_trading_days=_NEW_HIGH_RECENCY_TRADING_DAYS,
     # ROB-432: Toss 저평가 탈출 default order = PER ascending (cheapest PER first;
     # observed PER 0.66 < 1.36 < 1.54 < 2.84). Was market_cap desc (ROB-430 PR-②
     # wrong assumption) → visible top-N mismatched Toss.

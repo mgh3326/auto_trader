@@ -204,13 +204,14 @@ def test_registry_has_nine_specs_with_expected_thresholds():
     hyv = FUNDAMENTALS_PRESET_SPECS["high_yield_value"]
     assert hyv.min_roe == Decimal("15") and hyv.max_per == Decimal("10")
     assert hyv.sort_by == "roe"
-    assert hyv.max_new_high_age_days is None  # not a breakout preset
-    # ROB-430 PR-②: undervalued_breakout 신고가 = NEW 52w high within 20 days (a
-    # breakout event), not price/52w-high proximity.
+    assert hyv.max_new_high_age_trading_days is None  # not a breakout preset
+    # ROB-430 PR-②: undervalued_breakout 신고가 = NEW 52w high within 20 trading days
+    # (a breakout event), not price/52w-high proximity.
     ub = FUNDAMENTALS_PRESET_SPECS["undervalued_breakout"]
     assert ub.max_per == Decimal("10") and ub.max_pbr == Decimal("1")
-    # 30 calendar days ≈ Toss's "20 거래일" 신고가 window (see spec comment).
-    assert ub.max_new_high_age_days == 30
+    # ROB-432: Toss's "20 거래일" 신고가 window = 20 KRX trading sessions (XKRX),
+    # replacing the earlier 30-calendar-day approximation.
+    assert ub.max_new_high_age_trading_days == 20
     # ROB-432: Toss 저평가 탈출 default order = PER ascending (cheapest first).
     assert ub.sort_by == "per"
     assert ub.sort_descending is False
