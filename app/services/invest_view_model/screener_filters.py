@@ -285,3 +285,26 @@ def apply_filter_conditions(
     if not conditions:
         return list(rows)
     return [row for row in rows if all(_passes(row, c) for c in conditions)]
+
+
+def consecutive_gainers_loader_thresholds(
+    conditions: list[ScreenerFilterCondition],
+) -> dict[str, float | int]:
+    """Map a consecutive_gainers filter set → snapshot-loader WHERE kwargs.
+
+    Only this pilot loader's own SQL columns translate to WHERE thresholds:
+    ``consecutive_up_days`` (>=) and ``week_change_rate`` (>=). Other conditions
+    are ignored here — the loader has no column for them (those would post-filter).
+    Returns kwargs for ``_load_consecutive_gainers_from_snapshots`` so a loosened
+    threshold (e.g. days>=3) actually reaches the snapshot query, not just a
+    post-filter that can never widen the loader's own predicate.
+    """
+    out: dict[str, float | int] = {}
+    for c in conditions:
+        if c.operator != "gte":
+            continue
+        if c.field == "consecutive_up_days":
+            out["min_consecutive_up_days"] = int(c.value)
+        elif c.field == "week_change_rate":
+            out["min_week_change_rate"] = float(c.value)
+    return out

@@ -14,6 +14,7 @@ from app.services.invest_view_model.screener_filters import (
     ScreenerFilterCondition,
     ScreenerFilterError,
     apply_filter_conditions,
+    consecutive_gainers_loader_thresholds,
     merge_filter_overrides,
     preset_starting_filters,
     snapshot_kind_for_preset,
@@ -181,3 +182,42 @@ def test_pilot_starting_filters_validate_against_their_snapshot() -> None:
             preset_starting_filters(preset), snapshot_kind=kind
         )
         assert len(validated) == len(preset_starting_filters(preset))
+
+
+# --- consecutive_gainers loader threshold derivation --------------------------
+
+
+@pytest.mark.unit
+def test_consecutive_gainers_loader_thresholds_default_and_adjust() -> None:
+    # default starting set → loader gets the preset defaults (5 / 0.0).
+    base = preset_starting_filters("consecutive_gainers")
+    assert consecutive_gainers_loader_thresholds(base) == {
+        "min_consecutive_up_days": 5,
+        "min_week_change_rate": 0.0,
+    }
+    # loosen days to 3 + tighten week rate to 5% (the "조정 over snapshot" path).
+    adjusted = merge_filter_overrides(
+        base,
+        [
+            ScreenerFilterCondition("consecutive_up_days", "gte", 3),
+            ScreenerFilterCondition("week_change_rate", "gte", 5.0),
+        ],
+    )
+    assert consecutive_gainers_loader_thresholds(adjusted) == {
+        "min_consecutive_up_days": 3,
+        "min_week_change_rate": 5.0,
+    }
+
+
+@pytest.mark.unit
+def test_consecutive_gainers_loader_thresholds_ignores_non_where_conditions() -> None:
+    # only gte on the loader's own SQL columns map to WHERE kwargs; a volume add
+    # (no LOOSEN semantics here) and an lte are not loader thresholds.
+    conds = [
+        ScreenerFilterCondition("consecutive_up_days", "gte", 7),
+        ScreenerFilterCondition("volume", "gte", 100000),  # not a CG WHERE column
+        ScreenerFilterCondition("week_change_rate", "lte", 50.0),  # not gte
+    ]
+    assert consecutive_gainers_loader_thresholds(conds) == {
+        "min_consecutive_up_days": 7,
+    }
