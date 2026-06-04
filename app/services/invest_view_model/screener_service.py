@@ -448,6 +448,8 @@ async def _load_consecutive_gainers_from_snapshots(
     *,
     market: str,
     limit: int = _SNAPSHOT_FIRST_LIMIT,
+    min_consecutive_up_days: int = 5,
+    min_week_change_rate: float = 0.0,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> _SnapshotLoadResult | None:
     """Return qualifying rows from the latest snapshot partition only.
@@ -508,8 +510,11 @@ async def _load_consecutive_gainers_from_snapshots(
         .where(
             InvestScreenerSnapshot.market == market,
             InvestScreenerSnapshot.snapshot_date == latest_snapshot_date,
-            InvestScreenerSnapshot.consecutive_up_days >= 5,
-            InvestScreenerSnapshot.week_change_rate >= 0,
+            # ROB-439: thresholds default to the preset's starting set (5 / 0.0) so
+            # existing callers are unchanged; build_screener_results passes adjusted
+            # values when filter_overrides loosen/tighten over the base snapshot.
+            InvestScreenerSnapshot.consecutive_up_days >= min_consecutive_up_days,
+            InvestScreenerSnapshot.week_change_rate >= min_week_change_rate,
         )
         .order_by(
             InvestScreenerSnapshot.week_change_rate.desc().nullslast(),
@@ -1657,7 +1662,11 @@ async def build_screener_results(
     market: str = "kr",
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     session: AsyncSession | None = None,
+    filter_overrides: list[Any] | None = None,
 ) -> ScreenerResultsResponse:
+    """ROB-439: ``filter_overrides`` (list[ScreenerFilterCondition]) lets a caller
+    adjust/add conditions over the preset's base snapshot (None = preset default).
+    Pilot: consecutive_gainers threads loosen/tighten thresholds into the loader."""
     requested_market = _normalize_market(market)
     preset = get_preset(preset_id, requested_market)
     if preset is None:
@@ -1715,11 +1724,32 @@ async def build_screener_results(
     )
     if session is not None and _should_use_snapshot_first(screening_service):
         if preset_id == "consecutive_gainers":
+            # ROB-439: derive loosen/tighten thresholds from filter_overrides over
+            # the base snapshot (default None → loader defaults → unchanged behavior).
+            _cg_loader_kwargs: dict[str, Any] = {}
+            if filter_overrides:
+                from app.services.invest_view_model.screener_filters import (
+                    consecutive_gainers_loader_thresholds,
+                    merge_filter_overrides,
+                    preset_starting_filters,
+                    validate_conditions,
+                )
+
+                _cg_conditions = merge_filter_overrides(
+                    preset_starting_filters("consecutive_gainers"), filter_overrides
+                )
+                _cg_conditions = validate_conditions(
+                    _cg_conditions, snapshot_kind="invest_screener_snapshots"
+                )
+                _cg_loader_kwargs = consecutive_gainers_loader_thresholds(
+                    _cg_conditions
+                )
             _snapshot_load_result = await _load_consecutive_gainers_from_snapshots(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
                 now=now,
+                **_cg_loader_kwargs,
             )
             if _snapshot_load_result is not None:
                 _snapshot_check_result = _snapshot_load_result.rows
