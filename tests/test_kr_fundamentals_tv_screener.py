@@ -25,9 +25,11 @@ from app.services.invest_view_model.fundamentals_screener import (
     CHEAP_VALUE_SPEC,
     FUTURE_DIVIDEND_KING_SPEC,
     GROWTH_EXPECTATION_TOSS_SPEC,
+    HIGH_YIELD_VALUE_SPEC,
     PROFITABLE_COMPANY_SPEC,
     STABLE_GROWTH_SPEC,
     STEADY_DIVIDEND_SPEC,
+    UNDERVALUED_BREAKOUT_SPEC,
     UNDERVALUED_GROWTH_SPEC,
 )
 from app.services.invest_view_model.kr_fundamentals_tv_screener import (
@@ -506,3 +508,234 @@ async def test_stable_growth_includes_via_roe_and_yoy_skips_streak(db_session):
     assert result is not None
     assert [r["symbol"] for r in result.rows] == [sym]
     assert EARNINGS_STREAK_SKIP_WARNING in result.warnings
+
+
+# ---------------------------------------------------------------------------
+# ROB-428 PR-C: high_yield_value + undervalued_breakout (rerouted valuation presets)
+# ---------------------------------------------------------------------------
+
+
+async def test_high_yield_value_roe_and_per_bounds(db_session):
+    """high_yield_value: ROE >= 15 AND 0 < PER <= 10 (replicates the OLD loader)."""
+    await _cleanup(db_session)
+    sym_pass = f"{_PREFIX}A0"
+    sym_low_roe = f"{_PREFIX}A1"
+    sym_high_per = f"{_PREFIX}A2"
+    sym_neg_per = f"{_PREFIX}A3"
+    sym_null_roe = f"{_PREFIX}A4"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_pass,
+                price=Decimal("8000"),
+                change_rate=Decimal("0.5"),
+                volume=Decimal("500000"),
+                market_cap=Decimal("9000000000000"),
+                roe_ttm=Decimal("18"),  # >= 15
+                per=Decimal("8"),  # 0 < per <= 10
+                sector="Financials",
+                industry="Banks",
+            ),
+            _snap(
+                sym_low_roe,
+                market_cap=Decimal("8000000000000"),
+                roe_ttm=Decimal("9"),  # < 15 → excluded
+                per=Decimal("5"),
+            ),
+            _snap(
+                sym_high_per,
+                market_cap=Decimal("7000000000000"),
+                roe_ttm=Decimal("25"),
+                per=Decimal("12"),  # > 10 → excluded
+            ),
+            _snap(
+                sym_neg_per,
+                market_cap=Decimal("6000000000000"),
+                roe_ttm=Decimal("20"),
+                per=Decimal("-3"),  # per <= 0 → excluded (require_positive)
+            ),
+            _snap(
+                sym_null_roe,
+                market_cap=Decimal("5000000000000"),
+                roe_ttm=None,  # NULL roe → fail-closed exclude
+                per=Decimal("6"),
+            ),
+        ],
+        [
+            _universe(sym_pass, "고수익저평가"),
+            _universe(sym_low_roe, "낮은ROE"),
+            _universe(sym_high_per, "고PER"),
+            _universe(sym_neg_per, "적자기업"),
+            _universe(sym_null_roe, "ROE없음"),
+        ],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session,
+        market="kr",
+        spec=HIGH_YIELD_VALUE_SPEC,
+        limit=20,
+        now=_now,
+        universe_count=5,
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_pass]
+    row = result.rows[0]
+    # high_yield_value metric is ROE (must be emitted) + category filled.
+    assert row["roe"] == 18.0
+    assert row["per"] == 8.0
+    assert row["category"] == "Banks"
+    assert row["name"] == "고수익저평가"
+    assert row["close"] == 8000.0
+    assert row["_screener_snapshot_state"] == "fresh"
+
+
+async def test_high_yield_value_sorts_by_roe_desc(db_session):
+    await _cleanup(db_session)
+    sym_hi = f"{_PREFIX}A5"
+    sym_lo = f"{_PREFIX}A6"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_lo,
+                market_cap=Decimal("9000000000000"),  # bigger cap, lower ROE
+                roe_ttm=Decimal("16"),
+                per=Decimal("9"),
+            ),
+            _snap(
+                sym_hi,
+                market_cap=Decimal("3000000000000"),
+                roe_ttm=Decimal("35"),
+                per=Decimal("7"),
+            ),
+        ],
+        [_universe(sym_hi, "고ROE"), _universe(sym_lo, "저ROE")],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session, market="kr", spec=HIGH_YIELD_VALUE_SPEC, limit=20, now=_now
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_hi, sym_lo]
+
+
+async def test_undervalued_breakout_per_pbr_and_proximity(db_session):
+    """undervalued_breakout: 0<PER<=10, 0<PBR<=1, price/week_high_52 >= 0.95."""
+    await _cleanup(db_session)
+    sym_pass = f"{_PREFIX}B0"
+    sym_far_from_high = f"{_PREFIX}B1"
+    sym_high_pbr = f"{_PREFIX}B2"
+    sym_null_high = f"{_PREFIX}B3"
+    sym_zero_high = f"{_PREFIX}B4"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_pass,
+                price=Decimal("9700"),
+                change_rate=Decimal("1.0"),
+                volume=Decimal("700000"),
+                market_cap=Decimal("9000000000000"),
+                per=Decimal("8"),  # 0 < per <= 10
+                pbr=Decimal("0.8"),  # 0 < pbr <= 1
+                week_high_52=Decimal("10000"),  # 9700/10000 = 0.97 >= 0.95
+                sector="Industrials",
+                industry="Machinery",
+            ),
+            _snap(
+                sym_far_from_high,
+                market_cap=Decimal("8000000000000"),
+                per=Decimal("6"),
+                pbr=Decimal("0.7"),
+                price=Decimal("9000"),
+                week_high_52=Decimal("10000"),  # 0.90 < 0.95 → excluded
+            ),
+            _snap(
+                sym_high_pbr,
+                market_cap=Decimal("7000000000000"),
+                per=Decimal("5"),
+                pbr=Decimal("1.5"),  # > 1 → excluded
+                price=Decimal("9900"),
+                week_high_52=Decimal("10000"),
+            ),
+            _snap(
+                sym_null_high,
+                market_cap=Decimal("6000000000000"),
+                per=Decimal("4"),
+                pbr=Decimal("0.5"),
+                price=Decimal("5000"),
+                week_high_52=None,  # NULL high → proximity unavailable → excluded
+            ),
+            _snap(
+                sym_zero_high,
+                market_cap=Decimal("5000000000000"),
+                per=Decimal("4"),
+                pbr=Decimal("0.5"),
+                price=Decimal("5000"),
+                week_high_52=Decimal("0"),  # high <= 0 → proximity unavailable → excl
+            ),
+        ],
+        [
+            _universe(sym_pass, "저평가탈출"),
+            _universe(sym_far_from_high, "고가멀음"),
+            _universe(sym_high_pbr, "고PBR"),
+            _universe(sym_null_high, "고가없음"),
+            _universe(sym_zero_high, "고가0"),
+        ],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session,
+        market="kr",
+        spec=UNDERVALUED_BREAKOUT_SPEC,
+        limit=20,
+        now=_now,
+        universe_count=5,
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_pass]
+    row = result.rows[0]
+    # undervalued_breakout metric is high_52w_proximity (must be emitted) + category.
+    assert row["high_52w_proximity"] == pytest.approx(0.97)
+    assert row["week_high_52"] == 10000.0
+    assert row["per"] == 8.0
+    assert row["pbr"] == 0.8
+    assert row["category"] == "Machinery"
+    assert row["name"] == "저평가탈출"
+    # The excluded rows record a reason (fail-closed, never silent pass).
+    excluded_syms = {e["symbol"] for e in result.excluded}
+    assert {sym_far_from_high, sym_high_pbr, sym_null_high, sym_zero_high} <= (
+        excluded_syms
+    )
+
+
+async def test_undervalued_breakout_sorts_by_proximity_desc(db_session):
+    await _cleanup(db_session)
+    sym_closer = f"{_PREFIX}B5"
+    sym_further = f"{_PREFIX}B6"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_further,
+                market_cap=Decimal("9000000000000"),  # bigger cap, lower proximity
+                per=Decimal("6"),
+                pbr=Decimal("0.6"),
+                price=Decimal("9600"),  # 0.96
+                week_high_52=Decimal("10000"),
+            ),
+            _snap(
+                sym_closer,
+                market_cap=Decimal("3000000000000"),
+                per=Decimal("7"),
+                pbr=Decimal("0.7"),
+                price=Decimal("9990"),  # 0.999
+                week_high_52=Decimal("10000"),
+            ),
+        ],
+        [_universe(sym_closer, "근접"), _universe(sym_further, "덜근접")],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session, market="kr", spec=UNDERVALUED_BREAKOUT_SPEC, limit=20, now=_now
+    )
+    assert result is not None
+    assert [r["symbol"] for r in result.rows] == [sym_closer, sym_further]

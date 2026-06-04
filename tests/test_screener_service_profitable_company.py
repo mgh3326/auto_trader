@@ -238,36 +238,41 @@ async def test_cheap_value_empty_fundamentals_surfaces_missing_dependency(monkey
 
 
 @pytest.mark.asyncio
-async def test_undervalued_breakout_routes_snapshot_only_no_fundamentals_dependency(
-    monkeypatch,
-):
-    # ROB-428 PR-B leaves undervalued_breakout on its CURRENT (market_valuation)
-    # loader — it is NOT one of the 7 rerouted presets.
+async def test_undervalued_breakout_routes_to_fundamentals_loader(monkeypatch):
+    # ROB-428 PR-C: undervalued_breakout's DISPLAY read-path was rerouted onto the
+    # tvscreener KR snapshot (it is now a FUNDAMENTALS_PRESET_SPECS preset), so it
+    # routes through the same TV loader as the 7 fundamentals presets and reports
+    # the invest_kr_fundamentals_snapshots source + a fundamentals dependency.
     monkeypatch.setattr(
         "app.services.invest_view_model.screener_service._should_use_snapshot_first",
         lambda service: True,
     )
+    captured = {}
 
-    async def _fake_loader(session, *, market, limit, today_market_date=None):
-        return [
-            {
-                "symbol": "907001",
-                "market": "kr",
-                "name": "종목907001",
-                "per": 8.0,
-                "pbr": 0.8,
-                "high_52w": 100.0,
-                "high_52w_proximity": 0.96,
-                "latest_close": 96.0,
-                "snapshot_date": dt.date(2026, 6, 4),
-                "_screener_snapshot_state": "fresh",
-            }
-        ]
+    async def _fake_loader(session, *, market, spec, limit, now):
+        captured["preset_id"] = spec.preset_id
+        return FundamentalsScreenResult(
+            rows=[
+                {
+                    "symbol": "907001",
+                    "market": "kr",
+                    "name": "종목907001",
+                    "close": 96.0,
+                    "per": 8.0,
+                    "pbr": 0.8,
+                    "week_high_52": 100.0,
+                    "high_52w_proximity": 0.96,
+                    "snapshot_date": dt.date(2026, 6, 4),
+                    "_screener_snapshot_state": "fresh",
+                }
+            ],
+            valuation_partition_date=dt.date(2026, 6, 4),
+            fundamentals_partition_date=dt.date(2026, 6, 4),
+            fundamentals_collected_at=dt.datetime(2026, 6, 4, tzinfo=dt.UTC),
+            fundamentals_state="fresh",
+        )
 
-    monkeypatch.setattr(
-        "app.services.invest_view_model.undervalued_breakout_screener.load_undervalued_breakout_from_snapshots",
-        _fake_loader,
-    )
+    monkeypatch.setattr(_TV_LOADER_PATH, _fake_loader)
     result = await screener_service.build_screener_results(
         preset_id="undervalued_breakout",
         market="kr",
@@ -275,26 +280,77 @@ async def test_undervalued_breakout_routes_snapshot_only_no_fundamentals_depende
         screening_service=_StubScreening(),
         resolver=_MockResolver(),
     )
+    assert captured["preset_id"] == "undervalued_breakout"  # registry routed the spec
     assert [r.symbol for r in result.results] == ["907001"]
-    assert result.freshness.primary.source == "market_valuation_snapshots"
-    # valuation-only: NO fundamentals dependency attached
-    assert "fundamentals" not in {d.kind for d in result.freshness.dependencies}
+    assert result.freshness.primary.source == _FUNDAMENTALS_SOURCE
+    # now consistent with the 7 fundamentals presets: a fundamentals dependency IS
+    # attached.
+    assert "fundamentals" in {d.kind for d in result.freshness.dependencies}
+
+
+@pytest.mark.asyncio
+async def test_high_yield_value_routes_to_fundamentals_loader(monkeypatch):
+    # ROB-428 PR-C: high_yield_value likewise rerouted onto the TV loader; its
+    # metric (ROE) renders from the filled snapshot row.
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service._should_use_snapshot_first",
+        lambda service: True,
+    )
+    captured = {}
+
+    async def _fake_loader(session, *, market, spec, limit, now):
+        captured["preset_id"] = spec.preset_id
+        return FundamentalsScreenResult(
+            rows=[
+                {
+                    "symbol": "905930",
+                    "market": "kr",
+                    "name": "고수익저평가",
+                    "close": 8000.0,
+                    "category": "Banks",
+                    "roe": 18.0,
+                    "per": 8.0,
+                    "snapshot_date": dt.date(2026, 6, 4),
+                    "_screener_snapshot_state": "fresh",
+                }
+            ],
+            valuation_partition_date=dt.date(2026, 6, 4),
+            fundamentals_partition_date=dt.date(2026, 6, 4),
+            fundamentals_collected_at=dt.datetime(2026, 6, 4, tzinfo=dt.UTC),
+            fundamentals_state="fresh",
+        )
+
+    monkeypatch.setattr(_TV_LOADER_PATH, _fake_loader)
+    result = await screener_service.build_screener_results(
+        preset_id="high_yield_value",
+        market="kr",
+        session=_MockSession(),
+        screening_service=_StubScreening(),
+        resolver=_MockResolver(),
+    )
+    assert captured["preset_id"] == "high_yield_value"
+    assert [r.symbol for r in result.results] == ["905930"]
+    row = result.results[0]
+    assert row.category == "Banks"
+    assert row.metricValueLabel == "18.0%"  # high_yield_value metric=roe
+    assert result.freshness.primary.source == _FUNDAMENTALS_SOURCE
+    assert "fundamentals" in {d.kind for d in result.freshness.dependencies}
 
 
 @pytest.mark.asyncio
 async def test_undervalued_breakout_missing_when_loader_none(monkeypatch):
+    # ROB-428 PR-C: None from the TV loader → dataState=missing (handled by the
+    # shared FUNDAMENTALS_PRESET_SPECS None branch, never falls through to the
+    # generic provider).
     monkeypatch.setattr(
         "app.services.invest_view_model.screener_service._should_use_snapshot_first",
         lambda service: True,
     )
 
-    async def _none_loader(session, *, market, limit, today_market_date=None):
+    async def _none_loader(session, *, market, spec, limit, now):
         return None
 
-    monkeypatch.setattr(
-        "app.services.invest_view_model.undervalued_breakout_screener.load_undervalued_breakout_from_snapshots",
-        _none_loader,
-    )
+    monkeypatch.setattr(_TV_LOADER_PATH, _none_loader)
     result = await screener_service.build_screener_results(
         preset_id="undervalued_breakout",
         market="kr",
