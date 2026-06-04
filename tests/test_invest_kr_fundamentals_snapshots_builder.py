@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from decimal import Decimal
 
 import pytest
@@ -106,6 +107,24 @@ def test_build_payloads_drops_rows_without_symbol() -> None:
     assert payloads == []
 
 
+def test_build_payloads_sanitizes_non_finite_raw_payload_values() -> None:
+    payloads = build_kr_fundamentals_snapshot_payloads(
+        [
+            _sample_row(
+                raw_payload={
+                    "symbol": "KRX:005930",
+                    "sector": float("nan"),
+                    "nested": {"industry": float("inf")},
+                }
+            )
+        ],
+        snapshot_date=dt.date(2026, 6, 4),
+    )
+    assert payloads[0].raw_payload["sector"] is None
+    assert payloads[0].raw_payload["nested"]["industry"] is None
+    json.dumps(payloads[0].raw_payload, allow_nan=False)
+
+
 def test_provider_row_from_mapping_maps_normalized_keys() -> None:
     row = provider_row_from_mapping(
         {
@@ -176,6 +195,24 @@ def test_provider_row_from_mapping_missing_keys_become_none() -> None:
     assert row.continuous_dividend_payout is None
     assert row.week_high_52 is None
     assert row.industry is None
+
+
+def test_provider_row_from_mapping_sanitizes_nan_text_and_raw_payload() -> None:
+    row = provider_row_from_mapping(
+        {
+            "symbol": "KRX:610036",
+            "price": 26030,
+            "active_symbol": True,
+            "sector": float("nan"),
+            "industry": float("nan"),
+        }
+    )
+    assert row is not None
+    assert row.sector is None
+    assert row.industry is None
+    assert row.raw_payload["sector"] is None
+    assert row.raw_payload["industry"] is None
+    json.dumps(row.raw_payload, allow_nan=False)
 
 
 def test_provider_row_from_mapping_rejects_non_krx() -> None:

@@ -74,11 +74,16 @@ async def run(args: argparse.Namespace) -> int:
         print(
             "\n--dry-run: no rows written. Pass --commit only with operator approval."
         )
-    elif not result.get("committed"):
+        return 0
+    if not result.get("committed"):
+        # ROB-429 follow-up: a requested commit blocked by the coverage guard must
+        # exit non-zero so operator automation / CI detects the block — it is NOT a
+        # successful no-op. Pass --allow-partial to override (operator-gated).
         print(
             "\n--commit was requested but BLOCKED by the coverage guard; no rows "
             "written. Pass --allow-partial to override (operator-gated)."
         )
+        return 2
     return 0
 
 
