@@ -15,7 +15,8 @@ from app.services.invest_view_model.high_yield_value_screener import (
 )
 
 # 9-prefix synthetic symbols, isolated from real KR symbols and sibling suites.
-_TEST_SYMBOLS = ["921000", "920001", "929999"]
+# ZZUS* are synthetic US tickers for the ROB-427 PR3 US-market path.
+_TEST_SYMBOLS = ["921000", "920001", "929999", "ZZUSHI", "ZZUSLO"]
 
 
 @pytest.fixture(autouse=True)
@@ -124,6 +125,49 @@ async def test_filters_by_roe_and_per(db_session):
 
 
 @pytest.mark.asyncio
+async def test_us_market_filters_by_roe_and_per(db_session):
+    """ROB-427 PR3: US runs on Yahoo valuation snapshots (market=us), same ROE>=15 /
+    PER 0~10 rule, no KR universe / common-stock filter. row.market == 'us'."""
+    val_date = dt.date(2099, 12, 31)
+    db_session.add_all(
+        [
+            # qualifies: ROE 22 >= 15, PER 7 in (0, 10]
+            MarketValuationSnapshot(
+                market="us",
+                symbol="ZZUSHI",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("7.0"),
+                roe=decimal.Decimal("22.0"),
+            ),
+            # excluded: ROE 8 < 15
+            MarketValuationSnapshot(
+                market="us",
+                symbol="ZZUSLO",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("4.0"),
+                roe=decimal.Decimal("8.0"),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    rows = await load_high_yield_value_from_snapshots(
+        db_session, market="us", limit=20, today_market_date=val_date
+    )
+
+    assert rows is not None
+    symbols = [r["symbol"] for r in rows]
+    assert "ZZUSHI" in symbols
+    assert "ZZUSLO" not in symbols
+    target = next(r for r in rows if r["symbol"] == "ZZUSHI")
+    assert target["market"] == "us"
+    assert target["roe"] == pytest.approx(22.0)
+    assert target["per"] == pytest.approx(7.0)
+
+
+@pytest.mark.asyncio
 async def test_excludes_high_per_and_null_metrics(db_session):
     val_date = dt.date(2099, 12, 31)
     db_session.add(
@@ -224,7 +268,11 @@ async def test_stale_when_partition_is_not_todays_trading_date(db_session):
 
 @pytest.mark.asyncio
 async def test_returns_none_for_non_kr_market(db_session):
-    rows = await load_high_yield_value_from_snapshots(db_session, market="us", limit=20)
+    # ROB-427 PR3: US is now SUPPORTED (Yahoo valuation). crypto / unknown markets
+    # remain unsupported by this loader → None.
+    rows = await load_high_yield_value_from_snapshots(
+        db_session, market="crypto", limit=20
+    )
     assert rows is None
 
 
