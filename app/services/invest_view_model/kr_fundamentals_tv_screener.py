@@ -481,6 +481,41 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         )
         name_map = {r.symbol: r.name for r in names.all()}
 
+    # ROB-436 C-1: the tvscreener snapshot market_cap is unreliable for KR display
+    # (renders absurd-high like 3,468조원 AND bogus-low like 1억원 for real mid-caps).
+    # Override with the trusted Naver KRW market cap from the latest healthy
+    # market_valuation_snapshots partition when present. Symbols without a valuation
+    # row keep the tvscreener value (the ROB-436 C-1 absurd-high ceiling still hides
+    # implausible ones). Coverage scales with the operator's valuation-snapshot builds.
+    market_cap_map: dict[str, float] = {}
+    if symbols:
+        from app.models.market_valuation_snapshot import MarketValuationSnapshot
+        from app.services.invest_screener_snapshots.partition_health import (
+            resolve_healthy_partition,
+        )
+
+        val_hp = await resolve_healthy_partition(
+            session,
+            model=MarketValuationSnapshot,
+            date_col=MarketValuationSnapshot.snapshot_date,
+            market_col=MarketValuationSnapshot.market,
+            market="kr",
+        )
+        if val_hp and val_hp.partition_date is not None:
+            val_rows = await session.execute(
+                sa.select(
+                    MarketValuationSnapshot.symbol,
+                    MarketValuationSnapshot.market_cap,
+                ).where(
+                    MarketValuationSnapshot.market == "kr",
+                    MarketValuationSnapshot.snapshot_date == val_hp.partition_date,
+                    MarketValuationSnapshot.symbol.in_(symbols),
+                )
+            )
+            for r in val_rows.all():
+                if r.market_cap is not None:
+                    market_cap_map[r.symbol] = float(r.market_cap)
+
     # ROB-433: DART-first growth/streak. Only fetch the financial_fundamentals
     # derivation when this preset uses a 3년평균 growth or 순이익 연속증가 threshold
     # (valuation-only presets skip the extra query). DART coverage is sparse
@@ -551,6 +586,16 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
                 provenance=prov,
             )
         )
+
+    # ROB-436 C-1: apply the trusted KRW market cap to display + sort. market_cap_krw
+    # is what _normalize_market_cap_krw prefers for the label; overwrite market_cap too
+    # so a market_cap-sorted preset orders on the trusted value, not the tvscreener one.
+    if market_cap_map:
+        for row in included:
+            trusted = market_cap_map.get(row["symbol"])
+            if trusted is not None:
+                row["market_cap"] = trusted
+                row["market_cap_krw"] = trusted
 
     # ROB-429 B2: full-partition match total BEFORE the display limit.
     total_matched = len(included)
