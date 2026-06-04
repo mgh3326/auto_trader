@@ -34,11 +34,30 @@ def test_derive_metrics_streak_matches_view_model():
     )
 
 
-def test_derive_metrics_short_window_returns_partial():
+def test_derive_metrics_short_window_streak_is_none():
+    # ROB-430 PR-①: < 6 sessions → consecutive_up_days is None (insufficient), NOT a
+    # truncated lower bound that would silently fail the consecutive_gainers >= 5 filter.
     closes = [Decimal("100"), Decimal("101")]
     metrics = derive_metrics(closes)
-    assert metrics.consecutive_up_days == 1
+    assert metrics.consecutive_up_days is None
     assert metrics.week_change_rate is None  # < 6 elements
+    # change_rate is still computed from the latest pair (needs only 2 closes).
+    assert metrics.change_rate is not None
+
+
+def test_derive_metrics_streak_reliable_at_six_sessions():
+    # ROB-430 PR-①: 5 all-up closes can't confirm a >= 5 streak (max 4) → None;
+    # 6 all-up closes yield a reliable streak of 5 that passes the >= 5 filter.
+    assert (
+        derive_metrics([Decimal(c) for c in [10, 11, 12, 13, 14]]).consecutive_up_days
+        is None
+    )
+    assert (
+        derive_metrics(
+            [Decimal(c) for c in [10, 11, 12, 13, 14, 15]]
+        ).consecutive_up_days
+        == 5
+    )
 
 
 @pytest.mark.asyncio

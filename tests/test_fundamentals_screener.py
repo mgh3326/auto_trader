@@ -204,11 +204,14 @@ def test_registry_has_nine_specs_with_expected_thresholds():
     hyv = FUNDAMENTALS_PRESET_SPECS["high_yield_value"]
     assert hyv.min_roe == Decimal("15") and hyv.max_per == Decimal("10")
     assert hyv.sort_by == "roe"
-    assert hyv.min_high_52w_proximity is None  # not a breakout preset
+    assert hyv.max_new_high_age_days is None  # not a breakout preset
+    # ROB-430 PR-②: undervalued_breakout 신고가 = NEW 52w high within 20 days (a
+    # breakout event), not price/52w-high proximity.
     ub = FUNDAMENTALS_PRESET_SPECS["undervalued_breakout"]
     assert ub.max_per == Decimal("10") and ub.max_pbr == Decimal("1")
-    assert ub.min_high_52w_proximity == Decimal("0.95")
-    assert ub.sort_by == "high_52w_proximity"
+    # 30 calendar days ≈ Toss's "20 거래일" 신고가 window (see spec comment).
+    assert ub.max_new_high_age_days == 30
+    assert ub.sort_by == "market_cap"
 
 
 def _growth_period(year, *, revenue, net_income, filing_date):

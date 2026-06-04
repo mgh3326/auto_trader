@@ -38,6 +38,7 @@ class KrFundamentalsSnapshotUpsert(BaseModel):
     continuous_dividend_payout: Decimal | None = None
     continuous_dividend_growth: Decimal | None = None
     week_high_52: Decimal | None = None
+    week_high_52_date: dt.date | None = None
     rsi14: Decimal | None = None
     sector: str | None = None
     industry: str | None = None
