@@ -1734,25 +1734,34 @@ async def build_screener_results(
                 "(PER 0~10·PBR 0~1·신고가 근접)에 맞는 종목이 없습니다."
             )
         elif preset_id in FUNDAMENTALS_PRESET_SPECS:
-            from app.services.invest_view_model.fundamentals_screener import (
-                load_fundamentals_preset_from_snapshots,
+            # ROB-428 PR-B: KR display reads the tvscreener-backed snapshot
+            # (invest_kr_fundamentals_snapshots) so result rows fill price/change/
+            # volume/category/market_cap + metrics and the count gap closes. The
+            # DART loader (load_fundamentals_preset_from_snapshots) stays in place
+            # for reports/PIT and is untouched.
+            from app.services.invest_view_model.kr_fundamentals_tv_screener import (
+                load_kr_fundamentals_preset_from_tv_snapshot,
             )
 
-            _fundamentals_screen_result = await load_fundamentals_preset_from_snapshots(
-                session,
-                market=requested_market,
-                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
-                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
-                now=now,
+            _fundamentals_screen_result = (
+                await load_kr_fundamentals_preset_from_tv_snapshot(
+                    session,
+                    market=requested_market,
+                    spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                    limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                    now=now,
+                )
             )
             if _fundamentals_screen_result is not None:
                 _snapshot_check_result = _fundamentals_screen_result.rows
                 _snapshot_load_result = _SnapshotLoadResult(
                     rows=_fundamentals_screen_result.rows,
                     partition_date=_fundamentals_screen_result.valuation_partition_date,
-                    partition_computed_at=None,
+                    partition_computed_at=_fundamentals_screen_result.fundamentals_collected_at,
                 )
-            _snapshot_empty_warning = "최신 밸류에이션/재무 스냅샷에서 해당 프리셋 조건에 맞는 종목이 없습니다."
+            _snapshot_empty_warning = (
+                "최신 KR 펀더멘털 스냅샷에서 해당 프리셋 조건에 맞는 종목이 없습니다."
+            )
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
                 session,
@@ -1920,7 +1929,8 @@ async def build_screener_results(
         elif preset_id == "undervalued_breakout":
             primary_source = "market_valuation_snapshots"
         elif preset_id in FUNDAMENTALS_PRESET_SPECS:
-            primary_source = "market_valuation_snapshots"
+            # ROB-428 PR-B: KR display now reads the tvscreener KR snapshot.
+            primary_source = "invest_kr_fundamentals_snapshots"
         elif requested_market == "crypto":
             primary_source = "invest_crypto_screener_snapshots"
         else:
@@ -2019,9 +2029,17 @@ async def build_screener_results(
                 "snapshot_date": _fundamentals_screen_result.fundamentals_partition_date,
                 "collected_at": _fundamentals_screen_result.fundamentals_collected_at,
                 "data_state": _fundamentals_screen_result.fundamentals_state,
-                "source": "financial_fundamentals_snapshots",
+                # ROB-428 PR-B: KR display fundamentals now come from the
+                # tvscreener KR snapshot, not the DART table.
+                "source": "invest_kr_fundamentals_snapshots",
             }
         )
+        # ROB-428 PR-B: surface honest-divergence warnings (e.g. the earnings
+        # streak condition skipped because tvscreener does not expose it).
+        for _w in _fundamentals_screen_result.warnings:
+            _safe = _safe_warning(_w)
+            if _safe not in upstream_warnings:
+                upstream_warnings.append(_safe)
 
     freshness = _build_freshness(
         raw_timestamp=raw.get("timestamp"),
