@@ -2107,6 +2107,18 @@ async def build_screener_results(
     ):
         upstream_warnings.append("비KRW 가상자산 행은 제외했습니다.")
 
+    # ROB-429 B2: surface the full-partition match total + returned count on the KR
+    # fundamentals path (FUNDAMENTALS_PRESET_SPECS). None for all other presets so
+    # their behavior is unchanged.
+    total_count: int | None = None
+    returned_count: int | None = None
+    if (
+        preset_id in FUNDAMENTALS_PRESET_SPECS
+        and _fundamentals_screen_result is not None
+    ):
+        total_count = _fundamentals_screen_result.total_matched
+        returned_count = len(results)
+
     return ScreenerResultsResponse(
         presetId=preset.id,
         title=preset.name,
@@ -2117,4 +2129,6 @@ async def build_screener_results(
         warnings=upstream_warnings,
         freshness=freshness,
         sources=response_sources,
+        totalCount=total_count,
+        returnedCount=returned_count,
     )

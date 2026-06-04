@@ -216,9 +216,92 @@ async def test_build_snapshots_commit_upserts() -> None:
         snapshot_date=dt.date(2026, 6, 4),
         commit=True,
         limit=10,
+        universe_count=2,  # 2/2 = 100% >= 80% floor → allowed
     )
     assert result["fetched"] == 2
     assert result["would_upsert"] == 2
     assert result["upserted"] == 2
     assert result["committed"] is True
+    assert result["commit_allowed"] is True
+    assert result["block_reason"] is None
     assert {p.symbol for p in repo.payloads} == {"005930", "000660"}
+
+
+# ---------------------------------------------------------------------------
+# ROB-429 A2 — production commit guard (assert_min_coverage, floor 0.80)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_snapshots_dry_run_carries_coverage_metadata() -> None:
+    repo = _Repo()
+    result = await build_kr_fundamentals_snapshots(
+        provider=_Provider([_sample_row(symbol="005930")]),
+        repository=repo,
+        snapshot_date=dt.date(2026, 6, 4),
+        commit=False,
+        limit=10,
+        universe_count=100,
+    )
+    # dry-run still reports the full coverage metadata.
+    assert result["active_universe_count"] == 100
+    assert result["coverage_ratio"] == 0.01  # 1 / 100
+    assert result["commit_allowed"] is False  # 1 < ceil(0.80 * 100) = 80
+    assert result["block_reason"] is not None
+    assert result["upserted"] == 0
+    assert repo.payloads == []
+
+
+@pytest.mark.asyncio
+async def test_build_snapshots_commit_blocked_below_floor() -> None:
+    repo = _Repo()
+    result = await build_kr_fundamentals_snapshots(
+        provider=_Provider([_sample_row(symbol="005930")]),
+        repository=repo,
+        snapshot_date=dt.date(2026, 6, 4),
+        commit=True,
+        limit=10,
+        universe_count=100,  # floor = 80; would_upsert = 1 < 80 → blocked
+    )
+    assert result["commit_allowed"] is False
+    assert result["committed"] is False
+    assert result["upserted"] == 0
+    assert repo.payloads == []  # nothing upserted on a blocked commit
+    assert "80%" in result["block_reason"] or "floor" in result["block_reason"]
+
+
+@pytest.mark.asyncio
+async def test_build_snapshots_commit_allow_partial_overrides_floor() -> None:
+    repo = _Repo()
+    result = await build_kr_fundamentals_snapshots(
+        provider=_Provider([_sample_row(symbol="005930")]),
+        repository=repo,
+        snapshot_date=dt.date(2026, 6, 4),
+        commit=True,
+        limit=10,
+        universe_count=100,
+        allow_partial=True,  # operator override → upsert despite thin coverage
+    )
+    assert result["committed"] is True
+    assert result["commit_allowed"] is True
+    assert result["upserted"] == 1
+    assert result["block_reason"] is None
+    assert {p.symbol for p in repo.payloads} == {"005930"}
+
+
+@pytest.mark.asyncio
+async def test_build_snapshots_guard_fail_open_when_universe_zero() -> None:
+    # universe_count <= 0 disables the gate (fail-open, consistent with PR2a/2b).
+    repo = _Repo()
+    result = await build_kr_fundamentals_snapshots(
+        provider=_Provider([_sample_row(symbol="005930")]),
+        repository=repo,
+        snapshot_date=dt.date(2026, 6, 4),
+        commit=True,
+        limit=10,
+        universe_count=0,
+    )
+    assert result["committed"] is True
+    assert result["commit_allowed"] is True
+    assert result["coverage_ratio"] == 0.0
+    assert result["upserted"] == 1

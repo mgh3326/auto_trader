@@ -34,6 +34,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Actually write to the database. Default is dry-run/no writes.",
     )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Override the ROB-429 coverage guard and commit a partial backfill "
+            "(below 80%% of the active KR universe). Operator-gated."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and args.limit != 200:
         parser.error("--all is mutually exclusive with --limit")
@@ -46,12 +54,30 @@ async def run(args: argparse.Namespace) -> int:
             limit=args.limit,
             all_symbols=args.all,
             commit=args.commit,
+            allow_partial=args.allow_partial,
         )
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    # ROB-429 A2: surface the coverage guard metadata for the operator packet.
+    print(
+        "\ncoverage: would_upsert={would_upsert} / active_universe={universe} "
+        "= {ratio:.1%} (commit_allowed={allowed})".format(
+            would_upsert=result.get("would_upsert"),
+            universe=result.get("active_universe_count"),
+            ratio=result.get("coverage_ratio") or 0.0,
+            allowed=result.get("commit_allowed"),
+        )
+    )
+    if result.get("block_reason"):
+        print(f"blocked: {result['block_reason']}")
     if not args.commit:
         print(
             "\n--dry-run: no rows written. Pass --commit only with operator approval."
+        )
+    elif not result.get("committed"):
+        print(
+            "\n--commit was requested but BLOCKED by the coverage guard; no rows "
+            "written. Pass --allow-partial to override (operator-gated)."
         )
     return 0
 

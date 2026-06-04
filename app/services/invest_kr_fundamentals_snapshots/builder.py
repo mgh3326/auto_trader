@@ -10,6 +10,14 @@ from app.services.invest_kr_fundamentals_snapshots.repository import (
     KrFundamentalsSnapshotUpsert,
 )
 from app.services.invest_screener_snapshots.freshness import today_trading_date
+from app.services.snapshot_commit_guard import (
+    PartialCommitBlocked,
+    assert_min_coverage,
+)
+
+#: ROB-429 A2 — production commit coverage floor for KR fundamentals snapshots.
+#: A commit below ceil(active_universe * floor) is blocked unless --allow-partial.
+_KR_FUNDAMENTALS_MIN_COMMIT_COVERAGE_RATIO = 0.80
 
 _RAW_PAYLOAD_KEYS = {
     "symbol",
@@ -131,23 +139,56 @@ async def build_kr_fundamentals_snapshots(
     snapshot_date: dt.date | None = None,
     commit: bool = False,
     limit: int | None = None,
+    universe_count: int = 0,
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
     date_value = snapshot_date or today_trading_date("kr")
     provider_rows = await provider.fetch_rows(limit=limit)
     payloads = build_kr_fundamentals_snapshot_payloads(
         provider_rows, snapshot_date=date_value
     )
+    would_upsert = len(payloads)
+    coverage_ratio = (
+        round(would_upsert / universe_count, 4) if universe_count > 0 else 0.0
+    )
+
+    # ROB-429 A2: coverage guard (ROB-426 snapshot_commit_guard). A build below
+    # ceil(active_universe * 0.80) is NOT commit-allowed unless --allow-partial.
+    # We evaluate the gate for both dry-run and commit so the result always
+    # carries an honest commit_allowed/block_reason; the gate only blocks the
+    # actual upsert when committing. --allow-partial bypasses the gate entirely.
+    # universe_count <= 0 fail-opens (no denominator → cannot judge coverage).
+    commit_allowed = True
+    block_reason: str | None = None
+    if not allow_partial:
+        try:
+            assert_min_coverage(
+                count=would_upsert,
+                universe_count=universe_count,
+                market="kr",
+                metric="kr_fundamentals",
+                min_ratio=_KR_FUNDAMENTALS_MIN_COMMIT_COVERAGE_RATIO,
+            )
+        except PartialCommitBlocked as exc:
+            commit_allowed = False
+            block_reason = str(exc)
+
+    should_commit = commit and commit_allowed
     upserted = 0
-    if commit:
+    if should_commit:
         for payload in payloads:
             await repository.upsert(payload)
             upserted += 1
     return {
         "snapshot_date": date_value.isoformat(),
         "fetched": len(provider_rows),
-        "would_upsert": len(payloads),
+        "would_upsert": would_upsert,
         "upserted": upserted,
-        "committed": commit,
+        "committed": should_commit,
+        "active_universe_count": universe_count,
+        "coverage_ratio": coverage_ratio,
+        "commit_allowed": commit_allowed,
+        "block_reason": block_reason,
         "samples": [payload.model_dump(mode="json") for payload in payloads[:5]],
     }
 

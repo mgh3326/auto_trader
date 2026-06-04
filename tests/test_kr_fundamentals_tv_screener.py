@@ -511,6 +511,145 @@ async def test_stable_growth_includes_via_roe_and_yoy_skips_streak(db_session):
 
 
 # ---------------------------------------------------------------------------
+# ROB-429 B1 — full-partition evaluation (cand_cap removed) + total_matched
+# ---------------------------------------------------------------------------
+
+
+_BULK_PREFIX = "991"  # 3 chars; + 3-digit index = 6-char KR-shaped synthetic codes
+# Isolated partition date (distinct from _SD = 2026-06-04) so full-partition
+# evaluation sees ONLY this suite's rows, not sibling-suite residue on _SD. The
+# resolver picks the newest date, so this future date is selected deterministically.
+_BULK_SD = dt.date(2026, 6, 5)
+
+
+async def _cleanup_bulk(db_session) -> None:
+    await db_session.execute(
+        sa.delete(InvestKrFundamentalsSnapshot).where(
+            InvestKrFundamentalsSnapshot.symbol.like(f"{_BULK_PREFIX}%")
+        )
+    )
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.like(f"{_BULK_PREFIX}%")
+        )
+    )
+    await db_session.commit()
+
+
+def _bulk_snap(symbol: str, **kw) -> InvestKrFundamentalsSnapshot:
+    base = {
+        "symbol": symbol,
+        "snapshot_date": _BULK_SD,
+        "name": symbol,
+        "source": "tvscreener_kr",
+        "raw_payload": {},
+    }
+    base.update(kw)
+    return InvestKrFundamentalsSnapshot(**base)
+
+
+async def test_full_partition_includes_low_market_cap_small_cap(db_session):
+    """ROB-429 B1: a small (low-market-cap) symbol that passes the preset predicate
+    must appear in results. Under the OLD cand_cap = max(limit*8, 200) market-cap-
+    ordered cap, a small cap ranked beyond the top 200 by market_cap was never
+    evaluated. We seed 200 large-cap passers + 1 tiny passer (rank 201) and assert
+    the tiny one IS included now."""
+    await _cleanup_bulk(db_session)
+    snaps = []
+    universe = []
+    # 200 large-cap passers (market_cap descends, all pass undervalued_growth).
+    # Symbols 991000..991199 keep the largest caps; the small cap is 991999.
+    for i in range(200):
+        sym = f"{_BULK_PREFIX}{i:03d}"
+        snaps.append(
+            _bulk_snap(
+                sym,
+                # huge caps so the small cap sorts to the very bottom by market_cap
+                market_cap=Decimal(str((10_000 - i) * 1_000_000_000_000)),
+                per=Decimal("15"),  # <= 20
+                revenue_yoy=Decimal("0.15"),  # >= 0.10
+                eps_yoy=Decimal("0.30"),  # >= 0.20 (proxy)
+            )
+        )
+        universe.append(_universe(sym, f"대형주{i}"))
+    # The tiny small cap (rank 201 by market_cap) — excluded by the OLD cap.
+    sym_small = f"{_BULK_PREFIX}999"
+    snaps.append(
+        _bulk_snap(
+            sym_small,
+            market_cap=Decimal("1000000000"),  # 1B — far below the top 200
+            per=Decimal("10"),
+            revenue_yoy=Decimal("0.20"),
+            eps_yoy=Decimal("0.40"),
+        )
+    )
+    universe.append(_universe(sym_small, "소형성장주"))
+    try:
+        await _seed(db_session, snaps, universe)
+
+        # Use a high universe_count so the 201-row partition is judged healthy.
+        result = await load_kr_fundamentals_preset_from_tv_snapshot(
+            db_session,
+            market="kr",
+            spec=UNDERVALUED_GROWTH_SPEC,
+            limit=300,  # large display limit so all matches show
+            now=_now,
+            universe_count=201,
+        )
+        assert result is not None
+        matched_syms = {r["symbol"] for r in result.rows}
+        # The small cap the OLD market-cap cand_cap would have excluded is present.
+        assert sym_small in matched_syms
+        # All 201 seeded passers matched the predicate (isolated partition date).
+        assert result.total_matched == 201
+        # The display limit (300) is high enough to show them all.
+        assert len(result.rows) == 201
+    finally:
+        await _cleanup_bulk(db_session)
+
+
+async def test_total_matched_counts_all_before_display_limit(db_session):
+    """total_matched = full-partition predicate matches BEFORE the display limit;
+    len(rows) is capped to the display limit. Uses the isolated bulk partition date
+    so total_matched is exact (no sibling-suite residue on _SD)."""
+    await _cleanup_bulk(db_session)
+    snaps = []
+    universe = []
+    for i in range(5):
+        sym = f"{_BULK_PREFIX}{i:03d}"
+        snaps.append(
+            _bulk_snap(
+                sym,
+                market_cap=Decimal(str((5 - i) * 1_000_000_000_000)),
+                roe_ttm=Decimal(str(20 + i)),  # all pass profitable_company
+                gross_margin_ttm=Decimal("0.30"),
+            )
+        )
+        universe.append(_universe(sym, f"종목{i}"))
+    try:
+        await _seed(db_session, snaps, universe)
+
+        result = await load_kr_fundamentals_preset_from_tv_snapshot(
+            db_session,
+            market="kr",
+            spec=PROFITABLE_COMPANY_SPEC,
+            limit=2,  # display only 2
+            now=_now,
+            universe_count=5,
+        )
+        assert result is not None
+        assert result.total_matched == 5  # all 5 matched the predicate
+        assert len(result.rows) == 2  # display limit applied after counting
+        # sort_by="roe" desc → the two highest-ROE symbols are shown.
+        assert [r["symbol"] for r in result.rows] == [
+            f"{_BULK_PREFIX}004",
+            f"{_BULK_PREFIX}003",
+        ]
+    finally:
+        await _cleanup_bulk(db_session)
+
+
+# ---------------------------------------------------------------------------
 # ROB-428 PR-C: high_yield_value + undervalued_breakout (rerouted valuation presets)
 # ---------------------------------------------------------------------------
 
