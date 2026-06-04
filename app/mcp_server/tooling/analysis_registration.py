@@ -22,6 +22,7 @@ from app.mcp_server.tooling.research_pipeline_read import (
     research_summary_get_impl,
     stage_analysis_get_impl,
 )
+from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot_impl
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -31,6 +32,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_portfolio",
     "analyze_stock_batch",
     "screen_stocks",
+    "screen_stocks_snapshot",
     # ROB-359: "recommend_stocks" is intentionally registry-hidden (parked).
     # screen_stocks is the single candidate-discovery entrypoint; the
     # recommend_stocks_impl implementation is retained in
@@ -252,6 +254,30 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             market_cap_min_krw=market_cap_min_krw,
             market_cap_max_krw=market_cap_max_krw,
             limit=limit,
+        )
+
+    @mcp.tool(
+        name="screen_stocks_snapshot",
+        description=(
+            "Snapshot-backed screener: run an /invest/screener preset over its base "
+            "snapshot and adjust/add AND-filters on top (filters-over-snapshot, ROB-439). "
+            "Unlike screen_stocks (generic tvscreener/KIS path), this serves the persisted "
+            "screener snapshot data. filters=[{field, operator(gte|lte|eq), value}] tune the "
+            "preset's thresholds; the response includes availableFilters (the adjustable "
+            "catalog for that preset's snapshot) and appliedFilters. Currently threaded for "
+            "consecutive_gainers (e.g. loosen consecutive_up_days to 3 or tighten to 10); "
+            "other presets return default snapshot results and say so. Read-only."
+        ),
+    )
+    async def screen_stocks_snapshot(
+        preset: str,
+        market: Literal["kr", "us", "crypto"] = "kr",
+        filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return await screen_stocks_snapshot_impl(
+            preset=preset,
+            market=market,
+            filters=filters,
         )
 
     # ROB-359: recommend_stocks is intentionally NOT registered on the MCP tool
