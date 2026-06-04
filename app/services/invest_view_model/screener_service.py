@@ -106,7 +106,11 @@ _KR_TOSS_EXCLUDED_NAME_TOKENS = (
 )
 _KR_PREFERRED_SUFFIXES = ("우", "우B", "우C")
 _INVESTOR_FLOW_MIN_STREAK = 3
-_INVESTOR_FLOW_STALE_SUFFIX = " · 1일 지연"
+# ROB-430 트랙 B: the compact chip cannot count the lag (it lacks the market
+# reference date), so it states staleness without a hardcoded "1일" that
+# understated multi-day-old investor-flow partitions. The page-level warning
+# carries the precise snapshot date + lag.
+_INVESTOR_FLOW_STALE_SUFFIX = " · 지연"
 logger = logging.getLogger(__name__)
 
 
@@ -412,11 +416,18 @@ def _double_buy_dependency_warnings(
             "시세 스냅샷이 직전 영업일 기준이라 일부 데이터가 1일 지연되었습니다."
         )
     flow_dates = {row.get("flow_snapshot_date") for row in snapshot_rows}
-    if flow_dates and all(
-        isinstance(d, dt.date) and d < now_market_date for d in flow_dates
-    ):
+    valid_flow = {d for d in flow_dates if isinstance(d, dt.date)}
+    if valid_flow and all(d < now_market_date for d in valid_flow):
+        # ROB-430 트랙 B: report the actual flow snapshot date + lag instead of a
+        # hardcoded "1일" that understated multi-day-old partitions (investor_flow
+        # has no recurring refresh, so it can lag by several days). The lag is a
+        # calendar-day diff (matches ScreenerFreshnessDependency.lagLabel); weekend/
+        # holiday gaps inflate it, so the exact snapshot date is stated alongside.
+        latest_flow = max(valid_flow)
+        flow_lag_days = (now_market_date - latest_flow).days
         warnings.append(
-            "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."
+            f"수급 스냅샷이 {latest_flow.isoformat()} 기준이라 외인/기관 정보가 "
+            f"{flow_lag_days}일 지연되었습니다."
         )
     state_override = "stale" if warnings else None
     return warnings, state_override

@@ -78,7 +78,10 @@ def test_stale_state_annotates_label():
     )
     assert chip is not None
     assert chip.dataState == "stale"
-    assert "1일 지연" in chip.label
+    # ROB-430 트랙 B: the compact chip flags staleness without a hardcoded "1일"
+    # (the page-level warning carries the precise lag); it must not understate.
+    assert "지연" in chip.label
+    assert "1일 지연" not in chip.label
 
 
 @pytest.mark.unit
