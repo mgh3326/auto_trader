@@ -860,37 +860,42 @@ async def test_undervalued_breakout_per_pbr_and_new_high_recency(db_session):
     assert "pbr" in excluded[sym_high_pbr]
 
 
-async def test_undervalued_breakout_sorts_by_market_cap_desc(db_session):
-    """ROB-430 PR-②: both pass the recent-new-high filter; bigger market cap first."""
+async def test_undervalued_breakout_sorts_by_per_ascending(db_session):
+    """ROB-432: Toss 저평가 탈출 default order = PER ascending (cheapest first).
+
+    market_cap is reversed vs PER so the assertion can ONLY pass under PER-ascending
+    (not the old market_cap-desc): the low-PER name has the SMALLER market cap.
+    """
     await _cleanup(db_session)
-    sym_big = f"{_PREFIX}B5"
-    sym_small = f"{_PREFIX}B6"
+    sym_low_per = f"{_PREFIX}B5"
+    sym_high_per = f"{_PREFIX}B6"
     await _seed(
         db_session,
         [
             _snap(
-                sym_small,
-                market_cap=Decimal("3000000000000"),  # smaller cap → second
-                per=Decimal("7"),
+                sym_high_per,
+                market_cap=Decimal("9000000000000"),  # bigger cap, higher PER → second
+                per=Decimal("9"),
                 pbr=Decimal("0.7"),
                 price=Decimal("9990"),
                 week_high_52=Decimal("10000"),
                 week_high_52_date=dt.date(2026, 5, 28),  # recent
             ),
             _snap(
-                sym_big,
-                market_cap=Decimal("9000000000000"),  # bigger cap → first
-                per=Decimal("6"),
+                sym_low_per,
+                market_cap=Decimal("1000000000000"),  # smaller cap, lower PER → first
+                per=Decimal("4"),
                 pbr=Decimal("0.6"),
                 price=Decimal("9600"),
                 week_high_52=Decimal("10000"),
                 week_high_52_date=dt.date(2026, 5, 30),  # recent
             ),
         ],
-        [_universe(sym_big, "큰종목"), _universe(sym_small, "작은종목")],
+        [_universe(sym_low_per, "저PER주"), _universe(sym_high_per, "고PER주")],
     )
     result = await load_kr_fundamentals_preset_from_tv_snapshot(
         db_session, market="kr", spec=UNDERVALUED_BREAKOUT_SPEC, limit=20, now=_now
     )
     assert result is not None
-    assert [r["symbol"] for r in result.rows] == [sym_big, sym_small]
+    # PER ascending: 4 before 9 (even though sym_low_per has the smaller market cap).
+    assert [r["symbol"] for r in result.rows] == [sym_low_per, sym_high_per]

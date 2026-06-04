@@ -59,6 +59,10 @@ class FundamentalsPresetSpec:
     # The DART loader ignores it (no DART preset uses it).
     max_new_high_age_days: int | None = None  # 52w-high set within this many days
     sort_by: str = "roe"  # any metric key carried on the output row
+    # ROB-432: display sort direction. Default desc (highest metric first, e.g. ROE).
+    # undervalued_breakout uses ascending PER (cheapest first) to mirror Toss's
+    # 저평가 탈출 default order (lowest PER on top).
+    sort_descending: bool = True
 
 
 PROFITABLE_COMPANY_SPEC = FundamentalsPresetSpec(
@@ -144,7 +148,11 @@ UNDERVALUED_BREAKOUT_SPEC = FundamentalsPresetSpec(
     max_per=Decimal("10"),
     max_pbr=Decimal("1"),
     max_new_high_age_days=_NEW_HIGH_RECENCY_TRADING_DAYS_AS_CALENDAR,
-    sort_by="market_cap",
+    # ROB-432: Toss 저평가 탈출 default order = PER ascending (cheapest PER first;
+    # observed PER 0.66 < 1.36 < 1.54 < 2.84). Was market_cap desc (ROB-430 PR-②
+    # wrong assumption) → visible top-N mismatched Toss.
+    sort_by="per",
+    sort_descending=False,
 )
 
 FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {

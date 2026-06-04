@@ -428,13 +428,25 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
     total_matched = len(included)
 
     sort_row_key = _SORT_KEY_TO_ROW_KEY.get(spec.sort_by, spec.sort_by)
-    included.sort(
-        key=lambda r: (
-            r.get(sort_row_key) is None,
-            -(r.get(sort_row_key) or 0.0),
-            r["symbol"],
+    # ROB-432: nulls always last; direction from spec.sort_descending. Ascending
+    # (sort_descending=False) puts the smallest metric first — e.g. undervalued_breakout
+    # sorts by PER ascending (cheapest first) to mirror Toss's 저평가 탈출 order.
+    if spec.sort_descending:
+        included.sort(
+            key=lambda r: (
+                r.get(sort_row_key) is None,
+                -(r.get(sort_row_key) or 0.0),
+                r["symbol"],
+            )
         )
-    )
+    else:
+        included.sort(
+            key=lambda r: (
+                r.get(sort_row_key) is None,
+                (r.get(sort_row_key) or 0.0),
+                r["symbol"],
+            )
+        )
     included = included[:limit]
 
     warnings: list[str] = []
