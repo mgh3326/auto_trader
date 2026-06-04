@@ -1740,6 +1740,33 @@ async def build_screener_results(
             _snapshot_empty_warning = (
                 "최신 수급/시세 스냅샷에서 쌍끌이 매수 조건에 맞는 종목이 없습니다."
             )
+        elif preset_id == "high_yield_value" and requested_market == "us":
+            # ROB-427 PR3: US high_yield_value is backed by Yahoo valuation snapshots
+            # (market_valuation_snapshots, market=us) — NOT the KR tvscreener snapshot
+            # below (invest_kr_fundamentals_snapshots is KR-only). Same ROE>=15 / PER
+            # 0~10 rule via the market-parameterized loader. Honest empty until the
+            # operator builds the US valuation partition (fail-closed, never fabricated).
+            from app.services.invest_view_model.high_yield_value_screener import (
+                load_high_yield_value_from_snapshots,
+            )
+
+            _hyv_rows = await load_high_yield_value_from_snapshots(
+                session,
+                market="us",
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            if _hyv_rows is not None:
+                _snapshot_check_result = _hyv_rows
+                _snapshot_load_result = _SnapshotLoadResult(
+                    rows=_hyv_rows,
+                    partition_date=(
+                        _hyv_rows[0]["snapshot_date"] if _hyv_rows else None
+                    ),
+                    partition_computed_at=None,
+                )
+            _snapshot_empty_warning = (
+                "최신 미국 가치형(ROE·PER) 스냅샷에서 조건에 맞는 종목이 없습니다."
+            )
         # ROB-428 PR-C: high_yield_value + undervalued_breakout no longer have a
         # dedicated dispatch branch. They are now registered in
         # FUNDAMENTALS_PRESET_SPECS and fall into the tvscreener KR loader below

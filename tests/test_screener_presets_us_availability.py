@@ -13,6 +13,7 @@ import pytest
 
 from app.services.invest_view_model.screener_presets import (
     _KR_ONLY_PRESET_IDS,
+    _US_ACTIVE_PRESET_IDS,
     _US_UNSUPPORTED_PRESET_IDS,
     preset_definitions,
 )
@@ -64,8 +65,8 @@ def test_us_flow_presets_unsupported_with_reason() -> None:
 @pytest.mark.unit
 def test_us_fundamentals_presets_data_pending_with_reason() -> None:
     us = {p.id: p for p in preset_definitions("us")}
+    # ROB-427 PR3: high_yield_value is now active (Yahoo-backed); the rest pending.
     for pid in (
-        "high_yield_value",
         "undervalued_breakout",
         "profitable_company",
         "undervalued_growth",
@@ -80,11 +81,21 @@ def test_us_fundamentals_presets_data_pending_with_reason() -> None:
 
 
 @pytest.mark.unit
+def test_us_high_yield_value_active() -> None:
+    # ROB-427 PR3: Yahoo valuation backs ROE+PER, so high_yield_value runs for US.
+    us = {p.id: p for p in preset_definitions("us")}
+    assert us["high_yield_value"].availability == "active"
+    assert us["high_yield_value"].availabilityReason is None
+    assert "high_yield_value" in _US_ACTIVE_PRESET_IDS
+
+
+@pytest.mark.unit
 def test_availability_partition_covers_all_kr_only() -> None:
     """Every KR-only preset is exactly one of unsupported / data_pending in US."""
     us = {p.id: p for p in preset_definitions("us")}
     for pid in _KR_ONLY_PRESET_IDS:
-        assert us[pid].availability in {"data_pending", "unsupported"}, pid
+        # PR3: a KR-only preset may now be active for US (e.g. high_yield_value).
+        assert us[pid].availability in {"active", "data_pending", "unsupported"}, pid
 
 
 @pytest.mark.unit

@@ -43,6 +43,10 @@ _KR_ONLY_PRESET_IDS = {
 # unsupported = no US equivalent (KR 외국인·기관 수급); data_pending = catalogued
 # but disabled until a US data source exists (Yahoo valuation / US fundamentals).
 # The remaining KR-only presets default to data_pending via _KR_ONLY_PRESET_IDS.
+# ROB-427 PR3: KR-only presets that ARE active for US (backed by US data now).
+# high_yield_value (ROE+PER) runs on Yahoo valuation snapshots — see
+# high_yield_value_screener.load_high_yield_value_from_snapshots(market="us").
+_US_ACTIVE_PRESET_IDS = {"high_yield_value"}
 _US_UNSUPPORTED_PRESET_IDS = {"double_buy", "investor_flow_momentum"}
 _US_UNSUPPORTED_REASON = "외국인·기관 수급은 국내 전용 지표입니다"
 _US_DATA_PENDING_REASON: dict[str, str] = {
@@ -66,6 +70,8 @@ def _preset_availability(preset_id: str, market: str) -> tuple[str, str | None]:
     (disabled with an honest reason, never fabricated), ``active`` otherwise.
     """
     if market != "us":
+        return "active", None
+    if preset_id in _US_ACTIVE_PRESET_IDS:  # ROB-427 PR3: Yahoo-backed US activation
         return "active", None
     if preset_id in _US_UNSUPPORTED_PRESET_IDS:
         return "unsupported", _US_UNSUPPORTED_REASON
