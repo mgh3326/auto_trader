@@ -65,6 +65,10 @@ _KR_OPEN = _time(9, 0)
 _KR_CLOSE = _time(15, 30)
 _CACHE_HIT_FRESH_SECONDS = 300
 _SNAPSHOT_FIRST_LIMIT = 80
+# ROB-436 C-2: KR fundamentals presets (tvscreener display path) were capped at 20
+# rows while Toss shows the full match set (e.g. 아직저렴한가치주 553). Raise the
+# display cap so the count gap closes; total_matched still reports the true count.
+_FUNDAMENTALS_DISPLAY_LIMIT = 200
 _MAX_WARNING_CHARS = 240
 _US_SCREENER_DATA_NOT_READY_WARNING = (
     "미국 스크리너 데이터 준비중 — 일부 결과만 표시됩니다."
@@ -1824,14 +1828,14 @@ async def build_screener_results(
                 load_kr_fundamentals_preset_from_tv_snapshot,
             )
 
-            _fundamentals_screen_result = (
-                await load_kr_fundamentals_preset_from_tv_snapshot(
-                    session,
-                    market=requested_market,
-                    spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
-                    limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
-                    now=now,
-                )
+            _fundamentals_screen_result = await load_kr_fundamentals_preset_from_tv_snapshot(
+                session,
+                market=requested_market,
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                # ROB-436 C-2: fundamentals presets show closer to the full Toss
+                # match set (was 20 via _SCREENING_FILTERS); total_matched unchanged.
+                limit=_FUNDAMENTALS_DISPLAY_LIMIT,
+                now=now,
             )
             if _fundamentals_screen_result is not None:
                 _snapshot_check_result = _fundamentals_screen_result.rows
