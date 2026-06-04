@@ -59,6 +59,7 @@ _KR_STOCK_FIELD_SPECS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("continuous_dividend_payout", ("CONTINUOUS_DIVIDEND_PAYOUT",)),
     ("continuous_dividend_growth", ("CONTINUOUS_DIVIDEND_GROWTH",)),
     ("week_high_52", ("WEEK_HIGH_52",)),
+    ("week_high_52_date", ("PRICE_52_WEEK_HIGH_DATE",)),
     ("rsi14", ("RELATIVE_STRENGTH_INDEX_14",)),
     ("sector", ("SECTOR",)),
     ("industry", ("INDUSTRY",)),

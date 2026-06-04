@@ -449,6 +449,15 @@ async def db_session():
                         "ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
                     )
                 )
+                # ROB-430 PR-② — week_high_52_date added to the (persistent) KR
+                # fundamentals snapshot table; create_all is a no-op on the existing
+                # table, so patch the column in here (mirrors the alembic migration).
+                await conn.execute(
+                    text(
+                        "ALTER TABLE invest_kr_fundamentals_snapshots "
+                        "ADD COLUMN IF NOT EXISTS week_high_52_date DATE"
+                    )
+                )
                 # ROB-284 — crypto_candles_1d migrates in-place from the
                 # legacy (symbol, market) shape to the (instrument_id, time)
                 # shape. The test DB picks up its schema from

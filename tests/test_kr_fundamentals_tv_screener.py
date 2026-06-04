@@ -758,14 +758,19 @@ async def test_high_yield_value_sorts_by_roe_desc(db_session):
     assert [r["symbol"] for r in result.rows] == [sym_hi, sym_lo]
 
 
-async def test_undervalued_breakout_per_pbr_and_proximity(db_session):
-    """undervalued_breakout: 0<PER<=10, 0<PBR<=1, price/week_high_52 >= 0.95."""
+async def test_undervalued_breakout_per_pbr_and_new_high_recency(db_session):
+    """undervalued_breakout (ROB-430 PR-②): 0<PER<=10, 0<PBR<=1, and a NEW 52-week
+    high made within 20 days (week_high_52_date recency), NOT price/52w-high proximity.
+
+    Partition date is _SD = 2026-06-04, so a high-date on/after 2026-05-15 (age<=20)
+    passes; older / NULL / future high-dates are fail-closed excluded.
+    """
     await _cleanup(db_session)
     sym_pass = f"{_PREFIX}B0"
-    sym_far_from_high = f"{_PREFIX}B1"
+    sym_old_high = f"{_PREFIX}B1"
     sym_high_pbr = f"{_PREFIX}B2"
-    sym_null_high = f"{_PREFIX}B3"
-    sym_zero_high = f"{_PREFIX}B4"
+    sym_null_high_date = f"{_PREFIX}B3"
+    sym_future_high = f"{_PREFIX}B4"
     await _seed(
         db_session,
         [
@@ -777,17 +782,19 @@ async def test_undervalued_breakout_per_pbr_and_proximity(db_session):
                 market_cap=Decimal("9000000000000"),
                 per=Decimal("8"),  # 0 < per <= 10
                 pbr=Decimal("0.8"),  # 0 < pbr <= 1
-                week_high_52=Decimal("10000"),  # 9700/10000 = 0.97 >= 0.95
+                week_high_52=Decimal("10000"),
+                week_high_52_date=dt.date(2026, 5, 25),  # age 10 <= 20 → recent
                 sector="Industrials",
                 industry="Machinery",
             ),
             _snap(
-                sym_far_from_high,
+                sym_old_high,
                 market_cap=Decimal("8000000000000"),
                 per=Decimal("6"),
                 pbr=Decimal("0.7"),
                 price=Decimal("9000"),
-                week_high_52=Decimal("10000"),  # 0.90 < 0.95 → excluded
+                week_high_52=Decimal("10000"),
+                week_high_52_date=dt.date(2026, 4, 1),  # age 64 > 20 → excluded
             ),
             _snap(
                 sym_high_pbr,
@@ -796,30 +803,33 @@ async def test_undervalued_breakout_per_pbr_and_proximity(db_session):
                 pbr=Decimal("1.5"),  # > 1 → excluded
                 price=Decimal("9900"),
                 week_high_52=Decimal("10000"),
+                week_high_52_date=dt.date(2026, 6, 2),
             ),
             _snap(
-                sym_null_high,
+                sym_null_high_date,
                 market_cap=Decimal("6000000000000"),
                 per=Decimal("4"),
                 pbr=Decimal("0.5"),
                 price=Decimal("5000"),
-                week_high_52=None,  # NULL high → proximity unavailable → excluded
+                week_high_52=Decimal("5200"),
+                week_high_52_date=None,  # NULL high-date → unavailable → excluded
             ),
             _snap(
-                sym_zero_high,
+                sym_future_high,
                 market_cap=Decimal("5000000000000"),
                 per=Decimal("4"),
                 pbr=Decimal("0.5"),
                 price=Decimal("5000"),
-                week_high_52=Decimal("0"),  # high <= 0 → proximity unavailable → excl
+                week_high_52=Decimal("5200"),
+                week_high_52_date=dt.date(2026, 6, 10),  # future → age<0 → excluded
             ),
         ],
         [
             _universe(sym_pass, "저평가탈출"),
-            _universe(sym_far_from_high, "고가멀음"),
+            _universe(sym_old_high, "고가오래됨"),
             _universe(sym_high_pbr, "고PBR"),
-            _universe(sym_null_high, "고가없음"),
-            _universe(sym_zero_high, "고가0"),
+            _universe(sym_null_high_date, "고가일자없음"),
+            _universe(sym_future_high, "미래고가"),
         ],
     )
     result = await load_kr_fundamentals_preset_from_tv_snapshot(
@@ -833,7 +843,9 @@ async def test_undervalued_breakout_per_pbr_and_proximity(db_session):
     assert result is not None
     assert [r["symbol"] for r in result.rows] == [sym_pass]
     row = result.rows[0]
-    # undervalued_breakout metric is high_52w_proximity (must be emitted) + category.
+    # ROB-430 PR-②: the honest signal fields. proximity stays as an emitted column.
+    assert row["week_high_52_date"] == "2026-05-25"
+    assert row["new_high_age_days"] == 10
     assert row["high_52w_proximity"] == pytest.approx(0.97)
     assert row["week_high_52"] == 10000.0
     assert row["per"] == 8.0
@@ -841,40 +853,44 @@ async def test_undervalued_breakout_per_pbr_and_proximity(db_session):
     assert row["category"] == "Machinery"
     assert row["name"] == "저평가탈출"
     # The excluded rows record a reason (fail-closed, never silent pass).
-    excluded_syms = {e["symbol"] for e in result.excluded}
-    assert {sym_far_from_high, sym_high_pbr, sym_null_high, sym_zero_high} <= (
-        excluded_syms
-    )
+    excluded = {e["symbol"]: e["reason"] for e in result.excluded}
+    assert excluded[sym_old_high] == "52w high not recent"
+    assert excluded[sym_null_high_date] == "week_high_52_date unavailable"
+    assert excluded[sym_future_high] == "week_high_52_date unavailable"
+    assert "pbr" in excluded[sym_high_pbr]
 
 
-async def test_undervalued_breakout_sorts_by_proximity_desc(db_session):
+async def test_undervalued_breakout_sorts_by_market_cap_desc(db_session):
+    """ROB-430 PR-②: both pass the recent-new-high filter; bigger market cap first."""
     await _cleanup(db_session)
-    sym_closer = f"{_PREFIX}B5"
-    sym_further = f"{_PREFIX}B6"
+    sym_big = f"{_PREFIX}B5"
+    sym_small = f"{_PREFIX}B6"
     await _seed(
         db_session,
         [
             _snap(
-                sym_further,
-                market_cap=Decimal("9000000000000"),  # bigger cap, lower proximity
-                per=Decimal("6"),
-                pbr=Decimal("0.6"),
-                price=Decimal("9600"),  # 0.96
-                week_high_52=Decimal("10000"),
-            ),
-            _snap(
-                sym_closer,
-                market_cap=Decimal("3000000000000"),
+                sym_small,
+                market_cap=Decimal("3000000000000"),  # smaller cap → second
                 per=Decimal("7"),
                 pbr=Decimal("0.7"),
-                price=Decimal("9990"),  # 0.999
+                price=Decimal("9990"),
                 week_high_52=Decimal("10000"),
+                week_high_52_date=dt.date(2026, 5, 28),  # recent
+            ),
+            _snap(
+                sym_big,
+                market_cap=Decimal("9000000000000"),  # bigger cap → first
+                per=Decimal("6"),
+                pbr=Decimal("0.6"),
+                price=Decimal("9600"),
+                week_high_52=Decimal("10000"),
+                week_high_52_date=dt.date(2026, 5, 30),  # recent
             ),
         ],
-        [_universe(sym_closer, "근접"), _universe(sym_further, "덜근접")],
+        [_universe(sym_big, "큰종목"), _universe(sym_small, "작은종목")],
     )
     result = await load_kr_fundamentals_preset_from_tv_snapshot(
         db_session, market="kr", spec=UNDERVALUED_BREAKOUT_SPEC, limit=20, now=_now
     )
     assert result is not None
-    assert [r["symbol"] for r in result.rows] == [sym_closer, sym_further]
+    assert [r["symbol"] for r in result.rows] == [sym_big, sym_small]

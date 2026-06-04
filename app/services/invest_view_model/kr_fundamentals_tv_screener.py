@@ -93,8 +93,11 @@ _SORT_KEY_TO_ROW_KEY: dict[str, str] = {
     "earnings_growth_3y_avg": "earnings_growth_3y_avg",
     "earnings_growth_qoq": "earnings_growth_qoq",
     "payout_ratio": "payout_ratio",
-    # ROB-428 PR-C: undervalued_breakout sorts by 52w-high proximity (price/high).
+    # ROB-428 PR-C: 52w-high proximity remains an emitted (informational) row key.
     "high_52w_proximity": "high_52w_proximity",
+    # ROB-430 PR-②: undervalued_breakout sorts by market cap (Toss default, liquid
+    # names first) now that the filter is a recent-new-high event, not proximity.
+    "market_cap": "market_cap",
 }
 
 
@@ -217,8 +220,29 @@ async def _partition_row_count(
     )
 
 
+def _new_high_age_days(
+    snap: InvestKrFundamentalsSnapshot, *, partition_date: dt.date
+) -> int | None:
+    """Days from the 52-week-high date to the snapshot partition date.
+
+    ROB-430 PR-②: a smaller value = a more recent new 52-week high. Returns None
+    when week_high_52_date is missing or in the future relative to the partition
+    (defensive: a future high-date is treated as unavailable, not recent).
+    """
+    high_date = snap.week_high_52_date
+    if high_date is None:
+        return None
+    age = (partition_date - high_date).days
+    if age < 0:
+        return None
+    return age
+
+
 def _passes_thresholds(
-    snap: InvestKrFundamentalsSnapshot, spec: FundamentalsPresetSpec
+    snap: InvestKrFundamentalsSnapshot,
+    spec: FundamentalsPresetSpec,
+    *,
+    partition_date: dt.date,
 ) -> tuple[bool, str | None]:
     """Apply the spec's active thresholds against tvscreener columns (fail-closed).
 
@@ -242,15 +266,15 @@ def _passes_thresholds(
             if Decimal(str(value)) < Decimal(str(threshold)):
                 return False, f"{col_attr} below min"
 
-    # ROB-428 PR-C: 52-week-high proximity is a derived (price/week_high_52)
-    # threshold, not a single-column compare, so it is checked explicitly here
-    # (fail-closed: NULL price / NULL-or-zero week_high_52 excludes the row).
-    if spec.min_high_52w_proximity is not None:
-        proximity = _high_52w_proximity(snap)
-        if proximity is None:
-            return False, "high_52w_proximity unavailable"
-        if proximity < Decimal(str(spec.min_high_52w_proximity)):
-            return False, "high_52w_proximity below min"
+    # ROB-430 PR-②: 신고가 = a NEW 52-week high made within max_new_high_age_days
+    # days of the partition (a breakout event), checked via week_high_52_date
+    # recency (fail-closed: NULL or future high-date excludes the row).
+    if spec.max_new_high_age_days is not None:
+        age = _new_high_age_days(snap, partition_date=partition_date)
+        if age is None:
+            return False, "week_high_52_date unavailable"
+        if age > spec.max_new_high_age_days:
+            return False, "52w high not recent"
 
     return True, None
 
@@ -288,10 +312,17 @@ def _build_row(
         "dividend_growth_streak_years": _to_float(snap.continuous_dividend_growth),
         "earnings_increase_streak_years": None,  # tvscreener does not provide it
         "rsi": _to_float(snap.rsi14),
-        # ROB-428 PR-C: 52w-high proximity metric (_METRIC_FIELD["undervalued_breakout"]
-        # = "high_52w_proximity") + the raw 52-week high for completeness. None when
-        # price / week_high_52 cannot be derived (missing or week_high_52 <= 0).
+        # ROB-430 PR-②: undervalued_breakout's signal is a recent NEW 52w high.
+        # week_high_52_date (the high date) + new_high_age_days (days since, smaller =
+        # more recent) are the honest fields; high_52w_proximity stays as an
+        # informational column. None when the date / 52w-high cannot be derived.
         "week_high_52": _to_float(snap.week_high_52),
+        "week_high_52_date": (
+            snap.week_high_52_date.isoformat()
+            if snap.week_high_52_date is not None
+            else None
+        ),
+        "new_high_age_days": _new_high_age_days(snap, partition_date=partition_date),
         "high_52w_proximity": (
             float(prox) if (prox := _high_52w_proximity(snap)) is not None else None
         ),
@@ -381,7 +412,7 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         if not _is_kr_toss_common_stock(sym, name):
             continue
         seen.add(sym)
-        passes, reason = _passes_thresholds(snap, spec)
+        passes, reason = _passes_thresholds(snap, spec, partition_date=partition_date)
         if not passes:
             excluded.append({"symbol": sym, "reason": reason})
             continue

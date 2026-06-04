@@ -54,6 +54,7 @@ class KrFundamentalsProviderRow:
     continuous_dividend_payout: Decimal | None = None
     continuous_dividend_growth: Decimal | None = None
     week_high_52: Decimal | None = None
+    week_high_52_date: dt.date | None = None
     rsi14: Decimal | None = None
     sector: str | None = None
     industry: str | None = None
@@ -76,6 +77,27 @@ def _decimal_or_none(value: Any) -> Decimal | None:
     if result.is_nan() or result.is_infinite():
         return None
     return result
+
+
+def _date_from_epoch_seconds(value: Any) -> dt.date | None:
+    """Convert a tvscreener date column (Unix epoch seconds, int) to a UTC date.
+
+    ROB-430 PR-②: ``PRICE_52_WEEK_HIGH_DATE`` arrives as int64 epoch seconds
+    (e.g. ``1780358400``). Returns None for missing / non-finite / unparseable
+    values (fail-soft: a missing date simply excludes the row downstream).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
+    try:
+        return dt.datetime.fromtimestamp(seconds, tz=dt.UTC).date()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _is_missing_scalar(value: Any) -> bool:
@@ -171,6 +193,7 @@ def build_kr_fundamentals_snapshot_payloads(
                 continuous_dividend_payout=row.continuous_dividend_payout,
                 continuous_dividend_growth=row.continuous_dividend_growth,
                 week_high_52=row.week_high_52,
+                week_high_52_date=row.week_high_52_date,
                 rsi14=row.rsi14,
                 sector=row.sector,
                 industry=row.industry,
@@ -304,6 +327,7 @@ def provider_row_from_mapping(row: dict[str, Any]) -> KrFundamentalsProviderRow 
             row.get("continuous_dividend_growth")
         ),
         week_high_52=_decimal_or_none(row.get("52_week_high")),
+        week_high_52_date=_date_from_epoch_seconds(row.get("price_52_week_high_date")),
         rsi14=_decimal_or_none(row.get("relative_strength_index_14")),
         sector=_str_or_none(row.get("sector")),
         industry=_str_or_none(row.get("industry")),
