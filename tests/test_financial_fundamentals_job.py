@@ -186,3 +186,59 @@ async def test_estimate_only_does_not_fetch_or_commit():
     assert result.committed is False
     assert result.snapshots_built == 0
     assert any("estimate-only" in w for w in result.warnings)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_skip_existing_budget_split(bind_job_session, db_session, monkeypatch):
+    # ROB-441 budget-split: --skip-existing drops already-collected symbols so daily
+    # re-runs advance through the uncollected universe within the DART daily budget.
+    import sqlalchemy as sa
+
+    from app.models.financial_fundamentals_snapshot import (
+        FinancialFundamentalsSnapshot,
+    )
+
+    syms = ["900001", "900002", "900003"]
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(syms)
+        )
+    )
+    # 900001 already collected → must be skipped.
+    db_session.add(
+        FinancialFundamentalsSnapshot(
+            market="kr",
+            symbol="900001",
+            fiscal_period="2024A",
+            period_type="annual",
+            period_end_date=dt.date(2024, 12, 31),
+            source="dart",
+            source_collected_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            data_state="fresh",
+        )
+    )
+    await db_session.commit()
+
+    async def _fake_universe(market):  # noqa: ANN001
+        return list(syms)
+
+    monkeypatch.setattr(job, "resolve_active_universe", _fake_universe)
+
+    result = await job.run_financial_fundamentals_snapshot_build(
+        job.FinancialFundamentalsSnapshotBuildRequest(
+            market="kr", all_symbols=True, estimate_only=True, skip_existing=True
+        )
+    )
+    assert result.symbols_resolved == 2  # 900001 skipped (already collected)
+    assert result.projected_requests == 2 * 11  # only uncollected projected
+    assert any(
+        "skip_existing" in w and "1 already-collected" in w for w in result.warnings
+    )
+
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.commit()
