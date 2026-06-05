@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.services.invest_screener_snapshots.freshness import (
     DataState,
-    today_trading_date,
+    expected_baseline_date,
 )
 
 
@@ -26,7 +26,11 @@ class CoverageReport:
 
 
 async def build_coverage(session: AsyncSession, *, market: str) -> CoverageReport:
-    today = today_trading_date(market)
+    # ROB-438 follow-up: coverage must classify against the session-aware baseline
+    # (prior trading day during the pre-market window), matching the snapshot
+    # loaders (ROB-281). today_trading_date() returned today's calendar trading day,
+    # so a fresh prior-day partition was false-flagged stale/missing in pre-market.
+    today = expected_baseline_date(market)
     now = dt.datetime.now(dt.UTC)
 
     if market == "kr":

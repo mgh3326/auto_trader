@@ -246,10 +246,13 @@ async def load_auto_trader_rows(
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
     from app.services.invest_screener_snapshots.freshness import (
         classify_state,
-        today_trading_date,
+        expected_baseline_date,
     )
 
-    today = today_trading_date(market)
+    # ROB-438 follow-up: classify against the session-aware baseline (matches the
+    # loaders / classify_state usage), so prior-day partitions in the pre-market
+    # window aren't reported stale on the UTC calendar date.
+    today = expected_baseline_date(market)
     now = datetime.now(UTC)
 
     # Resolve the latest snapshot partition (mirrors production serving semantics).

@@ -33,10 +33,15 @@ async def test_coverage_report_structure(db_session):
 @pytest.mark.asyncio
 async def test_coverage_counts_fresh_and_stale(db_session):
     from app.services.invest_screener_snapshots.coverage_service import build_coverage
-    from app.services.invest_screener_snapshots.freshness import today_trading_date
+    from app.services.invest_screener_snapshots.freshness import (
+        expected_baseline_date,
+    )
 
     repo = InvestScreenerSnapshotsRepository(db_session)
-    today = today_trading_date("kr")
+    # ROB-438 follow-up: build_coverage classifies against the session-aware
+    # baseline; seed the "fresh" row on the same baseline so the test holds in the
+    # KR pre-market window too (where baseline = prior trading day != calendar today).
+    today = expected_baseline_date("kr")
     await repo.upsert(
         SnapshotUpsert(
             market="kr",
