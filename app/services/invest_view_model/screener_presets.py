@@ -46,12 +46,13 @@ _KR_ONLY_PRESET_IDS = {
 # ROB-427 PR3: KR-only presets that ARE active for US (backed by US data now).
 # high_yield_value (ROE+PER) runs on Yahoo valuation snapshots — see
 # high_yield_value_screener.load_high_yield_value_from_snapshots(market="us").
-_US_ACTIVE_PRESET_IDS = {"high_yield_value"}
+# ROB-440: undervalued_breakout (proximity) runs on the same Yahoo valuation
+# snapshots (high_52w price) — load_undervalued_breakout_from_snapshots(market="us").
+_US_ACTIVE_PRESET_IDS = {"high_yield_value", "undervalued_breakout"}
 _US_UNSUPPORTED_PRESET_IDS = {"double_buy", "investor_flow_momentum"}
 _US_UNSUPPORTED_REASON = "외국인·기관 수급은 국내 전용 지표입니다"
 _US_DATA_PENDING_REASON: dict[str, str] = {
     "high_yield_value": "미국 가치형(ROE·PER) 활성화 준비중",
-    "undervalued_breakout": "미국 신고가(52주) 데이터 소스 준비중",
     "profitable_company": "미국 펀더멘털(매출총이익률) 데이터 준비중",
     "undervalued_growth": "미국 펀더멘털(연평균 매출·순이익 증감률) 데이터 준비중",
     "cheap_value": "미국 펀더멘털(연평균 순이익 증감률) 데이터 준비중",

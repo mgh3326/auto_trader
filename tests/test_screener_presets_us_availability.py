@@ -65,9 +65,9 @@ def test_us_flow_presets_unsupported_with_reason() -> None:
 @pytest.mark.unit
 def test_us_fundamentals_presets_data_pending_with_reason() -> None:
     us = {p.id: p for p in preset_definitions("us")}
-    # ROB-427 PR3: high_yield_value is now active (Yahoo-backed); the rest pending.
+    # ROB-427 PR3 + ROB-440: high_yield_value + undervalued_breakout are now active
+    # (Yahoo-backed); the rest pending.
     for pid in (
-        "undervalued_breakout",
         "profitable_company",
         "undervalued_growth",
         "cheap_value",
@@ -87,6 +87,16 @@ def test_us_high_yield_value_active() -> None:
     assert us["high_yield_value"].availability == "active"
     assert us["high_yield_value"].availabilityReason is None
     assert "high_yield_value" in _US_ACTIVE_PRESET_IDS
+
+
+@pytest.mark.unit
+def test_us_undervalued_breakout_active() -> None:
+    # ROB-440 Part 2: Yahoo valuation backs high_52w(price) + PER/PBR, so
+    # undervalued_breakout (proximity) runs for US.
+    us = {p.id: p for p in preset_definitions("us")}
+    assert us["undervalued_breakout"].availability == "active"
+    assert us["undervalued_breakout"].availabilityReason is None
+    assert "undervalued_breakout" in _US_ACTIVE_PRESET_IDS
 
 
 @pytest.mark.unit

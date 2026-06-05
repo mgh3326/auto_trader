@@ -1811,6 +1811,32 @@ async def build_screener_results(
             _snapshot_empty_warning = (
                 "최신 미국 가치형(ROE·PER) 스냅샷에서 조건에 맞는 종목이 없습니다."
             )
+        elif preset_id == "undervalued_breakout" and requested_market == "us":
+            # ROB-440 Part 2: US undervalued_breakout uses the market-parameterized
+            # market_valuation loader (proximity: close >= high_52w * 0.95) — NOT the
+            # KR tvscreener date-recency path below (invest_kr_fundamentals is KR-only).
+            # high_52w(price) comes from Yahoo .info; fail-closed empty until the
+            # operator builds the US valuation partition. (Date-recency US parity is a
+            # follow-up; KR display keeps date-recency via the tvscreener loader.)
+            from app.services.invest_view_model.undervalued_breakout_screener import (
+                load_undervalued_breakout_from_snapshots,
+            )
+
+            _ub_rows = await load_undervalued_breakout_from_snapshots(
+                session,
+                market="us",
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            if _ub_rows is not None:
+                _snapshot_check_result = _ub_rows
+                _snapshot_load_result = _SnapshotLoadResult(
+                    rows=_ub_rows,
+                    partition_date=(_ub_rows[0]["snapshot_date"] if _ub_rows else None),
+                    partition_computed_at=None,
+                )
+            _snapshot_empty_warning = (
+                "최신 미국 신고가(52주) 스냅샷에서 조건에 맞는 종목이 없습니다."
+            )
         # ROB-428 PR-C: high_yield_value + undervalued_breakout no longer have a
         # dedicated dispatch branch. They are now registered in
         # FUNDAMENTALS_PRESET_SPECS and fall into the tvscreener KR loader below

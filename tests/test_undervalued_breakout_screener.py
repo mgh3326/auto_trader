@@ -217,10 +217,11 @@ async def test_loader_filters_per_pbr_and_near_high(db_session):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_loader_returns_none_without_valuation_partition(db_session):
+    # ROB-440 Part 2: kr+us are valid now; crypto (unsupported market) short-circuits.
     rows = await load_undervalued_breakout_from_snapshots(
-        db_session, market="us", limit=20, today_market_date=dt.date(2026, 6, 2)
+        db_session, market="crypto", limit=20, today_market_date=dt.date(2026, 6, 2)
     )
-    assert rows is None  # non-KR short-circuits
+    assert rows is None  # non-{kr,us} short-circuits
 
 
 @pytest.mark.integration
@@ -292,6 +293,54 @@ async def test_loader_ranks_by_proximity_desc_then_per_asc(db_session):
     )
     assert rows is not None
     assert [r["symbol"] for r in rows] == ["907021", "907024", "907023", "907022"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_loader_us_proximity_passes(db_session):
+    # ROB-440 Part 2: US runs on the same market-parameterized proximity loader
+    # (high_52w from Yahoo .info, latest_close from US invest_screener). No KR
+    # universe / common-stock filter for US.
+    vd = dt.date(2099, 12, 31)
+    sym = "907031"
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
+    )
+    await db_session.execute(
+        sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol == sym)
+    )
+    await db_session.commit()
+    db_session.add(
+        MarketValuationSnapshot(
+            market="us",
+            symbol=sym,
+            snapshot_date=vd,
+            source="yahoo",
+            per=Decimal("8"),
+            pbr=Decimal("0.8"),
+            high_52w=Decimal("100"),
+            market_cap=Decimal("5e11"),
+        )
+    )
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="us",
+            symbol=sym,
+            snapshot_date=vd,
+            latest_close=Decimal("99"),  # 0.99 proximity >= 0.95 → passes
+            closes_window=[],
+            source="kis",
+        )
+    )
+    await db_session.commit()
+
+    rows = await load_undervalued_breakout_from_snapshots(
+        db_session, market="us", limit=20, today_market_date=vd
+    )
+    assert rows is not None
+    row = next(r for r in rows if r["symbol"] == sym)
+    assert row["market"] == "us"  # market threaded through
+    assert row["high_52w"] == 100.0
 
 
 @pytest.mark.integration

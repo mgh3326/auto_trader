@@ -222,5 +222,8 @@ class TestYahooService:
             # ROB-440: ROE (percent) now extracted; None here (mock .info omits
             # returnOnEquity) — fail-closed.
             "ROE": None,
+            # ROB-440 Part 2: 52w high/low (price); None here (mock omits them).
+            "yearHigh": None,
+            "yearLow": None,
         }
         assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
