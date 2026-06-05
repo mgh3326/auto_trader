@@ -13,6 +13,7 @@ from app.services.financial_fundamentals_snapshots.builder_us import (
     build_us_fundamentals_for_symbols,
     fetch_us_annual_fundamentals,
     parse_us_annual_income_periods,
+    parse_us_quarterly_income_periods,
 )
 
 _COLLECTED = dt.datetime(2026, 6, 5, tzinfo=dt.UTC)
@@ -239,3 +240,88 @@ async def test_build_fetch_error_is_fail_closed() -> None:
     assert result.snapshots_built == 0
     assert result.committed is False  # nothing to commit
     assert any("fetch failed" in w for w in result.warnings)
+
+
+# --- ROB-441 PR4: quarterly periods (QoQ → growth_expectation_toss) ----------
+
+
+@pytest.mark.unit
+def test_parse_quarterly_periods() -> None:
+    rows = parse_us_quarterly_income_periods(
+        symbol="aapl",
+        data={"2024-09-30": _period(500, 60), "2024-06-30": _period(480, 50)},
+        collected_at=_COLLECTED,
+    )
+    assert len(rows) == 2
+    by_fp = {r.fiscal_period: r for r in rows}
+    assert set(by_fp) == {"2024Q3", "2024Q2"}  # calendar-quarter labels
+    q3 = by_fp["2024Q3"]
+    assert q3.period_type == "quarterly"
+    assert q3.period_end_date == dt.date(2024, 9, 30)
+    assert q3.filing_date == dt.date(2024, 9, 30) + dt.timedelta(days=45)
+    assert q3.net_income == Decimal("60")
+    assert q3.discrete_net_income == Decimal("60")  # yfinance quarterly is discrete
+
+
+@pytest.mark.unit
+def test_derive_qoq_from_us_quarterly_periods() -> None:
+    from app.services.financial_fundamentals_snapshots.derive import (
+        FundamentalPeriod,
+        derive_fundamentals_metrics,
+    )
+
+    rows = parse_us_quarterly_income_periods(
+        symbol="X",
+        data={"2024-06-30": _period(480, 100), "2024-09-30": _period(500, 120)},
+        collected_at=_COLLECTED,
+    )
+    periods = [
+        FundamentalPeriod(
+            fiscal_period=r.fiscal_period,
+            period_type=r.period_type,
+            period_end_date=r.period_end_date,
+            filing_date=r.filing_date,
+            revenue=r.revenue,
+            net_income=r.net_income,
+            discrete_revenue=r.discrete_revenue,
+            discrete_net_income=r.discrete_net_income,
+        )
+        for r in rows
+    ]
+    # consecutive Q2→Q3 (idx diff 1), latest within staleness → QoQ = (120-100)/100
+    deriv = derive_fundamentals_metrics(periods, report_date=dt.date(2024, 12, 1))
+    assert deriv.earnings_growth_qoq.value is not None
+    assert deriv.earnings_growth_qoq.state == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_include_quarterly() -> None:
+    async def _annual(*, symbol, collected_at):  # noqa: ANN001
+        return parse_us_annual_income_periods(
+            symbol=symbol,
+            data={"2024-12-31": _period(1000, 100)},
+            collected_at=collected_at,
+        )
+
+    async def _quarterly(*, symbol, collected_at):  # noqa: ANN001
+        return parse_us_quarterly_income_periods(
+            symbol=symbol,
+            data={"2024-09-30": _period(500, 60)},
+            collected_at=collected_at,
+        )
+
+    result = await build_us_fundamentals_for_symbols(
+        ["AAPL"],
+        commit=False,
+        fetcher=_annual,
+        quarterly_fetcher=_quarterly,
+        include_quarterly=True,
+    )
+    assert result.snapshots_built == 2  # 1 annual + 1 quarterly
+
+    # default (no include_quarterly) → annual only
+    result2 = await build_us_fundamentals_for_symbols(
+        ["AAPL"], commit=False, fetcher=_annual, quarterly_fetcher=_quarterly
+    )
+    assert result2.snapshots_built == 1

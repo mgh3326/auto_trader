@@ -159,6 +159,92 @@ async def fetch_us_annual_fundamentals(
     )
 
 
+# --- ROB-441 PR4: quarterly periods (QoQ → growth_expectation_toss) -----------
+
+# 10-Q SEC deadline is ~40-45 days after quarter-end (large filers 40d).
+_QUARTERLY_FILING_LAG_DAYS = 45
+
+
+def _quarter_label(period_end: dt.date) -> str:
+    """Calendar-quarter label 'YYYYQN' (derive._quarter_idx-compatible). Calendar
+    quarters keep consecutive quarter-ends one index apart, so the QoQ adjacency
+    check holds regardless of a company's fiscal-year alignment."""
+    return f"{period_end.year}Q{(period_end.month - 1) // 3 + 1}"
+
+
+def parse_us_quarterly_income_periods(
+    *, symbol: str, data: dict[str, Any], collected_at: dt.datetime
+) -> list[FinancialFundamentalsUpsert]:
+    """yfinance quarterly income ``data`` → quarterly upsert rows (sorted by date).
+
+    yfinance quarterly columns are already single-quarter (discrete), unlike DART's
+    cumulative YTD filings — so discrete_* equal the reported values directly.
+    fail-closed (skip a period with no revenue AND no net_income); filing_date =
+    quarter_end + 45d (PIT, no look-ahead)."""
+    out: list[FinancialFundamentalsUpsert] = []
+    for key, period_data in (data or {}).items():
+        if not isinstance(period_data, dict):
+            continue
+        period_end = _parse_period_end(str(key))
+        if period_end is None:
+            continue
+        revenue = _first_present(period_data, _REVENUE_LABELS)
+        net_income = _first_present(period_data, _NET_INCOME_LABELS)
+        if revenue is None and net_income is None:
+            continue  # fail-closed: nothing usable (QoQ needs net_income)
+        gross_profit = _first_present(period_data, _GROSS_PROFIT_LABELS)
+        cost_of_sales = _first_present(period_data, _COST_OF_SALES_LABELS)
+        filing_date = period_end + dt.timedelta(days=_QUARTERLY_FILING_LAG_DAYS)
+        out.append(
+            FinancialFundamentalsUpsert(
+                market="us",
+                symbol=symbol.upper(),
+                fiscal_period=_quarter_label(period_end),
+                period_type="quarterly",
+                period_end_date=period_end,
+                filing_date=filing_date,
+                effective_at=filing_date,
+                source="yfinance",
+                source_collected_at=collected_at,
+                currency="USD",
+                revenue=revenue,
+                net_income=net_income,
+                gross_profit=gross_profit,
+                cost_of_sales=cost_of_sales,
+                discrete_revenue=revenue,  # yfinance quarterly is already discrete
+                discrete_net_income=net_income,
+                data_state="fresh",
+                raw_payload={
+                    "income_statement": {str(k): str(v) for k, v in period_data.items()}
+                },
+            )
+        )
+    out.sort(key=lambda p: p.period_end_date)
+    return out
+
+
+async def fetch_us_quarterly_fundamentals(
+    *, symbol: str, collected_at: dt.datetime
+) -> list[FinancialFundamentalsUpsert]:
+    """Fetch yfinance quarterly income statement for ``symbol`` → quarterly rows.
+
+    Returns [] (fail-closed) when yfinance has no quarterly data or errors."""
+    from app.mcp_server.tooling.fundamentals_sources_yfinance import (
+        _fetch_financials_yfinance,
+    )
+
+    try:
+        payload = await _fetch_financials_yfinance(symbol, "income", "quarterly")
+    except Exception as exc:  # noqa: BLE001 — yfinance optional; fail-closed empty
+        logger.warning(
+            "US quarterly fundamentals fetch failed symbol=%s: %s", symbol, exc
+        )
+        return []
+    return parse_us_quarterly_income_periods(
+        symbol=symbol, data=payload.get("data") or {}, collected_at=collected_at
+    )
+
+
 # --- ROB-441 PR2: build orchestration (resolve → fetch → optional commit) -----
 
 _UsFetcher = Callable[..., Awaitable[list[FinancialFundamentalsUpsert]]]
@@ -214,25 +300,36 @@ async def build_us_fundamentals_for_symbols(
     concurrency: int = 4,
     collected_at: dt.datetime | None = None,
     fetcher: _UsFetcher | None = None,
+    include_quarterly: bool = False,
+    quarterly_fetcher: _UsFetcher | None = None,
 ) -> UsFundamentalsBuildResult:
-    """Fetch + parse US annual fundamentals for ``symbols``; write only if commit.
+    """Fetch + parse US annual (and optionally quarterly) fundamentals; write if commit.
 
     dry-run by default (commit=False): fetches/parses + reports counts, no DB write.
-    commit=True upserts via the repository (operator-approved). Fail-closed: a symbol
-    whose fetch fails or yields no rows is warned and skipped (never fabricated).
+    commit=True upserts via the repository (operator-approved). include_quarterly also
+    builds quarterly periods (ROB-441 PR4, for QoQ → growth_expectation_toss).
+    Fail-closed: a symbol whose fetch fails or yields no rows is warned and skipped.
     """
     collected_at = collected_at or dt.datetime.now(dt.UTC)
-    fetch = fetcher or fetch_us_annual_fundamentals
+    annual_fetch = fetcher or fetch_us_annual_fundamentals
+    quarterly_fetch = quarterly_fetcher or fetch_us_quarterly_fundamentals
     sem = asyncio.Semaphore(max(1, concurrency))
     warnings: list[str] = []
 
     async def _one(sym: str) -> list[FinancialFundamentalsUpsert]:
         async with sem:
+            rows: list[FinancialFundamentalsUpsert] = []
             try:
-                rows = await fetch(symbol=sym, collected_at=collected_at)
+                rows.extend(await annual_fetch(symbol=sym, collected_at=collected_at))
             except Exception as exc:  # noqa: BLE001 — fail-closed per symbol
-                warnings.append(f"{sym}: fetch failed ({exc})")
-                return []
+                warnings.append(f"{sym}: annual fetch failed ({exc})")
+            if include_quarterly:
+                try:
+                    rows.extend(
+                        await quarterly_fetch(symbol=sym, collected_at=collected_at)
+                    )
+                except Exception as exc:  # noqa: BLE001 — fail-closed per symbol
+                    warnings.append(f"{sym}: quarterly fetch failed ({exc})")
             if not rows:
                 warnings.append(f"{sym}: no US fundamentals rows")
             return rows
