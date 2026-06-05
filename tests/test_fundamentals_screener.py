@@ -432,6 +432,78 @@ async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_loader_us_candidate_filtering_and_fail_closed(db_session):
+    # ROB-441 PR3: US runs the market-parameterized derive loader. Verify the US
+    # candidate query (market=us) filters by the spec's valuation thresholds, and
+    # that without US financial_fundamentals backfilled the candidates fail-closed
+    # (reach derive then get excluded; never silently passed). The derive-inclusion
+    # path is market-agnostic and covered by the KR + PR1 derive-reuse tests.
+    await _cleanup_db(db_session)
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import (
+        resolve_healthy_partition,
+    )
+    from app.services.invest_view_model.fundamentals_screener import (
+        UNDERVALUED_GROWTH_SPEC,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    # seed on the US valuation partition the loader will resolve (shared DB safety).
+    val_hp = await resolve_healthy_partition(
+        db_session,
+        model=MarketValuationSnapshot,
+        date_col=MarketValuationSnapshot.snapshot_date,
+        market_col=MarketValuationSnapshot.market,
+        market="us",
+    )
+    vd = (
+        val_hp.partition_date
+        if (val_hp and val_hp.partition_date)
+        else dt.date(2026, 6, 2)
+    )
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="us",
+                symbol="906451",
+                snapshot_date=vd,
+                source="yahoo",
+                per=Decimal("15"),  # <= 20 → candidate
+                roe=Decimal("20"),
+                market_cap=Decimal("500000000000"),
+            ),
+            MarketValuationSnapshot(
+                market="us",
+                symbol="906452",
+                snapshot_date=vd,
+                source="yahoo",
+                per=Decimal("40"),  # > 20 → filtered at SQL candidate stage
+                roe=Decimal("20"),
+                market_cap=Decimal("400000000000"),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="us",
+        spec=UNDERVALUED_GROWTH_SPEC,
+        limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    excluded_symbols = {e["symbol"] for e in result.excluded}
+    assert (
+        "906451" in excluded_symbols
+    )  # candidate (per<=20) but no US ff → fail-closed
+    assert "906452" not in excluded_symbols  # filtered at SQL candidate stage (per>20)
+    await _cleanup_db(db_session)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_loader_valuation_filter_dividend_yield_excludes_null(db_session):
     await _cleanup_db(db_session)
     # spec §7 item 2: min_dividend_yield candidate filter must drop NULL dividend_yield

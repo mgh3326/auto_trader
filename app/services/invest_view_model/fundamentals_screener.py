@@ -337,8 +337,12 @@ async def load_fundamentals_preset_from_snapshots(
     limit: int = 20,
     now: Any = None,
 ) -> FundamentalsScreenResult | None:
-    """None when no valuation partition exists (caller → dataState=missing)."""
-    if session is None or market != "kr":
+    """None when no valuation partition exists (caller → dataState=missing).
+
+    ROB-441 PR3: market-parameterized for US — market_valuation (per/pbr/roe, US=Yahoo)
+    + financial_fundamentals (US=yfinance) periods → the market-agnostic derive layer.
+    KR name/common-stock filtering is KR-only (guarded)."""
+    if session is None or market not in {"kr", "us"}:
         return None
     from datetime import UTC, datetime
 
@@ -346,7 +350,7 @@ async def load_fundamentals_preset_from_snapshots(
     from app.services.invest_view_model.screener_service import _is_kr_toss_common_stock
 
     now_dt = now() if callable(now) else datetime.now(UTC)
-    today_market_date = today_trading_date("kr", now=now_dt)
+    today_market_date = today_trading_date(market, now=now_dt)
 
     from app.services.invest_screener_snapshots.partition_health import (
         resolve_healthy_partition,
@@ -357,7 +361,7 @@ async def load_fundamentals_preset_from_snapshots(
         model=MarketValuationSnapshot,
         date_col=MarketValuationSnapshot.snapshot_date,
         market_col=MarketValuationSnapshot.market,
-        market="kr",
+        market=market,
     )
     val_date = val_hp.partition_date if val_hp else None
     if val_date is None:
@@ -371,7 +375,7 @@ async def load_fundamentals_preset_from_snapshots(
         MarketValuationSnapshot.market_cap,
         MarketValuationSnapshot.dividend_yield,
     ).where(
-        MarketValuationSnapshot.market == "kr",
+        MarketValuationSnapshot.market == market,
         MarketValuationSnapshot.snapshot_date == val_date,
     )
     if spec.min_roe is not None:
@@ -417,7 +421,9 @@ async def load_fundamentals_preset_from_snapshots(
     symbols = [m["symbol"] for m in cand_mappings]
 
     name_map: dict[str, str] = {}
-    if symbols:
+    if (
+        market == "kr" and symbols
+    ):  # ROB-441 PR3: KR name/common-stock filter is KR-only
         names = await session.execute(
             sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
                 KRSymbolUniverse.symbol.in_(symbols),
@@ -434,14 +440,14 @@ async def load_fundamentals_preset_from_snapshots(
         sym = m["symbol"]
         if sym in seen:
             continue
-        if not _is_kr_toss_common_stock(sym, name_map.get(sym)):
+        if market == "kr" and not _is_kr_toss_common_stock(sym, name_map.get(sym)):
             continue
         seen.add(sym)
         valuation_rows.append({**dict(m), "_screener_snapshot_state": val_state})
 
     repo = FinancialFundamentalsSnapshotsRepository(session)
     period_rows = await repo.latest_periods_for_symbols(
-        market="kr", symbols=[v["symbol"] for v in valuation_rows]
+        market=market, symbols=[v["symbol"] for v in valuation_rows]
     )
     periods_by_symbol = {
         sym: [_to_period(r) for r in rows] for sym, rows in period_rows.items()

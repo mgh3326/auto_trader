@@ -1837,6 +1837,25 @@ async def build_screener_results(
             _snapshot_empty_warning = (
                 "최신 미국 신고가(52주) 스냅샷에서 조건에 맞는 종목이 없습니다."
             )
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS and requested_market == "us":
+            # ROB-441 PR3: US fundamentals presets (profitable_company/undervalued_growth/
+            # cheap_value/stable_growth) run on the market-parameterized derive loader
+            # (market_valuation US per/pbr/roe + financial_fundamentals US periods → derive)
+            # — NOT the KR tvscreener loader below (invest_kr_fundamentals is KR-only).
+            # Honest empty until the operator backfills US financial_fundamentals.
+            from app.services.invest_view_model.fundamentals_screener import (
+                load_fundamentals_preset_from_snapshots,
+            )
+
+            _fundamentals_screen_result = await load_fundamentals_preset_from_snapshots(
+                session,
+                market="us",
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                now=now,
+            )
+            if _fundamentals_screen_result is not None:
+                _snapshot_check_result = _fundamentals_screen_result.rows
         # ROB-428 PR-C: high_yield_value + undervalued_breakout no longer have a
         # dedicated dispatch branch. They are now registered in
         # FUNDAMENTALS_PRESET_SPECS and fall into the tvscreener KR loader below
