@@ -36,3 +36,12 @@ def test_all_excludes_symbol_and_limit() -> None:
 def test_concurrency_must_be_positive() -> None:
     with pytest.raises(SystemExit):
         parse_args(["--symbol", "AAPL", "--concurrency", "0"])
+
+
+@pytest.mark.unit
+def test_with_quarterly_flag() -> None:
+    # ROB-441 PR4: --with-quarterly opts into quarterly periods (annual-only default).
+    assert parse_args(["--symbol", "AAPL"]).include_quarterly is False
+    assert (
+        parse_args(["--symbol", "AAPL", "--with-quarterly"]).include_quarterly is True
+    )

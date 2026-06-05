@@ -65,11 +65,9 @@ def test_us_flow_presets_unsupported_with_reason() -> None:
 @pytest.mark.unit
 def test_us_fundamentals_presets_data_pending_with_reason() -> None:
     us = {p.id: p for p in preset_definitions("us")}
-    # ROB-441 PR3: growth/valuation fundamentals presets are now active (yfinance
-    # annual derive); only QoQ (growth_expectation_toss) + dividend presets stay
-    # data_pending until US quarterly/dividend fundamentals are built.
+    # ROB-441 PR4: growth_expectation_toss (QoQ) is now active (yfinance quarterly);
+    # only the dividend presets stay data_pending until US dividend data is built.
     for pid in (
-        "growth_expectation_toss",
         "steady_dividend",
         "future_dividend_king",
     ):
@@ -82,11 +80,13 @@ def test_us_fundamentals_growth_presets_active() -> None:
     # ROB-441 PR3: market_valuation US (per/pbr/roe) + financial_fundamentals US
     # annual derive → these run for US.
     us = {p.id: p for p in preset_definitions("us")}
+    # ROB-441 PR4: growth_expectation_toss joins once US quarterly periods (QoQ) exist.
     for pid in (
         "profitable_company",
         "undervalued_growth",
         "cheap_value",
         "stable_growth",
+        "growth_expectation_toss",
     ):
         assert us[pid].availability == "active", pid
         assert us[pid].availabilityReason is None, pid

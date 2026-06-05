@@ -51,8 +51,9 @@ _KR_ONLY_PRESET_IDS = {
 # ROB-441 PR3: profitable_company/undervalued_growth/cheap_value/stable_growth run on
 # the market-parameterized derive loader (market_valuation US per/pbr/roe +
 # financial_fundamentals US annual periods → derive) — load_fundamentals_preset_from_snapshots(market="us").
-# growth_expectation_toss (QoQ quarterly) + dividend presets stay data_pending until
-# US quarterly/dividend fundamentals are built (ROB-441 follow-up).
+# ROB-441 PR4: growth_expectation_toss (QoQ) runs once US quarterly periods are built
+# (yfinance quarterly income → derive earnings_growth_qoq). Dividend presets stay
+# data_pending until US dividend fundamentals are built (ROB-441 dividend follow-up).
 _US_ACTIVE_PRESET_IDS = {
     "high_yield_value",
     "undervalued_breakout",
@@ -60,11 +61,11 @@ _US_ACTIVE_PRESET_IDS = {
     "undervalued_growth",
     "cheap_value",
     "stable_growth",
+    "growth_expectation_toss",
 }
 _US_UNSUPPORTED_PRESET_IDS = {"double_buy", "investor_flow_momentum"}
 _US_UNSUPPORTED_REASON = "외국인·기관 수급은 국내 전용 지표입니다"
 _US_DATA_PENDING_REASON: dict[str, str] = {
-    "growth_expectation_toss": "미국 분기 순이익 증감률(QoQ) 데이터 준비중",
     "steady_dividend": "미국 배당·순이익 연속 데이터 준비중",
     "future_dividend_king": "미국 배당·순이익 연속 데이터 준비중",
 }

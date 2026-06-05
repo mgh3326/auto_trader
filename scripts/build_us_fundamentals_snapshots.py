@@ -39,6 +39,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
     )
     parser.add_argument(
+        "--with-quarterly",
+        dest="include_quarterly",
+        action="store_true",
+        help="Also build quarterly periods (annual-only by default; for QoQ presets).",
+    )
+    parser.add_argument(
         "--commit",
         action="store_true",
         help=(
@@ -94,7 +100,10 @@ async def run(args: argparse.Namespace) -> int:
         f"Resolved {len(symbols)} US symbols. NOTE: --dry-run still fetches yfinance."
     )
     result = await build_us_fundamentals_for_symbols(
-        symbols, commit=args.commit, concurrency=args.concurrency
+        symbols,
+        commit=args.commit,
+        concurrency=args.concurrency,
+        include_quarterly=args.include_quarterly,
     )
     _print_result(result)
     return 0
