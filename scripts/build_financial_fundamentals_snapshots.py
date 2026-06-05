@@ -69,6 +69,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "for any --commit, since fundamentals is incremental by DART budget)."
         ),
     )
+    parser.add_argument(
+        "--skip-existing",
+        dest="skip_existing",
+        action="store_true",
+        help=(
+            "DART budget-split: skip symbols that already have a snapshot so daily "
+            "re-runs advance through uncollected symbols. With --limit N selects the "
+            "NEXT N uncollected (keep N*11 under the daily budget, e.g. --limit 1500)."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
         parser.error("--all is mutually exclusive with --symbol and --limit")
@@ -153,6 +163,7 @@ async def run(args: argparse.Namespace) -> int:
                 commit=args.commit,
                 estimate_only=args.estimate_only,
                 allow_partial=args.allow_partial,
+                skip_existing=args.skip_existing,
             )
         )
     except PartialCommitBlocked as exc:

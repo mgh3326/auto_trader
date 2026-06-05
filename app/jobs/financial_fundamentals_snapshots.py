@@ -35,6 +35,11 @@ class FinancialFundamentalsSnapshotBuildRequest:
     collected_at: dt.datetime | None = None
     estimate_only: bool = False
     allow_partial: bool = False
+    # ROB-441: DART budget-split. Skip symbols that already have a snapshot so daily
+    # re-runs advance through uncollected symbols (the full KR universe ~3,910 × 11 req
+    # exceeds the 18k daily budget → must be split across days). With --limit N this
+    # selects the NEXT N uncollected symbols (resolve full → drop collected → slice).
+    skip_existing: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,6 +104,18 @@ async def resolve_active_universe(market: str) -> list[str]:
         )
         result = await session.execute(stmt)
         return [r[0] for r in result.all()]
+
+
+async def _already_collected_symbols(market: str) -> set[str]:
+    """Symbols with ≥1 existing financial_fundamentals snapshot (ROB-441 budget-split:
+    --skip-existing drops these so daily re-runs advance through uncollected symbols)."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            sa.select(FinancialFundamentalsSnapshot.symbol)
+            .where(FinancialFundamentalsSnapshot.market == market)
+            .distinct()
+        )
+        return {r[0] for r in result.all()}
 
 
 def _payload_key(p: FinancialFundamentalsUpsert) -> tuple[str, str, str, str]:
@@ -182,11 +199,28 @@ async def run_financial_fundamentals_snapshot_build(
     started_at = dt.datetime.now(dt.UTC)
     collected_at = request.collected_at or started_at
     use_fetcher = fetcher or default_dart_fetcher
-    symbols = await (
-        resolve_active_universe(market)
-        if request.all_symbols
-        else resolve_symbols(market, list(request.symbols), request.limit or 20)
-    )
+    skipped_existing = 0
+    if request.skip_existing:
+        # Budget-split: resolve the candidate pool, drop already-collected, then (for
+        # --limit) slice the NEXT N uncollected so each daily run stays under budget.
+        if request.symbols:
+            pool = [s.strip().upper() for s in request.symbols if s.strip()]
+        else:
+            pool = await resolve_active_universe(market)
+        done = await _already_collected_symbols(market)
+        remaining = [s for s in pool if s not in done]
+        skipped_existing = len(pool) - len(remaining)
+        symbols = (
+            remaining
+            if (request.all_symbols or request.symbols)
+            else remaining[: (request.limit or 20)]
+        )
+    else:
+        symbols = await (
+            resolve_active_universe(market)
+            if request.all_symbols
+            else resolve_symbols(market, list(request.symbols), request.limit or 20)
+        )
     if not symbols:
         finished_at = dt.datetime.now(dt.UTC)
         return FinancialFundamentalsSnapshotBuildResult(
@@ -220,6 +254,14 @@ async def run_financial_fundamentals_snapshot_build(
             finished_at=finished_at,
             idempotency={"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0},
             warnings=(
+                (
+                    f"skip_existing: {skipped_existing} already-collected skipped; "
+                    f"{len(symbols)} uncollected remain",
+                )
+                if skipped_existing
+                else ()
+            )
+            + (
                 f"estimate-only: projected {projected} DART requests; "
                 "no fetch performed",
             ),
@@ -263,6 +305,13 @@ async def run_financial_fundamentals_snapshot_build(
     if should_commit and payloads:
         await _commit_payloads(payloads)
     finished_at = dt.datetime.now(dt.UTC)
+    final_warnings = list(warnings)
+    if skipped_existing:
+        final_warnings.insert(
+            0,
+            f"skip_existing: {skipped_existing} already-collected symbols skipped; "
+            f"{len(symbols)} uncollected processed (budget-split)",
+        )
     return FinancialFundamentalsSnapshotBuildResult(
         market=market,
         symbols_resolved=len(symbols),
@@ -272,5 +321,5 @@ async def run_financial_fundamentals_snapshot_build(
         finished_at=finished_at,
         idempotency=idempotency,
         samples=tuple(_sample(p) for p in payloads[:10]),
-        warnings=warnings,
+        warnings=tuple(final_warnings),
     )

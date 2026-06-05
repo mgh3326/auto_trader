@@ -38,3 +38,12 @@ def test_estimate_only_mutually_exclusive_with_commit():
 def test_estimate_only_defaults_false():
     args = parse_args(["--symbol", "005930"])
     assert args.estimate_only is False
+
+
+@pytest.mark.unit
+def test_skip_existing_flag() -> None:
+    # ROB-441 budget-split: --skip-existing (off by default).
+    assert parse_args(["--symbol", "005930"]).skip_existing is False
+    args = parse_args(["--limit", "1500", "--skip-existing"])
+    assert args.skip_existing is True
+    assert args.limit == 1500
