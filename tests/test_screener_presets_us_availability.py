@@ -14,6 +14,7 @@ import pytest
 from app.services.invest_view_model.screener_presets import (
     _KR_ONLY_PRESET_IDS,
     _US_ACTIVE_PRESET_IDS,
+    _US_DATA_PENDING_REASON,
     _US_UNSUPPORTED_PRESET_IDS,
     preset_definitions,
 )
@@ -63,21 +64,33 @@ def test_us_flow_presets_unsupported_with_reason() -> None:
 
 
 @pytest.mark.unit
-def test_us_fundamentals_presets_data_pending_with_reason() -> None:
+def test_us_no_fundamentals_presets_data_pending() -> None:
+    # ROB-441 PR5: every Toss fundamentals preset is now US-active (yfinance
+    # annual/quarterly/dividends); no fundamentals preset stays data_pending.
     us = {p.id: p for p in preset_definitions("us")}
-    # ROB-427 PR3: high_yield_value is now active (Yahoo-backed); the rest pending.
+    assert _US_DATA_PENDING_REASON == {}
+    assert all(p.availability != "data_pending" for p in us.values())
+    for pid in ("steady_dividend", "future_dividend_king"):
+        assert us[pid].availability == "active", pid
+        assert us[pid].availabilityReason is None, pid
+
+
+@pytest.mark.unit
+def test_us_fundamentals_growth_presets_active() -> None:
+    # ROB-441 PR3: market_valuation US (per/pbr/roe) + financial_fundamentals US
+    # annual derive → these run for US.
+    us = {p.id: p for p in preset_definitions("us")}
+    # ROB-441 PR4: growth_expectation_toss joins once US quarterly periods (QoQ) exist.
     for pid in (
-        "undervalued_breakout",
         "profitable_company",
         "undervalued_growth",
         "cheap_value",
-        "growth_expectation_toss",
         "stable_growth",
-        "steady_dividend",
-        "future_dividend_king",
+        "growth_expectation_toss",
     ):
-        assert us[pid].availability == "data_pending", pid
-        assert us[pid].availabilityReason, pid
+        assert us[pid].availability == "active", pid
+        assert us[pid].availabilityReason is None, pid
+        assert pid in _US_ACTIVE_PRESET_IDS
 
 
 @pytest.mark.unit
@@ -87,6 +100,16 @@ def test_us_high_yield_value_active() -> None:
     assert us["high_yield_value"].availability == "active"
     assert us["high_yield_value"].availabilityReason is None
     assert "high_yield_value" in _US_ACTIVE_PRESET_IDS
+
+
+@pytest.mark.unit
+def test_us_undervalued_breakout_active() -> None:
+    # ROB-440 Part 2: Yahoo valuation backs high_52w(price) + PER/PBR, so
+    # undervalued_breakout (proximity) runs for US.
+    us = {p.id: p for p in preset_definitions("us")}
+    assert us["undervalued_breakout"].availability == "active"
+    assert us["undervalued_breakout"].availabilityReason is None
+    assert "undervalued_breakout" in _US_ACTIVE_PRESET_IDS
 
 
 @pytest.mark.unit

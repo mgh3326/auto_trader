@@ -54,13 +54,21 @@ from app.services.invest_view_model.screener_presets import (
 )
 
 _VALID_MARKETS = {"kr", "us", "crypto"}
-_KR_ABSURD_MARKET_CAP_KRW = 10_000_000_000_000_000
+# ROB-436 C-1: single-stock display-plausibility ceiling. The largest KR listing
+# (삼성전자) is ~500조 KRW, so anything above ~2,000조 is a bad/mis-unit row (e.g. the
+# tvscreener fundamentals snapshot rendered SG&G as 3,468.8조원). Was 10,000조 (1e16),
+# too lenient to catch it. Above this → hide the label (never render absurd values).
+_KR_ABSURD_MARKET_CAP_KRW = 2_000_000_000_000_000
 
 _KST = ZoneInfo("Asia/Seoul")
 _KR_OPEN = _time(9, 0)
 _KR_CLOSE = _time(15, 30)
 _CACHE_HIT_FRESH_SECONDS = 300
 _SNAPSHOT_FIRST_LIMIT = 80
+# ROB-436 C-2: KR fundamentals presets (tvscreener display path) were capped at 20
+# rows while Toss shows the full match set (e.g. 아직저렴한가치주 553). Raise the
+# display cap so the count gap closes; total_matched still reports the true count.
+_FUNDAMENTALS_DISPLAY_LIMIT = 200
 _MAX_WARNING_CHARS = 240
 _US_SCREENER_DATA_NOT_READY_WARNING = (
     "미국 스크리너 데이터 준비중 — 일부 결과만 표시됩니다."
@@ -82,6 +90,12 @@ _KR_TOSS_ETF_PREFIXES = (
     "WON ",
     "마이티 ",
     "히어로즈 ",
+    # ROB-435 A: KIWOOM (키움) + 1Q (한화) ETF issuer brands — these slipped into
+    # 연속상승세 (KIWOOM 미국S&P500모멘텀, 1Q 미국배당TOP30) because no KR common
+    # stock starts with these brand prefixes. (Long-term: kr_symbol_universe
+    # instrument_type from KRX master — see ROB-435.)
+    "KIWOOM ",
+    "1Q ",
 )
 _KR_TOSS_EXCLUDED_NAME_TOKENS = (
     " ETF",
@@ -438,6 +452,8 @@ async def _load_consecutive_gainers_from_snapshots(
     *,
     market: str,
     limit: int = _SNAPSHOT_FIRST_LIMIT,
+    min_consecutive_up_days: int = 5,
+    min_week_change_rate: float = 0.0,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> _SnapshotLoadResult | None:
     """Return qualifying rows from the latest snapshot partition only.
@@ -498,8 +514,11 @@ async def _load_consecutive_gainers_from_snapshots(
         .where(
             InvestScreenerSnapshot.market == market,
             InvestScreenerSnapshot.snapshot_date == latest_snapshot_date,
-            InvestScreenerSnapshot.consecutive_up_days >= 5,
-            InvestScreenerSnapshot.week_change_rate >= 0,
+            # ROB-439: thresholds default to the preset's starting set (5 / 0.0) so
+            # existing callers are unchanged; build_screener_results passes adjusted
+            # values when filter_overrides loosen/tighten over the base snapshot.
+            InvestScreenerSnapshot.consecutive_up_days >= min_consecutive_up_days,
+            InvestScreenerSnapshot.week_change_rate >= min_week_change_rate,
         )
         .order_by(
             InvestScreenerSnapshot.week_change_rate.desc().nullslast(),
@@ -1647,7 +1666,11 @@ async def build_screener_results(
     market: str = "kr",
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     session: AsyncSession | None = None,
+    filter_overrides: list[Any] | None = None,
 ) -> ScreenerResultsResponse:
+    """ROB-439: ``filter_overrides`` (list[ScreenerFilterCondition]) lets a caller
+    adjust/add conditions over the preset's base snapshot (None = preset default).
+    Pilot: consecutive_gainers threads loosen/tighten thresholds into the loader."""
     requested_market = _normalize_market(market)
     preset = get_preset(preset_id, requested_market)
     if preset is None:
@@ -1705,11 +1728,32 @@ async def build_screener_results(
     )
     if session is not None and _should_use_snapshot_first(screening_service):
         if preset_id == "consecutive_gainers":
+            # ROB-439: derive loosen/tighten thresholds from filter_overrides over
+            # the base snapshot (default None → loader defaults → unchanged behavior).
+            _cg_loader_kwargs: dict[str, Any] = {}
+            if filter_overrides:
+                from app.services.invest_view_model.screener_filters import (
+                    consecutive_gainers_loader_thresholds,
+                    merge_filter_overrides,
+                    preset_starting_filters,
+                    validate_conditions,
+                )
+
+                _cg_conditions = merge_filter_overrides(
+                    preset_starting_filters("consecutive_gainers"), filter_overrides
+                )
+                _cg_conditions = validate_conditions(
+                    _cg_conditions, snapshot_kind="invest_screener_snapshots"
+                )
+                _cg_loader_kwargs = consecutive_gainers_loader_thresholds(
+                    _cg_conditions
+                )
             _snapshot_load_result = await _load_consecutive_gainers_from_snapshots(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
                 now=now,
+                **_cg_loader_kwargs,
             )
             if _snapshot_load_result is not None:
                 _snapshot_check_result = _snapshot_load_result.rows
@@ -1767,6 +1811,51 @@ async def build_screener_results(
             _snapshot_empty_warning = (
                 "최신 미국 가치형(ROE·PER) 스냅샷에서 조건에 맞는 종목이 없습니다."
             )
+        elif preset_id == "undervalued_breakout" and requested_market == "us":
+            # ROB-440 Part 2: US undervalued_breakout uses the market-parameterized
+            # market_valuation loader (proximity: close >= high_52w * 0.95) — NOT the
+            # KR tvscreener date-recency path below (invest_kr_fundamentals is KR-only).
+            # high_52w(price) comes from Yahoo .info; fail-closed empty until the
+            # operator builds the US valuation partition. (Date-recency US parity is a
+            # follow-up; KR display keeps date-recency via the tvscreener loader.)
+            from app.services.invest_view_model.undervalued_breakout_screener import (
+                load_undervalued_breakout_from_snapshots,
+            )
+
+            _ub_rows = await load_undervalued_breakout_from_snapshots(
+                session,
+                market="us",
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            if _ub_rows is not None:
+                _snapshot_check_result = _ub_rows
+                _snapshot_load_result = _SnapshotLoadResult(
+                    rows=_ub_rows,
+                    partition_date=(_ub_rows[0]["snapshot_date"] if _ub_rows else None),
+                    partition_computed_at=None,
+                )
+            _snapshot_empty_warning = (
+                "최신 미국 신고가(52주) 스냅샷에서 조건에 맞는 종목이 없습니다."
+            )
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS and requested_market == "us":
+            # ROB-441 PR3: US fundamentals presets (profitable_company/undervalued_growth/
+            # cheap_value/stable_growth) run on the market-parameterized derive loader
+            # (market_valuation US per/pbr/roe + financial_fundamentals US periods → derive)
+            # — NOT the KR tvscreener loader below (invest_kr_fundamentals is KR-only).
+            # Honest empty until the operator backfills US financial_fundamentals.
+            from app.services.invest_view_model.fundamentals_screener import (
+                load_fundamentals_preset_from_snapshots,
+            )
+
+            _fundamentals_screen_result = await load_fundamentals_preset_from_snapshots(
+                session,
+                market="us",
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                now=now,
+            )
+            if _fundamentals_screen_result is not None:
+                _snapshot_check_result = _fundamentals_screen_result.rows
         # ROB-428 PR-C: high_yield_value + undervalued_breakout no longer have a
         # dedicated dispatch branch. They are now registered in
         # FUNDAMENTALS_PRESET_SPECS and fall into the tvscreener KR loader below
@@ -1784,14 +1873,14 @@ async def build_screener_results(
                 load_kr_fundamentals_preset_from_tv_snapshot,
             )
 
-            _fundamentals_screen_result = (
-                await load_kr_fundamentals_preset_from_tv_snapshot(
-                    session,
-                    market=requested_market,
-                    spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
-                    limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
-                    now=now,
-                )
+            _fundamentals_screen_result = await load_kr_fundamentals_preset_from_tv_snapshot(
+                session,
+                market=requested_market,
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                # ROB-436 C-2: fundamentals presets show closer to the full Toss
+                # match set (was 20 via _SCREENING_FILTERS); total_matched unchanged.
+                limit=_FUNDAMENTALS_DISPLAY_LIMIT,
+                now=now,
             )
             if _fundamentals_screen_result is not None:
                 _snapshot_check_result = _fundamentals_screen_result.rows

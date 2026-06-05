@@ -4,7 +4,7 @@ import logging
 import urllib.error
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -136,6 +136,24 @@ async def fetch_ohlcv(
     if normalized_period in {"day", "week", "month"}:
         return _filter_closed_buckets_nyse(raw, normalized_period)
     return raw
+
+
+async def fetch_52w_high_date(ticker: str) -> date | None:
+    """ROB-440: date of the 52-week high (max daily ``high`` over ~1y) for US
+    undervalued_breakout date-recency. None on any error / empty (fail-closed)."""
+    try:
+        df = await fetch_ohlcv(ticker, days=260, period="day")
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        logger.warning("52w-high-date fetch failed %s: %s", ticker, exc)
+        return None
+    if df is None or df.empty or "high" not in df.columns or "date" not in df.columns:
+        return None
+    try:
+        hi_idx = df["high"].idxmax()
+        value = df.loc[hi_idx, "date"]
+    except Exception:  # noqa: BLE001 — fail-closed
+        return None
+    return value if isinstance(value, date) else None
 
 
 async def _fetch_ohlcv_raw(
@@ -300,6 +318,19 @@ async def fetch_fast_info(ticker: str) -> dict[str, Any]:
     return await asyncio.to_thread(_fetch_fast_info_sync, ticker)
 
 
+def _roe_to_percent(raw_roe: Any) -> float | None:
+    """ROB-440: yfinance ``returnOnEquity`` is a fraction (0.35 = 35%); the screener
+    (high_yield_value ``roe >= 15``) and KR Naver ROE are both in percent. Convert
+    to percent; return None for missing/non-numeric so the row stays fail-closed
+    (a null ROE keeps high_yield_value preparing, never fabricated)."""
+    if raw_roe is None or isinstance(raw_roe, bool):
+        return None
+    try:
+        return float(raw_roe) * 100.0
+    except (TypeError, ValueError):
+        return None
+
+
 async def fetch_fundamental_info(ticker: str) -> dict:
     yahoo_ticker = to_yahoo_symbol(ticker)
 
@@ -315,6 +346,15 @@ async def fetch_fundamental_info(ticker: str) -> dict:
                     "EPS": info.get("trailingEps"),
                     "BPS": info.get("bookValue"),
                     "Dividend Yield": info.get("trailingAnnualDividendYield"),
+                    # ROB-440: ROE (percent) from the same .info call (no extra
+                    # request) unblocks US high_yield_value (already US-active,
+                    # ROB-427 PR3) which was empty because roe was never populated.
+                    "ROE": _roe_to_percent(info.get("returnOnEquity")),
+                    # ROB-440 Part 2: 52-week high/low (price) from the same .info
+                    # call → market_valuation high_52w/low_52w populated → US
+                    # undervalued_breakout (proximity: close >= high_52w * 0.95).
+                    "yearHigh": info.get("fiftyTwoWeekHigh"),
+                    "yearLow": info.get("fiftyTwoWeekLow"),
                 }
             except Exception as exc:
                 last_exc = exc

@@ -28,6 +28,7 @@ class MarketValuationSnapshotUpsert(BaseModel):
     market_cap: Decimal | None = None
     high_52w: Decimal | None = None
     low_52w: Decimal | None = None
+    high_52w_date: dt.date | None = None  # ROB-440 PR3: US 52w-high date (date-recency)
     raw_payload: dict | None = None
 
 
@@ -67,6 +68,7 @@ class MarketValuationSnapshotsRepository:
                 "market_cap": stmt.excluded.market_cap,
                 "high_52w": stmt.excluded.high_52w,
                 "low_52w": stmt.excluded.low_52w,
+                "high_52w_date": stmt.excluded.high_52w_date,
                 "raw_payload": stmt.excluded.raw_payload,
                 "computed_at": func.now(),
                 "updated_at": func.now(),

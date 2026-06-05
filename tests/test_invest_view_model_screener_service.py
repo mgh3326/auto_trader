@@ -253,6 +253,91 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_consecutive_gainers_threads_filter_overrides_to_loader(
+    monkeypatch,
+) -> None:
+    # ROB-439 PR2: filter_overrides must thread loosen/tighten thresholds into the
+    # snapshot loader's WHERE; no overrides → loader keeps the preset defaults.
+    from app.services.invest_view_model import screener_service as svc
+    from app.services.invest_view_model.screener_filters import ScreenerFilterCondition
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_loader(session, **kwargs):  # noqa: ANN001, ANN003
+        captured.clear()
+        captured.update(kwargs)
+        return svc._SnapshotLoadResult(rows=[], partition_date=date(2026, 5, 11))
+
+    monkeypatch.setattr(svc, "_should_use_snapshot_first", lambda _s: True)
+    monkeypatch.setattr(svc, "_load_consecutive_gainers_from_snapshots", _fake_loader)
+
+    fake_screening = MagicMock()
+    resolver = _FakeResolver(watched=set())
+
+    # no overrides → loader gets no threshold kwargs (defaults 5 / 0.0 apply).
+    await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+        session=object(),
+    )
+    assert "min_consecutive_up_days" not in captured
+    assert "min_week_change_rate" not in captured
+
+    # loosen days to 3 → threaded; unspecified week_change_rate keeps preset 0.0.
+    await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+        session=object(),
+        filter_overrides=[ScreenerFilterCondition("consecutive_up_days", "gte", 3)],
+    )
+    assert captured["min_consecutive_up_days"] == 3
+    assert captured["min_week_change_rate"] == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fundamentals_presets_use_raised_display_limit(monkeypatch) -> None:
+    # ROB-436 C-2: fundamentals presets (tvscreener path) display closer to the full
+    # Toss match set (was 20). build_screener_results must pass the raised limit.
+    from app.services.invest_view_model import kr_fundamentals_tv_screener as tv
+    from app.services.invest_view_model import screener_service as svc
+    from app.services.invest_view_model.fundamentals_screener import (
+        FundamentalsScreenResult,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_loader(session, **kwargs):  # noqa: ANN001, ANN003
+        captured.clear()
+        captured.update(kwargs)
+        return FundamentalsScreenResult(
+            rows=[],
+            valuation_partition_date=date(2026, 6, 4),
+            fundamentals_partition_date=date(2026, 6, 4),
+            fundamentals_collected_at=None,
+            fundamentals_state="fresh",
+        )
+
+    monkeypatch.setattr(svc, "_should_use_snapshot_first", lambda _s: True)
+    monkeypatch.setattr(
+        tv, "load_kr_fundamentals_preset_from_tv_snapshot", _fake_loader
+    )
+
+    fake_screening = MagicMock()
+    resolver = _FakeResolver(watched=set())
+    await build_screener_results(
+        preset_id="cheap_value",
+        screening_service=fake_screening,
+        resolver=resolver,
+        session=object(),
+    )
+    assert captured["limit"] == svc._FUNDAMENTALS_DISPLAY_LIMIT == 200
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_screener_results_forwards_us_market_and_formats_us_labels() -> (
     None
 ):

@@ -21,6 +21,7 @@ import sqlalchemy as sa
 
 from app.models.invest_kr_fundamentals_snapshot import InvestKrFundamentalsSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
+from app.models.market_valuation_snapshot import MarketValuationSnapshot
 from app.services.invest_view_model.fundamentals_screener import (
     CHEAP_VALUE_SPEC,
     FUTURE_DIVIDEND_KING_SPEC,
@@ -56,6 +57,11 @@ async def _cleanup(db_session) -> None:
     )
     await db_session.execute(
         sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.like(f"{_PREFIX}%"))
+    )
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.like(f"{_PREFIX}%")
+        )
     )
     await db_session.commit()
 
@@ -166,6 +172,69 @@ async def test_profitable_company_includes_and_excludes_on_thresholds(db_session
     assert row["gross_margin_ttm"] == 0.31
     assert row["_screener_snapshot_state"] == "fresh"
     assert row["snapshot_date"] == _SD
+
+
+async def test_market_cap_overridden_by_valuation_snapshot(db_session):
+    """ROB-436 C-1: trusted Naver KRW market cap overrides the bogus tvscreener one."""
+    await _cleanup(db_session)
+    sym = f"{_PREFIX}10"
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym,
+                price=Decimal("5000"),
+                roe_ttm=Decimal("20"),
+                gross_margin_ttm=Decimal("0.31"),
+                # bogus tvscreener market cap (1억 for a real mid-cap = the live bug)
+                market_cap=Decimal("100000000"),
+                sector="Technology",
+                industry="Semiconductors",
+            )
+        ],
+        [_universe(sym, "정상중형주")],
+    )
+    # Seed the trusted Naver valuation (1,251.9억 KRW) on the partition the loader
+    # WILL resolve. The shared test DB / xdist may carry kr valuation rows on a date
+    # newer than _SD, so resolve first then seed there — otherwise the loader's
+    # newest-partition pick wouldn't contain this symbol (deterministic in CI too).
+    from app.services.invest_screener_snapshots.partition_health import (
+        resolve_healthy_partition,
+    )
+
+    val_hp = await resolve_healthy_partition(
+        db_session,
+        model=MarketValuationSnapshot,
+        date_col=MarketValuationSnapshot.snapshot_date,
+        market_col=MarketValuationSnapshot.market,
+        market="kr",
+    )
+    val_date = val_hp.partition_date if (val_hp and val_hp.partition_date) else _SD
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol=sym,
+            snapshot_date=val_date,
+            source="naver_finance",
+            market_cap=Decimal("125190000000"),
+        )
+    )
+    await db_session.commit()
+
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session,
+        market="kr",
+        spec=PROFITABLE_COMPANY_SPEC,
+        limit=20,
+        now=_now,
+        universe_count=1,
+    )
+    assert result is not None
+    row = next(r for r in result.rows if r["symbol"] == sym)
+    # display + sort use the trusted KRW value, NOT the tvscreener 1e8 bogus one.
+    assert row["market_cap"] == 125190000000.0
+    assert row["market_cap_krw"] == 125190000000.0
+    await _cleanup(db_session)
 
 
 async def test_fail_closed_on_null_required_column(db_session):

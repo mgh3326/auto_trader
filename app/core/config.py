@@ -331,6 +331,15 @@ class Settings(BaseSettings):
     # production rollout can move schedule → dry-run-on-cron → commit-on-cron in stages.
     invest_screener_schedule_enabled: bool = False
 
+    # ROB-438 — recurring schedulers for the valuation + investor-flow snapshots
+    # (the other inputs the screener depends on). Same double-gate as invest_screener:
+    # *_schedule_enabled registers cron (default off → manual kick only); *_commit_enabled
+    # allows DB writes (default off → dry-run-on-cron). Operator flips both to activate.
+    market_valuation_schedule_enabled: bool = False
+    market_valuation_snapshots_commit_enabled: bool = False
+    investor_flow_schedule_enabled: bool = False
+    investor_flow_snapshots_commit_enabled: bool = False
+
     # ROB-222 — Naver momentum/theme event snapshot writes stay dry-run unless explicitly enabled.
     invest_momentum_events_commit_enabled: bool = False
     invest_momentum_events_scheduler_enabled: bool = False

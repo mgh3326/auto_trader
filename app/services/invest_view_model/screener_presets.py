@@ -46,20 +46,30 @@ _KR_ONLY_PRESET_IDS = {
 # ROB-427 PR3: KR-only presets that ARE active for US (backed by US data now).
 # high_yield_value (ROE+PER) runs on Yahoo valuation snapshots — see
 # high_yield_value_screener.load_high_yield_value_from_snapshots(market="us").
-_US_ACTIVE_PRESET_IDS = {"high_yield_value"}
+# ROB-440: undervalued_breakout (proximity) runs on the same Yahoo valuation
+# snapshots (high_52w price) — load_undervalued_breakout_from_snapshots(market="us").
+# ROB-441 PR3: profitable_company/undervalued_growth/cheap_value/stable_growth run on
+# the market-parameterized derive loader (market_valuation US per/pbr/roe +
+# financial_fundamentals US annual periods → derive) — load_fundamentals_preset_from_snapshots(market="us").
+# ROB-441 PR4: growth_expectation_toss (QoQ) runs on yfinance quarterly income.
+# ROB-441 PR5: steady_dividend / future_dividend_king run on yfinance dividends
+# (per-share) + cashflow dividends-paid → payout_ratio + dividend streaks (derive).
+# Every Toss fundamentals preset is now US-active; only the supply-flow presets
+# (double_buy / investor_flow_momentum) remain KR-only (no US equivalent feed).
+_US_ACTIVE_PRESET_IDS = {
+    "high_yield_value",
+    "undervalued_breakout",
+    "profitable_company",
+    "undervalued_growth",
+    "cheap_value",
+    "stable_growth",
+    "growth_expectation_toss",
+    "steady_dividend",
+    "future_dividend_king",
+}
 _US_UNSUPPORTED_PRESET_IDS = {"double_buy", "investor_flow_momentum"}
 _US_UNSUPPORTED_REASON = "외국인·기관 수급은 국내 전용 지표입니다"
-_US_DATA_PENDING_REASON: dict[str, str] = {
-    "high_yield_value": "미국 가치형(ROE·PER) 활성화 준비중",
-    "undervalued_breakout": "미국 신고가(52주) 데이터 소스 준비중",
-    "profitable_company": "미국 펀더멘털(매출총이익률) 데이터 준비중",
-    "undervalued_growth": "미국 펀더멘털(연평균 매출·순이익 증감률) 데이터 준비중",
-    "cheap_value": "미국 펀더멘털(연평균 순이익 증감률) 데이터 준비중",
-    "growth_expectation_toss": "미국 펀더멘털(연평균 순이익 증감률) 데이터 준비중",
-    "stable_growth": "미국 펀더멘털(증감률·순이익 연속증가) 데이터 준비중",
-    "steady_dividend": "미국 배당·순이익 연속 데이터 준비중",
-    "future_dividend_king": "미국 배당·순이익 연속 데이터 준비중",
-}
+_US_DATA_PENDING_REASON: dict[str, str] = {}
 
 
 def _preset_availability(preset_id: str, market: str) -> tuple[str, str | None]:
