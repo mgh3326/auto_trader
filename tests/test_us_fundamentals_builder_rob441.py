@@ -11,8 +11,10 @@ import pytest
 
 from app.services.financial_fundamentals_snapshots.builder_us import (
     build_us_fundamentals_for_symbols,
+    enrich_annual_with_dividends,
     fetch_us_annual_fundamentals,
     parse_us_annual_income_periods,
+    parse_us_cashflow_dividends_paid,
     parse_us_quarterly_income_periods,
 )
 
@@ -325,3 +327,122 @@ async def test_build_include_quarterly() -> None:
         ["AAPL"], commit=False, fetcher=_annual, quarterly_fetcher=_quarterly
     )
     assert result2.snapshots_built == 1
+
+
+# --- ROB-441 PR5: dividends (→ steady_dividend / future_dividend_king) --------
+
+
+@pytest.mark.unit
+def test_parse_cashflow_dividends_paid() -> None:
+    # cashflow stores dividends paid as a negative outflow → abs() per year.
+    out = parse_us_cashflow_dividends_paid(
+        {
+            "2024-12-31": {"Cash Dividends Paid": -500, "Net Income": 1000},
+            "2023-12-31": {"Common Stock Dividend Paid": -450},
+            "bad": {"Cash Dividends Paid": -1},  # bad date skipped
+        }
+    )
+    assert out == {2024: Decimal("500"), 2023: Decimal("450")}
+
+
+@pytest.mark.unit
+def test_enrich_annual_with_dividends() -> None:
+    annual = parse_us_annual_income_periods(
+        symbol="X",
+        data={"2023-12-31": _period(900, 100), "2024-12-31": _period(1000, 120)},
+        collected_at=_COLLECTED,
+    )
+    enriched = enrich_annual_with_dividends(
+        annual,
+        dps_by_year={2023: Decimal("2"), 2024: Decimal("3")},
+        dividends_paid_by_year={2023: Decimal("30"), 2024: Decimal("36")},
+    )
+    by_year = {r.period_end_date.year: r for r in enriched}
+    assert by_year[2023].dividend_per_share == Decimal("2")
+    assert by_year[2023].payout_ratio == Decimal("30")  # 30/100 * 100
+    assert by_year[2024].dividend_per_share == Decimal("3")
+    assert by_year[2024].payout_ratio == Decimal("30")  # 36/120 * 100
+
+
+@pytest.mark.unit
+def test_enrich_skips_payout_when_net_income_nonpositive() -> None:
+    annual = parse_us_annual_income_periods(
+        symbol="X",
+        data={"2024-12-31": {"Net Income": 0, "Total Revenue": 1000}},
+        collected_at=_COLLECTED,
+    )
+    enriched = enrich_annual_with_dividends(
+        annual,
+        dps_by_year={2024: Decimal("1")},
+        dividends_paid_by_year={2024: Decimal("50")},
+    )
+    # net_income 0 → payout fail-closed None; dps still set.
+    assert enriched[0].dividend_per_share == Decimal("1")
+    assert enriched[0].payout_ratio is None
+
+
+@pytest.mark.unit
+def test_derive_dividend_streaks_from_enriched_us_periods() -> None:
+    from app.services.financial_fundamentals_snapshots.derive import (
+        FundamentalPeriod,
+        derive_fundamentals_metrics,
+    )
+
+    annual = parse_us_annual_income_periods(
+        symbol="X",
+        data={
+            "2021-12-31": _period(1000, 100),
+            "2022-12-31": _period(1100, 120),
+            "2023-12-31": _period(1200, 140),
+            "2024-12-31": _period(1300, 160),
+        },
+        collected_at=_COLLECTED,
+    )
+    enriched = enrich_annual_with_dividends(
+        annual,
+        dps_by_year={
+            2021: Decimal("1"),
+            2022: Decimal("2"),
+            2023: Decimal("3"),
+            2024: Decimal("4"),
+        },
+        dividends_paid_by_year={},
+    )
+    periods = [
+        FundamentalPeriod(
+            fiscal_period=r.fiscal_period,
+            period_type=r.period_type,
+            period_end_date=r.period_end_date,
+            filing_date=r.filing_date,
+            net_income=r.net_income,
+            dividend_per_share=r.dividend_per_share,
+            payout_ratio=r.payout_ratio,
+        )
+        for r in enriched
+    ]
+    deriv = derive_fundamentals_metrics(periods, report_date=dt.date(2025, 6, 1))
+    assert deriv.dividend_paid_streak_years.value  # 4 years paid
+    assert deriv.dividend_growth_streak_years.value  # rising 1→2→3→4
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_include_dividends_enriches_annual() -> None:
+    async def _annual(*, symbol, collected_at):  # noqa: ANN001
+        return parse_us_annual_income_periods(
+            symbol=symbol,
+            data={"2024-12-31": _period(1000, 100)},
+            collected_at=collected_at,
+        )
+
+    async def _dividends(*, symbol):  # noqa: ANN001
+        return ({2024: Decimal("3")}, {2024: Decimal("30")})
+
+    result = await build_us_fundamentals_for_symbols(
+        ["AAPL"],
+        commit=False,
+        fetcher=_annual,
+        include_dividends=True,
+        dividend_fetcher=_dividends,
+    )
+    assert result.snapshots_built == 1

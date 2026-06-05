@@ -45,6 +45,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Also build quarterly periods (annual-only by default; for QoQ presets).",
     )
     parser.add_argument(
+        "--with-dividends",
+        dest="include_dividends",
+        action="store_true",
+        help="Enrich annual periods with dividend_per_share + payout_ratio (for dividend presets).",
+    )
+    parser.add_argument(
         "--commit",
         action="store_true",
         help=(
@@ -104,6 +110,7 @@ async def run(args: argparse.Namespace) -> int:
         commit=args.commit,
         concurrency=args.concurrency,
         include_quarterly=args.include_quarterly,
+        include_dividends=args.include_dividends,
     )
     _print_result(result)
     return 0

@@ -51,9 +51,11 @@ _KR_ONLY_PRESET_IDS = {
 # ROB-441 PR3: profitable_company/undervalued_growth/cheap_value/stable_growth run on
 # the market-parameterized derive loader (market_valuation US per/pbr/roe +
 # financial_fundamentals US annual periods → derive) — load_fundamentals_preset_from_snapshots(market="us").
-# ROB-441 PR4: growth_expectation_toss (QoQ) runs once US quarterly periods are built
-# (yfinance quarterly income → derive earnings_growth_qoq). Dividend presets stay
-# data_pending until US dividend fundamentals are built (ROB-441 dividend follow-up).
+# ROB-441 PR4: growth_expectation_toss (QoQ) runs on yfinance quarterly income.
+# ROB-441 PR5: steady_dividend / future_dividend_king run on yfinance dividends
+# (per-share) + cashflow dividends-paid → payout_ratio + dividend streaks (derive).
+# Every Toss fundamentals preset is now US-active; only the supply-flow presets
+# (double_buy / investor_flow_momentum) remain KR-only (no US equivalent feed).
 _US_ACTIVE_PRESET_IDS = {
     "high_yield_value",
     "undervalued_breakout",
@@ -62,13 +64,12 @@ _US_ACTIVE_PRESET_IDS = {
     "cheap_value",
     "stable_growth",
     "growth_expectation_toss",
+    "steady_dividend",
+    "future_dividend_king",
 }
 _US_UNSUPPORTED_PRESET_IDS = {"double_buy", "investor_flow_momentum"}
 _US_UNSUPPORTED_REASON = "외국인·기관 수급은 국내 전용 지표입니다"
-_US_DATA_PENDING_REASON: dict[str, str] = {
-    "steady_dividend": "미국 배당·순이익 연속 데이터 준비중",
-    "future_dividend_king": "미국 배당·순이익 연속 데이터 준비중",
-}
+_US_DATA_PENDING_REASON: dict[str, str] = {}
 
 
 def _preset_availability(preset_id: str, market: str) -> tuple[str, str | None]:

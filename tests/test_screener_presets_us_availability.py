@@ -14,6 +14,7 @@ import pytest
 from app.services.invest_view_model.screener_presets import (
     _KR_ONLY_PRESET_IDS,
     _US_ACTIVE_PRESET_IDS,
+    _US_DATA_PENDING_REASON,
     _US_UNSUPPORTED_PRESET_IDS,
     preset_definitions,
 )
@@ -63,16 +64,15 @@ def test_us_flow_presets_unsupported_with_reason() -> None:
 
 
 @pytest.mark.unit
-def test_us_fundamentals_presets_data_pending_with_reason() -> None:
+def test_us_no_fundamentals_presets_data_pending() -> None:
+    # ROB-441 PR5: every Toss fundamentals preset is now US-active (yfinance
+    # annual/quarterly/dividends); no fundamentals preset stays data_pending.
     us = {p.id: p for p in preset_definitions("us")}
-    # ROB-441 PR4: growth_expectation_toss (QoQ) is now active (yfinance quarterly);
-    # only the dividend presets stay data_pending until US dividend data is built.
-    for pid in (
-        "steady_dividend",
-        "future_dividend_king",
-    ):
-        assert us[pid].availability == "data_pending", pid
-        assert us[pid].availabilityReason, pid
+    assert _US_DATA_PENDING_REASON == {}
+    assert all(p.availability != "data_pending" for p in us.values())
+    for pid in ("steady_dividend", "future_dividend_king"):
+        assert us[pid].availability == "active", pid
+        assert us[pid].availabilityReason is None, pid
 
 
 @pytest.mark.unit

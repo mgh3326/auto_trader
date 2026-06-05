@@ -245,6 +245,102 @@ async def fetch_us_quarterly_fundamentals(
     )
 
 
+# --- ROB-441 PR5: dividends (→ steady_dividend / future_dividend_king) ---------
+
+# yfinance cashflow "dividends paid" labels (a cash OUTFLOW → stored negative).
+_CASHFLOW_DIVIDEND_LABELS = (
+    "Cash Dividends Paid",
+    "Common Stock Dividends Paid",
+    "Common Stock Dividend Paid",
+    "Cash Dividend Paid",
+    "Dividends Paid",
+)
+
+
+def _dps_by_year_from_payload(data: dict[str, Any]) -> dict[int, Decimal]:
+    """Dividends payload ``{year: total_dps}`` → ``{int year: Decimal dps}``."""
+    out: dict[int, Decimal] = {}
+    for year_str, dps in (data or {}).items():
+        dec = _to_decimal(dps)
+        if dec is None:
+            continue
+        try:
+            out[int(str(year_str)[:4])] = dec
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def parse_us_cashflow_dividends_paid(data: dict[str, Any]) -> dict[int, Decimal]:
+    """yfinance cashflow ``data`` → ``{year: abs(dividends paid)}`` (total cash out)."""
+    out: dict[int, Decimal] = {}
+    for key, period_data in (data or {}).items():
+        if not isinstance(period_data, dict):
+            continue
+        period_end = _parse_period_end(str(key))
+        if period_end is None:
+            continue
+        raw = _first_present(period_data, _CASHFLOW_DIVIDEND_LABELS)
+        if raw is None:
+            continue
+        out[period_end.year] = abs(raw)  # cashflow stores the outflow as negative
+    return out
+
+
+def enrich_annual_with_dividends(
+    periods: list[FinancialFundamentalsUpsert],
+    *,
+    dps_by_year: dict[int, Decimal],
+    dividends_paid_by_year: dict[int, Decimal],
+) -> list[FinancialFundamentalsUpsert]:
+    """Set dividend_per_share (per-share, for streak direction) + payout_ratio
+    (percent = total dividends paid / net_income × 100, total-based to avoid split
+    skew) on each ANNUAL period. Quarterly rows pass through. Fail-closed: a missing
+    figure leaves that field None (the derive streak/payout metric → excluded)."""
+    out: list[FinancialFundamentalsUpsert] = []
+    for p in periods:
+        if p.period_type != "annual":
+            out.append(p)
+            continue
+        year = p.period_end_date.year
+        dps = dps_by_year.get(year)
+        payout: Decimal | None = None
+        div_paid = dividends_paid_by_year.get(year)
+        if div_paid is not None and p.net_income is not None and p.net_income > 0:
+            payout = (div_paid / p.net_income) * Decimal(100)
+        if dps is None and payout is None:
+            out.append(p)  # nothing to enrich
+            continue
+        out.append(
+            p.model_copy(update={"dividend_per_share": dps, "payout_ratio": payout})
+        )
+    return out
+
+
+async def fetch_us_dividend_data(
+    *, symbol: str
+) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
+    """(dps_by_year, dividends_paid_by_year) for ``symbol`` — both fail-closed empty."""
+    from app.mcp_server.tooling.fundamentals_sources_yfinance import (
+        _fetch_dividends_yfinance,
+        _fetch_financials_yfinance,
+    )
+
+    dps_by_year: dict[int, Decimal] = {}
+    dividends_paid_by_year: dict[int, Decimal] = {}
+    try:
+        dv = await _fetch_dividends_yfinance(symbol)
+        dps_by_year = _dps_by_year_from_payload(dv.get("data") or {})
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        logger.warning("US dividends fetch failed symbol=%s: %s", symbol, exc)
+    try:
+        cf = await _fetch_financials_yfinance(symbol, "cashflow", "annual")
+        dividends_paid_by_year = parse_us_cashflow_dividends_paid(cf.get("data") or {})
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        logger.warning("US cashflow fetch failed symbol=%s: %s", symbol, exc)
+    return dps_by_year, dividends_paid_by_year
+
+
 # --- ROB-441 PR2: build orchestration (resolve → fetch → optional commit) -----
 
 _UsFetcher = Callable[..., Awaitable[list[FinancialFundamentalsUpsert]]]
@@ -302,27 +398,46 @@ async def build_us_fundamentals_for_symbols(
     fetcher: _UsFetcher | None = None,
     include_quarterly: bool = False,
     quarterly_fetcher: _UsFetcher | None = None,
+    include_dividends: bool = False,
+    dividend_fetcher: Callable[..., Awaitable[tuple[dict, dict]]] | None = None,
 ) -> UsFundamentalsBuildResult:
     """Fetch + parse US annual (and optionally quarterly) fundamentals; write if commit.
 
     dry-run by default (commit=False): fetches/parses + reports counts, no DB write.
     commit=True upserts via the repository (operator-approved). include_quarterly also
-    builds quarterly periods (ROB-441 PR4, for QoQ → growth_expectation_toss).
+    builds quarterly periods (ROB-441 PR4, QoQ → growth_expectation_toss);
+    include_dividends enriches annual periods with dividend_per_share + payout_ratio
+    (ROB-441 PR5, → steady_dividend / future_dividend_king).
     Fail-closed: a symbol whose fetch fails or yields no rows is warned and skipped.
     """
     collected_at = collected_at or dt.datetime.now(dt.UTC)
     annual_fetch = fetcher or fetch_us_annual_fundamentals
     quarterly_fetch = quarterly_fetcher or fetch_us_quarterly_fundamentals
+    dividend_fetch = dividend_fetcher or fetch_us_dividend_data
     sem = asyncio.Semaphore(max(1, concurrency))
     warnings: list[str] = []
 
     async def _one(sym: str) -> list[FinancialFundamentalsUpsert]:
         async with sem:
             rows: list[FinancialFundamentalsUpsert] = []
+            annual_rows: list[FinancialFundamentalsUpsert] = []
             try:
-                rows.extend(await annual_fetch(symbol=sym, collected_at=collected_at))
+                annual_rows = list(
+                    await annual_fetch(symbol=sym, collected_at=collected_at)
+                )
             except Exception as exc:  # noqa: BLE001 — fail-closed per symbol
                 warnings.append(f"{sym}: annual fetch failed ({exc})")
+            if include_dividends and annual_rows:
+                try:
+                    dps_by_year, div_paid_by_year = await dividend_fetch(symbol=sym)
+                    annual_rows = enrich_annual_with_dividends(
+                        annual_rows,
+                        dps_by_year=dps_by_year,
+                        dividends_paid_by_year=div_paid_by_year,
+                    )
+                except Exception as exc:  # noqa: BLE001 — fail-closed per symbol
+                    warnings.append(f"{sym}: dividend fetch failed ({exc})")
+            rows.extend(annual_rows)
             if include_quarterly:
                 try:
                     rows.extend(
