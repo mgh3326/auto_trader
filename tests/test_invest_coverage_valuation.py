@@ -234,3 +234,62 @@ async def test_valuation_builder_and_repository_upsert(db_session):
     await db_session.commit()
     counts = await repo.coverage_counts("kr", fresh_date=snapshot_date)
     assert counts.fresh_symbols >= 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_valuation_builder_threads_high_52w_date_us(db_session):
+    # ROB-440 PR3: the US fetcher's high_52w_date (iso string in raw, JSON-safe) →
+    # parsed to a date in the payload + persisted to the high_52w_date column
+    # (powers undervalued_breakout date-recency).
+    from app.services.market_valuation_snapshots.builder import (
+        build_valuation_snapshots_for_market,
+    )
+    from app.services.market_valuation_snapshots.repository import (
+        MarketValuationSnapshotsRepository,
+    )
+
+    snapshot_date = dt.date(2026, 5, 12)
+    sym = "ZZ9001"
+
+    async def fake_fetcher(symbol: str, market: str) -> dict[str, object]:
+        assert market == "us"
+        return {
+            "per": "8",
+            "pbr": "0.8",
+            "yearHigh": "100",
+            "high_52w_date": "2026-05-01",  # iso string (JSON-safe in raw_payload)
+        }
+
+    result = await build_valuation_snapshots_for_market(
+        market="us",
+        symbols=[sym],
+        snapshot_date=snapshot_date,
+        fetcher=fake_fetcher,
+    )
+    assert len(result.payloads) == 1
+    assert result.payloads[0].high_52w_date == dt.date(2026, 5, 1)
+    assert (
+        result.payloads[0].raw_payload["high_52w_date"] == "2026-05-01"
+    )  # not a date obj
+
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
+    )
+    await db_session.commit()
+    repo = MarketValuationSnapshotsRepository(db_session)
+    assert await repo.upsert(result.payloads) == 1
+    await db_session.commit()
+    row = (
+        await db_session.execute(
+            sa.select(MarketValuationSnapshot).where(
+                MarketValuationSnapshot.symbol == sym,
+                MarketValuationSnapshot.snapshot_date == snapshot_date,
+            )
+        )
+    ).scalar_one()
+    assert row.high_52w_date == dt.date(2026, 5, 1)  # persisted to the column
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
+    )
+    await db_session.commit()

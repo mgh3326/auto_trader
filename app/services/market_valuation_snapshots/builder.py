@@ -32,6 +32,17 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _to_date(value: Any) -> dt.date | None:
+    if isinstance(value, dt.date):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return dt.date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
 async def default_valuation_fetcher(symbol: str, market: str) -> dict[str, Any]:
     if market == "kr":
         from app.services.naver_finance.valuation import fetch_valuation
@@ -39,14 +50,23 @@ async def default_valuation_fetcher(symbol: str, market: str) -> dict[str, Any]:
         return await fetch_valuation(symbol)
     if market == "us":
         from app.services.brokers.yahoo.client import (
+            fetch_52w_high_date,
             fetch_fast_info,
             fetch_fundamental_info,
         )
 
-        fast_info, fundamentals = await asyncio.gather(
-            fetch_fast_info(symbol), fetch_fundamental_info(symbol)
+        fast_info, fundamentals, high_52w_date = await asyncio.gather(
+            fetch_fast_info(symbol),
+            fetch_fundamental_info(symbol),
+            fetch_52w_high_date(symbol),  # ROB-440 PR3: 52w-high date (date-recency)
         )
-        return {**fast_info, **fundamentals}
+        # isoformat string keeps raw_payload (JSONB) serializable; parsed back in
+        # _payload_from_raw → the high_52w_date column.
+        return {
+            **fast_info,
+            **fundamentals,
+            "high_52w_date": high_52w_date.isoformat() if high_52w_date else None,
+        }
     raise ValueError(f"unsupported market: {market}")
 
 
@@ -73,6 +93,7 @@ def _payload_from_raw(
         market_cap=_to_decimal(raw.get("market_cap") or raw.get("marketCap")),
         high_52w=_to_decimal(raw.get("high_52w") or raw.get("yearHigh")),
         low_52w=_to_decimal(raw.get("low_52w") or raw.get("yearLow")),
+        high_52w_date=_to_date(raw.get("high_52w_date")),
         raw_payload=redact_sensitive_payload(dict(raw)),
     )
 

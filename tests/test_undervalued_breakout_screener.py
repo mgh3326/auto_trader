@@ -297,11 +297,13 @@ async def test_loader_ranks_by_proximity_desc_then_per_asc(db_session):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_loader_us_proximity_passes(db_session):
-    # ROB-440 Part 2: US runs on the same market-parameterized proximity loader
-    # (high_52w from Yahoo .info, latest_close from US invest_screener). No KR
-    # universe / common-stock filter for US.
-    vd = dt.date(2099, 12, 31)
+async def test_loader_us_date_recency_passes(db_session):
+    # ROB-440 PR3: US uses date-recency (a NEW 52-week high within 20 XNYS trading
+    # sessions of the partition), NOT the price-proximity proxy. latest_close=80 vs
+    # high_52w=100 (proximity 0.80) would FAIL the old >=0.95 rule — so passing here
+    # proves the switch to date-recency. In-range XNYS dates (2099 is out of range).
+    vd = dt.date(2026, 6, 2)
+    high_date = dt.date(2026, 5, 20)  # ~9 XNYS sessions before vd → recent new high
     sym = "907031"
     await db_session.execute(
         sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
@@ -319,6 +321,7 @@ async def test_loader_us_proximity_passes(db_session):
             per=Decimal("8"),
             pbr=Decimal("0.8"),
             high_52w=Decimal("100"),
+            high_52w_date=high_date,
             market_cap=Decimal("5e11"),
         )
     )
@@ -327,7 +330,7 @@ async def test_loader_us_proximity_passes(db_session):
             market="us",
             symbol=sym,
             snapshot_date=vd,
-            latest_close=Decimal("99"),  # 0.99 proximity >= 0.95 → passes
+            latest_close=Decimal("80"),  # proximity 0.80 < 0.95 (old rule would reject)
             closes_window=[],
             source="kis",
         )
@@ -340,7 +343,26 @@ async def test_loader_us_proximity_passes(db_session):
     assert rows is not None
     row = next(r for r in rows if r["symbol"] == sym)
     assert row["market"] == "us"  # market threaded through
-    assert row["high_52w"] == 100.0
+    assert row["new_high_age_trading_days"] is not None
+    assert row["new_high_age_trading_days"] <= 20  # recent new high
+
+
+@pytest.mark.unit
+def test_new_high_age_trading_days_xnys() -> None:
+    from app.services.invest_view_model.undervalued_breakout_screener import (
+        _new_high_age_trading_days,
+    )
+
+    part = dt.date(2026, 6, 2)
+    # ~9 trading sessions earlier → small, in-range age.
+    age = _new_high_age_trading_days(dt.date(2026, 5, 20), part, "us")
+    assert age is not None and 0 < age <= 20
+    # same day → age 0 (a new high made today is the most recent).
+    assert _new_high_age_trading_days(part, part, "us") == 0
+    # future high date → None (fail-closed, not "recent").
+    assert _new_high_age_trading_days(dt.date(2026, 6, 30), part, "us") is None
+    # missing date → None.
+    assert _new_high_age_trading_days(None, part, "us") is None
 
 
 @pytest.mark.integration

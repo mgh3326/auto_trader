@@ -4,7 +4,7 @@ import logging
 import urllib.error
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -136,6 +136,24 @@ async def fetch_ohlcv(
     if normalized_period in {"day", "week", "month"}:
         return _filter_closed_buckets_nyse(raw, normalized_period)
     return raw
+
+
+async def fetch_52w_high_date(ticker: str) -> date | None:
+    """ROB-440: date of the 52-week high (max daily ``high`` over ~1y) for US
+    undervalued_breakout date-recency. None on any error / empty (fail-closed)."""
+    try:
+        df = await fetch_ohlcv(ticker, days=260, period="day")
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        logger.warning("52w-high-date fetch failed %s: %s", ticker, exc)
+        return None
+    if df is None or df.empty or "high" not in df.columns or "date" not in df.columns:
+        return None
+    try:
+        hi_idx = df["high"].idxmax()
+        value = df.loc[hi_idx, "date"]
+    except Exception:  # noqa: BLE001 — fail-closed
+        return None
+    return value if isinstance(value, date) else None
 
 
 async def _fetch_ohlcv_raw(

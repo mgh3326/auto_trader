@@ -77,3 +77,51 @@ async def test_fetch_fundamental_info_roe_none_when_missing(
 
     result = await fetch_fundamental_info("AAPL")
     assert result["ROE"] is None
+
+
+# --- ROB-440 PR3: 52-week-high date (for US undervalued_breakout date-recency) ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_52w_high_date_picks_max_high() -> None:
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.services.brokers.yahoo import client as yclient
+
+    df = pd.DataFrame(
+        {
+            "date": [dt.date(2026, 5, 1), dt.date(2026, 5, 20), dt.date(2026, 6, 1)],
+            "high": [90.0, 110.0, 100.0],  # max high on 2026-05-20
+            "low": [80.0, 100.0, 95.0],
+            "close": [88.0, 108.0, 99.0],
+        }
+    )
+
+    async def _fake_ohlcv(ticker, days=100, period="day", end_date=None):  # noqa: ANN001
+        return df
+
+    with patch.object(yclient, "fetch_ohlcv", _fake_ohlcv):
+        result = await yclient.fetch_52w_high_date("AAPL")
+    assert result == dt.date(2026, 5, 20)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_52w_high_date_fail_closed() -> None:
+    import pandas as pd
+
+    from app.services.brokers.yahoo import client as yclient
+
+    async def _empty(ticker, days=100, period="day", end_date=None):  # noqa: ANN001
+        return pd.DataFrame()
+
+    async def _boom(ticker, days=100, period="day", end_date=None):  # noqa: ANN001
+        raise RuntimeError("yfinance down")
+
+    with patch.object(yclient, "fetch_ohlcv", _empty):
+        assert await yclient.fetch_52w_high_date("AAPL") is None
+    with patch.object(yclient, "fetch_ohlcv", _boom):
+        assert await yclient.fetch_52w_high_date("AAPL") is None
