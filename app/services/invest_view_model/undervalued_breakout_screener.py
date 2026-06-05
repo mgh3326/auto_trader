@@ -52,8 +52,13 @@ async def load_undervalued_breakout_from_snapshots(
     limit: int = 20,
     today_market_date: dt.date | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Toss-parity 저평가 탈출 rows, or None when no KR valuation partition exists."""
-    if session is None or market != "kr":
+    """Toss-parity 저평가 탈출 rows, or None when no valuation partition exists.
+
+    ROB-440 Part 2: market-parameterized for US (proximity definition: close >=
+    high_52w * 0.95). KR display uses the tvscreener date-recency loader; this
+    market_valuation-backed loader serves US (+ KR reports/PIT). high_52w(price) +
+    latest_close required; NULL → fail-closed excluded."""
+    if session is None or market not in {"kr", "us"}:
         return None
 
     from app.services.invest_screener_snapshots.partition_health import (
@@ -65,7 +70,7 @@ async def load_undervalued_breakout_from_snapshots(
         model=MarketValuationSnapshot,
         date_col=MarketValuationSnapshot.snapshot_date,
         market_col=MarketValuationSnapshot.market,
-        market="kr",
+        market=market,
     )
     val_date = val_hp.partition_date if val_hp else None
     if val_date is None:
@@ -74,7 +79,7 @@ async def load_undervalued_breakout_from_snapshots(
 
     latest_price_stmt = sa.select(
         sa.func.max(InvestScreenerSnapshot.snapshot_date)
-    ).where(InvestScreenerSnapshot.market == "kr")
+    ).where(InvestScreenerSnapshot.market == market)
     try:
         price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
@@ -106,7 +111,7 @@ async def load_undervalued_breakout_from_snapshots(
             ),
         )
         .where(
-            MarketValuationSnapshot.market == "kr",
+            MarketValuationSnapshot.market == market,
             MarketValuationSnapshot.snapshot_date == val_date,
             MarketValuationSnapshot.per > 0,
             MarketValuationSnapshot.per <= _MAX_PER,
@@ -130,7 +135,9 @@ async def load_undervalued_breakout_from_snapshots(
 
     symbols = [r["symbol"] for r in cand_rows]
     name_map: dict[str, str] = {}
-    if symbols:
+    if (
+        market == "kr" and symbols
+    ):  # ROB-440 Part 2: KR name/common-stock filter is KR-only
         try:
             names = await session.execute(
                 sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
@@ -151,7 +158,7 @@ async def load_undervalued_breakout_from_snapshots(
 
         from app.services.invest_screener_snapshots.freshness import today_trading_date
 
-        today_market_date = today_trading_date("kr", now=datetime.now(UTC))
+        today_market_date = today_trading_date(market, now=datetime.now(UTC))
     state = "fresh" if val_date == today_market_date else "stale"
     if partition_degraded:
         from app.services.invest_screener_snapshots.partition_health import (
@@ -167,7 +174,7 @@ async def load_undervalued_breakout_from_snapshots(
         if sym in seen:
             continue
         name = name_map.get(sym)
-        if not _is_kr_toss_common_stock(sym, name):
+        if market == "kr" and not _is_kr_toss_common_stock(sym, name):
             continue
         # 신고가 근접 (fail-closed on NULL close / high_52w)
         if not _passes_near_high(r["latest_close"], r["high_52w"], _NEAR_HIGH_RATIO):
@@ -177,7 +184,7 @@ async def load_undervalued_breakout_from_snapshots(
         rows.append(
             {
                 "symbol": sym,
-                "market": "kr",
+                "market": market,
                 "name": name,
                 "latest_close": float(r["latest_close"])
                 if r["latest_close"] is not None

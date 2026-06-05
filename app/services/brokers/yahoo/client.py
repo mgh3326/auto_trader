@@ -332,6 +332,11 @@ async def fetch_fundamental_info(ticker: str) -> dict:
                     # request) unblocks US high_yield_value (already US-active,
                     # ROB-427 PR3) which was empty because roe was never populated.
                     "ROE": _roe_to_percent(info.get("returnOnEquity")),
+                    # ROB-440 Part 2: 52-week high/low (price) from the same .info
+                    # call → market_valuation high_52w/low_52w populated → US
+                    # undervalued_breakout (proximity: close >= high_52w * 0.95).
+                    "yearHigh": info.get("fiftyTwoWeekHigh"),
+                    "yearLow": info.get("fiftyTwoWeekLow"),
                 }
             except Exception as exc:
                 last_exc = exc
