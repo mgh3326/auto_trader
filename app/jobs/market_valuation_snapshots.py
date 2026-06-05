@@ -37,6 +37,14 @@ class MarketValuationSnapshotBuildRequest:
     concurrency: int = 4
     commit: bool = False
     today: dt.date | None = None
+    # ROB-440 PR4: US screener wants common stocks only (is_common_stock) — the full
+    # active universe (~12k incl ETFs/warrants) over-loads yfinance (FD/401). KR has
+    # no is_common_stock column, so this is US-effective only.
+    common_stocks_only: bool = False
+    # ROB-440 PR4: the 52w-high DATE needs a heavy OHLC fetch (3rd yahoo call/symbol);
+    # opt-in so the bulk valuation backfill stays light. Only undervalued_breakout
+    # date-recency consumes it.
+    include_high_date: bool = False
 
 
 @dataclass(frozen=True)
@@ -77,7 +85,13 @@ def _normalize_symbol(symbol: str) -> str:
     return symbol.strip().upper()
 
 
-async def resolve_symbols(market: str, override: list[str], limit: int) -> list[str]:
+async def resolve_symbols(
+    market: str,
+    override: list[str],
+    limit: int,
+    *,
+    common_stocks_only: bool = False,
+) -> list[str]:
     market_norm = _validate_market(market)
     if override:
         return [_normalize_symbol(symbol) for symbol in override if symbol.strip()]
@@ -94,17 +108,19 @@ async def resolve_symbols(market: str, override: list[str], limit: int) -> list[
         else:
             from app.models.us_symbol_universe import USSymbolUniverse
 
-            stmt = (
-                sa.select(USSymbolUniverse.symbol)
-                .where(USSymbolUniverse.is_active.is_(True))
-                .order_by(USSymbolUniverse.symbol)
-                .limit(limit)
+            stmt = sa.select(USSymbolUniverse.symbol).where(
+                USSymbolUniverse.is_active.is_(True)
             )
+            if common_stocks_only:  # ROB-440 PR4: US common-stock filter
+                stmt = stmt.where(USSymbolUniverse.is_common_stock.is_(True))
+            stmt = stmt.order_by(USSymbolUniverse.symbol).limit(limit)
         result = await session.execute(stmt)
         return [r[0] for r in result.all()]
 
 
-async def resolve_active_universe(market: str) -> list[str]:
+async def resolve_active_universe(
+    market: str, *, common_stocks_only: bool = False
+) -> list[str]:
     market_norm = _validate_market(market)
     async with AsyncSessionLocal() as session:
         if market_norm == "kr":
@@ -118,11 +134,12 @@ async def resolve_active_universe(market: str) -> list[str]:
         else:
             from app.models.us_symbol_universe import USSymbolUniverse
 
-            stmt = (
-                sa.select(USSymbolUniverse.symbol)
-                .where(USSymbolUniverse.is_active.is_(True))
-                .order_by(USSymbolUniverse.symbol)
+            stmt = sa.select(USSymbolUniverse.symbol).where(
+                USSymbolUniverse.is_active.is_(True)
             )
+            if common_stocks_only:  # ROB-440 PR4: US common-stock filter
+                stmt = stmt.where(USSymbolUniverse.is_common_stock.is_(True))
+            stmt = stmt.order_by(USSymbolUniverse.symbol)
         result = await session.execute(stmt)
         return [r[0] for r in result.all()]
 
@@ -204,9 +221,14 @@ async def run_market_valuation_snapshot_build(
     started_at = dt.datetime.now(dt.UTC)
     today = request.today or started_at.date()
     symbols = await (
-        resolve_active_universe(market)
+        resolve_active_universe(market, common_stocks_only=request.common_stocks_only)
         if request.all_symbols
-        else resolve_symbols(market, list(request.symbols), request.limit or 20)
+        else resolve_symbols(
+            market,
+            list(request.symbols),
+            request.limit or 20,
+            common_stocks_only=request.common_stocks_only,
+        )
     )
     if not symbols:
         finished_at = dt.datetime.now(dt.UTC)
@@ -239,6 +261,7 @@ async def run_market_valuation_snapshot_build(
             symbols=symbols[start : start + effective_batch_size],
             snapshot_date=today,
             concurrency=request.concurrency,
+            include_high_date=request.include_high_date,
         )
         payloads = list(result.payloads)
         warnings.extend(f"batch {batches}: {warning}" for warning in result.warnings)

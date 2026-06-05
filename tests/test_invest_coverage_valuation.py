@@ -293,3 +293,97 @@ async def test_valuation_builder_threads_high_52w_date_us(db_session):
         sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
     )
     await db_session.commit()
+
+
+# --- ROB-440 PR4: US valuation scale (common-stock filter + high_52w_date opt-in) ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_default_valuation_fetcher_high_date_opt_in(monkeypatch):
+    from app.services.market_valuation_snapshots import builder
+
+    calls = {"high": 0}
+
+    async def _fast(sym):  # noqa: ANN001
+        return {"symbol": sym}
+
+    async def _fund(sym):  # noqa: ANN001
+        return {"PER": 8.0}
+
+    async def _high(sym):  # noqa: ANN001
+        calls["high"] += 1
+        return dt.date(2026, 5, 20)
+
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
+    monkeypatch.setattr(
+        "app.services.brokers.yahoo.client.fetch_fundamental_info", _fund
+    )
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_52w_high_date", _high)
+
+    # opt-out (default): no OHLC call, no high_52w_date → light bulk backfill
+    raw = await builder.default_valuation_fetcher("AAPL", "us")
+    assert calls["high"] == 0
+    assert "high_52w_date" not in raw
+
+    # opt-in: OHLC fetched, high_52w_date as JSON-safe iso string
+    raw2 = await builder.default_valuation_fetcher("AAPL", "us", include_high_date=True)
+    assert calls["high"] == 1
+    assert raw2["high_52w_date"] == "2026-05-20"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_us_common_stocks_only(db_session):
+    from app.jobs.market_valuation_snapshots import resolve_active_universe
+    from app.models.us_symbol_universe import USSymbolUniverse
+
+    syms = ["ZZCOM1", "ZZETF1", "ZZINA1"]
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
+    db_session.add_all(
+        [
+            USSymbolUniverse(
+                symbol="ZZCOM1", exchange="NASDAQ", is_active=True, is_common_stock=True
+            ),
+            USSymbolUniverse(
+                symbol="ZZETF1", exchange="NYSE", is_active=True, is_common_stock=False
+            ),
+            USSymbolUniverse(
+                symbol="ZZINA1",
+                exchange="NASDAQ",
+                is_active=False,
+                is_common_stock=True,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    common = set(await resolve_active_universe("us", common_stocks_only=True))
+    assert "ZZCOM1" in common  # common + active
+    assert "ZZETF1" not in common  # is_common_stock=False excluded
+    assert "ZZINA1" not in common  # inactive excluded
+
+    unfiltered = set(await resolve_active_universe("us"))
+    assert {"ZZCOM1", "ZZETF1"} <= unfiltered  # active non-common included w/o filter
+
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
+    await db_session.commit()
+
+
+@pytest.mark.unit
+def test_build_market_valuation_cli_flags():
+    from scripts.build_market_valuation_snapshots import parse_args
+
+    base = parse_args(["--market", "us", "--symbol", "AAPL"])
+    assert base.common_stocks_only is False
+    assert base.include_high_date is False
+
+    opted = parse_args(
+        ["--market", "us", "--all", "--common-stocks-only", "--with-high-52w-date"]
+    )
+    assert opted.common_stocks_only is True
+    assert opted.include_high_date is True
