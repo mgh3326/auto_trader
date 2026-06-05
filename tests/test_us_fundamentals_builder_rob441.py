@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from app.services.financial_fundamentals_snapshots.builder_us import (
+    build_us_fundamentals_for_symbols,
     fetch_us_annual_fundamentals,
     parse_us_annual_income_periods,
 )
@@ -166,3 +167,75 @@ def test_derive_reuses_us_periods() -> None:
     assert deriv.revenue_growth_3y_avg.value is not None
     assert deriv.revenue_growth_3y_avg.state != "unavailable"
     assert deriv.earnings_growth_3y_avg.value is not None
+
+
+# --- ROB-441 PR2: build orchestration --------------------------------------
+
+
+async def _fetch_one_period(*, symbol, collected_at):  # noqa: ANN001
+    if symbol == "EMPTY":
+        return []
+    return parse_us_annual_income_periods(
+        symbol=symbol,
+        data={"2024-12-31": _period(1000, 100)},
+        collected_at=collected_at,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_dry_run_no_commit() -> None:
+    result = await build_us_fundamentals_for_symbols(
+        ["AAPL", "EMPTY"], commit=False, fetcher=_fetch_one_period
+    )
+    assert result.symbols_resolved == 2
+    assert result.snapshots_built == 1  # AAPL 1 period; EMPTY 0
+    assert result.committed is False
+    assert any("EMPTY" in w for w in result.warnings)
+    assert len(result.samples) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_commit_writes(monkeypatch) -> None:
+    captured: dict = {}
+
+    class _StubRepo:
+        def __init__(self, session):  # noqa: ANN001
+            pass
+
+        async def upsert(self, payloads):  # noqa: ANN001
+            captured["rows"] = list(payloads)
+            return len(captured["rows"])
+
+    class _FakeCM:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):  # noqa: ANN002
+            return False
+
+    monkeypatch.setattr("app.core.db.AsyncSessionLocal", lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.financial_fundamentals_snapshots.repository."
+        "FinancialFundamentalsSnapshotsRepository",
+        _StubRepo,
+    )
+    result = await build_us_fundamentals_for_symbols(
+        ["AAPL"], commit=True, fetcher=_fetch_one_period
+    )
+    assert result.committed is True
+    assert result.snapshots_built == 1
+    assert len(captured["rows"]) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_fetch_error_is_fail_closed() -> None:
+    async def _boom(*, symbol, collected_at):  # noqa: ANN001
+        raise RuntimeError("yfinance down")
+
+    result = await build_us_fundamentals_for_symbols(["X"], commit=True, fetcher=_boom)
+    assert result.snapshots_built == 0
+    assert result.committed is False  # nothing to commit
+    assert any("fetch failed" in w for w in result.warnings)
