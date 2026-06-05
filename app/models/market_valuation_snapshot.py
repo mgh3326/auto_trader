@@ -57,6 +57,9 @@ class MarketValuationSnapshot(Base):
     market_cap: Mapped[Decimal | None] = mapped_column(Numeric(30, 2), nullable=True)
     high_52w: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
     low_52w: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    # ROB-440 PR3: date the 52-week high occurred (US, from yfinance OHLC) —
+    # powers undervalued_breakout date-recency parity. NULL for KR.
+    high_52w_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False

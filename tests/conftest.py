@@ -458,6 +458,15 @@ async def db_session():
                         "ADD COLUMN IF NOT EXISTS week_high_52_date DATE"
                     )
                 )
+                # ROB-440 PR3 — high_52w_date added to the (persistent) market
+                # valuation snapshot table for US undervalued_breakout date-recency;
+                # create_all is a no-op on the existing table (mirrors the migration).
+                await conn.execute(
+                    text(
+                        "ALTER TABLE market_valuation_snapshots "
+                        "ADD COLUMN IF NOT EXISTS high_52w_date DATE"
+                    )
+                )
                 # ROB-284 — crypto_candles_1d migrates in-place from the
                 # legacy (symbol, market) shape to the (instrument_id, time)
                 # shape. The test DB picks up its schema from
