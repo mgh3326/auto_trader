@@ -300,6 +300,19 @@ async def fetch_fast_info(ticker: str) -> dict[str, Any]:
     return await asyncio.to_thread(_fetch_fast_info_sync, ticker)
 
 
+def _roe_to_percent(raw_roe: Any) -> float | None:
+    """ROB-440: yfinance ``returnOnEquity`` is a fraction (0.35 = 35%); the screener
+    (high_yield_value ``roe >= 15``) and KR Naver ROE are both in percent. Convert
+    to percent; return None for missing/non-numeric so the row stays fail-closed
+    (a null ROE keeps high_yield_value preparing, never fabricated)."""
+    if raw_roe is None or isinstance(raw_roe, bool):
+        return None
+    try:
+        return float(raw_roe) * 100.0
+    except (TypeError, ValueError):
+        return None
+
+
 async def fetch_fundamental_info(ticker: str) -> dict:
     yahoo_ticker = to_yahoo_symbol(ticker)
 
@@ -315,6 +328,10 @@ async def fetch_fundamental_info(ticker: str) -> dict:
                     "EPS": info.get("trailingEps"),
                     "BPS": info.get("bookValue"),
                     "Dividend Yield": info.get("trailingAnnualDividendYield"),
+                    # ROB-440: ROE (percent) from the same .info call (no extra
+                    # request) unblocks US high_yield_value (already US-active,
+                    # ROB-427 PR3) which was empty because roe was never populated.
+                    "ROE": _roe_to_percent(info.get("returnOnEquity")),
                 }
             except Exception as exc:
                 last_exc = exc
