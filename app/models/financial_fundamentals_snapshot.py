@@ -46,7 +46,8 @@ class FinancialFundamentalsSnapshot(Base):
             name="ck_financial_fundamentals_snapshots_period_type",
         ),
         CheckConstraint(
-            "source IN ('dart')",
+            # ROB-441: KR=DART; US non-DART vendors (yfinance statements, finnhub).
+            "source IN ('dart', 'yfinance', 'finnhub')",
             name="ck_financial_fundamentals_snapshots_source",
         ),
         CheckConstraint(
