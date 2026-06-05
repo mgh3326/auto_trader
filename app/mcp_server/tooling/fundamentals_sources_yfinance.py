@@ -249,6 +249,32 @@ async def _fetch_financials_yfinance(
     }
 
 
+async def _fetch_dividends_yfinance(symbol: str) -> dict[str, Any]:
+    """ROB-441: yfinance ``Ticker.dividends`` (per-share payments, split-adjusted) →
+    ``{"data": {year: total_dps}}`` aggregated per calendar year."""
+
+    def fetch_sync(ticker: yf.Ticker) -> dict[str, float]:
+        series = ticker.dividends
+        out: dict[str, float] = {}
+        if series is None or len(series) == 0:
+            return out
+        for ts, amount in series.items():
+            year = getattr(ts, "year", None)
+            if year is None or not pd.notna(amount):
+                continue
+            val = _normalize_value(amount)
+            if val is None:
+                continue
+            out[str(year)] = out.get(str(year), 0.0) + float(val)
+        return out
+
+    with yfinance_tracing_session() as session:
+        ticker = yf.Ticker(symbol, session=session)
+        data = await asyncio.to_thread(fetch_sync, ticker)
+
+    return {"symbol": symbol.upper(), "source": "yfinance", "data": data}
+
+
 async def _fetch_investment_opinions_yfinance(
     symbol: str,
     limit: int,

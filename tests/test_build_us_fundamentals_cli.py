@@ -45,3 +45,12 @@ def test_with_quarterly_flag() -> None:
     assert (
         parse_args(["--symbol", "AAPL", "--with-quarterly"]).include_quarterly is True
     )
+
+
+@pytest.mark.unit
+def test_with_dividends_flag() -> None:
+    # ROB-441 PR5: --with-dividends enriches annual periods (off by default).
+    assert parse_args(["--symbol", "AAPL"]).include_dividends is False
+    assert (
+        parse_args(["--symbol", "AAPL", "--with-dividends"]).include_dividends is True
+    )
