@@ -18,10 +18,15 @@ upsert), the CLI/operator orchestration, and the US display path are follow-ups.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+import sqlalchemy as sa
 
 from app.services.financial_fundamentals_snapshots.repository import (
     FinancialFundamentalsUpsert,
@@ -151,4 +156,105 @@ async def fetch_us_annual_fundamentals(
         return []
     return parse_us_annual_income_periods(
         symbol=symbol, data=payload.get("data") or {}, collected_at=collected_at
+    )
+
+
+# --- ROB-441 PR2: build orchestration (resolve → fetch → optional commit) -----
+
+_UsFetcher = Callable[..., Awaitable[list[FinancialFundamentalsUpsert]]]
+
+
+@dataclass(frozen=True)
+class UsFundamentalsBuildResult:
+    symbols_resolved: int
+    snapshots_built: int
+    committed: bool
+    samples: tuple[dict[str, Any], ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+async def resolve_us_symbols(
+    *, override: Sequence[str], limit: int, all_symbols: bool
+) -> list[str]:
+    """US common-stock universe (is_common_stock + is_active), or the override list."""
+    if override:
+        return [s.strip().upper() for s in override if s.strip()]
+    from app.core.db import AsyncSessionLocal
+    from app.models.us_symbol_universe import USSymbolUniverse
+
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            sa.select(USSymbolUniverse.symbol)
+            .where(
+                USSymbolUniverse.is_active.is_(True),
+                USSymbolUniverse.is_common_stock.is_(True),
+            )
+            .order_by(USSymbolUniverse.symbol)
+        )
+        if not all_symbols:
+            stmt = stmt.limit(limit)
+        return [r[0] for r in (await session.execute(stmt)).all()]
+
+
+def _sample(p: FinancialFundamentalsUpsert) -> dict[str, Any]:
+    return {
+        "symbol": p.symbol,
+        "fiscal_period": p.fiscal_period,
+        "period_end_date": p.period_end_date.isoformat(),
+        "filing_date": p.filing_date.isoformat() if p.filing_date else None,
+        "revenue": str(p.revenue) if p.revenue is not None else None,
+        "net_income": str(p.net_income) if p.net_income is not None else None,
+    }
+
+
+async def build_us_fundamentals_for_symbols(
+    symbols: Sequence[str],
+    *,
+    commit: bool = False,
+    concurrency: int = 4,
+    collected_at: dt.datetime | None = None,
+    fetcher: _UsFetcher | None = None,
+) -> UsFundamentalsBuildResult:
+    """Fetch + parse US annual fundamentals for ``symbols``; write only if commit.
+
+    dry-run by default (commit=False): fetches/parses + reports counts, no DB write.
+    commit=True upserts via the repository (operator-approved). Fail-closed: a symbol
+    whose fetch fails or yields no rows is warned and skipped (never fabricated).
+    """
+    collected_at = collected_at or dt.datetime.now(dt.UTC)
+    fetch = fetcher or fetch_us_annual_fundamentals
+    sem = asyncio.Semaphore(max(1, concurrency))
+    warnings: list[str] = []
+
+    async def _one(sym: str) -> list[FinancialFundamentalsUpsert]:
+        async with sem:
+            try:
+                rows = await fetch(symbol=sym, collected_at=collected_at)
+            except Exception as exc:  # noqa: BLE001 — fail-closed per symbol
+                warnings.append(f"{sym}: fetch failed ({exc})")
+                return []
+            if not rows:
+                warnings.append(f"{sym}: no US fundamentals rows")
+            return rows
+
+    gathered = await asyncio.gather(*[_one(s) for s in symbols])
+    payloads: list[FinancialFundamentalsUpsert] = [p for rows in gathered for p in rows]
+
+    committed = False
+    if commit and payloads:
+        from app.core.db import AsyncSessionLocal
+        from app.services.financial_fundamentals_snapshots.repository import (
+            FinancialFundamentalsSnapshotsRepository,
+        )
+
+        async with AsyncSessionLocal() as session:
+            await FinancialFundamentalsSnapshotsRepository(session).upsert(payloads)
+        committed = True
+
+    return UsFundamentalsBuildResult(
+        symbols_resolved=len(symbols),
+        snapshots_built=len(payloads),
+        committed=committed,
+        samples=tuple(_sample(p) for p in payloads[:5]),
+        warnings=tuple(warnings),
     )
