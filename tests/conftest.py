@@ -459,14 +459,27 @@ async def db_session():
                     )
                 )
                 # ROB-440 PR3 — high_52w_date added to the (persistent) market
-                # valuation snapshot table for US undervalued_breakout date-recency;
-                # create_all is a no-op on the existing table (mirrors the migration).
-                await conn.execute(
-                    text(
-                        "ALTER TABLE market_valuation_snapshots "
-                        "ADD COLUMN IF NOT EXISTS high_52w_date DATE"
+                # valuation snapshot table for US undervalued_breakout date-recency.
+                # On a FRESH DB create_all already adds it (the ORM model declares
+                # it), so only ALTER when genuinely missing — an unconditional
+                # ALTER (even IF NOT EXISTS) takes an AccessExclusive lock on this
+                # HOT table and widens the xdist DDL-vs-test deadlock window.
+                mv_has_high_52w_date = (
+                    await conn.execute(
+                        text(
+                            "SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'market_valuation_snapshots' "
+                            "AND column_name = 'high_52w_date'"
+                        )
                     )
-                )
+                ).first()
+                if not mv_has_high_52w_date:
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE market_valuation_snapshots "
+                            "ADD COLUMN high_52w_date DATE"
+                        )
+                    )
                 # ROB-284 — crypto_candles_1d migrates in-place from the
                 # legacy (symbol, market) shape to the (instrument_id, time)
                 # shape. The test DB picks up its schema from
