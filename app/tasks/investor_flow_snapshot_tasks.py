@@ -1,19 +1,31 @@
 """TaskIQ wrappers for KR investor-flow snapshot freshness.
 
-No recurring schedule is attached intentionally. Operators can enqueue this task
-manually in dry-run mode to produce an approval packet. Persisting rows requires
-commit=True and separate production database-write approval.
+Manual entry (``build_investor_flow_snapshots``, dry-run by default) plus the
+ROB-438 default-off scheduled wrapper. Recurring activation is double-gated like
+invest_screener (ROB-281): ``investor_flow_schedule_enabled`` registers the cron
+(off → manual ``taskiq kick`` only), ``investor_flow_snapshots_commit_enabled``
+allows DB writes (off → dry-run-on-cron). Operator flips both to activate.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
+from app.core.config import settings
 from app.core.taskiq_broker import broker
 from app.jobs.investor_flow_snapshots import (
     InvestorFlowSnapshotBuildRequest,
     run_investor_flow_snapshot_build,
 )
+
+_KST_LABEL = "Asia/Seoul"
+
+
+def _kr_flow_schedule(cron: str) -> list[dict[str, str]]:
+    """Cron labels gated by the schedule flag (default off → [] → not registered)."""
+    if not settings.investor_flow_schedule_enabled:
+        return []
+    return [{"cron": cron, "cron_offset": _KST_LABEL}]
 
 
 @broker.task(task_name="build_investor_flow_snapshots")
@@ -65,3 +77,24 @@ async def build_investor_flow_snapshots(
         ],
         "warnings": list(result.warnings),
     }
+
+
+@broker.task(
+    task_name="investor_flow_snapshots.kr_scheduled",
+    schedule=_kr_flow_schedule("40 16 * * 1-5"),
+)
+async def scheduled_kr_investor_flow() -> dict[str, Any]:
+    """ROB-438: KR investor-flow refresh at 16:40 KST (Naver 수급, post-close).
+
+    Holiday-gated via XKRX (skips non-trading days). Default-off; commit gated by
+    ``investor_flow_snapshots_commit_enabled`` (dry-run-on-cron until operator sets it).
+    """
+    from app.tasks.invest_screener_snapshot_tasks import is_market_session_today
+
+    if not is_market_session_today("kr"):
+        return {"status": "skipped_holiday", "market": "kr"}
+    return await build_investor_flow_snapshots(
+        market="kr",
+        all_symbols=True,
+        commit=settings.investor_flow_snapshots_commit_enabled,
+    )

@@ -83,12 +83,21 @@ async def test_task_wrapper_defaults_to_dry_run_and_returns_camel_case(monkeypat
     assert payload["samples"][0]["doubleBuy"] is True
 
 
-def test_task_module_has_no_recurring_schedule_activation():
+def test_recurring_schedule_is_default_off():
+    # ROB-438: the module now has a recurring scheduled task, but it is DEFAULT-OFF
+    # — merging this PR alone registers no cron. The manual build task still carries
+    # no schedule; the scheduled task's cron labels are empty unless the schedule
+    # flag is set (operator-gated, mirroring invest_screener ROB-281).
+    from unittest.mock import patch
+
     from app.tasks import TASKIQ_TASK_MODULES
 
     assert tasks in TASKIQ_TASK_MODULES
     labels = getattr(tasks.build_investor_flow_snapshots, "labels", {}) or {}
-    assert labels.get("schedule") is None
-    source = tasks.__loader__.get_source(tasks.__name__)  # type: ignore[union-attr]
-    assert "schedule=[" not in source
-    assert "cron_offset" not in source
+    assert labels.get("schedule") is None  # manual task: no schedule
+    with patch.object(tasks.settings, "investor_flow_schedule_enabled", False):
+        assert tasks._kr_flow_schedule("40 16 * * 1-5") == []
+    with patch.object(tasks.settings, "investor_flow_schedule_enabled", True):
+        assert tasks._kr_flow_schedule("40 16 * * 1-5") == [
+            {"cron": "40 16 * * 1-5", "cron_offset": "Asia/Seoul"}
+        ]
