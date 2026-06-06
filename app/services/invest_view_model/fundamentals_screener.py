@@ -477,6 +477,15 @@ async def load_fundamentals_preset_from_snapshots(
     )
     for r in included:
         r["snapshot_date"] = val_date
+        # ROB-440: market_valuation_snapshots stores dividend_yield as a RATIO
+        # (yahoo trailingAnnualDividendYield; naver /100), but the screener metric
+        # formatter expects PERCENT (matching the tvscreener KR snapshot, e.g. 5.20).
+        # Convert for US display so steady_dividend/future_dividend_king show "5.00%"
+        # not "0.05%". The SQL candidate filter ran on the raw ratio column above, so
+        # the min_dividend_yield gate is unaffected. KR via this loader (reports/PIT,
+        # not the screener display path) keeps the raw ratio.
+        if market == "us" and r.get("dividend_yield") is not None:
+            r["dividend_yield"] = r["dividend_yield"] * 100
     return FundamentalsScreenResult(
         rows=included,
         valuation_partition_date=val_date,

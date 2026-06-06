@@ -1276,3 +1276,111 @@ def test_toss_growth_expectation_fail_closed_on_missing_quarterly_data():
     assert rows == []
     assert excluded[0]["symbol"] == "005930"
     assert "earnings_growth_qoq unavailable" in excluded[0]["reason"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_dividend_yield_displayed_as_percent(db_session):
+    # ROB-440: market_valuation stores dividend_yield as a RATIO (0.05); the screener
+    # formatter expects PERCENT. US display rows must be ×100 (0.05 → 5.0) so the
+    # dividend label shows "5.00%" not "0.05%". The SQL filter ran on the raw ratio.
+    await _cleanup_db(db_session)
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import (
+        resolve_healthy_partition,
+    )
+    from app.services.invest_view_model.fundamentals_screener import (
+        FundamentalsPresetSpec,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    sym = "906470"
+    val_hp = await resolve_healthy_partition(
+        db_session,
+        model=MarketValuationSnapshot,
+        date_col=MarketValuationSnapshot.snapshot_date,
+        market_col=MarketValuationSnapshot.market,
+        market="us",
+    )
+    vd = (
+        val_hp.partition_date
+        if (val_hp and val_hp.partition_date)
+        else dt.date(2026, 6, 5)
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="us",
+            symbol=sym,
+            snapshot_date=vd,
+            source="yahoo",
+            dividend_yield=Decimal("0.05"),  # ratio (= 5%)
+            market_cap=Decimal("500000000000"),
+        )
+    )
+    await db_session.commit()
+
+    # dividend-only spec (no derive checks → no financial_fundamentals needed)
+    spec = FundamentalsPresetSpec(
+        preset_id="_test_div",
+        min_dividend_yield=Decimal("0.01"),
+        sort_by="dividend_yield",
+    )
+    res = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="us",
+        spec=spec,
+        limit=20,
+        now=lambda: dt.datetime(2026, 6, 5, tzinfo=dt.UTC),
+    )
+    assert res is not None
+    row = next(r for r in res.rows if r["symbol"] == sym)
+    assert row["dividend_yield"] == 5.0  # 0.05 ratio ×100 → 5.0 percent (display)
+    await _cleanup_db(db_session)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_kr_dividend_yield_not_double_scaled(db_session):
+    # KR via this loader (reports/PIT) keeps the raw ratio — only US display is ×100.
+    await _cleanup_db(db_session)
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        FundamentalsPresetSpec,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    sym = "906471"
+    vd = dt.date(2026, 6, 4)
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol=sym,
+            snapshot_date=vd,
+            source="naver_finance",
+            dividend_yield=Decimal("0.05"),
+            market_cap=Decimal("500000000000"),
+        )
+    )
+    db_session.add(
+        KRSymbolUniverse(
+            symbol=sym, name="배당테스트", exchange="KOSPI", is_active=True
+        )
+    )
+    await db_session.commit()
+    spec = FundamentalsPresetSpec(
+        preset_id="_test_div_kr",
+        min_dividend_yield=Decimal("0.01"),
+        sort_by="dividend_yield",
+    )
+    res = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="kr",
+        spec=spec,
+        limit=20,
+        now=lambda: dt.datetime(2026, 6, 4, tzinfo=dt.UTC),
+    )
+    assert res is not None
+    row = next(r for r in res.rows if r["symbol"] == sym)
+    assert row["dividend_yield"] == 0.05  # KR unchanged (no ×100)
+    await _cleanup_db(db_session)
