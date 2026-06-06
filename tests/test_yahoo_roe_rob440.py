@@ -7,6 +7,8 @@ ROE are percent. Convert ×100; null stays fail-closed.
 
 from __future__ import annotations
 
+import datetime as dt
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -125,3 +127,34 @@ async def test_fetch_52w_high_date_fail_closed() -> None:
         assert await yclient.fetch_52w_high_date("AAPL") is None
     with patch.object(yclient, "fetch_ohlcv", _boom):
         assert await yclient.fetch_52w_high_date("AAPL") is None
+
+
+# --- ROB-440: marketCap (US screener cand_cap ordering) ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch("app.services.brokers.yahoo.client.yf.Ticker")
+async def test_fetch_fundamental_info_includes_market_cap(
+    mock_ticker_class, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+        lambda: object(),
+    )
+    mock_ticker = MagicMock()
+    mock_ticker.info = {"trailingPE": 8.0, "marketCap": 1234567890}
+    mock_ticker_class.return_value = mock_ticker
+
+    from app.services.brokers.yahoo.client import fetch_fundamental_info
+
+    result = await fetch_fundamental_info("AAPL")
+    assert result["marketCap"] == 1234567890
+
+    # _payload_from_raw maps marketCap → market_cap
+    from app.services.market_valuation_snapshots.builder import _payload_from_raw
+
+    payload = _payload_from_raw(
+        market="us", symbol="AAPL", snapshot_date=dt.date(2026, 6, 6), raw=result
+    )
+    assert payload.market_cap == Decimal("1234567890")
