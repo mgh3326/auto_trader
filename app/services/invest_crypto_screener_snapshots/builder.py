@@ -75,7 +75,7 @@ def build_crypto_snapshot_payloads(
                 market_cap=row.market_cap,
                 rsi=row.rsi,
                 adx=row.adx,
-                # ROB-443: None when the coin has no Binance perp (fail-closed).
+                # ROB-443: None when the coin has no USD-M perp (fail-closed).
                 funding_rate=funding.get(symbol),
                 market_warning=row.market_warning,
                 raw_payload=row.raw_payload,
@@ -95,7 +95,7 @@ async def build_crypto_snapshots(
 ) -> dict[str, Any]:
     date_value = snapshot_date or today_crypto_snapshot_date()
     provider_rows = await provider.fetch_rows(limit=limit)
-    # ROB-443: enrich with Binance perp funding rate (one batch call; coins without
+    # ROB-443: enrich with USD-M perp funding rate (one batch call; coins without
     # a perp stay None). Fail-open — funding errors never block the snapshot build.
     funding_by_symbol = await fetch_funding_rates([row.symbol for row in provider_rows])
     payloads = build_crypto_snapshot_payloads(
