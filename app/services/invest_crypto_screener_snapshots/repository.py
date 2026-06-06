@@ -29,6 +29,7 @@ class CryptoSnapshotUpsert(BaseModel):
     market_cap: Decimal | None = None
     rsi: Decimal | None = None
     adx: Decimal | None = None
+    funding_rate: Decimal | None = None  # ROB-443: Binance perp; None when no perp
     market_warning: bool = False
     raw_payload: dict[str, Any] = Field(default_factory=dict)
     source: str = "tvscreener_upbit"
