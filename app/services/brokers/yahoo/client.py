@@ -355,6 +355,10 @@ async def fetch_fundamental_info(ticker: str) -> dict:
                     # undervalued_breakout (proximity: close >= high_52w * 0.95).
                     "yearHigh": info.get("fiftyTwoWeekHigh"),
                     "yearLow": info.get("fiftyTwoWeekLow"),
+                    # ROB-440: marketCap from the same .info call (no extra request)
+                    # → market_valuation.market_cap populated so the screener cand_cap
+                    # ordering prefers liquid US names (was symbol-order with null cap).
+                    "marketCap": info.get("marketCap"),
                 }
             except Exception as exc:
                 last_exc = exc

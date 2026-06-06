@@ -225,5 +225,7 @@ class TestYahooService:
             # ROB-440 Part 2: 52w high/low (price); None here (mock omits them).
             "yearHigh": None,
             "yearLow": None,
+            # ROB-440: marketCap; None here (mock omits it).
+            "marketCap": None,
         }
         assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
