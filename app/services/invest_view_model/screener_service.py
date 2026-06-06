@@ -1659,6 +1659,29 @@ def _build_freshness(
     )
 
 
+async def _us_valuation_partition_computed_at(
+    session: AsyncSession, *, snapshot_date: dt.date
+) -> datetime | None:
+    """Max computed_at of the US market_valuation partition (ROB-440). The US
+    fundamentals/valuation dispatch branches don't propagate the partition's
+    computed_at, so the freshness chip can't classify it; backfill it here.
+    Fail-open: any error returns None (chip unchanged)."""
+    import sqlalchemy as sa
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    try:
+        result = await session.execute(
+            sa.select(sa.func.max(MarketValuationSnapshot.computed_at)).where(
+                MarketValuationSnapshot.market == "us",
+                MarketValuationSnapshot.snapshot_date == snapshot_date,
+            )
+        )
+        return result.scalar_one_or_none()
+    except Exception:  # noqa: BLE001 — fail-open
+        return None
+
+
 async def build_screener_results(
     preset_id: str,
     screening_service: _ScreeningServiceProto,
@@ -2046,11 +2069,15 @@ async def build_screener_results(
         if preset_id == "investor_flow_momentum":
             primary_source = "investor_flow_snapshots"
         elif preset_id in FUNDAMENTALS_PRESET_SPECS:
-            # ROB-428 PR-B: KR display now reads the tvscreener KR snapshot.
-            # ROB-428 PR-C: high_yield_value + undervalued_breakout joined this
-            # branch (dropped their market_valuation_snapshots primary_source) so
-            # all KR Toss fundamentals/valuation presets report the same source.
-            primary_source = "invest_kr_fundamentals_snapshots"
+            # ROB-428 PR-B/C: KR display reads the tvscreener KR snapshot, so all KR
+            # Toss fundamentals/valuation presets report invest_kr_fundamentals_snapshots.
+            # ROB-440: US reads the market-parameterized valuation/derive path, so its
+            # primary source is market_valuation_snapshots (not the KR-only table).
+            primary_source = (
+                "market_valuation_snapshots"
+                if requested_market == "us"
+                else "invest_kr_fundamentals_snapshots"
+            )
         elif requested_market == "crypto":
             primary_source = "invest_crypto_screener_snapshots"
         else:
@@ -2064,6 +2091,20 @@ async def build_screener_results(
             # Fallback for double_buy / crypto paths that don't use _SnapshotLoadResult
             primary_snapshot_date = rows[0].get("snapshot_date")
             primary_computed_at = rows[0].get("computed_at")
+        # ROB-440: the US fundamentals/valuation dispatch branches don't carry the
+        # market_valuation partition's computed_at (set None) → classify_state can't
+        # run → freshness chip falls to stale even when the partition is current.
+        # Backfill computed_at from market_valuation_snapshots so the chip matches.
+        if (
+            requested_market == "us"
+            and preset_id in FUNDAMENTALS_PRESET_SPECS
+            and primary_computed_at is None
+            and primary_snapshot_date is not None
+            and session is not None
+        ):
+            primary_computed_at = await _us_valuation_partition_computed_at(
+                session, snapshot_date=primary_snapshot_date
+            )
     else:
         primary_kind = "live"
         primary_source = "screening_service"

@@ -387,3 +387,47 @@ def test_build_market_valuation_cli_flags():
     )
     assert opted.common_stocks_only is True
     assert opted.include_high_date is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_valuation_partition_computed_at_helper(db_session):
+    # ROB-440 freshness chip: backfill the US market_valuation partition computed_at
+    # (the US fundamentals/valuation dispatch branches don't propagate it).
+    from app.services.invest_view_model.screener_service import (
+        _us_valuation_partition_computed_at,
+    )
+
+    vd = dt.date(2099, 12, 31)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="us",
+            symbol="ZZ9100",
+            snapshot_date=vd,
+            source="yahoo",
+            per=Decimal("8"),
+            computed_at=dt.datetime(2099, 12, 31, 21, 22, tzinfo=dt.UTC),
+        )
+    )
+    await db_session.commit()
+
+    got = await _us_valuation_partition_computed_at(db_session, snapshot_date=vd)
+    assert got is not None  # partition exists → computed_at surfaced
+    # no US partition on this date → None (fail-open)
+    assert (
+        await _us_valuation_partition_computed_at(
+            db_session, snapshot_date=dt.date(2098, 1, 1)
+        )
+        is None
+    )
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    await db_session.commit()
