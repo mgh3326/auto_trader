@@ -1335,6 +1335,13 @@ async def test_us_dividend_yield_displayed_as_percent(db_session):
     assert res is not None
     row = next(r for r in res.rows if r["symbol"] == sym)
     assert row["dividend_yield"] == 5.0  # 0.05 ratio ×100 → 5.0 percent (display)
+    # ROB-440: row market is the real market (was hardcoded "kr" by evaluate) so the
+    # screener renders market_cap as USD, not 억원.
+    assert row["market"] == "us"
+    from app.services.invest_view_model.screener_service import _format_market_cap
+
+    label, _ = _format_market_cap(row, row["market"])
+    assert label.startswith("$")  # USD formatter (was "...억원" with the "kr" bug)
     await _cleanup_db(db_session)
 
 

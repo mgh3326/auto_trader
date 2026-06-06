@@ -477,6 +477,12 @@ async def load_fundamentals_preset_from_snapshots(
     )
     for r in included:
         r["snapshot_date"] = val_date
+        # ROB-440: evaluate_fundamentals_candidates hardcodes row["market"]="kr"
+        # (it has no market param). For US that mislabels the row → the screener
+        # renders market_cap with the KR formatter ("2,884억원" for a USD value) and
+        # normalizes the symbol/relation as KR. Stamp the real market so US rows use
+        # the USD market_cap formatter ("$11.2B"). KR (reports/PIT) is unchanged.
+        r["market"] = market
         # ROB-440: market_valuation_snapshots stores dividend_yield as a RATIO
         # (yahoo trailingAnnualDividendYield; naver /100), but the screener metric
         # formatter expects PERCENT (matching the tvscreener KR snapshot, e.g. 5.20).
