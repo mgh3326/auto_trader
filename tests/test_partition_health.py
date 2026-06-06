@@ -170,3 +170,46 @@ async def test_active_universe_count_counts_active_kr(db_session):
         )
     )
     await db_session.flush()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_active_universe_count_us_counts_common_stock_only(db_session):
+    # ROB-440: US coverage denominator must count common stocks (the build scope),
+    # not the full active universe (incl ETFs). Otherwise a complete common-stock
+    # build is mislabeled below-floor → partition degraded → spurious stale/"준비중".
+    from app.models.us_symbol_universe import USSymbolUniverse
+
+    syms = ["ZZC1", "ZZC2", "ZZETF", "ZZINA"]
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
+    await db_session.commit()
+
+    before = await active_universe_count(db_session, market="us")
+    db_session.add_all(
+        [
+            USSymbolUniverse(
+                symbol="ZZC1", exchange="NASDAQ", is_active=True, is_common_stock=True
+            ),
+            USSymbolUniverse(
+                symbol="ZZC2", exchange="NYSE", is_active=True, is_common_stock=True
+            ),
+            USSymbolUniverse(
+                symbol="ZZETF", exchange="NYSE", is_active=True, is_common_stock=False
+            ),
+            USSymbolUniverse(
+                symbol="ZZINA", exchange="NASDAQ", is_active=False, is_common_stock=True
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    after = await active_universe_count(db_session, market="us")
+    # only the 2 active common stocks add to the count (ETF + inactive excluded)
+    assert after == before + 2
+
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
+    await db_session.commit()

@@ -71,10 +71,19 @@ async def active_universe_count(session: AsyncSession, *, market: str) -> int:
         else:
             from app.models.us_symbol_universe import USSymbolUniverse
 
+            # ROB-440: US screener snapshots (valuation/fundamentals/OHLCV) are built
+            # over the COMMON-STOCK universe (is_common_stock), not the full active set
+            # (~12.4k incl ETFs/preferreds/warrants we intentionally skip). Use the
+            # common-stock count as the coverage denominator so a complete common-stock
+            # build (~5.1k) isn't mislabeled "below floor" (~41% of the full universe →
+            # partition flagged degraded → cap_degraded → spurious stale/"준비중").
             stmt = (
                 sa.select(sa.func.count())
                 .select_from(USSymbolUniverse)
-                .where(USSymbolUniverse.is_active.is_(True))
+                .where(
+                    USSymbolUniverse.is_active.is_(True),
+                    USSymbolUniverse.is_common_stock.is_(True),
+                )
             )
         return int((await session.execute(stmt)).scalar() or 0)
     except Exception as exc:  # noqa: BLE001
