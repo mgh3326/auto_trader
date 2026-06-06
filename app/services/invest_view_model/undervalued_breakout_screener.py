@@ -84,6 +84,7 @@ async def load_undervalued_breakout_from_snapshots(
 
     from app.services.invest_screener_snapshots.partition_health import (
         resolve_healthy_partition,
+        served_partition_degraded,
     )
 
     val_hp = await resolve_healthy_partition(
@@ -96,7 +97,9 @@ async def load_undervalued_breakout_from_snapshots(
     val_date = val_hp.partition_date if val_hp else None
     if val_date is None:
         return None
-    partition_degraded = bool(val_hp and (val_hp.is_fallback or not val_hp.healthy))
+    # ROB-440: a healthy fallback partition is NOT degraded (date check handles
+    # staleness); only an unhealthy served partition is.
+    partition_degraded = served_partition_degraded(val_hp)
 
     latest_price_stmt = sa.select(
         sa.func.max(InvestScreenerSnapshot.snapshot_date)

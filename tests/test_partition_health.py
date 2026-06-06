@@ -213,3 +213,31 @@ async def test_active_universe_count_us_counts_common_stock_only(db_session):
         sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
     )
     await db_session.commit()
+
+
+def test_served_partition_degraded_healthy_fallback_not_degraded():
+    # ROB-440: a HEALTHY fallback (is_fallback=True, healthy=True) is NOT degraded —
+    # resolver correctly served the latest healthy partition over a thin raw-latest.
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+        served_partition_degraded,
+    )
+
+    healthy_fallback = HealthyPartition(
+        partition_date=dt.date(2026, 6, 5),
+        row_count=4926,
+        coverage_ratio=0.96,
+        is_fallback=True,
+        healthy=True,
+    )
+    assert served_partition_degraded(healthy_fallback) is False
+
+    unhealthy = HealthyPartition(
+        partition_date=dt.date(2026, 6, 6),
+        row_count=388,
+        coverage_ratio=0.0758,
+        is_fallback=False,
+        healthy=False,
+    )
+    assert served_partition_degraded(unhealthy) is True
+    assert served_partition_degraded(None) is False

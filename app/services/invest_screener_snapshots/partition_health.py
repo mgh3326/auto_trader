@@ -49,6 +49,21 @@ class HealthyPartition:
     healthy: bool  # row_count met the coverage floor
 
 
+def served_partition_degraded(hp: HealthyPartition | None) -> bool:
+    """Whether a resolved partition should be treated as degraded for freshness.
+
+    ROB-440: a HEALTHY fallback (``is_fallback=True`` but ``healthy=True``) is NOT
+    degraded — resolve_healthy_partition correctly served the latest *healthy*
+    partition because a thinner raw-latest partition (e.g. a partial weekend build:
+    a 388-row 2026-06-06 partition shadowing the healthy 4,926-row 2026-06-05) was
+    skipped. Whether the served partition is stale vs the expected baseline is a
+    separate date check in the caller (``val_date == today_market_date``). Only a
+    served partition that failed the coverage floor (``healthy=False`` — no healthy
+    partition existed, thinnest served as last resort) is genuinely degraded.
+    """
+    return bool(hp is not None and not hp.healthy)
+
+
 def cap_degraded(state: DataState) -> DataState:
     """Never claim better than ``stale`` for a degraded partition.
 

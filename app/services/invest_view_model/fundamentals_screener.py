@@ -410,9 +410,14 @@ async def load_fundamentals_preset_from_snapshots(
         )
 
     val_state = "fresh" if val_date == today_market_date else "stale"
-    # ROB-426 PR2a: a thin/fallback valuation partition must not be labeled fresh
-    # even when its date matches today (consistency with the other screener loaders).
-    if val_hp and (val_hp.is_fallback or not val_hp.healthy):
+    # ROB-440: only an UNHEALTHY served partition degrades freshness. A healthy
+    # fallback (older than a thin raw-latest, e.g. a partial weekend build) is not
+    # degraded — its staleness vs the baseline is already the val_date date check.
+    from app.services.invest_screener_snapshots.partition_health import (
+        served_partition_degraded,
+    )
+
+    if served_partition_degraded(val_hp):
         from app.services.invest_screener_snapshots.partition_health import (
             cap_degraded,
         )
