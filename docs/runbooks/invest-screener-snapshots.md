@@ -260,3 +260,37 @@ uv run python -m scripts.diagnose_invest_screener_toss_parity \
 - Decision 1 lock 은 구조적 (safer-fallback) — live overlap 수치로 empirically 검증되지 않음. Section §9 의 diagnostic 으로 후속 검증 후, 필요 시 follow-up PR 에서 B 전환.
 - 다중 `investor_flow` source 가 활성화되면 `source.asc()` tiebreak 가 결정론을 보장하지만, source 별 net 값 분기가 큰 경우 데이터 product 차원 의사결정이 필요.
 - 구 ID `high_volume_momentum` URL/북마크 호환성 없음 — frontend preset list 진입이 주된 경로라 영향 작음.
+
+## 10. Crypto Activation Procedure (ROB-443 Phase 0)
+
+코인 스크리너(`crypto_high_volume`/`crypto_oversold`/`crypto_momentum`)는 **읽기 경로가 이미 스냅샷(`invest_crypto_screener_snapshots`)을 우선**하지만, 스냅샷을 채우는 **스케줄(Prefect flow)이 없어** 매번 라이브 tvscreener 로 폴백한다(`freshness.dataState=missing`, `source=screening_service`). Phase 0 는 빌드를 채워 KR/US 처럼 snapshot-backed 로 전환한다.
+
+> 코인은 별도 테이블/CLI 사용: `invest_crypto_screener_snapshots` + `scripts/build_invest_crypto_screener_snapshots.py` (equity 의 `build_invest_screener_snapshots.py` 와 다름).
+
+### Phase 0 — Pre-flight (read-only)
+
+```bash
+# 전체 Upbit 유니버스 dry-run (DB write 없음, 행 수/샘플 확인)
+uv run python -m scripts.build_invest_crypto_screener_snapshots --all
+```
+
+### Phase 0 — Populate (REQUIRES OPERATOR APPROVAL)
+
+```bash
+# 전체 Upbit KRW 유니버스 persist (dry-run 증거 + 승인 후에만)
+uv run python -m scripts.build_invest_crypto_screener_snapshots --all --commit
+```
+
+빌드 후 라이브 확인: 코인 프리셋 응답의 `freshness.primary.source` 가 `invest_crypto_screener_snapshots`, `dataState` 가 `fresh` 여야 한다(`_CRYPTO_MIN_FRESH_ROWS=20` 이상 + 오늘 KST 파티션). 미만이면 `partial`, 부재면 `missing`(라이브 폴백).
+
+### Phase 0 — Prefect flow (스케줄, 등록은 별도)
+
+- 플로우: `app/flows/invest_crypto_screener_snapshots_flow.py` (`invest_crypto_screener_snapshots_flow`).
+- 쓰기 게이트: `INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED` (KR/US 와 공유). 기본 `False` → dry-run/rollback. operator 가 Prefect worker env 에서 켜야 persist.
+- **배포 등록은 이 PR 에 포함되지 않음** (US flow 와 동일 안전 게이트). 등록은 `robin-prefect-automations` 에서 paused-by-default 로 추가 후 unpause 승인.
+
+### Safety boundary (crypto)
+
+- **No DB migration** (Phase 0; 파생 컬럼은 Phase 1 ROB-443).
+- read-only 발굴. broker/order/watch/order-intent mutation 0. DB write 는 `InvestCryptoScreenerSnapshotsRepository` 의 upsert 만.
+- snapshot commit/스케줄 활성화는 operator 승인 게이트. 매수 신호 아님(스크리닝 컨텍스트).
