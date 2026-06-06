@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from app.services.invest_crypto_screener_snapshots.derivatives import (
+    fetch_funding_rates,
+)
 from app.services.invest_crypto_screener_snapshots.freshness import (
     today_crypto_snapshot_date,
 )
@@ -47,8 +50,12 @@ def _decimal_or_none(value: Any) -> Decimal | None:
 
 
 def build_crypto_snapshot_payloads(
-    rows: list[CryptoProviderRow], *, snapshot_date: dt.date
+    rows: list[CryptoProviderRow],
+    *,
+    snapshot_date: dt.date,
+    funding_by_symbol: dict[str, Decimal] | None = None,
 ) -> list[CryptoSnapshotUpsert]:
+    funding = funding_by_symbol or {}
     payloads: list[CryptoSnapshotUpsert] = []
     for row in rows:
         symbol = str(row.symbol or "").strip().upper()
@@ -68,6 +75,8 @@ def build_crypto_snapshot_payloads(
                 market_cap=row.market_cap,
                 rsi=row.rsi,
                 adx=row.adx,
+                # ROB-443: None when the coin has no USD-M perp (fail-closed).
+                funding_rate=funding.get(symbol),
                 market_warning=row.market_warning,
                 raw_payload=row.raw_payload,
                 source="tvscreener_upbit",
@@ -86,7 +95,12 @@ async def build_crypto_snapshots(
 ) -> dict[str, Any]:
     date_value = snapshot_date or today_crypto_snapshot_date()
     provider_rows = await provider.fetch_rows(limit=limit)
-    payloads = build_crypto_snapshot_payloads(provider_rows, snapshot_date=date_value)
+    # ROB-443: enrich with USD-M perp funding rate (one batch call; coins without
+    # a perp stay None). Fail-open — funding errors never block the snapshot build.
+    funding_by_symbol = await fetch_funding_rates([row.symbol for row in provider_rows])
+    payloads = build_crypto_snapshot_payloads(
+        provider_rows, snapshot_date=date_value, funding_by_symbol=funding_by_symbol
+    )
     upserted = 0
     if commit:
         for payload in payloads:
@@ -97,6 +111,7 @@ async def build_crypto_snapshots(
         "fetched": len(provider_rows),
         "would_upsert": len(payloads),
         "upserted": upserted,
+        "fundingEnriched": sum(1 for p in payloads if p.funding_rate is not None),
         "committed": commit,
         "samples": [payload.model_dump(mode="json") for payload in payloads[:5]],
     }

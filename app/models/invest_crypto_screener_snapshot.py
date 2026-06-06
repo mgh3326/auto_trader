@@ -74,6 +74,10 @@ class InvestCryptoScreenerSnapshot(Base):
     market_cap: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     rsi: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     adx: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # ROB-443 Phase 1: crypto-native USD-M perp funding rate (lastFundingRate, a
+    # ratio e.g. 0.0001; vendor call localized to derivatives.py). NULL for
+    # Upbit-only coins without a perp (fail-closed). Powers funding presets.
+    funding_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8), nullable=True)
     market_warning: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
