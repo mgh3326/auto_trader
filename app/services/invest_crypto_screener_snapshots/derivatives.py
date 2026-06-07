@@ -13,15 +13,28 @@ sensitive, so they are deferred to a follow-up PR.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.mcp_server.tooling.fundamentals_sources_binance import (
     _fetch_funding_rate_batch,
+    _fetch_long_short_ratio,
+    _fetch_open_interest,
 )
 
 FundingBatchFetcher = Callable[[list[str]], Awaitable[list[dict[str, Any]]]]
+PerSymbolFetcher = Callable[[str, str, int], Awaitable[dict[str, Any]]]
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def base_symbol_from_upbit(upbit_symbol: str) -> str | None:
@@ -68,4 +81,61 @@ async def fetch_funding_rates(
             out[upbit] = Decimal(str(raw))
         except (InvalidOperation, ValueError):
             continue
+    return out
+
+
+async def fetch_oi_and_long_short(
+    perp_upbit_symbols: list[str],
+    *,
+    oi_fetcher: PerSymbolFetcher = _fetch_open_interest,
+    lsr_fetcher: PerSymbolFetcher = _fetch_long_short_ratio,
+    period: str = "1h",
+    limit: int = 24,
+    concurrency: int = 8,
+) -> dict[str, dict[str, Decimal | None]]:
+    """Per-symbol open-interest + global long/short ratio for coins that have a perp.
+
+    Unlike funding (one batch call), these endpoints are per-symbol, so the caller
+    should pass ONLY the perp coins (e.g. the symbols funding enrichment matched),
+    not the whole universe. Bounded concurrency; **fail-open per coin and per
+    metric** — one coin's (or one endpoint's) error leaves that field None and
+    never blocks the rest.
+
+    Returns ``{KRW-XXX: {"open_interest_usd", "oi_change_24h",
+    "long_short_account_ratio"}}`` for coins with at least one metric resolved.
+    """
+    base_to_upbit: dict[str, str] = {}
+    for sym in perp_upbit_symbols:
+        base = base_symbol_from_upbit(sym)
+        if base and base not in base_to_upbit:
+            base_to_upbit[base] = str(sym).strip().upper()
+    if not base_to_upbit:
+        return {}
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+    out: dict[str, dict[str, Decimal | None]] = {}
+
+    async def _one(base: str, upbit: str) -> None:
+        async with sem:
+            row: dict[str, Decimal | None] = {}
+            try:
+                oi = await oi_fetcher(base, period, limit)
+                history = oi.get("open_interest_history") or []
+                latest_usd = (
+                    history[-1].get("sum_open_interest_value_usd") if history else None
+                )
+                row["open_interest_usd"] = _to_decimal(latest_usd)
+                row["oi_change_24h"] = _to_decimal(oi.get("oi_change_pct"))
+            except Exception:  # noqa: BLE001 — fail-open per metric
+                pass
+            try:
+                lsr = await lsr_fetcher(base, period, limit)
+                global_leg = lsr.get("global_account") or {}
+                row["long_short_account_ratio"] = _to_decimal(global_leg.get("ratio"))
+            except Exception:  # noqa: BLE001 — fail-open per metric
+                pass
+            if any(v is not None for v in row.values()):
+                out[upbit] = row
+
+    await asyncio.gather(*(_one(b, u) for b, u in base_to_upbit.items()))
     return out

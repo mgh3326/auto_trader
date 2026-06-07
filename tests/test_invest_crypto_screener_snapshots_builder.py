@@ -30,6 +30,7 @@ def _stub_funding(monkeypatch):
         return {}
 
     monkeypatch.setattr(builder_mod, "fetch_funding_rates", _empty)
+    monkeypatch.setattr(builder_mod, "fetch_oi_and_long_short", _empty)
 
 
 class _Condition:

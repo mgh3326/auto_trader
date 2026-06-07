@@ -78,6 +78,16 @@ class InvestCryptoScreenerSnapshot(Base):
     # ratio e.g. 0.0001; vendor call localized to derivatives.py). NULL for
     # Upbit-only coins without a perp (fail-closed). Powers funding presets.
     funding_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8), nullable=True)
+    # ROB-443 follow-up: per-symbol USD-M perp derivatives (open interest in USD,
+    # 24h OI change %, global retail long/short account ratio). NULL when no perp
+    # (fail-closed). Vendor calls localized to derivatives.py.
+    open_interest_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(28, 2), nullable=True
+    )
+    oi_change_24h: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    long_short_account_ratio: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
     market_warning: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )

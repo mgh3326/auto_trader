@@ -422,6 +422,34 @@ CRYPTO_SCREENER_PRESETS: list[ScreenerPreset] = [
         presetOrigin=_AT_OWN,
         parityNote="auto_trader 자체 가상자산 프리셋 (선물 펀딩비 기반, Toss 대상 아님).",
     ),
+    ScreenerPreset(
+        id="crypto_oi_surge",
+        name="미결제약정 급증",
+        description="24시간 미결제약정(OI)이 크게 늘어난 가상자산 — 신규 자금/포지션 유입 신호",
+        badges=["가상자산"],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="미결제약정", detail="24시간 증가 상위"),
+        ],
+        metricLabel="OI 변화",
+        market="crypto",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 가상자산 프리셋 (선물 미결제약정 기반, Toss 대상 아님).",
+    ),
+    ScreenerPreset(
+        id="crypto_long_short_skew",
+        name="롱숏 쏠림 (리테일)",
+        description="리테일 롱숏 계정 비율이 1에서 가장 벗어난 가상자산 — 포지션 쏠림/역추세 참고 신호",
+        badges=["가상자산"],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="롱숏비율", detail="1에서 가장 치우침"),
+        ],
+        metricLabel="롱숏비율",
+        market="crypto",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 가상자산 프리셋 (선물 롱숏비율 기반, Toss 대상 아님).",
+    ),
 ]
 
 
