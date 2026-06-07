@@ -963,6 +963,9 @@ async def _load_crypto_rows_from_snapshots(
                 else None,
                 "rsi": float(snap.rsi) if snap.rsi is not None else None,
                 "adx": float(snap.adx) if snap.adx is not None else None,
+                "funding_rate": float(snap.funding_rate)
+                if getattr(snap, "funding_rate", None) is not None
+                else None,
                 "source": "tvscreener_upbit",
                 "computed_at": snap.computed_at.isoformat()
                 if getattr(snap, "computed_at", None) is not None
@@ -997,6 +1000,8 @@ _METRIC_FIELD: dict[str, str] = {
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
+    "crypto_funding_squeeze": "funding_rate",
+    "crypto_funding_overheated": "funding_rate",
     "profitable_company": "roe",
     "undervalued_growth": "earnings_growth_3y_avg",
     "stable_growth": "roe",
@@ -1271,6 +1276,9 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return f"{float(value):.1f}%", []
     if field == "dividend_yield":
         return f"{float(value):.2f}%", []
+    if field == "funding_rate":
+        # ROB-443: ratio (e.g. 0.0001) → signed percent per funding interval.
+        return f"{float(value) * 100:+.4f}%", []
     if field in ("volume", "trade_amount_24h"):
         return f"{int(float(value)):,}", []
     if field == "foreign_net":
@@ -1956,6 +1964,17 @@ async def build_screener_results(
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "밸류에이션/재무 스냅샷이 아직 적재되지 않아 해당 프리셋 후보를 표시할 수 없습니다."
+
+    if (
+        preset_id in {"crypto_funding_squeeze", "crypto_funding_overheated"}
+        and _snapshot_check_result is None
+    ):
+        # ROB-443: funding presets rank by funding_rate, which only the crypto
+        # snapshot carries (the live tvscreener fallback has no funding data).
+        # Snapshot-only — never fall through to the generic provider.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = "암호화폐 펀딩비 스냅샷이 아직 적재되지 않아 펀딩비 후보를 표시할 수 없습니다."
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:

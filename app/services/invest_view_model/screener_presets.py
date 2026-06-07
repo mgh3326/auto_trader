@@ -394,6 +394,34 @@ CRYPTO_SCREENER_PRESETS: list[ScreenerPreset] = [
         presetOrigin=_AT_OWN,
         parityNote="auto_trader 자체 가상자산 프리셋 (Toss 국내주식 골라보기 대상 아님).",
     ),
+    ScreenerPreset(
+        id="crypto_funding_squeeze",
+        name="펀딩비 음수 (숏 과열)",
+        description="펀딩비가 음수(숏이 롱에 지급) — 숏 쏠림으로 숏스퀴즈 가능성이 있는 가상자산",
+        badges=["가상자산"],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="펀딩비", detail="음수 (숏 과열)"),
+        ],
+        metricLabel="펀딩비",
+        market="crypto",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 가상자산 프리셋 (선물 펀딩비 기반, Toss 대상 아님).",
+    ),
+    ScreenerPreset(
+        id="crypto_funding_overheated",
+        name="펀딩비 과열 (롱 과열)",
+        description="펀딩비가 높은 양수(롱이 숏에 지급) — 롱 쏠림으로 되돌림 주의가 필요한 가상자산",
+        badges=["가상자산"],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="펀딩비", detail="높은 양수 (롱 과열)"),
+        ],
+        metricLabel="펀딩비",
+        market="crypto",
+        presetOrigin=_AT_OWN,
+        parityNote="auto_trader 자체 가상자산 프리셋 (선물 펀딩비 기반, Toss 대상 아님).",
+    ),
 ]
 
 

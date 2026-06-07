@@ -480,6 +480,25 @@ async def db_session():
                             "ADD COLUMN high_52w_date DATE"
                         )
                     )
+                # ROB-443 PR1 — funding_rate added to the (persistent) crypto
+                # screener snapshot table. Same fresh-DB/create_all logic: only
+                # ALTER when genuinely missing to avoid an AccessExclusive lock.
+                crypto_has_funding_rate = (
+                    await conn.execute(
+                        text(
+                            "SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'invest_crypto_screener_snapshots' "
+                            "AND column_name = 'funding_rate'"
+                        )
+                    )
+                ).first()
+                if not crypto_has_funding_rate:
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE invest_crypto_screener_snapshots "
+                            "ADD COLUMN funding_rate NUMERIC(12, 8)"
+                        )
+                    )
                 # ROB-284 — crypto_candles_1d migrates in-place from the
                 # legacy (symbol, market) shape to the (instrument_id, time)
                 # shape. The test DB picks up its schema from

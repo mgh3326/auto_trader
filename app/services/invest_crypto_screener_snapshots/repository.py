@@ -100,6 +100,29 @@ class InvestCryptoScreenerSnapshotsRepository:
                 InvestCryptoScreenerSnapshot.trade_amount_24h.desc().nullslast(),
                 InvestCryptoScreenerSnapshot.symbol.asc(),
             )
+        elif preset_id == "crypto_funding_squeeze":
+            # ROB-443: negative funding = shorts pay longs = crowded shorts →
+            # short-squeeze candidate. Most-negative first. funding_rate NULL
+            # (no perp) is excluded (fail-closed).
+            stmt = stmt.where(
+                InvestCryptoScreenerSnapshot.funding_rate.is_not(None),
+                InvestCryptoScreenerSnapshot.funding_rate < 0,
+            ).order_by(
+                InvestCryptoScreenerSnapshot.funding_rate.asc(),
+                InvestCryptoScreenerSnapshot.trade_amount_24h.desc().nullslast(),
+                InvestCryptoScreenerSnapshot.symbol.asc(),
+            )
+        elif preset_id == "crypto_funding_overheated":
+            # ROB-443: high positive funding = longs pay shorts = crowded longs →
+            # pullback risk. Highest first. funding_rate NULL excluded.
+            stmt = stmt.where(
+                InvestCryptoScreenerSnapshot.funding_rate.is_not(None),
+                InvestCryptoScreenerSnapshot.funding_rate > 0,
+            ).order_by(
+                InvestCryptoScreenerSnapshot.funding_rate.desc(),
+                InvestCryptoScreenerSnapshot.trade_amount_24h.desc().nullslast(),
+                InvestCryptoScreenerSnapshot.symbol.asc(),
+            )
         else:
             stmt = stmt.order_by(
                 InvestCryptoScreenerSnapshot.trade_amount_24h.desc().nullslast(),
