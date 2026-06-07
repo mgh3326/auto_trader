@@ -964,7 +964,7 @@ async def _load_crypto_rows_from_snapshots(
                 "rsi": float(snap.rsi) if snap.rsi is not None else None,
                 "adx": float(snap.adx) if snap.adx is not None else None,
                 "funding_rate": float(snap.funding_rate)
-                if snap.funding_rate is not None
+                if getattr(snap, "funding_rate", None) is not None
                 else None,
                 "source": "tvscreener_upbit",
                 "computed_at": snap.computed_at.isoformat()
