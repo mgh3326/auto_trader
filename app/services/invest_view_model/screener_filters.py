@@ -168,7 +168,80 @@ SNAPSHOT_FILTER_FIELDS: dict[str, dict[str, ScreenerFilterDefinition]] = {
             unit="%",
         ),
     },
+    # ROB-443: crypto screener snapshot (tvscreener_upbit + USD-M perp derivatives).
+    # Composing filters added ON TOP of a preset's base (the preset's defining
+    # filter runs in SQL; these tighten/add in-memory — see screener_service crypto
+    # dispatch). Liquidity floor (trade_amount_24h) is the most broadly useful.
+    "invest_crypto_screener_snapshots": {
+        "trade_amount_24h": ScreenerFilterDefinition(
+            field="trade_amount_24h",
+            label="거래대금(24h)",
+            operator="gte",
+            value_type="int",
+            min_bound=0,
+            step=1_000_000_000,
+            unit="원",
+        ),
+        "rsi": ScreenerFilterDefinition(
+            field="rsi",
+            label="RSI",
+            operator="lte",
+            value_type="float",
+            min_bound=0.0,
+            max_bound=100.0,
+            step=1.0,
+        ),
+        "change_rate": ScreenerFilterDefinition(
+            field="change_rate",
+            label="등락률(당일)",
+            operator="gte",
+            value_type="percent",
+            min_bound=-30.0,
+            max_bound=30.0,
+            step=1.0,
+            unit="%",
+        ),
+        "oi_change_24h": ScreenerFilterDefinition(
+            field="oi_change_24h",
+            label="미결제약정 변화(24h)",
+            operator="gte",
+            value_type="percent",
+            min_bound=-100.0,
+            max_bound=500.0,
+            step=1.0,
+            unit="%",
+        ),
+        "long_short_account_ratio": ScreenerFilterDefinition(
+            field="long_short_account_ratio",
+            label="롱숏비율(리테일)",
+            operator="gte",
+            value_type="float",
+            min_bound=0.0,
+            max_bound=10.0,
+            step=0.1,
+        ),
+        "funding_rate": ScreenerFilterDefinition(
+            field="funding_rate",
+            label="펀딩비(비율)",
+            operator="lte",
+            value_type="float",
+            min_bound=-1.0,
+            max_bound=1.0,
+            step=0.0001,
+        ),
+    },
 }
+
+_CRYPTO_SNAPSHOT_KIND = "invest_crypto_screener_snapshots"
+_CRYPTO_PRESET_IDS = (
+    "crypto_high_volume",
+    "crypto_oversold",
+    "crypto_momentum",
+    "crypto_funding_squeeze",
+    "crypto_funding_overheated",
+    "crypto_oi_surge",
+    "crypto_long_short_skew",
+)
 
 # pilot preset → (base snapshot kind, starting filter set). A preset is just the
 # starting conditions; users adjust/add on top. Mirrors the current hardcoded
@@ -177,6 +250,8 @@ SNAPSHOT_FILTER_FIELDS: dict[str, dict[str, ScreenerFilterDefinition]] = {
 _PILOT_PRESET_SNAPSHOT: dict[str, str] = {
     "consecutive_gainers": "invest_screener_snapshots",
     "high_yield_value": "market_valuation_snapshots",
+    # ROB-443: crypto presets share one snapshot catalog (composing filters on top).
+    **dict.fromkeys(_CRYPTO_PRESET_IDS, _CRYPTO_SNAPSHOT_KIND),
 }
 _PILOT_PRESET_STARTING: dict[str, tuple[ScreenerFilterCondition, ...]] = {
     "consecutive_gainers": (
