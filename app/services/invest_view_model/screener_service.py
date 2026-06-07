@@ -1951,6 +1951,26 @@ async def build_screener_results(
                 _snapshot_check_result, _snapshot_state_override = (
                     _crypto_snapshot_result
                 )
+                # ROB-443: apply screen_stocks_snapshot filter overrides on top of
+                # the preset's SQL base (add/tighten). The preset's defining filter
+                # already ran in repo.list_latest; these compose in-memory over the
+                # exposed row fields (e.g. liquidity floor, rsi cap). validate raises
+                # ScreenerFilterError on an unknown field (caught by the MCP tool).
+                if filter_overrides:
+                    from app.services.invest_view_model.screener_filters import (
+                        apply_filter_conditions,
+                        snapshot_kind_for_preset,
+                        validate_conditions,
+                    )
+
+                    _crypto_kind = snapshot_kind_for_preset(preset_id)
+                    if _crypto_kind is not None:
+                        _crypto_conditions = validate_conditions(
+                            filter_overrides, snapshot_kind=_crypto_kind
+                        )
+                        _snapshot_check_result = apply_filter_conditions(
+                            _snapshot_check_result, _crypto_conditions
+                        )
                 _snapshot_empty_warning = (
                     "최신 암호화폐 스크리너 스냅샷에서 조건에 맞는 결과가 없습니다."
                 )
