@@ -411,6 +411,8 @@ async def test_build_screener_presets_returns_crypto_presets() -> None:
         "crypto_momentum",
         "crypto_funding_squeeze",
         "crypto_funding_overheated",
+        "crypto_oi_surge",
+        "crypto_long_short_skew",
     ]
     assert all(p.market == "crypto" for p in resp.presets)
 

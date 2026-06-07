@@ -102,6 +102,8 @@ def test_crypto_preset_definitions_are_crypto_scoped() -> None:
         "crypto_momentum",
         "crypto_funding_squeeze",
         "crypto_funding_overheated",
+        "crypto_oi_surge",
+        "crypto_long_short_skew",
     ]
     assert all(p.market == "crypto" for p in presets)
     assert all(p.filterChips[0].label == "가상자산" for p in presets)

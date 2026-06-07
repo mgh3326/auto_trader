@@ -78,3 +78,63 @@ def test_funding_presets_registered_for_crypto() -> None:
     ids = {p.id for p in preset_definitions("crypto")}
     assert "crypto_funding_squeeze" in ids
     assert "crypto_funding_overheated" in ids
+
+
+def _row_oi(symbol, *, oi_change, ls, vd):
+    return InvestCryptoScreenerSnapshot(
+        symbol=symbol,
+        snapshot_date=vd,
+        latest_close=Decimal("100"),
+        oi_change_24h=oi_change,
+        long_short_account_ratio=ls,
+        market_warning=False,
+        source="tvscreener_upbit",
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_oi_surge_and_long_short_skew_presets(db_session):
+    vd = dt.date(2099, 11, 2)
+    await db_session.execute(
+        InvestCryptoScreenerSnapshot.__table__.delete().where(
+            InvestCryptoScreenerSnapshot.snapshot_date == vd
+        )
+    )
+    db_session.add_all(
+        [
+            _row_oi("KRW-AAA", oi_change=Decimal("5.0"), ls=Decimal("1.1"), vd=vd),
+            _row_oi("KRW-BBB", oi_change=Decimal("30.0"), ls=Decimal("0.4"), vd=vd),
+            _row_oi("KRW-CCC", oi_change=Decimal("-2.0"), ls=Decimal("2.5"), vd=vd),
+            _row_oi("KRW-DDD", oi_change=None, ls=None, vd=vd),  # no perp
+        ]
+    )
+    await db_session.commit()
+    repo = InvestCryptoScreenerSnapshotsRepository(db_session)
+
+    # oi_surge: positive oi_change only, biggest first (negative + null excluded)
+    surge = await repo.list_latest(preset_id="crypto_oi_surge", snapshot_date=vd)
+    assert [r.symbol for r in surge] == ["KRW-BBB", "KRW-AAA"]
+
+    # long_short_skew: most deviated from 1 (either direction), null excluded
+    # |2.5-1|=1.5 (CCC) > |0.4-1|=0.6 (BBB) > |1.1-1|=0.1 (AAA)
+    skew = await repo.list_latest(preset_id="crypto_long_short_skew", snapshot_date=vd)
+    assert [r.symbol for r in skew] == ["KRW-CCC", "KRW-BBB", "KRW-AAA"]
+
+    await db_session.execute(
+        InvestCryptoScreenerSnapshot.__table__.delete().where(
+            InvestCryptoScreenerSnapshot.snapshot_date == vd
+        )
+    )
+    await db_session.commit()
+
+
+def test_oi_and_long_short_metric_labels() -> None:
+    from app.services.invest_view_model.screener_service import _metric_value_label
+
+    oi, _ = _metric_value_label("crypto_oi_surge", {"oi_change_24h": 12.5})
+    ls, _ = _metric_value_label(
+        "crypto_long_short_skew", {"long_short_account_ratio": 1.83}
+    )
+    assert oi == "+12.50%"
+    assert ls == "1.83"

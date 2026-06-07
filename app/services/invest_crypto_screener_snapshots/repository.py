@@ -30,6 +30,9 @@ class CryptoSnapshotUpsert(BaseModel):
     rsi: Decimal | None = None
     adx: Decimal | None = None
     funding_rate: Decimal | None = None  # ROB-443: USD-M perp; None when no perp
+    open_interest_usd: Decimal | None = None  # ROB-443: USD-M perp OI (USD)
+    oi_change_24h: Decimal | None = None  # ROB-443: 24h OI change %
+    long_short_account_ratio: Decimal | None = None  # ROB-443: global retail L/S
     market_warning: bool = False
     raw_payload: dict[str, Any] = Field(default_factory=dict)
     source: str = "tvscreener_upbit"
@@ -120,6 +123,29 @@ class InvestCryptoScreenerSnapshotsRepository:
                 InvestCryptoScreenerSnapshot.funding_rate > 0,
             ).order_by(
                 InvestCryptoScreenerSnapshot.funding_rate.desc(),
+                InvestCryptoScreenerSnapshot.trade_amount_24h.desc().nullslast(),
+                InvestCryptoScreenerSnapshot.symbol.asc(),
+            )
+        elif preset_id == "crypto_oi_surge":
+            # ROB-443: largest 24h open-interest increase = new capital / position
+            # buildup. oi_change_24h NULL (no perp / insufficient history) excluded.
+            stmt = stmt.where(
+                InvestCryptoScreenerSnapshot.oi_change_24h.is_not(None),
+                InvestCryptoScreenerSnapshot.oi_change_24h > 0,
+            ).order_by(
+                InvestCryptoScreenerSnapshot.oi_change_24h.desc(),
+                InvestCryptoScreenerSnapshot.trade_amount_24h.desc().nullslast(),
+                InvestCryptoScreenerSnapshot.symbol.asc(),
+            )
+        elif preset_id == "crypto_long_short_skew":
+            # ROB-443: retail long/short positioning most skewed from 1 (either
+            # direction) — a crowding/contrarian context signal. NULL excluded.
+            stmt = stmt.where(
+                InvestCryptoScreenerSnapshot.long_short_account_ratio.is_not(None),
+            ).order_by(
+                func.abs(
+                    InvestCryptoScreenerSnapshot.long_short_account_ratio - 1
+                ).desc(),
                 InvestCryptoScreenerSnapshot.trade_amount_24h.desc().nullslast(),
                 InvestCryptoScreenerSnapshot.symbol.asc(),
             )

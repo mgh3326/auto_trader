@@ -499,6 +499,33 @@ async def db_session():
                             "ADD COLUMN funding_rate NUMERIC(12, 8)"
                         )
                     )
+                # ROB-443 follow-up — OI / long-short columns on the (persistent)
+                # crypto screener snapshot table. Same conditional-ALTER pattern.
+                for _col, _ddl in (
+                    ("open_interest_usd", "open_interest_usd NUMERIC(28, 2)"),
+                    ("oi_change_24h", "oi_change_24h NUMERIC(10, 4)"),
+                    (
+                        "long_short_account_ratio",
+                        "long_short_account_ratio NUMERIC(10, 4)",
+                    ),
+                ):
+                    _has = (
+                        await conn.execute(
+                            text(
+                                "SELECT 1 FROM information_schema.columns "
+                                "WHERE table_name = 'invest_crypto_screener_snapshots' "
+                                "AND column_name = :c"
+                            ),
+                            {"c": _col},
+                        )
+                    ).first()
+                    if not _has:
+                        await conn.execute(
+                            text(
+                                "ALTER TABLE invest_crypto_screener_snapshots "
+                                f"ADD COLUMN {_ddl}"
+                            )
+                        )
                 # ROB-284 — crypto_candles_1d migrates in-place from the
                 # legacy (symbol, market) shape to the (instrument_id, time)
                 # shape. The test DB picks up its schema from
