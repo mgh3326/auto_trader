@@ -110,14 +110,22 @@ async def load_high_yield_value_from_snapshots(
             MarketValuationSnapshot.per > 0,
             MarketValuationSnapshot.per <= _MAX_PER,
         )
-        .order_by(
-            MarketValuationSnapshot.roe.desc().nullslast(),
-            MarketValuationSnapshot.per.asc().nullslast(),
-            MarketValuationSnapshot.symbol.asc(),
-            MarketValuationSnapshot.source.asc(),
-        )
-        .limit(max(limit * 4, limit + 40))
     )
+    if market == "us":
+        # ROB-440: drop yahoo micro-cap / ROE-artifact outliers (DCX 1177% @ $48M).
+        from app.services.invest_view_model.us_quality_guards import (
+            apply_us_valuation_quality_guards,
+        )
+
+        candidate_stmt = apply_us_valuation_quality_guards(
+            candidate_stmt, uses_roe=True
+        )
+    candidate_stmt = candidate_stmt.order_by(
+        MarketValuationSnapshot.roe.desc().nullslast(),
+        MarketValuationSnapshot.per.asc().nullslast(),
+        MarketValuationSnapshot.symbol.asc(),
+        MarketValuationSnapshot.source.asc(),
+    ).limit(max(limit * 4, limit + 40))
     try:
         result = await session.execute(candidate_stmt)
     except Exception as exc:  # noqa: BLE001

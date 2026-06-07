@@ -143,13 +143,19 @@ async def load_undervalued_breakout_from_snapshots(
             MarketValuationSnapshot.pbr > 0,
             MarketValuationSnapshot.pbr <= _MAX_PBR,
         )
-        .order_by(
-            MarketValuationSnapshot.per.asc().nullslast(),
-            MarketValuationSnapshot.symbol.asc(),
-            MarketValuationSnapshot.source.asc(),
-        )
-        .limit(max(limit * 6, limit + 60))
     )
+    if market == "us":
+        # ROB-440: drop yahoo micro-cap outliers (PER/PBR distort at nano-cap).
+        from app.services.invest_view_model.us_quality_guards import (
+            apply_us_valuation_quality_guards,
+        )
+
+        cand_stmt = apply_us_valuation_quality_guards(cand_stmt)
+    cand_stmt = cand_stmt.order_by(
+        MarketValuationSnapshot.per.asc().nullslast(),
+        MarketValuationSnapshot.symbol.asc(),
+        MarketValuationSnapshot.source.asc(),
+    ).limit(max(limit * 6, limit + 60))
     try:
         cand_rows = list((await session.execute(cand_stmt)).mappings().all())
     except Exception as exc:  # noqa: BLE001
