@@ -1391,3 +1391,164 @@ async def test_kr_dividend_yield_not_double_scaled(db_session):
     row = next(r for r in res.rows if r["symbol"] == sym)
     assert row["dividend_yield"] == 0.05  # KR unchanged (no ×100)
     await _cleanup_db(db_session)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_quality_guards_drop_microcap_and_bad_data(db_session):
+    # ROB-440: US fundamentals quality guards — micro-cap (size floor) + ROE/dividend
+    # sanity caps drop the yahoo outliers the corrected labels exposed. KR unaffected.
+    await _cleanup_db(db_session)
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        FundamentalsPresetSpec,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2099, 12, 1)
+
+    def _mv(symbol, *, market, roe=None, per=None, div=None, mcap):
+        return MarketValuationSnapshot(
+            market=market,
+            symbol=symbol,
+            snapshot_date=vd,
+            source="yahoo",
+            roe=roe,
+            per=per,
+            dividend_yield=div,
+            market_cap=Decimal(str(mcap)),
+        )
+
+    db_session.add_all(
+        [
+            _mv(
+                "DCX",
+                market="us",
+                roe=Decimal("1177"),
+                per=Decimal("5"),
+                mcap=48_000_000,
+            ),  # micro + ROE artifact
+            _mv(
+                "BLKB",
+                market="us",
+                roe=Decimal("418"),
+                per=Decimal("5"),
+                mcap=1_300_000_000,
+            ),  # large-cap ROE artifact
+            _mv(
+                "GOODR",
+                market="us",
+                roe=Decimal("25"),
+                per=Decimal("8"),
+                mcap=190_000_000_000,
+            ),  # legit
+        ]
+    )
+    await db_session.commit()
+    now = lambda: dt.datetime(2099, 12, 1, tzinfo=dt.UTC)  # noqa: E731
+
+    roe_spec = FundamentalsPresetSpec(
+        preset_id="_t_roe", min_roe=Decimal("15"), sort_by="roe"
+    )
+    res = await load_fundamentals_preset_from_snapshots(
+        db_session, market="us", spec=roe_spec, limit=20, now=now
+    )
+    syms = {r["symbol"] for r in res.rows}
+    assert syms == {"GOODR"}  # DCX(size floor) + BLKB(ROE cap) dropped
+
+    # dividend cap: bad-data NVO-like dropped, legit high-yield kept
+    await db_session.execute(
+        MarketValuationSnapshot.__table__.delete().where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    db_session.add_all(
+        [
+            _mv(
+                "BADDIV", market="us", div=Decimal("0.2674"), mcap=190_000_000_000
+            ),  # yahoo artifact
+            _mv(
+                "AGNCX", market="us", div=Decimal("0.14"), mcap=12_000_000_000
+            ),  # legit ~14%
+        ]
+    )
+    await db_session.commit()
+    div_spec = FundamentalsPresetSpec(
+        preset_id="_t_div", min_dividend_yield=Decimal("0.03"), sort_by="dividend_yield"
+    )
+    res2 = await load_fundamentals_preset_from_snapshots(
+        db_session, market="us", spec=div_spec, limit=20, now=now
+    )
+    assert {r["symbol"] for r in res2.rows} == {"AGNCX"}  # BADDIV(>25%) dropped
+
+    await db_session.execute(
+        MarketValuationSnapshot.__table__.delete().where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    await db_session.commit()
+    await _cleanup_db(db_session)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_kr_unaffected_by_us_quality_guards(db_session):
+    # KR path (reports/PIT) must NOT apply the US-only guards.
+    await _cleanup_db(db_session)
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.fundamentals_screener import (
+        FundamentalsPresetSpec,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2099, 12, 2)
+    # idempotent on the persistent local DB (prior runs may have left these)
+    await db_session.execute(
+        MarketValuationSnapshot.__table__.delete().where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    await db_session.execute(
+        KRSymbolUniverse.__table__.delete().where(KRSymbolUniverse.symbol == "900001")
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="900001",
+            snapshot_date=vd,
+            source="naver_finance",
+            roe=Decimal("1177"),
+            per=Decimal("5"),
+            market_cap=Decimal("48000000"),
+        )
+    )
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="900001", name="마이크로", exchange="KOSDAQ", is_active=True
+        )
+    )
+    await db_session.commit()
+    res = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="kr",
+        spec=FundamentalsPresetSpec(
+            preset_id="_t_kr", min_roe=Decimal("15"), sort_by="roe"
+        ),
+        limit=20,
+        now=lambda: dt.datetime(2099, 12, 2, tzinfo=dt.UTC),
+    )
+    assert "900001" in {
+        r["symbol"] for r in res.rows
+    }  # KR micro-cap kept (no US guard)
+
+    await db_session.execute(
+        MarketValuationSnapshot.__table__.delete().where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    await db_session.execute(
+        KRSymbolUniverse.__table__.delete().where(KRSymbolUniverse.symbol == "900001")
+    )
+    await db_session.commit()
+    await _cleanup_db(db_session)
