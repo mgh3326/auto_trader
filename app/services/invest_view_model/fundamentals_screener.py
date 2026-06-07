@@ -184,18 +184,6 @@ FUNDAMENTALS_PRESET_SPECS: dict[str, FundamentalsPresetSpec] = {
     )
 }
 
-# ROB-440: US fundamentals quality guards. Once the labels were corrected (#1154
-# dividend ×100, #1155 market_cap currency), yahoo .info ratios for micro-caps and
-# bad data points surfaced at the TOP of the rankings: DCX ROE 1177% on a $48M cap,
-# NVO dividend 26.74% from a bad trailingAnnualDividendYield. KR uses tvscreener
-# (cleaner) so these apply to US only. Guards: a size/liquidity floor (global) plus
-# metric sanity caps applied only when that metric is the preset's filter/sort.
-_US_MIN_MARKET_CAP_USD = Decimal("100000000")  # $100M — drop nano-caps (DCX $48M)
-_US_MAX_ROE_PERCENT = Decimal(
-    "300"
-)  # drop egregious ROE artifacts (keep real high ROE)
-_US_MAX_DIVIDEND_RATIO = Decimal("0.25")  # 25% — drop bad dividend data (real ≤ ~20%)
-
 
 @dataclass(frozen=True)
 class FundamentalsScreenResult:
@@ -407,27 +395,19 @@ async def load_fundamentals_preset_from_snapshots(
             MarketValuationSnapshot.dividend_yield >= spec.min_dividend_yield
         )
     if market == "us":
-        # ROB-440 quality guards (US only; KR uses cleaner tvscreener). Drop the
-        # micro-cap / bad-data outliers the now-correct labels expose. NULL passes
-        # the ratio caps (missing ≠ anomalous); the size floor requires a value.
-        cand_stmt = cand_stmt.where(
-            MarketValuationSnapshot.market_cap.is_not(None),
-            MarketValuationSnapshot.market_cap >= _US_MIN_MARKET_CAP_USD,
+        # ROB-440 quality guards (US only; KR uses cleaner tvscreener). Shared with
+        # the high_yield_value / undervalued_breakout US loaders.
+        from app.services.invest_view_model.us_quality_guards import (
+            apply_us_valuation_quality_guards,
         )
-        if spec.min_roe is not None or spec.sort_by == "roe":
-            cand_stmt = cand_stmt.where(
-                sa.or_(
-                    MarketValuationSnapshot.roe.is_(None),
-                    MarketValuationSnapshot.roe <= _US_MAX_ROE_PERCENT,
-                )
-            )
-        if spec.min_dividend_yield is not None or spec.sort_by == "dividend_yield":
-            cand_stmt = cand_stmt.where(
-                sa.or_(
-                    MarketValuationSnapshot.dividend_yield.is_(None),
-                    MarketValuationSnapshot.dividend_yield <= _US_MAX_DIVIDEND_RATIO,
-                )
-            )
+
+        cand_stmt = apply_us_valuation_quality_guards(
+            cand_stmt,
+            uses_roe=spec.min_roe is not None or spec.sort_by == "roe",
+            uses_dividend=(
+                spec.min_dividend_yield is not None or spec.sort_by == "dividend_yield"
+            ),
+        )
     # Cap the candidate universe by market_cap (prefer liquid names); ranking by the
     # preset's sort_by happens AFTER derive. Surface truncation honestly (no silent cap).
     _cand_cap = max(limit * 8, 200)

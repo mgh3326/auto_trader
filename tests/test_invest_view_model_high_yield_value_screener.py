@@ -139,6 +139,7 @@ async def test_us_market_filters_by_roe_and_per(db_session):
                 source="yahoo",
                 per=decimal.Decimal("7.0"),
                 roe=decimal.Decimal("22.0"),
+                market_cap=decimal.Decimal("5000000000"),  # ROB-440: above US floor
             ),
             # excluded: ROE 8 < 15
             MarketValuationSnapshot(
@@ -148,6 +149,7 @@ async def test_us_market_filters_by_roe_and_per(db_session):
                 source="yahoo",
                 per=decimal.Decimal("4.0"),
                 roe=decimal.Decimal("8.0"),
+                market_cap=decimal.Decimal("5000000000"),
             ),
         ]
     )
@@ -296,3 +298,64 @@ def test_metric_value_label_formats_roe_as_percent():
     label, warnings = _metric_value_label("high_yield_value", {"roe": 18.3})
     assert label == "18.3%"
     assert warnings == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_quality_guards_drop_microcap_and_roe_artifacts(db_session):
+    # ROB-440: high_yield_value US must apply the shared quality guards (the live DCX
+    # ROE 1177% @ $48M / BLKB 418% outliers that #1161 missed for this loader).
+    val_date = dt.date(2099, 12, 30)
+    for s in ("ZZUDCX", "ZZUBLK", "ZZUGUD"):
+        await db_session.execute(
+            MarketValuationSnapshot.__table__.delete().where(
+                MarketValuationSnapshot.symbol == s
+            )
+        )
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(  # micro-cap + ROE artifact → dropped (size floor + ROE cap)
+                market="us",
+                symbol="ZZUDCX",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("5.0"),
+                roe=decimal.Decimal("1177.0"),
+                market_cap=decimal.Decimal("48000000"),
+            ),
+            MarketValuationSnapshot(  # large-cap ROE artifact → dropped (ROE cap)
+                market="us",
+                symbol="ZZUBLK",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("5.0"),
+                roe=decimal.Decimal("418.0"),
+                market_cap=decimal.Decimal("1300000000"),
+            ),
+            MarketValuationSnapshot(  # legit → kept
+                market="us",
+                symbol="ZZUGUD",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("8.0"),
+                roe=decimal.Decimal("25.0"),
+                market_cap=decimal.Decimal("190000000000"),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    rows = await load_high_yield_value_from_snapshots(
+        db_session, market="us", limit=20, today_market_date=val_date
+    )
+    syms = {r["symbol"] for r in (rows or [])}
+    assert "ZZUGUD" in syms
+    assert "ZZUDCX" not in syms and "ZZUBLK" not in syms  # outliers dropped
+
+    for s in ("ZZUDCX", "ZZUBLK", "ZZUGUD"):
+        await db_session.execute(
+            MarketValuationSnapshot.__table__.delete().where(
+                MarketValuationSnapshot.symbol == s
+            )
+        )
+    await db_session.commit()
