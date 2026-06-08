@@ -995,6 +995,13 @@ def build_screener_presets(market: str = "kr") -> ScreenerPresetsResponse:
     )
 
 
+# ROB-432: presets that screen ON investor_flow (수급) — only these treat a stale
+# investor_flow partition as a freshness dependency that can drag overallState.
+# Other KR presets still render the per-row investor_flow chip (display only).
+_INVESTOR_FLOW_DEPENDENCY_PRESETS: frozenset[str] = frozenset(
+    {"double_buy", "investor_flow_momentum"}
+)
+
 _METRIC_FIELD: dict[str, str] = {
     "consecutive_gainers": "week_change_rate",
     "cheap_value": "per",
@@ -2211,7 +2218,16 @@ async def build_screener_results(
     # _investor_flow_collected_at, and _investor_flow_data_state have been stashed
     # back on rows.
     dependency_specs: list[dict[str, Any]] = []
-    if requested_market == "kr" and investor_flow_chips:
+    # ROB-432: investor_flow is a freshness DEPENDENCY only for presets that screen
+    # on it (외인/기관 수급). For fundamentals/valuation/price presets it is a
+    # supplementary per-row CHIP (still hydrated + shown), not a screening input —
+    # so a stale investor_flow partition must NOT drag their overallState to stale
+    # ("펀더는 fresh인데 stale 표시" 오해 제거).
+    if (
+        requested_market == "kr"
+        and preset_id in _INVESTOR_FLOW_DEPENDENCY_PRESETS
+        and investor_flow_chips
+    ):
         from app.services.invest_screener_snapshots.freshness import (
             classify_investor_flow_partition,
             today_trading_date,

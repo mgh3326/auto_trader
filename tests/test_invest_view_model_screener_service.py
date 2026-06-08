@@ -2583,10 +2583,12 @@ async def test_double_buy_flow_stale_warning_reports_actual_multiday_lag(
 async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_dependency() -> (
     None
 ):
-    """ROB-277 follow-up FU2/FU6: when primary partition is today's and an
-    investor_flow snapshot is 2 trading days older, freshness.dependencies must
-    surface that as a 'stale' investor_flow entry with the correct snapshotDate
-    and lagLabel, and overallState must be 'stale' per D1.c rule 2."""
+    """ROB-432: consecutive_gainers (price preset) must NOT be dragged stale by a
+    stale investor_flow partition. investor_flow is a supplementary per-row chip
+    here, not a screening input, so it is not a freshness dependency — overallState
+    stays fresh. (Supersedes the ROB-277 FU2/FU6 behavior where every KR preset
+    treated investor_flow as a dependency; now only double_buy /
+    investor_flow_momentum, which actually screen on 수급, do.)"""
     import datetime as dt
 
     today_kr = dt.date(2026, 5, 20)  # Wednesday
@@ -2693,17 +2695,14 @@ async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_depend
     assert f.primary is not None
     assert f.primary.snapshotDate == today_kr.isoformat()
     assert f.primary.dataState == "fresh"
-    # Dependency surfaces the investor-flow partition (NOT the primary date)
-    assert len(f.dependencies) == 1
-    dep = f.dependencies[0]
-    assert dep.kind == "investor_flow"
-    assert dep.snapshotDate == inv_partition.isoformat()
-    assert dep.dataState == "stale"
-    # lagLabel reflects the 2-day gap (calendar diff between today and inv_partition)
-    assert dep.lagLabel is not None and "일 지연" in dep.lagLabel
-    # D1.c rule 2: primary fresh + dep stale → overall stale
-    assert f.overallState == "stale"
-    assert f.dataState == "stale"
+    # ROB-432: consecutive_gainers screens on price momentum, NOT 수급. investor_flow
+    # is a supplementary per-row chip (still hydrated/shown), NOT a freshness
+    # dependency — so a stale investor_flow partition must NOT drag overallState.
+    # (Was: dep present + overall stale; only double_buy/investor_flow_momentum,
+    # which actually screen on 수급, treat it as a dependency now.)
+    assert f.dependencies == []
+    assert f.overallState == "fresh"
+    assert f.dataState == "fresh"
 
 
 @pytest.mark.unit
@@ -3346,3 +3345,17 @@ async def test_market_cap_source_fallback_when_valuation_partition_is_fallback(
 
     assert len(resp.results) == 1
     assert resp.results[0].marketCapSource == "fallback"
+
+
+def test_investor_flow_dependency_presets_are_supply_only() -> None:
+    # ROB-432: only 수급-screening presets treat investor_flow as a freshness
+    # dependency. Guards against re-broadening it to fundamentals/price presets.
+    from app.services.invest_view_model.screener_service import (
+        _INVESTOR_FLOW_DEPENDENCY_PRESETS,
+    )
+
+    assert _INVESTOR_FLOW_DEPENDENCY_PRESETS == frozenset(
+        {"double_buy", "investor_flow_momentum"}
+    )
+    for non_supply in ("undervalued_growth", "high_yield_value", "consecutive_gainers"):
+        assert non_supply not in _INVESTOR_FLOW_DEPENDENCY_PRESETS
