@@ -133,16 +133,16 @@ async def fetch_upbit_notices(
             {
                 "id": _first_present(raw, "id", "notice_id", "noticeId"),
                 "title": _first_present(raw, "title", "content"),
-                "category": _first_present(raw, "category", "thread_name", "threadName"),
+                "category": _first_present(
+                    raw, "category", "thread_name", "threadName"
+                ),
                 "listed_at": listed.astimezone(dt.UTC).isoformat() if listed else None,
                 "first_listed_at": (
                     first_listed.astimezone(dt.UTC).isoformat()
                     if first_listed
                     else None
                 ),
-                "need_new_badge": _first_present(
-                    raw, "need_new_badge", "needNewBadge"
-                ),
+                "need_new_badge": _first_present(raw, "need_new_badge", "needNewBadge"),
                 "need_update_badge": _first_present(
                     raw, "need_update_badge", "needUpdateBadge"
                 ),
