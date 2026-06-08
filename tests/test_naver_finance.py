@@ -278,7 +278,8 @@ SAMPLE_INVESTOR_TRENDS_HTML = """
 <table class="type2">
     <tbody><tr><td></td></tr></tbody>
 </table>
-<!-- Second table.type2 has the actual data -->
+<!-- Second table.type2 has the actual data (ROB-448: 9 cells — the 외국인 column is a
+     2-level header with 순매수 / 보유주수 / 보유율) -->
 <table class="type2">
     <tr>
         <td>2024.01.15</td>
@@ -288,6 +289,8 @@ SAMPLE_INVESTOR_TRENDS_HTML = """
         <td>10,000,000</td>
         <td>1,000,000</td>
         <td>-500,000</td>
+        <td>2,790,424,635</td>
+        <td>47.73%</td>
     </tr>
     <tr>
         <td>2024.01.14</td>
@@ -297,6 +300,8 @@ SAMPLE_INVESTOR_TRENDS_HTML = """
         <td>8,000,000</td>
         <td>-200,000</td>
         <td>300,000</td>
+        <td>2,789,924,635</td>
+        <td>47.72%</td>
     </tr>
 </table>
 </body>
@@ -618,11 +623,15 @@ class TestFetchInvestorTrends:
         assert day1["change"] == 500  # ▲500
         assert day1["institutional_net"] == 1000000
         assert day1["foreign_net"] == -500000
+        # ROB-448: foreign holding shares (count) + rate (percent, 0..100)
+        assert day1["foreign_holding_shares"] == 2790424635
+        assert day1["foreign_holding_rate"] == pytest.approx(47.73)
 
         # Second day
         day2 = result["data"][1]
         assert day2["date"] == "2024-01-14"
         assert day2["change"] == -300  # ▼300
+        assert day2["foreign_holding_rate"] == pytest.approx(47.72)
 
     async def test_days_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
@@ -635,6 +644,77 @@ class TestFetchInvestorTrends:
         result = await naver_finance.fetch_investor_trends("005930", days=1)
 
         assert len(result["data"]) == 1
+
+    async def test_legacy_7cell_layout_degrades_to_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROB-448: a 7-cell row (no holding columns) must degrade to None, not IndexError.
+        html = """
+        <html><body>
+        <table class="type2"><tbody><tr><td></td></tr></tbody></table>
+        <table class="type2">
+            <tr><td>2024.01.15</td><td>75,000</td><td>▲500</td><td>+0.67%</td>
+                <td>10,000,000</td><td>1,000,000</td><td>-500,000</td></tr>
+        </table>
+        </body></html>
+        """
+
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup(html, "lxml")
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investor_trends("005930", days=20)
+
+        assert len(result["data"]) == 1
+        assert result["data"][0]["foreign_net"] == -500000
+        assert result["data"][0]["foreign_holding_shares"] is None
+        assert result["data"][0]["foreign_holding_rate"] is None
+
+
+@pytest.mark.unit
+class TestParseHoldingRate:
+    """ROB-448: foreign holding-rate parser (percent 0..100). Module-level/sync so it
+    does NOT inherit TestFetchInvestorTrends's class-level @pytest.mark.asyncio."""
+
+    def test_parse_holding_rate_unit(self) -> None:
+        # '%' must NOT trigger parse_korean_number's /100 (which would yield 0.4773).
+        assert naver_finance.investor._parse_holding_rate("47.73%") == pytest.approx(
+            47.73
+        )
+        assert naver_finance.investor._parse_holding_rate("12.5") == pytest.approx(12.5)
+        assert naver_finance.investor._parse_holding_rate("") is None
+        assert naver_finance.investor._parse_holding_rate(None) is None
+
+
+@pytest.mark.unit
+class TestParseTotalInfos:
+    """ROB-448: directly exercise _parse_total_infos (the eps/bps/market_cap source the
+    fetch_valuation overlay surfaces) — all overlay tests stub _fetch_integration, so
+    without this the raw-JSON → parsed-metric loop (and a typo like .get('esp')) is
+    untested."""
+
+    def test_parses_metrics_with_unit_suffixes(self) -> None:
+        result = naver_finance.valuation._parse_total_infos(
+            [
+                {"code": "eps", "value": "5,432원"},
+                {"code": "bps", "value": "50,000원"},
+                {"code": "marketValue", "value": "400조"},
+                {"code": "per", "value": "12.5배"},
+                {"code": "pbr", "value": "1.2배"},
+                {"code": "unmapped", "value": "ignore me"},
+            ]
+        )
+        assert result["eps"] == pytest.approx(5432)  # won/share, 원 stripped
+        assert result["bps"] == pytest.approx(50000)
+        assert result["market_cap"] == pytest.approx(
+            400_000_000_000_000
+        )  # 400조 raw KRW
+        assert result["per"] == pytest.approx(12.5)
+        assert result["pbr"] == pytest.approx(1.2)
+        assert "unmapped" not in result
 
 
 @pytest.mark.asyncio
@@ -994,6 +1074,71 @@ class TestFetchHtml:
 @pytest.mark.unit
 class TestFetchValuation:
     """Tests for fetch_valuation function."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_integration(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ROB-448: fetch_valuation now overlays eps/bps/market_cap via the mobile
+        # _fetch_integration endpoint. Stub it to {} so these HTML-only tests stay
+        # hermetic (no network) — the overlay leaves the 3 keys None. The overlay
+        # behaviour itself is asserted in test_overlays_eps_bps_market_cap.
+        async def _empty(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+            return {}
+
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_integration", _empty)
+
+    async def test_overlays_eps_bps_market_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROB-448: eps/bps/market_cap (RAW KRW) from _fetch_integration overlay the
+        # HTML-scraped valuation. additive — existing keys untouched.
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "main.naver" in url:
+                return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+            return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
+
+        async def fake_integration(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+            return {"eps": 5432.0, "bps": 50000.0, "market_cap": 400_000_000_000_000.0}
+
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", fake_integration
+        )
+
+        result = await naver_finance.fetch_valuation("005930")
+
+        assert result["eps"] == pytest.approx(5432.0)  # won/share
+        assert result["bps"] == pytest.approx(50000.0)
+        assert result["market_cap"] == pytest.approx(400_000_000_000_000.0)  # raw KRW
+        # HTML-scraped keys untouched by the overlay
+        assert result["per"] == pytest.approx(12.5)
+        assert result["pbr"] == pytest.approx(1.2)
+
+    async def test_overlay_fails_open_leaves_keys_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROB-448: a mobile-API failure must not break valuation — eps/bps/market_cap
+        # degrade to None, HTML keys still returned.
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "main.naver" in url:
+                return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+            return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
+
+        async def boom(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+            raise RuntimeError("mobile api down")
+
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_integration", boom)
+
+        result = await naver_finance.fetch_valuation("005930")
+
+        assert result["eps"] is None
+        assert result["bps"] is None
+        assert result["market_cap"] is None
+        assert result["per"] == pytest.approx(12.5)  # valuation still intact
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
