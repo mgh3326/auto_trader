@@ -123,3 +123,116 @@ def freshness_to_meta(
     return data_state, meta, warnings
 
 
+import datetime as dt
+import logging
+from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class KrRankingSnapshotResult:
+    rows: list[dict[str, Any]]
+    total_count: int
+    data_state: str  # "fresh" | "stale"
+    source: str
+    latest_snapshot_at: str | None
+    warnings: list[str] = field(default_factory=list)
+    meta_fields: dict[str, Any] = field(default_factory=dict)
+
+
+def _build_query_service(session: Any) -> Any:
+    from app.services.invest_momentum_events.query_service import (
+        MomentumRankingQueryService,
+    )
+    from app.services.invest_momentum_events.repository import (
+        InvestMomentumEventSnapshotsRepository,
+    )
+
+    return MomentumRankingQueryService(InvestMomentumEventSnapshotsRepository(session))
+
+
+async def _enrich_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return rows  # replaced in Task 5
+
+
+async def load_kr_ranking_snapshot(
+    *,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    now: dt.datetime | None = None,
+    query_service: Any | None = None,
+    enrich: bool = True,
+) -> KrRankingSnapshotResult | None:
+    """Primary KR discovery source for screen_stocks. Returns a result with rows
+    (fresh OR stale, honestly labeled) or None (ineligible sort_by / zero rows /
+    any error) so the caller falls through to the live path. Fail-open by design."""
+    if not is_snapshot_eligible_sort(sort_by):
+        return None
+    if now is None:
+        now = dt.datetime.now(dt.UTC)
+
+    order_types = order_types_for_sort(sort_by)
+    try:
+        if query_service is not None:
+            return await _run(
+                query_service, sort_by, sort_order, limit, now, order_types, enrich, None
+            )
+        from app.core.db import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as session:
+            qs = _build_query_service(session)
+            return await _run(
+                qs, sort_by, sort_order, limit, now, order_types, enrich, session
+            )
+    except Exception as exc:  # fail-open: never break screen_stocks
+        logger.debug("kr_market_ranking snapshot unavailable, falling back: %s", exc)
+        return None
+
+
+async def _run(
+    qs: Any,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    now: dt.datetime,
+    order_types: tuple[str, ...],
+    enrich: bool,
+    session: Any | None,
+) -> KrRankingSnapshotResult | None:
+    collected: list[dict[str, Any]] = []
+    freshnesses: list[Freshness] = []
+    for ot in order_types:
+        ranking = await qs.get_ranking(
+            order_type=ot, market="kr", limit=max(limit, 50), now=now
+        )
+        freshnesses.append(ranking.freshness)
+        collected.extend(ranking_row_to_screen_row(r) for r in ranking.rows)
+
+    if not collected:
+        return None  # unavailable -> live fallthrough
+
+    rows = dedupe_and_sort_rows(collected, sort_by=sort_by, sort_order=sort_order)
+    rows = rows[:limit]
+
+    # Worst freshness wins (stale beats fresh when buckets disagree).
+    overall = "stale" if any(f.overall == "stale" for f in freshnesses) else "fresh"
+    base = next((f for f in freshnesses if f.overall == overall), freshnesses[0])
+
+    if enrich and session is not None:
+        rows = await _enrich_rows(rows)  # defined in Task 5
+
+    data_state, meta, warnings = freshness_to_meta(base, row_count=len(rows))
+    return KrRankingSnapshotResult(
+        rows=rows,
+        total_count=len(rows),
+        data_state=data_state,
+        source="kr_market_ranking",
+        latest_snapshot_at=meta.get("latest_snapshot_at"),
+        warnings=warnings,
+        meta_fields=meta,
+    )
+
+
+

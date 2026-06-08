@@ -115,3 +115,103 @@ def test_freshness_to_meta_stale_adds_warning_and_not_retryable():
     assert any("오래" in w for w in warnings)
 
 
+import datetime as dt
+
+from app.services.invest_momentum_events.query_service import MomentumRanking
+
+
+class _FakeQS:
+    """Fake MomentumRankingQueryService: returns canned MomentumRanking per order_type."""
+    def __init__(self, by_order_type: dict[str, MomentumRanking]):
+        self._by = by_order_type
+        self.calls: list[str] = []
+
+    async def get_ranking(self, *, order_type, market, limit, now, **_):
+        self.calls.append(order_type)
+        return self._by[order_type]
+
+
+def _ranking(order_type, overall, rows):
+    return MomentumRanking(
+        market="kr", order_type=order_type, trading_date=None,
+        rows=tuple(rows), freshness=Freshness(overall, None, None if overall == "fresh" else "older_than_ttl"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_load_returns_none_for_ineligible_sort():
+    qs = _FakeQS({})
+    out = await krs.load_kr_ranking_snapshot(
+        sort_by="rsi", sort_order="desc", limit=20, query_service=qs, enrich=False
+    )
+    assert out is None
+    assert qs.calls == []  # never queried
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_load_returns_none_when_unavailable():
+    qs = _FakeQS({"up": _ranking("up", "unavailable", [])})
+    out = await krs.load_kr_ranking_snapshot(
+        sort_by="change_rate", sort_order="desc", limit=20, query_service=qs, enrich=False
+    )
+    assert out is None  # zero rows -> live fallthrough
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_load_fresh_change_rate_returns_rows():
+    rows = [RankingRow(1, "005930", "삼성전자", 71000.0, 3.5, 100, 5e11, 4e14)]
+    qs = _FakeQS({"up": _ranking("up", "fresh", rows)})
+    out = await krs.load_kr_ranking_snapshot(
+        sort_by="change_rate", sort_order="desc", limit=20, query_service=qs, enrich=False
+    )
+    assert out is not None
+    assert out.data_state == "fresh"
+    assert out.total_count == 1
+    assert out.rows[0]["symbol"] == "005930"
+    assert out.source == "kr_market_ranking"
+    assert qs.calls == ["up"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_load_stale_returned_honestly_not_dropped():
+    rows = [RankingRow(1, "005930", "삼성", 71000.0, 1.0, 100, 5e11, 4e14)]
+    qs = _FakeQS({"quantTop": _ranking("quantTop", "stale", rows)})
+    out = await krs.load_kr_ranking_snapshot(
+        sort_by="volume", sort_order="desc", limit=20, query_service=qs, enrich=False
+    )
+    assert out is not None and out.rows  # stale still returns rows (no hard-0)
+    assert out.data_state == "stale"
+    assert any("오래" in w for w in out.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_load_trade_amount_unions_buckets_and_resorts():
+    up = [RankingRow(1, "A", "A", 1.0, 9.0, 10, 100.0, 5.0)]
+    qt = [RankingRow(1, "B", "B", 1.0, 1.0, 99, 300.0, 1.0)]
+    qs = _FakeQS({"up": _ranking("up", "fresh", up), "quantTop": _ranking("quantTop", "fresh", qt)})
+    out = await krs.load_kr_ranking_snapshot(
+        sort_by="trade_amount", sort_order="desc", limit=20, query_service=qs, enrich=False
+    )
+    assert out is not None
+    assert [r["symbol"] for r in out.rows] == ["B", "A"]  # 300 > 100
+    assert set(qs.calls) == {"up", "quantTop"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_load_fail_open_on_query_error():
+    class _Boom:
+        async def get_ranking(self, **_):
+            raise RuntimeError("db down")
+    out = await krs.load_kr_ranking_snapshot(
+        sort_by="volume", sort_order="desc", limit=20, query_service=_Boom(), enrich=False
+    )
+    assert out is None  # fail-open -> live fallthrough
+
+
+
