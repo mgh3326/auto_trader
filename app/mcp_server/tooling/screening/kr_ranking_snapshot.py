@@ -43,6 +43,59 @@ def order_types_for_sort(sort_by: str) -> tuple[str, ...]:
     return _ORDER_TYPE_BY_SORT.get(sort_by, ())
 
 
+def snapshot_path_applicable(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sector: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    max_pbr: float | None,
+    min_dividend_yield: float | None,
+    min_analyst_buy: float | None,
+    max_rsi: float | None,
+    adv_krw_min: int | None,
+    market_cap_min_krw: int | None,
+    market_cap_max_krw: int | None,
+    instrument_types: list[str] | None,
+    exclude_sectors: list[str] | None,
+) -> bool:
+    """True iff this is a plain KR-wide ranking query the kr_market_ranking read-model
+    can faithfully serve.
+
+    The read-model is KR-wide (KOSPI+KOSDAQ) common stocks with no quality fields, so:
+    - a market sub-filter (kospi/kosdaq/konex) would mislabel KR-wide rows,
+    - an ETF/category/sector constraint or any quality filter cannot be honored.
+    In those cases this returns False so the caller uses the live path (which honors
+    them) instead of silently returning unfiltered / mislabeled snapshot rows.
+    """
+    if market not in {"kr", "all"}:
+        return False
+    if asset_type not in (None, "stock"):
+        return False
+    if category is not None or sector is not None:
+        return False
+    if any(
+        v is not None
+        for v in (
+            min_market_cap,
+            max_per,
+            max_pbr,
+            min_dividend_yield,
+            min_analyst_buy,
+            max_rsi,
+            adv_krw_min,
+            market_cap_min_krw,
+            market_cap_max_krw,
+        )
+    ):
+        return False
+    if instrument_types or exclude_sectors:
+        return False
+    return True
+
+
 def _opt_float(value: float | int | None) -> float | None:
     return float(value) if value is not None else None
 

@@ -27,6 +27,7 @@ from app.mcp_server.tooling.screening.enrichment import _pick_display_name
 from app.mcp_server.tooling.screening.instrument_type import classify_kr_instrument
 from app.mcp_server.tooling.screening.kr_ranking_snapshot import (
     load_kr_ranking_snapshot,
+    snapshot_path_applicable,
 )
 from app.mcp_server.tooling.screening.tvscreener_support import (
     _adapt_tvscreener_stock_response,
@@ -673,25 +674,45 @@ async def _screen_kr_with_fallback(
     """Screen Korean market with tvscreener fallback to legacy."""
     # ROB-388: snapshot-primary. Serve the durable kr_market_ranking read-model first
     # (fresh OR stale, honestly labeled) so screen_stocks never hard-0s when the live
-    # KRX session is down. None => ineligible sort_by / zero rows / error => live path.
-    snapshot = await load_kr_ranking_snapshot(
-        sort_by=sort_by, sort_order=sort_order, limit=limit
-    )
-    if snapshot is not None and snapshot.rows:
-        return _build_screen_response(
-            snapshot.rows,
-            snapshot.total_count,
-            {
-                "market": market,
-                "sort_by": sort_by,
-                "sort_order": sort_order,
-                "asset_type": asset_type,
-                "category": category,
-            },
-            market,
-            warnings=snapshot.warnings or None,
-            meta_fields=snapshot.meta_fields,
+    # KRX session is down. Gated to plain KR-wide ranking queries: a market sub-filter
+    # (kospi/kosdaq/konex), ETF/category/sector, or any quality filter would be
+    # mislabeled/silently dropped by the read-model, so those use the live path (which
+    # honors them). None => ineligible sort_by / zero rows / error => live path.
+    if snapshot_path_applicable(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sector=sector,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield,
+        min_analyst_buy=min_analyst_buy,
+        max_rsi=max_rsi,
+        adv_krw_min=adv_krw_min,
+        market_cap_min_krw=market_cap_min_krw,
+        market_cap_max_krw=market_cap_max_krw,
+        instrument_types=instrument_types,
+        exclude_sectors=exclude_sectors,
+    ):
+        snapshot = await load_kr_ranking_snapshot(
+            sort_by=sort_by, sort_order=sort_order, limit=limit
         )
+        if snapshot is not None and snapshot.rows:
+            return _build_screen_response(
+                snapshot.rows,
+                snapshot.total_count,
+                {
+                    "market": market,
+                    "sort_by": sort_by,
+                    "sort_order": sort_order,
+                    "asset_type": asset_type,
+                    "category": category,
+                },
+                market,
+                warnings=snapshot.warnings or None,
+                meta_fields=snapshot.meta_fields,
+            )
 
     try:
         capability_snapshot = await _get_tvscreener_stock_capability_snapshot(

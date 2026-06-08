@@ -391,3 +391,88 @@ async def test_fallback_none_snapshot_goes_live():
             limit=20,
         )
     assert resp["meta"]["source"] == "legacy"  # fell through to live
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_fallback_skips_snapshot_when_filtered():
+    """A quality filter (max_per) cannot be honored by the KR-wide ranking snapshot,
+    so the guard must skip the snapshot path entirely and go live (which honors it)."""
+    snap_mock = AsyncMock(
+        return_value=KrRankingSnapshotResult(
+            rows=[{"symbol": "X"}],
+            total_count=1,
+            data_state="fresh",
+            source="kr_market_ranking",
+            latest_snapshot_at=None,
+        )
+    )
+    with (
+        patch.object(kr_mod, "load_kr_ranking_snapshot", new=snap_mock),
+        patch.object(
+            kr_mod,
+            "_get_tvscreener_stock_capability_snapshot",
+            new=AsyncMock(return_value={}),
+        ),
+        patch.object(kr_mod, "_can_use_tvscreener_stock_path", return_value=False),
+        patch.object(
+            kr_mod,
+            "_screen_kr",
+            new=AsyncMock(return_value={"meta": {"source": "legacy"}, "results": []}),
+        ),
+    ):
+        resp = await kr_mod._screen_kr_with_fallback(
+            market="kr",
+            asset_type=None,
+            category=None,
+            sector=None,
+            min_market_cap=None,
+            max_per=10.0,
+            max_pbr=None,
+            min_dividend_yield=None,
+            min_analyst_buy=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=20,
+        )
+    snap_mock.assert_not_awaited()  # guard prevented the snapshot path
+    assert resp["meta"]["source"] == "legacy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_fallback_skips_snapshot_for_submarket():
+    """market=kospi would be mislabeled by the KR-wide snapshot -> guard goes live."""
+    snap_mock = AsyncMock(return_value=None)
+    with (
+        patch.object(kr_mod, "load_kr_ranking_snapshot", new=snap_mock),
+        patch.object(
+            kr_mod,
+            "_get_tvscreener_stock_capability_snapshot",
+            new=AsyncMock(return_value={}),
+        ),
+        patch.object(kr_mod, "_can_use_tvscreener_stock_path", return_value=False),
+        patch.object(
+            kr_mod,
+            "_screen_kr",
+            new=AsyncMock(return_value={"meta": {"source": "legacy"}, "results": []}),
+        ),
+    ):
+        resp = await kr_mod._screen_kr_with_fallback(
+            market="kospi",
+            asset_type=None,
+            category=None,
+            sector=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            min_analyst_buy=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=20,
+        )
+    snap_mock.assert_not_awaited()  # sub-market -> live path
+    assert resp["meta"]["source"] == "legacy"

@@ -300,3 +300,93 @@ async def test_enrich_rows_no_fabrication_when_missing():
     assert out[0]["pbr"] is None
     assert out[0]["dividend_yield"] is None
     assert out[0]["code"] == "999999"  # unchanged when no universe match
+
+
+# --- ROB-388 follow-up: snapshot_path_applicable guard (sub-market + filter safety) ---
+
+_GUARD_BASE: dict[str, object] = {
+    "asset_type": None,
+    "category": None,
+    "sector": None,
+    "min_market_cap": None,
+    "max_per": None,
+    "max_pbr": None,
+    "min_dividend_yield": None,
+    "min_analyst_buy": None,
+    "max_rsi": None,
+    "adv_krw_min": None,
+    "market_cap_min_krw": None,
+    "market_cap_max_krw": None,
+    "instrument_types": None,
+    "exclude_sectors": None,
+}
+
+
+@pytest.mark.unit
+def test_snapshot_path_applicable_only_kr_wide():
+    # KR-wide ranking is faithfully serveable
+    assert krs.snapshot_path_applicable(market="kr", **_GUARD_BASE) is True
+    assert krs.snapshot_path_applicable(market="all", **_GUARD_BASE) is True
+    # sub-markets would mislabel KR-wide data -> not applicable
+    assert krs.snapshot_path_applicable(market="kospi", **_GUARD_BASE) is False
+    assert krs.snapshot_path_applicable(market="kosdaq", **_GUARD_BASE) is False
+    assert krs.snapshot_path_applicable(market="konex", **_GUARD_BASE) is False
+
+
+@pytest.mark.unit
+def test_snapshot_path_applicable_disqualified_by_asset_or_scope():
+    assert (
+        krs.snapshot_path_applicable(
+            market="kr", **{**_GUARD_BASE, "asset_type": "etf"}
+        )
+        is False
+    )
+    assert (
+        krs.snapshot_path_applicable(
+            market="kr", **{**_GUARD_BASE, "category": "반도체"}
+        )
+        is False
+    )
+    assert (
+        krs.snapshot_path_applicable(market="kr", **{**_GUARD_BASE, "sector": "Tech"})
+        is False
+    )
+    # asset_type="stock" is explicitly allowed
+    assert (
+        krs.snapshot_path_applicable(
+            market="kr", **{**_GUARD_BASE, "asset_type": "stock"}
+        )
+        is True
+    )
+
+
+@pytest.mark.unit
+def test_snapshot_path_applicable_disqualified_by_any_quality_filter():
+    # the snapshot has no way to honor these -> must go live (which does)
+    for key in (
+        "min_market_cap",
+        "max_per",
+        "max_pbr",
+        "min_dividend_yield",
+        "min_analyst_buy",
+        "max_rsi",
+        "adv_krw_min",
+        "market_cap_min_krw",
+        "market_cap_max_krw",
+    ):
+        assert (
+            krs.snapshot_path_applicable(market="kr", **{**_GUARD_BASE, key: 1})
+            is False
+        ), key
+    assert (
+        krs.snapshot_path_applicable(
+            market="kr", **{**_GUARD_BASE, "instrument_types": ["etf"]}
+        )
+        is False
+    )
+    assert (
+        krs.snapshot_path_applicable(
+            market="kr", **{**_GUARD_BASE, "exclude_sectors": ["금융"]}
+        )
+        is False
+    )
