@@ -94,6 +94,35 @@ async def test_unwired_preset_with_filters_warns(patched) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_high_yield_value_with_filters_warns(patched) -> None:
+    # ROB-445: high_yield_value HAS a snapshot_kind (market_valuation_snapshots) but
+    # build_screener_results does NOT thread its filters → it must still warn (the old
+    # `snapshot_kind is None` guard let this slip through = silent no-op).
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="high_yield_value",
+        market="kr",
+        filters=[{"field": "per", "operator": "lte", "value": 8}],
+    )
+    assert out["snapshotKind"] is not None  # has a catalog, unlike cheap_value
+    assert any("배선되지 않" in w for w in out["warnings"])
+    # filters were still echoed (transparency) even though not applied
+    assert out["appliedFilters"] == [{"field": "per", "operator": "lte", "value": 8}]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_threaded_preset_does_not_double_warn(patched) -> None:
+    # ROB-445 guard: consecutive_gainers DOES thread filters → no '미적용' warning.
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        filters=[{"field": "consecutive_up_days", "operator": "gte", "value": 3}],
+    )
+    assert not any("배선되지 않" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_bad_filter_entry_fails_soft(patched) -> None:
     out = await tool.screen_stocks_snapshot_impl(
         preset="consecutive_gainers",
