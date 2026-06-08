@@ -6,10 +6,10 @@ That snapshot has a CLI + job but **no Prefect flow** — so without a daily sch
 goes stale (the regime tool's tvl/stablecoin/breadth fields drop to "missing"). This is
 the missing daily build trigger (mirrors the crypto/KR/US screener-snapshot flows).
 
-Default providers extend the build's DEFAULT_PROVIDERS (alternative_me/coingecko/binance,
-= fng only) with the keyless DeFi providers (defillama/tradingview) so the regime tool's
-tvl/stablecoin/breadth fields actually populate. coinglass/tokenomist are key-gated PoCs
-and are left out by default (they fail-open with a warning when no key is set).
+Default providers extend the build's DEFAULT_PROVIDERS (which only populate fng /
+dominance / funding) with the keyless DeFi providers (defillama/tradingview) so the
+regime tool's tvl/stablecoin/breadth fields actually populate. coinglass/tokenomist are
+key-gated PoCs and are left out by default (they fail-open with a warning when no key).
 
 Importable only; no deployment is registered here. Writes are runtime-gated by
 ``INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED`` (the shared snapshot-commit gate) so an
@@ -24,12 +24,14 @@ from prefect import flow, task
 
 from app.core.config import settings
 from app.jobs.crypto_insight_snapshots import refresh_crypto_insight_snapshots
+from app.services.crypto_insight_snapshots.builder import DEFAULT_PROVIDERS
 
-# Keyless providers the regime tool needs populated (extends DEFAULT_PROVIDERS).
+# Extend the build's DEFAULT_PROVIDERS (fng / dominance / funding) with the keyless DeFi
+# providers the regime tool needs populated. DEFAULT_PROVIDERS is imported (not re-listed)
+# so this flow file carries no venue-name string literals — keeps the ROB-285 audit clean.
+# coinglass/tokenomist are key-gated PoCs → left out (they fail-open without a key).
 _DEFAULT_FLOW_PROVIDERS: tuple[str, ...] = (
-    "alternative_me",  # fng
-    "coingecko",  # btc dominance / global mcap change
-    "binance",  # funding rate
+    *DEFAULT_PROVIDERS,
     "defillama",  # tvl (per-chain) + stablecoin supply
     "tradingview",  # crypto breadth (reference)
 )
