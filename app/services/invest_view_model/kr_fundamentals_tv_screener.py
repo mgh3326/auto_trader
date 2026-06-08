@@ -75,10 +75,28 @@ _THRESHOLD_CHECKS: tuple[tuple[str, str, bool], ...] = (
     ("max_pbr", "pbr", True),  # also requires pbr > 0
     ("min_dividend_yield", "dividend_yield", False),
     ("min_gross_margin_ttm", "gross_margin_ttm", False),
-    ("min_payout_ratio", "payout_ratio_ttm", False),
     ("min_earnings_growth_qoq", "eps_qoq", False),
-    ("min_dividend_paid_streak_years", "continuous_dividend_payout", False),
-    ("min_dividend_growth_streak_years", "continuous_dividend_growth", False),
+    # ROB-444: payout_ratio + dividend streaks moved to the DART-first block below
+    # (_DIVIDEND_DART_CHECKS) — tvscreener payout_ratio_ttm was 2.6% sparse.
+)
+
+# ROB-444: dividend payout/streak — DART-first (financial_fundamentals derive),
+# tvscreener column fallback. DART payout_ratio (현금배당성향, percent — same unit as
+# the tvscreener column + spec) covers far more KR symbols than tvscreener's
+# payout_ratio_ttm (~2.6%). Streaks fall back to tvscreener continuous_dividend_*
+# (~64%) when DART is absent. (spec_field, tvscreener_fallback_col, dart_metric_attr)
+_DIVIDEND_DART_CHECKS: tuple[tuple[str, str, str], ...] = (
+    ("min_payout_ratio", "payout_ratio_ttm", "payout_ratio"),
+    (
+        "min_dividend_paid_streak_years",
+        "continuous_dividend_payout",
+        "dividend_paid_streak_years",
+    ),
+    (
+        "min_dividend_growth_streak_years",
+        "continuous_dividend_growth",
+        "dividend_growth_streak_years",
+    ),
 )
 
 # ROB-433: 3-year-average growth thresholds are evaluated DART-first. Each entry is
@@ -277,7 +295,11 @@ def _passes_thresholds(
     absent. provenance = ``{"growth_source": "dart"|"proxy"|None,
     "streak_source": "dart"|"skipped"|None}`` and is only meaningful when passes.
     """
-    provenance: dict[str, str | None] = {"growth_source": None, "streak_source": None}
+    provenance: dict[str, str | None] = {
+        "growth_source": None,
+        "streak_source": None,
+        "dividend_source": None,  # ROB-444: "dart" | "tvscreener"
+    }
 
     for spec_field, col_attr, require_positive in _THRESHOLD_CHECKS:
         threshold = getattr(spec, spec_field)
@@ -340,6 +362,28 @@ def _passes_thresholds(
             provenance["streak_source"] = "dart"
         else:
             provenance["streak_source"] = "skipped"
+
+    # ROB-444: dividend payout/streak — DART-first, tvscreener column fallback.
+    # tvscreener payout_ratio_ttm is ~2.6% sparse (the binding constraint behind
+    # steady_dividend 3 / future_dividend_king 0); DART payout_ratio + dividend
+    # streaks (financial_fundamentals derive) recover coverage. NULL on BOTH sources
+    # is fail-closed (a real dividend condition, never fabricated).
+    for spec_field, fallback_col, dart_attr in _DIVIDEND_DART_CHECKS:
+        threshold = getattr(spec, spec_field)
+        if threshold is None:
+            continue
+        dm = getattr(dart, dart_attr, None) if dart is not None else None
+        if dm is not None and dm.state == "ok" and dm.value is not None:
+            value, source = dm.value, "dart"
+        else:
+            value, source = getattr(snap, fallback_col), "tvscreener"
+        if value is None:
+            return False, f"{dart_attr} unavailable", provenance
+        if Decimal(str(value)) < Decimal(str(threshold)):
+            return False, f"{dart_attr} below min", provenance
+        # DART wins; only downgrade to tvscreener if not already DART-sourced.
+        if provenance.get("dividend_source") != "tvscreener":
+            provenance["dividend_source"] = source
 
     # ROB-430 PR-② / ROB-432: 신고가 = a NEW 52-week high made within
     # max_new_high_age_trading_days KRX trading sessions of the partition (a breakout
@@ -537,6 +581,11 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         spec.min_revenue_growth_3y_avg is not None
         or spec.min_earnings_growth_3y_avg is not None
         or spec.min_earnings_increase_streak_years is not None
+        # ROB-444: dividend payout/streak are DART-first too (tvscreener
+        # payout_ratio_ttm is ~2.6% sparse → it was the binding constraint).
+        or spec.min_payout_ratio is not None
+        or spec.min_dividend_paid_streak_years is not None
+        or spec.min_dividend_growth_streak_years is not None
     ):
         from app.services.financial_fundamentals_snapshots.derive import (
             derive_fundamentals_metrics,

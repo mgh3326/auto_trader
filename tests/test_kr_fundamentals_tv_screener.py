@@ -1014,3 +1014,42 @@ async def test_steady_dividend_excludes_sub_threshold_percent_yield(db_session):
     assert sym_ok in syms
     assert sym_low not in syms  # ROB-444: sub-3% no longer leaks through
     await _cleanup(db_session)
+
+
+def test_dividend_dart_first_recovers_when_tvscreener_payout_sparse():
+    """ROB-444 PR2: tvscreener payout_ratio_ttm is ~2.6% sparse (binding constraint).
+    DART-first payout/streak recovers a symbol whose tvscreener payout/streak are NULL
+    but whose DART derive has them. dart=None → fail-closed (no fabrication)."""
+    from types import SimpleNamespace
+
+    from app.services.financial_fundamentals_snapshots.derive import MetricResult
+    from app.services.invest_view_model.kr_fundamentals_tv_screener import (
+        _passes_thresholds,
+    )
+
+    snap = _snap(
+        f"{_PREFIX}60",
+        market_cap=Decimal("4000000000000"),
+        dividend_yield=Decimal("6.0"),  # percent → 0.06 >= 0.03 (PR1)
+        payout_ratio_ttm=None,  # tvscreener sparse
+        continuous_dividend_payout=None,  # tvscreener sparse
+    )
+    dart = SimpleNamespace(
+        payout_ratio=MetricResult(
+            value=Decimal("40"), state="ok"
+        ),  # 현금배당성향 % (>=30)
+        dividend_paid_streak_years=MetricResult(value=Decimal("5"), state="ok"),  # >=3
+        earnings_increase_streak_years=MetricResult(value=Decimal("4"), state="ok"),
+    )
+
+    ok, reason, prov = _passes_thresholds(
+        snap, STEADY_DIVIDEND_SPEC, partition_date=_SD, dart=dart
+    )
+    assert ok is True, reason  # DART recovered payout + streak
+    assert prov["dividend_source"] == "dart"
+
+    # dart=None → tvscreener payout/streak NULL → fail-closed (not fabricated)
+    ok2, reason2, _ = _passes_thresholds(
+        snap, STEADY_DIVIDEND_SPEC, partition_date=_SD, dart=None
+    )
+    assert ok2 is False and "payout_ratio" in (reason2 or "")
