@@ -33,6 +33,7 @@ async def test_alternative_me_adapter_maps_fear_greed_metric():
                         "value": "72",
                         "value_classification": "Greed",
                         "timestamp": "1778620000",
+                        "time_until_update": "3600",
                     },
                     {
                         "value": "65",
@@ -55,6 +56,13 @@ async def test_alternative_me_adapter_maps_fear_greed_metric():
     assert metric.provider == "alternative_me"
     assert metric.value == Decimal("72")
     assert metric.label == "Greed"
+    expected_age = int(
+        (
+            dt.datetime(2026, 5, 13, tzinfo=dt.UTC)
+            - dt.datetime.fromtimestamp(1778620000, tz=dt.UTC)
+        ).total_seconds()
+    )
+    assert metric.freshness_seconds == expected_age + 3600
 
 
 async def test_coingecko_adapter_maps_global_metrics():

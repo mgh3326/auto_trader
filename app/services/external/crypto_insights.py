@@ -56,13 +56,26 @@ def _decimal(value: Any) -> Decimal | None:
         return None
 
 
-def _freshness_from_unix(value: Any, now: dt.datetime) -> int | None:
+def _freshness_from_unix(
+    value: Any,
+    now: dt.datetime,
+    time_until_update: Any = None,
+) -> int | None:
     try:
         timestamp = int(value)
     except Exception:  # noqa: BLE001
         return None
     observed = dt.datetime.fromtimestamp(timestamp, tz=dt.UTC)
-    return max(0, int((now - observed).total_seconds()))
+    age_seconds = max(0, int((now - observed).total_seconds()))
+    if time_until_update is not None:
+        try:
+            return age_seconds + max(0, int(time_until_update))
+        except Exception:  # noqa: BLE001
+            pass
+    # Alternative.me is daily; when the live response lacks time_until_update,
+    # keep one day of freshness from the value timestamp rather than expiring at
+    # fetch time. The caller still compares this against snapshot_at age.
+    return 24 * 3600
 
 
 async def fetch_alternative_me_fear_greed(
@@ -85,7 +98,9 @@ async def fetch_alternative_me_fear_greed(
         current = rows[0]
         value = _decimal(current.get("value"))
         timestamp = current.get("timestamp")
-        freshness = _freshness_from_unix(timestamp, observed_at)
+        freshness = _freshness_from_unix(
+            timestamp, observed_at, current.get("time_until_update")
+        )
         if timestamp is not None:
             try:
                 observed_at = dt.datetime.fromtimestamp(int(timestamp), tz=dt.UTC)

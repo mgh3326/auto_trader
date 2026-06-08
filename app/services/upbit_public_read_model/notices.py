@@ -14,9 +14,11 @@ from typing import Any
 
 import httpx
 
-# Unofficial public notices API (verify in live smoke). Parsing tolerates shape drift.
-_UPBIT_NOTICES_URL = "https://api-manager.upbit.com/api/v1/notices"
-_DEFAULT_PARAMS = {"page": "1", "per_page": "30", "thread_name": "general"}
+# Unofficial public announcements API (verified by ROB-452 live smoke via
+# https://www.upbit.com/service_center/notice resource timing). Parsing tolerates
+# shape drift because this is not a documented Open API surface.
+_UPBIT_NOTICES_URL = "https://api-manager.upbit.com/api/v1/announcements"
+_DEFAULT_PARAMS = {"os": "web", "page": "1", "per_page": "30", "category": "all"}
 _TIMEOUT = httpx.Timeout(10.0)
 
 
@@ -30,15 +32,35 @@ def _extract_items(payload: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [x for x in data if isinstance(x, dict)]
     if isinstance(data, dict):
-        for key in ("notice", "notices", "list", "items", "results"):
+        items: list[dict[str, Any]] = []
+        for key in (
+            # Upbit live shape returns fixed_notices + notices.
+            "fixed_notices",
+            "fixedNotices",
+            "notice",
+            "notices",
+            "list",
+            "items",
+            "results",
+        ):
             seq = data.get(key)
             if isinstance(seq, list):
-                return [x for x in seq if isinstance(x, dict)]
+                items.extend(x for x in seq if isinstance(x, dict))
+        return items
     return []
 
 
 def _item_date(item: dict[str, Any]) -> dt.datetime | None:
-    for key in ("listed_at", "first_listed_at", "created_at", "updated_at"):
+    for key in (
+        "listed_at",
+        "listedAt",
+        "first_listed_at",
+        "firstListedAt",
+        "created_at",
+        "createdAt",
+        "updated_at",
+        "updatedAt",
+    ):
         raw = item.get(key)
         if not raw:
             continue
@@ -47,6 +69,23 @@ def _item_date(item: dict[str, Any]) -> dt.datetime | None:
         except (ValueError, TypeError):
             continue
     return None
+
+
+def _first_present(item: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in item:
+            return item[key]
+    return None
+
+
+def _first_listed_date(item: dict[str, Any]) -> dt.datetime | None:
+    raw = _first_present(item, "first_listed_at", "firstListedAt")
+    if not raw:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 
 async def fetch_upbit_notices(
@@ -87,11 +126,26 @@ async def fetch_upbit_notices(
         # keep within window when a parseable date exists; undated items pass through
         if listed is not None and listed < cutoff:
             continue
+        first_listed = _first_listed_date(raw)
+        if first_listed is not None and first_listed.tzinfo is None:
+            first_listed = first_listed.replace(tzinfo=dt.UTC)
         items.append(
             {
-                "title": raw.get("title"),
-                "category": raw.get("category") or raw.get("thread_name"),
+                "id": _first_present(raw, "id", "notice_id", "noticeId"),
+                "title": _first_present(raw, "title", "content"),
+                "category": _first_present(raw, "category", "thread_name", "threadName"),
                 "listed_at": listed.astimezone(dt.UTC).isoformat() if listed else None,
+                "first_listed_at": (
+                    first_listed.astimezone(dt.UTC).isoformat()
+                    if first_listed
+                    else None
+                ),
+                "need_new_badge": _first_present(
+                    raw, "need_new_badge", "needNewBadge"
+                ),
+                "need_update_badge": _first_present(
+                    raw, "need_update_badge", "needUpdateBadge"
+                ),
             }
         )
 

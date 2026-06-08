@@ -21,9 +21,20 @@ def test_extract_items_defensive_shapes():
     a = {"data": {"notice": [{"title": "x", "listed_at": today}]}}
     b = {"data": {"list": [{"title": "y"}]}}
     c = [{"title": "z"}]
+    live = {
+        "success": True,
+        "data": {
+            "fixed_notices": [{"title": "fixed", "listed_at": today}],
+            "notices": [{"title": "normal", "listed_at": today}],
+        },
+    }
     assert notices_mod._extract_items(a)[0]["title"] == "x"
     assert notices_mod._extract_items(b)[0]["title"] == "y"
     assert notices_mod._extract_items(c)[0]["title"] == "z"
+    assert [i["title"] for i in notices_mod._extract_items(live)] == [
+        "fixed",
+        "normal",
+    ]
     assert notices_mod._extract_items("garbage") == []
 
 
@@ -34,12 +45,25 @@ async def test_fetch_upbit_notices_success_windowed():
 
     async def fake():
         return {
+            "success": True,
             "data": {
-                "notice": [
-                    {"title": "BTC 입출금", "category": "general", "listed_at": recent},
-                    {"title": "old notice", "category": "general", "listed_at": old},
+                "notices": [
+                    {
+                        "id": 1,
+                        "title": "BTC 입출금",
+                        "category": "입출금",
+                        "listed_at": recent,
+                        "first_listed_at": recent,
+                        "need_new_badge": False,
+                    },
+                    {
+                        "id": 2,
+                        "title": "old notice",
+                        "category": "general",
+                        "listed_at": old,
+                    },
                 ]
-            }
+            },
         }
 
     out = await notices_mod.fetch_upbit_notices(days=14, fetcher=fake)
@@ -47,6 +71,10 @@ async def test_fetch_upbit_notices_success_windowed():
     titles = [i["title"] for i in out["items"]]
     assert "BTC 입출금" in titles
     assert "old notice" not in titles  # outside 14-day window
+    recent_item = next(i for i in out["items"] if i["title"] == "BTC 입출금")
+    assert recent_item["id"] == 1
+    assert recent_item["category"] == "입출금"
+    assert recent_item["need_new_badge"] is False
 
 
 @pytest.mark.asyncio
