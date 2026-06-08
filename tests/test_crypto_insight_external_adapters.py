@@ -33,6 +33,7 @@ async def test_alternative_me_adapter_maps_fear_greed_metric():
                         "value": "72",
                         "value_classification": "Greed",
                         "timestamp": "1778620000",
+                        "time_until_update": "3600",
                     },
                     {
                         "value": "65",
@@ -55,6 +56,13 @@ async def test_alternative_me_adapter_maps_fear_greed_metric():
     assert metric.provider == "alternative_me"
     assert metric.value == Decimal("72")
     assert metric.label == "Greed"
+    expected_age = int(
+        (
+            dt.datetime(2026, 5, 13, tzinfo=dt.UTC)
+            - dt.datetime.fromtimestamp(1778620000, tz=dt.UTC)
+        ).total_seconds()
+    )
+    assert metric.freshness_seconds == expected_age + 3600
 
 
 async def test_coingecko_adapter_maps_global_metrics():
@@ -102,15 +110,41 @@ async def test_binance_adapter_maps_public_funding_rate():
 async def test_defillama_adapter_maps_tvl_and_stablecoin_metrics():
     def handler(request):
         if request.url.host == "api.llama.fi":
+            assert request.url.path == "/v2/chains"
             return httpx.Response(
-                200, json={"name": "Ethereum", "symbol": "ETH", "tvl": 123}
+                200,
+                json=[
+                    {
+                        "name": "Ethereum",
+                        "tokenSymbol": "ETH",
+                        "gecko_id": "ethereum",
+                        "tvl": 123,
+                    },
+                    {
+                        "name": "Solana",
+                        "tokenSymbol": "SOL",
+                        "gecko_id": "solana",
+                        "tvl": 789,
+                    },
+                ],
             )
-        return httpx.Response(200, json={"totalCirculatingUSD": 456})
+        return httpx.Response(
+            200,
+            json={
+                "chains": [
+                    {"name": "Ethereum", "totalCirculatingUSD": {"peggedUSD": 456}},
+                    {"name": "Solana", "totalCirculatingUSD": {"peggedUSD": 44}},
+                ]
+            },
+        )
 
     async with _client(handler) as client:
         result = await fetch_defillama_reference(client, protocol_slugs=["ethereum"])
 
-    assert {metric.metric for metric in result.metrics} == {"tvl", "stablecoin_supply"}
+    metrics = {metric.metric: metric for metric in result.metrics}
+    assert set(metrics) == {"tvl", "stablecoin_supply"}
+    assert metrics["tvl"].symbol == "ETH"
+    assert metrics["stablecoin_supply"].value == Decimal("500")
 
 
 async def test_optional_poc_adapters_are_non_fatal_without_credentials():
