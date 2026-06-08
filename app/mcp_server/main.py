@@ -45,6 +45,10 @@ mcp = FastMCP(
     ),
     version="0.1.0",
     auth=auth_provider,
+    # ROB-447: fail-fast on duplicate tool names at boot instead of the default "warn"
+    # (last-registration-silently-wins), which had let the brief판 shadow the report판's
+    # get_market_reports / get_latest_market_brief. Any future collision now raises.
+    on_duplicate="error",
 )
 
 mcp.add_middleware(McpToolCallSentryMiddleware())
