@@ -32,3 +32,36 @@ def is_snapshot_eligible_sort(sort_by: str) -> bool:
 
 def order_types_for_sort(sort_by: str) -> tuple[str, ...]:
     return _ORDER_TYPE_BY_SORT.get(sort_by, ())
+
+
+from typing import Any
+
+from app.services.invest_momentum_events.query_service import RankingRow
+
+
+def _opt_float(value: float | int | None) -> float | None:
+    return float(value) if value is not None else None
+
+
+def ranking_row_to_screen_row(row: RankingRow) -> dict[str, Any]:
+    """Map one RankingRow to the screen_stocks result-row shape. Pure; null-safe;
+    never fabricates valuation fields (per/pbr/dividend_yield default to None and
+    are filled best-effort later by enrichment)."""
+    code = row.symbol
+    return {
+        "symbol": code,
+        "short_code": code,
+        "code": code,
+        "name": row.name or code,
+        "price": _opt_float(row.price),
+        "change_rate": _opt_float(row.change_rate),
+        "volume": _opt_float(row.volume),
+        "trade_amount": _opt_float(row.trade_value),
+        "market_cap": _opt_float(row.market_cap),
+        "market": "kr",
+        "per": None,
+        "pbr": None,
+        "dividend_yield": None,
+        "instrument_type": "stock",
+    }
+
