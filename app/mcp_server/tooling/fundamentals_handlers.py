@@ -10,6 +10,9 @@ from app.mcp_server.tooling.fundamentals._crypto import (
     handle_get_long_short_ratio,
     handle_get_open_interest,
 )
+from app.mcp_server.tooling.fundamentals._crypto_catalysts import (
+    handle_get_crypto_catalysts,
+)
 from app.mcp_server.tooling.fundamentals._crypto_regime import (
     handle_get_crypto_market_regime,
 )
@@ -65,6 +68,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_open_interest",
     "get_long_short_ratio",
     "get_crypto_market_regime",
+    "get_crypto_catalysts",
     "get_market_index",
     "get_upbit_index",
     "get_upbit_altseason",
@@ -281,6 +285,22 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     )
     async def get_crypto_market_regime() -> dict[str, Any]:
         return await handle_get_crypto_market_regime()
+
+    @mcp.tool(
+        name="get_crypto_catalysts",
+        description=(
+            "Get crypto supply/event catalysts (read-only): token unlocks (Tokenomist, "
+            "disabled PoC today), Upbit notices (listings / 유의 / 점검), and Upbit "
+            "market warnings (CAUTION). Each source is independently "
+            "fresh/disabled/unavailable. Pass symbol (e.g. 'XRP') to scope to one coin, "
+            "or omit for market-wide. days windows the notices feed."
+        ),
+    )
+    async def get_crypto_catalysts(
+        symbol: str | None = None,
+        days: int = 14,
+    ) -> dict[str, Any]:
+        return await handle_get_crypto_catalysts(symbol, days)
 
     @mcp.tool(
         name="get_market_index",
