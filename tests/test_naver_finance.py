@@ -995,6 +995,71 @@ class TestFetchHtml:
 class TestFetchValuation:
     """Tests for fetch_valuation function."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_integration(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ROB-448: fetch_valuation now overlays eps/bps/market_cap via the mobile
+        # _fetch_integration endpoint. Stub it to {} so these HTML-only tests stay
+        # hermetic (no network) — the overlay leaves the 3 keys None. The overlay
+        # behaviour itself is asserted in test_overlays_eps_bps_market_cap.
+        async def _empty(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+            return {}
+
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_integration", _empty)
+
+    async def test_overlays_eps_bps_market_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROB-448: eps/bps/market_cap (RAW KRW) from _fetch_integration overlay the
+        # HTML-scraped valuation. additive — existing keys untouched.
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "main.naver" in url:
+                return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+            return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
+
+        async def fake_integration(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+            return {"eps": 5432.0, "bps": 50000.0, "market_cap": 400_000_000_000_000.0}
+
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", fake_integration
+        )
+
+        result = await naver_finance.fetch_valuation("005930")
+
+        assert result["eps"] == pytest.approx(5432.0)  # won/share
+        assert result["bps"] == pytest.approx(50000.0)
+        assert result["market_cap"] == pytest.approx(400_000_000_000_000.0)  # raw KRW
+        # HTML-scraped keys untouched by the overlay
+        assert result["per"] == pytest.approx(12.5)
+        assert result["pbr"] == pytest.approx(1.2)
+
+    async def test_overlay_fails_open_leaves_keys_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROB-448: a mobile-API failure must not break valuation — eps/bps/market_cap
+        # degrade to None, HTML keys still returned.
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "main.naver" in url:
+                return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+            return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
+
+        async def boom(code: str, client: Any) -> dict[str, Any]:  # noqa: ARG001
+            raise RuntimeError("mobile api down")
+
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_integration", boom)
+
+        result = await naver_finance.fetch_valuation("005930")
+
+        assert result["eps"] is None
+        assert result["bps"] is None
+        assert result["market_cap"] is None
+        assert result["per"] == pytest.approx(12.5)  # valuation still intact
+
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
             url: str, params: dict[str, Any] | None = None

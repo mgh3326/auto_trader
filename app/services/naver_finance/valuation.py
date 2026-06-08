@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
@@ -20,6 +21,8 @@ from app.services.naver_finance.parser import (
 )
 
 NAVER_MOBILE_API = "https://m.stock.naver.com/api/stock"
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_valuation_from_soups(
@@ -234,7 +237,28 @@ async def fetch_valuation(code: str) -> dict[str, Any]:
         _fetch_html(main_url, params={"code": code}),
         _fetch_html(sise_url, params={"code": code}),
     )
-    return _parse_valuation_from_soups(code, main_soup, sise_soup)
+    valuation = _parse_valuation_from_soups(code, main_soup, sise_soup)
+
+    # ROB-448: overlay EPS/BPS/market_cap from the Naver mobile integration endpoint
+    # (already parsed by _parse_total_infos, just not surfaced on the HTML path).
+    # Units are RAW KRW: market_cap = won, eps/bps = won/share (parse_korean_number
+    # expands 조/억/만). fail-open — a mobile-API hiccup leaves the 3 keys None and
+    # never breaks the existing HTML-scraped valuation.
+    valuation.setdefault("eps", None)
+    valuation.setdefault("bps", None)
+    valuation.setdefault("market_cap", None)
+    try:
+        async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=10) as client:
+            integ = await _fetch_integration(code, client)
+        for key in ("eps", "bps", "market_cap"):
+            if integ.get(key) is not None:
+                valuation[key] = integ[key]
+    except Exception as exc:  # noqa: BLE001 — additive overlay; degrade to None
+        logger.debug(
+            "fetch_valuation: integration overlay failed for %s: %s", code, exc
+        )
+
+    return valuation
 
 
 def _parse_total_infos(total_infos: list[dict[str, Any]]) -> dict[str, Any]:
@@ -304,6 +328,9 @@ async def _fetch_integration(
         "name": name,
         "per": metrics.get("per"),
         "pbr": metrics.get("pbr"),
+        # ROB-448: eps/bps are parsed by _parse_total_infos but were dropped here.
+        "eps": metrics.get("eps"),
+        "bps": metrics.get("bps"),
         "market_cap": metrics.get("market_cap"),
         "current_price": current_price,
         "change_pct": change_pct,
