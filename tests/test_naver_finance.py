@@ -278,7 +278,8 @@ SAMPLE_INVESTOR_TRENDS_HTML = """
 <table class="type2">
     <tbody><tr><td></td></tr></tbody>
 </table>
-<!-- Second table.type2 has the actual data -->
+<!-- Second table.type2 has the actual data (ROB-448: 9 cells — the 외국인 column is a
+     2-level header with 순매수 / 보유주수 / 보유율) -->
 <table class="type2">
     <tr>
         <td>2024.01.15</td>
@@ -288,6 +289,8 @@ SAMPLE_INVESTOR_TRENDS_HTML = """
         <td>10,000,000</td>
         <td>1,000,000</td>
         <td>-500,000</td>
+        <td>2,790,424,635</td>
+        <td>47.73%</td>
     </tr>
     <tr>
         <td>2024.01.14</td>
@@ -297,6 +300,8 @@ SAMPLE_INVESTOR_TRENDS_HTML = """
         <td>8,000,000</td>
         <td>-200,000</td>
         <td>300,000</td>
+        <td>2,789,924,635</td>
+        <td>47.72%</td>
     </tr>
 </table>
 </body>
@@ -618,11 +623,15 @@ class TestFetchInvestorTrends:
         assert day1["change"] == 500  # ▲500
         assert day1["institutional_net"] == 1000000
         assert day1["foreign_net"] == -500000
+        # ROB-448: foreign holding shares (count) + rate (percent, 0..100)
+        assert day1["foreign_holding_shares"] == 2790424635
+        assert day1["foreign_holding_rate"] == pytest.approx(47.73)
 
         # Second day
         day2 = result["data"][1]
         assert day2["date"] == "2024-01-14"
         assert day2["change"] == -300  # ▼300
+        assert day2["foreign_holding_rate"] == pytest.approx(47.72)
 
     async def test_days_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
@@ -635,6 +644,44 @@ class TestFetchInvestorTrends:
         result = await naver_finance.fetch_investor_trends("005930", days=1)
 
         assert len(result["data"]) == 1
+
+    async def test_legacy_7cell_layout_degrades_to_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROB-448: a 7-cell row (no holding columns) must degrade to None, not IndexError.
+        html = """
+        <html><body>
+        <table class="type2"><tbody><tr><td></td></tr></tbody></table>
+        <table class="type2">
+            <tr><td>2024.01.15</td><td>75,000</td><td>▲500</td><td>+0.67%</td>
+                <td>10,000,000</td><td>1,000,000</td><td>-500,000</td></tr>
+        </table>
+        </body></html>
+        """
+
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup(html, "lxml")
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investor_trends("005930", days=20)
+
+        assert len(result["data"]) == 1
+        assert result["data"][0]["foreign_net"] == -500000
+        assert result["data"][0]["foreign_holding_shares"] is None
+        assert result["data"][0]["foreign_holding_rate"] is None
+
+    def test_parse_holding_rate_unit(self) -> None:
+        # ROB-448: holding rate is a percent in [0,100] — '%' must NOT trigger the
+        # parse_korean_number /100 (which would yield 0.4773).
+        assert naver_finance.investor._parse_holding_rate("47.73%") == pytest.approx(
+            47.73
+        )
+        assert naver_finance.investor._parse_holding_rate("12.5") == pytest.approx(12.5)
+        assert naver_finance.investor._parse_holding_rate("") is None
+        assert naver_finance.investor._parse_holding_rate(None) is None
 
 
 @pytest.mark.asyncio

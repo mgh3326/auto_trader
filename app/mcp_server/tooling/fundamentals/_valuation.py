@@ -203,6 +203,10 @@ def _aggregate_investor_data(
             "institutional_net": sum(r.get("institutional_net") or 0 for r in rows),
             "foreign_net": sum(r.get("foreign_net") or 0 for r in rows),
             "individual_net": sum(r.get("individual_net") or 0 for r in rows),
+            # ROB-448: holding shares/rate are point-in-time levels (not flows) → carry
+            # the bucket's most-recent value, like close (NOT a sum).
+            "foreign_holding_shares": rows_sorted[0].get("foreign_holding_shares"),
+            "foreign_holding_rate": rows_sorted[0].get("foreign_holding_rate"),
         }
         aggregated.append(agg)
 
