@@ -4420,6 +4420,10 @@ def _make_daily_investor_data(days: int = 10) -> dict:
                 "volume": 10_000_000 + i * 500_000,
                 "institutional_net": 500_000 * (1 if i % 3 == 0 else -1),
                 "foreign_net": 300_000 * (1 if i % 2 == 0 else -1),
+                # ROB-448: holding levels — newest day (i=0) is HIGHEST so the
+                # aggregation's carry-newest (vs sum / carry-oldest) is unambiguous.
+                "foreign_holding_rate": round(48.00 - i * 0.01, 2),
+                "foreign_holding_shares": 2_800_000_000 - i * 1_000_000,
             }
         )
     return {
@@ -4476,6 +4480,9 @@ class TestGetInvestorTrends:
         result = await tools["get_investor_trends"]("005930", period="week")
 
         assert result["period"] == "week"
+        # ROB-448: holding rate/shares are point-in-time LEVELS — each bucket must carry
+        # the most-recent (date_end) day's value, NOT a sum and NOT the oldest.
+        date_to_rate = {r["date"]: r["foreign_holding_rate"] for r in mock["data"]}
         for row in result["data"]:
             assert "period_key" in row
             assert "date_start" in row
@@ -4484,6 +4491,20 @@ class TestGetInvestorTrends:
             assert "institutional_net" in row
             assert "foreign_net" in row
             assert "individual_net" in row
+            # carry-newest: bucket rate == the date_end day's rate (not a sum > 100)
+            assert row["foreign_holding_rate"] == date_to_rate[row["date_end"]]
+            assert 0 <= row["foreign_holding_rate"] <= 100
+            # 기간요약 delta present; newest(date_end) − oldest(date_start), so within a
+            # multi-day bucket where newer is higher → change >= 0
+            assert "foreign_holding_rate_change" in row
+            if row["trading_days"] > 1:
+                expected_change = round(
+                    date_to_rate[row["date_end"]] - date_to_rate[row["date_start"]], 2
+                )
+                assert row["foreign_holding_rate_change"] == expected_change
+            # holding shares carried (not summed): a single Samsung day is ~2.8e9, a
+            # summed week would exceed 1e10
+            assert row["foreign_holding_shares"] < 3_000_000_000
 
     async def test_monthly_aggregation(self, monkeypatch):
         """Test monthly aggregation sums investor flows."""

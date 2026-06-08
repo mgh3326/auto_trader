@@ -161,6 +161,19 @@ async def handle_get_investor_trends(
     return result
 
 
+def _holding_rate_change(rows_sorted: list[dict[str, Any]]) -> float | None:
+    """ROB-448: bucket's foreign holding-rate delta in pp (newest − oldest).
+
+    ``rows_sorted`` is newest-first. Positive = foreigners accumulated over the bucket.
+    None when either endpoint's rate is missing (legacy 7-cell rows).
+    """
+    newest = rows_sorted[0].get("foreign_holding_rate")
+    oldest = rows_sorted[-1].get("foreign_holding_rate")
+    if newest is None or oldest is None:
+        return None
+    return round(newest - oldest, 2)
+
+
 def _aggregate_investor_data(
     daily_data: list[dict[str, Any]], period: str
 ) -> list[dict[str, Any]]:
@@ -207,6 +220,8 @@ def _aggregate_investor_data(
             # the bucket's most-recent value, like close (NOT a sum).
             "foreign_holding_shares": rows_sorted[0].get("foreign_holding_shares"),
             "foreign_holding_rate": rows_sorted[0].get("foreign_holding_rate"),
+            # ROB-448: 기간요약 — holding-rate change over the bucket (newest − oldest, pp).
+            "foreign_holding_rate_change": _holding_rate_change(rows_sorted),
         }
         aggregated.append(agg)
 

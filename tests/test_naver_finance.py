@@ -673,15 +673,48 @@ class TestFetchInvestorTrends:
         assert result["data"][0]["foreign_holding_shares"] is None
         assert result["data"][0]["foreign_holding_rate"] is None
 
+
+@pytest.mark.unit
+class TestParseHoldingRate:
+    """ROB-448: foreign holding-rate parser (percent 0..100). Module-level/sync so it
+    does NOT inherit TestFetchInvestorTrends's class-level @pytest.mark.asyncio."""
+
     def test_parse_holding_rate_unit(self) -> None:
-        # ROB-448: holding rate is a percent in [0,100] — '%' must NOT trigger the
-        # parse_korean_number /100 (which would yield 0.4773).
+        # '%' must NOT trigger parse_korean_number's /100 (which would yield 0.4773).
         assert naver_finance.investor._parse_holding_rate("47.73%") == pytest.approx(
             47.73
         )
         assert naver_finance.investor._parse_holding_rate("12.5") == pytest.approx(12.5)
         assert naver_finance.investor._parse_holding_rate("") is None
         assert naver_finance.investor._parse_holding_rate(None) is None
+
+
+@pytest.mark.unit
+class TestParseTotalInfos:
+    """ROB-448: directly exercise _parse_total_infos (the eps/bps/market_cap source the
+    fetch_valuation overlay surfaces) — all overlay tests stub _fetch_integration, so
+    without this the raw-JSON → parsed-metric loop (and a typo like .get('esp')) is
+    untested."""
+
+    def test_parses_metrics_with_unit_suffixes(self) -> None:
+        result = naver_finance.valuation._parse_total_infos(
+            [
+                {"code": "eps", "value": "5,432원"},
+                {"code": "bps", "value": "50,000원"},
+                {"code": "marketValue", "value": "400조"},
+                {"code": "per", "value": "12.5배"},
+                {"code": "pbr", "value": "1.2배"},
+                {"code": "unmapped", "value": "ignore me"},
+            ]
+        )
+        assert result["eps"] == pytest.approx(5432)  # won/share, 원 stripped
+        assert result["bps"] == pytest.approx(50000)
+        assert result["market_cap"] == pytest.approx(
+            400_000_000_000_000
+        )  # 400조 raw KRW
+        assert result["per"] == pytest.approx(12.5)
+        assert result["pbr"] == pytest.approx(1.2)
+        assert "unmapped" not in result
 
 
 @pytest.mark.asyncio
