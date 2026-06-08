@@ -67,3 +67,51 @@ def test_ranking_row_to_screen_row_null_safe():
     assert out["volume"] is None
     assert out["trade_amount"] is None
 
+
+from app.services.invest_momentum_events.query_service import Freshness
+
+
+@pytest.mark.unit
+def test_dedupe_and_sort_rows_by_trade_amount_desc():
+    rows = [
+        {"symbol": "A", "trade_amount": 100.0, "market_cap": 5.0},
+        {"symbol": "B", "trade_amount": 300.0, "market_cap": 1.0},
+        {"symbol": "A", "trade_amount": 100.0, "market_cap": 5.0},  # dup symbol
+    ]
+    out = krs.dedupe_and_sort_rows(rows, sort_by="trade_amount", sort_order="desc")
+    assert [r["symbol"] for r in out] == ["B", "A"]  # deduped + sorted desc
+
+
+@pytest.mark.unit
+def test_dedupe_and_sort_rows_market_cap_asc_nulls_last():
+    rows = [
+        {"symbol": "A", "market_cap": None},
+        {"symbol": "B", "market_cap": 2.0},
+        {"symbol": "C", "market_cap": 1.0},
+    ]
+    out = krs.dedupe_and_sort_rows(rows, sort_by="market_cap", sort_order="asc")
+    assert [r["symbol"] for r in out] == ["C", "B", "A"]  # None sorts last
+
+
+@pytest.mark.unit
+def test_freshness_to_meta_fresh():
+    fr = Freshness(overall="fresh", latest_snapshot_at=None, stale_reason=None)
+    data_state, meta, warnings = krs.freshness_to_meta(fr, row_count=20)
+    assert data_state == "fresh"
+    assert meta["source"] == "kr_market_ranking"
+    assert meta["data_state"] == "fresh"
+    # coverage caveat is always present (top-movers, not full universe)
+    assert any("전체 KRX 스캔" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_freshness_to_meta_stale_adds_warning_and_not_retryable():
+    fr = Freshness(overall="stale", latest_snapshot_at=None, stale_reason="older_than_ttl")
+    data_state, meta, warnings = krs.freshness_to_meta(fr, row_count=10)
+    assert data_state == "stale"
+    assert meta["data_state"] == "stale"
+    assert meta["stale_reason"] == "older_than_ttl"
+    assert meta["retryable"] is False  # stale snapshot won't recover by immediate retry
+    assert any("오래" in w for w in warnings)
+
+

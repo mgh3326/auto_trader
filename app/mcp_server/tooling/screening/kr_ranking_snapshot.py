@@ -36,7 +36,7 @@ def order_types_for_sort(sort_by: str) -> tuple[str, ...]:
 
 from typing import Any
 
-from app.services.invest_momentum_events.query_service import RankingRow
+from app.services.invest_momentum_events.query_service import Freshness, RankingRow
 
 
 def _opt_float(value: float | int | None) -> float | None:
@@ -64,4 +64,62 @@ def ranking_row_to_screen_row(row: RankingRow) -> dict[str, Any]:
         "dividend_yield": None,
         "instrument_type": "stock",
     }
+
+
+def dedupe_and_sort_rows(
+    rows: list[dict[str, Any]], *, sort_by: str, sort_order: str
+) -> list[dict[str, Any]]:
+    """Dedupe by symbol (first wins) and sort by the requested field. None sorts last
+    regardless of order. Used for trade_amount / market_cap which have no native
+    momentum bucket (we union 'up'+'quantTop' then re-rank)."""
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for r in rows:
+        sym = r.get("symbol")
+        if sym in seen:
+            continue
+        seen.add(sym)
+        deduped.append(r)
+
+    reverse = sort_order != "asc"
+
+    def key(r: dict[str, Any]) -> tuple[int, float]:
+        v = r.get(sort_by)
+        if v is None:
+            # None always last: sort to the extreme opposite of the active direction
+            return (1, float("-inf") if reverse else float("inf"))
+        return (0, float(v))
+
+    return sorted(deduped, key=key, reverse=reverse)
+
+
+def freshness_to_meta(
+    freshness: Freshness, *, row_count: int
+) -> tuple[str, dict[str, Any], list[str]]:
+    """Map momentum Freshness to (data_state, meta_fields, warnings) for screen_stocks.
+    'unavailable' is handled by the caller (returns None -> live), so only fresh/stale
+    produce a response here."""
+    data_state = freshness.overall
+    meta: dict[str, Any] = {
+        "data_state": data_state,
+        "source": "kr_market_ranking",
+        "latest_snapshot_at": (
+            freshness.latest_snapshot_at.isoformat()
+            if freshness.latest_snapshot_at is not None
+            else None
+        ),
+    }
+    warnings: list[str] = [
+        f"모멘텀 랭킹 상위 {row_count}종목 기반 — 전체 KRX 스캔이 아닙니다."
+    ]
+    if data_state == "stale":
+        meta["stale_reason"] = freshness.stale_reason
+        meta["retryable"] = False
+        meta["reason"] = "kr_market_ranking_stale"
+        warnings.append(
+            "모멘텀 랭킹 스냅샷이 오래되었습니다"
+            f"({freshness.stale_reason}) — 신규 후보 발굴에 주의하세요."
+        )
+    return data_state, meta, warnings
+
 
