@@ -214,4 +214,39 @@ async def test_load_fail_open_on_query_error():
     assert out is None  # fail-open -> live fallthrough
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_enrich_rows_fills_code_sector_valuation_best_effort():
+    rows = [
+        {"symbol": "005930", "code": "005930", "per": None, "pbr": None,
+         "dividend_yield": None, "instrument_type": "stock", "name": "삼성전자"},
+    ]
+    universe = {"005930": {"code": "KR7005930003", "sector": "반도체", "name": "삼성전자"}}
+    valuation = {"005930": {"per": 12.3, "pbr": 1.1, "dividend_yield": 2.5}}
+
+    out = await krs._enrich_rows(
+        rows,
+        universe_by_code=universe,
+        valuation_by_code=valuation,
+    )
+    assert out[0]["code"] == "KR7005930003"
+    assert out[0]["sector"] == "반도체"
+    assert out[0]["per"] == 12.3
+    assert out[0]["pbr"] == 1.1
+    assert out[0]["dividend_yield"] == 2.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_enrich_rows_no_fabrication_when_missing():
+    rows = [{"symbol": "999999", "code": "999999", "per": None, "pbr": None,
+             "dividend_yield": None, "instrument_type": "stock", "name": "x"}]
+    out = await krs._enrich_rows(rows, universe_by_code={}, valuation_by_code={})
+    assert out[0]["per"] is None
+    assert out[0]["pbr"] is None
+    assert out[0]["dividend_yield"] is None
+    assert out[0]["code"] == "999999"  # unchanged when no universe match
+
+
+
 

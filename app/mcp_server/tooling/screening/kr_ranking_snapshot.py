@@ -152,8 +152,62 @@ def _build_query_service(session: Any) -> Any:
     return MomentumRankingQueryService(InvestMomentumEventSnapshotsRepository(session))
 
 
-async def _enrich_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return rows  # replaced in Task 5
+async def _load_universe_by_code() -> dict[str, dict[str, Any]]:
+    from app.services.krx import fetch_stock_all_cached
+
+    out: dict[str, dict[str, Any]] = {}
+    for mkt in ("STK", "KSQ"):
+        for item in await fetch_stock_all_cached(market=mkt):
+            code = str(item.get("short_code") or item.get("code") or "").strip()
+            if code:
+                out[code] = item
+    return out
+
+
+async def _load_valuation_by_code() -> dict[str, dict[str, Any]]:
+    from app.services.krx import fetch_valuation_all_cached
+
+    return await fetch_valuation_all_cached(market="ALL")
+
+
+async def _enrich_rows(
+    rows: list[dict[str, Any]],
+    *,
+    universe_by_code: dict[str, dict[str, Any]] | None = None,
+    valuation_by_code: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Best-effort enrich snapshot rows with code/sector/instrument_type + per/pbr/
+    dividend_yield from KRX universe/valuation caches. Fail-open and no fabrication:
+    on any cache error or missing key, leave fields as-is (null)."""
+    from app.mcp_server.tooling.screening.instrument_type import classify_kr_instrument
+
+    try:
+        if universe_by_code is None:
+            universe_by_code = await _load_universe_by_code()
+        if valuation_by_code is None:
+            valuation_by_code = await _load_valuation_by_code()
+    except Exception:  # noqa: BLE001 — enrichment is best-effort
+        return rows
+
+    for r in rows:
+        code = r.get("symbol") or ""
+        base = universe_by_code.get(code) or {}
+        val = valuation_by_code.get(code) or {}
+        if base.get("code"):
+            r["code"] = base["code"]
+        if base.get("sector") and not r.get("sector"):
+            r["sector"] = base["sector"]
+        r["instrument_type"] = classify_kr_instrument(
+            code, r.get("name"), base.get("subtype")
+        )
+        if r.get("per") is None:
+            r["per"] = val.get("per")
+        if r.get("pbr") is None:
+            r["pbr"] = val.get("pbr")
+        if r.get("dividend_yield") is None:
+            r["dividend_yield"] = val.get("dividend_yield")
+    return rows
+
 
 
 async def load_kr_ranking_snapshot(
