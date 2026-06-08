@@ -451,7 +451,13 @@ def _summarize_analysis_result(
         return analysis
 
     quote = analysis.get("quote") or {}
-    indicators = (analysis.get("indicators") or {}).get("indicators", {})
+    # ROB-451: production stores a FLAT indicator map ({"rsi": {"14": ...}}) — the unwrap
+    # already happens in analysis_analyze.py. The old `.get("indicators", {})` assumed the
+    # pre-unwrap provider shape, so it found nothing → rsi_14 was ALWAYS null (all markets).
+    # Defensively accept both: nested provider payload OR the already-flat map.
+    raw_indicators = analysis.get("indicators") or {}
+    inner = raw_indicators.get("indicators")
+    indicators = inner if isinstance(inner, dict) else raw_indicators
     rsi = (indicators.get("rsi") or {}).get("14")
     sr = analysis.get("support_resistance") or {}
 

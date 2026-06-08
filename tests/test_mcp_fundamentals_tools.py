@@ -537,11 +537,11 @@ class TestAnalyzeStockBatch:
             "market_type": "equity_kr",
             "source": "kis",
             "quote": {"price": 75000},
+            # ROB-451: production stores the FLAT indicator map (already unwrapped in
+            # analysis_analyze.py). The old double-nested mock hid the batch-formatter bug.
             "indicators": {
-                "indicators": {
-                    "rsi": {"14": 45.0},
-                    "bollinger": {"lower": 74000},
-                }
+                "rsi": {"14": 45.0},
+                "bollinger": {"lower": 74000},
             },
             "support_resistance": {
                 "supports": [{"price": 73000}],
@@ -593,6 +593,32 @@ class TestAnalyzeStockBatch:
             "supports": [{"price": 73000}],
             "resistances": [{"price": 77000, "strength": "medium"}],
         }
+
+    async def test_analyze_stock_batch_quick_summary_crypto_rsi(self, monkeypatch):
+        # ROB-451: crypto batch quick summary must surface rsi_14 (flat indicator map),
+        # while consensus stays null (crypto has no analyst-consensus source — correct).
+        tools = build_tools()
+
+        mock_analysis = {
+            "symbol": "BTC",
+            "market_type": "crypto",
+            "source": "upbit",
+            "quote": {"price": 95000000},
+            "indicators": {"rsi": {"14": 61.2}},  # production FLAT shape
+            "support_resistance": {"supports": [], "resistances": []},
+            # no "opinions" → consensus is correctly null for crypto
+        }
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return mock_analysis
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](["BTC"], market="crypto")
+
+        row = result["results"]["BTC"]
+        assert row["rsi_14"] == pytest.approx(61.2)  # ROB-451: no longer null
+        assert row.get("consensus") is None  # crypto: correct (not a regression)
 
     async def test_analyze_stock_batch_quick_false_returns_full_payload(
         self, monkeypatch
