@@ -288,11 +288,22 @@ def _passes_thresholds(
             return False, f"{col_attr} unavailable", provenance
         if require_positive and value <= 0:
             return False, f"{col_attr} not positive", provenance
+        # ROB-444: tvscreener dividend_yield is a PERCENT (e.g. 6.32 = 6.32%), but the
+        # shared spec threshold is a RATIO (min_dividend_yield=0.03 = 3%; US
+        # market_valuation stores dividend_yield as a ratio). Compare in ratio so the
+        # 3% gate actually filters — without this, 0.48% passed `0.48 < 0.03` = False.
+        # The row's displayed dividend_yield stays percent (metric label `{v:.2f}%`).
+        cmp_value = (
+            Decimal(str(value)) / Decimal("100")
+            if col_attr == "dividend_yield"
+            else Decimal(str(value))
+        )
+        threshold_dec = Decimal(str(threshold))
         if spec_field in _MAX_FIELDS:
-            if Decimal(str(value)) > Decimal(str(threshold)):
+            if cmp_value > threshold_dec:
                 return False, f"{col_attr} above max", provenance
         else:
-            if Decimal(str(value)) < Decimal(str(threshold)):
+            if cmp_value < threshold_dec:
                 return False, f"{col_attr} below min", provenance
 
     # ROB-433: 3y-avg growth — DART (exact 3년평균) first, tvscreener YoY proxy fallback.
