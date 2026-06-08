@@ -10,6 +10,9 @@ from app.mcp_server.tooling.fundamentals._crypto import (
     handle_get_long_short_ratio,
     handle_get_open_interest,
 )
+from app.mcp_server.tooling.fundamentals._crypto_regime import (
+    handle_get_crypto_market_regime,
+)
 from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_earnings_calendar,
     handle_get_financials,
@@ -61,6 +64,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_funding_rate",
     "get_open_interest",
     "get_long_short_ratio",
+    "get_crypto_market_regime",
     "get_market_index",
     "get_upbit_index",
     "get_upbit_altseason",
@@ -263,6 +267,20 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         limit: int = 30,
     ) -> dict[str, Any]:
         return await handle_get_long_short_ratio(symbol, period, limit)
+
+    @mcp.tool(
+        name="get_crypto_market_regime",
+        description=(
+            "Get crypto market-regime signals from the crypto_insight_snapshots store "
+            "(read-only): Fear&Greed (fng), DeFi TVL by protocol, stablecoin supply, "
+            "TradingView breadth, aggregate open interest. Each field is independently "
+            "fresh/stale/missing/disabled — only fng is populated by default; "
+            "tvl/stablecoin/breadth need operator-enabled providers and aggregate_oi "
+            "(coinglass) is a disabled PoC. No arguments."
+        ),
+    )
+    async def get_crypto_market_regime() -> dict[str, Any]:
+        return await handle_get_crypto_market_regime()
 
     @mcp.tool(
         name="get_market_index",
