@@ -9,6 +9,15 @@ falls through to the live (tvscreener -> legacy KRX) path.
 
 from __future__ import annotations
 
+import datetime as dt
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.services.invest_momentum_events.query_service import Freshness, RankingRow
+
+logger = logging.getLogger(__name__)
+
 # sort_by values the kr_market_ranking read-model can serve. Everything else
 # (dividend_yield, week_change_rate, rsi, score, ...) must go to the live path.
 SNAPSHOT_ELIGIBLE_SORTS: frozenset[str] = frozenset(
@@ -32,11 +41,6 @@ def is_snapshot_eligible_sort(sort_by: str) -> bool:
 
 def order_types_for_sort(sort_by: str) -> tuple[str, ...]:
     return _ORDER_TYPE_BY_SORT.get(sort_by, ())
-
-
-from typing import Any
-
-from app.services.invest_momentum_events.query_service import Freshness, RankingRow
 
 
 def _opt_float(value: float | int | None) -> float | None:
@@ -123,13 +127,6 @@ def freshness_to_meta(
     return data_state, meta, warnings
 
 
-import datetime as dt
-import logging
-from dataclasses import dataclass, field
-
-logger = logging.getLogger(__name__)
-
-
 @dataclass(frozen=True)
 class KrRankingSnapshotResult:
     rows: list[dict[str, Any]]
@@ -209,7 +206,6 @@ async def _enrich_rows(
     return rows
 
 
-
 async def load_kr_ranking_snapshot(
     *,
     sort_by: str,
@@ -231,7 +227,14 @@ async def load_kr_ranking_snapshot(
     try:
         if query_service is not None:
             return await _run(
-                query_service, sort_by, sort_order, limit, now, order_types, enrich, None
+                query_service,
+                sort_by,
+                sort_order,
+                limit,
+                now,
+                order_types,
+                enrich,
+                None,
             )
         from app.core.db import AsyncSessionLocal
 
@@ -287,6 +290,3 @@ async def _run(
         warnings=warnings,
         meta_fields=meta,
     )
-
-
-

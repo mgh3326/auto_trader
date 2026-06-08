@@ -1,6 +1,11 @@
 import pytest
 
 from app.mcp_server.tooling.screening import kr_ranking_snapshot as krs
+from app.services.invest_momentum_events.query_service import (
+    Freshness,
+    MomentumRanking,
+    RankingRow,
+)
 
 
 @pytest.mark.unit
@@ -28,14 +33,17 @@ def test_order_types_for_sort():
     assert krs.order_types_for_sort("rsi") == ()
 
 
-from app.services.invest_momentum_events.query_service import RankingRow
-
-
 @pytest.mark.unit
 def test_ranking_row_to_screen_row_maps_fields():
     row = RankingRow(
-        rank=1, symbol="005930", name="삼성전자", price=71000.0,
-        change_rate=3.5, volume=12_000_000, trade_value=8.5e11, market_cap=4.2e14,
+        rank=1,
+        symbol="005930",
+        name="삼성전자",
+        price=71000.0,
+        change_rate=3.5,
+        volume=12_000_000,
+        trade_value=8.5e11,
+        market_cap=4.2e14,
     )
     out = krs.ranking_row_to_screen_row(row)
     assert out["symbol"] == "005930"
@@ -45,7 +53,7 @@ def test_ranking_row_to_screen_row_maps_fields():
     assert out["price"] == 71000.0
     assert out["change_rate"] == 3.5
     assert out["volume"] == 12_000_000.0  # int -> float
-    assert out["trade_amount"] == 8.5e11   # trade_value -> trade_amount
+    assert out["trade_amount"] == 8.5e11  # trade_value -> trade_amount
     assert out["market_cap"] == 4.2e14
     assert out["market"] == "kr"
     # not provided by the ranking read-model -> explicit null (no fabrication)
@@ -57,8 +65,14 @@ def test_ranking_row_to_screen_row_maps_fields():
 @pytest.mark.unit
 def test_ranking_row_to_screen_row_null_safe():
     row = RankingRow(
-        rank=2, symbol="000660", name=None, price=None,
-        change_rate=None, volume=None, trade_value=None, market_cap=None,
+        rank=2,
+        symbol="000660",
+        name=None,
+        price=None,
+        change_rate=None,
+        volume=None,
+        trade_value=None,
+        market_cap=None,
     )
     out = krs.ranking_row_to_screen_row(row)
     assert out["symbol"] == "000660"
@@ -66,9 +80,6 @@ def test_ranking_row_to_screen_row_null_safe():
     assert out["price"] is None
     assert out["volume"] is None
     assert out["trade_amount"] is None
-
-
-from app.services.invest_momentum_events.query_service import Freshness
 
 
 @pytest.mark.unit
@@ -106,7 +117,9 @@ def test_freshness_to_meta_fresh():
 
 @pytest.mark.unit
 def test_freshness_to_meta_stale_adds_warning_and_not_retryable():
-    fr = Freshness(overall="stale", latest_snapshot_at=None, stale_reason="older_than_ttl")
+    fr = Freshness(
+        overall="stale", latest_snapshot_at=None, stale_reason="older_than_ttl"
+    )
     data_state, meta, warnings = krs.freshness_to_meta(fr, row_count=10)
     assert data_state == "stale"
     assert meta["data_state"] == "stale"
@@ -115,13 +128,9 @@ def test_freshness_to_meta_stale_adds_warning_and_not_retryable():
     assert any("오래" in w for w in warnings)
 
 
-import datetime as dt
-
-from app.services.invest_momentum_events.query_service import MomentumRanking
-
-
 class _FakeQS:
     """Fake MomentumRankingQueryService: returns canned MomentumRanking per order_type."""
+
     def __init__(self, by_order_type: dict[str, MomentumRanking]):
         self._by = by_order_type
         self.calls: list[str] = []
@@ -133,8 +142,13 @@ class _FakeQS:
 
 def _ranking(order_type, overall, rows):
     return MomentumRanking(
-        market="kr", order_type=order_type, trading_date=None,
-        rows=tuple(rows), freshness=Freshness(overall, None, None if overall == "fresh" else "older_than_ttl"),
+        market="kr",
+        order_type=order_type,
+        trading_date=None,
+        rows=tuple(rows),
+        freshness=Freshness(
+            overall, None, None if overall == "fresh" else "older_than_ttl"
+        ),
     )
 
 
@@ -154,7 +168,11 @@ async def test_load_returns_none_for_ineligible_sort():
 async def test_load_returns_none_when_unavailable():
     qs = _FakeQS({"up": _ranking("up", "unavailable", [])})
     out = await krs.load_kr_ranking_snapshot(
-        sort_by="change_rate", sort_order="desc", limit=20, query_service=qs, enrich=False
+        sort_by="change_rate",
+        sort_order="desc",
+        limit=20,
+        query_service=qs,
+        enrich=False,
     )
     assert out is None  # zero rows -> live fallthrough
 
@@ -165,7 +183,11 @@ async def test_load_fresh_change_rate_returns_rows():
     rows = [RankingRow(1, "005930", "삼성전자", 71000.0, 3.5, 100, 5e11, 4e14)]
     qs = _FakeQS({"up": _ranking("up", "fresh", rows)})
     out = await krs.load_kr_ranking_snapshot(
-        sort_by="change_rate", sort_order="desc", limit=20, query_service=qs, enrich=False
+        sort_by="change_rate",
+        sort_order="desc",
+        limit=20,
+        query_service=qs,
+        enrich=False,
     )
     assert out is not None
     assert out.data_state == "fresh"
@@ -193,9 +215,18 @@ async def test_load_stale_returned_honestly_not_dropped():
 async def test_load_trade_amount_unions_buckets_and_resorts():
     up = [RankingRow(1, "A", "A", 1.0, 9.0, 10, 100.0, 5.0)]
     qt = [RankingRow(1, "B", "B", 1.0, 1.0, 99, 300.0, 1.0)]
-    qs = _FakeQS({"up": _ranking("up", "fresh", up), "quantTop": _ranking("quantTop", "fresh", qt)})
+    qs = _FakeQS(
+        {
+            "up": _ranking("up", "fresh", up),
+            "quantTop": _ranking("quantTop", "fresh", qt),
+        }
+    )
     out = await krs.load_kr_ranking_snapshot(
-        sort_by="trade_amount", sort_order="desc", limit=20, query_service=qs, enrich=False
+        sort_by="trade_amount",
+        sort_order="desc",
+        limit=20,
+        query_service=qs,
+        enrich=False,
     )
     assert out is not None
     assert [r["symbol"] for r in out.rows] == ["B", "A"]  # 300 > 100
@@ -208,8 +239,13 @@ async def test_load_fail_open_on_query_error():
     class _Boom:
         async def get_ranking(self, **_):
             raise RuntimeError("db down")
+
     out = await krs.load_kr_ranking_snapshot(
-        sort_by="volume", sort_order="desc", limit=20, query_service=_Boom(), enrich=False
+        sort_by="volume",
+        sort_order="desc",
+        limit=20,
+        query_service=_Boom(),
+        enrich=False,
     )
     assert out is None  # fail-open -> live fallthrough
 
@@ -218,10 +254,19 @@ async def test_load_fail_open_on_query_error():
 @pytest.mark.unit
 async def test_enrich_rows_fills_code_sector_valuation_best_effort():
     rows = [
-        {"symbol": "005930", "code": "005930", "per": None, "pbr": None,
-         "dividend_yield": None, "instrument_type": "stock", "name": "삼성전자"},
+        {
+            "symbol": "005930",
+            "code": "005930",
+            "per": None,
+            "pbr": None,
+            "dividend_yield": None,
+            "instrument_type": "stock",
+            "name": "삼성전자",
+        },
     ]
-    universe = {"005930": {"code": "KR7005930003", "sector": "반도체", "name": "삼성전자"}}
+    universe = {
+        "005930": {"code": "KR7005930003", "sector": "반도체", "name": "삼성전자"}
+    }
     valuation = {"005930": {"per": 12.3, "pbr": 1.1, "dividend_yield": 2.5}}
 
     out = await krs._enrich_rows(
@@ -239,14 +284,19 @@ async def test_enrich_rows_fills_code_sector_valuation_best_effort():
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_enrich_rows_no_fabrication_when_missing():
-    rows = [{"symbol": "999999", "code": "999999", "per": None, "pbr": None,
-             "dividend_yield": None, "instrument_type": "stock", "name": "x"}]
+    rows = [
+        {
+            "symbol": "999999",
+            "code": "999999",
+            "per": None,
+            "pbr": None,
+            "dividend_yield": None,
+            "instrument_type": "stock",
+            "name": "x",
+        }
+    ]
     out = await krs._enrich_rows(rows, universe_by_code={}, valuation_by_code={})
     assert out[0]["per"] is None
     assert out[0]["pbr"] is None
     assert out[0]["dividend_yield"] is None
     assert out[0]["code"] == "999999"  # unchanged when no universe match
-
-
-
-
