@@ -218,3 +218,137 @@ async def save_retrospective(
     }
     repo = TradeRetrospectiveRepository(db)
     return await repo.upsert(payload)
+
+
+def _kst_day_start(date_str: str) -> datetime:
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    return datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=_KST)
+
+
+def _kst_day_end(date_str: str) -> datetime:
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=_KST)
+
+
+def _kst_date_str(dt: datetime) -> str:
+    return dt.astimezone(_KST).date().isoformat()
+
+
+async def get_retrospectives(
+    db: AsyncSession,
+    *,
+    symbol: str | None = None,
+    account_mode: str | None = None,
+    strategy_key: str | None = None,
+    market: str | None = None,
+    correlation_id: str | None = None,
+    days: int | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    filters = []
+    if symbol is not None:
+        filters.append(TradeRetrospective.symbol == to_db_symbol(symbol))
+    if account_mode is not None:
+        filters.append(TradeRetrospective.account_mode == account_mode)
+    if strategy_key is not None:
+        filters.append(TradeRetrospective.strategy_key == strategy_key)
+    if market is not None:
+        filters.append(TradeRetrospective.market == market)
+    if correlation_id is not None:
+        filters.append(TradeRetrospective.correlation_id == correlation_id)
+    if days is not None:
+        filters.append(TradeRetrospective.created_at >= now_kst() - timedelta(days=days))
+    stmt = (
+        select(TradeRetrospective)
+        .where(*filters)
+        .order_by(TradeRetrospective.created_at.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    by_outcome: dict[str, int] = {}
+    for r in rows:
+        by_outcome[r.outcome] = by_outcome.get(r.outcome, 0) + 1
+    return {
+        "entries": [serialize_retrospective(r) for r in rows],
+        "summary": {"count": len(rows), "by_outcome": by_outcome},
+    }
+
+
+def _is_win(r: TradeRetrospective) -> bool:
+    if r.realized_pnl is not None:
+        return r.realized_pnl > 0
+    return r.pnl_pct is not None and r.pnl_pct > 0
+
+
+def _is_decided(r: TradeRetrospective) -> bool:
+    return r.realized_pnl is not None or r.pnl_pct is not None
+
+
+async def build_retrospective_aggregate(
+    db: AsyncSession,
+    *,
+    kst_date_from: str | None = None,
+    kst_date_to: str | None = None,
+    account_mode: str | None = None,
+    market: str | None = None,
+    strategy_key: str | None = None,
+    group_by: str = "strategy",
+) -> dict[str, Any]:
+    if group_by not in ("strategy", "day"):
+        group_by = "strategy"
+    filters = []
+    if account_mode is not None:
+        filters.append(TradeRetrospective.account_mode == account_mode)
+    if market is not None:
+        filters.append(TradeRetrospective.market == market)
+    if strategy_key is not None:
+        filters.append(TradeRetrospective.strategy_key == strategy_key)
+    if kst_date_from is not None:
+        filters.append(TradeRetrospective.created_at >= _kst_day_start(kst_date_from))
+    if kst_date_to is not None:
+        filters.append(TradeRetrospective.created_at <= _kst_day_end(kst_date_to))
+
+    rows = (
+        await db.execute(select(TradeRetrospective).where(*filters))
+    ).scalars().all()
+
+    groups: dict[str, list[TradeRetrospective]] = {}
+    excluded_no_evidence = 0
+    for r in rows:
+        if not r.fill_evidence_available:
+            excluded_no_evidence += 1
+            continue
+        key = (r.strategy_key or "no_strategy") if group_by == "strategy" else _kst_date_str(r.created_at)
+        groups.setdefault(key, []).append(r)
+
+    out: list[dict[str, Any]] = []
+    for key, items in groups.items():
+        decided = [it for it in items if _is_decided(it)]
+        wins = sum(1 for it in decided if _is_win(it))
+        misses = len(decided) - wins
+        realized_sum: dict[str, float] = {}
+        for it in items:
+            if it.realized_pnl is not None and it.realized_pnl_currency:
+                realized_sum[it.realized_pnl_currency] = (
+                    realized_sum.get(it.realized_pnl_currency, 0.0)
+                    + float(it.realized_pnl)
+                )
+        by_outcome: dict[str, int] = {}
+        for it in items:
+            by_outcome[it.outcome] = by_outcome.get(it.outcome, 0) + 1
+        out.append({
+            "group": key,
+            "sample_size": len(items),
+            "wins": wins,
+            "misses": misses,
+            "win_rate_pct": (wins / len(decided) * 100.0) if decided else None,
+            "avg_pnl_pct": _avg([it.pnl_pct for it in items]),
+            "realized_pnl_sum": realized_sum,
+            "by_outcome": by_outcome,
+        })
+    out.sort(key=lambda g: -g["sample_size"])
+    return {
+        "group_by": group_by,
+        "groups": out,
+        "excluded_no_fill_evidence": excluded_no_evidence,
+    }
