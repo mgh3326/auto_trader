@@ -127,7 +127,7 @@ async def save_trade_journal(
     symbol is auto-detected for instrument_type (KRW-BTC -> crypto, AAPL -> equity_us, 005930 -> equity_kr).
     min_hold_days auto-calculates hold_until from now.
     Warns if an active journal already exists for the same symbol.
-    account_type='paper' for paper trading journals (requires account name).
+    account_type='paper'|'mock' for paper/mock journals (paper requires account name).
     paper_trade_id links to the paper trade record.
     paperclip_issue_id links to the Paperclip issue tracking this trade.
     metadata is an optional JSON dict for extensible fields.
@@ -145,12 +145,12 @@ async def save_trade_journal(
         return {"success": False, "error": f"Invalid status: {status}"}
 
     # account_type 검증
-    if account_type not in ("live", "paper"):
+    if account_type not in ("live", "paper", "mock"):
         return {"success": False, "error": f"Invalid account_type: {account_type}"}
-    if account_type == "live" and paper_trade_id is not None:
+    if account_type in ("live", "mock") and paper_trade_id is not None:
         return {
             "success": False,
-            "error": "paper_trade_id cannot be set for live account_type",
+            "error": "paper_trade_id cannot be set for live/mock account_type",
         }
     if account_type == "paper" and not account:
         return {
@@ -245,7 +245,7 @@ async def get_trade_journal(
     days: int | None = None,
     include_closed: bool = False,
     limit: int = 50,
-    account_type: str | None = "live",
+    account_type: str | None = None,
     account: str | None = None,
     paperclip_issue_id: str | None = None,
     enrich_live: bool = False,
@@ -254,7 +254,7 @@ async def get_trade_journal(
 
     Returns active journals by default. Set include_closed=True for closed/stopped.
     Each entry includes hold_remaining_days, hold_expired for hold period checks.
-    account_type defaults to 'live'; set to 'paper' for paper journals, or None to query both.
+    account_type defaults to None (all); set 'live'|'paper'|'mock' to filter.
     account (optional) filters to a specific account name.
     paperclip_issue_id (optional) filters by Paperclip issue ID for reverse lookup.
     """
