@@ -129,6 +129,65 @@ def _limit_order_error(tool_name: str, symbol: str, order_type: str) -> dict[str
     }
 
 
+# ROB-463: NXT venue, TIF/order-validity, and 예약주문 are requested capabilities
+# but require operator confirmation of the exact KIS wire codes
+# (EXCG_ID_DVSN_CD='NXT', ORD_COND_DVSN_CD, RSV_ORD_TIME) before any live order
+# can carry them. Until then these knobs are surfaced (so callers get an explicit,
+# actionable response instead of silent non-support) but fail closed — no live
+# order is placed, even in dry_run. Day orders auto-route via SOR (NXT-eligible) /
+# KRX exactly as before. See docs/superpowers/specs for the gated questions.
+_SUPPORTED_VENUES = {None, "auto"}
+_SUPPORTED_ORDER_VALIDITIES = {None, "day"}
+
+
+def _venue_tif_gate(
+    tool_name: str,
+    symbol: str,
+    *,
+    venue: str | None,
+    order_validity: str | None,
+    reserved_time: str | None,
+) -> dict[str, Any] | None:
+    """Return a fail-closed error payload for not-yet-enabled venue/TIF knobs.
+
+    None means the request uses only the supported (auto-route, day) behaviour
+    and may proceed unchanged.
+    """
+    norm_venue = (venue or "").strip().lower() or None
+    norm_validity = (order_validity or "").strip().lower() or None
+    norm_reserved = (reserved_time or "").strip() or None
+
+    blocked: str | None = None
+    if norm_venue not in _SUPPORTED_VENUES:
+        blocked = f"venue={venue!r} (explicit KRX/NXT/unified routing)"
+    elif norm_validity not in _SUPPORTED_ORDER_VALIDITIES:
+        blocked = f"order_validity={order_validity!r} (TIF / 예약주문 / gtc)"
+    elif norm_reserved is not None:
+        blocked = f"reserved_time={reserved_time!r} (예약주문 / scheduled order)"
+
+    if blocked is None:
+        return None
+
+    return {
+        "success": False,
+        "error": "venue_tif_pending_operator_confirmation",
+        "source": "mcp",
+        "tool": tool_name,
+        "symbol": symbol,
+        "blocked": blocked,
+        "linear": "ROB-463",
+        "reason": (
+            f"{blocked} is not yet enabled for KIS live orders. NXT venue, "
+            "order validity/TIF, and 예약주문 require operator confirmation of "
+            "the exact KIS wire codes (EXCG_ID_DVSN_CD='NXT', ORD_COND_DVSN_CD, "
+            "RSV_ORD_TIME) before a live order can carry them — see ROB-463. "
+            "Until then orders auto-route via SOR (NXT-eligible) / KRX as day "
+            "orders; leave venue/order_validity/reserved_time unset (or "
+            "venue='auto', order_validity='day')."
+        ),
+    }
+
+
 async def _place_order_variant(
     *,
     tool_name: str,
@@ -322,6 +381,17 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "dry_run=True by default for safety. "
             "For buy orders (dry_run=False), thesis and strategy are required. "
             "Safety limit: max 20 orders/day. "
+            "Normal weight-management trims do NOT need defensive_trim — leave "
+            "it False. defensive_trim=True only bypasses the sell-side price "
+            "floor and requires side='sell', order_type='limit', and an "
+            "approval_issue_id (e.g. 'ROB-164'); approval_issue_id is mandatory "
+            "whenever defensive_trim=True, including dry_run (ROB-164 audit gate). "
+            "Orders auto-route via SOR (NXT-eligible) / KRX as day orders. "
+            "venue (krx|nxt|unified), order_validity (day|예약|gtc), and "
+            "reserved_time are accepted but NOT yet enabled — NXT/TIF/예약주문 "
+            "require operator confirmation of the exact KIS wire codes "
+            "(ROB-463) and currently fail closed with an explicit error (no live "
+            "order, even in dry_run); leave them unset for normal day orders. "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
@@ -345,9 +415,21 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         indicators_snapshot: dict[str, Any] | None = None,
         defensive_trim: bool = False,
         approval_issue_id: str | None = None,
+        venue: str | None = None,
+        order_validity: str | None = None,
+        reserved_time: str | None = None,
         account_mode: str | None = None,
         account_type: str | None = None,
     ) -> dict[str, Any]:
+        gate = _venue_tif_gate(
+            "kis_live_place_order",
+            symbol,
+            venue=venue,
+            order_validity=order_validity,
+            reserved_time=reserved_time,
+        )
+        if gate is not None:
+            return gate
         return await _place_order_variant(
             tool_name="kis_live_place_order",
             pinned_mode=_PINNED,

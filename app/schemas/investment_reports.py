@@ -40,6 +40,9 @@ MarketSessionLiteral = Literal["regular", "nxt", "pre", "post", "24x7"]
 AccountScopeLiteral = Literal["kis_live", "kis_mock", "alpaca_paper", "upbit_live"]
 ExecutionModeLiteral = Literal["advisory_only", "mock_preview"]
 ReportStatusLiteral = Literal["draft", "published", "decided", "expired", "superseded"]
+# ROB-455 — the lifecycle targets an operator may transition a report TO. draft /
+# published are entry states (set at create), not transition targets here.
+ReportStatusTransitionLiteral = Literal["superseded", "decided", "expired"]
 
 ItemKindLiteral = Literal["action", "watch", "risk"]
 ItemSideLiteral = Literal["buy", "sell"]
@@ -63,7 +66,13 @@ WatchActionModeLiteral = Literal[
     "notify_only", "preview_only", "approval_required", "auto_execute_mock"
 ]
 
-DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_approve"]
+# ROB-455 — order-lifecycle verbs. ``cancel`` / ``reprice`` express adjustment
+# outcomes the demo previously faked with deny + decision_note. The verb is the
+# first-class lifecycle record; item.status reuses an existing projection
+# (cancel→denied, reprice→approved) — see decisions.py ``_ITEM_STATUS_BY_DECISION``.
+DecisionVerbLiteral = Literal[
+    "approve", "deny", "defer", "skip", "partial_approve", "cancel", "reprice"
+]
 
 # ROB-274 — proposal lifecycle literals. ``operation=None`` is the legacy
 # shape and is treated as 'create' by the DB CHECK constraints (see
@@ -400,12 +409,26 @@ class RecordDecisionRequest(BaseModel):
     idempotency_key: str | None = None
 
     @model_validator(mode="after")
-    def _validate_partial_approve_has_payload(self) -> RecordDecisionRequest:
-        if self.decision == "partial_approve" and not self.approved_payload_snapshot:
+    def _validate_payload_required_verbs(self) -> RecordDecisionRequest:
+        # partial_approve and reprice both carry the scoped/adjusted params in
+        # approved_payload_snapshot — a verb without it is indistinguishable from
+        # a plain approve and must not transition the item.
+        if self.decision in ("partial_approve", "reprice") and (
+            not self.approved_payload_snapshot
+        ):
             raise ValueError(
-                "partial_approve requires non-empty approved_payload_snapshot"
+                f"{self.decision} requires non-empty approved_payload_snapshot"
             )
         return self
+
+
+class SetReportStatusRequest(BaseModel):
+    """ROB-455 — operator request to transition a report's lifecycle status."""
+
+    report_uuid: UUID
+    status: ReportStatusTransitionLiteral
+    reason: str | None = None
+    actor: str | None = None
 
 
 class WatchInvalidation(BaseModel):

@@ -43,7 +43,13 @@ class KiwoomDomesticAccountClient:
         return await self._client.post_api(
             api_id=constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
             path=ACCOUNT_PATH,
-            body={"stk_cd": str(symbol).strip()},
+            # ROB-460 — kt00010 (get_orderable_cash symbol path) requires
+            # dmst_stex_tp (국내거래소구분), like its sibling kt00018; value "KRX" is
+            # proven by the order endpoints. Mock is KRX-only.
+            body={
+                "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
+                "stk_cd": str(symbol).strip(),
+            },
             cont_yn=cont_yn,
             next_key=next_key,
         )
@@ -59,7 +65,13 @@ class KiwoomDomesticAccountClient:
             path=ACCOUNT_PATH,
             # ROB-418 — kt00018 requires qry_tp; omitting it returns return_code 2
             # (필수입력 파라미터=qry_tp). Value is convention-default, smoke-confirmed.
-            body={"qry_tp": constants.ACCOUNT_BALANCE_QRY_TP_DEFAULT},
+            # ROB-460 — kt00018 ALSO requires dmst_stex_tp (국내거래소구분); 2026-06-09
+            # live returned return_code 2 (필수입력 파라미터=dmst_stex_tp) via
+            # get_positions/get_orderable_cash. Value "KRX" proven by order endpoints.
+            body={
+                "qry_tp": constants.ACCOUNT_BALANCE_QRY_TP_DEFAULT,
+                "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
+            },
             cont_yn=cont_yn,
             next_key=next_key,
         )

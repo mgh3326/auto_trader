@@ -370,6 +370,7 @@ async def get_available_capital_impl(
             exchange_rate = 1300.0
 
     total_orderable_krw = 0.0
+    manual_cash_excluded_krw = 0.0
     processed_accounts: list[dict[str, Any]] = []
 
     for acc in accounts:
@@ -402,12 +403,20 @@ async def get_available_capital_impl(
                 updated_at = manual_setting.get("updated_at")
                 stale_warning = _is_stale_manual_cash(updated_at)
 
+                # ROB-467: stale manual cash is no longer trustworthy as
+                # deployable capital. Keep it visible for transparency, but
+                # exclude it from the orderable total so it is not mistaken
+                # for real ammunition every session.
                 manual_cash_result = {
                     "amount": amount,
                     "updated_at": updated_at,
                     "stale_warning": stale_warning,
+                    "included_in_total": not stale_warning,
                 }
-                total_orderable_krw += amount
+                if stale_warning:
+                    manual_cash_excluded_krw += amount
+                else:
+                    total_orderable_krw += amount
         except Exception as exc:
             logger.warning("Failed to get manual cash setting: %s", exc)
             errors.append({"source": "manual_cash", "error": str(exc)})
@@ -417,6 +426,7 @@ async def get_available_capital_impl(
         "manual_cash": manual_cash_result,
         "summary": {
             "total_orderable_krw": total_orderable_krw,
+            "manual_cash_excluded_krw": manual_cash_excluded_krw,
             "exchange_rate_usd_krw": exchange_rate,
             "as_of": now_kst().isoformat(),
         },

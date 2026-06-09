@@ -51,9 +51,6 @@ from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
-from app.mcp_server.tooling.market_report_registration import (
-    register_market_report_tools,
-)
 from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
@@ -108,7 +105,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # surface.
     register_investment_hermes_tools(mcp)
     register_trade_profile_tools(mcp)
-    register_market_report_tools(mcp)
+    # ROB-447: register_market_report_tools removed — its get_market_reports /
+    # get_latest_market_brief were silently shadowed by register_market_brief_tools
+    # (registered later, default on_duplicate="warn" = last wins). The brief판
+    # (per-symbol AI analysis history) is the operator-observed surface. The report판
+    # SERVICE (app/services/market_report_service.py) stays — it is the n8n write path
+    # + weekly_summary consumer; only its dead MCP tool registration is dropped.
     register_user_settings_tools(mcp)
     register_news_tools(mcp)
     register_market_brief_tools(mcp)

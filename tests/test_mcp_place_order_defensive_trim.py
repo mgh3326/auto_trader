@@ -565,3 +565,29 @@ async def test_flag_on_buy_side_rejected() -> None:
         result["error"]
         == "defensive_trim requires side='sell' (buy orders always use existing path)"
     )
+
+
+def test_kis_live_place_order_documents_defensive_trim_approval_dependency():
+    """ROB-466: the kis_live_place_order schema description must surface that
+    defensive_trim=True requires approval_issue_id, so callers discover the
+    dependency before a runtime rejection (even in dry_run)."""
+    from app.mcp_server.tooling.orders_kis_variants import (
+        register_kis_live_order_tools,
+    )
+
+    captured: dict[str, str] = {}
+
+    class _CaptureMCP:
+        def tool(self, *, name: str, description: str = ""):
+            captured[name] = description
+
+            def _decorator(func):
+                return func
+
+            return _decorator
+
+    register_kis_live_order_tools(_CaptureMCP())
+
+    desc = captured["kis_live_place_order"]
+    assert "defensive_trim" in desc
+    assert "approval_issue_id" in desc

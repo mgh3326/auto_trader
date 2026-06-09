@@ -27,17 +27,18 @@ from app.schemas.investment_reports import (
     InvestmentReportDecideItemResponse,
     InvestmentReportItemDecisionResponse,
     InvestmentReportItemResponse,
-    InvestmentReportListResponse,
     InvestmentReportResponse,
     InvestmentWatchAlertResponse,
     InvestmentWatchEventResponse,
     PreviousReportContextResponse,
     RecordDecisionRequest,
+    SetReportStatusRequest,
 )
 from app.services import market_data as market_data_service
 from app.services.investment_reports.decisions import (
     InvestmentReportDecisionService,
 )
+from app.services.investment_reports.idempotency import kst_date_from_report_key
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
@@ -66,6 +67,7 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_delta_get",
     "investment_report_generate_from_bundle",
     "investment_watch_recommend",
+    "investment_report_set_status",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -111,9 +113,16 @@ GENERATE_FROM_BUNDLE_DESCRIPTION = (
 
 CREATE_DESCRIPTION = (
     "Persist one ROB-265 investment_report bundle (report + items). "
-    "Idempotent on (report_type, market, market_session, account_scope, "
-    "execution_mode, kst_date, generator_version). No broker / order "
-    "submission is performed. "
+    "Idempotent on the 7-tuple (report_type, market, market_session, "
+    "account_scope, execution_mode, kst_date, generator_version) — "
+    "created_by_profile is NOT part of the key, so to mint a new row bump "
+    "generator_version (recommended) or another keyed field, not "
+    "created_by_profile. "
+    "account_scope accepts kis_live | kis_mock | alpaca_paper | upbit_live "
+    "(alpaca_paper IS accepted here; only "
+    "investment_report_generate_from_bundle restricts to the live "
+    "KIS/Upbit pairs and steers paper to the Hermes composition path). "
+    "No broker / order submission is performed. "
     "items[] each require: client_item_key, item_kind (action|watch|risk), "
     "intent (buy_review|sell_review|risk_review|trend_recovery_review|"
     "rebalance_review), rationale. "
@@ -428,22 +437,62 @@ async def investment_report_list_impl(
     status: str | None = None,
     report_type: str | None = None,
     limit: int = 20,
+    offset: int = 0,
 ) -> dict:
+    # ROB-465: the MCP list returns lightweight summaries (uuid/title/status/
+    # kst_date + filter context) instead of full report bodies — full reports
+    # (market_snapshot/portfolio_snapshot/report_metadata) blew the response
+    # token budget (~78k chars for ~20 reports). Detail lives in
+    # investment_report_get. The HTTP router keeps the full
+    # InvestmentReportListResponse contract (unchanged).
     capped = max(1, min(int(limit), 100))
+    eff_offset = max(0, int(offset))
     async with AsyncSessionLocal() as db:
         service = InvestmentReportQueryService(db)
+        # Fetch one extra row to derive has_more without a separate count query.
         rows = await service.list_reports(
             market=market,
             market_session=market_session,
             account_scope=account_scope,
             status=status,
             report_type=report_type,
-            limit=capped,
+            limit=capped + 1,
+            offset=eff_offset,
         )
-        response = InvestmentReportListResponse(
-            reports=[InvestmentReportResponse.model_validate(r) for r in rows]
-        )
-    return {"success": True, **response.model_dump(mode="json", by_alias=True)}
+        has_more = len(rows) > capped
+        page = rows[:capped]
+        summaries = [_report_summary(r) for r in page]
+    next_offset = eff_offset + len(page) if has_more else None
+    return {
+        "success": True,
+        "reports": summaries,
+        "pagination": {
+            "returned_count": len(summaries),
+            "offset": eff_offset,
+            "limit": capped,
+            "has_more": has_more,
+            "next_offset": next_offset,
+        },
+    }
+
+
+def _report_summary(row: Any) -> dict[str, Any]:
+    """ROB-465: lightweight list row — identifiers + filter context, no bodies.
+
+    Read straight off the ORM row (``InvestmentReport``); ``kst_date`` is not a
+    column, so recover it from the idempotency key.
+    """
+    return {
+        "report_uuid": str(row.report_uuid),
+        "report_type": row.report_type,
+        "market": row.market,
+        "market_session": row.market_session,
+        "account_scope": row.account_scope,
+        "title": row.title,
+        "status": row.status,
+        "kst_date": kst_date_from_report_key(row.idempotency_key),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +723,7 @@ async def investment_report_delta_get_impl(
     report_uuid: str,
     near_pct: float = 1.0,
     account_type: str = "live",
+    use_previous_as_baseline: bool = False,
 ) -> dict:
     from app.core.timezone import now_kst
     from app.services.investment_reports.delta_service import DeltaService
@@ -684,6 +734,15 @@ async def investment_report_delta_get_impl(
         return {"success": False, "error": "invalid_report_uuid"}
 
     async with AsyncSessionLocal() as db:
+        # ROB-455 — make previous_report_uuid load-bearing as the delta baseline:
+        # resolve to the report's predecessor when asked (falls back to the report
+        # itself when the chain link is unset).
+        if use_previous_as_baseline:
+            repo = InvestmentReportsRepository(db)
+            report = await repo.get_report_by_uuid(parsed)
+            if report is not None and report.previous_report_uuid is not None:
+                parsed = report.previous_report_uuid
+
         service = DeltaService(db)
         return await service.compute_delta(
             parsed,
@@ -691,6 +750,50 @@ async def investment_report_delta_get_impl(
             account_type=account_type,
             computed_at_kst=now_kst().isoformat(),
         )
+
+
+# ---------------------------------------------------------------------------
+# investment_report_set_status (ROB-455)
+# ---------------------------------------------------------------------------
+async def investment_report_set_status_impl(
+    report_uuid: str,
+    status: str,
+    reason: str | None = None,
+    actor: str | None = None,
+) -> dict:
+    try:
+        request = SetReportStatusRequest.model_validate(
+            {
+                "report_uuid": report_uuid,
+                "status": status,
+                "reason": reason,
+                "actor": actor,
+            }
+        )
+    except ValidationError as exc:
+        return {"success": False, "error": "invalid_request", "detail": str(exc)}
+
+    async with AsyncSessionLocal() as db:
+        service = InvestmentReportIngestionService(db)
+        report = await service.set_report_status(
+            report_uuid=request.report_uuid,
+            status=request.status,
+            reason=request.reason,
+            actor=request.actor,
+        )
+        if report is None:
+            return {
+                "success": False,
+                "error": "not_found",
+                "report_uuid": str(request.report_uuid),
+            }
+        await db.commit()
+        response = InvestmentReportResponse.model_validate(report)
+    return {
+        "success": True,
+        "status": request.status,
+        **response.model_dump(mode="json", by_alias=True),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -891,7 +994,11 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         name="investment_report_list",
         description=(
             "List investment_reports filtered by market / market_session / "
-            "account_scope / status / report_type. limit clamped to 1..100."
+            "account_scope / status / report_type. Returns lightweight summaries "
+            "(report_uuid/title/status/kst_date + filter context) — NOT full "
+            "report bodies; fetch detail via investment_report_get. limit clamped "
+            "to 1..100 (default 20); paginate with offset using "
+            "pagination.next_offset (null when no more)."
         ),
     )(investment_report_list_impl)
     mcp.tool(
@@ -904,10 +1011,15 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
     mcp.tool(
         name="investment_report_decide_item",
         description=(
-            "Record an operator decision on one investment_report_item. "
-            "Idempotent per (item_uuid, verb, actor) by default; pass "
-            "idempotency_key to override. partial_approve requires a "
-            "non-empty approved_payload_snapshot."
+            "Record an operator decision on one investment_report_item. Verbs: "
+            "approve | deny | defer | skip | partial_approve | cancel | reprice "
+            "(ROB-455 order-lifecycle verbs: cancel = withdraw a tranche, "
+            "reprice = adjust levels). Idempotent per (item_uuid, verb, actor) by "
+            "default; pass idempotency_key to override. partial_approve and "
+            "reprice both require a non-empty approved_payload_snapshot (the "
+            "scoped/adjusted params). item.status projection: approve/reprice -> "
+            "approved, deny/cancel -> denied, defer -> deferred, skip -> "
+            "unchanged (the exact verb is preserved in the decision audit row)."
         ),
     )(investment_report_decide_item_impl)
     mcp.tool(
@@ -941,9 +1053,11 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
             "Read-only intraday delta vs a baseline report. Given report_uuid "
             "(the open/prior report), returns three deterministic deltas for Hermes "
             "to compose: levels_delta (journal target/stop touch x live), "
-            "holdings_pnl_delta (per-symbol live P/L vs the baseline snapshot "
-            "bundle's portfolio P/L), and index_delta (live index vs the report's "
-            "frozen market baseline). Per-signal fail-open: a degraded signal is "
+            "holdings_pnl_delta (per-symbol live P/L vs the baseline P/L from the "
+            "snapshot bundle, or the create-time portfolio_snapshot JSON when no "
+            "bundle is present), and index_delta (live index vs the report's "
+            "frozen market_snapshot baseline). Per-signal fail-open: a degraded "
+            "signal is "
             "null with a reason under 'unavailable'; missing data is never coerced "
             "to zero. No broker/order/watch mutation."
         ),
@@ -964,6 +1078,20 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
             "no order is created or submitted."
         ),
     )(investment_watch_recommend_impl)
+    mcp.tool(
+        name="investment_report_set_status",
+        description=(
+            "ROB-455 — transition a report's lifecycle status to superseded | "
+            "decided | expired (draft/published are entry states set at create, "
+            "not transition targets here). Idempotent: setting the current status "
+            "is a no-op success. Records the transition (reason/actor) in "
+            "report_metadata.status_transitions for traceability. Use this to "
+            "mark a report explicitly superseded instead of relying on a "
+            "created_at heuristic — note that chaining a new report via "
+            "previous_report_uuid already auto-supersedes its predecessor. "
+            "No broker / order / watch mutation."
+        ),
+    )(investment_report_set_status_impl)
 
 
 __all__ = [
@@ -976,6 +1104,7 @@ __all__ = [
     "investment_report_generate_from_bundle_impl",
     "investment_report_get_impl",
     "investment_report_list_impl",
+    "investment_report_set_status_impl",
     "investment_watch_recommend_impl",
     "register_investment_report_tools",
 ]

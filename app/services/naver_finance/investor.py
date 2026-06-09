@@ -148,6 +148,23 @@ async def _build_investment_opinions_from_company_list_soup(
     return opinions
 
 
+def _parse_holding_rate(text: str | None) -> float | None:
+    """Foreign holding RATE as a percent in [0, 100] (e.g. '47.73%' → 47.73).
+
+    ROB-448: ``parse_korean_number`` divides by 100 on a trailing '%' (→0.4773), which
+    would mis-scale a holding rate. Strip the '%' and parse the bare number instead.
+    """
+    if not text:
+        return None
+    cleaned = text.replace("%", "").replace(",", "").strip()
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
 async def fetch_investor_trends(code: str, days: int = 20) -> dict[str, Any]:
     """Fetch foreign/institutional investor trading trends.
 
@@ -195,7 +212,10 @@ async def fetch_investor_trends(code: str, days: int = 20) -> dict[str, Any]:
     rows = target_table.select("tr")
     for row in rows:
         cells = row.select("td")
-        # Columns: 날짜(0), 종가(1), 전일비(2), 등락률(3), 거래량(4), 기관(5), 외국인(6)
+        # ROB-448: the 외국인 column is a 2-level header → the data row actually has 9
+        # cells (the old "7 cells" comment was stale). Columns:
+        #   날짜(0), 종가(1), 전일비(2), 등락률(3), 거래량(4), 기관 순매수(5),
+        #   외국인 순매수(6), 외국인 보유주수(7), 외국인 보유율(8)
         if len(cells) < 7:
             continue
 
@@ -217,6 +237,18 @@ async def fetch_investor_trends(code: str, days: int = 20) -> dict[str, Any]:
                     cells[5].get_text(strip=True)
                 ),
                 "foreign_net": _parse_korean_number(cells[6].get_text(strip=True)),
+                # ROB-448: foreign holding shares (count) + rate (%, 0..100). Guarded so
+                # a legacy 7-cell layout degrades to None instead of IndexError.
+                "foreign_holding_shares": (
+                    _parse_korean_number(cells[7].get_text(strip=True))
+                    if len(cells) >= 9
+                    else None
+                ),
+                "foreign_holding_rate": (
+                    _parse_holding_rate(cells[8].get_text(strip=True))
+                    if len(cells) >= 9
+                    else None
+                ),
             }
 
             trends["data"].append(data_point)

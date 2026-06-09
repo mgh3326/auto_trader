@@ -194,9 +194,78 @@ async def test_get_quote_korean_equity(monkeypatch):
     assert result["source"] == "kis"
     assert result["price"] == pytest.approx(105.0)  # price = close
     assert result["open"] == pytest.approx(100.0)
+    # ROB-448: single candle → previous_close is None (never 0, never raise)
+    assert result["previous_close"] is None
     assert called["code"] == "005930"
     assert called["market"] == "J"
-    assert called["n"] == 1
+    assert called["n"] == 2  # ROB-448: 2 candles to surface previous_close
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_tags_premarket_data_state(monkeypatch):
+    """ROB-464: KR get_quote tags data_state so a pre-market prior-close is not
+    mistaken for a live price."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: "premarket_unavailable",
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    assert result["instrument_type"] == "equity_kr"
+    assert result["data_state"] == "premarket_unavailable"
+    # The prior close is still surfaced as price (not dropped) — just flagged.
+    assert result["price"] == pytest.approx(105.0)
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_previous_close(monkeypatch):
+    # ROB-448: with 2 candles, previous_close = the prior trading day's close.
+    tools = build_tools()
+    df = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-01",
+                "open": 98.0,
+                "high": 102.0,
+                "low": 97.0,
+                "close": 100.0,
+                "volume": 900,
+                "value": 90000.0,
+            },
+            {
+                "date": "2024-01-02",
+                "open": 100.0,
+                "high": 110.0,
+                "low": 99.0,
+                "close": 105.0,
+                "volume": 1000,
+                "value": 105000.0,
+            },
+        ]
+    )
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    result = await tools["get_quote"]("005930")
+
+    assert result["price"] == pytest.approx(105.0)  # latest close
+    assert result["previous_close"] == pytest.approx(100.0)  # prior day's close
 
 
 @pytest.mark.asyncio

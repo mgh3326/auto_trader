@@ -24,6 +24,7 @@ from app.mcp_server.tooling.market_data_indicators import (
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
 )
+from app.mcp_server.tooling.market_session import kr_market_data_state
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
 )
@@ -420,15 +421,24 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
     df = await kis.inquire_daily_itemchartprice(
         code=symbol,
         market="J",
-        n=1,
+        n=2,  # ROB-448: 2 candles so we can surface the prior trading day's close
     )
     if df.empty:
         raise ValueError(f"Symbol '{symbol}' not found")
     last = df.iloc[-1].to_dict()
+    # ROB-448: previous trading day's close (mirror the US path). None — never 0, never
+    # raise — when <2 candles (newly listed / sparse history). Consumers derive
+    # %change = (price - previous_close) / previous_close * 100.
+    previous_close: float | None = None
+    if len(df) >= 2:
+        prev_close_raw = df.iloc[-2].to_dict().get("close")
+        if prev_close_raw is not None and not pd.isna(prev_close_raw):
+            previous_close = float(prev_close_raw)
     return {
         "symbol": symbol,
         "instrument_type": "equity_kr",
         "price": last.get("close"),
+        "previous_close": previous_close,
         "open": last.get("open"),
         "high": last.get("high"),
         "low": last.get("low"),
@@ -983,7 +993,12 @@ async def _get_quote_impl(
     try:
         if market_type == "crypto":
             return await _fetch_quote_crypto(symbol)
-        return await _fetch_quote_equity_kr(symbol)
+        # ROB-464: tag the KRX session so a pre-market / closed-session prior
+        # close is not mistaken for a live price. The shared fetcher (used by
+        # orders/portfolio) is left untouched; only the get_quote tool adds this.
+        quote = await _fetch_quote_equity_kr(symbol)
+        quote["data_state"] = kr_market_data_state()
+        return quote
     except Exception as exc:
         return _error_payload_from_exception(
             source=source,

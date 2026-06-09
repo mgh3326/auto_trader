@@ -50,6 +50,9 @@ def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_order_history",
         description=(
+            "[DEPRECATED ROB-447] For KIS equities prefer the typed "
+            "kis_live_get_order_history / kis_mock_get_order_history; generic remains "
+            "for crypto/US. "
             "Get order history for a symbol. Supports Upbit (crypto) and KIS "
             "(KR/US equities). Pending orders can be queried without a symbol, "
             "but filled/cancelled/all queries require symbol. "
@@ -111,6 +114,10 @@ def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="place_order",
         description=(
+            "[DEPRECATED ROB-447] For KIS equities prefer the typed "
+            "kis_live_place_order / kis_mock_place_order (is_mock-hardpinned, "
+            "unambiguous routing); this generic router remains the only surface for "
+            "crypto/US for now. "
             "Place buy/sell LIMIT orders for stocks or crypto. "
             "Supports Upbit (crypto) and KIS (KR/US equities). "
             "Only limit orders are supported via MCP — market orders are not allowed. "
@@ -242,6 +249,9 @@ def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="cancel_order",
         description=(
+            "[DEPRECATED ROB-447] For KIS equities prefer the typed "
+            "kis_live_cancel_order / kis_mock_cancel_order; generic remains for "
+            "crypto/US. "
             "Cancel a pending order. Supports Upbit (crypto) and KIS (KR/US equities). "
             "For KIS US orders, resolves exchange/order details from symbol lookup and order history when possible. "
             "Use account_mode={'kis_live','kis_mock'} to choose KIS routing; "
@@ -288,6 +298,9 @@ def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="modify_order",
         description=(
+            "[DEPRECATED ROB-447] For KIS equities prefer the typed "
+            "kis_live_modify_order / kis_mock_modify_order; generic remains for "
+            "crypto/US. "
             "Modify a pending order (price/quantity). "
             "Supports Upbit (crypto) and KIS (KR/US equities). "
             "dry_run=True by default for safety. "

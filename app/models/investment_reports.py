@@ -406,7 +406,8 @@ class InvestmentReportItemDecision(Base):
             name="uq_investment_report_item_decisions_idempotency_key",
         ),
         CheckConstraint(
-            "decision IN ('approve','deny','defer','skip','partial_approve')",
+            "decision IN ('approve','deny','defer','skip','partial_approve',"
+            "'cancel','reprice')",
             name="ck_investment_report_item_decisions_decision",
         ),
         Index(

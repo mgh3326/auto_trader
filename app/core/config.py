@@ -324,6 +324,11 @@ class Settings(BaseSettings):
     # ROB-204 — Prefect/manual US screener snapshot writes stay dry-run unless explicitly enabled.
     invest_screener_snapshots_commit_enabled: bool = False
 
+    # ROB-449 — get_retail_sentiment live Naver 종목토론 fetch is OFF by default. The source
+    # is a ToS-sensitive UGC surface; the tool returns status="disabled" until an operator
+    # explicitly enables it after a ToS/endpoint review. Aggregate counts only (never raw text).
+    retail_sentiment_live_enabled: bool = False
+
     # ROB-281 — Gates cron registration for KR/US screener snapshot scheduled refreshes.
     # When False, scheduled tasks remain defined as broker tasks (so operators can still
     # kick them manually via ``taskiq kick``) but no cron entries are registered. Pairs

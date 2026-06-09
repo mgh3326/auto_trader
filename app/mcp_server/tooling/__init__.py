@@ -19,17 +19,18 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+# ROB-447: MARKET_REPORT_TOOL_NAMES / register_market_report_tools removed — the
+# report판 MCP tools were dead (shadowed by the brief판). The report판 SERVICE
+# (app/services/market_report_service.py) stays for the n8n write path + weekly_summary.
 __all__ = [
     "INVESTMENT_HERMES_TOOL_NAMES",
     "INVESTMENT_SNAPSHOTS_TOOL_NAMES",
-    "MARKET_REPORT_TOOL_NAMES",
     "TRADE_PROFILE_TOOL_NAMES",
     "NEWS_TOOL_NAMES",
     "TRADE_JOURNAL_TOOL_NAMES",
     "register_all_tools",
     "register_investment_hermes_tools",
     "register_investment_snapshots_tools",
-    "register_market_report_tools",
     "register_trade_journal_tools",
     "register_trade_profile_tools",
     "register_news_tools",
@@ -51,14 +52,6 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "register_investment_snapshots_tools": (
         "app.mcp_server.tooling.investment_snapshots_registration",
         "register_investment_snapshots_tools",
-    ),
-    "MARKET_REPORT_TOOL_NAMES": (
-        "app.mcp_server.tooling.market_report_registration",
-        "MARKET_REPORT_TOOL_NAMES",
-    ),
-    "register_market_report_tools": (
-        "app.mcp_server.tooling.market_report_registration",
-        "register_market_report_tools",
     ),
     "NEWS_TOOL_NAMES": (
         "app.mcp_server.tooling.news_registration",

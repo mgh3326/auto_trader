@@ -1389,7 +1389,10 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "Converts USD orderable cash to KRW and can optionally exclude "
             "manual cash. Manual cash is stored via set_user_setting/"
             "get_user_setting with key='manual_cash'; it is not added for "
-            "paper account queries. "
+            "paper account queries. Stale manual cash (older than 3 days) is "
+            "flagged stale_warning=true, marked included_in_total=false, and "
+            "excluded from summary.total_orderable_krw (its amount is surfaced "
+            "as summary.manual_cash_excluded_krw); refresh it to count again. "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings."
         ),

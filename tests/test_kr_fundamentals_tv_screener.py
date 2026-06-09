@@ -304,7 +304,8 @@ async def test_earnings_increase_streak_skipped_and_warned(db_session):
             _snap(
                 sym,
                 market_cap=Decimal("4000000000000"),
-                dividend_yield=Decimal("0.04"),  # >= 0.03
+                # ROB-444: tvscreener dividend_yield is PERCENT (4.0 = 4% >= 3%).
+                dividend_yield=Decimal("4.0"),
                 payout_ratio_ttm=Decimal("40"),  # >= 30
                 continuous_dividend_payout=Decimal("5"),  # >= 3
                 # NOTE: no earnings-increase-streak column exists; must be skipped.
@@ -330,7 +331,7 @@ async def test_steady_dividend_fail_closed_on_null_payout(db_session):
             _snap(
                 sym,
                 market_cap=Decimal("3000000000000"),
-                dividend_yield=Decimal("0.05"),
+                dividend_yield=Decimal("5.0"),  # ROB-444: percent (5% >= 3%)
                 payout_ratio_ttm=None,  # required → fail-closed
                 continuous_dividend_payout=Decimal("10"),
             )
@@ -354,14 +355,14 @@ async def test_future_dividend_king_growth_streak_and_payout(db_session):
             _snap(
                 sym_pass,
                 market_cap=Decimal("4000000000000"),
-                dividend_yield=Decimal("0.02"),  # >= 0.01
+                dividend_yield=Decimal("2.0"),  # ROB-444: percent (2% >= 1%)
                 payout_ratio_ttm=Decimal("35"),  # >= 30
                 continuous_dividend_growth=Decimal("5"),  # >= 3
             ),
             _snap(
                 sym_low_streak,
                 market_cap=Decimal("3500000000000"),
-                dividend_yield=Decimal("0.02"),
+                dividend_yield=Decimal("2.0"),  # ROB-444: percent
                 payout_ratio_ttm=Decimal("50"),
                 continuous_dividend_growth=Decimal("1"),  # < 3 → excluded
             ),
@@ -976,3 +977,79 @@ async def test_undervalued_breakout_sorts_by_per_ascending(db_session):
     assert result is not None
     # PER ascending: 4 before 9 (even though sym_low_per has the smaller market cap).
     assert [r["symbol"] for r in result.rows] == [sym_low_per, sym_high_per]
+
+
+async def test_steady_dividend_excludes_sub_threshold_percent_yield(db_session):
+    """ROB-444: tvscreener dividend_yield is PERCENT. min_dividend_yield=0.03 (ratio,
+    3%) must exclude a 0.48% symbol and include a 6.32% one. Pre-fix, the raw compare
+    (0.48 < 0.03 = False) wrongly let sub-3% yields through."""
+    await _cleanup(db_session)
+    sym_low = f"{_PREFIX}50"  # 0.48% → below 3% → excluded
+    sym_ok = f"{_PREFIX}51"  # 6.32% → above 3% → included
+    await _seed(
+        db_session,
+        [
+            _snap(
+                sym_low,
+                market_cap=Decimal("4000000000000"),
+                dividend_yield=Decimal("0.48"),  # percent → 0.48% < 3%
+                payout_ratio_ttm=Decimal("40"),
+                continuous_dividend_payout=Decimal("5"),
+            ),
+            _snap(
+                sym_ok,
+                market_cap=Decimal("4000000000000"),
+                dividend_yield=Decimal("6.32"),  # percent → 6.32% >= 3%
+                payout_ratio_ttm=Decimal("40"),
+                continuous_dividend_payout=Decimal("5"),
+            ),
+        ],
+        [_universe(sym_low, "저배당"), _universe(sym_ok, "고배당")],
+    )
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session, market="kr", spec=STEADY_DIVIDEND_SPEC, limit=20, now=_now
+    )
+    assert result is not None
+    syms = [r["symbol"] for r in result.rows]
+    assert sym_ok in syms
+    assert sym_low not in syms  # ROB-444: sub-3% no longer leaks through
+    await _cleanup(db_session)
+
+
+def test_dividend_dart_first_recovers_when_tvscreener_payout_sparse():
+    """ROB-444 PR2: tvscreener payout_ratio_ttm is ~2.6% sparse (binding constraint).
+    DART-first payout/streak recovers a symbol whose tvscreener payout/streak are NULL
+    but whose DART derive has them. dart=None → fail-closed (no fabrication)."""
+    from types import SimpleNamespace
+
+    from app.services.financial_fundamentals_snapshots.derive import MetricResult
+    from app.services.invest_view_model.kr_fundamentals_tv_screener import (
+        _passes_thresholds,
+    )
+
+    snap = _snap(
+        f"{_PREFIX}60",
+        market_cap=Decimal("4000000000000"),
+        dividend_yield=Decimal("6.0"),  # percent → 0.06 >= 0.03 (PR1)
+        payout_ratio_ttm=None,  # tvscreener sparse
+        continuous_dividend_payout=None,  # tvscreener sparse
+    )
+    dart = SimpleNamespace(
+        payout_ratio=MetricResult(
+            value=Decimal("40"), state="ok"
+        ),  # 현금배당성향 % (>=30)
+        dividend_paid_streak_years=MetricResult(value=Decimal("5"), state="ok"),  # >=3
+        earnings_increase_streak_years=MetricResult(value=Decimal("4"), state="ok"),
+    )
+
+    ok, reason, prov = _passes_thresholds(
+        snap, STEADY_DIVIDEND_SPEC, partition_date=_SD, dart=dart
+    )
+    assert ok is True, reason  # DART recovered payout + streak
+    assert prov["dividend_source"] == "dart"
+
+    # dart=None → tvscreener payout/streak NULL → fail-closed (not fabricated)
+    ok2, reason2, _ = _passes_thresholds(
+        snap, STEADY_DIVIDEND_SPEC, partition_date=_SD, dart=None
+    )
+    assert ok2 is False and "payout_ratio" in (reason2 or "")

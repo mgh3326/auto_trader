@@ -224,3 +224,96 @@ async def test_get_available_capital_toss_filter_uses_manual_cash_path(monkeypat
         call in (None, "toss") for call in cash_balance_calls
     )
     assert result["manual_cash"]["amount"] == 5000000
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_excludes_stale_manual_cash_from_total(monkeypatch):
+    """Stale manual cash is excluded from total_orderable_krw and reported separately (ROB-467)."""
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        return {
+            "accounts": [
+                {
+                    "account": "kis_domestic",
+                    "currency": "KRW",
+                    "orderable": 1000000.0,
+                },
+            ],
+            "summary": {"total_krw": 1000000.0, "total_usd": 0.0},
+            "errors": [],
+        }
+
+    stale_date = datetime.now(UTC) - timedelta(days=70)
+
+    async def mock_get_manual_cash_setting():
+        return {
+            "key": "manual_cash",
+            "value": {"amount": 10000000},
+            "updated_at": stale_date.isoformat(),
+        }
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(portfolio_cash, "get_usd_krw_rate", lambda: 1300.0)
+    monkeypatch.setattr(
+        portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl()
+
+    # Stale manual cash stays visible for transparency...
+    assert result["manual_cash"]["amount"] == 10000000
+    assert result["manual_cash"]["stale_warning"] is True
+    # ...but is flagged as excluded and removed from the orderable total.
+    assert result["manual_cash"]["included_in_total"] is False
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(1000000.0)
+    assert result["summary"]["manual_cash_excluded_krw"] == pytest.approx(10000000.0)
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_includes_fresh_manual_cash_in_total(monkeypatch):
+    """Fresh manual cash is included in total with included_in_total=True and zero excluded (ROB-467)."""
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        return {
+            "accounts": [
+                {
+                    "account": "kis_domestic",
+                    "currency": "KRW",
+                    "orderable": 1000000.0,
+                },
+            ],
+            "summary": {"total_krw": 1000000.0, "total_usd": 0.0},
+            "errors": [],
+        }
+
+    async def mock_get_manual_cash_setting():
+        return {
+            "key": "manual_cash",
+            "value": {"amount": 5000000},
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(portfolio_cash, "get_usd_krw_rate", lambda: 1300.0)
+    monkeypatch.setattr(
+        portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl()
+
+    assert result["manual_cash"]["stale_warning"] is False
+    assert result["manual_cash"]["included_in_total"] is True
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(6000000.0)
+    assert result["summary"]["manual_cash_excluded_krw"] == pytest.approx(0.0)
