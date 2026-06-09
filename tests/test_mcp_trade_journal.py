@@ -504,22 +504,22 @@ class TestGetTradeJournalAccountType:
     """get_trade_journal account_type 필터 테스트."""
 
     @pytest.mark.asyncio
-    async def test_default_returns_live_only(self, monkeypatch) -> None:
-        """기본 account_type='live' — 기존 동작 유지."""
-        live_journal = TradeJournal(
+    async def test_default_does_not_filter_account_type(self, monkeypatch) -> None:
+        """ROB-474: 기본 account_type=None — account_type WHERE 미적용(live/paper/mock 모두 반환)."""
+        mock_journal = TradeJournal(
             symbol="005930",
             instrument_type=InstrumentType.equity_kr,
-            thesis="Live",
-            account_type="live",
+            thesis="Mock",
+            account_type="mock",
             status="active",
         )
-        live_journal.id = 1
-        live_journal.created_at = now_kst()
-        live_journal.updated_at = now_kst()
+        mock_journal.id = 1
+        mock_journal.created_at = now_kst()
+        mock_journal.updated_at = now_kst()
 
         mock_session = AsyncMock()
         mock_scalars = MagicMock()
-        mock_scalars.all.return_value = [live_journal]
+        mock_scalars.all.return_value = [mock_journal]
         mock_result = MagicMock()
         mock_result.scalars.return_value = mock_scalars
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -535,8 +535,16 @@ class TestGetTradeJournalAccountType:
 
         result = await get_trade_journal()
         assert result["success"] is True
-        assert len(result["entries"]) == 1
-        assert result["entries"][0]["account_type"] == "live"
+        # Default no longer pins account_type='live' — a mock row surfaces.
+        assert result["entries"][0]["account_type"] == "mock"
+        # And the executed SELECT carries no account_type predicate when omitted.
+        executed_stmt = mock_session.execute.await_args.args[0]
+        where = (
+            str(executed_stmt.whereclause)
+            if executed_stmt.whereclause is not None
+            else ""
+        )
+        assert "account_type" not in where
 
     @pytest.mark.asyncio
     async def test_filter_by_account_name(self, monkeypatch) -> None:

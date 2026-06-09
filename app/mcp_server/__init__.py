@@ -56,6 +56,9 @@ AVAILABLE_TOOL_NAMES = [
     "get_asset_profile",
     "set_asset_profile",
     "get_mock_loop_retrospective",
+    "save_trade_retrospective",
+    "get_trade_retrospectives",
+    "get_retrospective_aggregate",
 ]
 
 
