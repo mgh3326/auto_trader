@@ -9,6 +9,7 @@ from app.services.investment_reports.delta_service import (
     DeltaService,
     _baseline_indices,
     _baseline_pnl_from_bundle_pairs,
+    _baseline_pnl_from_portfolio_snapshot,
     _holdings_pnl_delta,
     _index_delta,
     _levels_delta,
@@ -117,6 +118,25 @@ def test_baseline_pnl_from_bundle_pairs_reads_portfolio_holdings():
 def test_baseline_pnl_from_bundle_pairs_none_when_no_portfolio_kind():
     pairs = [(object(), _snap("market", {"indices": {}}))]
     assert _baseline_pnl_from_bundle_pairs(pairs) is None
+
+
+def test_baseline_pnl_from_portfolio_snapshot_reads_holdings():
+    # ROB-456: lightweight create-time report.portfolio_snapshot JSON column.
+    snap = {
+        "holdings": [
+            {"ticker": "AAPL", "pnl_rate": 3.1},
+            {"ticker": "MSFT", "pnl_rate": -2.0},
+            {"ticker": "NOPNL"},  # missing pnl_rate -> skipped, not fabricated
+        ]
+    }
+    assert _baseline_pnl_from_portfolio_snapshot(snap) == {"AAPL": 3.1, "MSFT": -2.0}
+
+
+def test_baseline_pnl_from_portfolio_snapshot_none_when_empty():
+    # The column's un-populated default ({}) must yield absent (missing != zero).
+    assert _baseline_pnl_from_portfolio_snapshot({}) is None
+    assert _baseline_pnl_from_portfolio_snapshot({"holdings": []}) is None
+    assert _baseline_pnl_from_portfolio_snapshot(None) is None
 
 
 def test_holdings_pnl_delta_joins_baseline_and_live_missing_not_zero():

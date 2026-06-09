@@ -86,6 +86,24 @@ def _levels_delta(
     }
 
 
+def _parse_holdings_pnl(holdings: Any) -> dict[str, float]:
+    """Parse a ``holdings`` list into ``{ticker: pnl_rate}`` (the single source of
+    shape truth shared by the bundle path and the create-time JSON path).
+
+    Holdings without a finite ``pnl_rate`` are skipped (missing != zero). Always
+    returns a dict (possibly empty); the caller decides absent-vs-empty.
+    """
+    out: dict[str, float] = {}
+    for holding in holdings or []:
+        if not isinstance(holding, Mapping):
+            continue
+        ticker = holding.get("ticker")
+        rate = holding.get("pnl_rate")
+        if ticker is not None and _is_finite_number(rate):
+            out[str(ticker)] = float(rate)
+    return out
+
+
 def _baseline_pnl_from_bundle_pairs(
     pairs: list[tuple[Any, Any]],
 ) -> dict[str, float] | None:
@@ -93,20 +111,32 @@ def _baseline_pnl_from_bundle_pairs(
 
     Returns ``None`` when no ``portfolio`` snapshot is present (so the caller can
     record ``baseline_snapshot_absent`` rather than fabricating an empty baseline).
-    Holdings without a finite ``pnl_rate`` are skipped (missing != zero).
     """
     for _item, snapshot in pairs:
         if getattr(snapshot, "snapshot_kind", None) != "portfolio":
             continue
         payload = getattr(snapshot, "payload_json", None) or {}
-        out: dict[str, float] = {}
-        for holding in payload.get("holdings") or []:
-            ticker = holding.get("ticker")
-            rate = holding.get("pnl_rate")
-            if ticker is not None and _is_finite_number(rate):
-                out[str(ticker)] = float(rate)
-        return out
+        return _parse_holdings_pnl(payload.get("holdings"))
     return None
+
+
+def _baseline_pnl_from_portfolio_snapshot(
+    portfolio_snapshot: Any,
+) -> dict[str, float] | None:
+    """ROB-456 — derive ``{ticker: pnl_rate}`` from the lightweight create-time
+    ``report.portfolio_snapshot`` JSON column.
+
+    Returns ``None`` when no usable ``holdings`` list is present, so the column's
+    un-populated default (``{}``) still yields ``baseline_snapshot_absent`` rather
+    than a fabricated empty baseline (missing != zero). Expects the SAME shape as
+    the bundle path: ``holdings[].ticker`` / ``holdings[].pnl_rate``.
+    """
+    if not isinstance(portfolio_snapshot, Mapping):
+        return None
+    holdings = portfolio_snapshot.get("holdings")
+    if not isinstance(holdings, list) or not holdings:
+        return None
+    return _parse_holdings_pnl(holdings)
 
 
 def _live_pnl_by_symbol(holdings_result: Mapping[str, Any]) -> dict[str, float]:
@@ -329,6 +359,14 @@ class DeltaService:
                     snapshot_bundle.id
                 )
                 baseline_pnl = _baseline_pnl_from_bundle_pairs(pairs)
+        if baseline_pnl is None:
+            # ROB-456 — fall back to the lightweight create-time JSON column when
+            # the heavy bundle is absent (or carried no portfolio snapshot), so a
+            # report created with portfolio_snapshot={holdings:[...]} still yields
+            # a P/L baseline. index_delta already reads report.market_snapshot.
+            baseline_pnl = _baseline_pnl_from_portfolio_snapshot(
+                getattr(report, "portfolio_snapshot", None)
+            )
         return {
             "market": report.market,
             "symbols": symbols,
