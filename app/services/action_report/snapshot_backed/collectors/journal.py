@@ -7,10 +7,13 @@ the only allowed write path, and is intentionally not imported here.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.models.trade_journal import TradeJournal
 from app.models.trading import InstrumentType
@@ -73,8 +76,29 @@ class JournalSnapshotCollector:
             .limit(self._recent_limit)
         )
 
-        active_rows = (await self._session.execute(active_stmt)).scalars().all()
-        recent_rows = (await self._session.execute(recent_stmt)).scalars().all()
+        try:
+            active_rows = (await self._session.execute(active_stmt)).scalars().all()
+            recent_rows = (await self._session.execute(recent_stmt)).scalars().all()
+        except Exception:  # defensive — surface as collector unavailable, never crash
+            logger.exception("journal collector query failed")
+            return [
+                build_result(
+                    snapshot_kind=self.snapshot_kind,
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    payload={
+                        "active": [], "recent_retrospective": [],
+                        "active_count": 0, "retrospective_count": 0,
+                        "recent_limit": self._recent_limit,
+                        "collector_status": "unavailable",
+                        "error": "journal_query_failed",
+                    },
+                    origin="auto_trader_db",
+                    as_of=now,
+                    freshness_status="unavailable",
+                    errors={"reason": "journal_query_failed"},
+                )
+            ]
 
         payload: dict[str, Any] = {
             "active": [_journal_to_dict(j) for j in active_rows],
@@ -82,6 +106,7 @@ class JournalSnapshotCollector:
             "active_count": len(active_rows),
             "retrospective_count": len(recent_rows),
             "recent_limit": self._recent_limit,
+            "collector_status": "ok",
         }
 
         return [

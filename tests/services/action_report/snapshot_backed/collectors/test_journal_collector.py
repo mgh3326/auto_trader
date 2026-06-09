@@ -60,3 +60,27 @@ async def test_us_scope_includes_legacy_null_account_kis_us(db_session):
     results = await collector.collect(_req("us"))
     active_syms = {e["symbol"] for e in results[0].payload_json["active"]}
     assert "MSFT" in active_syms
+
+
+@pytest.mark.asyncio
+async def test_empty_active_reports_ok_status(db_session):
+    collector = JournalSnapshotCollector(db_session)
+    results = await collector.collect(_req("us"))
+    payload = results[0].payload_json
+    assert payload["active"] == []
+    assert payload["collector_status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_query_failure_reports_unavailable(monkeypatch, db_session):
+    collector = JournalSnapshotCollector(db_session)
+
+    async def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db_session, "execute", _boom)
+    results = await collector.collect(_req("us"))
+    payload = results[0].payload_json
+    assert payload["collector_status"] == "unavailable"
+    assert results[0].freshness_status == "unavailable"
+

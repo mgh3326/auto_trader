@@ -137,7 +137,13 @@ class PortfolioJournalStage:
                 )
             )
 
-        missing_data = [] if journal_snaps else ["journal"]
+        def _journal_collector_status(snap: Any) -> str | None:
+            return (getattr(snap, "payload_json", None) or {}).get("collector_status")
+
+        journal_unavailable = (not journal_snaps) or any(
+            _journal_collector_status(s) == "unavailable" for s in journal_snaps
+        )
+        missing_data = ["journal"] if journal_unavailable else []
         key_points = [e.get("thesis", "") for e in entries[:5] if e.get("thesis")]
         # ROB-392 — surface the NAV scope label (byte-identical summary stays
         # unchanged; the label rides only in key_points).
