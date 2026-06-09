@@ -386,9 +386,7 @@ async def test_set_report_status_transitions_and_is_idempotent(
     assert transitions[-1]["actor"] == "operator"
 
     # Idempotent: setting the same status again is a no-op success.
-    again = await service.set_report_status(
-        report_uuid=a.report_uuid, status="decided"
-    )
+    again = await service.set_report_status(report_uuid=a.report_uuid, status="decided")
     assert again is not None and again.status == "decided"
 
     # Unknown report -> None (caller surfaces not_found).

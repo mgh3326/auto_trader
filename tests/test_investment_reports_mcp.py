@@ -824,9 +824,7 @@ async def test_delta_get_resolves_previous_report_as_baseline(
     # ROB-455 — when use_previous_as_baseline=True, the delta baseline resolves to
     # the report's previous_report_uuid (the report it chains from).
     a_uuid = await _create_report(kst_date="2026-05-18")
-    b_uuid = await _create_report(
-        kst_date="2026-05-19", previous_report_uuid=a_uuid
-    )
+    b_uuid = await _create_report(kst_date="2026-05-19", previous_report_uuid=a_uuid)
 
     captured: dict[str, str] = {}
 
