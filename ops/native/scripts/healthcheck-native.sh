@@ -51,9 +51,12 @@ if ! curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null; then
   rc=1
 fi
 
-code=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Accept: text/event-stream' "http://127.0.0.1:${MCP_PORT}/mcp" || true)
-if [[ "$code" != "401" && "$code" != "400" ]]; then
-  echo "mcp unexpected status at :${MCP_PORT}: $code" >&2
+# ROB-469: probe the unauthenticated, dependency-free /health route (200) instead
+# of the auth-gated /mcp (401/400). A 200 proves the event loop is responsive — a
+# wedged loop stops answering /health.
+code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${MCP_PORT}/health" || true)
+if [[ "$code" != "200" ]]; then
+  echo "mcp health failed at :${MCP_PORT}: $code" >&2
   rc=1
 fi
 

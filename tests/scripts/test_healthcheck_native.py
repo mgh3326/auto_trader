@@ -68,7 +68,7 @@ def _common_env(tmp_path: Path, bin_dir: Path) -> dict[str, str]:
 
 
 def test_default_mode_probes_stable_ports(tmp_path: Path) -> None:
-    bin_dir = _build_curl_stub(tmp_path, {8000: 200, 8765: 401})
+    bin_dir = _build_curl_stub(tmp_path, {8000: 200, 8765: 200})
     env = _common_env(tmp_path, bin_dir)
     proc = subprocess.run(
         ["bash", str(HC)], check=False, capture_output=True, text=True, env=env
@@ -77,7 +77,7 @@ def test_default_mode_probes_stable_ports(tmp_path: Path) -> None:
 
 
 def test_direct_blue_probes_8001_and_8766(tmp_path: Path) -> None:
-    bin_dir = _build_curl_stub(tmp_path, {8001: 200, 8766: 401})
+    bin_dir = _build_curl_stub(tmp_path, {8001: 200, 8766: 200})
     env = _common_env(tmp_path, bin_dir)
     proc = subprocess.run(
         ["bash", str(HC), "--direct", "blue"],
@@ -90,7 +90,7 @@ def test_direct_blue_probes_8001_and_8766(tmp_path: Path) -> None:
 
 
 def test_direct_green_probes_8002_and_8767(tmp_path: Path) -> None:
-    bin_dir = _build_curl_stub(tmp_path, {8002: 200, 8767: 400})
+    bin_dir = _build_curl_stub(tmp_path, {8002: 200, 8767: 200})
     env = _common_env(tmp_path, bin_dir)
     proc = subprocess.run(
         ["bash", str(HC), "--direct", "green"],
@@ -130,7 +130,7 @@ def test_unknown_arg_rejected(tmp_path: Path) -> None:
 
 
 def test_default_mode_fails_when_api_down(tmp_path: Path) -> None:
-    bin_dir = _build_curl_stub(tmp_path, {8000: 500, 8765: 401})
+    bin_dir = _build_curl_stub(tmp_path, {8000: 500, 8765: 200})
     env = _common_env(tmp_path, bin_dir)
     proc = subprocess.run(
         ["bash", str(HC)], check=False, capture_output=True, text=True, env=env

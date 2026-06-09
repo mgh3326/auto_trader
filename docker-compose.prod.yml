@@ -101,6 +101,14 @@ services:
     restart: unless-stopped
     network_mode: host
     command: ["python", "-m", "app.mcp_server.main"]
+    healthcheck:
+      # ROB-469: L7 probe of the unauthenticated /health route. A TCP-connect
+      # check would pass even on a wedged loop; /health proves responsiveness.
+      test: [ "CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5).status == 200 else 1)" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     deploy:
       resources:
         limits:

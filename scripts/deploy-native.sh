@@ -178,9 +178,10 @@ run_healthcheck_once() {
     rc=1
   }
 
-  code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Accept: text/event-stream' http://127.0.0.1:8765/mcp || true)"
-  if [[ "$code" != "401" && "$code" != "400" ]]; then
-    echo "MCP unexpected status: $code" >&2
+  # ROB-469: probe unauthenticated /health (200) instead of auth-gated /mcp.
+  code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/health || true)"
+  if [[ "$code" != "200" ]]; then
+    echo "MCP health failed: $code" >&2
     rc=1
   fi
 
