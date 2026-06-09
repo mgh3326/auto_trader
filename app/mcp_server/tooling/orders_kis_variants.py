@@ -395,6 +395,12 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "(ROB-463) and currently fail closed with an explicit error (no live "
             "order, even in dry_run); leave them unset for normal day orders. "
             "report item에서 비롯된 주문이면 investment_report_get의 item_uuid를 report_item_uuid로 넘겨 감사 링크(ROB-473). "
+            "Fills are NOT recorded at send time; run "
+            "kis_live_reconcile_orders (or enable the operator-gated "
+            "kis_live.reconcile_periodic task, ROB-475) to book "
+            "fill/journal/realized_pnl. reconcile is the LOCAL bookkeeping "
+            "layer; the live-account truth is get_holdings / "
+            "get_available_capital. "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
@@ -561,7 +567,14 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "order-id-keyed broker fill evidence (inquire_daily_order_domestic). "
             "Books fills/journals/realized_pnl ONLY from confirmed fills; marks "
             "unfilled/cancelled orders without journal side-effects. "
-            "dry_run=True by default for safety. KR domestic only."
+            "Stale unfilled day orders are resolved to 'expired' once the "
+            "KRX session has closed (fail-closed: a live broker status keeps "
+            "them pending in case of NXT carryover). "
+            "dry_run=True by default for safety. KR domestic only. "
+            "This is the LOCAL bookkeeping layer (trade/journal/"
+            "realized_pnl); the live-account truth is get_holdings / "
+            "get_available_capital. An operator-gated periodic auto-"
+            "reconcile task exists (kis_live.reconcile_periodic, ROB-475)."
         ),
     )
     async def kis_live_reconcile_orders(

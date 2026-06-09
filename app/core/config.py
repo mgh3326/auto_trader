@@ -490,6 +490,10 @@ class Settings(BaseSettings):
     # periodic taskiq task returns paused until an operator flips these.
     KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED: bool = False
     KIS_MOCK_RECONCILE_PERIODIC_ENABLED: bool = False
+
+    # ROB-475 — paused periodic auto-reconcile for KIS live KR orders.
+    # Default off; operator flips + adds cron in robin-prefect-automations.
+    KIS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
     # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
     # (no real mock orders) until an operator flips this.
     WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False

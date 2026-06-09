@@ -782,3 +782,95 @@ class TradeJournalCounterfactual(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class TradeRetrospective(Base):
+    """ROB-474 — structured trade retrospective (outcome + lesson + next strategy).
+
+    Journal-side typed home for retro outcome so investment_report_items keeps its
+    'no execution state on items' invariant. correlation_id is the idempotency key
+    (NULL => ad-hoc append; set => upsert). journal_id uses SET NULL: a retro is a
+    durable learning record that should survive journal deletion (deliberate
+    deviation from the CASCADE used by sibling review tables).
+    """
+
+    __tablename__ = "trade_retrospectives"
+    __table_args__ = (
+        UniqueConstraint(
+            "correlation_id", name="uq_trade_retrospectives_correlation_id"
+        ),
+        CheckConstraint(
+            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','alpaca_paper','upbit_live')",
+            name="ck_trade_retrospectives_account_mode",
+        ),
+        CheckConstraint(
+            "outcome IN ('filled','partially_filled','unfilled','rejected','cancelled')",
+            name="ck_trade_retrospectives_outcome",
+        ),
+        CheckConstraint(
+            "side IS NULL OR side IN ('buy','sell')",
+            name="ck_trade_retrospectives_side",
+        ),
+        CheckConstraint(
+            "realized_pnl_currency IS NULL OR realized_pnl_currency IN ('KRW','USD')",
+            name="ck_trade_retrospectives_currency",
+        ),
+        CheckConstraint(
+            "realized_pnl_source IS NULL OR "
+            "realized_pnl_source IN ('caller_supplied','derived_from_journal')",
+            name="ck_trade_retrospectives_pnl_source",
+        ),
+        Index("ix_trade_retrospectives_correlation_id", "correlation_id"),
+        Index("ix_trade_retrospectives_journal_id", "journal_id"),
+        Index("ix_trade_retrospectives_strategy_key", "strategy_key"),
+        Index("ix_trade_retrospectives_symbol", "symbol"),
+        Index("ix_trade_retrospectives_report_uuid", "report_uuid"),
+        Index(
+            "ix_trade_retrospectives_account_mode_created",
+            "account_mode",
+            "created_at",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("review.trade_journals.id", ondelete="SET NULL")
+    )
+    report_uuid: Mapped[str | None] = mapped_column(Text)
+    report_item_uuid: Mapped[str | None] = mapped_column(Text)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[InstrumentType] = mapped_column(
+        Enum(InstrumentType, name="instrument_type", create_type=False),
+        nullable=False,
+    )
+    side: Mapped[str | None] = mapped_column(Text)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str | None] = mapped_column(Text)
+    strategy_key: Mapped[str | None] = mapped_column(Text)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    realized_pnl_currency: Mapped[str | None] = mapped_column(Text)
+    realized_pnl_source: Mapped[str | None] = mapped_column(Text)
+    pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    fill_evidence_available: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    rationale: Mapped[str | None] = mapped_column(Text)
+    result_summary: Mapped[str | None] = mapped_column(Text)
+    lesson: Mapped[str | None] = mapped_column(Text)
+    next_strategy: Mapped[str | None] = mapped_column(Text)
+    evidence_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    created_by_profile: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

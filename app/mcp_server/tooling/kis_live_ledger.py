@@ -19,6 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.market_session import (
+    DATA_STATE_MARKET_CLOSED,
+    kr_market_data_state,
+)
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
@@ -28,6 +32,7 @@ from app.mcp_server.tooling.order_journal import (
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISLiveOrderLedger
+from app.services.brokers.kis.live_order_expiry import classify_day_order_expiry
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
@@ -42,6 +47,7 @@ _STATUS_TO_LIFECYCLE: dict[str, str] = {
     "partial": "partial",
     "pending": "accepted",
     "cancelled": "cancelled",
+    "expired": "cancelled",  # ROB-476 — terminal, no journal side-effect
     "anomaly": "anomaly",
 }
 
@@ -155,6 +161,31 @@ async def _save_kis_live_order_ledger(
         return None
 
 
+_BROKER_EXCHANGE_KEYS = ("EXCG_ID_DVSN_CD", "excg_id_dvsn_cd", "exg_id_dvsn_cd")
+
+
+def _expected_krx_expiry(now: datetime.datetime) -> str | None:
+    """KRX day-order expiry = 15:30 KST of the send date (ISO 8601), or None."""
+    try:
+        kst = datetime.timezone(datetime.timedelta(hours=9))
+        local = now.astimezone(kst)
+        close = local.replace(hour=15, minute=30, second=0, microsecond=0)
+        return close.isoformat()
+    except (ValueError, OverflowError):
+        return None
+
+
+def _extract_broker_exchange(execution_result: dict[str, Any]) -> str | None:
+    """Read the broker-reported exchange factually; None if absent (no fabrication)."""
+    output = execution_result.get("output") or {}
+    for source in (execution_result, output):
+        for key in _BROKER_EXCHANGE_KEYS:
+            val = source.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+    return None
+
+
 async def _record_kis_live_order(
     *,
     normalized_symbol: str,
@@ -238,6 +269,13 @@ async def _record_kis_live_order(
         "response_message": msg,
         "fill_recorded": False,
         "journal_created": False,
+        "order_validity": "day",
+        "routing": {
+            "requested_venue": "auto",
+            "note": "SOR auto-route (KRX; NXT-eligible)",
+        },
+        "expected_expiry": _expected_krx_expiry(now_kst()),
+        "broker_exchange": _extract_broker_exchange(execution_result),
         "message": (
             "KIS live order accepted (pending fill); run kis_live_reconcile_orders "
             "to record fill/journal once the broker confirms execution"
@@ -436,6 +474,16 @@ async def _reconcile_one_ledger_row(
     }
 
     if evidence.verdict == FillVerdict.PENDING:
+        market_closed = kr_market_data_state() == DATA_STATE_MARKET_CLOSED
+        expiry = classify_day_order_expiry(
+            rows=rows, order_no=order_no, market_closed=market_closed
+        )
+        if expiry == "expired":
+            base["verdict"] = "expired"
+            base["action"] = "marked_expired" if not dry_run else "would_mark_expired"
+            if not dry_run:
+                await _update_ledger_outcome(ledger_id=row.id, status="expired")
+            return base
         base["action"] = "noop_pending"
         return base
 
