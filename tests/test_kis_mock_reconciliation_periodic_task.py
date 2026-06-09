@@ -7,6 +7,14 @@ import pytest
 import app.tasks.kis_mock_reconciliation_tasks as task_mod
 
 
+def test_task_registered_without_recurring_schedule():
+    import app.tasks as task_package
+
+    assert task_mod in task_package.TASKIQ_TASK_MODULES
+    labels = getattr(task_mod.kis_mock_reconcile_periodic, "labels", {}) or {}
+    assert labels.get("schedule") is None
+
+
 @pytest.mark.asyncio
 async def test_periodic_paused_when_flag_off(monkeypatch):
     monkeypatch.setattr(
