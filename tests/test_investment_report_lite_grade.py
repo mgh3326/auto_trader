@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.schemas.investment_reports import IngestReportItem
+from app.mcp_server.tooling import investment_reports_handlers as h
+from app.schemas.investment_reports import IngestReportItem, IngestReportRequest
 from app.services.investment_reports.lite_grade import (
     build_lite_report_quality_summary,
 )
@@ -13,12 +14,12 @@ pytestmark = pytest.mark.unit
 
 
 def _item(**over):
-    base = dict(
-        client_item_key="k1",
-        item_kind="action",
-        intent="buy_review",
-        rationale="r",
-    )
+    base = {
+        "client_item_key": "k1",
+        "item_kind": "action",
+        "intent": "buy_review",
+        "rationale": "r",
+    }
     base.update(over)
     return IngestReportItem(**base)
 
@@ -92,3 +93,43 @@ def test_empty_items_grades_no_action():
     out = build_lite_report_quality_summary([])
     assert out["grade"] == "no_action"
     assert out["total_item_count"] == 0
+
+
+def _request(profile="CLAUDE_ADVISOR", **over):
+    base = {
+        "report_type": "advisory_lite_v1",
+        "market": "kr",
+        "created_by_profile": profile,
+        "title": "t",
+        "summary": "s",
+        "kst_date": "2026-06-09",
+        "status": "draft",
+        "items": [
+            _item(
+                evidence=[{"source": "consensus", "freshness": "fresh"}],
+                freshness="fresh",
+            )
+        ],
+    }
+    base.update(over)
+    return IngestReportRequest(**base)
+
+
+def test_attach_lite_quality_advisory_profile_populates():
+    out = h._maybe_attach_lite_quality(_request(profile="CLAUDE_ADVISOR"))
+    rqs = out.snapshot_report_diagnostics["report_quality_summary"]
+    assert rqs["grade"] == "informational_only"
+    assert rqs["basis"] == "item_evidence_lite"
+
+
+def test_attach_lite_quality_non_advisory_profile_skips():
+    out = h._maybe_attach_lite_quality(_request(profile="t"))
+    assert out.snapshot_report_diagnostics is None
+
+
+def test_attach_lite_quality_does_not_clobber_caller_diagnostics():
+    caller = {"report_quality_summary": {"grade": "no_action", "basis": "caller"}}
+    out = h._maybe_attach_lite_quality(
+        _request(profile="CLAUDE_ADVISOR", snapshot_report_diagnostics=caller)
+    )
+    assert out.snapshot_report_diagnostics == caller
