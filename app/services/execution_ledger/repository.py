@@ -170,3 +170,37 @@ class ExecutionLedgerRepository:
         if market == "crypto":
             return stmt.where(ExecutionLedger.instrument_type == "crypto")
         return stmt
+
+    async def net_quantity_by_match_key_since(
+        self, *, cutover: datetime
+    ) -> dict[tuple[str, str, str, str, str, str], Decimal]:
+        from sqlalchemy import case
+        signed_qty = case(
+            (ExecutionLedger.side == "buy", ExecutionLedger.filled_qty),
+            else_=-ExecutionLedger.filled_qty,
+        )
+        rows = await self.db.execute(
+            select(
+                ExecutionLedger.broker,
+                ExecutionLedger.account_mode,
+                ExecutionLedger.venue,
+                ExecutionLedger.instrument_type,
+                ExecutionLedger.symbol,
+                ExecutionLedger.currency,
+                func.coalesce(func.sum(signed_qty), 0),
+            )
+            .where(ExecutionLedger.filled_at >= cutover)
+            .where(ExecutionLedger.source != "manual_import")
+            .group_by(
+                ExecutionLedger.broker,
+                ExecutionLedger.account_mode,
+                ExecutionLedger.venue,
+                ExecutionLedger.instrument_type,
+                ExecutionLedger.symbol,
+                ExecutionLedger.currency,
+            )
+        )
+        return {
+            (broker, account_mode, venue, str(instrument_type), symbol, currency): Decimal(str(net_qty))
+            for broker, account_mode, venue, instrument_type, symbol, currency, net_qty in rows.all()
+        }

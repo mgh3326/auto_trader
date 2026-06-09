@@ -127,3 +127,89 @@ def build_opening_lot_plan(
             )
         )
     return plan
+
+
+async def load_opening_lot_candidates(
+    brokers: list[str],
+) -> list[OpeningLotCandidate]:
+    candidates: list[OpeningLotCandidate] = []
+    if "kis" in brokers:
+        candidates.extend(await load_kis_opening_lot_candidates())
+    if "upbit" in brokers:
+        candidates.extend(await load_upbit_opening_lot_candidates())
+    return candidates
+
+
+async def load_kis_opening_lot_candidates() -> list[OpeningLotCandidate]:
+    from app.services.brokers.kis.client import KISClient
+    kis = KISClient()
+    candidates: list[OpeningLotCandidate] = []
+    for row in await kis.fetch_my_stocks():
+        qty = Decimal(str(row.get("hldg_qty") or "0"))
+        avg_price = Decimal(str(row.get("pchs_avg_pric") or "0"))
+        symbol = str(row.get("pdno") or "").strip().upper()
+        if symbol:
+            candidates.append(
+                OpeningLotCandidate(
+                    broker="kis",
+                    account_mode="live",
+                    venue="krx",
+                    instrument_type="equity_kr",
+                    symbol=symbol,
+                    raw_symbol=symbol,
+                    currency="KRW",
+                    current_qty=qty,
+                    avg_price=avg_price,
+                )
+            )
+    for row in await kis.fetch_my_us_stocks():
+        symbol = str(row.get("ovrs_pdno") or "").strip().upper()
+        venue = str(row.get("ovrs_excg_cd") or row.get("excg_cd") or "").strip().upper()
+        if not venue:
+            venue = "NASD"
+        qty = Decimal(str(row.get("ovrs_cblc_qty") or "0"))
+        avg_price = Decimal(str(row.get("pchs_avg_pric") or "0"))
+        if symbol:
+            candidates.append(
+                OpeningLotCandidate(
+                    broker="kis",
+                    account_mode="live",
+                    venue=venue,
+                    instrument_type="equity_us",
+                    symbol=symbol,
+                    raw_symbol=symbol,
+                    currency="USD",
+                    current_qty=qty,
+                    avg_price=avg_price,
+                )
+            )
+    return candidates
+
+
+async def load_upbit_opening_lot_candidates() -> list[OpeningLotCandidate]:
+    from app.services.brokers.upbit.client import fetch_my_coins, parse_upbit_account_row
+    rows = await fetch_my_coins()
+    candidates: list[OpeningLotCandidate] = []
+    for row in rows:
+        currency = str(row.get("currency") or "").strip().upper()
+        if not currency or currency == "KRW":
+            continue
+        unit_currency = str(row.get("unit_currency") or "KRW").strip().upper()
+        parsed = parse_upbit_account_row(row)
+        current_qty = Decimal(str(parsed["total_quantity"]))
+        avg_price = Decimal(str(parsed["avg_buy_price"]))
+        candidates.append(
+            OpeningLotCandidate(
+                broker="upbit",
+                account_mode="live",
+                venue=f"upbit_{unit_currency.lower()}",
+                instrument_type="crypto",
+                symbol=currency,
+                raw_symbol=f"{unit_currency}-{currency}",
+                currency="KRW" if unit_currency == "KRW" else "USD",
+                current_qty=current_qty,
+                avg_price=avg_price,
+                avg_price_modified=bool(parsed["avg_buy_price_modified"]),
+            )
+        )
+    return candidates
