@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import types
+from datetime import UTC, datetime
 
 import pytest
 
@@ -50,7 +51,7 @@ def test_levels_delta_filters_to_symbols_and_projects_flags():
             },
         ]
     }
-    out = _levels_delta(journal, {"AAPL", "MSFT"}, near_pct=1.0)
+    out = _levels_delta(journal, {"AAPL": None, "MSFT": None}, near_pct=1.0)
     syms = [e["symbol"] for e in out["entries"]]
     assert syms == ["AAPL", "MSFT"]  # ZZZZ filtered out
     aapl = out["entries"][0]
@@ -83,9 +84,113 @@ def test_levels_delta_empty_symbols_keeps_all_entries():
             },
         ]
     }
-    out = _levels_delta(journal, set(), near_pct=1.0)
+    out = _levels_delta(journal, {}, near_pct=1.0)
     assert [e["symbol"] for e in out["entries"]] == ["AAPL"]
     assert out["entries"][0]["near_target"] is False  # no target -> not near
+
+
+def test_levels_delta_drops_journals_created_before_baseline():
+    # ROB-454 repro: the report's planned tranche has NO journal yet; the only
+    # journal for the symbol is a STALE pre-report position (breached). It must
+    # NOT contribute a stop_hit to this report's delta.
+    baseline = datetime(2026, 6, 8, 9, 0, tzinfo=UTC)
+    journal = {
+        "entries": [
+            {
+                "id": 35,
+                "symbol": "196170",
+                "side": "buy",
+                "target_price": 400000.0,
+                "stop_loss": 353500.0,
+                "current_price": 289500.0,
+                "pnl_pct_live": -18.0,
+                "target_reached": False,
+                "stop_reached": True,
+                "created_at": "2026-05-20T10:00:00+00:00",  # before baseline
+            },
+        ]
+    }
+    out = _levels_delta(
+        journal, {"196170": {"buy"}}, near_pct=1.0, baseline_created_at=baseline
+    )
+    assert out["entries"] == []
+    assert out["summary"]["stop_hit"] == 0
+
+
+def test_levels_delta_keeps_post_report_and_dedups_to_most_recent():
+    # Two post-baseline journals for the same (symbol, side): only the most
+    # recent one is counted, so an older breached duplicate does not inflate.
+    baseline = datetime(2026, 6, 8, 0, 0, tzinfo=UTC)
+    journal = {
+        "entries": [
+            {
+                "id": 50,  # newest, not breached
+                "symbol": "196170",
+                "side": "buy",
+                "target_price": 300000.0,
+                "stop_loss": 256500.0,
+                "current_price": 289500.0,
+                "pnl_pct_live": 2.0,
+                "target_reached": False,
+                "stop_reached": False,
+                "created_at": "2026-06-08T12:00:00+00:00",
+            },
+            {
+                "id": 48,  # older duplicate, breached -> must be dropped
+                "symbol": "196170",
+                "side": "buy",
+                "target_price": 300000.0,
+                "stop_loss": 300000.0,
+                "current_price": 289500.0,
+                "pnl_pct_live": -3.0,
+                "target_reached": False,
+                "stop_reached": True,
+                "created_at": "2026-06-08T09:00:00+00:00",
+            },
+        ]
+    }
+    out = _levels_delta(
+        journal, {"196170": {"buy"}}, near_pct=1.0, baseline_created_at=baseline
+    )
+    assert [e["journal_id"] for e in out["entries"]] == [50]
+    assert out["summary"]["stop_hit"] == 0
+
+
+def test_levels_delta_side_scope_excludes_opposite_and_null_allows_any():
+    journal = {
+        "entries": [
+            {
+                "id": 1,
+                "symbol": "AAPL",
+                "side": "buy",
+                "target_price": 230.0,
+                "stop_loss": 200.0,
+                "current_price": 231.0,
+                "pnl_pct_live": 4.0,
+                "target_reached": True,
+                "stop_reached": False,
+                "created_at": None,
+            },
+            {
+                "id": 2,
+                "symbol": "AAPL",
+                "side": "sell",
+                "target_price": 150.0,
+                "stop_loss": 260.0,
+                "current_price": 259.0,
+                "pnl_pct_live": 1.0,
+                "target_reached": False,
+                "stop_reached": False,
+                "created_at": None,
+            },
+        ]
+    }
+    # scope restricts AAPL to buy -> the sell journal is excluded
+    out = _levels_delta(journal, {"AAPL": {"buy"}}, near_pct=1.0)
+    assert {e["journal_id"] for e in out["entries"]} == {1}
+    # scope None (item had side=NULL) keeps any side, one entry per side
+    out_any = _levels_delta(journal, {"AAPL": None}, near_pct=1.0)
+    assert {e["journal_id"] for e in out_any["entries"]} == {1, 2}
 
 
 def _snap(kind, payload):
@@ -175,11 +280,20 @@ def test_index_delta_change_pct_and_null_guards():
 
 
 def _baseline(
-    *, market="us", symbols=None, market_snapshot=None, baseline_pnl="default"
+    *,
+    market="us",
+    symbols=None,
+    scope=None,
+    baseline_created_at=None,
+    market_snapshot=None,
+    baseline_pnl="default",
 ):
+    syms = symbols if symbols is not None else {"AAPL"}
     return {
         "market": market,
-        "symbols": symbols if symbols is not None else {"AAPL"},
+        "symbols": syms,
+        "scope": scope if scope is not None else dict.fromkeys(syms),
+        "baseline_created_at": baseline_created_at,
         "market_snapshot": market_snapshot
         if market_snapshot is not None
         else {"baseline": {"indices": {"^GSPC": {"current": 5500.0}}}},
