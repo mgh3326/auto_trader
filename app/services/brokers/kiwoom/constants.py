@@ -58,3 +58,13 @@ TOKEN_REFRESH_LEEWAY_SECONDS = 30  # refresh slightly before expires_dt
 # 성립으로 회복하는 것이 1차 목표이며, 값의 scope 정확성은 smoke가 검증한다.
 ACCOUNT_BALANCE_QRY_TP_DEFAULT = "1"  # kt00018 조회구분
 ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
+
+# ROB-460 — Kiwoom REST account-cash reads also require dmst_stex_tp (국내거래소구분).
+# 2026-06-09 live: get_positions(kt00018)·get_orderable_cash returned return_code 2
+# (필수입력 파라미터=dmst_stex_tp). Unlike the qry_tp/stk_bond_tp convention-defaults,
+# this value is PROVEN: every order endpoint (kt10000-kt10003) submits
+# dmst_stex_tp=MOCK_EXCHANGE_KRX successfully. Mock is KRX-only (NXT/SOR rejected on
+# the order path), so KRX is the only valid selection. Applied to the account-cash
+# reads behind the two reported tools (kt00018 잔고, kt00010 주문가능금액); order-history
+# reads (kt00009/kt00007) are left untouched — not proven to need it (smoke-validated).
+ACCOUNT_DMST_STEX_TP_DEFAULT = MOCK_EXCHANGE_KRX  # "KRX" — 국내거래소구분
