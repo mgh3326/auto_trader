@@ -39,8 +39,15 @@ from app.services.investment_snapshots.repository import (
 # discriminator: the Hermes advisory composition path hard-codes
 # "HERMES_ADVISOR" (investment_hermes_handlers / hermes_ingest), and no
 # smoke/test/operator profile ("t", "test", "schedule", "pilot-operator", …)
-# uses it. So a draft counts as an advisory prior iff it carries this profile.
-_ADVISORY_DRAFT_PROFILES: frozenset[str] = frozenset({"HERMES_ADVISOR"})
+# uses it. So a draft counts as an advisory prior iff it carries an advisory
+# profile.
+#
+# ROB-459 P3 — Claude-authored advisory reports use "CLAUDE_ADVISOR"; add it to
+# the default set so they chain as baseline too. Operators may extend the set
+# via INVESTMENT_ADVISORY_DRAFT_PROFILES (UNION only — see _advisory_draft_profiles).
+_DEFAULT_ADVISORY_DRAFT_PROFILES: frozenset[str] = frozenset(
+    {"HERMES_ADVISOR", "CLAUDE_ADVISOR"}
+)
 
 # Allowed draft policies for ``previous_report_context``. There is intentionally
 # NO "all" policy — admitting every draft would re-introduce smoke boilerplate.
@@ -51,9 +58,23 @@ _VALID_DRAFT_POLICIES: frozenset[str] = frozenset(
 )
 
 
+def _advisory_draft_profiles() -> frozenset[str]:
+    """Runtime advisory-draft whitelist: built-in defaults UNION operator config.
+
+    Union-only / fail-closed: operators may ADD genuine advisory profiles via
+    ``INVESTMENT_ADVISORY_DRAFT_PROFILES`` but cannot drop a default or admit
+    every draft (there is still no "all" policy). Smoke/test profiles ("t",
+    "test", …) stay excluded unless explicitly listed.
+    """
+    from app.core.config import settings
+
+    extra = frozenset(settings.INVESTMENT_ADVISORY_DRAFT_PROFILES or [])
+    return _DEFAULT_ADVISORY_DRAFT_PROFILES | extra
+
+
 def _is_advisory_draft(report: InvestmentReport) -> bool:
     """True when a draft report is a genuine advisory baseline (not smoke)."""
-    return report.created_by_profile in _ADVISORY_DRAFT_PROFILES
+    return report.created_by_profile in _advisory_draft_profiles()
 
 
 class InvestmentReportQueryService:
