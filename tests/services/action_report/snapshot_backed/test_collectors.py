@@ -48,11 +48,15 @@ from app.services.action_report.snapshot_backed.collectors.watch_context import 
 from app.services.investment_snapshots.collectors import CollectorRequest
 
 
-def _request(market: str = "kr", account_scope: str = "kis_live") -> CollectorRequest:
+def _request(
+    market: str = "kr",
+    account_scope: str = "kis_live",
+    symbols: list[str] | None = None,
+) -> CollectorRequest:
     return CollectorRequest(
         market=market,  # type: ignore[arg-type]
         account_scope=account_scope,  # type: ignore[arg-type]
-        symbols=None,
+        symbols=symbols,
         candidate_limit=None,
         policy_snapshot={},
     )
@@ -1115,6 +1119,107 @@ async def test_market_collector_no_index_fn_emits_no_indices():
     assert "indices" not in results[0].payload_json
 
 
+@pytest.mark.asyncio
+async def test_market_collector_crypto_attaches_altseason():
+    # ROB-381 PR3: crypto market dimension gains an Upbit altseason snapshot.
+    called = {"hit": False}
+
+    async def fake_altseason_fn():
+        called["hit"] = True
+        return {"ubai_ubmi_ratio": 0.455, "breadth": {"alts_beating_btc_pct": 0.42}}
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    payload = results[0].payload_json
+    assert called["hit"] is True
+    assert payload["altseason"]["ubai_ubmi_ratio"] == 0.455
+    assert results[0].coverage_json["has_altseason"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_only_for_crypto():
+    # Non-crypto markets never call the altseason source.
+    called = {"hit": False}
+
+    async def fake_altseason_fn():
+        called["hit"] = True
+        return {"ubai_ubmi_ratio": 0.5}
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="us"))
+    assert called["hit"] is False
+    assert "altseason" not in results[0].payload_json
+    assert results[0].coverage_json["has_altseason"] is False
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_failure_is_soft():
+    # Altseason is best-effort: a fetch error leaves the rest of the snapshot.
+    async def fake_altseason_fn():
+        raise RuntimeError("upbit down")
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    assert results[0].freshness_status == "fresh"
+    assert "events" in results[0].payload_json
+    assert "altseason" not in results[0].payload_json
+
+
+@pytest.mark.asyncio
+async def test_market_collector_altseason_none_is_omitted():
+    # Source returning None (both planes down) → no altseason key, not fabricated.
+    async def fake_altseason_fn():
+        return None
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(),
+        query_service=_empty_events_query(),
+        altseason_fn=fake_altseason_fn,
+    )
+    results = await collector.collect(_request(market="crypto"))
+    assert "altseason" not in results[0].payload_json
+    assert results[0].coverage_json["has_altseason"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_altseason_fn_returns_payload(monkeypatch):
+    # ROB-381 PR3: registry adapter passes through the upbit altseason service.
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def fake_fetch():
+        return {"ubai_ubmi_ratio": 0.47}
+
+    monkeypatch.setattr(
+        "app.services.external.upbit_index.fetch_upbit_altseason", fake_fetch
+    )
+    fn = registry._build_altseason_fn()
+    assert await fn() == {"ubai_ubmi_ratio": 0.47}
+
+
+@pytest.mark.asyncio
+async def test_build_altseason_fn_failopen_on_error(monkeypatch):
+    from app.services.action_report.snapshot_backed.collectors import registry
+
+    async def boom():
+        raise RuntimeError("upbit down")
+
+    monkeypatch.setattr("app.services.external.upbit_index.fetch_upbit_altseason", boom)
+    fn = registry._build_altseason_fn()
+    assert await fn() is None
+
+
 # ---------------------------------------------------------------------------
 # News collector
 # ---------------------------------------------------------------------------
@@ -1158,50 +1263,74 @@ async def test_news_collector_failure_is_fail_open():
 
 # --- ROB-366 B8: market-scoped news articles via injected fetch fn ----------
 @pytest.mark.asyncio
-async def test_news_collector_articles_from_news_fetch_fn():
-    captured: dict = {}
+async def test_news_collector_articles_per_symbol_from_seam():
+    from app.services.symbol_news_service import (
+        SymbolNewsArticle,
+        SymbolNewsFetchResult,
+    )
 
-    async def fake_news_fn(market, hours, limit):
-        captured["market"] = market
-        return [
-            {"title": "Apple beats earnings", "url": "u1", "stock_symbol": "AAPL"},
-            {"title": "Fed holds rates", "url": "u2", "stock_symbol": None},
-        ]
+    captured: list[tuple[str, str, int]] = []
 
-    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
-    results = await collector.collect(_request(market="us"))
+    async def fake_fetch(symbol: str, market: str, limit: int):
+        captured.append((symbol, market, limit))
+        art = SymbolNewsArticle(
+            provider="finnhub",
+            market=market,
+            symbol=symbol,
+            external_article_id=f"id-{symbol}",
+            title=f"{symbol} up",
+            source_name="Reuters",
+            canonical_url=f"https://x/{symbol}",
+            summary="s",
+            published_at=None,
+            fetched_at=dt.datetime(2026, 5, 5, tzinfo=dt.UTC),
+            provider_metadata={"sentiment": "positive"},
+        )
+        return SymbolNewsFetchResult(symbol, market, "finnhub", "ok", limit, 1, [art])
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
+    results = await collector.collect(_request(market="us", symbols=["AAPL", "MSFT"]))
+
     payload = results[0].payload_json
-    # The articles key (what NewsStage reads) is populated, market-scoped.
     assert payload["count"] == 2
-    assert [a["title"] for a in payload["articles"]] == [
-        "Apple beats earnings",
-        "Fed holds rates",
-    ]
-    assert captured["market"] == "us"
+    assert {a["symbol"] for a in payload["articles"]} == {"AAPL", "MSFT"}
+    assert payload["articles"][0]["sentiment"] == "positive"
+    assert payload["articles"][0]["external_article_id"] == "id-AAPL"
+    assert [r["symbol"] for r in payload["fetch_records"]] == ["AAPL", "MSFT"]
+    assert {c[0] for c in captured} == {"AAPL", "MSFT"}
     assert results[0].freshness_status == "fresh"
 
 
 @pytest.mark.asyncio
-async def test_news_collector_articles_empty_is_partial():
-    async def fake_news_fn(market, hours, limit):
-        return []
+async def test_news_collector_per_symbol_failure_is_fail_open():
+    from app.services.symbol_news_service import SymbolNewsFetchResult
 
-    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
-    results = await collector.collect(_request(market="us"))
-    assert results[0].payload_json["count"] == 0
-    assert results[0].payload_json["articles"] == []
+    async def fake_fetch(symbol: str, market: str, limit: int):
+        return SymbolNewsFetchResult(
+            symbol, market, "finnhub", "error", limit, 0, [], "RuntimeError"
+        )
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
+    results = await collector.collect(_request(market="us", symbols=["AAPL"]))
+
+    payload = results[0].payload_json
+    assert payload["count"] == 0
+    assert payload["fetch_records"][0]["status"] == "error"
+    # fail-open: never raises, degrades to partial
     assert results[0].freshness_status == "partial"
 
 
 @pytest.mark.asyncio
-async def test_news_collector_articles_fetch_failure_is_fail_open():
-    async def fake_news_fn(market, hours, limit):
-        raise RuntimeError("news feed down")
+async def test_news_collector_no_symbols_is_partial():
 
-    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_news_fn)
-    results = await collector.collect(_request(market="us"))
-    assert len(results) == 1
-    assert results[0].freshness_status == "unavailable"
+    async def fake_fetch(symbol: str, market: str, limit: int):  # pragma: no cover
+        raise AssertionError("should not fetch without symbols")
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
+    results = await collector.collect(_request(market="us", symbols=[]))
+
+    assert results[0].payload_json["count"] == 0
+    assert results[0].freshness_status == "partial"
 
 
 def _make_citation(*, report_uuid: str, symbols: list[str]):
@@ -1428,6 +1557,178 @@ async def test_symbol_collector_query_failure_is_fail_open():
     assert results[0].freshness_status == "unavailable"
 
 
+def _us_universe_row(
+    symbol: str,
+    *,
+    name_kr: str = "",
+    name_en: str = "",
+    exchange: str = "NASD",
+    is_active: bool = True,
+):
+    class _Row:
+        def __init__(self) -> None:
+            self.symbol = symbol
+            self.name_kr = name_kr
+            self.name_en = name_en
+            self.exchange = exchange
+            self.is_active = is_active
+
+    return _Row()
+
+
+def _two_stage_session(stock_rows: list[Any], universe_rows: list[Any]) -> MagicMock:
+    """Session whose 1st execute() returns stock_info rows, 2nd returns
+    us_symbol_universe rows, and 3rd returns whether the universe is non-empty."""
+    session = MagicMock()
+
+    def _result(rows: list[Any]) -> MagicMock:
+        scalars = MagicMock(all=MagicMock(return_value=rows))
+        return MagicMock(scalars=MagicMock(return_value=scalars))
+
+    any_rows_mock = MagicMock()
+    any_rows_mock.scalar_one_or_none.return_value = 1 if universe_rows else None
+
+    session.execute = AsyncMock(
+        side_effect=[
+            _result(stock_rows),
+            _result(universe_rows),
+            any_rows_mock,
+        ]
+    )
+    return session
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_falls_back_to_universe_for_unheld():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # stock_info has the held name; the candidate is only in us_symbol_universe.
+    session = _two_stage_session(
+        stock_rows=[_stock_info_row("AAPL", "애플")],
+        universe_rows=[_us_universe_row("HCA", name_en="HCA Healthcare")],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["AAPL", "HCA"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    resolved = {r.symbol for r in results if r.symbol}
+    assert resolved == {"AAPL", "HCA"}
+    hca = next(r for r in results if r.symbol == "HCA")
+    assert hca.payload_json["instrument_type"] == "equity_us"
+    assert hca.payload_json["name"] == "HCA Healthcare"
+    assert hca.payload_json["exchange"] == "NASD"
+    # No partial/missing row when everything resolved.
+    assert all(r.freshness_status != "partial" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_prefers_stock_info_meta_no_dup():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # AAPL is in BOTH stock_info and the universe; stock_info must win and the
+    # universe row must NOT produce a duplicate.
+    session = _two_stage_session(
+        stock_rows=[_stock_info_row("AAPL", "애플")],
+        universe_rows=[_us_universe_row("AAPL", name_en="Apple Inc")],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["AAPL"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    aapl_rows = [r for r in results if r.symbol == "AAPL"]
+    assert len(aapl_rows) == 1
+    # stock_info meta preserved (sector/market_cap come only from stock_info).
+    assert aapl_rows[0].payload_json["sector"] == "Tech"
+    assert aapl_rows[0].payload_json["market_cap"] == 1_000_000.0
+    assert aapl_rows[0].payload_json["name"] == "애플"
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_unresolved_reason_codes():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # NOPE: absent everywhere → not_registered.
+    # DEAD: present in universe but inactive → inactive.
+    session = _two_stage_session(
+        stock_rows=[],
+        universe_rows=[_us_universe_row("DEAD", name_en="Dead Co", is_active=False)],
+    )
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["NOPE", "DEAD"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    unresolved = {
+        u["symbol"]: u["reason_code"] for u in partial.payload_json["unresolved"]
+    }
+    assert unresolved == {"NOPE": "not_registered", "DEAD": "inactive"}
+    # back-compat bulk list still present.
+    assert set(partial.payload_json["missing_symbols"]) == {"NOPE", "DEAD"}
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_us_universe_empty_reason():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _two_stage_session(stock_rows=[], universe_rows=[])
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["NVDA"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    unresolved = {
+        u["symbol"]: u["reason_code"] for u in partial.payload_json["unresolved"]
+    }
+    assert unresolved == {"NVDA": "universe_empty"}
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_kr_missing_has_no_unresolved_field():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    # KR uses the single-query stock_info path; missing rows stay bulk-only.
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930", "000660"],
+        candidate_limit=None,
+        policy_snapshot={},
+    )
+    collector = SymbolSnapshotCollector(session)
+    results = await collector.collect(req)
+
+    partial = next(r for r in results if r.freshness_status == "partial")
+    assert partial.payload_json["missing_symbols"] == ["000660"]
+    assert "unresolved" not in partial.payload_json
+    # KR path issues exactly one query (no universe fallback).
+    assert session.execute.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Symbol collector quote/orderbook enrichment — ROB-278 Phase 2.
 #
@@ -1463,7 +1764,7 @@ def _stock_info_session(rows: list[Any]) -> MagicMock:
 def _fake_quote_client_ok() -> MagicMock:
     """Fake KIS quote/orderbook client returning a full top-of-book."""
 
-    async def fetch_quote(symbol: str) -> dict[str, Any]:
+    async def fetch_quote(symbol: str, venue: str = "krx") -> dict[str, Any]:
         return {
             "last_price": 70_000.0,
             "best_bid": 69_900.0,
@@ -1518,7 +1819,7 @@ async def test_symbol_collector_enriches_with_kis_quote_when_kis_live():
     assert payload["quote"]["nxt_eligible"] is True
     assert payload["quote"]["session"] == "regular"
     assert payload["quote"]["status"] == "ok"
-    quote_client.fetch_quote_orderbook.assert_awaited_once_with("005930")
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with("005930", venue="krx")
 
 
 @pytest.mark.asyncio
@@ -1584,7 +1885,7 @@ async def test_symbol_collector_quote_exception_marks_unavailable():
     ]
     session = _stock_info_session(rows)
 
-    async def fetch(symbol: str):
+    async def fetch(symbol: str, venue: str = "krx"):
         if symbol == "005930":
             raise RuntimeError("session closed")
         return {
@@ -1628,7 +1929,7 @@ async def test_symbol_collector_quote_empty_book_marks_no_data_reason():
 
     session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
 
-    async def fetch(symbol: str):
+    async def fetch(symbol: str, venue: str = "krx"):
         return {
             "last_price": 0.0,
             "best_bid": 0.0,
@@ -1724,7 +2025,7 @@ def _upbit_universe_row(market: str = "KRW-BTC", korean_name: str = "비트코�
 def _fake_upbit_quote_client_ok() -> MagicMock:
     """Fake Upbit orderbook adapter returning a full top-of-book (no last_price)."""
 
-    async def fetch(symbol: str) -> dict[str, Any]:
+    async def fetch(symbol: str, venue: str = "upbit") -> dict[str, Any]:
         return {
             "last_price": None,
             "best_bid": 94_900_000.0,
@@ -1798,7 +2099,9 @@ async def test_symbol_collector_crypto_enriches_with_upbit_orderbook_no_user_id(
     assert q["spread_bps"] == pytest.approx(21.05, rel=0.05)
     assert q["venue"] == "upbit"
     assert q["last_price"] is None  # orderbook carries no last trade — honest
-    quote_client.fetch_quote_orderbook.assert_awaited_once_with("KRW-BTC")
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with(
+        "KRW-BTC", venue="upbit"
+    )
 
 
 @pytest.mark.asyncio
@@ -1840,7 +2143,7 @@ async def test_symbol_collector_crypto_orderbook_failure_is_fail_open():
         ]
     )
 
-    async def fetch(symbol: str):
+    async def fetch(symbol: str, venue: str = "upbit"):
         if symbol == "KRW-BTC":
             raise RuntimeError("upbit timeout")
         return {
@@ -2236,3 +2539,241 @@ def test_collector_modules_do_not_import_broker_or_activation_paths():
                 f"{name} unexpectedly references {forbidden!r} — "
                 "collectors must remain read-only"
             )
+
+
+def test_collector_request_carries_market_session_default_none():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    req = CollectorRequest(market="kr", account_scope="kis_live", policy_snapshot={})
+    assert req.market_session is None
+    req2 = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        policy_snapshot={},
+        market_session="nxt",
+    )
+    assert req2.market_session == "nxt"
+
+
+def test_ensure_bundle_request_carries_market_session_default_none():
+    from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
+
+    req = EnsureBundleRequest(
+        market="kr",
+        account_scope="kis_live",
+        purpose="testing",
+        policy_version="v1",
+    )
+    assert req.market_session is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_bundle_threads_market_session_into_collector_request():
+    import datetime as dt
+    import types
+
+    from app.schemas.investment_snapshots_mcp import EnsureBundleRequest
+    from app.services.action_report.common.snapshot_bundle import (
+        SnapshotBundleEnsureService,
+    )
+    from app.services.investment_snapshots.collectors import (
+        SnapshotCollectResult,
+    )
+
+    captured: dict = {}
+
+    class _CapturingCollector:
+        snapshot_kind = "market"
+
+        async def collect(self, request: CollectorRequest):
+            captured["market_session"] = request.market_session
+            return [
+                SnapshotCollectResult(
+                    snapshot_kind="market",
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    payload={"ok": True},
+                    origin="auto_trader_db",
+                    as_of=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+                    freshness_status="fresh",
+                    coverage={},
+                )
+            ]
+
+    service = SnapshotBundleEnsureService.__new__(SnapshotBundleEnsureService)
+    service._collectors = {"market": _CapturingCollector()}
+
+    kind_policy = types.SimpleNamespace(
+        snapshot_kind="market",
+        collector_timeout=dt.timedelta(seconds=5),
+    )
+
+    results, warnings, attempted = await service._collect_for_kind(
+        kind_policy=kind_policy,
+        request=EnsureBundleRequest(
+            market="kr",
+            account_scope="kis_live",
+            market_session="nxt",
+            purpose="testing",
+            policy_version="v1",
+        ),
+        policy_snapshot={},
+    )
+    assert attempted is True
+    assert captured["market_session"] == "nxt"
+
+
+@pytest.mark.asyncio
+async def test_kis_adapter_maps_nxt_venue_to_market_code_nx():
+    from unittest.mock import AsyncMock, MagicMock
+
+    import pandas as pd
+
+    from app.services.action_report.snapshot_backed.collectors.registry import (
+        _KISDomesticQuoteOrderbookAdapter,
+    )
+
+    captured: dict = {}
+
+    kis_client = MagicMock()
+    kis_client.inquire_price = AsyncMock(
+        return_value=pd.DataFrame({"close": [70_000.0]})
+    )
+
+    async def _inquire_orderbook(code, market="J"):
+        captured["market"] = market
+        return {
+            "askp1": "70100",
+            "bidp1": "69900",
+            "askp_rsqn1": "10",
+            "bidp_rsqn1": "12",
+        }
+
+    kis_client.inquire_orderbook = AsyncMock(side_effect=_inquire_orderbook)
+
+    adapter = _KISDomesticQuoteOrderbookAdapter(kis_client)
+    raw = await adapter.fetch_quote_orderbook("005930", venue="nxt")
+    assert captured["market"] == "NX"
+    assert raw["venue"] == "nxt"
+
+    raw_krx = await adapter.fetch_quote_orderbook("005930")  # default venue
+    assert captured["market"] == "J"
+    assert raw_krx["venue"] == "krx"
+
+
+@pytest.mark.asyncio
+async def test_symbol_collector_switches_to_nxt_venue_when_nxt_session():
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    session = _stock_info_session([_stock_info_row("005930", "삼성전자")])
+
+    captured: dict = {}
+
+    async def fetch_quote(symbol: str, venue: str = "krx") -> dict[str, Any]:
+        captured["venue"] = venue
+        return {
+            "last_price": 70_000.0,
+            "best_bid": 69_900.0,
+            "best_ask": 70_100.0,
+            "bid_depth": 100.0,
+            "ask_depth": 120.0,
+            "venue": venue,
+            "as_of": "2026-06-01T08:30:00+09:00",
+            "session": "nxt",
+            "nxt_eligible": True,
+        }
+
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(side_effect=fetch_quote)
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="kr",
+        account_scope="kis_live",
+        symbols=["005930"],
+        policy_snapshot={},
+        user_id=42,
+        market_session="nxt",
+    )
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert captured["venue"] == "nxt"
+    assert payload["quote"]["venue"] == "nxt"
+    assert payload["quote"]["session"] == "nxt"
+
+
+@pytest.mark.asyncio
+async def test_market_collector_kr_nxt_marks_index_frozen():
+    async def fake_index_fn(symbols):
+        return [
+            {"symbol": "KOSPI", "name": "코스피", "current": 2700.0, "change_pct": 0.0},
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    req = _request(market="kr")
+    req = req.model_copy(update={"market_session": "nxt"})
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+    assert payload["index_session"] == "regular_closed"
+    assert "frozen" in payload["index_session_note"]
+
+
+@pytest.mark.asyncio
+async def test_market_collector_kr_regular_session_has_no_frozen_note():
+    async def fake_index_fn(symbols):
+        return [
+            {"symbol": "KOSPI", "name": "코스피", "current": 2700.0, "change_pct": 0.5},
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="kr"))
+    payload = results[0].payload_json
+    assert "index_session" not in payload
+
+
+# ---------------------------------------------------------------------------
+# ROB-392 Slice A — NAV scope label + KR code-as-name fallback.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_kr_kis_live_payload_carries_nav_scope_label():
+    # Reuse the same fixture wiring as
+    # test_portfolio_v2_kr_kis_live_success_populates_kis_primary.
+    session = _manual_kr_session()
+    reader = _kis_reader_with_holdings()
+    collector = PortfolioSnapshotCollector(session, kis_reader=reader)
+    results = await collector.collect(_kr_kis_request(user_id=42))
+    payload = results[0].payload_json
+    assert payload["primary_source"] == "kis"
+    assert payload["nav_scope"] == "kis_primary_sellable"
+    assert "ISA/Toss" in payload["nav_scope_label"]
+    # 수치 회귀: holdings/count는 라벨 추가와 무관하게 유지.
+    assert payload["count"] == len(payload["holdings"])
+
+
+def test_apply_kr_name_fallback_fills_code_as_name_rows():
+    from app.services.action_report.snapshot_backed.collectors.portfolio import (
+        _apply_kr_name_fallback,
+    )
+
+    rows = [
+        {"ticker": "035420", "display_name": None},  # missing
+        {"ticker": "035720", "display_name": "035720"},  # code-as-name
+        {"ticker": "005930", "display_name": "삼성전자"},  # already good
+    ]
+    _apply_kr_name_fallback(rows, {"035420": "NAVER", "035720": "카카오"})
+    assert rows[0]["display_name"] == "NAVER"
+    assert rows[1]["display_name"] == "카카오"
+    assert rows[2]["display_name"] == "삼성전자"  # untouched
+
+
+def test_apply_kr_name_fallback_keeps_code_when_unresolved():
+    from app.services.action_report.snapshot_backed.collectors.portfolio import (
+        _apply_kr_name_fallback,
+    )
+
+    rows = [{"ticker": "999999", "display_name": None}]
+    _apply_kr_name_fallback(rows, {})  # lookup returned nothing
+    assert rows[0]["display_name"] is None  # no fabricated name

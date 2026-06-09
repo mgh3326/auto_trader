@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.jobs.watch_market_data import (
+    evaluate_alert_conditions,
     get_current_value,
     is_market_open,
     is_triggered,
@@ -49,6 +50,7 @@ from app.services.hermes_client import (
 )
 from app.services.investment_reports.idempotency import watch_event_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.investment_reports.watch_auto_execute import maybe_auto_execute
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,7 @@ _OUTCOME_BY_ACTION_MODE: dict[str, str] = {
     "notify_only": "notified",
     "preview_only": "preview_attached",
     "approval_required": "review_required",
+    "auto_execute_mock": "executed",
 }
 
 
@@ -131,12 +134,25 @@ class InvestmentWatchScanner:
                     continue
 
                 try:
-                    current_value = await get_current_value(
-                        target_kind=alert.target_kind,
-                        metric=alert.metric,
-                        symbol=alert.symbol,
-                        market=alert.market,
-                    )
+                    if alert.conditions:
+                        triggered, current_value = await evaluate_alert_conditions(
+                            target_kind=alert.target_kind,
+                            symbol=alert.symbol,
+                            market=alert.market,
+                            conditions=alert.conditions,
+                            combine=alert.combine,
+                            get_value_fn=get_current_value,
+                        )
+                    else:
+                        current_value = await get_current_value(
+                            target_kind=alert.target_kind,
+                            metric=alert.metric,
+                            symbol=alert.symbol,
+                            market=alert.market,
+                        )
+                        triggered = is_triggered(
+                            current_value, alert.operator, float(alert.threshold)
+                        )
                 except Exception as exc:
                     logger.warning(
                         "investment-watch lookup failed: "
@@ -150,8 +166,7 @@ class InvestmentWatchScanner:
                     stats.failed_lookups += 1
                     continue
 
-                threshold_value = float(alert.threshold)
-                if not is_triggered(current_value, alert.operator, threshold_value):
+                if not triggered:
                     continue
 
                 # Insert (or look up existing) event row with delivery_status='pending'.
@@ -172,6 +187,20 @@ class InvestmentWatchScanner:
                 if is_first_attempt:
                     stats.triggered += 1
                     stats.details.append(emission["detail"])
+                    if alert.action_mode == "auto_execute_mock":
+                        payload = emission["payload"]
+                        try:
+                            await maybe_auto_execute(
+                                db,
+                                alert=alert,
+                                correlation_id=payload.correlation_id,
+                                kst_date=payload.kst_date,
+                            )
+                        except Exception:  # noqa: BLE001 - never kill the scan loop
+                            logger.exception(
+                                "auto_execute_mock failed for alert %s",
+                                emission["alert_uuid"],
+                            )
                 else:
                     # No new event row this iteration — we found an
                     # existing pending/failed/skipped row from earlier
@@ -224,6 +253,7 @@ class InvestmentWatchScanner:
         alert_operator = alert.operator
         alert_threshold = alert.threshold
         alert_threshold_key = alert.threshold_key
+        alert_threshold_high = alert.threshold_high
         alert_intent = alert.intent
         alert_action_mode = alert.action_mode
 
@@ -257,6 +287,7 @@ class InvestmentWatchScanner:
                 metric=alert_metric,
                 operator=alert_operator,
                 threshold=alert_threshold,
+                threshold_high=alert_threshold_high,
                 threshold_key=alert_threshold_key,
                 intent=alert_intent,
                 action_mode=alert_action_mode,
@@ -294,6 +325,11 @@ class InvestmentWatchScanner:
             metric=event.metric,
             operator=event.operator,
             threshold=Decimal(str(event.threshold)),
+            threshold_high=(
+                Decimal(str(event.threshold_high))
+                if event.threshold_high is not None
+                else None
+            ),
             threshold_key=event.threshold_key,
             intent=event.intent,
             action_mode=event.action_mode,

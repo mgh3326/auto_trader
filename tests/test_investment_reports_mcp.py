@@ -20,9 +20,12 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_context_get_impl,
     investment_report_create_impl,
     investment_report_decide_item_impl,
+    investment_report_delta_get_impl,
     investment_report_generate_from_bundle_impl,
     investment_report_get_impl,
     investment_report_list_impl,
+    investment_report_set_status_impl,
+    investment_watch_recommend_impl,
 )
 from tests._investment_reports_helpers import future_datetime
 
@@ -91,6 +94,22 @@ def _watch_item_dict(client_item_key: str = "watch-1") -> dict:
     }
 
 
+def _review_watch_item_dict(client_item_key: str = "review-watch-1") -> dict:
+    """operation='review' watch — 생성 시 watch_condition/valid_until 면제(ROB-274).
+
+    ROB-393 재현용: 이 항목은 condition 없이 approve까지 도달하지만 종전
+    activate_watch에서 'corrupt state'로 막혔다.
+    """
+    return {
+        "client_item_key": client_item_key,
+        "item_kind": "watch",
+        "operation": "review",
+        "symbol": "005930",
+        "intent": "trend_recovery_review",
+        "rationale": "r",
+    }
+
+
 def test_tool_names_match_registered_set() -> None:
     assert INVESTMENT_REPORT_TOOL_NAMES == {
         "investment_report_create",
@@ -101,6 +120,10 @@ def test_tool_names_match_registered_set() -> None:
         "investment_report_context_get",
         # ROB-273 — opt-in snapshot-backed advisory generator.
         "investment_report_generate_from_bundle",
+        "investment_watch_recommend",
+        "investment_report_delta_get",
+        # ROB-455 — report status lifecycle transition writer.
+        "investment_report_set_status",
     }
 
 
@@ -235,6 +258,87 @@ async def test_activate_watch_copies_snapshot(session: AsyncSession) -> None:
     assert response["alert"]["metric"] == "rsi"
     assert response["alert"]["operator"] == "below"
     assert response["item"]["status"] == "activated"
+
+
+@pytest.mark.asyncio
+async def test_activate_review_watch_without_condition_is_actionable(
+    session: AsyncSession,
+) -> None:
+    """ROB-393 재현: operation='review' watch는 condition 없이 approve되지만,
+    인자 없이 activate하면 'corrupt state'가 아니라 actionable 에러여야 한다."""
+    created = await investment_report_create_impl(
+        items=[_review_watch_item_dict()], **_create_kwargs()
+    )
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        await investment_report_activate_watch_impl(
+            item_uuid=watch_uuid, actor="operator"
+        )
+    message = str(exc_info.value)
+    assert "corrupt state" not in message
+    assert "watch_condition not set" in message
+
+
+@pytest.mark.asyncio
+async def test_activate_review_watch_with_injected_condition_succeeds(
+    session: AsyncSession,
+) -> None:
+    """ROB-393: review-watch도 activate 시 watch_condition/valid_until을 주면
+    활성화되고, 주입된 조건이 item에 영속화된다."""
+    created = await investment_report_create_impl(
+        items=[_review_watch_item_dict()], **_create_kwargs()
+    )
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    response = await investment_report_activate_watch_impl(
+        item_uuid=watch_uuid,
+        actor="operator",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 70000},
+        valid_until=future_datetime().isoformat(),
+    )
+    assert response["success"] is True
+    assert response["alert"]["metric"] == "price"
+    assert response["alert"]["operator"] == "below"
+    assert response["item"]["status"] == "activated"
+
+    # 주입 조건이 item에 영속화되었는지 확인.
+    bundle_post = await investment_report_get_impl(created["report"]["report_uuid"])
+    item_post = bundle_post["items"][0]
+    assert item_post["watch_condition"]["metric"] == "price"
+    assert item_post["valid_until"] is not None
+
+
+@pytest.mark.asyncio
+async def test_activate_watch_rejects_condition_override(
+    session: AsyncSession,
+) -> None:
+    """ROB-393: condition이 이미 있는 watch에 activate로 또 주면 silent override
+    하지 않고 거부한다."""
+    created = await investment_report_create_impl(
+        items=[_watch_item_dict()], **_create_kwargs()
+    )
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        await investment_report_activate_watch_impl(
+            item_uuid=watch_uuid,
+            actor="operator",
+            watch_condition={"metric": "price", "operator": "below", "threshold": 1},
+        )
+    assert "already set" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -547,3 +651,199 @@ async def test_context_get_draft_policy_advisory_only(
         market="kr", draft_policy="all"
     )
     assert len(ctx_unknown["prior_reports"]) == 0
+
+
+@pytest.fixture
+def _stub_market_data(monkeypatch):
+    """Stub market_data so the watch-recommend tool needs no live network and
+    we can assert it touches no broker/order client."""
+    from app.mcp_server.tooling import investment_reports_handlers as h
+    from app.services.market_data.contracts import Candle
+
+    async def fake_get_quote(symbol, market):
+        from app.services.market_data.contracts import Quote
+
+        return Quote(symbol=symbol, market=market, price=100.0, source="stub")
+
+    async def fake_get_ohlcv(symbol, market, period, count, end=None):
+        import datetime as _dt
+
+        return [
+            Candle(
+                symbol=symbol,
+                market=market,
+                source="stub",
+                period="day",
+                timestamp=_dt.datetime(2026, 5, d + 1, tzinfo=_dt.UTC),
+                open=100.0,
+                high=102.0,
+                low=98.0,
+                close=100.0,
+                volume=1.0,
+            )
+            for d in range(25)
+        ]
+
+    monkeypatch.setattr(h.market_data_service, "get_quote", fake_get_quote)
+    monkeypatch.setattr(h.market_data_service, "get_ohlcv", fake_get_ohlcv)
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_dry_run_does_not_persist(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    resp = await investment_watch_recommend_impl(symbol="005930", market="kr")
+    assert resp["success"] is True
+    assert resp["committed"] is False
+    assert resp["recommendation"]["data_state"] == "ok"
+    assert resp["recommendation"]["policy_version"] == "v1"
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_commit_persists_on_watch_only(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    # watch_only item via evidence_snapshot.action_verdict
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    item_uuid = bundle["items"][0]["item_uuid"]
+
+    resp = await investment_watch_recommend_impl(
+        symbol="005930", market="kr", item_uuid=item_uuid, commit=True, actor="op"
+    )
+    assert resp["committed"] is True
+
+    bundle_post = await investment_report_get_impl(created["report"]["report_uuid"])
+    rec = bundle_post["items"][0]["watch_recommendation"]
+    assert rec is not None
+    assert rec["data_state"] == "ok"
+    assert rec["entry_review_below_price"] is not None
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_commit_rejected_for_non_watch_verdict(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {
+        "action_verdict": "buy_review"
+    }  # not watch_only/limit_wait
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    item_uuid = bundle["items"][0]["item_uuid"]
+
+    with pytest.raises(ValueError) as exc:
+        await investment_watch_recommend_impl(
+            symbol="005930", market="kr", item_uuid=item_uuid, commit=True, actor="op"
+        )
+    assert "watch_only" in str(exc.value) or "limit_wait" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_commit_rejected_on_data_gap(
+    session: AsyncSession, monkeypatch
+) -> None:
+    from app.mcp_server.tooling import investment_reports_handlers as h
+    from app.services.market_data.contracts import Quote
+
+    async def fake_get_quote(symbol, market):
+        return Quote(symbol=symbol, market=market, price=100.0, source="stub")
+
+    async def few_candles(symbol, market, period, count, end=None):
+        return []  # data gap
+
+    monkeypatch.setattr(h.market_data_service, "get_quote", fake_get_quote)
+    monkeypatch.setattr(h.market_data_service, "get_ohlcv", few_candles)
+
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    item_uuid = bundle["items"][0]["item_uuid"]
+
+    with pytest.raises(ValueError) as exc:
+        await investment_watch_recommend_impl(
+            symbol="005930", market="kr", item_uuid=item_uuid, commit=True, actor="op"
+        )
+    assert "data_gap" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# ROB-455 PR1 — set_status tool + previous_report_uuid as delta baseline
+# ---------------------------------------------------------------------------
+async def _create_report(**overrides) -> str:
+    out = await investment_report_create_impl(**_create_kwargs(**overrides))
+    return out["report"]["report_uuid"]
+
+
+@pytest.mark.asyncio
+async def test_set_status_impl_transitions_report(session: AsyncSession) -> None:
+    report_uuid = await _create_report()
+    out = await investment_report_set_status_impl(
+        report_uuid=report_uuid, status="superseded", actor="operator", reason="v2"
+    )
+    assert out["success"] is True
+    assert out["status"] == "superseded"
+
+    fetched = await investment_report_get_impl(report_uuid)
+    assert fetched["report"]["status"] == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_set_status_impl_rejects_invalid_status(session: AsyncSession) -> None:
+    report_uuid = await _create_report()
+    # 'published' is not a lifecycle transition target; 'garbage' is unknown.
+    for bad in ("published", "garbage"):
+        out = await investment_report_set_status_impl(
+            report_uuid=report_uuid, status=bad
+        )
+        assert out["success"] is False
+        assert out["error"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_set_status_impl_unknown_uuid_returns_not_found(
+    session: AsyncSession,
+) -> None:
+    out = await investment_report_set_status_impl(
+        report_uuid=str(uuid.uuid4()), status="expired"
+    )
+    assert out == {
+        "success": False,
+        "error": "not_found",
+        "report_uuid": out["report_uuid"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_delta_get_resolves_previous_report_as_baseline(
+    session: AsyncSession, monkeypatch
+) -> None:
+    # ROB-455 — when use_previous_as_baseline=True, the delta baseline resolves to
+    # the report's previous_report_uuid (the report it chains from).
+    a_uuid = await _create_report(kst_date="2026-05-18")
+    b_uuid = await _create_report(kst_date="2026-05-19", previous_report_uuid=a_uuid)
+
+    captured: dict[str, str] = {}
+
+    class _StubDelta:
+        def __init__(self, _db):
+            pass
+
+        async def compute_delta(self, report_uuid, **_kw):
+            captured["uuid"] = str(report_uuid)
+            return {"success": True, "baseline_report_uuid": str(report_uuid)}
+
+    monkeypatch.setattr(
+        "app.services.investment_reports.delta_service.DeltaService", _StubDelta
+    )
+
+    await investment_report_delta_get_impl(
+        report_uuid=b_uuid, use_previous_as_baseline=True
+    )
+    assert captured["uuid"] == a_uuid  # resolved to the predecessor
+
+    await investment_report_delta_get_impl(report_uuid=b_uuid)
+    assert captured["uuid"] == b_uuid  # default: the report itself is the baseline

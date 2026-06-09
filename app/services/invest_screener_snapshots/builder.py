@@ -9,11 +9,21 @@ from decimal import Decimal
 from typing import Any
 
 from app.mcp_server.tooling.market_data_indicators import _fetch_ohlcv_for_indicators
+from app.services.invest_screener_snapshots.freshness import expected_baseline_date
 from app.services.invest_screener_snapshots.repository import SnapshotUpsert
 
 logger = logging.getLogger(__name__)
 
 _LOOKBACK = 10
+
+#: ROB-430 PR-①: consecutive_gainers filters ``consecutive_up_days >= 5``, which
+#: requires at least 6 daily closes to even be possible (6 closes → 5 up-moves).
+#: When the OHLCV window is shorter than this, a trailing-streak count is a
+#: truncated lower bound (the start of the run is off-screen), so we record
+#: ``consecutive_up_days = None`` (insufficient data) rather than a misleadingly
+#: small number that would silently fail the >= 5 filter. The fix that actually
+#: surfaces streaks is an operator re-build over a full daily-candle history.
+_MIN_SESSIONS_FOR_RELIABLE_STREAK = 6
 
 
 @dataclass(frozen=True)
@@ -40,7 +50,10 @@ def derive_metrics(closes: Sequence[Decimal]) -> DerivedMetrics:
         change_rate = (change_amount / prev * Decimal("100")) if prev != 0 else None
 
     streak: int | None
-    if len(closes) < 2:
+    if len(closes) < _MIN_SESSIONS_FOR_RELIABLE_STREAK:
+        # ROB-430 PR-①: too few sessions to establish a streak the >= 5 filter
+        # needs; a trailing count here is a truncated lower bound, so report None
+        # (insufficient) instead of a misleadingly small, silently-excluded value.
         streak = None
     else:
         streak = 0
@@ -108,7 +121,7 @@ def _coerce_snapshot_date(value: Any, fallback: dt.date) -> dt.date:
 
 
 async def build_snapshot_for_symbol(
-    *, market: str, symbol: str, today: dt.date
+    *, market: str, symbol: str, today: dt.date, now: dt.datetime | None = None
 ) -> SnapshotUpsert | None:
     market_type, source = _market_type_and_source(market)
     try:
@@ -121,6 +134,21 @@ async def build_snapshot_for_symbol(
     if df is None or df.empty or "close" not in df.columns:
         return None
     df = df.sort_values("date").reset_index(drop=True) if "date" in df.columns else df
+    if "date" in df.columns:
+        # ROB-430 트랙B follow-up: compute the streak on COMPLETED daily closes only
+        # (Toss "종가 기준"). The KIS daily endpoint returns a forming bar for the
+        # current session intraday; including it would let an intraday/down move
+        # prematurely break a streak. expected_baseline_date returns the prior
+        # session before KR close (or today once closed), so an incomplete today-bar
+        # is dropped only when present — a no-op for an end-of-day build.
+        completed_through = expected_baseline_date(market, now=now)
+        df = df[
+            df["date"].map(
+                lambda d: _coerce_snapshot_date(d, today) <= completed_through
+            )
+        ].reset_index(drop=True)
+        if df.empty:
+            return None
     closes_raw: list[Any] = list(df["close"].tolist())
     closes = [Decimal(str(c)) for c in closes_raw if c is not None]
     if not closes:
@@ -172,4 +200,25 @@ async def build_snapshots_for_market(
             )
 
     await asyncio.gather(*(_one(i, s) for i, s in enumerate(symbols_list)))
-    return [r for r in results if r is not None]
+    built = [r for r in results if r is not None]
+
+    # ROB-430 PR-①: operator diagnostic. If a large share of rows have an OHLCV
+    # window shorter than _MIN_SESSIONS_FOR_RELIABLE_STREAK, consecutive_up_days is
+    # None for them and consecutive_gainers (>= 5) will be empty regardless of the
+    # market — the partition needs a re-build over a fuller daily-candle history.
+    thin = sum(
+        1
+        for r in built
+        if len(r.closes_window or []) < _MIN_SESSIONS_FOR_RELIABLE_STREAK
+    )
+    if thin:
+        logger.warning(
+            "invest_screener_snapshots[%s]: %d/%d rows have < %d OHLCV sessions "
+            "(consecutive_up_days unreliable → consecutive_gainers may be empty; "
+            "re-build over a fuller daily-candle history)",
+            market,
+            thin,
+            len(built),
+            _MIN_SESSIONS_FOR_RELIABLE_STREAK,
+        )
+    return built

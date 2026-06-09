@@ -431,3 +431,81 @@ def test_momentum_event_recurring_schedule_is_disabled_by_default_and_gated(
         {"cron": "*/10 9-15 * * 1-5", "cron_offset": "Asia/Seoul"}
     ]
     assert _csv_tuple("KRX,NXT") == ("KRX", "NXT")
+
+
+class TestMomentumDataStateHonesty:
+    """A 2.5-week-old partition must NOT be labeled fresh (ROB-389 regression)."""
+
+    @pytest.mark.asyncio
+    async def test_stale_partition_is_labeled_stale_with_days(self, monkeypatch):
+        import datetime as dt
+
+        from app.mcp_server.tooling import momentum_candidates as mod
+        from app.services.invest_momentum_events.repository import (
+            MomentumCandidateSignal,
+        )
+
+        old_date = dt.date(2026, 5, 13)
+        row = MomentumCandidateSignal(
+            symbol="000050",
+            name="가나다",
+            score=1.0,
+            latest_snapshot_at=dt.datetime(2026, 5, 13, 11, 0, tzinfo=dt.UTC),
+            trading_date=old_date,
+            price=Decimal("1000"),
+            change_rate=Decimal("1.0"),
+            surface_count=1,
+            venue_count=1,
+            rank_delta=None,
+            signals=[],
+            theme_names=[],
+            reason_codes=[],
+        )
+
+        class _FakeRepo:
+            def __init__(self, session):
+                pass
+
+            async def list_candidate_signals(self, *, trading_date=None, limit=20):
+                return [row]
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(mod, "InvestMomentumEventSnapshotsRepository", _FakeRepo)
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: _FakeSession())
+
+        result = await mod.get_momentum_candidates_impl(market="kr", limit=20)
+
+        assert result["data_state"] == "stale"
+        assert result["days_stale"] >= 1
+        assert result["latest_trading_date"] == old_date.isoformat()
+        assert "expected_baseline_date" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_rows_is_missing(self, monkeypatch):
+        from app.mcp_server.tooling import momentum_candidates as mod
+
+        class _FakeRepo:
+            def __init__(self, session):
+                pass
+
+            async def list_candidate_signals(self, *, trading_date=None, limit=20):
+                return []
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(mod, "InvestMomentumEventSnapshotsRepository", _FakeRepo)
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: _FakeSession())
+
+        result = await mod.get_momentum_candidates_impl(market="kr", limit=20)
+        assert result["data_state"] == "missing"

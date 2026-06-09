@@ -78,7 +78,10 @@ def test_stale_state_annotates_label():
     )
     assert chip is not None
     assert chip.dataState == "stale"
-    assert "1일 지연" in chip.label
+    # ROB-430 트랙 B: the compact chip flags staleness without a hardcoded "1일"
+    # (the page-level warning carries the precise lag); it must not understate.
+    assert "지연" in chip.label
+    assert "1일 지연" not in chip.label
 
 
 @pytest.mark.unit
@@ -217,6 +220,23 @@ async def test_investor_flow_momentum_preset_uses_snapshot_discovery(
         )
     )
     await db_session.commit()
+
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        AsyncMock(
+            return_value=HealthyPartition(
+                partition_date=latest_partition,
+                row_count=9999,
+                coverage_ratio=1.0,
+                is_fallback=False,
+                healthy=True,
+            )
+        ),
+    )
 
     monkeypatch.setattr(
         "app.services.invest_view_model.screener_service._should_use_snapshot_first",

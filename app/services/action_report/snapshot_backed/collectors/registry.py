@@ -19,10 +19,17 @@ from app.services.action_report.snapshot_backed.collectors.candidate_universe im
 from app.services.action_report.snapshot_backed.collectors.invest_page import (
     InvestPageSnapshotCollector,
 )
+from app.services.action_report.snapshot_backed.collectors.investor_flow import (
+    InvestorFlowSnapshotCollector,
+)
 from app.services.action_report.snapshot_backed.collectors.journal import (
     JournalSnapshotCollector,
 )
+from app.services.action_report.snapshot_backed.collectors.kr_market_ranking import (
+    KrMarketRankingSnapshotCollector,
+)
 from app.services.action_report.snapshot_backed.collectors.market import (
+    AltseasonFn,
     IndexQuoteFn,
     MarketEventsSnapshotCollector,
 )
@@ -69,6 +76,10 @@ class _UpbitOpenOrdersAdapter:
         return await _upbit_fetch_open_orders(market=market)
 
 
+# ROB-390 — venue -> KIS domestic market-division code. "J"=KRX, "NX"=NXT.
+_VENUE_TO_KIS_MARKET_CODE = {"krx": "J", "nxt": "NX"}
+
+
 class _KISDomesticQuoteOrderbookAdapter:
     """ROB-278 Phase 2 — read-only adapter wrapping the existing KIS quote
     + orderbook calls. Exposes a single ``fetch_quote_orderbook(symbol)``
@@ -83,13 +94,16 @@ class _KISDomesticQuoteOrderbookAdapter:
     def __init__(self, kis_client: KISClient | None) -> None:
         self._client = kis_client
 
-    async def fetch_quote_orderbook(self, symbol: str) -> dict[str, Any]:
+    async def fetch_quote_orderbook(
+        self, symbol: str, venue: str = "krx"
+    ) -> dict[str, Any]:
         if self._client is None:
             raise RuntimeError("kis client unavailable")
         # Two read-only calls — both already exist on the KIS client. No
         # new HTTP surface, no order placement/cancellation paths reached.
+        market_code = _VENUE_TO_KIS_MARKET_CODE.get(venue, "J")
         price_df = await self._client.inquire_price(symbol)
-        orderbook = await self._client.inquire_orderbook(symbol)
+        orderbook = await self._client.inquire_orderbook(symbol, market=market_code)
 
         last_price = float(price_df["close"].iloc[0]) if len(price_df) else 0.0
 
@@ -122,7 +136,7 @@ class _KISDomesticQuoteOrderbookAdapter:
             "best_ask": best_ask,
             "bid_depth": bid_depth,
             "ask_depth": ask_depth,
-            "venue": "krx",
+            "venue": venue if venue in _VENUE_TO_KIS_MARKET_CODE else "krx",
             "as_of": None,  # KIS orderbook payload has no clean as_of; UI uses snapshot.as_of
             "session": "regular" if best_bid > 0 and best_ask > 0 else "closed",
             "nxt_eligible": bool(nxt_eligible),
@@ -141,7 +155,10 @@ class _UpbitQuoteOrderbookAdapter:
     top-of-book is the liquidity signal the symbol stage reads.
     """
 
-    async def fetch_quote_orderbook(self, symbol: str) -> dict[str, Any]:
+    async def fetch_quote_orderbook(
+        self, symbol: str, venue: str = "krx"
+    ) -> dict[str, Any]:
+        _ = venue  # Upbit has a single venue; argument kept for protocol parity.
         # Lazy import keeps httpx / the Upbit module out of the registry import
         # graph (mirrors the news / index fns) and narrow to the read function.
         from app.services.upbit_orderbook import fetch_orderbook
@@ -198,41 +215,37 @@ def _build_market_index_quote_fn() -> IndexQuoteFn:
     return _index_quote_fn
 
 
-def _build_news_fetch_fn() -> NewsFetchFn:
-    """Read-only adapter over the deterministic, market-aware news source.
+def _build_altseason_fn() -> AltseasonFn:
+    """Read-only adapter over the Upbit altseason source (ROB-381 PR3).
 
-    ROB-366 B8: given (market, hours, limit), returns recent market-scoped
-    ``NewsArticle`` rows mapped to plain dicts in the shape NewsStage reads
-    (``articles``). ``get_news_articles`` is imported lazily and uses its own
-    read-only session; this stays a thin pass-through with no order/mutation
-    surface. The collector wraps the call so a fetch error degrades the
-    optional ``news`` kind to ``unavailable``.
+    Returns the UBAI/UBMI ratio + 24h alt-vs-BTC breadth snapshot, or ``None`` on
+    any failure. Imported lazily and already fail-open inside the service, so the
+    crypto market snapshot degrades gracefully. No order/mutation surface.
     """
 
-    async def _news_fetch_fn(
-        market: str, hours: int, limit: int
-    ) -> list[dict[str, Any]]:
-        from app.services.llm_news_service import get_news_articles
+    async def _altseason_fn() -> dict[str, Any] | None:
+        from app.services.external.upbit_index import fetch_upbit_altseason
 
-        articles, _total = await get_news_articles(
-            market=market, hours=hours, limit=limit
-        )
-        out: list[dict[str, Any]] = []
-        for a in articles:
-            published = getattr(a, "article_published_at", None)
-            out.append(
-                {
-                    "title": a.title,
-                    "url": a.url,
-                    "source": a.source,
-                    "feed_source": a.feed_source,
-                    "summary": a.summary,
-                    "stock_symbol": a.stock_symbol,
-                    "stock_name": a.stock_name,
-                    "published_at": published.isoformat() if published else None,
-                }
-            )
-        return out
+        try:
+            return await fetch_upbit_altseason()
+        except Exception:  # noqa: BLE001 — best-effort altseason signal
+            return None
+
+    return _altseason_fn
+
+
+def _build_news_fetch_fn() -> NewsFetchFn:
+    """Per-symbol on-demand news adapter over ``symbol_news_service`` (ROB-423).
+
+    Given (symbol, market, limit) returns a normalized ``SymbolNewsFetchResult``.
+    Imported lazily; no MCP/LLM/order surface. The collector wraps the call so a
+    fetch error degrades the optional ``news`` kind without blocking the bundle.
+    """
+
+    async def _news_fetch_fn(symbol: str, market: str, limit: int):
+        from app.services.symbol_news_service import fetch_symbol_news
+
+        return await fetch_symbol_news(symbol, market, limit=limit)
 
     return _news_fetch_fn
 
@@ -267,7 +280,9 @@ def production_collector_registry(session: AsyncSession) -> SnapshotCollectorReg
     registry.register(WatchContextSnapshotCollector(session))
     registry.register(
         MarketEventsSnapshotCollector(
-            session, index_quote_fn=_build_market_index_quote_fn()
+            session,
+            index_quote_fn=_build_market_index_quote_fn(),
+            altseason_fn=_build_altseason_fn(),
         )
     )
 
@@ -293,6 +308,8 @@ def production_collector_registry(session: AsyncSession) -> SnapshotCollectorReg
         )
     )
     registry.register(CandidateUniverseSnapshotCollector(session))
+    registry.register(KrMarketRankingSnapshotCollector(session))
+    registry.register(InvestorFlowSnapshotCollector(session))
     registry.register(InvestPageSnapshotCollector(session))
     # Remote-debug probes remain fail-open stubs — they are operator-driven
     # only, and automated wiring is intentionally out of scope.

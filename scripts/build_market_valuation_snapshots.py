@@ -43,9 +43,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
     )
     parser.add_argument(
+        "--common-stocks-only",
+        dest="common_stocks_only",
+        action="store_true",
+        help=(
+            "US: restrict to is_common_stock (excludes ETFs/preferreds/warrants). "
+            "Strongly recommended for --all (full US universe ~12k over-loads yfinance)."
+        ),
+    )
+    parser.add_argument(
+        "--with-high-52w-date",
+        dest="include_high_date",
+        action="store_true",
+        help=(
+            "US: also fetch the 52-week-high DATE (extra OHLC call/symbol) for "
+            "undervalued_breakout date-recency. Heavy — omit for the bulk backfill."
+        ),
+    )
+    parser.add_argument(
         "--commit",
         action="store_true",
         help="Actually write to the database. Default is --dry-run/no writes.",
+    )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Acknowledge and commit a partial/thin build that is below the "
+            "coverage floor (skips the commit guard). Use for small "
+            "--symbol/--limit backfills."
+        ),
     )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
@@ -90,18 +117,30 @@ def _print_result(result) -> None:
 
 async def run(args: argparse.Namespace) -> int:
     from app.jobs import market_valuation_snapshots as snapshot_job
+    from app.services.snapshot_commit_guard import PartialCommitBlocked
 
-    result = await snapshot_job.run_market_valuation_snapshot_build(
-        snapshot_job.MarketValuationSnapshotBuildRequest(
-            market=args.market,
-            symbols=tuple(args.symbol),
-            limit=args.limit,
-            all_symbols=args.all,
-            batch_size=args.batch_size,
-            concurrency=args.concurrency,
-            commit=args.commit,
-        )
+    request = snapshot_job.MarketValuationSnapshotBuildRequest(
+        market=args.market,
+        symbols=tuple(args.symbol),
+        limit=args.limit,
+        all_symbols=args.all,
+        batch_size=args.batch_size,
+        concurrency=args.concurrency,
+        commit=args.commit,
+        common_stocks_only=args.common_stocks_only,
+        include_high_date=args.include_high_date,
     )
+    use_guarded = args.commit and not args.allow_partial
+    try:
+        if use_guarded:
+            result = await snapshot_job.run_market_valuation_snapshot_build_guarded(
+                request
+            )
+        else:
+            result = await snapshot_job.run_market_valuation_snapshot_build(request)
+    except PartialCommitBlocked as exc:
+        print(f"\nCOMMIT BLOCKED: {exc}\n")
+        return 2
     _print_result(result)
     return 0
 

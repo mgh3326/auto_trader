@@ -51,8 +51,14 @@ def test_get_preset_returns_match() -> None:
 
 @pytest.mark.unit
 def test_screening_filters_known_for_each_preset() -> None:
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUNDAMENTALS_PRESET_SPECS,
+    )
+
     # Every catalog preset must have a deterministic filter mapping.
     for p in preset_definitions():
+        if p.id in FUNDAMENTALS_PRESET_SPECS:
+            continue
         filters = screening_filters_for(p.id)
         assert isinstance(filters, dict)
         # Every preset must specify market and limit so the screening service
@@ -94,6 +100,10 @@ def test_crypto_preset_definitions_are_crypto_scoped() -> None:
         "crypto_high_volume",
         "crypto_oversold",
         "crypto_momentum",
+        "crypto_funding_squeeze",
+        "crypto_funding_overheated",
+        "crypto_oi_surge",
+        "crypto_long_short_skew",
     ]
     assert all(p.market == "crypto" for p in presets)
     assert all(p.filterChips[0].label == "가상자산" for p in presets)
@@ -126,29 +136,30 @@ def test_toss_parity_presets_have_a_parity_status() -> None:
 @pytest.mark.unit
 def test_already_implemented_presets_marked_full() -> None:
     by_id = {p.id: p for p in preset_definitions("kr")}
-    # ROB-170 / ROB-276 shipped real Toss parity for these.
-    assert by_id["consecutive_gainers"].parityStatus == "full"
-    assert by_id["double_buy"].parityStatus == "full"
+    # ROB-170 / ROB-276 / ROB-359 / ROB-422 shipped real Toss parity for these.
+    for pid in (
+        "consecutive_gainers",
+        "double_buy",
+        "high_yield_value",
+        "profitable_company",
+        "undervalued_growth",
+        "stable_growth",
+        "future_dividend_king",
+        "cheap_value",
+        "steady_dividend",
+    ):
+        assert by_id[pid].parityStatus == "full"
 
 
 @pytest.mark.unit
 def test_partial_and_mismatch_presets_explain_the_gap() -> None:
     by_id = {p.id: p for p in preset_definitions("kr")}
-    assert by_id["cheap_value"].parityStatus == "partial"
-    assert by_id["steady_dividend"].parityStatus == "partial"
-    assert by_id["oversold_recovery"].parityStatus == "mismatch"
-    assert by_id["growth_expectation"].parityStatus == "mismatch"
-    # Honest divergence must be explained, not silently approximated.
-    for pid in (
-        "cheap_value",
-        "steady_dividend",
-        "oversold_recovery",
-        "growth_expectation",
-    ):
-        assert by_id[pid].parityNote, pid
-    # partial presets specifically flag the un-implementable conditions.
-    for pid in ("cheap_value", "steady_dividend"):
-        assert "확인 불가" in (by_id[pid].parityNote or ""), pid
+    # All baseline mismatch or partial presets are now either upgraded to full parity
+    # or reclassified as auto_trader_original (extra) presets, leaving 0 partial/mismatch KR presets.
+    partial_or_mismatch = [
+        p for p in by_id.values() if p.parityStatus in ("partial", "mismatch")
+    ]
+    assert len(partial_or_mismatch) == 0
 
 
 @pytest.mark.unit
@@ -162,8 +173,11 @@ def test_high_yield_value_preset_is_full_toss_parity_kr_only() -> None:
     assert preset.presetOrigin == "toss_parity"
     assert preset.parityStatus == "full"
     assert preset.metricLabel == "ROE"
-    # KR-only: must not surface in the US catalog.
-    assert "high_yield_value" not in {p.id for p in preset_definitions("us")}
+    # ROB-427 PR3: exposed AND active for US (Yahoo valuation backs ROE+PER).
+    us_by_id = {p.id: p for p in preset_definitions("us")}
+    assert "high_yield_value" in us_by_id
+    assert us_by_id["high_yield_value"].availability == "active"
+    assert us_by_id["high_yield_value"].availabilityReason is None
 
 
 @pytest.mark.unit

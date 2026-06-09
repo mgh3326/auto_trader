@@ -1,10 +1,12 @@
 import "./screener.css";
 import { InvestorFlowChip } from "./InvestorFlowChip";
-import type { ScreenerResultRow } from "../../types/screener";
+import { ScreenerEmptyState } from "./ScreenerEmptyState";
+import type { ScreenerResultRow, ScreenerFreshness } from "../../types/screener";
 
 interface Props {
   rows: ScreenerResultRow[];
   metricLabel: string;
+  freshness?: ScreenerFreshness | null;
 }
 
 const directionClass: Record<ScreenerResultRow["changeDirection"], string> = {
@@ -13,9 +15,14 @@ const directionClass: Record<ScreenerResultRow["changeDirection"], string> = {
   flat: "screener-change-flat",
 };
 
-export function ScreenerResultsTable({ rows, metricLabel }: Props) {
+export function ScreenerResultsTable({ rows, metricLabel, freshness }: Props) {
   if (rows.length === 0) {
-    return <div className="screener-empty">표시할 종목이 없습니다.</div>;
+    return (
+      <ScreenerEmptyState
+        reason={freshness?.primary?.degradationReason ?? null}
+        coverageLabel={freshness?.primary?.coverageLabel ?? null}
+      />
+    );
   }
   return (
     <table className="screener-table" data-testid="screener-results-table">
@@ -89,7 +96,12 @@ export function ScreenerResultsTable({ rows, metricLabel }: Props) {
               <span className="screener-change-amount">{r.changeAmountLabel}</span>
             </td>
             <td>{r.category}</td>
-            <td>{r.marketCapLabel}</td>
+            <td className="screener-cell screener-cell--market-cap">
+              {r.marketCapLabel}
+              {r.marketCapSource === "fallback" ? (
+                <span className="screener-cell__cap-badge" title="직전 영업일 밸류에이션 스냅샷 기준">참고</span>
+              ) : null}
+            </td>
             <td>{r.volumeLabel}</td>
             <td>{r.analystLabel}</td>
             <td>

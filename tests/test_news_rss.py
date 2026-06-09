@@ -509,8 +509,24 @@ class TestMCPNewsTools:
     def test_news_tool_names_exported(self):
         from app.mcp_server.tooling.news_handlers import NEWS_TOOL_NAMES
 
+        # ROB-424: search_news removed; get_market_news kept (legacy briefing).
+        assert "search_news" not in NEWS_TOOL_NAMES
         assert "get_market_news" in NEWS_TOOL_NAMES
-        assert "search_news" in NEWS_TOOL_NAMES
+        assert "get_market_issues" in NEWS_TOOL_NAMES
+
+    @pytest.mark.asyncio
+    async def test_get_market_news_carries_legacy_surface_notice(self, monkeypatch):
+        from app.mcp_server.tooling import news_handlers
+
+        async def _empty(**kwargs):
+            return ([], 0)
+
+        monkeypatch.setattr(
+            news_handlers, "get_news_articles", AsyncMock(side_effect=_empty)
+        )
+        result = await news_handlers._get_market_news_impl(hours=24, limit=20)
+        assert result["surface"] == "legacy_market_briefing"
+        assert "investment-decision evidence" in result["advisory"]
 
     @pytest.mark.asyncio
     async def test_get_market_news_returns_sources_and_feed_sources(self):
@@ -614,21 +630,6 @@ class TestMCPNewsTools:
         assert result["market"] == "crypto"
         assert mock_get.call_args.kwargs["market"] == "crypto"
 
-    @pytest.mark.asyncio
-    async def test_search_news_calls_service(self):
-        from app.mcp_server.tooling.news_handlers import _search_news_impl
-
-        with patch(
-            "app.mcp_server.tooling.news_handlers._search_news_db",
-            new_callable=AsyncMock,
-            return_value=([], 0),
-        ):
-            result = await _search_news_impl(query="반도체", days=7, limit=20)
-
-        assert result["query"] == "반도체"
-        assert result["count"] == 0
-        assert result["news"] == []
-
 
 class TestGetMarketNewsNoneDefaults:
     """Test that FastMCP passing None for defaulted params is handled."""
@@ -651,65 +652,6 @@ class TestGetMarketNewsNoneDefaults:
         assert call_kwargs["market"] is None
         assert call_kwargs["hours"] == 24
         assert call_kwargs["limit"] == 20
-        assert result["count"] == 0
-
-
-class TestSearchNewsJsonbCast:
-    """Verify search_news builds valid JSONB containment queries."""
-
-    @pytest.mark.asyncio
-    async def test_search_news_db_builds_valid_jsonb_query(self):
-        """The @> operator RHS must be cast to JSONB, not passed as varchar."""
-        from app.mcp_server.tooling.news_handlers import _search_news_db
-
-        captured_stmts = []
-        mock_db = AsyncMock()
-        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-        mock_db.__aexit__ = AsyncMock(return_value=False)
-
-        async def capture_execute(stmt, *args, **kwargs):
-            captured_stmts.append(stmt)
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.all.return_value = []
-            mock_result.scalar_one.return_value = 0
-            return mock_result
-
-        mock_db.execute = capture_execute
-
-        with patch(
-            "app.mcp_server.tooling.news_handlers.AsyncSessionLocal",
-            return_value=mock_db,
-        ):
-            articles, total = await _search_news_db(query="반도체", days=7)
-
-        assert total == 0
-        assert articles == []
-        # Verify query was built (2 statements: main + count)
-        assert len(captured_stmts) == 2
-
-        # Compile the main query and check that CAST appears for JSONB
-        from sqlalchemy.dialects.postgresql import dialect as pg_dialect
-
-        compiled = captured_stmts[0].compile(dialect=pg_dialect())
-        sql_text = str(compiled)
-        # The RHS of @> must be cast to JSONB
-        assert "CAST" in sql_text.upper() or "::jsonb" in sql_text.lower(), (
-            f"JSONB cast missing in query: {sql_text}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_search_news_impl_with_keyword_returns_result(self):
-        """Full _search_news_impl should not raise JSONB operator error."""
-        from app.mcp_server.tooling.news_handlers import _search_news_impl
-
-        with patch(
-            "app.mcp_server.tooling.news_handlers._search_news_db",
-            new_callable=AsyncMock,
-            return_value=([], 0),
-        ):
-            result = await _search_news_impl(query="반도체", days=7, limit=3)
-
-        assert result["query"] == "반도체"
         assert result["count"] == 0
 
 
@@ -780,37 +722,6 @@ class TestMCPNewsRuntimeRegression:
 
         assert result["count"] == 1
         assert result["news"][0]["title"] == "Test"
-
-    @pytest.mark.asyncio
-    async def test_search_news_default_call(self):
-        """Reproduce: mcporter call auto_trader.search_news query="반도체" days=7 limit=3"""
-        from app.mcp_server.tooling.news_handlers import _search_news_impl
-
-        with patch(
-            "app.mcp_server.tooling.news_handlers._search_news_db",
-            new_callable=AsyncMock,
-            return_value=([], 0),
-        ):
-            result = await _search_news_impl(query="반도체", days=7, limit=3)
-
-        assert result["query"] == "반도체"
-        assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_search_news_impl_days_none_uses_default(self):
-        """FastMCP may pass None for days — should fall back to 7."""
-        from app.mcp_server.tooling.news_handlers import _search_news_impl
-
-        with patch(
-            "app.mcp_server.tooling.news_handlers._search_news_db",
-            new_callable=AsyncMock,
-            return_value=([], 0),
-        ) as mock_search:
-            await _search_news_impl(query="반도체", days=None, limit=None)
-
-        call_kwargs = mock_search.call_args.kwargs
-        assert call_kwargs["days"] == 7
-        assert call_kwargs["limit"] == 20
 
 
 class TestAnalyzeEndpointDefense:
@@ -1048,29 +959,6 @@ class TestKstNaiveCutoffQueries:
 
         # Verify at least one query was executed (the main query + count query)
         assert len(captured_queries) >= 2
-
-    @pytest.mark.asyncio
-    async def test_search_news_db_cutoff_is_naive(self):
-        """_search_news_db should not raise offset-naive/aware mismatch."""
-        from app.mcp_server.tooling.news_handlers import _search_news_db
-
-        mock_db = AsyncMock()
-        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-        mock_db.__aexit__ = AsyncMock(return_value=False)
-
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
-        mock_result.scalar_one.return_value = 0
-        mock_db.execute = AsyncMock(return_value=mock_result)
-
-        with patch(
-            "app.mcp_server.tooling.news_handlers.AsyncSessionLocal",
-            return_value=mock_db,
-        ):
-            articles, total = await _search_news_db(query="반도체", days=7)
-
-        assert total == 0
-        assert articles == []
 
     @pytest.mark.asyncio
     async def test_get_market_news_impl_no_tz_error(self):

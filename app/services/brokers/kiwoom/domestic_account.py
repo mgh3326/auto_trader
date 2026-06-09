@@ -57,7 +57,9 @@ class KiwoomDomesticAccountClient:
         return await self._client.post_api(
             api_id=constants.ACCOUNT_BALANCE_API_ID,
             path=ACCOUNT_PATH,
-            body={},
+            # ROB-418 — kt00018 requires qry_tp; omitting it returns return_code 2
+            # (필수입력 파라미터=qry_tp). Value is convention-default, smoke-confirmed.
+            body={"qry_tp": constants.ACCOUNT_BALANCE_QRY_TP_DEFAULT},
             cont_yn=cont_yn,
             next_key=next_key,
         )
@@ -71,7 +73,10 @@ class KiwoomDomesticAccountClient:
         return await self._client.post_api(
             api_id=constants.ACCOUNT_ORDER_STATUS_API_ID,
             path=ACCOUNT_PATH,
-            body={},
+            # ROB-418 — kt00009 requires stk_bond_tp; omitting it returns
+            # return_code 2 (필수입력 파라미터=stk_bond_tp). Convention-default,
+            # smoke-confirmed.
+            body={"stk_bond_tp": constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT},
             cont_yn=cont_yn,
             next_key=next_key,
         )

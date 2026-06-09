@@ -188,5 +188,5 @@ async def test_news_dimension_reads_article_snapshot_not_db(db_session) -> None:
     }
     # The seeded DB report must NOT appear — the snapshot is authoritative.
     assert all(c["title"] != "DB-only report" for c in news_ev["citations"])
-    assert news_ev["data_health"]["source"] == "news_articles"
+    assert news_ev["data_health"]["source"] == "symbol_news"
     assert news_ev["citations"][0]["symbol_candidates"][0]["market"] == "us"

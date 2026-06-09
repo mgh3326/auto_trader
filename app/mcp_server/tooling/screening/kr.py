@@ -31,6 +31,7 @@ from app.mcp_server.tooling.screening.tvscreener_support import (
     _get_tvscreener_stock_capability_snapshot,
 )
 from app.services.krx import (
+    KRXSessionExpiredError,
     classify_etf_category,
     fetch_etf_all_cached,
     fetch_stock_all_cached,
@@ -143,6 +144,8 @@ async def _screen_kr(
             market_cap = _to_optional_float(item.get("market_cap"))
             if market_cap is not None:
                 item["market_cap_krw"] = market_cap * 100_000_000
+        if item.get("trade_amount") is None and item.get("value") is not None:
+            item["trade_amount"] = _to_optional_float(item.get("value"))
 
     valuation_market = {"kospi": "STK", "kosdaq": "KSQ"}.get(market, "ALL")
     try:
@@ -399,6 +402,7 @@ async def _normalize_kr_results(
             "rsi": _to_optional_float(row.get("relative_strength_index_14")),
             "adx": _to_optional_float(row.get("average_directional_index_14")),
             "volume": _to_optional_float(row.get("volume")),
+            "trade_amount": _to_optional_float(base.get("value")),
             "average_volume_30_day": _to_optional_float(
                 _get_first_present(
                     row,
@@ -619,6 +623,29 @@ async def _screen_kr_via_tvscreener(
         return result
 
 
+def _krx_session_unavailable_response(
+    market: str,
+    sort_by: str,
+    sort_order: str,
+) -> dict[str, Any]:
+    """Structured, retryable 'unavailable' response for an expired KRX session."""
+    return _build_screen_response(
+        [],
+        0,
+        {"market": market, "sort_by": sort_by, "sort_order": sort_order},
+        market,
+        warnings=[
+            "KRX 세션이 만료되어 KR 스크리너를 일시적으로 사용할 수 없습니다. "
+            "잠시 후 다시 시도하세요."
+        ],
+        meta_fields={
+            "data_state": "unavailable",
+            "retryable": True,
+            "reason": "krx_session_expired",
+        },
+    )
+
+
 async def _screen_kr_with_fallback(
     market: str,
     asset_type: str | None,
@@ -641,81 +668,87 @@ async def _screen_kr_with_fallback(
     exclude_sector_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Screen Korean market with tvscreener fallback to legacy."""
-    capability_snapshot = await _get_tvscreener_stock_capability_snapshot(
-        market=market,
-        asset_type=asset_type,
-        category=category,
-        sort_by=sort_by,
-        min_market_cap=min_market_cap,
-        max_per=max_per,
-        min_dividend_yield=min_dividend_yield,
-    )
-    if _can_use_tvscreener_stock_path(
-        market=market,
-        asset_type=asset_type,
-        category=category,
-        sort_by=sort_by,
-        min_market_cap=min_market_cap,
-        max_per=max_per,
-        min_dividend_yield=min_dividend_yield,
-        capability_snapshot=capability_snapshot,
-    ):
-        try:
-            tvscreener_result = await _screen_kr_via_tvscreener(
-                market=market,
-                asset_type=asset_type or "stock",
-                category=category,
-                sector=sector,
-                min_market_cap=min_market_cap,
-                max_per=max_per,
-                max_pbr=max_pbr,
-                min_dividend_yield=min_dividend_yield,
-                min_analyst_buy=min_analyst_buy,
-                min_rsi=None,
-                max_rsi=max_rsi,
-                min_adx=None,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                limit=limit,
-                adv_krw_min=adv_krw_min,
-                market_cap_min_krw=market_cap_min_krw,
-                market_cap_max_krw=market_cap_max_krw,
-                instrument_types=instrument_types,
-                exclude_sectors=exclude_sectors,
-                exclude_sector_keys=exclude_sector_keys,
-            )
-            if tvscreener_result and not tvscreener_result.get("error"):
-                logger.info(
-                    "Korean stock screening via tvscreener succeeded: %d stocks",
-                    tvscreener_result.get("count", 0),
-                )
-                return _adapt_tvscreener_stock_response(
-                    tvscreener_result,
+    try:
+        capability_snapshot = await _get_tvscreener_stock_capability_snapshot(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            sort_by=sort_by,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield,
+        )
+        if _can_use_tvscreener_stock_path(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            sort_by=sort_by,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield,
+            capability_snapshot=capability_snapshot,
+        ):
+            try:
+                tvscreener_result = await _screen_kr_via_tvscreener(
                     market=market,
+                    asset_type=asset_type or "stock",
+                    category=category,
+                    sector=sector,
+                    min_market_cap=min_market_cap,
+                    max_per=max_per,
+                    max_pbr=max_pbr,
+                    min_dividend_yield=min_dividend_yield,
+                    min_analyst_buy=min_analyst_buy,
+                    min_rsi=None,
+                    max_rsi=max_rsi,
+                    min_adx=None,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    limit=limit,
+                    adv_krw_min=adv_krw_min,
+                    market_cap_min_krw=market_cap_min_krw,
+                    market_cap_max_krw=market_cap_max_krw,
+                    instrument_types=instrument_types,
+                    exclude_sectors=exclude_sectors,
+                    exclude_sector_keys=exclude_sector_keys,
                 )
-        except Exception as exc:
-            logger.debug(
-                "tvscreener Korean screening failed, falling back to legacy: %s",
-                exc,
-            )
+                if tvscreener_result and not tvscreener_result.get("error"):
+                    logger.info(
+                        "Korean stock screening via tvscreener succeeded: %d stocks",
+                        tvscreener_result.get("count", 0),
+                    )
+                    return _adapt_tvscreener_stock_response(
+                        tvscreener_result,
+                        market=market,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "tvscreener Korean screening failed, falling back to legacy: %s",
+                    exc,
+                )
 
-    # Fallback to legacy implementation
-    return await _screen_kr(
-        market=market,
-        asset_type=asset_type,
-        category=category,
-        min_market_cap=min_market_cap,
-        max_per=max_per,
-        max_pbr=max_pbr,
-        min_dividend_yield=min_dividend_yield,
-        max_rsi=max_rsi,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        limit=limit,
-        adv_krw_min=adv_krw_min,
-        market_cap_min_krw=market_cap_min_krw,
-        market_cap_max_krw=market_cap_max_krw,
-        instrument_types=instrument_types,
-        exclude_sectors=exclude_sectors,
-        exclude_sector_keys=exclude_sector_keys,
-    )
+        # Fallback to legacy implementation
+        return await _screen_kr(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            adv_krw_min=adv_krw_min,
+            market_cap_min_krw=market_cap_min_krw,
+            market_cap_max_krw=market_cap_max_krw,
+            instrument_types=instrument_types,
+            exclude_sectors=exclude_sectors,
+            exclude_sector_keys=exclude_sector_keys,
+        )
+    except KRXSessionExpiredError:
+        logger.warning(
+            "KRX session expired during KR screening; returning unavailable signal"
+        )
+        return _krx_session_unavailable_response(market, sort_by, sort_order)

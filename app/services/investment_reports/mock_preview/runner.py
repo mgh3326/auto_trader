@@ -28,6 +28,9 @@ from app.services.action_report.snapshot_backed.collectors.registry import (
     production_collector_registry,
 )
 from app.services.investment_reports.ingestion import InvestmentReportIngestionService
+from app.services.investment_reports.investment_report_news_service import (
+    InvestmentReportNewsService,
+)
 from app.services.investment_reports.mock_preview.bridge import (
     MockPreviewBridge,
     extract_order_params,
@@ -54,6 +57,7 @@ class MockPreviewReportRunner:
         self._reports_repo = InvestmentReportsRepository(session)
         self._snap_repo = InvestmentSnapshotsRepository(session)
         self._ingestion = InvestmentReportIngestionService(session)
+        self._news_service = InvestmentReportNewsService(self._reports_repo)
         self._bridge = bridge if bridge is not None else MockPreviewBridge()
         # ROB-379 smoke finding: the default SnapshotBundleEnsureService registry
         # is EMPTY (Phase-2 stub), so an un-injected ensure produced a `failed`
@@ -183,6 +187,14 @@ class MockPreviewReportRunner:
                 report.id, snapshot_bundle_uuid=ensure_resp.bundle_uuid
             )
             await self._session.refresh(report)
+
+        # ROB-423 — copy the live report's news citations onto the mock
+        # (report-level). Skip when this run idempotently reused an existing
+        # mock that already carries them.
+        if not reused:
+            await self._news_service.copy_for_mock(
+                live_report_uuid=live.report_uuid, mock_report=report
+            )
 
         return report, reused, count
 

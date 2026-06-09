@@ -219,5 +219,13 @@ class TestYahooService:
             "EPS": 5.6,
             "BPS": 20.1,
             "Dividend Yield": 0.012,
+            # ROB-440: ROE (percent) now extracted; None here (mock .info omits
+            # returnOnEquity) — fail-closed.
+            "ROE": None,
+            # ROB-440 Part 2: 52w high/low (price); None here (mock omits them).
+            "yearHigh": None,
+            "yearLow": None,
+            # ROB-440: marketCap; None here (mock omits it).
+            "marketCap": None,
         }
         assert mock_ticker_class.call_args.kwargs["session"] is tracing_session

@@ -53,6 +53,12 @@ _MARKET_TO_INDEX_SYMBOLS: dict[str, list[str]] = {
 # deterministic fundamentals index source so this module imports no MCP tooling.
 IndexQuoteFn = Callable[[list[str]], Awaitable[list[dict[str, Any]]]]
 
+# ROB-381 PR3 — read-only callable returning the Upbit altseason snapshot
+# (UBAI/UBMI ratio + 24h alt-vs-BTC breadth) or ``None``. Wired in registry.py
+# over ``fetch_upbit_altseason`` and only consulted for the crypto market, so the
+# Hermes crypto market dimension gains an altseason signal. Best-effort.
+AltseasonFn = Callable[[], Awaitable[dict[str, Any] | None]]
+
 
 class MarketEventsSnapshotCollector:
     """Required-kind ``market`` collector backed by ``market_events``."""
@@ -65,12 +71,14 @@ class MarketEventsSnapshotCollector:
         *,
         query_service: MarketEventsQueryService | None = None,
         index_quote_fn: IndexQuoteFn | None = None,
+        altseason_fn: AltseasonFn | None = None,
         lookback_days: int = 0,
         lookahead_days: int = 1,
     ) -> None:
         self._session = session
         self._query = query_service or MarketEventsQueryService(session)
         self._index_quote_fn = index_quote_fn
+        self._altseason_fn = altseason_fn
         self._lookback = max(0, lookback_days)
         self._lookahead = max(0, lookahead_days)
 
@@ -113,6 +121,14 @@ class MarketEventsSnapshotCollector:
         indices = await self._collect_indices(request.market)
         if indices:
             payload["indices"] = indices
+            if request.market == "kr" and request.market_session == "nxt":
+                payload["index_session"] = "regular_closed"
+                payload["index_session_note"] = (
+                    "KRX 정규장 미개장, 전일 종가 기준(frozen)"
+                )
+        altseason = await self._collect_altseason(request.market)
+        if altseason:
+            payload["altseason"] = altseason
         return [
             build_result(
                 snapshot_kind=self.snapshot_kind,
@@ -126,6 +142,7 @@ class MarketEventsSnapshotCollector:
                     "from_date": from_date.isoformat(),
                     "to_date": to_date.isoformat(),
                     "index_count": len(payload.get("indices", {})),
+                    "has_altseason": bool(altseason),
                 },
             )
         ]
@@ -169,3 +186,19 @@ class MarketEventsSnapshotCollector:
                 "current": row.get("current"),
             }
         return indices
+
+    async def _collect_altseason(self, market: str) -> dict[str, Any] | None:
+        """Attach the Upbit altseason snapshot to the crypto market dimension.
+
+        Crypto-only and best-effort: returns ``None`` for non-crypto markets, when
+        no altseason source is wired, or on any fetch error — the rest of the
+        market snapshot is emitted regardless (never fabricated).
+        """
+        if market != "crypto" or self._altseason_fn is None:
+            return None
+        try:
+            altseason = await self._altseason_fn()
+        except Exception as exc:  # noqa: BLE001 — altseason is best-effort
+            _logger.info("altseason fetch failed for %s: %r", market, exc)
+            return None
+        return altseason if isinstance(altseason, dict) else None

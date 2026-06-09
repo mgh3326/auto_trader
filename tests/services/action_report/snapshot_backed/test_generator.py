@@ -1589,6 +1589,10 @@ async def test_descriptors_freeze_numeric_baseline_from_payload() -> None:
         "from_date": "2026-05-30",
         "to_date": "2026-05-30",
         "indices": {"SPX": {"price": 5300.0, "change_pct": 0.4}},
+        "altseason": {
+            "ubai_ubmi_ratio": 0.455,
+            "breadth": {"alts_beating_btc_pct": 0.42},
+        },
         "events": [{"big": "blob"}],  # heavy list must NOT be frozen
     }
     portfolio = _FakeSnap(kind="portfolio")
@@ -1618,6 +1622,10 @@ async def test_descriptors_freeze_numeric_baseline_from_payload() -> None:
         "SPX": {"price": 5300.0, "change_pct": 0.4}
     }
     assert sent.market_snapshot["baseline"]["market"] == "us"
+    assert sent.market_snapshot["baseline"]["altseason"] == {
+        "ubai_ubmi_ratio": 0.455,
+        "breadth": {"alts_beating_btc_pct": 0.42},
+    }
     assert "events" not in sent.market_snapshot["baseline"]
 
     pb = sent.portfolio_snapshot["baseline"]

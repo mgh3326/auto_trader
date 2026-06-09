@@ -54,6 +54,52 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def mock_screener_service_resolve_healthy(monkeypatch):
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+        resolve_healthy_partition,
+    )
+
+    orig_resolve = resolve_healthy_partition
+
+    async def _fake_resolve(session, **kwargs):
+        if type(session).__name__ in ("_FakeSession", "_RouterFakeSession"):
+            # It's a fake session! Consume the first result
+            partition_date = None
+            results_attr = "_results" if hasattr(session, "_results") else "results"
+            results_list = getattr(session, results_attr, [])
+            if results_list:
+                first_res = results_list.pop(0)
+                partition_date = first_res.scalar_one_or_none()
+            return HealthyPartition(
+                partition_date=partition_date,
+                row_count=9999,
+                coverage_ratio=1.0,
+                is_fallback=False,
+                healthy=True,
+            )
+        else:
+            # It's a real db session! Run the original resolver
+            hp = await orig_resolve(session, **kwargs)
+            if hp:
+                return HealthyPartition(
+                    partition_date=hp.partition_date,
+                    row_count=hp.row_count,
+                    coverage_ratio=hp.coverage_ratio,
+                    is_fallback=hp.is_fallback,
+                    healthy=True,
+                )
+            return None
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _fake_resolve,
+    )
+
+
 class _FakeScalarResult:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
@@ -77,6 +123,12 @@ class _FakeExecuteResult:
 
     def scalar_one_or_none(self) -> Any | None:
         return self._scalar_rows[0] if self._scalar_rows else None
+
+    def scalar(self) -> Any | None:
+        return self._scalar_rows[0] if self._scalar_rows else None
+
+    def mappings(self) -> _FakeExecuteResult:
+        return self
 
     def one(self) -> Any:
         if self._rows:
@@ -201,6 +253,91 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_consecutive_gainers_threads_filter_overrides_to_loader(
+    monkeypatch,
+) -> None:
+    # ROB-439 PR2: filter_overrides must thread loosen/tighten thresholds into the
+    # snapshot loader's WHERE; no overrides → loader keeps the preset defaults.
+    from app.services.invest_view_model import screener_service as svc
+    from app.services.invest_view_model.screener_filters import ScreenerFilterCondition
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_loader(session, **kwargs):  # noqa: ANN001, ANN003
+        captured.clear()
+        captured.update(kwargs)
+        return svc._SnapshotLoadResult(rows=[], partition_date=date(2026, 5, 11))
+
+    monkeypatch.setattr(svc, "_should_use_snapshot_first", lambda _s: True)
+    monkeypatch.setattr(svc, "_load_consecutive_gainers_from_snapshots", _fake_loader)
+
+    fake_screening = MagicMock()
+    resolver = _FakeResolver(watched=set())
+
+    # no overrides → loader gets no threshold kwargs (defaults 5 / 0.0 apply).
+    await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+        session=object(),
+    )
+    assert "min_consecutive_up_days" not in captured
+    assert "min_week_change_rate" not in captured
+
+    # loosen days to 3 → threaded; unspecified week_change_rate keeps preset 0.0.
+    await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+        session=object(),
+        filter_overrides=[ScreenerFilterCondition("consecutive_up_days", "gte", 3)],
+    )
+    assert captured["min_consecutive_up_days"] == 3
+    assert captured["min_week_change_rate"] == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fundamentals_presets_use_raised_display_limit(monkeypatch) -> None:
+    # ROB-436 C-2: fundamentals presets (tvscreener path) display closer to the full
+    # Toss match set (was 20). build_screener_results must pass the raised limit.
+    from app.services.invest_view_model import kr_fundamentals_tv_screener as tv
+    from app.services.invest_view_model import screener_service as svc
+    from app.services.invest_view_model.fundamentals_screener import (
+        FundamentalsScreenResult,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_loader(session, **kwargs):  # noqa: ANN001, ANN003
+        captured.clear()
+        captured.update(kwargs)
+        return FundamentalsScreenResult(
+            rows=[],
+            valuation_partition_date=date(2026, 6, 4),
+            fundamentals_partition_date=date(2026, 6, 4),
+            fundamentals_collected_at=None,
+            fundamentals_state="fresh",
+        )
+
+    monkeypatch.setattr(svc, "_should_use_snapshot_first", lambda _s: True)
+    monkeypatch.setattr(
+        tv, "load_kr_fundamentals_preset_from_tv_snapshot", _fake_loader
+    )
+
+    fake_screening = MagicMock()
+    resolver = _FakeResolver(watched=set())
+    await build_screener_results(
+        preset_id="cheap_value",
+        screening_service=fake_screening,
+        resolver=resolver,
+        session=object(),
+    )
+    assert captured["limit"] == svc._FUNDAMENTALS_DISPLAY_LIMIT == 200
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_screener_results_forwards_us_market_and_formats_us_labels() -> (
     None
 ):
@@ -241,7 +378,9 @@ async def test_build_screener_results_forwards_us_market_and_formats_us_labels()
     resolver = _FakeResolver(watched={("us", "AAPL")})
 
     resp = await build_screener_results(
-        preset_id="cheap_value",
+        # growth_expectation routes via the generic provider (not KR-only, not
+        # snapshot-first); cheap_value is now KR-only/snapshot-only after ROB-422 PR2c-1.
+        preset_id="growth_expectation",
         screening_service=fake_screening,
         resolver=resolver,
         market="us",
@@ -270,6 +409,10 @@ async def test_build_screener_presets_returns_crypto_presets() -> None:
         "crypto_high_volume",
         "crypto_oversold",
         "crypto_momentum",
+        "crypto_funding_squeeze",
+        "crypto_funding_overheated",
+        "crypto_oi_surge",
+        "crypto_long_short_skew",
     ]
     assert all(p.market == "crypto" for p in resp.presets)
 
@@ -1056,8 +1199,9 @@ async def test_build_screener_results_warns_when_only_market_cap_fallback_is_abs
 @pytest.mark.parametrize(
     ("preset_id", "field", "value", "expected"),
     [
-        ("cheap_value", "per", 8.25, "8.2"),
-        ("steady_dividend", "dividend_yield", 3.456, "3.46%"),
+        # cheap_value/steady_dividend are now snapshot-only (ROB-422 PR2c-1) and no
+        # longer route through the generic-provider stub this test drives. Their metric
+        # formatting (per / dividend_yield) is covered by other presets/tests.
         ("oversold_recovery", "rsi", 29.94, "29.9"),
         ("kr_high_volume_surge", "volume", 1_234_567, "1,234,567"),
     ],
@@ -1187,6 +1331,9 @@ async def test_build_screener_results_emits_freshness_live() -> None:
     assert resp.freshness.cacheHit is False
     assert resp.freshness.asOfLabel == "2026.05.10 14:30 기준"  # KST = UTC+9
     assert resp.freshness.relativeLabel == "12분 전 갱신"
+    # ROB-426 PR3: a non-snapshot (live) path carries degradationReason="live".
+    assert resp.freshness.primary is not None
+    assert resp.freshness.primary.degradationReason == "live"
 
 
 @pytest.mark.unit
@@ -1826,7 +1973,14 @@ def test_build_freshness_no_change_to_existing_callsite_with_defaults() -> None:
 # ---------------------------------------------------------------------------
 
 
-_DOUBLE_BUY_TEST_SYMBOLS = ["921100", "921200", "921300", "922100", "923000"]
+_DOUBLE_BUY_TEST_SYMBOLS = [
+    "921100",
+    "921200",
+    "921300",
+    "922100",
+    "923000",
+    "923100",
+]
 
 
 @pytest.mark.unit
@@ -1868,6 +2022,11 @@ async def test_double_buy_preset_missing_snapshot_reports_missing_state() -> Non
     assert resp.results == []
     assert resp.freshness.dataState == "missing"
     assert any("스냅샷" in w for w in resp.warnings)
+    # ROB-426 PR3: the snapshot-only preset has no partition, but freshness.primary
+    # must still carry degradationReason="snapshot_missing" so the UI renders the
+    # "스냅샷 준비중" empty-state instead of the generic fallback message.
+    assert resp.freshness.primary is not None
+    assert resp.freshness.primary.degradationReason == "snapshot_missing"
 
 
 @pytest.mark.asyncio
@@ -1962,6 +2121,27 @@ async def test_double_buy_preset_returns_snapshot_filtered_rows(db_session) -> N
                     institution_net=-1,
                     double_buy=False,
                     double_sell=True,
+                    source="naver_finance",
+                ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today's > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol="921100",
+                    snapshot_date=today - _dt.timedelta(days=1),
+                    foreign_net=500_000,
+                    institution_net=1_000_000,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol="921200",
+                    snapshot_date=today - _dt.timedelta(days=1),
+                    foreign_net=100_000,
+                    institution_net=100_000,
+                    double_buy=True,
+                    double_sell=False,
                     source="naver_finance",
                 ),
             ]
@@ -2085,17 +2265,30 @@ async def test_double_buy_preset_stale_when_price_snapshot_older_than_flow(
                 is_active=True,
             )
         )
-        db_session.add(
-            InvestorFlowSnapshot(
-                market="kr",
-                symbol=symbol,
-                snapshot_date=flow_date,
-                foreign_net=1,
-                institution_net=1,
-                double_buy=True,
-                double_sell=False,
-                source="naver_finance",
-            )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=flow_date,
+                    foreign_net=1,
+                    institution_net=1,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=flow_date - _dt.timedelta(days=1),
+                    foreign_net=0,
+                    institution_net=0,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+            ]
         )
         db_session.add(
             InvestScreenerSnapshot(
@@ -2193,17 +2386,30 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
                 is_active=True,
             )
         )
-        db_session.add(
-            InvestorFlowSnapshot(
-                market="kr",
-                symbol=symbol,
-                snapshot_date=past_dt,
-                foreign_net=1,
-                institution_net=1,
-                double_buy=True,
-                double_sell=False,
-                source="naver_finance",
-            )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=past_dt,
+                    foreign_net=1,
+                    institution_net=1,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=past_dt - _dt.timedelta(days=1),
+                    foreign_net=0,
+                    institution_net=0,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+            ]
         )
         db_session.add(
             InvestScreenerSnapshot(
@@ -2237,8 +2443,10 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
         )
 
         fake_screening.list_screening.assert_not_called()
+        # ROB-430 트랙 B: flow stale by exactly 1 calendar day (12-30 vs 12-31) →
+        # the warning states the actual snapshot date + lag (not a hardcoded "1일").
         flow_warning = (
-            "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."
+            "수급 스냅샷이 2099-12-30 기준이라 외인/기관 정보가 1일 지연되었습니다."
         )
         assert flow_warning in resp.warnings, (
             f"expected flow-side stale warning in {resp.warnings}"
@@ -2249,6 +2457,116 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
             f"price-stale warning must not appear when price==flow date: {resp.warnings}"
         )
         # state_override from helper bumps fresh → stale.
+        assert resp.freshness.dataState in {"stale", "fallback"}
+    finally:
+        await _purge()
+
+
+@pytest.mark.asyncio
+async def test_double_buy_flow_stale_warning_reports_actual_multiday_lag(
+    db_session,
+) -> None:
+    """ROB-430 트랙 B: a multi-day-old investor-flow partition must report the real
+    lag (e.g. 3일), not a hardcoded "1일" that understated the staleness.
+    """
+    import datetime as _dt
+    import decimal as _dec
+
+    import sqlalchemy as _sa
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
+    snap_dt = _dt.date(2099, 12, 28)  # both partitions; market date will be 12-31
+    symbol = "923100"
+
+    async def _purge() -> None:
+        await db_session.execute(
+            _sa.delete(InvestorFlowSnapshot).where(
+                InvestorFlowSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(InvestScreenerSnapshot).where(
+                InvestScreenerSnapshot.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol.in_(_DOUBLE_BUY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.commit()
+
+    await _purge()
+    try:
+        db_session.add(
+            KRSymbolUniverse(
+                symbol=symbol, name="다일지연주", exchange="KOSPI", is_active=True
+            )
+        )
+        db_session.add_all(
+            [
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=snap_dt,
+                    foreign_net=1,
+                    institution_net=1,
+                    double_buy=True,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+                # ROB-431: prior flow partition (DoD delta) — lower net so today > prior.
+                InvestorFlowSnapshot(
+                    market="kr",
+                    symbol=symbol,
+                    snapshot_date=snap_dt - _dt.timedelta(days=1),
+                    foreign_net=0,
+                    institution_net=0,
+                    double_buy=False,
+                    double_sell=False,
+                    source="naver_finance",
+                ),
+            ]
+        )
+        db_session.add(
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=snap_dt,
+                latest_close=_dec.Decimal("10000"),
+                prev_close=_dec.Decimal("9000"),
+                change_rate=_dec.Decimal("11.0"),
+                daily_volume=1,
+                closes_window=[9000, 9500, 9800, 9900, 10000],
+                source="kis",
+            )
+        )
+        await db_session.commit()
+
+        fake_screening = type(
+            "ScreenerService",
+            (_FakeProductionScreening,),
+            {"__module__": "app.services.screener_service"},
+        )()
+
+        # market date = 12-31; flow date = 12-28 → 3 calendar days behind.
+        resp = await build_screener_results(
+            preset_id="double_buy",
+            screening_service=fake_screening,
+            resolver=_FakeResolver(watched=set()),
+            session=db_session,
+            now=lambda: datetime(2099, 12, 31, 6, 0, tzinfo=UTC),
+        )
+
+        assert any(r.symbol == symbol for r in resp.results)
+        # The actual lag (3일) + snapshot date must appear — never a flat "1일".
+        assert (
+            "수급 스냅샷이 2099-12-28 기준이라 외인/기관 정보가 3일 지연되었습니다."
+            in resp.warnings
+        ), f"expected actual 3-day flow lag in {resp.warnings}"
         assert resp.freshness.dataState in {"stale", "fallback"}
     finally:
         await _purge()
@@ -2265,10 +2583,12 @@ async def test_double_buy_preset_flow_stale_warning_when_all_flow_dates_in_past(
 async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_dependency() -> (
     None
 ):
-    """ROB-277 follow-up FU2/FU6: when primary partition is today's and an
-    investor_flow snapshot is 2 trading days older, freshness.dependencies must
-    surface that as a 'stale' investor_flow entry with the correct snapshotDate
-    and lagLabel, and overallState must be 'stale' per D1.c rule 2."""
+    """ROB-432: consecutive_gainers (price preset) must NOT be dragged stale by a
+    stale investor_flow partition. investor_flow is a supplementary per-row chip
+    here, not a screening input, so it is not a freshness dependency — overallState
+    stays fresh. (Supersedes the ROB-277 FU2/FU6 behavior where every KR preset
+    treated investor_flow as a dependency; now only double_buy /
+    investor_flow_momentum, which actually screen on 수급, do.)"""
     import datetime as dt
 
     today_kr = dt.date(2026, 5, 20)  # Wednesday
@@ -2329,6 +2649,18 @@ async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_depend
                 rows=[_name_row("005930", "삼성전자")]
             ),  # Q3: filter names
             _FakeExecuteResult(
+                scalar_rows=[today_kr]
+            ),  # Q4: MAX(snapshot_date) for MarketValuationSnapshot
+            _FakeExecuteResult(
+                rows=[
+                    type(
+                        "Row",
+                        (),
+                        {"symbol": "005930", "market_cap": 418_000_000_000_000},
+                    )()
+                ]
+            ),  # Q5: MarketValuationSnapshot select query
+            _FakeExecuteResult(
                 scalar_rows=[
                     _FakeSnapshot(
                         symbol="005930",
@@ -2337,8 +2669,8 @@ async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_depend
                         week_change_rate=Decimal("3.5"),
                     )
                 ]
-            ),  # Q4: enrichment
-            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # Q5: kr_names
+            ),  # Q6: enrichment
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # Q7: kr_names
         ]
     )
 
@@ -2363,17 +2695,14 @@ async def test_consecutive_gainers_fresh_primary_with_stale_investor_flow_depend
     assert f.primary is not None
     assert f.primary.snapshotDate == today_kr.isoformat()
     assert f.primary.dataState == "fresh"
-    # Dependency surfaces the investor-flow partition (NOT the primary date)
-    assert len(f.dependencies) == 1
-    dep = f.dependencies[0]
-    assert dep.kind == "investor_flow"
-    assert dep.snapshotDate == inv_partition.isoformat()
-    assert dep.dataState == "stale"
-    # lagLabel reflects the 2-day gap (calendar diff between today and inv_partition)
-    assert dep.lagLabel is not None and "일 지연" in dep.lagLabel
-    # D1.c rule 2: primary fresh + dep stale → overall stale
-    assert f.overallState == "stale"
-    assert f.dataState == "stale"
+    # ROB-432: consecutive_gainers screens on price momentum, NOT 수급. investor_flow
+    # is a supplementary per-row chip (still hydrated/shown), NOT a freshness
+    # dependency — so a stale investor_flow partition must NOT drag overallState.
+    # (Was: dep present + overall stale; only double_buy/investor_flow_momentum,
+    # which actually screen on 수급, treat it as a dependency now.)
+    assert f.dependencies == []
+    assert f.overallState == "fresh"
+    assert f.dataState == "fresh"
 
 
 @pytest.mark.unit
@@ -2449,3 +2778,584 @@ def test_crypto_candidate_context_matches_builder_labels():
     assert ctx.scoreLabel == "+4.20%"
     assert ctx.reasons == ["단기 상승 모멘텀 후보"]
     assert ctx.source == "tvscreener_upbit"
+
+
+def test_partition_degradation_maps_each_case():
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+    from app.services.invest_view_model.screener_service import _partition_degradation
+
+    # no partition
+    assert _partition_degradation(None, rows_empty=True) == ("snapshot_missing", None)
+
+    # thin newest (not healthy): coverage_ratio 20/3800
+    thin = HealthyPartition(
+        partition_date=__import__("datetime").date(2026, 5, 22),
+        row_count=20,
+        coverage_ratio=20 / 3800,
+        is_fallback=False,
+        healthy=False,
+    )
+    reason, label = _partition_degradation(thin, rows_empty=False)
+    assert reason == "coverage_below_floor"
+    assert label == "20 / 3,800 (0.5%)"
+
+    # older healthy fallback
+    older = HealthyPartition(
+        partition_date=__import__("datetime").date(2026, 5, 20),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=True,
+        healthy=True,
+    )
+    assert _partition_degradation(older, rows_empty=False) == ("older_fallback", None)
+
+    # healthy newest, no qualifiers
+    healthy = HealthyPartition(
+        partition_date=__import__("datetime").date(2026, 6, 3),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+    assert _partition_degradation(healthy, rows_empty=True) == (
+        "healthy_no_matches",
+        None,
+    )
+
+    # healthy newest with results -> no degradation
+    assert _partition_degradation(healthy, rows_empty=False) == (None, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_consecutive_gainers_thin_partition_sets_coverage_reason(monkeypatch):
+    """When the served partition is thin (not healthy), the loader result carries
+    degradation_reason='coverage_below_floor' and a coverage label, plus joined market_cap."""
+    import datetime as dt
+
+    import app.services.invest_view_model.screener_service as svc
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    thin = HealthyPartition(
+        partition_date=dt.date(2026, 5, 22),
+        row_count=20,
+        coverage_ratio=20 / 3800,
+        is_fallback=False,
+        healthy=False,
+    )
+    val_hp = HealthyPartition(
+        partition_date=dt.date(2026, 5, 22),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestScreenerSnapshot:
+            return thin
+        elif model == MarketValuationSnapshot:
+            return val_hp
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    snap = _FakeSnapshot(symbol="005930", snapshot_date=dt.date(2026, 5, 22))
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snap]),  # snapshot candidate rows
+            _FakeExecuteResult(
+                rows=[type("Row", (), {"symbol": "005930", "name": "삼성전자"})()]
+            ),  # name lookup
+            _FakeExecuteResult(
+                rows=[
+                    type(
+                        "Row",
+                        (),
+                        {"symbol": "005930", "market_cap": 418_000_000_000_000},
+                    )()
+                ]
+            ),  # valuation lookup
+        ]
+    )
+
+    result = await svc._load_consecutive_gainers_from_snapshots(
+        session,
+        market="kr",
+        limit=10,
+        now=lambda: dt.datetime(2026, 5, 22, 6, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    assert result.degradation_reason == "coverage_below_floor"
+    assert result.coverage_label == "20 / 3,800 (0.5%)"
+    assert result.rows[0]["market_cap"] == 418_000_000_000_000.0
+    assert result.rows[0]["_market_cap_source"] == "primary"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_investor_flow_older_fallback_sets_reason(monkeypatch):
+    """When the served partition is older fallback, the loader result carries
+    degradation_reason='older_fallback' and coverage_label is None, plus joined market_cap."""
+    import datetime as dt
+
+    import app.services.invest_view_model.screener_service as svc
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    older = HealthyPartition(
+        partition_date=dt.date(2026, 5, 30),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=True,
+        healthy=True,
+    )
+    val_hp = HealthyPartition(
+        partition_date=dt.date(2026, 5, 30),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestorFlowSnapshot:
+            return older
+        elif model == MarketValuationSnapshot:
+            return val_hp
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    snap = type(
+        "InvestorFlowSnapshot",
+        (),
+        {
+            "symbol": "005930",
+            "snapshot_date": dt.date(2026, 5, 30),
+            "double_buy": True,
+            "foreign_consecutive_buy_days": 5,
+            "institution_consecutive_buy_days": 4,
+            "foreign_net_buy_rank": 1,
+            "foreign_net": 1000,
+            "institution_net": 2000,
+            "individual_net": -3000,
+            "collected_at": dt.datetime(2026, 5, 30, 7, tzinfo=dt.UTC),
+        },
+    )()
+
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snap]),  # snapshot candidate rows
+            _FakeExecuteResult(
+                rows=[type("Row", (), {"symbol": "005930", "name": "삼성전자"})()]
+            ),  # name lookup
+            _FakeExecuteResult(
+                rows=[
+                    type(
+                        "Row",
+                        (),
+                        {"symbol": "005930", "market_cap": 418_000_000_000_000},
+                    )()
+                ]
+            ),  # valuation lookup
+        ]
+    )
+
+    result = await svc._load_investor_flow_discovery_from_snapshots(
+        session,
+        market="kr",
+        limit=10,
+        now=lambda: dt.datetime(2026, 6, 3, 6, tzinfo=dt.UTC),
+    )
+    assert result is not None
+    assert result.degradation_reason == "older_fallback"
+    assert result.coverage_label is None
+    assert result.rows[0]["market_cap"] == 418_000_000_000_000.0
+    assert result.rows[0]["_market_cap_source"] == "primary"
+
+
+def test_build_freshness_carries_degradation_reason_and_coverage():
+    from app.services.invest_view_model.screener_service import _build_freshness
+
+    fr = _build_freshness(
+        raw_timestamp=None,
+        cache_hit=True,
+        market="kr",
+        now=lambda: datetime(2026, 6, 3, 6, tzinfo=UTC),
+        dataState="stale",
+        primary_kind="screener_snapshot",
+        primary_snapshot_date=date(2026, 5, 22),
+        primary_source="invest_screener_snapshots",
+        primary_degradation_reason="coverage_below_floor",
+        primary_coverage_label="20 / 3,800 (0.5%)",
+    )
+    assert fr.primary is not None
+    assert fr.primary.degradationReason == "coverage_below_floor"
+    assert fr.primary.coverageLabel == "20 / 3,800 (0.5%)"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_healthy_no_matches_is_not_stale(monkeypatch):
+    """A healthy newest partition with 0 qualifiers must NOT be labeled stale;
+    freshness.primary.degradationReason must be 'healthy_no_matches'."""
+    import datetime as dt
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    # We want a healthy partition for the newest partition date (e.g. today).
+    today_date = dt.date(2026, 6, 3)
+    healthy_new = HealthyPartition(
+        partition_date=today_date,
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+    val_hp = HealthyPartition(
+        partition_date=today_date,
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestScreenerSnapshot:
+            return healthy_new
+        elif model == MarketValuationSnapshot:
+            return val_hp
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[]),  # Q2: qualifying rows: NONE
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="kr",
+        session=session,
+        now=lambda: dt.datetime(2026, 6, 3, 8, tzinfo=dt.UTC),  # KST 17:00
+    )
+
+    assert resp.results == []
+    assert resp.freshness.primary.degradationReason == "healthy_no_matches"
+    assert resp.freshness.primary.dataState != "stale"
+    assert resp.freshness.dataState == "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_market_cap_source_surfaced_on_row(monkeypatch):
+    """A consecutive_gainers row whose market_cap came from the valuation join
+    carries marketCapSource."""
+    import datetime as dt
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    today_date = dt.date(2026, 6, 3)
+    healthy_new = HealthyPartition(
+        partition_date=today_date,
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+    val_hp = HealthyPartition(
+        partition_date=today_date,
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestScreenerSnapshot:
+            return healthy_new
+        elif model == MarketValuationSnapshot:
+            return val_hp
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    snap = _FakeSnapshot(symbol="005930", snapshot_date=today_date)
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snap]),  # snapshot candidate rows
+            _FakeExecuteResult(
+                rows=[type("Row", (), {"symbol": "005930", "name": "삼성전자"})()]
+            ),  # name lookup
+            _FakeExecuteResult(
+                rows=[
+                    type(
+                        "Row",
+                        (),
+                        {"symbol": "005930", "market_cap": 418_000_000_000_000},
+                    )()
+                ]
+            ),  # valuation lookup
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="kr",
+        session=session,
+        now=lambda: dt.datetime(2026, 6, 3, 6, tzinfo=dt.UTC),
+    )
+
+    assert len(resp.results) == 1
+    assert resp.results[0].marketCapSource == "primary"
+
+
+def _pr3_reason_session(today_date):
+    """A _FakeSession yielding one consecutive_gainers snapshot row + KR name +
+    valuation market_cap (reused by the ROB-426 PR3 reason-matrix e2e tests)."""
+    snap = _FakeSnapshot(symbol="005930", snapshot_date=today_date)
+    return _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snap]),  # candidate snapshot rows
+            _FakeExecuteResult(
+                rows=[type("Row", (), {"symbol": "005930", "name": "삼성전자"})()]
+            ),  # KR name lookup
+            _FakeExecuteResult(
+                rows=[
+                    type(
+                        "Row",
+                        (),
+                        {"symbol": "005930", "market_cap": 418_000_000_000_000},
+                    )()
+                ]
+            ),  # valuation market_cap lookup
+        ]
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coverage_below_floor_reason_reaches_response(monkeypatch):
+    """A thin (not healthy) snapshot partition surfaces degradationReason=
+    'coverage_below_floor' + a coverageLabel through build_screener_results."""
+    import datetime as dt
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    today_date = dt.date(2026, 6, 3)
+    thin = HealthyPartition(
+        partition_date=today_date,
+        row_count=20,
+        coverage_ratio=20 / 3800,
+        is_fallback=False,
+        healthy=False,
+    )
+    val_hp = HealthyPartition(
+        partition_date=today_date,
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestScreenerSnapshot:
+            return thin
+        if model == MarketValuationSnapshot:
+            return val_hp
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="kr",
+        session=_pr3_reason_session(today_date),
+        now=lambda: dt.datetime(2026, 6, 3, 6, tzinfo=dt.UTC),
+    )
+
+    assert resp.freshness.primary is not None
+    assert resp.freshness.primary.degradationReason == "coverage_below_floor"
+    assert resp.freshness.primary.coverageLabel == "20 / 3,800 (0.5%)"
+    # A degraded partition must never be labeled fresh (cap_degraded invariant);
+    # exact stale-vs-missing depends on row classification, out of scope here.
+    assert resp.freshness.primary.dataState != "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_older_fallback_reason_reaches_response(monkeypatch):
+    """An older (is_fallback) healthy partition surfaces degradationReason=
+    'older_fallback' (no coverageLabel) through build_screener_results."""
+    import datetime as dt
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    today_date = dt.date(2026, 6, 3)
+    older = HealthyPartition(
+        partition_date=dt.date(2026, 5, 30),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=True,
+        healthy=True,
+    )
+    val_hp = HealthyPartition(
+        partition_date=today_date,
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestScreenerSnapshot:
+            return older
+        if model == MarketValuationSnapshot:
+            return val_hp
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="kr",
+        session=_pr3_reason_session(dt.date(2026, 5, 30)),
+        now=lambda: dt.datetime(2026, 6, 3, 6, tzinfo=dt.UTC),
+    )
+
+    assert resp.freshness.primary is not None
+    assert resp.freshness.primary.degradationReason == "older_fallback"
+    assert resp.freshness.primary.coverageLabel is None
+    # A degraded (older fallback) partition must never be labeled fresh.
+    assert resp.freshness.primary.dataState != "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_market_cap_source_fallback_when_valuation_partition_is_fallback(
+    monkeypatch,
+):
+    """When the valuation partition served for the market_cap join is an older
+    fallback partition, the row carries marketCapSource='fallback'."""
+    import datetime as dt
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+
+    today_date = dt.date(2026, 6, 3)
+    healthy_new = HealthyPartition(
+        partition_date=today_date,
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=False,
+        healthy=True,
+    )
+    val_fallback = HealthyPartition(
+        partition_date=dt.date(2026, 5, 30),
+        row_count=3800,
+        coverage_ratio=1.0,
+        is_fallback=True,  # older valuation partition served
+        healthy=True,
+    )
+
+    async def _fake_resolve(session, model, **kwargs):
+        if model == InvestScreenerSnapshot:
+            return healthy_new
+        if model == MarketValuationSnapshot:
+            return val_fallback
+        return None
+
+    import app.services.invest_screener_snapshots.partition_health as ph
+
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _fake_resolve)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="kr",
+        session=_pr3_reason_session(today_date),
+        now=lambda: dt.datetime(2026, 6, 3, 6, tzinfo=dt.UTC),
+    )
+
+    assert len(resp.results) == 1
+    assert resp.results[0].marketCapSource == "fallback"
+
+
+def test_investor_flow_dependency_presets_are_supply_only() -> None:
+    # ROB-432: only 수급-screening presets treat investor_flow as a freshness
+    # dependency. Guards against re-broadening it to fundamentals/price presets.
+    from app.services.invest_view_model.screener_service import (
+        _INVESTOR_FLOW_DEPENDENCY_PRESETS,
+    )
+
+    assert _INVESTOR_FLOW_DEPENDENCY_PRESETS == frozenset(
+        {"double_buy", "investor_flow_momentum"}
+    )
+    for non_supply in ("undervalued_growth", "high_yield_value", "consecutive_gainers"):
+        assert non_supply not in _INVESTOR_FLOW_DEPENDENCY_PRESETS

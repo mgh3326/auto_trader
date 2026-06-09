@@ -1,0 +1,66 @@
+[
+  {
+    "changeRate7Days": -0.0467924331,
+    "changeRate30Days": -0.0379228539,
+    "changeRate90Days": 0.1417042042,
+    "changeRate180Days": -0.1523395163,
+    "changeRate365Days": -0.2553657409,
+    "code": "CRIX.UPBIT.KRW-BTC"
+  },
+  {
+    "changeRate7Days": -0.0517840227,
+    "changeRate30Days": -0.1083729216,
+    "changeRate90Days": 0.0615058324,
+    "changeRate180Days": -0.2838063439,
+    "changeRate365Days": -0.162109375,
+    "code": "CRIX.UPBIT.KRW-ETH"
+  },
+  {
+    "changeRate7Days": -0.0111664421,
+    "changeRate30Days": -0.077421688,
+    "changeRate90Days": -0.0680535454,
+    "changeRate180Days": -0.1516186476,
+    "changeRate365Days": 0.1271728998,
+    "code": "CRIX.UPBIT.BTC-ETH"
+  },
+  {
+    "changeRate7Days": 0.0266742338,
+    "changeRate30Days": 0.0134453782,
+    "changeRate90Days": -0.1184210526,
+    "changeRate180Days": -0.2269230769,
+    "changeRate365Days": -0.1231216675,
+    "code": "CRIX.UPBIT.BTC-XRP"
+  },
+  {
+    "changeRate7Days": -0.0777202073,
+    "changeRate30Days": 0.0258896716,
+    "changeRate90Days": -0.1257503703,
+    "changeRate180Days": -0.2524996667,
+    "changeRate365Days": -0.3203636364,
+    "code": "CRIX.UPBIT.BTC-ETC"
+  },
+  {
+    "changeRate7Days": 0,
+    "changeRate30Days": -0.0476190476,
+    "changeRate90Days": -0.1836734694,
+    "changeRate180Days": -0.2452830189,
+    "changeRate365Days": -0.6992481203,
+    "code": "CRIX.UPBIT.BTC-CVC"
+  },
+  {
+    "changeRate7Days": 0,
+    "changeRate30Days": -0.1666666667,
+    "changeRate90Days": -0.2857142857,
+    "changeRate180Days": -0.375,
+    "changeRate365Days": -0.4444444444,
+    "code": "CRIX.UPBIT.BTC-DGB"
+  },
+  {
+    "changeRate7Days": 0,
+    "changeRate30Days": 1,
+    "changeRate90Days": 1,
+    "changeRate180Days": 0,
+    "changeRate365Days": -0.5,
+    "code": "CRIX.UPBIT.BTC-SC"
+  }
+]

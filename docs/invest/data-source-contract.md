@@ -36,6 +36,7 @@ Phase 4  push (ingest)
 ```
 
 - **공식 생성 MCP** (canonical): 위 4개 (`prepare_bundle` / `get_hermes_context` / `..._ingest_from_hermes` / `..._create_from_hermes_composition`).
+- **KR staged report 계약**: `docs/invest/report-workflows/`에 `pre` → `nxt` → `regular` 단계형 리포트와 sanitized composer template을 둔다. 운영 프롬프트는 이 계약을 private operator workspace에서 감싸되, public repo에는 비밀값·계좌 상태·generated report를 넣지 않는다.
 - **보조 MCP** (`get_quote` / `get_orderbook` / `get_indicators` / `get_valuation` / `get_financials` / `screen_stocks` / `get_top_stocks` / `get_news` / `search_news` / `get_holdings` / `get_cash_balance` / `get_order_history` / …)는 **read-only 진단**이다. UI/diagnostics 용도이며, 그 직접 호출 결과는 리포트 근거가 아니다.
 
 ## 보조 MCP는 언제 collector로 흡수되나 (이슈 질문 6)
@@ -67,8 +68,9 @@ Phase 4  push (ingest)
 | reports | invest_page_db | supplementary | — | pre_collected | — | no | unavailable | invest_page |
 | reports | investment_snapshots | primary | investment_snapshots | frozen_in_bundle | — | no | unavailable | — |
 | reports | market_events_db | primary | market_events | pre_collected | — | no | unavailable | market |
+| screener | invest_momentum_events | supplementary | invest_momentum_event_snapshots | pre_collected | — | yes | stale | kr_market_ranking |
 | screener | invest_screener_snapshots | primary | invest_screener_snapshots | pre_collected | — | yes | stale | candidate_universe |
-| screener | investor_flow_snapshots | supplementary | investor_flow_snapshots | pre_collected | — | yes | stale | — |
+| screener | investor_flow_snapshots | supplementary | investor_flow_snapshots | pre_collected | — | yes | stale | investor_flow |
 | screener | upbit_live | primary | invest_crypto_screener_snapshots | pre_collected | — | yes | stale | — |
 | stocks | kis_live | primary | — | report_time_on_demand | — | yes | 확인 불가 | symbol |
 | stocks | naver_finance | low_trust_attention | — | report_time_on_demand | — | no | 확인 불가 | naver_remote_debug |

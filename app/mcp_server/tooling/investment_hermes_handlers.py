@@ -33,6 +33,7 @@ PRs per the user's Plan B directive).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +51,7 @@ from app.services.action_report.common.snapshot_bundle import (
 from app.services.action_report.snapshot_backed.collectors.registry import (
     production_collector_registry,
 )
+from app.services.investment_reports.delta_service import DeltaService
 from app.services.investment_stages.hermes_context import (
     HermesContextExporter,
     HermesContextExportError,
@@ -65,12 +67,19 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 
+logger = logging.getLogger(__name__)
+
+
 INVESTMENT_HERMES_TOOL_NAMES: set[str] = {
     "investment_report_prepare_bundle",
     "investment_report_get_hermes_context",
     "investment_report_create_from_hermes_composition",
     "investment_stage_artifacts_ingest_from_hermes",
+    "investment_report_prepare_intraday_context",
 }
+
+
+INTRADAY_UPDATE_REPORT_TYPE = "intraday_update_v1"
 
 
 _DISABLED_PAYLOAD: dict[str, Any] = {
@@ -181,6 +190,75 @@ async def investment_report_get_hermes_context_impl(
                 "detail": str(exc),
             }
     return {"success": True, **payload.model_dump(mode="json")}
+
+
+# ---------------------------------------------------------------------------
+# investment_report_prepare_intraday_context (ROB-376 item 2)
+# ---------------------------------------------------------------------------
+async def investment_report_prepare_intraday_context_impl(
+    snapshot_bundle_uuid: str,
+    baseline_report_uuid: str,
+    near_pct: float = 1.0,
+    account_type: str = "live",
+) -> dict[str, Any]:
+    """Assemble an intraday_update Hermes context: the bundle's deterministic
+    context + an ``intraday_delta_block`` (report-vs-now/prior delta) keyed to
+    ``baseline_report_uuid``. Read-only; no in-process LLM; no broker / order /
+    watch / order-intent mutation. Fail-open: a delta failure leaves the rest
+    of the context intact. Gated by SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED.
+    """
+    disabled = _disabled_check()
+    if disabled is not None:
+        return disabled
+
+    parsed_bundle = _parse_bundle_uuid(snapshot_bundle_uuid)
+    if isinstance(parsed_bundle, dict):
+        return parsed_bundle
+
+    from app.core.timezone import now_kst
+
+    base_uuid: uuid.UUID | None = None
+    async with AsyncSessionLocal() as db:
+        exporter = HermesContextExporter(db)
+        try:
+            payload = await exporter.export(snapshot_bundle_uuid=parsed_bundle)
+        except HermesContextExportError as exc:
+            return {
+                "success": False,
+                "error": "snapshot_bundle_not_found",
+                "snapshot_bundle_uuid": snapshot_bundle_uuid,
+                "detail": str(exc),
+            }
+
+        # Delta is fail-open: errors ride inside intraday_delta_block, never
+        # flip the context's success.
+        try:
+            base_uuid = uuid.UUID(baseline_report_uuid)
+        except (ValueError, AttributeError, TypeError):
+            delta_block: dict[str, Any] = {
+                "success": False,
+                "error": "invalid_report_uuid",
+            }
+        else:
+            try:
+                delta_block = await DeltaService(db).compute_delta(
+                    base_uuid,
+                    near_pct=near_pct,
+                    account_type=account_type,
+                    computed_at_kst=now_kst().isoformat(),
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-open
+                logger.exception("intraday delta computation failed")
+                delta_block = {"unavailable": str(exc) or exc.__class__.__name__}
+
+    # Echo baseline only when the delta actually succeeded against it.
+    payload.baseline_report_uuid = base_uuid if delta_block.get("success") else None
+    payload.intraday_delta_block = delta_block
+    return {
+        "success": True,
+        "report_type_hint": INTRADAY_UPDATE_REPORT_TYPE,
+        **payload.model_dump(mode="json"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +456,9 @@ def register_investment_hermes_tools(mcp: FastMCP) -> None:
             "Auto-finalises any matching Hermes stage run "
             "(metadata.investment_stage_run_uuid) from 'running' to "
             "'completed' (§D4). "
+            "Accepts any account_scope (kis_live | kis_mock | alpaca_paper | "
+            "upbit_live) — this is the path for alpaca_paper / paper:<name> "
+            "reports that investment_report_generate_from_bundle rejects. "
             "Gated by SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
         ),
     )(investment_report_create_from_hermes_composition_impl)
@@ -395,6 +476,17 @@ def register_investment_hermes_tools(mcp: FastMCP) -> None:
             "effect. Gated by SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
         ),
     )(investment_stage_artifacts_ingest_from_hermes_impl)
+    mcp.tool(
+        name="investment_report_prepare_intraday_context",
+        description=(
+            "ROB-376 — assemble an intraday_update Hermes context: the bundle's "
+            "deterministic context plus an intraday_delta_block (report-vs-now / "
+            "report-vs-prior delta) keyed to baseline_report_uuid, for Hermes to "
+            "compose an intraday_update_v1 report. Read-only, fail-open on the "
+            "delta, no in-process LLM, no broker/order/watch mutation. Gated by "
+            "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
+        ),
+    )(investment_report_prepare_intraday_context_impl)
 
 
 __all__ = [
@@ -403,5 +495,6 @@ __all__ = [
     "investment_report_get_hermes_context_impl",
     "investment_report_prepare_bundle_impl",
     "investment_stage_artifacts_ingest_from_hermes_impl",
+    "investment_report_prepare_intraday_context_impl",
     "register_investment_hermes_tools",
 ]

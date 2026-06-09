@@ -537,11 +537,11 @@ class TestAnalyzeStockBatch:
             "market_type": "equity_kr",
             "source": "kis",
             "quote": {"price": 75000},
+            # ROB-451: production stores the FLAT indicator map (already unwrapped in
+            # analysis_analyze.py). The old double-nested mock hid the batch-formatter bug.
             "indicators": {
-                "indicators": {
-                    "rsi": {"14": 45.0},
-                    "bollinger": {"lower": 74000},
-                }
+                "rsi": {"14": 45.0},
+                "bollinger": {"lower": 74000},
             },
             "support_resistance": {
                 "supports": [{"price": 73000}],
@@ -593,6 +593,32 @@ class TestAnalyzeStockBatch:
             "supports": [{"price": 73000}],
             "resistances": [{"price": 77000, "strength": "medium"}],
         }
+
+    async def test_analyze_stock_batch_quick_summary_crypto_rsi(self, monkeypatch):
+        # ROB-451: crypto batch quick summary must surface rsi_14 (flat indicator map),
+        # while consensus stays null (crypto has no analyst-consensus source — correct).
+        tools = build_tools()
+
+        mock_analysis = {
+            "symbol": "BTC",
+            "market_type": "crypto",
+            "source": "upbit",
+            "quote": {"price": 95000000},
+            "indicators": {"rsi": {"14": 61.2}},  # production FLAT shape
+            "support_resistance": {"supports": [], "resistances": []},
+            # no "opinions" → consensus is correctly null for crypto
+        }
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return mock_analysis
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](["BTC"], market="crypto")
+
+        row = result["results"]["BTC"]
+        assert row["rsi_14"] == pytest.approx(61.2)  # ROB-451: no longer null
+        assert row.get("consensus") is None  # crypto: correct (not a regression)
 
     async def test_analyze_stock_batch_quick_false_returns_full_payload(
         self, monkeypatch
@@ -3647,8 +3673,8 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
 
     _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
-    quote_mock = AsyncMock(side_effect=AssertionError("unexpected KR quote fetch"))
-    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", quote_mock)
+    quote_mock = AsyncMock(return_value=None)
+    _patch_runtime_attr(monkeypatch, "_fetch_kr_live_quote", quote_mock)
 
     standalone_valuation_mock = AsyncMock(
         side_effect=AssertionError("unexpected standalone KR valuation fetch")
@@ -3738,7 +3764,7 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
     result = await tools["analyze_stock"]("005930", market="kr")
 
     assert ohlcv_fetches == [("005930", "equity_kr", 250)]
-    quote_mock.assert_not_awaited()
+    quote_mock.assert_awaited_once_with("005930")
     standalone_valuation_mock.assert_not_awaited()
     standalone_news_mock.assert_not_awaited()
     standalone_opinions_mock.assert_not_awaited()
@@ -3756,6 +3782,8 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
         "volume": 1000000,
         "value": 75000000000.0,
         "source": "kis",
+        "price_as_of": "1970-01-01T00:00:00",
+        "is_stale_price": True,
     }
     assert result["valuation"]["instrument_type"] == "equity_kr"
     assert result["news"]["source"] == "naver"
@@ -3788,9 +3816,10 @@ async def test_analyze_stock_kr_falls_back_to_quote_helper_when_ohlcv_empty(
             "volume": 1100000,
             "value": 76000000000.0,
             "source": "kis",
+            "price_as_of": pd.Timestamp.now().isoformat(),
         }
     )
-    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", quote_mock)
+    _patch_runtime_attr(monkeypatch, "_fetch_kr_live_quote", quote_mock)
 
     standalone_valuation_mock = AsyncMock(
         side_effect=AssertionError("unexpected standalone KR valuation fetch")
@@ -4417,6 +4446,10 @@ def _make_daily_investor_data(days: int = 10) -> dict:
                 "volume": 10_000_000 + i * 500_000,
                 "institutional_net": 500_000 * (1 if i % 3 == 0 else -1),
                 "foreign_net": 300_000 * (1 if i % 2 == 0 else -1),
+                # ROB-448: holding levels — newest day (i=0) is HIGHEST so the
+                # aggregation's carry-newest (vs sum / carry-oldest) is unambiguous.
+                "foreign_holding_rate": round(48.00 - i * 0.01, 2),
+                "foreign_holding_shares": 2_800_000_000 - i * 1_000_000,
             }
         )
     return {
@@ -4473,6 +4506,9 @@ class TestGetInvestorTrends:
         result = await tools["get_investor_trends"]("005930", period="week")
 
         assert result["period"] == "week"
+        # ROB-448: holding rate/shares are point-in-time LEVELS — each bucket must carry
+        # the most-recent (date_end) day's value, NOT a sum and NOT the oldest.
+        date_to_rate = {r["date"]: r["foreign_holding_rate"] for r in mock["data"]}
         for row in result["data"]:
             assert "period_key" in row
             assert "date_start" in row
@@ -4481,6 +4517,20 @@ class TestGetInvestorTrends:
             assert "institutional_net" in row
             assert "foreign_net" in row
             assert "individual_net" in row
+            # carry-newest: bucket rate == the date_end day's rate (not a sum > 100)
+            assert row["foreign_holding_rate"] == date_to_rate[row["date_end"]]
+            assert 0 <= row["foreign_holding_rate"] <= 100
+            # 기간요약 delta present; newest(date_end) − oldest(date_start), so within a
+            # multi-day bucket where newer is higher → change >= 0
+            assert "foreign_holding_rate_change" in row
+            if row["trading_days"] > 1:
+                expected_change = round(
+                    date_to_rate[row["date_end"]] - date_to_rate[row["date_start"]], 2
+                )
+                assert row["foreign_holding_rate_change"] == expected_change
+            # holding shares carried (not summed): a single Samsung day is ~2.8e9, a
+            # summed week would exceed 1e10
+            assert row["foreign_holding_shares"] < 3_000_000_000
 
     async def test_monthly_aggregation(self, monkeypatch):
         """Test monthly aggregation sums investor flows."""

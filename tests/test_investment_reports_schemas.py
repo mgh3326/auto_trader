@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -16,9 +17,11 @@ from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
     IngestReportRequest,
+    MaxActionPayload,
     RecordDecisionRequest,
     ReportSnapshotBundleResponse,
     ReportSnapshotDetailResponse,
+    WatchConditionClause,
     WatchConditionPayload,
 )
 from tests._investment_reports_helpers import future_datetime
@@ -280,3 +283,83 @@ def test_item_decision_bucket_optional():
     assert item.decision_bucket is None
     assert item.cited_dimension_report_uuids == []
     assert item.cited_snapshot_uuids == []
+
+
+def test_clause_between_requires_low_high_and_orders():
+    c = WatchConditionClause(metric="price", op="between", low="100", high="200")
+    assert c.low == Decimal("100") and c.high == Decimal("200")
+    with pytest.raises(ValidationError):
+        WatchConditionClause(metric="price", op="between", low="200", high="100")
+    with pytest.raises(ValidationError):
+        WatchConditionClause(metric="price", op="above")  # missing threshold
+
+
+def test_legacy_flat_payload_normalizes_to_single_condition():
+    p = WatchConditionPayload(metric="price", operator="below", threshold="55000")
+    assert len(p.conditions) == 1
+    assert p.conditions[0].metric == "price"
+    assert p.conditions[0].op == "below"
+    assert p.conditions[0].threshold == Decimal("55000")
+    assert p.combine == "and"
+    assert p.threshold_key == "55000"  # legacy dedup key preserved
+
+
+def test_conditions_payload_multi_metric_and():
+    p = WatchConditionPayload(
+        conditions=[
+            {"metric": "price", "op": "between", "low": "50000", "high": "55000"},
+            {"metric": "rsi", "op": "below", "threshold": "35"},
+        ]
+    )
+    assert len(p.conditions) == 2
+    assert p.combine == "and"
+
+
+def test_payload_requires_conditions_or_flat():
+    with pytest.raises(ValidationError):
+        WatchConditionPayload(target_kind="asset")  # neither flat nor conditions
+
+
+def test_max_action_xor_quantity_notional():
+    MaxActionPayload(side="buy", quantity="10", account_mode="kis_mock")
+    MaxActionPayload(side="sell", notional="1000000", account_mode="kis_mock")
+    with pytest.raises(ValidationError):
+        MaxActionPayload(side="buy", account_mode="kis_mock")  # neither
+    with pytest.raises(ValidationError):
+        MaxActionPayload(
+            side="buy", quantity="10", notional="100", account_mode="kis_mock"
+        )  # both
+
+
+def test_max_action_allows_extra_legacy_keys():
+    m = MaxActionPayload(
+        side="buy", quantity="10", account_mode="kis_mock", notional_usd="500"
+    )
+    assert m.model_dump()["notional_usd"] == "500"
+
+
+def test_ingest_item_validates_max_action_when_present():
+    with pytest.raises(ValidationError):
+        IngestReportItem(
+            client_item_key="k1",
+            item_kind="watch",
+            operation="create",
+            intent="buy_review",
+            rationale="r",
+            symbol="005930",
+            watch_condition={"metric": "price", "operator": "below", "threshold": "5"},
+            valid_until="2026-12-31T00:00:00Z",
+            max_action={"side": "buy"},  # invalid: no quantity/notional
+        )
+
+
+def test_auto_execute_mock_action_mode_flag_and_literal():
+    from app.core.config import settings
+    from app.schemas.investment_reports import WatchConditionPayload
+
+    assert settings.WATCH_AUTO_EXECUTE_MOCK_ENABLED is False
+    # auto_execute_mock is now a valid action_mode literal value
+    p = WatchConditionPayload(
+        metric="price", operator="below", threshold="5", action_mode="auto_execute_mock"
+    )
+    assert p.action_mode == "auto_execute_mock"

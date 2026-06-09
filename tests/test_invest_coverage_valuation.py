@@ -234,3 +234,200 @@ async def test_valuation_builder_and_repository_upsert(db_session):
     await db_session.commit()
     counts = await repo.coverage_counts("kr", fresh_date=snapshot_date)
     assert counts.fresh_symbols >= 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_valuation_builder_threads_high_52w_date_us(db_session):
+    # ROB-440 PR3: the US fetcher's high_52w_date (iso string in raw, JSON-safe) →
+    # parsed to a date in the payload + persisted to the high_52w_date column
+    # (powers undervalued_breakout date-recency).
+    from app.services.market_valuation_snapshots.builder import (
+        build_valuation_snapshots_for_market,
+    )
+    from app.services.market_valuation_snapshots.repository import (
+        MarketValuationSnapshotsRepository,
+    )
+
+    snapshot_date = dt.date(2026, 5, 12)
+    sym = "ZZ9001"
+
+    async def fake_fetcher(symbol: str, market: str) -> dict[str, object]:
+        assert market == "us"
+        return {
+            "per": "8",
+            "pbr": "0.8",
+            "yearHigh": "100",
+            "high_52w_date": "2026-05-01",  # iso string (JSON-safe in raw_payload)
+        }
+
+    result = await build_valuation_snapshots_for_market(
+        market="us",
+        symbols=[sym],
+        snapshot_date=snapshot_date,
+        fetcher=fake_fetcher,
+    )
+    assert len(result.payloads) == 1
+    assert result.payloads[0].high_52w_date == dt.date(2026, 5, 1)
+    assert (
+        result.payloads[0].raw_payload["high_52w_date"] == "2026-05-01"
+    )  # not a date obj
+
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
+    )
+    await db_session.commit()
+    repo = MarketValuationSnapshotsRepository(db_session)
+    assert await repo.upsert(result.payloads) == 1
+    await db_session.commit()
+    row = (
+        await db_session.execute(
+            sa.select(MarketValuationSnapshot).where(
+                MarketValuationSnapshot.symbol == sym,
+                MarketValuationSnapshot.snapshot_date == snapshot_date,
+            )
+        )
+    ).scalar_one()
+    assert row.high_52w_date == dt.date(2026, 5, 1)  # persisted to the column
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
+    )
+    await db_session.commit()
+
+
+# --- ROB-440 PR4: US valuation scale (common-stock filter + high_52w_date opt-in) ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_default_valuation_fetcher_high_date_opt_in(monkeypatch):
+    from app.services.market_valuation_snapshots import builder
+
+    calls = {"high": 0}
+
+    async def _fast(sym):  # noqa: ANN001
+        return {"symbol": sym}
+
+    async def _fund(sym):  # noqa: ANN001
+        return {"PER": 8.0}
+
+    async def _high(sym):  # noqa: ANN001
+        calls["high"] += 1
+        return dt.date(2026, 5, 20)
+
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
+    monkeypatch.setattr(
+        "app.services.brokers.yahoo.client.fetch_fundamental_info", _fund
+    )
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_52w_high_date", _high)
+
+    # opt-out (default): no OHLC call, no high_52w_date → light bulk backfill
+    raw = await builder.default_valuation_fetcher("AAPL", "us")
+    assert calls["high"] == 0
+    assert "high_52w_date" not in raw
+
+    # opt-in: OHLC fetched, high_52w_date as JSON-safe iso string
+    raw2 = await builder.default_valuation_fetcher("AAPL", "us", include_high_date=True)
+    assert calls["high"] == 1
+    assert raw2["high_52w_date"] == "2026-05-20"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_us_common_stocks_only(db_session):
+    from app.jobs.market_valuation_snapshots import resolve_active_universe
+    from app.models.us_symbol_universe import USSymbolUniverse
+
+    syms = ["ZZCOM1", "ZZETF1", "ZZINA1"]
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
+    db_session.add_all(
+        [
+            USSymbolUniverse(
+                symbol="ZZCOM1", exchange="NASDAQ", is_active=True, is_common_stock=True
+            ),
+            USSymbolUniverse(
+                symbol="ZZETF1", exchange="NYSE", is_active=True, is_common_stock=False
+            ),
+            USSymbolUniverse(
+                symbol="ZZINA1",
+                exchange="NASDAQ",
+                is_active=False,
+                is_common_stock=True,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    common = set(await resolve_active_universe("us", common_stocks_only=True))
+    assert "ZZCOM1" in common  # common + active
+    assert "ZZETF1" not in common  # is_common_stock=False excluded
+    assert "ZZINA1" not in common  # inactive excluded
+
+    unfiltered = set(await resolve_active_universe("us"))
+    assert {"ZZCOM1", "ZZETF1"} <= unfiltered  # active non-common included w/o filter
+
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
+    await db_session.commit()
+
+
+@pytest.mark.unit
+def test_build_market_valuation_cli_flags():
+    from scripts.build_market_valuation_snapshots import parse_args
+
+    base = parse_args(["--market", "us", "--symbol", "AAPL"])
+    assert base.common_stocks_only is False
+    assert base.include_high_date is False
+
+    opted = parse_args(
+        ["--market", "us", "--all", "--common-stocks-only", "--with-high-52w-date"]
+    )
+    assert opted.common_stocks_only is True
+    assert opted.include_high_date is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_valuation_partition_computed_at_helper(db_session):
+    # ROB-440 freshness chip: backfill the US market_valuation partition computed_at
+    # (the US fundamentals/valuation dispatch branches don't propagate it).
+    from app.services.invest_view_model.screener_service import (
+        _us_valuation_partition_computed_at,
+    )
+
+    vd = dt.date(2099, 12, 31)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="us",
+            symbol="ZZ9100",
+            snapshot_date=vd,
+            source="yahoo",
+            per=Decimal("8"),
+            computed_at=dt.datetime(2099, 12, 31, 21, 22, tzinfo=dt.UTC),
+        )
+    )
+    await db_session.commit()
+
+    got = await _us_valuation_partition_computed_at(db_session, snapshot_date=vd)
+    assert got is not None  # partition exists → computed_at surfaced
+    # no US partition on this date → None (fail-open)
+    assert (
+        await _us_valuation_partition_computed_at(
+            db_session, snapshot_date=dt.date(2098, 1, 1)
+        )
+        is None
+    )
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.snapshot_date == vd
+        )
+    )
+    await db_session.commit()

@@ -11,14 +11,14 @@ symbols under ``missing_data``. It is descriptive context, not a directional
 call, so the verdict is always ``NEUTRAL`` — no bull/bear is invented from
 symbol metadata. Read-only over persisted snapshots; no LLM, no broker calls.
 
-Known limitation (ROB-369): ``SymbolSnapshotCollector`` resolves per-symbol
-metadata from ``stock_info`` and only enriches quotes for KR + ``kis_live``.
-``stock_info`` has no crypto rows and there is no Upbit quote adapter yet, so
-crypto symbols resolve thin today — this stage then reports them honestly under
-``missing_data`` (``unresolved_symbols``) rather than fabricating metadata.
-Enriching crypto symbol snapshots (an Upbit ``upbit_symbol_universe`` collector
-path + orderbook adapter) is a separate follow-up slice; the capture→synthesis
-disconnect this stage fixes is market-agnostic and benefits KR/US immediately.
+Known limitation (ROB-369 / ROB-414): ``SymbolSnapshotCollector`` resolves
+KR metadata from ``stock_info`` and US metadata from ``stock_info`` with a
+``us_symbol_universe`` fallback for unheld candidates (ROB-414); quotes are
+enriched only for KR + ``kis_live``. Crypto reads ``upbit_symbol_universe``
+for metadata but has no quote adapter yet, so crypto symbols resolve thin —
+this stage reports genuinely unresolvable tickers honestly under
+``missing_data`` (``unresolved_symbols`` with per-ticker reason codes for US)
+rather than fabricating metadata.
 """
 
 from __future__ import annotations
@@ -63,11 +63,22 @@ class SymbolStage:
         snaps = context.snapshots_for("symbol")
         resolved: list[tuple[InvestmentSnapshot, dict[str, Any]]] = []
         missing: list[str] = []
+        unresolved_reasons: dict[str, str] = {}
         for snap in snaps:
             payload = snap.payload_json or {}
             if payload.get("symbol"):
                 resolved.append((snap, payload))
-            elif isinstance(payload.get("missing_symbols"), list):
+                continue
+            unresolved = payload.get("unresolved")
+            if isinstance(unresolved, list):
+                for item in unresolved:
+                    if (
+                        isinstance(item, dict)
+                        and isinstance(item.get("symbol"), str)
+                        and isinstance(item.get("reason_code"), str)
+                    ):
+                        unresolved_reasons[item["symbol"]] = item["reason_code"]
+            if isinstance(payload.get("missing_symbols"), list):
                 missing.extend(
                     s for s in payload["missing_symbols"] if isinstance(s, str)
                 )
@@ -123,9 +134,12 @@ class SymbolStage:
 
         missing_data: list[str] = []
         if missing:
-            missing_data.append(
-                f"unresolved_symbols: {', '.join(sorted(set(missing)))}"
-            )
+            uniq = sorted(set(missing))
+            rendered = [
+                f"{s} ({unresolved_reasons[s]})" if s in unresolved_reasons else s
+                for s in uniq
+            ]
+            missing_data.append(f"unresolved_symbols: {', '.join(rendered)}")
 
         return StageArtifactPayload(
             stage_type=self.stage_type,

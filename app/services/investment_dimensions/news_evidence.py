@@ -132,7 +132,7 @@ def _evidence_from_articles(
         latest_published,
         now_dt=now_dt,
         lookback_hours=lookback_hours,
-        source="news_articles",
+        source="symbol_news",
     )
 
 

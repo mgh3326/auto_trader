@@ -288,8 +288,9 @@ def build_report_quality_summary(
     * ``no_action`` — bundle failed or fell back to stale data.
     * ``informational_only`` — a critical kind is degrading, OR (ROB-366 B10)
       the core is not fully fresh, OR internal coverage is below
-      ``HIGH_CONFIDENCE_MIN_COVERAGE_PCT`` with no usable external cross-check to
-      corroborate (a degrading cross-check does not count).
+      ``HIGH_CONFIDENCE_MIN_COVERAGE_PCT``, OR (ROB-415) ``candidate_universe``
+      (the buy-candidate source) is non-fresh — the latter two only when no usable
+      external cross-check corroborates (a degrading cross-check does not count).
     * ``high_confidence`` — core fully fresh AND (ample internal coverage OR a
       usable external cross-check). A genuinely complete bundle is internally
       all-fresh (the producer's invariant), so it satisfies both checks and is
@@ -304,6 +305,8 @@ def build_report_quality_summary(
     critical_statuses: list[str | None] = []
     core_fresh = core_total = 0
     optional_fresh = optional_total = 0
+    candidate_universe_present = False
+    candidate_universe_status: str | None = None
     for kind, info in summary.items():
         if kind == "overall" or not isinstance(info, Mapping):
             continue
@@ -320,6 +323,9 @@ def build_report_quality_summary(
             optional_total += 1
             if status == "fresh":
                 optional_fresh += 1
+            if kind == "candidate_universe":
+                candidate_universe_present = True
+                candidate_universe_status = status
 
     total = sum(counts.values())
     fresh = counts.get("fresh", 0)
@@ -352,6 +358,14 @@ def build_report_quality_summary(
         )
         core_incomplete = core_total > 0 and core_fresh < core_total
         thin_coverage = internal_pct < HIGH_CONFIDENCE_MIN_COVERAGE_PCT
+        # ROB-415 — candidate_universe is the buy-candidate source: a stale one
+        # degrades the report's core purpose even when other optional kinds keep
+        # aggregate coverage above the thin threshold. Gated like thin_coverage
+        # (a usable cross-check can still rescue), so ROB-323's external fail-open
+        # holds: an un-run external probe alone never demotes.
+        candidate_universe_non_fresh = (
+            candidate_universe_present and candidate_universe_status != "fresh"
+        )
         # A cross-check only corroborates when it is present and not itself
         # degrading — a hard_stale/unavailable/failed probe is stale-expired
         # evidence and must not rescue thin coverage.
@@ -359,7 +373,9 @@ def build_report_quality_summary(
             external_status is None
             or external_status in CRITICAL_KIND_DEGRADING_STATUSES
         )
-        if core_incomplete or (thin_coverage and no_cross_check):
+        if core_incomplete or (
+            (thin_coverage or candidate_universe_non_fresh) and no_cross_check
+        ):
             grade = "informational_only"
 
     return {

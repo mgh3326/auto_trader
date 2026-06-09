@@ -426,9 +426,12 @@ async def test_kr_priority_full_fresh_outranks_partial_and_stale(db_session):
         (ev("A", "consecutive_gainers", 6.0), "stale"),  # full but stale
         (ev("B", "high_yield_value", 5.0), "fresh"),  # full + fresh, lower score
         (ev("C", "high_yield_value", 9.0), "fresh"),  # full + fresh, top score
-        # partial parity + fresh + top score must still rank BELOW any full-parity
-        # candidate (parity dominates freshness and score in the sort key).
-        (ev("D", "cheap_value", 10.0), "fresh"),  # partial parity
+        # lower-parity (non-Toss-parity) + fresh + top score must still rank BELOW any
+        # full-parity candidate (parity dominates freshness and score in the sort key).
+        # NOTE: cheap_value was promoted partial→full in ROB-422 PR2c-1 (and no partial
+        # Toss-parity presets remain), so a not_toss_parity source is used to exercise
+        # the "lower parity ranks last regardless of score" path.
+        (ev("D", "top_gainers", 10.0), "fresh"),  # not_toss_parity (rank 3)
     ]
     ordered = sorted(rows, key=lambda pair: _priority_sort_key(pair[0], pair[1]))
     assert [p[0].symbol for p in ordered] == ["C", "B", "A", "D"]
@@ -481,15 +484,112 @@ async def test_kr_stale_only_preset_not_overstated(db_session, monkeypatch):
     assert results[0].coverage_json["usefulness"] == "stale_only"
 
 
-def test_partial_parity_presets_report_partial_status():
-    """ROB-363 — partial Toss-parity presets (cheap_value, steady_dividend) must
-    derive a 'partial' status, never be inflated to 'full' (honesty criterion)."""
+def test_toss_parity_status_reflects_live_catalog():
+    """_toss_parity_status reads the live catalog parityStatus (not a hardcoded map).
+    ROB-422 PR2c-1 promoted cheap_value/steady_dividend partial→full once their
+    fundamentals conditions became implementable, so they now report 'full' (no partial
+    Toss-parity presets remain). Honesty is still enforced upstream via dataState/missing
+    when the backing fundamentals snapshots are absent — not via a forced 'partial' label."""
     from app.services.action_report.snapshot_backed.collectors.candidate_universe import (
         _toss_parity_status,
     )
 
-    assert _toss_parity_status("cheap_value", "kr") == "partial"
-    assert _toss_parity_status("steady_dividend", "kr") == "partial"
+    assert _toss_parity_status("cheap_value", "kr") == "full"
+    assert _toss_parity_status("steady_dividend", "kr") == "full"
     # full presets stay full; non-toss rankings stay not_toss_parity.
     assert _toss_parity_status("consecutive_gainers", "kr") == "full"
     assert _toss_parity_status("top_gainers", "kr") == "not_toss_parity"
+
+
+@pytest.mark.asyncio
+async def test_equity_coverage_uses_session_aware_baseline(db_session, monkeypatch):
+    import app.services.action_report.snapshot_backed.collectors.candidate_universe as cu
+    import app.services.invest_view_model.double_buy_screener as dbb
+    import app.services.invest_view_model.high_yield_value_screener as hy
+    import app.services.invest_view_model.screener_service as ss
+    from app.services.invest_screener_snapshots.freshness import expected_baseline_date
+
+    async def _no_rows(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ss, "load_consecutive_gainers_from_snapshots", _no_rows)
+    monkeypatch.setattr(dbb, "load_double_buy_from_snapshots", _no_rows)
+    monkeypatch.setattr(hy, "load_high_yield_value_from_snapshots", _no_rows)
+
+    fixed_now = dt.datetime(2026, 6, 1, 0, 30, tzinfo=dt.UTC)  # 09:30 KST Mon
+    monkeypatch.setattr(cu, "utcnow", lambda: fixed_now)
+
+    captured: dict = {}
+
+    class _CapturingRepo(_FakeEquityRepository):
+        async def coverage(self, *, market, today_trading_date):
+            captured["baseline"] = today_trading_date
+            return await super().coverage(
+                market=market, today_trading_date=today_trading_date
+            )
+
+    repo = _CapturingRepo()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=2,
+            policy_snapshot={},
+        )
+    )
+
+    # 09:30 KST is before the 16:20 preliminary, so baseline is the PRIOR weekday,
+    # NOT raw UTC now.date() (2026-05-31, a Sunday).
+    assert captured["baseline"] == expected_baseline_date("kr", now=fixed_now)
+    assert captured["baseline"] != fixed_now.date()
+
+
+@pytest.mark.asyncio
+async def test_stale_equity_payload_exposes_days_stale(db_session, monkeypatch):
+    import app.services.action_report.snapshot_backed.collectors.candidate_universe as cu
+
+    fixed_now = dt.datetime(2026, 6, 1, 11, 0, tzinfo=dt.UTC)  # 20:00 KST Mon
+    monkeypatch.setattr(cu, "utcnow", lambda: fixed_now)
+
+    class _StaleRepo(_FakeEquityRepository):
+        async def coverage(self, *, market, today_trading_date):
+            return CoverageCounts(
+                market=market,
+                today_trading_date=today_trading_date,
+                fresh_count=0,
+                stale_count=11638,
+                last_computed_at=None,
+            )
+
+        async def list_top_candidates(self, *, market, limit=10):
+            self.requested_limits.append(limit)
+            return [
+                InvestScreenerSnapshot(
+                    market=market,
+                    symbol="000050",
+                    snapshot_date=dt.date(2026, 5, 13),
+                    latest_close=Decimal("1000"),
+                    change_rate=Decimal("1.0"),
+                    source="kis",
+                )
+            ]
+
+    repo = _StaleRepo()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="us",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=5,
+            policy_snapshot={},
+        )
+    )
+    payload = results[0].payload_json
+    assert payload["latest_partition_date"] == "2026-05-13"
+    assert payload["days_stale"] >= 1
+    assert "expected_baseline_date" in payload
+    assert payload["usefulness"] == "stale_only"
+    assert "일 지연" in payload["missing_data"]["what"]

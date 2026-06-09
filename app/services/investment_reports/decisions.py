@@ -22,13 +22,19 @@ from app.schemas.investment_reports import (
 from app.services.investment_reports.repository import InvestmentReportsRepository
 
 # Decision verb → resulting item.status. ``skip`` is audit-only and
-# leaves the item unchanged.
+# leaves the item unchanged. ROB-455 order-lifecycle verbs reuse existing
+# item.status values (no new status added): ``cancel`` projects to 'denied'
+# (the item won't proceed), ``reprice`` projects to 'approved' (an approval
+# with adjusted levels carried in approved_payload_snapshot). The precise verb
+# is preserved first-class in the decision audit row.
 _ITEM_STATUS_BY_DECISION: dict[DecisionVerbLiteral, str | None] = {
     "approve": "approved",
     "deny": "denied",
     "defer": "deferred",
     "skip": None,
     "partial_approve": "approved",
+    "cancel": "denied",
+    "reprice": "approved",
 }
 
 

@@ -1,14 +1,14 @@
 """Read-only loader for the 고수익 저평가 (Toss 고수익 저평가 parity) preset.
 
-Filters the latest ``market_valuation_snapshots`` partition (KR) by Toss's
+Filters the latest ``market_valuation_snapshots`` partition by Toss's
 high-yield-value rule:
 
-    market = kr
-    roe >= 15        (percent; sourced from Naver ROE(%) column)
+    market = kr | us   (ROB-427 PR3: US backed by Yahoo valuation snapshots)
+    roe >= 15          (percent; KR=Naver ROE(%), US=Yahoo ROE)
     0 < per <= 10
     sort by roe desc, per asc, symbol asc
 
-ROE/PER come from ``market_valuation_snapshots`` (source ``naver_finance``).
+ROE/PER come from ``market_valuation_snapshots`` (KR=``naver_finance``, US=``yahoo``).
 The latest ``invest_screener_snapshots`` price row is LEFT-joined for display
 only — a missing price row never drops a qualifying valuation row. NULL roe/per
 are excluded by the SQL predicate (fail-closed; never fabricate a qualifier).
@@ -46,24 +46,40 @@ async def load_high_yield_value_from_snapshots(
     []    -> latest partition exists but no qualifiers (caller renders empty + stale).
     Rows  -> ordered by roe desc, per asc, symbol asc.
     """
-    if session is None or market != "kr":
+    # ROB-427 PR3: KR + US. Both back this preset with market_valuation_snapshots
+    # (KR=naver_finance, US=yahoo) — ROE/PER are vendor-agnostic, so the same query
+    # serves both once the hardcoded "kr" literals below are parameterized.
+    if session is None or market not in {"kr", "us"}:
         return None
 
-    latest_val_stmt = sa.select(
-        sa.func.max(MarketValuationSnapshot.snapshot_date)
-    ).where(MarketValuationSnapshot.market == "kr")
+    from app.services.invest_screener_snapshots.partition_health import (
+        resolve_healthy_partition,
+        served_partition_degraded,
+    )
+
+    val_hp = await resolve_healthy_partition(
+        session,
+        model=MarketValuationSnapshot,
+        date_col=MarketValuationSnapshot.snapshot_date,
+        market_col=MarketValuationSnapshot.market,
+        market=market,
+    )
+    val_date = val_hp.partition_date if val_hp else None
+    if val_date is None:
+        return None
+    # ROB-440: a healthy fallback partition is NOT degraded (date check handles
+    # staleness); only an unhealthy served partition is.
+    partition_degraded = served_partition_degraded(val_hp)
+
     latest_price_stmt = sa.select(
         sa.func.max(InvestScreenerSnapshot.snapshot_date)
-    ).where(InvestScreenerSnapshot.market == "kr")
+    ).where(InvestScreenerSnapshot.market == market)
     try:
-        val_date = (await session.execute(latest_val_stmt)).scalar_one_or_none()
         price_date = (await session.execute(latest_price_stmt)).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "high_yield_value: latest dates lookup failed: %s", exc, exc_info=True
+            "high_yield_value: latest price date lookup failed: %s", exc, exc_info=True
         )
-        return None
-    if val_date is None:
         return None
 
     candidate_stmt = (
@@ -88,20 +104,28 @@ async def load_high_yield_value_from_snapshots(
             ),
         )
         .where(
-            MarketValuationSnapshot.market == "kr",
+            MarketValuationSnapshot.market == market,
             MarketValuationSnapshot.snapshot_date == val_date,
             MarketValuationSnapshot.roe >= _MIN_ROE,
             MarketValuationSnapshot.per > 0,
             MarketValuationSnapshot.per <= _MAX_PER,
         )
-        .order_by(
-            MarketValuationSnapshot.roe.desc().nullslast(),
-            MarketValuationSnapshot.per.asc().nullslast(),
-            MarketValuationSnapshot.symbol.asc(),
-            MarketValuationSnapshot.source.asc(),
-        )
-        .limit(max(limit * 4, limit + 40))
     )
+    if market == "us":
+        # ROB-440: drop yahoo micro-cap / ROE-artifact outliers (DCX 1177% @ $48M).
+        from app.services.invest_view_model.us_quality_guards import (
+            apply_us_valuation_quality_guards,
+        )
+
+        candidate_stmt = apply_us_valuation_quality_guards(
+            candidate_stmt, uses_roe=True
+        )
+    candidate_stmt = candidate_stmt.order_by(
+        MarketValuationSnapshot.roe.desc().nullslast(),
+        MarketValuationSnapshot.per.asc().nullslast(),
+        MarketValuationSnapshot.symbol.asc(),
+        MarketValuationSnapshot.source.asc(),
+    ).limit(max(limit * 4, limit + 40))
     try:
         result = await session.execute(candidate_stmt)
     except Exception as exc:  # noqa: BLE001
@@ -113,7 +137,10 @@ async def load_high_yield_value_from_snapshots(
 
     symbols = [r["symbol"] for r in candidate_rows]
     name_map: dict[str, str] = {}
-    if symbols:
+    # KR name hydration + the KR common-stock guard are KR-specific (KRX universe +
+    # Korean-name ETF/preferred heuristic). US mirrors the consecutive_gainers loader:
+    # no KR-universe lookup; the shared row builder fills the US name downstream.
+    if market == "kr" and symbols:
         try:
             names = await session.execute(
                 sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
@@ -142,8 +169,14 @@ async def load_high_yield_value_from_snapshots(
             today_trading_date,
         )
 
-        today_market_date = today_trading_date("kr", now=datetime.now(UTC))
+        today_market_date = today_trading_date(market, now=datetime.now(UTC))
     state = "fresh" if val_date == today_market_date else "stale"
+    if partition_degraded:
+        from app.services.invest_screener_snapshots.partition_health import (
+            cap_degraded,
+        )
+
+        state = cap_degraded(state)
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -152,13 +185,13 @@ async def load_high_yield_value_from_snapshots(
         if sym in seen:
             continue
         name = name_map.get(sym)
-        if not _is_kr_toss_common_stock(sym, name):
+        if market == "kr" and not _is_kr_toss_common_stock(sym, name):
             continue
         seen.add(sym)
         rows.append(
             {
                 "symbol": sym,
-                "market": "kr",
+                "market": market,
                 "name": name,
                 "latest_close": (
                     float(r["latest_close"]) if r["latest_close"] is not None else None

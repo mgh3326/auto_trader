@@ -309,6 +309,7 @@ class Settings(BaseSettings):
         return url
 
     opendart_api_key: str
+    opendart_daily_request_budget: int = 18000
     DATABASE_URL: str
     upbit_access_key: str
     upbit_secret_key: str
@@ -323,12 +324,26 @@ class Settings(BaseSettings):
     # ROB-204 — Prefect/manual US screener snapshot writes stay dry-run unless explicitly enabled.
     invest_screener_snapshots_commit_enabled: bool = False
 
+    # ROB-449 — get_retail_sentiment live Naver 종목토론 fetch is OFF by default. The source
+    # is a ToS-sensitive UGC surface; the tool returns status="disabled" until an operator
+    # explicitly enables it after a ToS/endpoint review. Aggregate counts only (never raw text).
+    retail_sentiment_live_enabled: bool = False
+
     # ROB-281 — Gates cron registration for KR/US screener snapshot scheduled refreshes.
     # When False, scheduled tasks remain defined as broker tasks (so operators can still
     # kick them manually via ``taskiq kick``) but no cron entries are registered. Pairs
     # with ``invest_screener_snapshots_commit_enabled`` (the DB write gate) so the
     # production rollout can move schedule → dry-run-on-cron → commit-on-cron in stages.
     invest_screener_schedule_enabled: bool = False
+
+    # ROB-438 — recurring schedulers for the valuation + investor-flow snapshots
+    # (the other inputs the screener depends on). Same double-gate as invest_screener:
+    # *_schedule_enabled registers cron (default off → manual kick only); *_commit_enabled
+    # allows DB writes (default off → dry-run-on-cron). Operator flips both to activate.
+    market_valuation_schedule_enabled: bool = False
+    market_valuation_snapshots_commit_enabled: bool = False
+    investor_flow_schedule_enabled: bool = False
+    investor_flow_snapshots_commit_enabled: bool = False
 
     # ROB-222 — Naver momentum/theme event snapshot writes stay dry-run unless explicitly enabled.
     invest_momentum_events_commit_enabled: bool = False
@@ -387,6 +402,10 @@ class Settings(BaseSettings):
     HERMES_WEBHOOK_URL: str = "http://localhost:18790/hooks/review-trigger"
     HERMES_TOKEN: str = ""
     HERMES_ENABLED: bool = False
+
+    # ROB-337 Slice 2 — watch validity review job. Default off; the task and
+    # CLI are scheduleless / dry-run-default even when this is set.
+    WATCH_VALIDITY_REVIEW_ENABLED: bool = False
 
     # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
     N8N_FILL_WEBHOOK_URL: str = ""
@@ -458,6 +477,25 @@ class Settings(BaseSettings):
 
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
+
+    # ROB-404 — kis_mock execution-event consumer + periodic reconcile.
+    # Default off: the consumer runs reconcile in dry-run preflight and the
+    # periodic taskiq task returns paused until an operator flips these.
+    KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED: bool = False
+    KIS_MOCK_RECONCILE_PERIODIC_ENABLED: bool = False
+    # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
+    # (no real mock orders) until an operator flips this.
+    WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False
+    # ROB-405 Slice A — mock roundtrip → trade_journal bridge. Default off:
+    # no journals are created until an operator flips this.
+    MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED: bool = False
+    # ROB-405 Slice B — auto journal verdict. Default off.
+    JOURNAL_VERDICT_AUTO_ENABLED: bool = False
+    # ROB-405 Slice C — journal counterfactual sync. Default off.
+    JOURNAL_COUNTERFACTUAL_ENABLED: bool = False
+    # ROB-405 Slice E — watch follow-up report-item link. Default off.
+    WATCH_FOLLOW_UP_LINK_ENABLED: bool = False
+
     # ROB-269 Phase 2 — gates BOTH the 4 MCP snapshot tools AND the
     # /trading/api/investment-snapshots/* GET router. Default off: code is
     # importable but unreachable from caller surfaces until flipped post-merge.

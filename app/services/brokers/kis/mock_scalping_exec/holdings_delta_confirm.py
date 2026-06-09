@@ -113,6 +113,11 @@ async def confirm_fill_from_holdings_delta(
         )
         return None
 
+    # NOTE (ROB-400 / ROB-404): this synchronous per-order confirm shares the
+    # holdings-delta root cause fixed for the batch reconciler — two concurrent
+    # same-symbol confirms could each claim the same delta. It is narrower here
+    # (baseline captured immediately pre-submit), and true order-unit attribution
+    # awaits the execution-event correlation source in ROB-404.
     decision = classify_fill_by_delta(
         side=baseline.side,
         ordered_qty=baseline.ordered_qty,

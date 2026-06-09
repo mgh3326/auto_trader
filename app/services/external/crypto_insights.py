@@ -12,7 +12,7 @@ import httpx
 ALTERNATIVE_ME_FNG_URL = "https://api.alternative.me/fng/"
 COINGECKO_GLOBAL_URL = "https://api.coingecko.com/api/v3/global"
 BINANCE_FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
-DEFILLAMA_PROTOCOL_URL = "https://api.llama.fi/protocol/{slug}"
+DEFILLAMA_CHAINS_URL = "https://api.llama.fi/v2/chains"
 DEFILLAMA_STABLECOINS_URL = "https://stablecoins.llama.fi/stablecoins"
 COINGLASS_OPEN_INTEREST_URL = (
     "https://open-api-v4.coinglass.com/api/futures/openInterest/ohlc-history"
@@ -56,13 +56,26 @@ def _decimal(value: Any) -> Decimal | None:
         return None
 
 
-def _freshness_from_unix(value: Any, now: dt.datetime) -> int | None:
+def _freshness_from_unix(
+    value: Any,
+    now: dt.datetime,
+    time_until_update: Any = None,
+) -> int | None:
     try:
         timestamp = int(value)
     except Exception:  # noqa: BLE001
         return None
     observed = dt.datetime.fromtimestamp(timestamp, tz=dt.UTC)
-    return max(0, int((now - observed).total_seconds()))
+    age_seconds = max(0, int((now - observed).total_seconds()))
+    if time_until_update is not None:
+        try:
+            return age_seconds + max(0, int(time_until_update))
+        except Exception:  # noqa: BLE001
+            pass
+    # Alternative.me is daily; when the live response lacks time_until_update,
+    # keep one day of freshness from the value timestamp rather than expiring at
+    # fetch time. The caller still compares this against snapshot_at age.
+    return 24 * 3600
 
 
 async def fetch_alternative_me_fear_greed(
@@ -85,7 +98,9 @@ async def fetch_alternative_me_fear_greed(
         current = rows[0]
         value = _decimal(current.get("value"))
         timestamp = current.get("timestamp")
-        freshness = _freshness_from_unix(timestamp, observed_at)
+        freshness = _freshness_from_unix(
+            timestamp, observed_at, current.get("time_until_update")
+        )
         if timestamp is not None:
             try:
                 observed_at = dt.datetime.fromtimestamp(int(timestamp), tz=dt.UTC)
@@ -227,6 +242,40 @@ async def fetch_binance_funding_rates(
     return CryptoInsightProviderResult(metrics=tuple(metrics), warnings=tuple(warnings))
 
 
+def _matches_defillama_slug(row: dict[str, Any], slug: str) -> bool:
+    candidates = (
+        row.get("gecko_id"),
+        row.get("name"),
+        row.get("tokenSymbol"),
+        row.get("symbol"),
+    )
+    return any(str(value).strip().lower() == slug for value in candidates if value)
+
+
+def _stablecoin_usd_total(payload: dict[str, Any]) -> Decimal | None:
+    direct = _decimal(payload.get("totalCirculatingUSD")) or _decimal(
+        payload.get("totalCirculating")
+    )
+    if direct is not None:
+        return direct
+    total = Decimal("0")
+    found = False
+    for chain in payload.get("chains") or []:
+        if not isinstance(chain, dict):
+            continue
+        circulating = chain.get("totalCirculatingUSD")
+        value = (
+            circulating.get("peggedUSD")
+            if isinstance(circulating, dict)
+            else circulating
+        )
+        amount = _decimal(value)
+        if amount is not None:
+            total += amount
+            found = True
+    return total if found else None
+
+
 async def fetch_defillama_reference(
     client: httpx.AsyncClient | None = None,
     *,
@@ -239,53 +288,67 @@ async def fetch_defillama_reference(
     metrics: list[CryptoInsightMetric] = []
     warnings: list[str] = []
     try:
-        for slug in [s.strip().lower() for s in protocol_slugs if s.strip()]:
-            try:
-                url = DEFILLAMA_PROTOCOL_URL.format(slug=slug)
-                response = await http.get(url)
-                response.raise_for_status()
-                payload = response.json()
+        wanted_slugs = [s.strip().lower() for s in protocol_slugs if s.strip()]
+        try:
+            response = await http.get(DEFILLAMA_CHAINS_URL)
+            response.raise_for_status()
+            payload = response.json()
+            chain_rows = (
+                [row for row in payload if isinstance(row, dict)]
+                if isinstance(payload, list)
+                else []
+            )
+            for slug in wanted_slugs:
+                row = next(
+                    (r for r in chain_rows if _matches_defillama_slug(r, slug)), None
+                )
+                if row is None:
+                    warnings.append(f"defillama:{slug}: chain not found")
+                    continue
                 metrics.append(
                     CryptoInsightMetric(
                         metric="tvl",
                         provider="defillama",
-                        symbol=(payload.get("symbol") or slug).upper(),
-                        value=_decimal(payload.get("tvl")),
+                        symbol=(
+                            row.get("tokenSymbol") or row.get("symbol") or slug
+                        ).upper(),
+                        value=_decimal(row.get("tvl")),
                         unit="usd",
-                        label=payload.get("name"),
-                        source_url=url,
+                        label=row.get("name"),
+                        source_url=DEFILLAMA_CHAINS_URL,
                         observed_at=observed_at,
                         freshness_seconds=0,
                         raw_payload={
-                            "name": payload.get("name"),
-                            "symbol": payload.get("symbol"),
-                            "tvl": payload.get("tvl"),
+                            "name": row.get("name"),
+                            "tokenSymbol": row.get("tokenSymbol"),
+                            "gecko_id": row.get("gecko_id"),
+                            "tvl": row.get("tvl"),
                         },
                     )
                 )
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"defillama:{slug}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"defillama:chains: {exc}")
         try:
             response = await http.get(
                 DEFILLAMA_STABLECOINS_URL, params={"includePrices": "false"}
             )
             response.raise_for_status()
             payload = response.json()
-            total = payload.get("totalCirculatingUSD") or payload.get(
-                "totalCirculating"
-            )
+            total = _stablecoin_usd_total(payload if isinstance(payload, dict) else {})
             metrics.append(
                 CryptoInsightMetric(
                     metric="stablecoin_supply",
                     provider="defillama",
                     symbol=None,
-                    value=_decimal(total),
+                    value=total,
                     unit="usd",
                     label="stablecoins circulating",
                     source_url=DEFILLAMA_STABLECOINS_URL,
                     observed_at=observed_at,
                     freshness_seconds=0,
-                    raw_payload={"totalCirculatingUSD": total},
+                    raw_payload={
+                        "totalCirculatingUSD": str(total) if total is not None else None
+                    },
                 )
             )
         except Exception as exc:  # noqa: BLE001

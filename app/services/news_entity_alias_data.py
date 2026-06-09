@@ -24,11 +24,19 @@ class AliasEntry:
 
 
 KR_ALIASES: tuple[AliasEntry, ...] = (
-    AliasEntry("005930", "kr", "삼성전자", ("삼성전자", "삼전", "Samsung Electronics")),
+    AliasEntry(
+        "005930",
+        "kr",
+        "삼성전자",
+        ("삼성전자", "삼전", "삼전닉스", "Samsung Electronics"),
+    ),
     # ROB-130: "닉스" is a 2-char alias requested by the spec; accepts some
     # false-positive risk for higher recall on KR market chatter.
     AliasEntry(
-        "000660", "kr", "SK하이닉스", ("SK하이닉스", "하이닉스", "닉스", "SK Hynix")
+        "000660",
+        "kr",
+        "SK하이닉스",
+        ("SK하이닉스", "하이닉스", "닉스", "삼전닉스", "SK Hynix"),
     ),
     AliasEntry("035420", "kr", "NAVER", ("네이버", "NAVER")),
     AliasEntry("035720", "kr", "카카오", ("카카오",)),
@@ -38,6 +46,11 @@ KR_ALIASES: tuple[AliasEntry, ...] = (
     AliasEntry("005380", "kr", "현대차", ("현대차", "현대자동차", "Hyundai Motor")),
     AliasEntry("005490", "kr", "POSCO홀딩스", ("POSCO", "포스코")),
     AliasEntry("373220", "kr", "LG에너지솔루션", ("LG에너지솔루션", "LG엔솔")),
+    AliasEntry("000270", "kr", "기아", ("기아", "기아차", "Kia")),
+    AliasEntry("006400", "kr", "삼성SDI", ("삼성SDI", "삼성에스디아이")),
+    AliasEntry("068270", "kr", "셀트리온", ("셀트리온",)),
+    AliasEntry("066570", "kr", "LG전자", ("LG전자", "엘지전자", "LG Electronics")),
+    AliasEntry("105560", "kr", "KB금융", ("KB금융", "KB금융지주")),
 )
 
 US_ALIASES: tuple[AliasEntry, ...] = (

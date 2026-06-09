@@ -224,3 +224,54 @@ async def test_caller_supplied_idempotency_key_cross_item_collision_rejected(
                 idempotency_key=shared_key,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# ROB-455 PR2 — order-lifecycle verbs: cancel + reprice
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_cancel_records_verb_and_projects_item_to_denied(
+    session: AsyncSession,
+) -> None:
+    item = await _seed_report_with_one_action_item(session)
+    decision = await InvestmentReportDecisionService(session).record(
+        RecordDecisionRequest(
+            item_uuid=item.item_uuid, decision="cancel", actor="operator-test"
+        )
+    )
+    # The verb is first-class in the decision audit row...
+    assert decision.decision == "cancel"
+    repo = InvestmentReportsRepository(session)
+    refreshed = await repo.get_item_by_uuid(item.item_uuid)
+    # ...while item.status reuses the 'denied' projection (no new status value).
+    assert refreshed is not None
+    assert refreshed.status == "denied"
+
+
+@pytest.mark.asyncio
+async def test_reprice_requires_payload_then_projects_to_approved(
+    session: AsyncSession,
+) -> None:
+    item = await _seed_report_with_one_action_item(session)
+    # reprice carries the new levels — rejected at the schema layer without them
+    # (mirrors partial_approve's approved_payload_snapshot requirement).
+    with pytest.raises(Exception) as exc:
+        RecordDecisionRequest(
+            item_uuid=item.item_uuid, decision="reprice", actor="operator-test"
+        )
+    assert "approved_payload_snapshot" in str(exc.value)
+
+    decision = await InvestmentReportDecisionService(session).record(
+        RecordDecisionRequest(
+            item_uuid=item.item_uuid,
+            decision="reprice",
+            actor="operator-test",
+            approved_payload_snapshot={"suggested_limit_price": 70000},
+        )
+    )
+    assert decision.decision == "reprice"
+    assert decision.approved_payload_snapshot == {"suggested_limit_price": 70000}
+    repo = InvestmentReportsRepository(session)
+    refreshed = await repo.get_item_by_uuid(item.item_uuid)
+    assert refreshed is not None
+    assert refreshed.status == "approved"

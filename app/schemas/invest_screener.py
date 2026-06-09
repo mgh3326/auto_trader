@@ -47,6 +47,13 @@ ScreenerRiskSeverity = Literal["info", "warning", "danger"]
 # preset matches Toss semantics (auto_trader_original presets leave it None).
 ScreenerPresetOrigin = Literal["toss_parity", "auto_trader_original"]
 ScreenerParityStatus = Literal["full", "partial", "mismatch"]
+# ROB-427: per-preset × market availability. Orthogonal to parityStatus (Toss
+# semantic closeness): availability says whether this preset can RUN in the
+# requested market right now. "active" runs; "data_pending" is catalogued but
+# disabled until a US data source/backfill exists; "unsupported" has no market
+# equivalent (e.g. KR-only investor flow). data_pending/unsupported never
+# fabricate rows — build_screener_results fail-closes with availabilityReason.
+ScreenerPresetAvailability = Literal["active", "data_pending", "unsupported"]
 
 
 class ScreenerInvestorFlowChip(BaseModel):
@@ -79,6 +86,11 @@ class ScreenerPreset(BaseModel):
     presetOrigin: ScreenerPresetOrigin | None = None
     parityStatus: ScreenerParityStatus | None = None
     parityNote: str | None = None
+    # ROB-427: per-market availability. Default "active" keeps every existing
+    # construction (KR/crypto) valid; preset_definitions(market="us") sets
+    # data_pending/unsupported with availabilityReason instead of hiding presets.
+    availability: ScreenerPresetAvailability = "active"
+    availabilityReason: str | None = None
 
 
 class ScreenerSourceContext(BaseModel):
@@ -127,6 +139,8 @@ class ScreenerResultRow(BaseModel):
     sourceContext: list[ScreenerSourceContext] = Field(default_factory=list)
     riskContext: list[ScreenerRiskContext] = Field(default_factory=list)
     candidateContext: ScreenerCandidateContext | None = None
+    # ROB-426 PR3: provenance of marketCapLabel for the non-valuation KR presets.
+    marketCapSource: Literal["primary", "fallback"] | None = None
 
 
 class ScreenerPresetsResponse(BaseModel):
@@ -143,11 +157,24 @@ class ScreenerFreshnessPrimary(BaseModel):
     asOfLabel: str
     dataState: Literal["fresh", "partial", "stale", "missing", "fallback"]
     source: str | None = None
+    # ROB-426 PR3: structured degraded-state context. dataState (the chip) stays
+    # frozen; these carry the *why* and a coverage label for the thin-partition case.
+    degradationReason: (
+        Literal[
+            "snapshot_missing",
+            "coverage_below_floor",
+            "older_fallback",
+            "healthy_no_matches",
+            "live",
+        ]
+        | None
+    ) = None
+    coverageLabel: str | None = None
 
 
 class ScreenerFreshnessDependency(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["investor_flow"]
+    kind: Literal["investor_flow", "fundamentals"]
     snapshotDate: str | None = None
     collectedAt: str | None = None
     lagLabel: str | None = None
@@ -184,3 +211,8 @@ class ScreenerResultsResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     freshness: ScreenerFreshness
     sources: list[ScreenerSourceContext] = Field(default_factory=list)
+    # ROB-429 B2: full-partition predicate match total (totalCount) and the number
+    # actually returned after the display limit (returnedCount). Set on the KR
+    # fundamentals (FUNDAMENTALS_PRESET_SPECS) path only; None for other presets.
+    totalCount: int | None = None
+    returnedCount: int | None = None

@@ -91,7 +91,10 @@ def test_screener_presets_endpoint_returns_catalog() -> None:
     assert by_id["consecutive_gainers"]["presetOrigin"] == "toss_parity"
     assert by_id["consecutive_gainers"]["parityStatus"] == "full"
     assert by_id["kr_high_volume_surge"]["presetOrigin"] == "auto_trader_original"
-    assert by_id["oversold_recovery"]["parityStatus"] == "mismatch"
+    # ROB-422 PR2c-1 — oversold_recovery reclassified from a 'mismatch' Toss-parity
+    # attempt to its own auto_trader screen (RSI), so parityStatus is now None.
+    assert by_id["oversold_recovery"]["presetOrigin"] == "auto_trader_original"
+    assert by_id["oversold_recovery"]["parityStatus"] is None
     assert by_id["oversold_recovery"]["parityNote"]
 
 
@@ -179,7 +182,9 @@ def test_screener_results_endpoint_forwards_market_query() -> None:
         }
     )
     client = TestClient(_build_app(stub_screening=stub))
-    r = client.get("/invest/api/screener/results?preset=cheap_value&market=us")
+    # growth_expectation is a generic-provider preset (not KR-only, not snapshot-first),
+    # so it forwards to list_screening for US. (cheap_value is now KR-only/snapshot-only.)
+    r = client.get("/invest/api/screener/results?preset=growth_expectation&market=us")
 
     assert r.status_code == 200
     body = r.json()
@@ -289,6 +294,43 @@ class _RouterFakeExecuteResult:
         if self._rows:
             return self._rows[0]
         return type("EmptyRow", (), {})()
+
+
+@pytest.fixture(autouse=True)
+def mock_screener_service_resolve_healthy(monkeypatch):
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+        resolve_healthy_partition,
+    )
+
+    orig_resolve = resolve_healthy_partition
+
+    async def _fake_resolve(session, **kwargs):
+        if type(session).__name__ in ("_FakeSession", "_RouterFakeSession"):
+            # It's a fake session! Consume the first result
+            partition_date = None
+            results_attr = "_results" if hasattr(session, "_results") else "results"
+            results_list = getattr(session, results_attr, [])
+            if results_list:
+                first_res = results_list.pop(0)
+                partition_date = first_res.scalar_one_or_none()
+            return HealthyPartition(
+                partition_date=partition_date,
+                row_count=9999,
+                coverage_ratio=1.0,
+                is_fallback=False,
+                healthy=True,
+            )
+        else:
+            # It's a real db session! Run the original resolver
+            return await orig_resolve(session, **kwargs)
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _fake_resolve,
+    )
 
 
 class _RouterFakeSession:
@@ -410,9 +452,21 @@ def test_consecutive_gainers_endpoint_separates_served_from_data_basis() -> None
             _RouterFakeExecuteResult(scalar_rows=[stale_date]),  # 1: MAX(snapshot_date)
             _RouterFakeExecuteResult(scalar_rows=[snap]),  # 2: qualifying rows
             _RouterFakeExecuteResult(rows=[name_row]),  # 3: KR symbol names (filter)
-            _RouterFakeExecuteResult(scalar_rows=[snap]),  # 4: enrichment get_fresh
-            _RouterFakeExecuteResult(rows=[name_row]),  # 5: bulk KR names
-            _RouterFakeExecuteResult(scalar_rows=[]),  # 6: no investor-flow chip
+            _RouterFakeExecuteResult(
+                scalar_rows=[stale_date]
+            ),  # 4: MAX(snapshot_date) for MarketValuationSnapshot
+            _RouterFakeExecuteResult(
+                rows=[
+                    type(
+                        "Row",
+                        (),
+                        {"symbol": "005930", "market_cap": 418_000_000_000_000},
+                    )()
+                ]
+            ),  # 5: MarketValuationSnapshot select query
+            _RouterFakeExecuteResult(scalar_rows=[snap]),  # 6: enrichment get_fresh
+            _RouterFakeExecuteResult(rows=[name_row]),  # 7: bulk KR names
+            _RouterFakeExecuteResult(scalar_rows=[]),  # 8: no investor-flow chip
         ]
     )
 

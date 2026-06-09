@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import functools
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -32,21 +33,53 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
-async def default_valuation_fetcher(symbol: str, market: str) -> dict[str, Any]:
+def _to_date(value: Any) -> dt.date | None:
+    if isinstance(value, dt.date):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return dt.date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+async def default_valuation_fetcher(
+    symbol: str, market: str, *, include_high_date: bool = False
+) -> dict[str, Any]:
     if market == "kr":
         from app.services.naver_finance.valuation import fetch_valuation
 
         return await fetch_valuation(symbol)
     if market == "us":
         from app.services.brokers.yahoo.client import (
+            fetch_52w_high_date,
             fetch_fast_info,
             fetch_fundamental_info,
         )
 
-        fast_info, fundamentals = await asyncio.gather(
-            fetch_fast_info(symbol), fetch_fundamental_info(symbol)
+        # ROB-440 PR4: the 52w-high DATE needs a heavy OHLC fetch (1y daily) — a 3rd
+        # yahoo call/symbol that over-loads yfinance at universe scale (FD/401). Opt-in
+        # so the bulk valuation backfill is 2 calls/symbol; only undervalued_breakout
+        # date-recency needs it (targeted run with include_high_date=True).
+        if not include_high_date:
+            fast_info, fundamentals = await asyncio.gather(
+                fetch_fast_info(symbol), fetch_fundamental_info(symbol)
+            )
+            return {**fast_info, **fundamentals}
+
+        fast_info, fundamentals, high_52w_date = await asyncio.gather(
+            fetch_fast_info(symbol),
+            fetch_fundamental_info(symbol),
+            fetch_52w_high_date(symbol),  # ROB-440 PR3: 52w-high date (date-recency)
         )
-        return {**fast_info, **fundamentals}
+        # isoformat string keeps raw_payload (JSONB) serializable; parsed back in
+        # _payload_from_raw → the high_52w_date column.
+        return {
+            **fast_info,
+            **fundamentals,
+            "high_52w_date": high_52w_date.isoformat() if high_52w_date else None,
+        }
     raise ValueError(f"unsupported market: {market}")
 
 
@@ -73,6 +106,7 @@ def _payload_from_raw(
         market_cap=_to_decimal(raw.get("market_cap") or raw.get("marketCap")),
         high_52w=_to_decimal(raw.get("high_52w") or raw.get("yearHigh")),
         low_52w=_to_decimal(raw.get("low_52w") or raw.get("yearLow")),
+        high_52w_date=_to_date(raw.get("high_52w_date")),
         raw_payload=redact_sensitive_payload(dict(raw)),
     )
 
@@ -84,11 +118,16 @@ async def build_valuation_snapshots_for_market(
     snapshot_date: dt.date,
     concurrency: int = 4,
     fetcher: ValuationFetcher | None = None,
+    include_high_date: bool = False,
 ) -> MarketValuationBuildResult:
     market_norm = market.strip().lower()
     if market_norm not in {"kr", "us"}:
         raise ValueError(f"unsupported market: {market}")
-    fetch = fetcher or default_valuation_fetcher
+    # ROB-440 PR4: thread include_high_date into the default fetcher (opt-in heavy
+    # OHLC). Custom fetchers manage their own behavior.
+    fetch = fetcher or functools.partial(
+        default_valuation_fetcher, include_high_date=include_high_date
+    )
     sem = asyncio.Semaphore(max(1, concurrency))
     symbols_list = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
     payloads: list[MarketValuationSnapshotUpsert | None] = [None] * len(symbols_list)

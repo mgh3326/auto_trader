@@ -501,3 +501,71 @@ def test_report_diagnostics_includes_data_quality_audit() -> None:
     )
     assert "data_quality_audit" in out
     assert out["data_quality_audit"]["snapshot_bundle_uuid"] == "b-1"
+
+
+def test_quality_grade_demotes_when_candidate_universe_stale_no_cross_check() -> None:
+    # ROB-415: candidate_universe (the buy-candidate source) is stale while other
+    # optional kinds are fresh, so aggregate internal coverage stays >=70% and the
+    # old thin_coverage rule never fired. With no usable external cross-check, a
+    # stale candidate_universe must demote high_confidence → informational_only.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+            "symbol": {"status": "fresh"},
+            "invest_page": {"status": "fresh"},
+            "candidate_universe": {"status": "soft_stale"},
+            "toss_remote_debug": {"status": "unavailable"},  # external, no rescue
+        },
+        bundle_status="partial",
+    )
+    # Core fully fresh and internal coverage is high (7/8 ≈ 88%), so the old rule
+    # left it high_confidence — the bug.
+    assert out["core_fresh_coverage_pct"] == 100
+    assert out["grade"] == "informational_only"
+    assert out["external_cross_check_status"] == "unavailable"
+
+
+def test_quality_grade_candidate_universe_stale_rescued_by_cross_check() -> None:
+    # ROB-415 / ROB-323: a usable external cross-check still corroborates a stale
+    # candidate_universe, so the bundle stays high_confidence. Guards the demotion
+    # from over-firing when there IS fresh external evidence.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+            "symbol": {"status": "fresh"},
+            "invest_page": {"status": "fresh"},
+            "candidate_universe": {"status": "soft_stale"},
+            "toss_remote_debug": {"status": "fresh"},  # usable cross-check
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "high_confidence"
+    assert out["external_cross_check_status"] == "fresh"
+
+
+def test_quality_grade_candidate_universe_fresh_stays_high() -> None:
+    # candidate_universe present and fresh must NOT trigger the ROB-415 demotion.
+    out = build_report_quality_summary(
+        freshness_summary={
+            "overall": "partial",
+            "portfolio": {"status": "fresh"},
+            "journal": {"status": "fresh"},
+            "watch_context": {"status": "fresh"},
+            "market": {"status": "fresh"},
+            "news": {"status": "fresh"},
+            "candidate_universe": {"status": "fresh"},
+            "toss_remote_debug": {"status": "unavailable"},  # external, no rescue
+        },
+        bundle_status="partial",
+    )
+    assert out["grade"] == "high_confidence"

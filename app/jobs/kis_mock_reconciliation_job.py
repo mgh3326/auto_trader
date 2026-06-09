@@ -77,13 +77,19 @@ async def run_kis_mock_reconciliation(
     *,
     dry_run: bool = True,
     limit: int = 100,
+    symbol: str | None = None,
     thresholds: ReconcilerThresholds | None = None,
     kis_client: KISClient | None = None,
 ) -> dict[str, Any]:
-    """Fetch open mock orders, fetch mock holdings, propose & optionally apply transitions."""
+    """Fetch open mock orders, fetch mock holdings, propose & optionally apply transitions.
+
+    ``symbol`` (ROB-404) restricts reconciliation to one symbol's open orders —
+    the delta-budget kernel groups by (symbol, side) so a single-symbol pass is
+    self-consistent. ``None`` keeps the full-batch behavior.
+    """
     thresholds = thresholds or ReconcilerThresholds()
     lifecycle_svc = KISMockLifecycleService(db)
-    open_rows = await lifecycle_svc.list_open_orders(limit=limit)
+    open_rows = await lifecycle_svc.list_open_orders(limit=limit, symbol=symbol)
     if not open_rows:
         return {
             "success": True,
@@ -114,6 +120,7 @@ async def run_kis_mock_reconciliation(
                 else None
             ),
             accepted_at=row.trade_date,
+            price=_to_decimal(row.price),
         )
         for row in open_rows
     ]
@@ -130,6 +137,10 @@ async def run_kis_mock_reconciliation(
     events: list[dict[str, Any]] = []
 
     for proposal in proposals:
+        # ``observed_delta`` is the raw un-apportioned per-order delta (diagnostic
+        # only — a pending sibling in a same-symbol group may show a non-zero
+        # delta it did NOT receive). ``attributed_fill_qty`` is the authoritative
+        # apportioned quantity that drives lifecycle and order-history status.
         detail = {
             "observed_holdings_qty": (
                 str(proposal.observed_holdings_qty)
@@ -139,6 +150,11 @@ async def run_kis_mock_reconciliation(
             "observed_delta": (
                 str(proposal.observed_delta)
                 if proposal.observed_delta is not None
+                else None
+            ),
+            "attributed_fill_qty": (
+                str(proposal.attributed_fill_qty)
+                if proposal.attributed_fill_qty is not None
                 else None
             ),
         }

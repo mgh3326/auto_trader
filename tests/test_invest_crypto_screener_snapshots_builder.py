@@ -20,6 +20,19 @@ from app.services.invest_crypto_screener_snapshots.repository import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_funding(monkeypatch):
+    # ROB-443: build_crypto_snapshots enriches via Binance; stub it so unit tests
+    # never hit the network. Individual tests override with their own map.
+    import app.services.invest_crypto_screener_snapshots.builder as builder_mod
+
+    async def _empty(_symbols):
+        return {}
+
+    monkeypatch.setattr(builder_mod, "fetch_funding_rates", _empty)
+    monkeypatch.setattr(builder_mod, "fetch_oi_and_long_short", _empty)
+
+
 class _Condition:
     def __init__(self, label: str) -> None:
         self.label = label
@@ -94,6 +107,42 @@ def test_build_crypto_snapshot_payloads_maps_provider_rows() -> None:
     assert payload.adx == Decimal("24.1")
     assert payload.market_warning is True
     assert payload.raw_payload == {"safe": True}
+
+
+def test_build_crypto_snapshot_payloads_sets_funding_rate() -> None:
+    # ROB-443: funding map enriches matching coins; absent coins stay None.
+    payloads = build_crypto_snapshot_payloads(
+        [
+            CryptoProviderRow(symbol="KRW-BTC", latest_close=Decimal("150000000")),
+            CryptoProviderRow(symbol="KRW-NOPERP", latest_close=Decimal("100")),
+        ],
+        snapshot_date=dt.date(2026, 5, 13),
+        funding_by_symbol={"KRW-BTC": Decimal("0.00012")},
+    )
+    by_symbol = {p.symbol: p for p in payloads}
+    assert by_symbol["KRW-BTC"].funding_rate == Decimal("0.00012")
+    assert by_symbol["KRW-NOPERP"].funding_rate is None  # no perp → fail-closed
+
+
+@pytest.mark.asyncio
+async def test_build_crypto_snapshots_enriches_funding(monkeypatch) -> None:
+    import app.services.invest_crypto_screener_snapshots.builder as builder_mod
+
+    async def _funding(symbols):
+        assert symbols == ["KRW-BTC"]  # provider symbols passed through
+        return {"KRW-BTC": Decimal("0.0005")}
+
+    monkeypatch.setattr(builder_mod, "fetch_funding_rates", _funding)
+    repo = _Repo()
+    result = await build_crypto_snapshots(
+        provider=_Provider(),
+        repository=repo,
+        snapshot_date=dt.date(2026, 5, 13),
+        commit=True,
+        limit=1,
+    )
+    assert result["fundingEnriched"] == 1
+    assert repo.payloads[0].funding_rate == Decimal("0.0005")
 
 
 @pytest.mark.asyncio

@@ -47,7 +47,7 @@ class TradeJournal(Base):
             name="trade_journals_side",
         ),
         CheckConstraint(
-            "account_type IN ('live','paper')",
+            "account_type IN ('live','paper','mock')",
             name="trade_journals_account_type",
         ),
         CheckConstraint(
@@ -58,6 +58,7 @@ class TradeJournal(Base):
         Index("ix_trade_journals_created", "created_at"),
         Index("ix_trade_journals_account_type", "account_type"),
         Index("ix_trade_journals_paperclip_issue_id", "paperclip_issue_id"),
+        Index("ix_trade_journals_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -113,6 +114,7 @@ class TradeJournal(Base):
     )
     paper_trade_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     paperclip_issue_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),

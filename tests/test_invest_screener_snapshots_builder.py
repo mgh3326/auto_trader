@@ -34,11 +34,30 @@ def test_derive_metrics_streak_matches_view_model():
     )
 
 
-def test_derive_metrics_short_window_returns_partial():
+def test_derive_metrics_short_window_streak_is_none():
+    # ROB-430 PR-①: < 6 sessions → consecutive_up_days is None (insufficient), NOT a
+    # truncated lower bound that would silently fail the consecutive_gainers >= 5 filter.
     closes = [Decimal("100"), Decimal("101")]
     metrics = derive_metrics(closes)
-    assert metrics.consecutive_up_days == 1
+    assert metrics.consecutive_up_days is None
     assert metrics.week_change_rate is None  # < 6 elements
+    # change_rate is still computed from the latest pair (needs only 2 closes).
+    assert metrics.change_rate is not None
+
+
+def test_derive_metrics_streak_reliable_at_six_sessions():
+    # ROB-430 PR-①: 5 all-up closes can't confirm a >= 5 streak (max 4) → None;
+    # 6 all-up closes yield a reliable streak of 5 that passes the >= 5 filter.
+    assert (
+        derive_metrics([Decimal(c) for c in [10, 11, 12, 13, 14]]).consecutive_up_days
+        is None
+    )
+    assert (
+        derive_metrics(
+            [Decimal(c) for c in [10, 11, 12, 13, 14, 15]]
+        ).consecutive_up_days
+        == 5
+    )
 
 
 @pytest.mark.asyncio
@@ -67,6 +86,59 @@ async def test_build_snapshot_for_symbol_kr(monkeypatch):
     assert payload.daily_volume == 1_000_000
     assert payload.source == "kis"
     fetcher.assert_awaited_once_with("005930", "equity_kr", count=10)
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_drops_forming_intraday_bar(monkeypatch):
+    """ROB-430 트랙B f/u: a forming (intraday) current-session bar is excluded so
+    consecutive_up_days is computed on COMPLETED closes only (Toss "종가 기준").
+
+    7 rising completed closes through 2026-06-03, then a DOWN forming 2026-06-04 bar.
+    Intraday (before 16:20 KST) → drop 06-04 → streak intact (6). Post-close → keep
+    the completed 06-04 down close → streak breaks (0).
+    """
+    df = pd.DataFrame(
+        {
+            "date": [
+                dt.date(2026, 5, 26),
+                dt.date(2026, 5, 27),
+                dt.date(2026, 5, 28),
+                dt.date(2026, 5, 29),
+                dt.date(2026, 6, 1),
+                dt.date(2026, 6, 2),
+                dt.date(2026, 6, 3),
+                dt.date(2026, 6, 4),
+            ],
+            "close": [100, 101, 102, 103, 104, 105, 106, 90],
+            "volume": [1_000_000] * 8,
+        }
+    )
+    monkeypatch.setattr(
+        "app.services.invest_screener_snapshots.builder._fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    # 06-04 10:00 KST (01:00 UTC) — before 16:20 KST → forming 06-04 bar dropped.
+    intraday = await build_snapshot_for_symbol(
+        market="kr",
+        symbol="005930",
+        today=dt.date(2026, 6, 4),
+        now=dt.datetime(2026, 6, 4, 1, 0, tzinfo=dt.UTC),
+    )
+    assert intraday is not None
+    assert intraday.snapshot_date == dt.date(2026, 6, 3)
+    assert intraday.consecutive_up_days == 6  # streak intact through the last close
+
+    # 06-04 17:00 KST (08:00 UTC) — after 16:20 KST → completed 06-04 down close kept.
+    post_close = await build_snapshot_for_symbol(
+        market="kr",
+        symbol="005930",
+        today=dt.date(2026, 6, 4),
+        now=dt.datetime(2026, 6, 4, 8, 0, tzinfo=dt.UTC),
+    )
+    assert post_close is not None
+    assert post_close.snapshot_date == dt.date(2026, 6, 4)
+    assert post_close.consecutive_up_days == 0  # the down close ends the run
 
 
 @pytest.mark.asyncio

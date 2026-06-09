@@ -15,7 +15,37 @@ from app.services.invest_view_model.high_yield_value_screener import (
 )
 
 # 9-prefix synthetic symbols, isolated from real KR symbols and sibling suites.
-_TEST_SYMBOLS = ["921000", "920001", "929999"]
+# ZZUS* are synthetic US tickers for the ROB-427 PR3 US-market path.
+_TEST_SYMBOLS = ["921000", "920001", "929999", "ZZUSHI", "ZZUSLO"]
+
+
+@pytest.fixture(autouse=True)
+def mock_partition_health_always_healthy(monkeypatch):
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+        resolve_healthy_partition,
+    )
+
+    orig_resolve = resolve_healthy_partition
+
+    async def _fake_resolve(*args, **kwargs):
+        hp = await orig_resolve(*args, **kwargs)
+        if hp:
+            return HealthyPartition(
+                partition_date=hp.partition_date,
+                row_count=hp.row_count,
+                coverage_ratio=hp.coverage_ratio,
+                is_fallback=hp.is_fallback,
+                healthy=True,
+            )
+        return None
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _fake_resolve,
+    )
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -92,6 +122,51 @@ async def test_filters_by_roe_and_per(db_session):
     assert target["roe"] == pytest.approx(18.0)
     assert target["per"] == pytest.approx(8.0)
     assert target["_screener_snapshot_state"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_us_market_filters_by_roe_and_per(db_session):
+    """ROB-427 PR3: US runs on Yahoo valuation snapshots (market=us), same ROE>=15 /
+    PER 0~10 rule, no KR universe / common-stock filter. row.market == 'us'."""
+    val_date = dt.date(2099, 12, 31)
+    db_session.add_all(
+        [
+            # qualifies: ROE 22 >= 15, PER 7 in (0, 10]
+            MarketValuationSnapshot(
+                market="us",
+                symbol="ZZUSHI",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("7.0"),
+                roe=decimal.Decimal("22.0"),
+                market_cap=decimal.Decimal("5000000000"),  # ROB-440: above US floor
+            ),
+            # excluded: ROE 8 < 15
+            MarketValuationSnapshot(
+                market="us",
+                symbol="ZZUSLO",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("4.0"),
+                roe=decimal.Decimal("8.0"),
+                market_cap=decimal.Decimal("5000000000"),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    rows = await load_high_yield_value_from_snapshots(
+        db_session, market="us", limit=20, today_market_date=val_date
+    )
+
+    assert rows is not None
+    symbols = [r["symbol"] for r in rows]
+    assert "ZZUSHI" in symbols
+    assert "ZZUSLO" not in symbols
+    target = next(r for r in rows if r["symbol"] == "ZZUSHI")
+    assert target["market"] == "us"
+    assert target["roe"] == pytest.approx(22.0)
+    assert target["per"] == pytest.approx(7.0)
 
 
 @pytest.mark.asyncio
@@ -195,7 +270,11 @@ async def test_stale_when_partition_is_not_todays_trading_date(db_session):
 
 @pytest.mark.asyncio
 async def test_returns_none_for_non_kr_market(db_session):
-    rows = await load_high_yield_value_from_snapshots(db_session, market="us", limit=20)
+    # ROB-427 PR3: US is now SUPPORTED (Yahoo valuation). crypto / unknown markets
+    # remain unsupported by this loader → None.
+    rows = await load_high_yield_value_from_snapshots(
+        db_session, market="crypto", limit=20
+    )
     assert rows is None
 
 
@@ -219,3 +298,64 @@ def test_metric_value_label_formats_roe_as_percent():
     label, warnings = _metric_value_label("high_yield_value", {"roe": 18.3})
     assert label == "18.3%"
     assert warnings == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_quality_guards_drop_microcap_and_roe_artifacts(db_session):
+    # ROB-440: high_yield_value US must apply the shared quality guards (the live DCX
+    # ROE 1177% @ $48M / BLKB 418% outliers that #1161 missed for this loader).
+    val_date = dt.date(2099, 12, 30)
+    for s in ("ZZUDCX", "ZZUBLK", "ZZUGUD"):
+        await db_session.execute(
+            MarketValuationSnapshot.__table__.delete().where(
+                MarketValuationSnapshot.symbol == s
+            )
+        )
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(  # micro-cap + ROE artifact → dropped (size floor + ROE cap)
+                market="us",
+                symbol="ZZUDCX",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("5.0"),
+                roe=decimal.Decimal("1177.0"),
+                market_cap=decimal.Decimal("48000000"),
+            ),
+            MarketValuationSnapshot(  # large-cap ROE artifact → dropped (ROE cap)
+                market="us",
+                symbol="ZZUBLK",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("5.0"),
+                roe=decimal.Decimal("418.0"),
+                market_cap=decimal.Decimal("1300000000"),
+            ),
+            MarketValuationSnapshot(  # legit → kept
+                market="us",
+                symbol="ZZUGUD",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("8.0"),
+                roe=decimal.Decimal("25.0"),
+                market_cap=decimal.Decimal("190000000000"),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    rows = await load_high_yield_value_from_snapshots(
+        db_session, market="us", limit=20, today_market_date=val_date
+    )
+    syms = {r["symbol"] for r in (rows or [])}
+    assert "ZZUGUD" in syms
+    assert "ZZUDCX" not in syms and "ZZUBLK" not in syms  # outliers dropped
+
+    for s in ("ZZUDCX", "ZZUBLK", "ZZUGUD"):
+        await db_session.execute(
+            MarketValuationSnapshot.__table__.delete().where(
+                MarketValuationSnapshot.symbol == s
+            )
+        )
+    await db_session.commit()

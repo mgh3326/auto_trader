@@ -46,6 +46,11 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/mcp_server/tooling/fundamentals_sources_binance.py",
         "app/mcp_server/tooling/fundamentals_sources_naver.py",
         "app/mcp_server/tooling/fundamentals/_crypto.py",
+        # ROB-443: crypto screener snapshot funding-rate enrichment. No new Binance
+        # HTTP code — it imports the existing public funding fetcher
+        # (_fetch_funding_rate_batch in fundamentals_sources_binance, already
+        # allow-listed); the Binance reference here is only that import path.
+        "app/services/invest_crypto_screener_snapshots/derivatives.py",
         "app/models/research_backtest.py",
         "app/schemas/research_backtest.py",
         "app/services/crypto_insight_snapshots/builder.py",

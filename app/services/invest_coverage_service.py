@@ -33,7 +33,7 @@ from app.schemas.invest_coverage import (
     InvestCoverageSurface,
     InvestCoverageSymbol,
 )
-from app.services.invest_screener_snapshots.freshness import today_trading_date
+from app.services.invest_screener_snapshots.freshness import expected_baseline_date
 from app.services.market_data_coverage.ohlcv_freshness import (
     kr_candles_freshness,
     us_candles_freshness,
@@ -68,7 +68,10 @@ async def build_invest_coverage(
     if market_norm not in {"kr", "us", "crypto", "all"}:
         raise ValueError("market must be one of kr, us, crypto, all")
     symbol_list = _normalize_symbols(symbols or [])
-    trading_day = as_of or today_trading_date(
+    # ROB-438 follow-up: default to the session-aware baseline (prior trading day
+    # in the pre-market window) so coverage surfaces don't false-flag fresh
+    # prior-day snapshots as stale; explicit as_of still overrides.
+    trading_day = as_of or expected_baseline_date(
         "us" if market_norm == "all" else market_norm
     )
     now = dt.datetime.now(dt.UTC)

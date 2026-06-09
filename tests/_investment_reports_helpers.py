@@ -29,6 +29,8 @@ from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
     InvestmentReportItemDecision,
+    InvestmentReportNewsCitation,
+    InvestmentReportNewsFetchRun,
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
@@ -37,6 +39,8 @@ INVESTMENT_REPORTS_TABLES = [
     InvestmentReport.__table__,
     InvestmentReportItem.__table__,
     InvestmentReportItemDecision.__table__,
+    InvestmentReportNewsCitation.__table__,
+    InvestmentReportNewsFetchRun.__table__,
     InvestmentWatchAlert.__table__,
     InvestmentWatchEvent.__table__,
 ]
@@ -211,6 +215,85 @@ async def session() -> AsyncSession:
                         "OR operation IN ('cancel','keep','review') "
                         "OR valid_until IS NOT NULL"
                         ")",
+                        # ROB-403 — investment_watch_alerts conditions/combine/
+                        # threshold_high + operator CHECK extend. Idempotent;
+                        # mirrors the alembic migration.
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD COLUMN IF NOT EXISTS conditions JSONB "
+                        "NOT NULL DEFAULT '[]'::jsonb",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD COLUMN IF NOT EXISTS combine TEXT NOT NULL DEFAULT 'and'",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_operator",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_ck_investment_watch_alerts_operator",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD CONSTRAINT ck_investment_watch_alerts_operator "
+                        "CHECK (operator IN ('above','below','between'))",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_combine",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_ck_investment_watch_alerts_combine",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD CONSTRAINT ck_investment_watch_alerts_combine "
+                        "CHECK (combine IN ('and'))",
+                        # ROB-403 — investment_watch_events: between + threshold_high.
+                        "ALTER TABLE review.investment_watch_events "
+                        "ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_operator",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_operator",
+                        "ALTER TABLE review.investment_watch_events "
+                        "ADD CONSTRAINT ck_investment_watch_events_operator "
+                        "CHECK (operator IN ('above','below','between'))",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_action_mode",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_ck_investment_watch_alerts_action_mode",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_ck_investment_watch_alerts_a_646d",
+                        "ALTER TABLE review.investment_watch_alerts "
+                        "ADD CONSTRAINT ck_investment_watch_alerts_action_mode "
+                        "CHECK (action_mode IN ('notify_only','preview_only',"
+                        "'approval_required','auto_execute_mock'))",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_action_mode",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_action_mode",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_a_05f0",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_ac_6a20",
+                        "ALTER TABLE review.investment_watch_events "
+                        "ADD CONSTRAINT ck_investment_watch_events_action_mode "
+                        "CHECK (action_mode IN ('notify_only','preview_only',"
+                        "'approval_required','auto_execute_mock'))",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_outcome",
+                        "ALTER TABLE review.investment_watch_events "
+                        "DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_outcome",
+                        "ALTER TABLE review.investment_watch_events "
+                        "ADD CONSTRAINT ck_investment_watch_events_outcome "
+                        "CHECK (outcome IN ('notified','review_required','preview_attached',"
+                        "'executed','expired','ignored','failed'))",
+                        # ROB-455 — extend the decision-verb CHECK with the
+                        # order-lifecycle verbs cancel/reprice. create_all names
+                        # this via the convention hash; drop both forms then
+                        # recreate canonical with the new verb set. Mirrors
+                        # alembic 20260609_rob455.
+                        "ALTER TABLE review.investment_report_item_decisions "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_item_decisions_ck_investment_repor_9aa6",
+                        "ALTER TABLE review.investment_report_item_decisions "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_item_decisions_decision",
+                        "ALTER TABLE review.investment_report_item_decisions "
+                        "ADD CONSTRAINT ck_investment_report_item_decisions_decision "
+                        "CHECK (decision IN ('approve','deny','defer','skip',"
+                        "'partial_approve','cancel','reprice'))",
                     ):
                         await conn.execute(sa.text(stmt))
                 factory = async_sessionmaker(engine, expire_on_commit=False)

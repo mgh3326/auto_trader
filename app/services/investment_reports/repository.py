@@ -23,6 +23,8 @@ from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
     InvestmentReportItemDecision,
+    InvestmentReportNewsCitation,
+    InvestmentReportNewsFetchRun,
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
@@ -181,6 +183,40 @@ class InvestmentReportsRepository:
             .values(status=status)
         )
 
+    async def update_item_watch_condition(
+        self,
+        item_id: int,
+        watch_condition: dict | None,
+        valid_until: datetime | None,
+    ) -> None:
+        """ROB-393 — persist a watch_condition / valid_until injected at
+        activation time onto a review-watch item. Only non-None values are
+        written; a None field is left unchanged. Flushes but never commits
+        (caller owns the transaction)."""
+        values: dict[str, Any] = {}
+        if watch_condition is not None:
+            values["watch_condition"] = watch_condition
+        if valid_until is not None:
+            values["valid_until"] = valid_until
+        if not values:
+            return
+        await self._session.execute(
+            sa.update(InvestmentReportItem)
+            .where(InvestmentReportItem.id == item_id)
+            .values(**values)
+        )
+
+    async def update_item_watch_recommendation(
+        self, item_id: int, watch_recommendation: dict
+    ) -> None:
+        """ROB-337 — persist the advisory watch_recommendation JSONB onto an
+        item. Flushes but never commits (caller owns the transaction)."""
+        await self._session.execute(
+            sa.update(InvestmentReportItem)
+            .where(InvestmentReportItem.id == item_id)
+            .values(watch_recommendation=watch_recommendation)
+        )
+
     async def delete_items_for_report(self, report_id: int) -> None:
         """ROB-352 — remove every item of one report (overwrite path).
 
@@ -232,6 +268,18 @@ class InvestmentReportsRepository:
         await self._session.flush()
         await self._session.refresh(row)
         return row
+
+    async def update_alert_metadata(self, alert_id: int, metadata: dict) -> None:
+        """ROB-337 — replace an alert's alert_metadata JSONB (caller merges).
+
+        Used by the validity review job to persist a ``last_review`` block.
+        Does NOT touch status / threshold / valid_until. Flushes via the
+        caller's transaction; never commits."""
+        await self._session.execute(
+            sa.update(InvestmentWatchAlert)
+            .where(InvestmentWatchAlert.id == alert_id)
+            .values(alert_metadata=metadata)
+        )
 
     async def get_alert_by_idempotency_key(
         self, idempotency_key: str
@@ -297,6 +345,16 @@ class InvestmentReportsRepository:
             sa.select(InvestmentWatchEvent).where(
                 InvestmentWatchEvent.idempotency_key == idempotency_key
             )
+        )
+
+    async def update_event_follow_up(
+        self, event_id: int, *, follow_up_report_item_id: int
+    ) -> None:
+        """ROB-405 Slice E — link a watch event to its follow-up report item."""
+        await self._session.execute(
+            sa.update(InvestmentWatchEvent)
+            .where(InvestmentWatchEvent.id == event_id)
+            .values(follow_up_report_item_id=follow_up_report_item_id)
         )
 
     async def update_event_delivery(
@@ -367,3 +425,51 @@ class InvestmentReportsRepository:
             .limit(limit)
         )
         return list(result.all())
+
+    async def list_items_for_report_ordered_by_id(
+        self, report_id: int
+    ) -> list[InvestmentReportItem]:
+        """Insertion-order items (id.asc()). Use for composition-index mapping —
+        ``created_at`` ties (single-transaction inserts share ``now()``) make
+        the created_at-ordered query non-deterministic for this purpose."""
+        result = await self._session.scalars(
+            sa.select(InvestmentReportItem)
+            .where(InvestmentReportItem.report_id == report_id)
+            .order_by(InvestmentReportItem.id.asc())
+        )
+        return list(result.all())
+
+    async def insert_news_fetch_run(
+        self, **fields: Any
+    ) -> InvestmentReportNewsFetchRun:
+        row = InvestmentReportNewsFetchRun(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def insert_news_citation(self, **fields: Any) -> InvestmentReportNewsCitation:
+        row = InvestmentReportNewsCitation(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def list_news_citations_for_report(
+        self, report_uuid: UUID
+    ) -> list[InvestmentReportNewsCitation]:
+        result = await self._session.scalars(
+            sa.select(InvestmentReportNewsCitation)
+            .where(InvestmentReportNewsCitation.report_uuid == report_uuid)
+            .order_by(InvestmentReportNewsCitation.id.asc())
+        )
+        return list(result.all())
+
+    async def merge_report_unavailable_sources(
+        self, report_id: int, extra: dict[str, Any]
+    ) -> None:
+        row = await self._session.get(InvestmentReport, report_id)
+        if row is None:
+            return
+        merged = {**(row.unavailable_sources or {}), **extra}
+        row.unavailable_sources = merged
+        await self._session.flush()

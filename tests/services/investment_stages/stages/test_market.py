@@ -182,6 +182,45 @@ async def test_market_stage_crypto_selects_crypto_bull():
 
 
 @pytest.mark.asyncio
+async def test_market_stage_crypto_summarizes_upbit_altseason_with_citations():
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "market": [
+                _snapshot(
+                    {
+                        "indices": {"CRYPTO": {"change_percent": 0.4}},
+                        "altseason": {
+                            "ubai_ubmi_ratio": 0.455,
+                            "breadth": {
+                                "alts_beating_btc_pct": 0.42,
+                                "alts_beating_btc": 84,
+                                "alts_total": 200,
+                            },
+                        },
+                    }
+                )
+            ]
+        },
+        bundle_metadata={},
+        market="crypto",
+    )
+    payload = await MarketStage().run(ctx)
+
+    assert payload.summary == (
+        "CRYPTO change_percent=+0.40%; Upbit altseason "
+        "UBAI/UBMI=0.455, alts_beating_btc=42.0%"
+    )
+    assert "Upbit altseason UBAI/UBMI=0.455" in payload.key_points
+    assert "Upbit breadth alts beating BTC 42.0%" in payload.key_points
+    assert [c.payload_path for c in payload.cited_snapshots] == [
+        "$.indices.CRYPTO.change_percent",
+        "$.altseason.ubai_ubmi_ratio",
+        "$.altseason.breadth.alts_beating_btc_pct",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_market_stage_crypto_selects_crypto_bear():
     ctx = StageContext(
         bundle_uuid=uuid.uuid4(),

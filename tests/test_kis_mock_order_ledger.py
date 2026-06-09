@@ -455,8 +455,17 @@ async def test_kis_mock_buy_does_not_require_thesis_strategy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kis_live_path_unchanged_calls_save_order_fill(monkeypatch):
-    from app.mcp_server.tooling import kis_mock_ledger, order_execution, order_journal
+async def test_kis_live_kr_path_records_to_live_ledger_not_save_fill(monkeypatch):
+    # ROB-395: KR live no longer books a fill/journal at send. It records the
+    # order accepted-only to review.kis_live_order_ledger; _save_order_fill must
+    # NOT run, and the response carries fill_recorded:false. (US-unchanged is
+    # covered separately by test_order_execution_live_routing.)
+    from app.mcp_server.tooling import (
+        kis_live_ledger,
+        kis_mock_ledger,
+        order_execution,
+        order_journal,
+    )
     from tests._mcp_tooling_support import build_tools
 
     monkeypatch.setattr(
@@ -529,6 +538,12 @@ async def test_kis_live_path_unchanged_calls_save_order_fill(monkeypatch):
     save_ledger = AsyncMock(return_value=None)
     monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save_ledger)
 
+    # ROB-395: KR live writes to the live ledger instead of booking a fill.
+    save_live_ledger = AsyncMock(return_value=77)
+    monkeypatch.setattr(
+        kis_live_ledger, "_save_kis_live_order_ledger", save_live_ledger
+    )
+
     tools = build_tools()
     result = await tools["place_order"](
         symbol="005930",
@@ -543,8 +558,14 @@ async def test_kis_live_path_unchanged_calls_save_order_fill(monkeypatch):
     )
 
     assert result["success"] is True, result
-    save_fill.assert_awaited_once()
+    # accepted-only: no fill/journal booked at send
+    save_fill.assert_not_awaited()
+    create_journal.assert_not_awaited()
+    # recorded to the live ledger; mock ledger untouched
+    save_live_ledger.assert_awaited_once()
     save_ledger.assert_not_awaited()
+    assert result["fill_recorded"] is False
+    assert result["broker_status"] == "accepted"
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +736,86 @@ async def test_shadow_exposure_unknown_on_db_error(monkeypatch):
     assert result["buy_reserved_amount"] == 0.0
     assert result["sell_reserved_quantity"] == 0.0
     assert "db unavailable" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling import order_execution
+    from app.models.review import KISMockOrderLedger
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda *_, **__: [],
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_execute_order",
+        AsyncMock(
+            return_value={
+                "odno": "0001234567",
+                "ord_tmd": "091500",
+                "msg": "정상처리",
+                "rt_cd": "0",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(return_value=55000.0),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(
+            return_value={
+                "symbol": "005930",
+                "side": "buy",
+                "order_type": "limit",
+                "price": 55000.0,
+                "quantity": 10,
+                "estimated_value": 550000.0,
+                "fee": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_daily_order_limit",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_record_order_history",
+        AsyncMock(),
+    )
+
+    result = await order_execution._place_order_impl(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=55000,
+        dry_run=False,
+        reason="rob402-test",
+        is_mock=True,
+        correlation_id="corr-rob402",
+    )
+    assert result["success"] is True, result
+    row = (
+        await db_session.execute(
+            select(KISMockOrderLedger).where(
+                KISMockOrderLedger.correlation_id == "corr-rob402"
+            )
+        )
+    ).scalar_one_or_none()
+    assert row is not None

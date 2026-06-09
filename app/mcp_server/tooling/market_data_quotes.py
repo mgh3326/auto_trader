@@ -420,21 +420,69 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
     df = await kis.inquire_daily_itemchartprice(
         code=symbol,
         market="J",
-        n=1,
+        n=2,  # ROB-448: 2 candles so we can surface the prior trading day's close
     )
     if df.empty:
         raise ValueError(f"Symbol '{symbol}' not found")
     last = df.iloc[-1].to_dict()
+    # ROB-448: previous trading day's close (mirror the US path). None — never 0, never
+    # raise — when <2 candles (newly listed / sparse history). Consumers derive
+    # %change = (price - previous_close) / previous_close * 100.
+    previous_close: float | None = None
+    if len(df) >= 2:
+        prev_close_raw = df.iloc[-2].to_dict().get("close")
+        if prev_close_raw is not None and not pd.isna(prev_close_raw):
+            previous_close = float(prev_close_raw)
     return {
         "symbol": symbol,
         "instrument_type": "equity_kr",
         "price": last.get("close"),
+        "previous_close": previous_close,
         "open": last.get("open"),
         "high": last.get("high"),
         "low": last.get("low"),
         "volume": last.get("volume"),
         "value": last.get("value"),
         "source": "kis",
+    }
+
+
+async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
+    """analyze 전용: KR 라이브 현재가(KIS inquire_price, stck_prpr) + as_of.
+
+    공유 _fetch_quote_equity_kr(orders/portfolio 사용)는 건드리지 않는다.
+    실패/빈응답이면 None (호출자가 일봉으로 fallback).
+    """
+    kis = KISClient()
+    try:
+        df = await kis.inquire_price(code=symbol, market="J")
+    except Exception:
+        return None
+    if df.empty:
+        return None
+
+    row = df.iloc[0].to_dict()  # index=종목코드
+    as_of: datetime.datetime | None = None
+    date_val = row.get("date")
+    time_val = row.get("time")
+    if date_val is not None:
+        d = pd.Timestamp(date_val).to_pydatetime()
+        if time_val is not None:
+            as_of = datetime.datetime.combine(d.date(), time_val)
+        else:
+            as_of = d
+
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_kr",
+        "price": row.get("close"),  # stck_prpr → close
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "volume": row.get("volume"),
+        "value": row.get("value"),
+        "source": "kis",
+        "price_as_of": as_of.isoformat() if as_of is not None else None,
     }
 
 
@@ -1168,6 +1216,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 __all__ = [
     "_fetch_quote_crypto",
     "_fetch_quote_equity_kr",
+    "_fetch_kr_live_quote",
     "_fetch_quote_equity_us",
     "_fetch_ohlcv_crypto",
     "_fetch_ohlcv_equity_kr",

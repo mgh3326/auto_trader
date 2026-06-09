@@ -9,6 +9,8 @@ that surface.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -31,7 +33,9 @@ from app.schemas.investment_reports import (
     InvestmentWatchEventResponse,
     PreviousReportContextResponse,
     RecordDecisionRequest,
+    SetReportStatusRequest,
 )
+from app.services import market_data as market_data_service
 from app.services.investment_reports.decisions import (
     InvestmentReportDecisionService,
 )
@@ -43,6 +47,12 @@ from app.services.investment_reports.query_service import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
+from app.services.investment_reports.watch_recommendation_policy import (
+    ATR_PERIOD,
+    LOOKBACK_DAYS,
+    WatchPolicyInput,
+    compute_watch_recommendation,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -54,7 +64,10 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_decide_item",
     "investment_report_activate_watch",
     "investment_report_context_get",
+    "investment_report_delta_get",
     "investment_report_generate_from_bundle",
+    "investment_watch_recommend",
+    "investment_report_set_status",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -388,12 +401,16 @@ async def investment_report_activate_watch_impl(
     item_uuid: str,
     actor: str,
     idempotency_key: str | None = None,
+    watch_condition: dict | None = None,
+    valid_until: str | None = None,
 ) -> dict:
     request = ActivateWatchRequest.model_validate(
         {
             "item_uuid": item_uuid,
             "actor": actor,
             "idempotency_key": idempotency_key,
+            "watch_condition": watch_condition,
+            "valid_until": valid_until,
         }
     )
     async with AsyncSessionLocal() as db:
@@ -408,6 +425,107 @@ async def investment_report_activate_watch_impl(
             item=InvestmentReportItemResponse.model_validate(item_row),
         )
     return response.model_dump(mode="json", by_alias=True)
+
+
+# ---------------------------------------------------------------------------
+# investment_watch_recommend (ROB-337 Slice 1)
+# ---------------------------------------------------------------------------
+_RECOMMEND_VERDICTS = {"watch_only", "limit_wait"}
+_MARKET_MAP = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
+
+
+def _normalize_recommend_symbol(symbol: str, market: str) -> str:
+    s = str(symbol or "").strip()
+    if market == "crypto":
+        up = s.upper()
+        return up if "-" in up else f"KRW-{up}"
+    if market == "us":
+        return s.upper()
+    return s
+
+
+async def investment_watch_recommend_impl(
+    symbol: str,
+    market: str,
+    item_uuid: str | None = None,
+    commit: bool = False,
+    actor: str | None = None,
+) -> dict:
+    """ROB-337 — compute advisory buy-review price thresholds for a watch.
+
+    Read-only by default (commit=False). Advisory only: NO order is created
+    or submitted. commit=True persists onto the item's watch_recommendation
+    column, gated on action_verdict in {watch_only, limit_wait} and a
+    non-data_gap result.
+    """
+    if market not in _MARKET_MAP:
+        return {"success": False, "error": "unsupported_market", "market": market}
+
+    md_symbol = _normalize_recommend_symbol(symbol, market)
+    md_market = _MARKET_MAP[market]
+
+    quote = await market_data_service.get_quote(symbol=md_symbol, market=md_market)
+    reference_price = (
+        Decimal(str(quote.price)) if getattr(quote, "price", None) is not None else None
+    )
+    candles = await market_data_service.get_ohlcv(
+        symbol=md_symbol,
+        market=md_market,
+        period="day",
+        count=LOOKBACK_DAYS + ATR_PERIOD + 6,
+    )
+    ordered = sorted(candles, key=lambda c: c.timestamp)
+    highs = [Decimal(str(c.high)) for c in ordered]
+    lows = [Decimal(str(c.low)) for c in ordered]
+    closes = [Decimal(str(c.close)) for c in ordered]
+
+    valid_until = None
+    async with AsyncSessionLocal() as db:
+        repo = InvestmentReportsRepository(db)
+        item = None
+        if item_uuid is not None:
+            item = await repo.get_item_by_uuid(UUID(item_uuid))
+            if item is not None:
+                valid_until = item.valid_until
+
+        payload = compute_watch_recommendation(
+            WatchPolicyInput(
+                reference_price=reference_price,
+                best_bid=None,
+                best_ask=None,
+                daily_highs=highs,
+                daily_lows=lows,
+                daily_closes=closes,
+            ),
+            computed_at=datetime.now(UTC),
+            valid_until=valid_until,
+        )
+        rec_json = payload.model_dump(mode="json")
+
+        if not commit:
+            return {"success": True, "committed": False, "recommendation": rec_json}
+
+        if item_uuid is None or item is None:
+            raise ValueError("commit=True requires an existing item_uuid")
+        verdict = None
+        if isinstance(item.evidence_snapshot, dict):
+            verdict = item.evidence_snapshot.get("action_verdict")
+        if verdict not in _RECOMMEND_VERDICTS:
+            raise ValueError(
+                "commit requires item action_verdict in {watch_only, limit_wait}; "
+                f"got {verdict!r}"
+            )
+        if payload.data_state == "data_gap":
+            raise ValueError("refusing to commit a data_gap recommendation")
+
+        await repo.update_item_watch_recommendation(item.id, rec_json)
+        await db.commit()
+        return {
+            "success": True,
+            "committed": True,
+            "item_uuid": item_uuid,
+            "recommendation": rec_json,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +564,86 @@ async def investment_report_context_get_impl(
         )
         serialised = _serialise_context(ctx, pending_orders=pending_orders)
     return {"success": True, **serialised.model_dump(mode="json", by_alias=True)}
+
+
+# ---------------------------------------------------------------------------
+# investment_report_delta_get (ROB-376)
+# ---------------------------------------------------------------------------
+async def investment_report_delta_get_impl(
+    report_uuid: str,
+    near_pct: float = 1.0,
+    account_type: str = "live",
+    use_previous_as_baseline: bool = False,
+) -> dict:
+    from app.core.timezone import now_kst
+    from app.services.investment_reports.delta_service import DeltaService
+
+    try:
+        parsed = UUID(report_uuid)
+    except (ValueError, AttributeError, TypeError):
+        return {"success": False, "error": "invalid_report_uuid"}
+
+    async with AsyncSessionLocal() as db:
+        # ROB-455 — make previous_report_uuid load-bearing as the delta baseline:
+        # resolve to the report's predecessor when asked (falls back to the report
+        # itself when the chain link is unset).
+        if use_previous_as_baseline:
+            repo = InvestmentReportsRepository(db)
+            report = await repo.get_report_by_uuid(parsed)
+            if report is not None and report.previous_report_uuid is not None:
+                parsed = report.previous_report_uuid
+
+        service = DeltaService(db)
+        return await service.compute_delta(
+            parsed,
+            near_pct=near_pct,
+            account_type=account_type,
+            computed_at_kst=now_kst().isoformat(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# investment_report_set_status (ROB-455)
+# ---------------------------------------------------------------------------
+async def investment_report_set_status_impl(
+    report_uuid: str,
+    status: str,
+    reason: str | None = None,
+    actor: str | None = None,
+) -> dict:
+    try:
+        request = SetReportStatusRequest.model_validate(
+            {
+                "report_uuid": report_uuid,
+                "status": status,
+                "reason": reason,
+                "actor": actor,
+            }
+        )
+    except ValidationError as exc:
+        return {"success": False, "error": "invalid_request", "detail": str(exc)}
+
+    async with AsyncSessionLocal() as db:
+        service = InvestmentReportIngestionService(db)
+        report = await service.set_report_status(
+            report_uuid=request.report_uuid,
+            status=request.status,
+            reason=request.reason,
+            actor=request.actor,
+        )
+        if report is None:
+            return {
+                "success": False,
+                "error": "not_found",
+                "report_uuid": str(request.report_uuid),
+            }
+        await db.commit()
+        response = InvestmentReportResponse.model_validate(report)
+    return {
+        "success": True,
+        "status": request.status,
+        **response.model_dump(mode="json", by_alias=True),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -708,8 +906,15 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         name="investment_report_create",
         description=(
             "Persist one ROB-265 investment_report bundle (report + items). "
-            "Idempotent on (report_type, market, market_session, account_scope, "
-            "execution_mode, kst_date, generator_version). "
+            "Idempotent on the 7-tuple (report_type, market, market_session, "
+            "account_scope, execution_mode, kst_date, generator_version) — "
+            "created_by_profile is NOT part of the key, so to mint a new row bump "
+            "generator_version (recommended) or another keyed field, not "
+            "created_by_profile. "
+            "account_scope accepts kis_live | kis_mock | alpaca_paper | upbit_live "
+            "(alpaca_paper IS accepted here; only "
+            "investment_report_generate_from_bundle restricts to the live "
+            "KIS/Upbit pairs and steers paper to the Hermes composition path). "
             "No broker / order submission is performed."
         ),
     )(investment_report_create_impl)
@@ -730,17 +935,26 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
     mcp.tool(
         name="investment_report_decide_item",
         description=(
-            "Record an operator decision on one investment_report_item. "
-            "Idempotent per (item_uuid, verb, actor) by default; pass "
-            "idempotency_key to override. partial_approve requires a "
-            "non-empty approved_payload_snapshot."
+            "Record an operator decision on one investment_report_item. Verbs: "
+            "approve | deny | defer | skip | partial_approve | cancel | reprice "
+            "(ROB-455 order-lifecycle verbs: cancel = withdraw a tranche, "
+            "reprice = adjust levels). Idempotent per (item_uuid, verb, actor) by "
+            "default; pass idempotency_key to override. partial_approve and "
+            "reprice both require a non-empty approved_payload_snapshot (the "
+            "scoped/adjusted params). item.status projection: approve/reprice -> "
+            "approved, deny/cancel -> denied, defer -> deferred, skip -> "
+            "unchanged (the exact verb is preserved in the decision audit row)."
         ),
     )(investment_report_decide_item_impl)
     mcp.tool(
         name="investment_report_activate_watch",
         description=(
             "Activate an approved watch item into investment_watch_alerts "
-            "as an immutable activation snapshot. Idempotent per source item."
+            "as an immutable activation snapshot. Idempotent per source item. "
+            "For operation='review' watches created without a condition, pass "
+            "watch_condition (metric/operator/threshold) and valid_until to arm "
+            "them; activating such a watch without a condition fails with an "
+            "actionable error rather than 'corrupt state'."
         ),
     )(investment_report_activate_watch_impl)
     mcp.tool(
@@ -758,9 +972,50 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         ),
     )(investment_report_context_get_impl)
     mcp.tool(
+        name="investment_report_delta_get",
+        description=(
+            "Read-only intraday delta vs a baseline report. Given report_uuid "
+            "(the open/prior report), returns three deterministic deltas for Hermes "
+            "to compose: levels_delta (journal target/stop touch x live), "
+            "holdings_pnl_delta (per-symbol live P/L vs the baseline P/L from the "
+            "snapshot bundle, or the create-time portfolio_snapshot JSON when no "
+            "bundle is present), and index_delta (live index vs the report's "
+            "frozen market_snapshot baseline). Per-signal fail-open: a degraded "
+            "signal is "
+            "null with a reason under 'unavailable'; missing data is never coerced "
+            "to zero. No broker/order/watch mutation."
+        ),
+    )(investment_report_delta_get_impl)
+    mcp.tool(
         name="investment_report_generate_from_bundle",
         description=GENERATE_FROM_BUNDLE_DESCRIPTION,
     )(investment_report_generate_from_bundle_impl)
+    mcp.tool(
+        name="investment_watch_recommend",
+        description=(
+            "ROB-337 — compute advisory buy-review price thresholds "
+            "(entry_review_below_price, suggested_limit_price_range, "
+            "max_chase_price, invalidation) for a symbol from deterministic "
+            "market evidence. Read-only by default; commit=True persists onto "
+            "an item's watch_recommendation (gated on action_verdict in "
+            "{watch_only, limit_wait}, refused on data_gap). Advisory only — "
+            "no order is created or submitted."
+        ),
+    )(investment_watch_recommend_impl)
+    mcp.tool(
+        name="investment_report_set_status",
+        description=(
+            "ROB-455 — transition a report's lifecycle status to superseded | "
+            "decided | expired (draft/published are entry states set at create, "
+            "not transition targets here). Idempotent: setting the current status "
+            "is a no-op success. Records the transition (reason/actor) in "
+            "report_metadata.status_transitions for traceability. Use this to "
+            "mark a report explicitly superseded instead of relying on a "
+            "created_at heuristic — note that chaining a new report via "
+            "previous_report_uuid already auto-supersedes its predecessor. "
+            "No broker / order / watch mutation."
+        ),
+    )(investment_report_set_status_impl)
 
 
 __all__ = [
@@ -769,8 +1024,11 @@ __all__ = [
     "investment_report_context_get_impl",
     "investment_report_create_impl",
     "investment_report_decide_item_impl",
+    "investment_report_delta_get_impl",
     "investment_report_generate_from_bundle_impl",
     "investment_report_get_impl",
     "investment_report_list_impl",
+    "investment_report_set_status_impl",
+    "investment_watch_recommend_impl",
     "register_investment_report_tools",
 ]

@@ -505,6 +505,7 @@ class SnapshotBundleEnsureService:
             candidate_limit=request.candidate_limit,
             policy_snapshot=policy_snapshot,
             user_id=request.user_id,
+            market_session=request.market_session,
         )
         try:
             results = await asyncio.wait_for(

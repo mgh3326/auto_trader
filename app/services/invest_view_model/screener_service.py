@@ -38,6 +38,10 @@ from app.schemas.invest_screener import (
     ScreenerSourceContext,
 )
 from app.schemas.investor_flow import InvestorFlowItem
+from app.services.invest_screener_snapshots.partition_health import HealthyPartition
+from app.services.invest_view_model.fundamentals_screener import (
+    FUNDAMENTALS_PRESET_SPECS,
+)
 from app.services.invest_view_model.investor_flow_service import (
     latest_items_for_symbols as _latest_investor_flow_items,
 )
@@ -50,13 +54,21 @@ from app.services.invest_view_model.screener_presets import (
 )
 
 _VALID_MARKETS = {"kr", "us", "crypto"}
-_KR_ABSURD_MARKET_CAP_KRW = 10_000_000_000_000_000
+# ROB-436 C-1: single-stock display-plausibility ceiling. The largest KR listing
+# (삼성전자) is ~500조 KRW, so anything above ~2,000조 is a bad/mis-unit row (e.g. the
+# tvscreener fundamentals snapshot rendered SG&G as 3,468.8조원). Was 10,000조 (1e16),
+# too lenient to catch it. Above this → hide the label (never render absurd values).
+_KR_ABSURD_MARKET_CAP_KRW = 2_000_000_000_000_000
 
 _KST = ZoneInfo("Asia/Seoul")
 _KR_OPEN = _time(9, 0)
 _KR_CLOSE = _time(15, 30)
 _CACHE_HIT_FRESH_SECONDS = 300
 _SNAPSHOT_FIRST_LIMIT = 80
+# ROB-436 C-2: KR fundamentals presets (tvscreener display path) were capped at 20
+# rows while Toss shows the full match set (e.g. 아직저렴한가치주 553). Raise the
+# display cap so the count gap closes; total_matched still reports the true count.
+_FUNDAMENTALS_DISPLAY_LIMIT = 200
 _MAX_WARNING_CHARS = 240
 _US_SCREENER_DATA_NOT_READY_WARNING = (
     "미국 스크리너 데이터 준비중 — 일부 결과만 표시됩니다."
@@ -78,6 +90,12 @@ _KR_TOSS_ETF_PREFIXES = (
     "WON ",
     "마이티 ",
     "히어로즈 ",
+    # ROB-435 A: KIWOOM (키움) + 1Q (한화) ETF issuer brands — these slipped into
+    # 연속상승세 (KIWOOM 미국S&P500모멘텀, 1Q 미국배당TOP30) because no KR common
+    # stock starts with these brand prefixes. (Long-term: kr_symbol_universe
+    # instrument_type from KRX master — see ROB-435.)
+    "KIWOOM ",
+    "1Q ",
 )
 _KR_TOSS_EXCLUDED_NAME_TOKENS = (
     " ETF",
@@ -102,7 +120,11 @@ _KR_TOSS_EXCLUDED_NAME_TOKENS = (
 )
 _KR_PREFERRED_SUFFIXES = ("우", "우B", "우C")
 _INVESTOR_FLOW_MIN_STREAK = 3
-_INVESTOR_FLOW_STALE_SUFFIX = " · 1일 지연"
+# ROB-430 트랙 B: the compact chip cannot count the lag (it lacks the market
+# reference date), so it states staleness without a hardcoded "1일" that
+# understated multi-day-old investor-flow partitions. The page-level warning
+# carries the precise snapshot date + lag.
+_INVESTOR_FLOW_STALE_SUFFIX = " · 지연"
 logger = logging.getLogger(__name__)
 
 
@@ -110,11 +132,43 @@ logger = logging.getLogger(__name__)
 class _SnapshotLoadResult:
     """ROB-277 follow-up: snapshot loaders must surface latest-partition metadata
     even when no rows qualified, so freshness.primary can still report the
-    correct snapshot date."""
+    correct snapshot date. ROB-426 PR3 adds the degradation reason + coverage
+    label derived from the served HealthyPartition."""
 
     rows: list[dict[str, Any]]
     partition_date: dt.date | None
     partition_computed_at: datetime | None = None
+    # ROB-426 PR3
+    degradation_reason: str | None = None
+    coverage_label: str | None = None
+
+
+def _partition_degradation(
+    hp: HealthyPartition | None, *, rows_empty: bool
+) -> tuple[str | None, str | None]:
+    """Map a served HealthyPartition to (degradation_reason, coverage_label).
+
+    The five HealthyPartition shapes from resolve_healthy_partition are mutually
+    exclusive: (is_fallback=False, healthy=True) newest-healthy; (is_fallback=True,
+    healthy=True) older-fallback; (is_fallback=False, healthy=False) thin-newest.
+    """
+    if hp is None:
+        return ("snapshot_missing", None)
+    if not hp.healthy:
+        universe = (
+            round(hp.row_count / hp.coverage_ratio) if hp.coverage_ratio > 0 else 0
+        )
+        label = (
+            f"{hp.row_count:,} / {universe:,} ({hp.coverage_ratio * 100:.1f}%)"
+            if universe > 0
+            else None
+        )
+        return ("coverage_below_floor", label)
+    if hp.is_fallback:
+        return ("older_fallback", None)
+    if rows_empty:
+        return ("healthy_no_matches", None)
+    return (None, None)
 
 
 def _investor_flow_chip_for_item(
@@ -376,11 +430,18 @@ def _double_buy_dependency_warnings(
             "시세 스냅샷이 직전 영업일 기준이라 일부 데이터가 1일 지연되었습니다."
         )
     flow_dates = {row.get("flow_snapshot_date") for row in snapshot_rows}
-    if flow_dates and all(
-        isinstance(d, dt.date) and d < now_market_date for d in flow_dates
-    ):
+    valid_flow = {d for d in flow_dates if isinstance(d, dt.date)}
+    if valid_flow and all(d < now_market_date for d in valid_flow):
+        # ROB-430 트랙 B: report the actual flow snapshot date + lag instead of a
+        # hardcoded "1일" that understated multi-day-old partitions (investor_flow
+        # has no recurring refresh, so it can lag by several days). The lag is a
+        # calendar-day diff (matches ScreenerFreshnessDependency.lagLabel); weekend/
+        # holiday gaps inflate it, so the exact snapshot date is stated alongside.
+        latest_flow = max(valid_flow)
+        flow_lag_days = (now_market_date - latest_flow).days
         warnings.append(
-            "수급 스냅샷이 직전 영업일 기준이라 외인/기관 정보가 1일 지연되었습니다."
+            f"수급 스냅샷이 {latest_flow.isoformat()} 기준이라 외인/기관 정보가 "
+            f"{flow_lag_days}일 지연되었습니다."
         )
     state_override = "stale" if warnings else None
     return warnings, state_override
@@ -391,6 +452,8 @@ async def _load_consecutive_gainers_from_snapshots(
     *,
     market: str,
     limit: int = _SNAPSHOT_FIRST_LIMIT,
+    min_consecutive_up_days: int = 5,
+    min_week_change_rate: float = 0.0,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> _SnapshotLoadResult | None:
     """Return qualifying rows from the latest snapshot partition only.
@@ -412,6 +475,10 @@ async def _load_consecutive_gainers_from_snapshots(
         classify_state,
         expected_baseline_date,
     )
+    from app.services.invest_screener_snapshots.partition_health import (
+        cap_degraded,
+        resolve_healthy_partition,
+    )
 
     # ROB-281: session-aware baseline. In the KR 07:40–16:19 KST pre-market
     # window (or US pre-17:20 ET window), the expected baseline is the prior
@@ -420,22 +487,20 @@ async def _load_consecutive_gainers_from_snapshots(
     now_utc = now()
     today = expected_baseline_date(market, now=now_utc)
 
-    # Step 1: resolve the latest snapshot partition date.
-    # This prevents older qualifying partitions from leaking into current results
-    # when the latest partition has zero qualifiers (the known stale-data bug).
-    latest_date_stmt = sa.select(
-        sa.func.max(InvestScreenerSnapshot.snapshot_date)
-    ).where(InvestScreenerSnapshot.market == market)
-    try:
-        latest_date_result = await session.execute(latest_date_stmt)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "failed to read invest_screener_snapshots max date: %s", exc, exc_info=True
-        )
-        return None
-    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+    # Step 1: resolve the latest *healthy* snapshot partition (ROB-426 PR2a).
+    # A thin smoke partition must not shadow a healthy older one; the resolver
+    # falls back to the newest healthy partition and is fail-open internally.
+    hp = await resolve_healthy_partition(
+        session,
+        model=InvestScreenerSnapshot,
+        date_col=InvestScreenerSnapshot.snapshot_date,
+        market_col=InvestScreenerSnapshot.market,
+        market=market,
+    )
+    latest_snapshot_date = hp.partition_date if hp else None
     if latest_snapshot_date is None:
         return None  # no snapshots in the table; fall through to external
+    partition_degraded = bool(hp and (hp.is_fallback or not hp.healthy))
 
     # Step 2: qualify rows only within that one partition.  KR rows are
     # over-fetched because the Toss-compatible common-stock guard runs after
@@ -449,8 +514,11 @@ async def _load_consecutive_gainers_from_snapshots(
         .where(
             InvestScreenerSnapshot.market == market,
             InvestScreenerSnapshot.snapshot_date == latest_snapshot_date,
-            InvestScreenerSnapshot.consecutive_up_days >= 5,
-            InvestScreenerSnapshot.week_change_rate >= 0,
+            # ROB-439: thresholds default to the preset's starting set (5 / 0.0) so
+            # existing callers are unchanged; build_screener_results passes adjusted
+            # values when filter_overrides loosen/tighten over the base snapshot.
+            InvestScreenerSnapshot.consecutive_up_days >= min_consecutive_up_days,
+            InvestScreenerSnapshot.week_change_rate >= min_week_change_rate,
         )
         .order_by(
             InvestScreenerSnapshot.week_change_rate.desc().nullslast(),
@@ -490,6 +558,48 @@ async def _load_consecutive_gainers_from_snapshots(
                 exc_info=True,
             )
 
+    # ROB-426 PR3: market_cap for this non-valuation preset — look up the healthy
+    # KR valuation partition by symbol (mirrors the symbol-name lookup above; does
+    # not disturb the InvestScreenerSnapshot scalar query).
+    market_cap_map: dict[str, float] = {}
+    market_cap_source: str | None = None
+    if market == "kr" and candidate_snaps:
+        from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+        val_hp = await resolve_healthy_partition(
+            session,
+            model=MarketValuationSnapshot,
+            date_col=MarketValuationSnapshot.snapshot_date,
+            market_col=MarketValuationSnapshot.market,
+            market="kr",
+        )
+        if val_hp is not None:
+            market_cap_source = "fallback" if val_hp.is_fallback else "primary"
+            try:
+                _mc = await session.execute(
+                    sa.select(
+                        MarketValuationSnapshot.symbol,
+                        MarketValuationSnapshot.market_cap,
+                    ).where(
+                        MarketValuationSnapshot.market == "kr",
+                        MarketValuationSnapshot.snapshot_date == val_hp.partition_date,
+                        MarketValuationSnapshot.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        ),
+                    )
+                )
+                market_cap_map = {
+                    r.symbol: float(r.market_cap)
+                    for r in _mc.all()
+                    if r.market_cap is not None
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "consecutive_gainers: market_cap lookup failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for snap in candidate_snaps:
@@ -507,6 +617,8 @@ async def _load_consecutive_gainers_from_snapshots(
             today_trading_date_value=today,
             now=now_utc,
         )
+        if partition_degraded:
+            state = cap_degraded(state)
         rows.append(
             {
                 "symbol": snap.symbol,
@@ -530,6 +642,10 @@ async def _load_consecutive_gainers_from_snapshots(
                 "snapshot_date": snap.snapshot_date,  # ROB-277
                 "computed_at": snap.computed_at,  # ROB-277
                 "_screener_snapshot_state": state,
+                "market_cap": market_cap_map.get(snap.symbol),
+                "_market_cap_source": (
+                    market_cap_source if snap.symbol in market_cap_map else None
+                ),
             }
         )
         if len(rows) >= limit:
@@ -544,10 +660,13 @@ async def _load_consecutive_gainers_from_snapshots(
         # No qualifying rows after filtering, but we can grab computed_at from
         # any snap in the partition (they share the same snapshot_date).
         partition_computed_at = getattr(candidate_snaps[0], "computed_at", None)
+    reason, coverage_label = _partition_degradation(hp, rows_empty=not rows)
     return _SnapshotLoadResult(
         rows=rows,
         partition_date=latest_snapshot_date,
         partition_computed_at=partition_computed_at,
+        degradation_reason=reason,
+        coverage_label=coverage_label,
     )
 
 
@@ -593,20 +712,22 @@ async def _load_investor_flow_discovery_from_snapshots(
         return None
 
     from app.models.investor_flow_snapshot import InvestorFlowSnapshot
-
-    latest_date_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
-        InvestorFlowSnapshot.market == "kr"
+    from app.services.invest_screener_snapshots.partition_health import (
+        cap_degraded,
+        resolve_healthy_partition,
     )
-    try:
-        latest_date_result = await session.execute(latest_date_stmt)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "failed to read investor_flow_snapshots max date: %s", exc, exc_info=True
-        )
-        return None
-    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+
+    hp = await resolve_healthy_partition(
+        session,
+        model=InvestorFlowSnapshot,
+        date_col=InvestorFlowSnapshot.snapshot_date,
+        market_col=InvestorFlowSnapshot.market,
+        market="kr",
+    )
+    latest_snapshot_date = hp.partition_date if hp else None
     if latest_snapshot_date is None:
         return None
+    partition_degraded = bool(hp and (hp.is_fallback or not hp.healthy))
 
     candidate_limit = max(limit * 5, limit + 60)
     stmt = (
@@ -657,6 +778,44 @@ async def _load_investor_flow_discovery_from_snapshots(
                 exc_info=True,
             )
 
+    # ROB-426 PR3: market_cap via the healthy KR valuation partition.
+    market_cap_map: dict[str, float] = {}
+    market_cap_source: str | None = None
+    if candidate_snaps:
+        from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+        val_hp = await resolve_healthy_partition(
+            session,
+            model=MarketValuationSnapshot,
+            date_col=MarketValuationSnapshot.snapshot_date,
+            market_col=MarketValuationSnapshot.market,
+            market="kr",
+        )
+        if val_hp is not None:
+            market_cap_source = "fallback" if val_hp.is_fallback else "primary"
+            try:
+                _mc = await session.execute(
+                    sa.select(
+                        MarketValuationSnapshot.symbol,
+                        MarketValuationSnapshot.market_cap,
+                    ).where(
+                        MarketValuationSnapshot.market == "kr",
+                        MarketValuationSnapshot.snapshot_date == val_hp.partition_date,
+                        MarketValuationSnapshot.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        ),
+                    )
+                )
+                market_cap_map = {
+                    r.symbol: float(r.market_cap)
+                    for r in _mc.all()
+                    if r.market_cap is not None
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "investor_flow: market_cap lookup failed: %s", exc, exc_info=True
+                )
+
     from app.services.invest_screener_snapshots.freshness import (
         classify_investor_flow_partition,
         today_trading_date,
@@ -679,6 +838,8 @@ async def _load_investor_flow_discovery_from_snapshots(
             today_trading_date_value=today,
             now=now_utc,
         )
+        if partition_degraded:
+            state = cap_degraded(state)
         rows.append(
             {
                 "symbol": snap.symbol,
@@ -693,6 +854,10 @@ async def _load_investor_flow_discovery_from_snapshots(
                 "snapshot_date": snap.snapshot_date,
                 "collected_at": snap.collected_at,
                 "_screener_snapshot_state": state,
+                "market_cap": market_cap_map.get(snap.symbol),
+                "_market_cap_source": (
+                    market_cap_source if snap.symbol in market_cap_map else None
+                ),
             }
         )
         if len(rows) >= limit:
@@ -704,10 +869,13 @@ async def _load_investor_flow_discovery_from_snapshots(
         partition_collected_at = rows[0].get("collected_at")
     elif candidate_snaps:
         partition_collected_at = getattr(candidate_snaps[0], "collected_at", None)
+    reason, coverage_label = _partition_degradation(hp, rows_empty=not rows)
     return _SnapshotLoadResult(
         rows=rows,
         partition_date=latest_snapshot_date,
         partition_computed_at=partition_collected_at,  # investor_flow has no computed_at; use collected_at
+        degradation_reason=reason,
+        coverage_label=coverage_label,
     )
 
 
@@ -795,6 +963,18 @@ async def _load_crypto_rows_from_snapshots(
                 else None,
                 "rsi": float(snap.rsi) if snap.rsi is not None else None,
                 "adx": float(snap.adx) if snap.adx is not None else None,
+                "funding_rate": float(snap.funding_rate)
+                if getattr(snap, "funding_rate", None) is not None
+                else None,
+                "open_interest_usd": float(snap.open_interest_usd)
+                if getattr(snap, "open_interest_usd", None) is not None
+                else None,
+                "oi_change_24h": float(snap.oi_change_24h)
+                if getattr(snap, "oi_change_24h", None) is not None
+                else None,
+                "long_short_account_ratio": float(snap.long_short_account_ratio)
+                if getattr(snap, "long_short_account_ratio", None) is not None
+                else None,
                 "source": "tvscreener_upbit",
                 "computed_at": snap.computed_at.isoformat()
                 if getattr(snap, "computed_at", None) is not None
@@ -815,6 +995,13 @@ def build_screener_presets(market: str = "kr") -> ScreenerPresetsResponse:
     )
 
 
+# ROB-432: presets that screen ON investor_flow (수급) — only these treat a stale
+# investor_flow partition as a freshness dependency that can drag overallState.
+# Other KR presets still render the per-row investor_flow chip (display only).
+_INVESTOR_FLOW_DEPENDENCY_PRESETS: frozenset[str] = frozenset(
+    {"double_buy", "investor_flow_momentum"}
+)
+
 _METRIC_FIELD: dict[str, str] = {
     "consecutive_gainers": "week_change_rate",
     "cheap_value": "per",
@@ -823,11 +1010,21 @@ _METRIC_FIELD: dict[str, str] = {
     "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
     "high_yield_value": "roe",
+    "undervalued_breakout": "high_52w_proximity",
     "investor_flow_momentum": "foreign_net",
     "double_buy": "change_rate",  # NEW — placeholder; Task 3 wires snapshot-first branch
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
+    "crypto_funding_squeeze": "funding_rate",
+    "crypto_funding_overheated": "funding_rate",
+    "crypto_oi_surge": "oi_change_24h",
+    "crypto_long_short_skew": "long_short_account_ratio",
+    "profitable_company": "roe",
+    "undervalued_growth": "earnings_growth_3y_avg",
+    "stable_growth": "roe",
+    "future_dividend_king": "dividend_yield",
+    "growth_expectation_toss": "earnings_growth_qoq",
 }
 
 
@@ -1097,6 +1294,15 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return f"{float(value):.1f}%", []
     if field == "dividend_yield":
         return f"{float(value):.2f}%", []
+    if field == "funding_rate":
+        # ROB-443: ratio (e.g. 0.0001) → signed percent per funding interval.
+        return f"{float(value) * 100:+.4f}%", []
+    if field == "oi_change_24h":
+        # ROB-443: 24h open-interest change, already a percent.
+        return f"{float(value):+.2f}%", []
+    if field == "long_short_account_ratio":
+        # ROB-443: global retail long/short ratio (>1 long-skewed, <1 short-skewed).
+        return f"{float(value):.2f}", []
     if field in ("volume", "trade_amount_24h"):
         return f"{int(float(value)):,}", []
     if field == "foreign_net":
@@ -1302,6 +1508,9 @@ def _build_freshness(
     primary_computed_at: datetime | None = None,
     primary_source: str | None = None,
     dependency_specs: list[dict[str, Any]] | None = None,
+    # ROB-426 PR3
+    primary_degradation_reason: str | None = None,
+    primary_coverage_label: str | None = None,
 ) -> ScreenerFreshness:
     """ROB-277: split served time vs data 기준.
 
@@ -1400,6 +1609,25 @@ def _build_freshness(
             asOfLabel=as_of_label,
             dataState=dataState,  # type: ignore[arg-type]
             source=primary_source,
+            degradationReason=primary_degradation_reason,  # type: ignore[arg-type]
+            coverageLabel=primary_coverage_label,
+        )
+    elif primary_kind == "screener_snapshot":
+        # ROB-426 PR3: a snapshot-only preset whose partition is absent. There is
+        # no date to label, but we must still emit a primary carrying
+        # degradationReason (snapshot_missing) so the UI renders the
+        # "스냅샷 준비중" empty-state instead of the generic fallback message.
+        # primary.dataState equals the passed dataState ("missing"), so the
+        # overall-state aggregation below is unchanged vs the prior primary=None.
+        primary = ScreenerFreshnessPrimary(
+            kind="screener_snapshot",
+            snapshotDate=None,
+            computedAt=None,
+            asOfLabel=data_basis_kst.strftime("%Y.%m.%d %H:%M 기준"),
+            dataState=dataState,  # type: ignore[arg-type]
+            source=primary_source,
+            degradationReason=primary_degradation_reason,  # type: ignore[arg-type]
+            coverageLabel=primary_coverage_label,
         )
     elif primary_kind in {"live", "fallback"}:
         primary = ScreenerFreshnessPrimary(
@@ -1409,6 +1637,8 @@ def _build_freshness(
             asOfLabel=data_basis_kst.strftime("%Y.%m.%d %H:%M 기준"),
             dataState=dataState,  # type: ignore[arg-type]
             source=primary_source,
+            degradationReason=primary_degradation_reason,  # type: ignore[arg-type]
+            coverageLabel=primary_coverage_label,
         )
 
     # Build dependencies list
@@ -1461,6 +1691,29 @@ def _build_freshness(
     )
 
 
+async def _us_valuation_partition_computed_at(
+    session: AsyncSession, *, snapshot_date: dt.date
+) -> datetime | None:
+    """Max computed_at of the US market_valuation partition (ROB-440). The US
+    fundamentals/valuation dispatch branches don't propagate the partition's
+    computed_at, so the freshness chip can't classify it; backfill it here.
+    Fail-open: any error returns None (chip unchanged)."""
+    import sqlalchemy as sa
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    try:
+        result = await session.execute(
+            sa.select(sa.func.max(MarketValuationSnapshot.computed_at)).where(
+                MarketValuationSnapshot.market == "us",
+                MarketValuationSnapshot.snapshot_date == snapshot_date,
+            )
+        )
+        return result.scalar_one_or_none()
+    except Exception:  # noqa: BLE001 — fail-open
+        return None
+
+
 async def build_screener_results(
     preset_id: str,
     screening_service: _ScreeningServiceProto,
@@ -1468,7 +1721,11 @@ async def build_screener_results(
     market: str = "kr",
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     session: AsyncSession | None = None,
+    filter_overrides: list[Any] | None = None,
 ) -> ScreenerResultsResponse:
+    """ROB-439: ``filter_overrides`` (list[ScreenerFilterCondition]) lets a caller
+    adjust/add conditions over the preset's base snapshot (None = preset default).
+    Pilot: consecutive_gainers threads loosen/tighten thresholds into the loader."""
     requested_market = _normalize_market(market)
     preset = get_preset(preset_id, requested_market)
     if preset is None:
@@ -1489,6 +1746,30 @@ async def build_screener_results(
             freshness=freshness,
         )
 
+    # ROB-427: a preset that is catalogued for this market but not `active`
+    # (data_pending / unsupported) must fail-closed — never run a loader or
+    # fabricate rows. Surface the honest availabilityReason as a warning.
+    if preset.availability != "active":
+        freshness = _build_freshness(
+            raw_timestamp=None,
+            cache_hit=False,
+            market=requested_market,
+            now=now,
+        )
+        return ScreenerResultsResponse(
+            presetId=preset_id,
+            title=preset.name,
+            description=preset.description,
+            filterChips=preset.filterChips,
+            metricLabel=preset.metricLabel,
+            results=[],
+            warnings=[
+                preset.availabilityReason
+                or "이 시장에서는 아직 제공되지 않는 프리셋입니다."
+            ],
+            freshness=freshness,
+        )
+
     filters = screening_filters_for(preset_id, requested_market)
     # ROB-277 follow-up: loaders for consecutive_gainers and investor_flow_momentum
     # now return _SnapshotLoadResult so partition metadata threads through even when
@@ -1496,16 +1777,38 @@ async def build_screener_results(
     _snapshot_load_result: _SnapshotLoadResult | None = None
     _snapshot_check_result: list[dict[str, Any]] | None = None
     _snapshot_state_override: str | None = None
+    _fundamentals_screen_result = None
     _snapshot_empty_warning = (
         "스크리너 스냅샷 업데이트가 필요해 최신 연속 상승세 결과를 표시하지 못했습니다."
     )
     if session is not None and _should_use_snapshot_first(screening_service):
         if preset_id == "consecutive_gainers":
+            # ROB-439: derive loosen/tighten thresholds from filter_overrides over
+            # the base snapshot (default None → loader defaults → unchanged behavior).
+            _cg_loader_kwargs: dict[str, Any] = {}
+            if filter_overrides:
+                from app.services.invest_view_model.screener_filters import (
+                    consecutive_gainers_loader_thresholds,
+                    merge_filter_overrides,
+                    preset_starting_filters,
+                    validate_conditions,
+                )
+
+                _cg_conditions = merge_filter_overrides(
+                    preset_starting_filters("consecutive_gainers"), filter_overrides
+                )
+                _cg_conditions = validate_conditions(
+                    _cg_conditions, snapshot_kind="invest_screener_snapshots"
+                )
+                _cg_loader_kwargs = consecutive_gainers_loader_thresholds(
+                    _cg_conditions
+                )
             _snapshot_load_result = await _load_consecutive_gainers_from_snapshots(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
                 now=now,
+                **_cg_loader_kwargs,
             )
             if _snapshot_load_result is not None:
                 _snapshot_check_result = _snapshot_load_result.rows
@@ -1526,27 +1829,123 @@ async def build_screener_results(
                 load_double_buy_from_snapshots,
             )
 
-            _snapshot_check_result = await load_double_buy_from_snapshots(
+            _snapshot_load_result = await load_double_buy_from_snapshots(
                 session,
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
             )
+            if _snapshot_load_result is not None:
+                _snapshot_check_result = _snapshot_load_result.rows
             _snapshot_empty_warning = (
                 "최신 수급/시세 스냅샷에서 쌍끌이 매수 조건에 맞는 종목이 없습니다."
             )
-        elif preset_id == "high_yield_value":
+        elif preset_id == "high_yield_value" and requested_market == "us":
+            # ROB-427 PR3: US high_yield_value is backed by Yahoo valuation snapshots
+            # (market_valuation_snapshots, market=us) — NOT the KR tvscreener snapshot
+            # below (invest_kr_fundamentals_snapshots is KR-only). Same ROE>=15 / PER
+            # 0~10 rule via the market-parameterized loader. Honest empty until the
+            # operator builds the US valuation partition (fail-closed, never fabricated).
             from app.services.invest_view_model.high_yield_value_screener import (
                 load_high_yield_value_from_snapshots,
             )
 
-            _snapshot_check_result = await load_high_yield_value_from_snapshots(
+            _hyv_rows = await load_high_yield_value_from_snapshots(
                 session,
-                market=requested_market,
+                market="us",
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
             )
+            if _hyv_rows is not None:
+                _snapshot_check_result = _hyv_rows
+                _snapshot_load_result = _SnapshotLoadResult(
+                    rows=_hyv_rows,
+                    partition_date=(
+                        _hyv_rows[0]["snapshot_date"] if _hyv_rows else None
+                    ),
+                    partition_computed_at=None,
+                )
             _snapshot_empty_warning = (
-                "최신 밸류에이션 스냅샷에서 고수익 저평가 조건(ROE 15%↑·PER 0~10)에 "
-                "맞는 종목이 없습니다."
+                "최신 미국 가치형(ROE·PER) 스냅샷에서 조건에 맞는 종목이 없습니다."
+            )
+        elif preset_id == "undervalued_breakout" and requested_market == "us":
+            # ROB-440 Part 2: US undervalued_breakout uses the market-parameterized
+            # market_valuation loader (proximity: close >= high_52w * 0.95) — NOT the
+            # KR tvscreener date-recency path below (invest_kr_fundamentals is KR-only).
+            # high_52w(price) comes from Yahoo .info; fail-closed empty until the
+            # operator builds the US valuation partition. (Date-recency US parity is a
+            # follow-up; KR display keeps date-recency via the tvscreener loader.)
+            from app.services.invest_view_model.undervalued_breakout_screener import (
+                load_undervalued_breakout_from_snapshots,
+            )
+
+            _ub_rows = await load_undervalued_breakout_from_snapshots(
+                session,
+                market="us",
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            if _ub_rows is not None:
+                _snapshot_check_result = _ub_rows
+                _snapshot_load_result = _SnapshotLoadResult(
+                    rows=_ub_rows,
+                    partition_date=(_ub_rows[0]["snapshot_date"] if _ub_rows else None),
+                    partition_computed_at=None,
+                )
+            _snapshot_empty_warning = (
+                "최신 미국 신고가(52주) 스냅샷에서 조건에 맞는 종목이 없습니다."
+            )
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS and requested_market == "us":
+            # ROB-441 PR3: US fundamentals presets (profitable_company/undervalued_growth/
+            # cheap_value/stable_growth) run on the market-parameterized derive loader
+            # (market_valuation US per/pbr/roe + financial_fundamentals US periods → derive)
+            # — NOT the KR tvscreener loader below (invest_kr_fundamentals is KR-only).
+            # Honest empty until the operator backfills US financial_fundamentals.
+            from app.services.invest_view_model.fundamentals_screener import (
+                load_fundamentals_preset_from_snapshots,
+            )
+
+            _fundamentals_screen_result = await load_fundamentals_preset_from_snapshots(
+                session,
+                market="us",
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                now=now,
+            )
+            if _fundamentals_screen_result is not None:
+                _snapshot_check_result = _fundamentals_screen_result.rows
+        # ROB-428 PR-C: high_yield_value + undervalued_breakout no longer have a
+        # dedicated dispatch branch. They are now registered in
+        # FUNDAMENTALS_PRESET_SPECS and fall into the tvscreener KR loader below
+        # (same path as the 7 fundamentals presets), so display fills category and
+        # uses tvscreener's full ROE coverage. The OLD valuation loaders
+        # (load_high_yield_value_from_snapshots / load_undervalued_breakout_from_snapshots)
+        # stay in place for reports/PIT (candidate_universe collector) and are untouched.
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS:
+            # ROB-428 PR-B: KR display reads the tvscreener-backed snapshot
+            # (invest_kr_fundamentals_snapshots) so result rows fill price/change/
+            # volume/category/market_cap + metrics and the count gap closes. The
+            # DART loader (load_fundamentals_preset_from_snapshots) stays in place
+            # for reports/PIT and is untouched.
+            from app.services.invest_view_model.kr_fundamentals_tv_screener import (
+                load_kr_fundamentals_preset_from_tv_snapshot,
+            )
+
+            _fundamentals_screen_result = await load_kr_fundamentals_preset_from_tv_snapshot(
+                session,
+                market=requested_market,
+                spec=FUNDAMENTALS_PRESET_SPECS[preset_id],
+                # ROB-436 C-2: fundamentals presets show closer to the full Toss
+                # match set (was 20 via _SCREENING_FILTERS); total_matched unchanged.
+                limit=_FUNDAMENTALS_DISPLAY_LIMIT,
+                now=now,
+            )
+            if _fundamentals_screen_result is not None:
+                _snapshot_check_result = _fundamentals_screen_result.rows
+                _snapshot_load_result = _SnapshotLoadResult(
+                    rows=_fundamentals_screen_result.rows,
+                    partition_date=_fundamentals_screen_result.valuation_partition_date,
+                    partition_computed_at=_fundamentals_screen_result.fundamentals_collected_at,
+                )
+            _snapshot_empty_warning = (
+                "최신 KR 펀더멘털 스냅샷에서 해당 프리셋 조건에 맞는 종목이 없습니다."
             )
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
@@ -1559,6 +1958,26 @@ async def build_screener_results(
                 _snapshot_check_result, _snapshot_state_override = (
                     _crypto_snapshot_result
                 )
+                # ROB-443: apply screen_stocks_snapshot filter overrides on top of
+                # the preset's SQL base (add/tighten). The preset's defining filter
+                # already ran in repo.list_latest; these compose in-memory over the
+                # exposed row fields (e.g. liquidity floor, rsi cap). validate raises
+                # ScreenerFilterError on an unknown field (caught by the MCP tool).
+                if filter_overrides:
+                    from app.services.invest_view_model.screener_filters import (
+                        apply_filter_conditions,
+                        snapshot_kind_for_preset,
+                        validate_conditions,
+                    )
+
+                    _crypto_kind = snapshot_kind_for_preset(preset_id)
+                    if _crypto_kind is not None:
+                        _crypto_conditions = validate_conditions(
+                            filter_overrides, snapshot_kind=_crypto_kind
+                        )
+                        _snapshot_check_result = apply_filter_conditions(
+                            _snapshot_check_result, _crypto_conditions
+                        )
                 _snapshot_empty_warning = (
                     "최신 암호화폐 스크리너 스냅샷에서 조건에 맞는 결과가 없습니다."
                 )
@@ -1579,12 +1998,33 @@ async def build_screener_results(
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "수급 또는 시세 스냅샷이 아직 적재되지 않아 쌍끌이 매수 후보를 표시할 수 없습니다."
 
-    if preset_id == "high_yield_value" and _snapshot_check_result is None:
-        # snapshot-only preset; the generic provider has no ROE filter and could
-        # half-apply (PER only) the rule — never fall through to it.
+    # ROB-428 PR-C: high_yield_value + undervalued_breakout are now in
+    # FUNDAMENTALS_PRESET_SPECS, so their None-handling (loader returned None →
+    # dataState=missing, never fall through to the generic provider) is covered by
+    # the shared block below. The dedicated valuation-only None blocks were removed.
+    if preset_id in FUNDAMENTALS_PRESET_SPECS and _snapshot_check_result is None:
+        # snapshot-only; the generic provider has neither a gross-margin nor a
+        # fundamentals filter and could half-apply the rule — never fall through.
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
-        _snapshot_empty_warning = "밸류에이션 스냅샷이 아직 적재되지 않아 고수익 저평가 후보를 표시할 수 없습니다."
+        _snapshot_empty_warning = "밸류에이션/재무 스냅샷이 아직 적재되지 않아 해당 프리셋 후보를 표시할 수 없습니다."
+
+    if (
+        preset_id
+        in {
+            "crypto_funding_squeeze",
+            "crypto_funding_overheated",
+            "crypto_oi_surge",
+            "crypto_long_short_skew",
+        }
+        and _snapshot_check_result is None
+    ):
+        # ROB-443: these presets rank by derivative columns (funding / open
+        # interest / long-short), which only the crypto snapshot carries (the live
+        # tvscreener fallback has none). Snapshot-only — never fall through.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = "암호화폐 선물 지표 스냅샷이 아직 적재되지 않아 해당 후보를 표시할 수 없습니다."
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
@@ -1634,11 +2074,34 @@ async def build_screener_results(
     from app.services.invest_screener_snapshots.freshness import aggregate_states
 
     if _snapshot_was_checked and not rows:
-        # Latest snapshot partition was found but had no qualifying rows —
-        # the data exists, but this preset has no current qualifiers.  Stock
-        # snapshot semantics keep the historical stale warning; crypto snapshots
-        # can still be fresh/partial 24/7 even when a preset returns zero rows.
-        _aggregated_data_state = _snapshot_state_override or "stale"
+        # Latest snapshot partition was found but had no qualifying rows.
+        _load_reason = (
+            _snapshot_load_result.degradation_reason
+            if _snapshot_load_result is not None
+            else None
+        )
+        if _load_reason == "healthy_no_matches":
+            # ROB-426 PR3: the served partition is the newest *healthy* one — zero
+            # qualifiers is a filter outcome, not staleness. Reflect the
+            # partition's date-based freshness instead of flooring to "stale".
+            from app.services.invest_screener_snapshots.freshness import (
+                expected_baseline_date,
+            )
+
+            # KNOWN MINOR (ROB-426 PR3): this uses expected_baseline_date for all
+            # presets, which matches the consecutive_gainers row classifier but NOT
+            # investor_flow's (it classifies rows with today_trading_date). In the
+            # KR pre-market window the two diverge, so an empty investor_flow page
+            # may show "fresh" here while a populated one would show "stale". Impact
+            # is a cosmetic chip on an already-empty page; expected_baseline_date is
+            # the more-correct baseline (avoids the prior-day-labeled-stale
+            # regression). Aligning investor_flow's row classifier is a follow-up.
+            _baseline = expected_baseline_date(requested_market, now=now())
+            _pd = _snapshot_load_result.partition_date
+            _aggregated_data_state = "fresh" if _pd == _baseline else "stale"
+        else:
+            # missing / degraded / crypto override paths keep prior behavior.
+            _aggregated_data_state = _snapshot_state_override or "stale"
     else:
         _row_states: list[str] = [
             str(r.get("_screener_snapshot_state") or "missing") for r in rows
@@ -1674,8 +2137,16 @@ async def build_screener_results(
         primary_kind = "screener_snapshot"
         if preset_id == "investor_flow_momentum":
             primary_source = "investor_flow_snapshots"
-        elif preset_id == "high_yield_value":
-            primary_source = "market_valuation_snapshots"
+        elif preset_id in FUNDAMENTALS_PRESET_SPECS:
+            # ROB-428 PR-B/C: KR display reads the tvscreener KR snapshot, so all KR
+            # Toss fundamentals/valuation presets report invest_kr_fundamentals_snapshots.
+            # ROB-440: US reads the market-parameterized valuation/derive path, so its
+            # primary source is market_valuation_snapshots (not the KR-only table).
+            primary_source = (
+                "market_valuation_snapshots"
+                if requested_market == "us"
+                else "invest_kr_fundamentals_snapshots"
+            )
         elif requested_market == "crypto":
             primary_source = "invest_crypto_screener_snapshots"
         else:
@@ -1689,9 +2160,34 @@ async def build_screener_results(
             # Fallback for double_buy / crypto paths that don't use _SnapshotLoadResult
             primary_snapshot_date = rows[0].get("snapshot_date")
             primary_computed_at = rows[0].get("computed_at")
+        # ROB-440: the US fundamentals/valuation dispatch branches don't carry the
+        # market_valuation partition's computed_at (set None) → classify_state can't
+        # run → freshness chip falls to stale even when the partition is current.
+        # Backfill computed_at from market_valuation_snapshots so the chip matches.
+        if (
+            requested_market == "us"
+            and preset_id in FUNDAMENTALS_PRESET_SPECS
+            and primary_computed_at is None
+            and primary_snapshot_date is not None
+            and session is not None
+        ):
+            primary_computed_at = await _us_valuation_partition_computed_at(
+                session, snapshot_date=primary_snapshot_date
+            )
     else:
         primary_kind = "live"
         primary_source = "screening_service"
+
+    # ROB-426 PR3: structured degradation reason for freshness.primary.
+    primary_degradation_reason: str | None = None
+    primary_coverage_label: str | None = None
+    if _snapshot_load_result is not None and _snapshot_load_result.degradation_reason:
+        primary_degradation_reason = _snapshot_load_result.degradation_reason
+        primary_coverage_label = _snapshot_load_result.coverage_label
+    elif _snapshot_state_override == "missing":
+        primary_degradation_reason = "snapshot_missing"
+    elif primary_kind == "live":
+        primary_degradation_reason = "live"
 
     # Bulk-lookup Korean names for KR rows from kr_symbol_universe
     _kr_names: dict[str, str] = {}
@@ -1722,7 +2218,16 @@ async def build_screener_results(
     # _investor_flow_collected_at, and _investor_flow_data_state have been stashed
     # back on rows.
     dependency_specs: list[dict[str, Any]] = []
-    if requested_market == "kr" and investor_flow_chips:
+    # ROB-432: investor_flow is a freshness DEPENDENCY only for presets that screen
+    # on it (외인/기관 수급). For fundamentals/valuation/price presets it is a
+    # supplementary per-row CHIP (still hydrated + shown), not a screening input —
+    # so a stale investor_flow partition must NOT drag their overallState to stale
+    # ("펀더는 fresh인데 stale 표시" 오해 제거).
+    if (
+        requested_market == "kr"
+        and preset_id in _INVESTOR_FLOW_DEPENDENCY_PRESETS
+        and investor_flow_chips
+    ):
         from app.services.invest_screener_snapshots.freshness import (
             classify_investor_flow_partition,
             today_trading_date,
@@ -1756,6 +2261,25 @@ async def build_screener_results(
                 }
             )
 
+    if requested_market == "kr" and _fundamentals_screen_result is not None:
+        dependency_specs.append(
+            {
+                "kind": "fundamentals",
+                "snapshot_date": _fundamentals_screen_result.fundamentals_partition_date,
+                "collected_at": _fundamentals_screen_result.fundamentals_collected_at,
+                "data_state": _fundamentals_screen_result.fundamentals_state,
+                # ROB-428 PR-B: KR display fundamentals now come from the
+                # tvscreener KR snapshot, not the DART table.
+                "source": "invest_kr_fundamentals_snapshots",
+            }
+        )
+        # ROB-428 PR-B: surface honest-divergence warnings (e.g. the earnings
+        # streak condition skipped because tvscreener does not expose it).
+        for _w in _fundamentals_screen_result.warnings:
+            _safe = _safe_warning(_w)
+            if _safe not in upstream_warnings:
+                upstream_warnings.append(_safe)
+
     freshness = _build_freshness(
         raw_timestamp=raw.get("timestamp"),
         cache_hit=bool(raw.get("cache_hit")),
@@ -1767,6 +2291,8 @@ async def build_screener_results(
         primary_computed_at=primary_computed_at,
         primary_source=primary_source,
         dependency_specs=dependency_specs,
+        primary_degradation_reason=primary_degradation_reason,
+        primary_coverage_label=primary_coverage_label,
     )
     response_sources = _screen_response_sources(
         requested_market=requested_market,
@@ -1841,6 +2367,7 @@ async def build_screener_results(
                 candidateContext=_crypto_candidate_context(row, preset_id)
                 if market == "crypto"
                 else None,
+                marketCapSource=row.get("_market_cap_source"),
             )
         )
 
@@ -1849,6 +2376,18 @@ async def build_screener_results(
         and "비KRW 가상자산 행은 제외했습니다." not in upstream_warnings
     ):
         upstream_warnings.append("비KRW 가상자산 행은 제외했습니다.")
+
+    # ROB-429 B2: surface the full-partition match total + returned count on the KR
+    # fundamentals path (FUNDAMENTALS_PRESET_SPECS). None for all other presets so
+    # their behavior is unchanged.
+    total_count: int | None = None
+    returned_count: int | None = None
+    if (
+        preset_id in FUNDAMENTALS_PRESET_SPECS
+        and _fundamentals_screen_result is not None
+    ):
+        total_count = _fundamentals_screen_result.total_matched
+        returned_count = len(results)
 
     return ScreenerResultsResponse(
         presetId=preset.id,
@@ -1860,4 +2399,6 @@ async def build_screener_results(
         warnings=upstream_warnings,
         freshness=freshness,
         sources=response_sources,
+        totalCount=total_count,
+        returnedCount=returned_count,
     )
