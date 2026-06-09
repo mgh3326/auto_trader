@@ -91,3 +91,32 @@ class TestDomesticOrdersTransientRetry:
             )
 
         assert parent._request_with_rate_limit.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_raises_when_domestic_history_reaches_max_pages_with_cursor(
+        self, _mock_domestic_orders
+    ):
+        instance, parent = _mock_domestic_orders
+        parent._request_with_rate_limit = AsyncMock(
+            side_effect=[
+                {
+                    "rt_cd": "0",
+                    "output1": [{"ord_no": "001", "pdno": "005930"}],
+                    "ctx_area_fk100": "FK2",
+                    "ctx_area_nk100": "NK2",
+                },
+                {
+                    "rt_cd": "0",
+                    "output1": [{"ord_no": "002", "pdno": "005930"}],
+                    "ctx_area_fk100": "FK3",
+                    "ctx_area_nk100": "NK3",
+                },
+            ]
+        )
+
+        with pytest.raises(RuntimeError, match="domestic daily order history truncated"):
+            await instance.inquire_daily_order_domestic(
+                start_date="20260201",
+                end_date="20260208",
+                max_pages=2,
+            )

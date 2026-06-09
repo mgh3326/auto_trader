@@ -523,6 +523,7 @@ class DomesticOrderClient:
         side: str = "00",
         order_number: str = "",
         is_mock: bool = False,
+        max_pages: int = 100,
     ) -> list[dict]:
         """
         국내주식 일별 체결조회 (주문 히스토리)
@@ -534,25 +535,10 @@ class DomesticOrderClient:
             side: 매도매수구분 (00:전체, 01:매도, 02:매수)
             order_number: 주문번호 (특정 주문만 조회 시)
             is_mock: True면 모의투자, False면 실전투자
+            max_pages: 최대 조회 페이지 수
 
         Returns:
             체결 주문 목록 (list of dict)
-            각 항목:
-            - ord_no: 주문번호
-            - orgn_ord_no: 원주문번호
-            - sll_buy_dvsn_cd: 매도매수구분코드 (01:매도, 02:매수)
-            - sll_buy_dvsn_cd_name: 매도매수구분명
-            - rvse_cncl_dvsn_cd: 정정취소구분코드
-            - rvse_cncl_dvsn_name: 정정취소구분명
-            - pdno: 상품번호(종목코드)
-            - prdt_name: 상품명
-            - ord_qty: 주문수량
-            - ord_unpr: 주문단가
-            - ccld_qty: 체결수량
-            - ccld_unpr: 체결단가
-            - ccld_amt: 체결금액
-            - ord_dt: 주문일자
-            - ord_tmd: 주문시각
         """
         await self._parent._ensure_token()
 
@@ -579,14 +565,15 @@ class DomesticOrderClient:
         ctx_area_nk100 = ""
         tr_cont = ""
         page = 1
-        max_pages = 10
+        page_limit = max(1, int(max_pages))
+        truncated = False
         token_retry_count = 0
         max_token_retries = 3
         transient_retry_count = 0
 
         logging.info(f"국내주식 체결조회 시작 - {start_date} ~ {end_date}")
 
-        while page <= max_pages:
+        while page <= page_limit:
             hdr = self._parent._hdr_base | {
                 "authorization": f"Bearer {self._settings.kis_access_token}",
                 "tr_id": tr_id,
@@ -678,7 +665,16 @@ class DomesticOrderClient:
             tr_cont = "N"
 
             page += 1
+            if page > page_limit:
+                truncated = True
+                break
             await asyncio.sleep(0.1)
+
+        if truncated:
+            raise RuntimeError(
+                "KIS domestic daily order history truncated "
+                f"at max_pages={page_limit} for {start_date}~{end_date}"
+            )
 
         logging.info(f"국내주식 체결조회 완료: 총 {len(all_orders)}건")
         return all_orders
