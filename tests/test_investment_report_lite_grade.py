@@ -1,0 +1,94 @@
+"""ROB-472 — lite report quality grade 순수 헬퍼."""
+
+from __future__ import annotations
+
+import pytest
+
+from app.schemas.investment_reports import IngestReportItem
+from app.services.investment_reports.lite_grade import (
+    build_lite_report_quality_summary,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def _item(**over):
+    base = dict(
+        client_item_key="k1",
+        item_kind="action",
+        intent="buy_review",
+        rationale="r",
+    )
+    base.update(over)
+    return IngestReportItem(**base)
+
+
+def test_no_actionable_items_grades_no_action():
+    items = [_item(item_kind="risk", intent="risk_review")]
+    out = build_lite_report_quality_summary(items)
+    assert out["grade"] == "no_action"
+    assert out["basis"] == "item_evidence_lite"
+
+
+def test_actionable_but_no_evidence_grades_no_action():
+    items = [_item()]  # action item, evidence=[] (default)
+    out = build_lite_report_quality_summary(items)
+    assert out["grade"] == "no_action"
+    assert "evidence" in out["reason"]
+
+
+def test_evidence_backed_action_grades_informational_only():
+    items = [
+        _item(
+            evidence=[{"source": "consensus", "freshness": "fresh"}],
+            freshness="fresh",
+        )
+    ]
+    out = build_lite_report_quality_summary(items)
+    assert out["grade"] == "informational_only"
+    assert out["evidence_item_count"] == 1
+    assert out["actionable_item_count"] == 1
+
+
+def test_never_returns_high_confidence_even_with_rich_evidence():
+    items = [
+        _item(
+            client_item_key=f"k{i}",
+            evidence=[
+                {"source": "consensus", "freshness": "fresh"},
+                {"source": "foreign_flow", "freshness": "fresh"},
+            ],
+            freshness="fresh",
+        )
+        for i in range(5)
+    ]
+    out = build_lite_report_quality_summary(items)
+    assert out["grade"] != "high_confidence"
+    assert out["grade"] == "informational_only"
+
+
+def test_freshness_breakdown_counts_item_and_evidence():
+    items = [
+        _item(
+            evidence=[
+                {"source": "a", "freshness": "fresh"},
+                {"source": "b", "freshness": "stale"},
+            ],
+            freshness="soft_stale",
+        )
+    ]
+    out = build_lite_report_quality_summary(items)
+    # item.freshness(soft_stale) + evidence(fresh, stale)
+    assert out["freshness_breakdown"] == {
+        "fresh": 1,
+        "soft_stale": 1,
+        "stale": 1,
+        "unknown": 0,
+    }
+    assert out["evidence_source_count"] == 2
+
+
+def test_empty_items_grades_no_action():
+    out = build_lite_report_quality_summary([])
+    assert out["grade"] == "no_action"
+    assert out["total_item_count"] == 0
