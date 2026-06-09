@@ -22,13 +22,15 @@ def test_usd_positive_keeps_buy():
 
 
 def test_override_takes_precedence_over_basis():
-    assert demote_for_budget("buy_review",
-        _state(basis="available_usd", usd=0, override=500)) == ("buy_review", [])
+    assert demote_for_budget(
+        "buy_review", _state(basis="available_usd", usd=0, override=500)
+    ) == ("buy_review", [])
 
 
 def test_krw_reference_basis_flags_fx_required():
-    v, reasons = demote_for_budget("buy_review",
-        _state(basis="krw_orderable_reference", usd=0, krw=500000))
+    v, reasons = demote_for_budget(
+        "buy_review", _state(basis="krw_orderable_reference", usd=0, krw=500000)
+    )
     assert v == "watch_only" and reasons == ["fx_required"]
 
 

@@ -513,9 +513,13 @@ class EvidenceAutoEmitter:
                 base_verdict, quality_flags
             )
             # ROB-347 — budget demotion (buy_review only; never fabricates USD).
-            verdict, budget_reasons = demote_for_budget(verdict, budget_state)
-            if budget_reasons and reject_or_wait_reason is None:
-                reject_or_wait_reason = budget_reasons[0]
+            # Applies only to US market under kis_live account scope.
+            if request_market == "us" and account_scope == "kis_live":
+                verdict, budget_reasons = demote_for_budget(verdict, budget_state)
+                if budget_reasons and reject_or_wait_reason is None:
+                    reject_or_wait_reason = budget_reasons[0]
+            else:
+                budget_reasons = []
 
             if verdict == "data_gap" and reject_or_wait_reason is None:
                 reject_or_wait_reason = "quote_missing"

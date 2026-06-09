@@ -1,8 +1,11 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from app.services.action_report.snapshot_backed.generator import SnapshotBackedReportGenerator
+import pytest
+
+from app.services.action_report.snapshot_backed.generator import (
+    SnapshotBackedReportGenerator,
+)
 from app.services.action_report.snapshot_backed.request import ReportGenerationRequest
 
 
@@ -31,8 +34,7 @@ async def test_auto_emit_threads_budget(monkeypatch):
     mock_repo.list_bundle_items_with_snapshots = AsyncMock(return_value=[])
 
     generator = SnapshotBackedReportGenerator(
-        session=mock_session,
-        snapshots_repository=mock_repo
+        session=mock_session, snapshots_repository=mock_repo
     )
 
     request = ReportGenerationRequest(
