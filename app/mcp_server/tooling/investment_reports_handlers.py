@@ -235,6 +235,85 @@ async def _collect_pending_orders_snapshot(
     return list(orders)
 
 
+def _validate_report_items(
+    raw_items: list[dict[str, Any]] | None,
+) -> tuple[list[IngestReportItem], dict[str, Any] | None]:
+    """Validate report items with per-item, per-field errors (ROB-458).
+
+    Returns ``(validated_items, error_payload)``. ``error_payload`` is None on
+    success; otherwise a structured MCP error dict naming EVERY offending item
+    index / client_item_key / field so the caller fixes all violations in one
+    round-trip. Shared by investment_report_create and
+    investment_report_generate_from_bundle so the two cannot drift.
+    """
+    validated_items: list[IngestReportItem] = []
+    item_errors: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_items or []):
+        if not isinstance(raw, dict):
+            item_errors.append(
+                {
+                    "index": index,
+                    "client_item_key": None,
+                    "errors": [
+                        {
+                            "field": "",
+                            "message": (
+                                f"item must be an object, got {type(raw).__name__}"
+                            ),
+                        }
+                    ],
+                }
+            )
+            continue
+        try:
+            validated_items.append(IngestReportItem.model_validate(raw))
+        except ValidationError as exc:
+            item_errors.append(
+                {
+                    "index": index,
+                    "client_item_key": raw.get("client_item_key"),
+                    "errors": [
+                        {
+                            "field": ".".join(str(p) for p in err["loc"]),
+                            "message": err["msg"],
+                        }
+                        for err in exc.errors()
+                    ],
+                }
+            )
+    if item_errors:
+        return [], {
+            "success": False,
+            "error": "invalid_items",
+            "item_errors": item_errors,
+            "required_fields": [
+                "client_item_key",
+                "item_kind",
+                "intent",
+                "rationale",
+            ],
+            "enums": {
+                "item_kind": ["action", "watch", "risk"],
+                "intent": [
+                    "buy_review",
+                    "sell_review",
+                    "risk_review",
+                    "trend_recovery_review",
+                    "rebalance_review",
+                ],
+                "target_kind": ["asset", "index", "fx"],
+                "side": ["buy", "sell"],
+            },
+            "notes": (
+                "watch items require watch_condition + valid_until unless "
+                "operation is 'review'; decision_bucket must be one of the "
+                "DECISION_BUCKETS vocabulary. target_kind is a SEPARATE optional "
+                "field (asset|index|fx, default 'asset') — it is NOT item_kind."
+            ),
+        }
+    return validated_items, None
+
+
 # ---------------------------------------------------------------------------
 # investment_report_create
 # ---------------------------------------------------------------------------
@@ -688,75 +767,9 @@ async def investment_report_generate_from_bundle_impl(
             "allowed": list(_ALLOWED_MARKET_SESSIONS),
         }
 
-    # ROB-352 — validate items with per-item, per-field errors instead of a raw
-    # ValidationError. Names the offending item index/client_item_key and the
-    # failing field so callers fix it without reading backend code.
-    validated_items: list[IngestReportItem] = []
-    item_errors: list[dict[str, Any]] = []
-    for index, raw in enumerate(items or []):
-        # Guard non-dict entries (e.g. a bare string/list) so building the
-        # error report itself never crashes on ``.get``.
-        if not isinstance(raw, dict):
-            item_errors.append(
-                {
-                    "index": index,
-                    "client_item_key": None,
-                    "errors": [
-                        {
-                            "field": "",
-                            "message": (
-                                f"item must be an object, got {type(raw).__name__}"
-                            ),
-                        }
-                    ],
-                }
-            )
-            continue
-        try:
-            validated_items.append(IngestReportItem.model_validate(raw))
-        except ValidationError as exc:
-            item_errors.append(
-                {
-                    "index": index,
-                    "client_item_key": raw.get("client_item_key"),
-                    "errors": [
-                        {
-                            "field": ".".join(str(p) for p in err["loc"]),
-                            "message": err["msg"],
-                        }
-                        for err in exc.errors()
-                    ],
-                }
-            )
-    if item_errors:
-        return {
-            "success": False,
-            "error": "invalid_items",
-            "item_errors": item_errors,
-            "required_fields": [
-                "client_item_key",
-                "item_kind",
-                "intent",
-                "rationale",
-            ],
-            "enums": {
-                "item_kind": ["action", "watch", "risk"],
-                "intent": [
-                    "buy_review",
-                    "sell_review",
-                    "risk_review",
-                    "trend_recovery_review",
-                    "rebalance_review",
-                ],
-                "target_kind": ["asset", "index", "fx"],
-                "side": ["buy", "sell"],
-            },
-            "notes": (
-                "watch items require watch_condition + valid_until unless "
-                "operation is 'review'; decision_bucket must be one of the "
-                "DECISION_BUCKETS vocabulary."
-            ),
-        }
+    validated_items, item_error = _validate_report_items(items)
+    if item_error is not None:
+        return item_error
 
     # ROB-352 — a destructive overwrite must carry a non-empty reason (audit).
     # Pre-validate here so the caller gets a structured error rather than an
