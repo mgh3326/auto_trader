@@ -37,7 +37,7 @@ def _stub_dir(tmp_path: Path) -> Path:
         "done\n"
         'case "$url" in\n'
         "  *127.0.0.1*)\n"
-        '    if [[ "$capture_status" == "1" ]]; then echo 401; fi\n'
+        '    if [[ "$capture_status" == "1" ]]; then echo 200; fi\n'
         "    exit 0 ;;\n"
         "  *) exit 6 ;;\n"
         "esac\n"
@@ -212,7 +212,7 @@ def test_full_deploy_rolls_back_on_probe_failure(tmp_path: Path) -> None:
         "done\n"
         'case "$url" in\n'
         "  *8002*|*8767*) exit 22 ;;\n"
-        '  *127.0.0.1*) if [[ "$capture_status" == "1" ]]; then echo 401; fi; exit 0 ;;\n'
+        '  *127.0.0.1*) if [[ "$capture_status" == "1" ]]; then echo 200; fi; exit 0 ;;\n'
         "  *) exit 6 ;;\n"
         "esac\n"
     )
