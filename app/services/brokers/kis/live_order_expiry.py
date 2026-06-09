@@ -13,7 +13,7 @@ the status is non-informative AND the KRX session is closed.
 
 The exact KIS status strings differ across surfaces and MUST be confirmed by a
 read-only operator smoke (mirror of fill_evidence.py); the token lists below are
-intention conservative.
+intentionally conservative.
 """
 
 from __future__ import annotations
