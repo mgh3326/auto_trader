@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 
+from app.mcp_server.env_utils import DEFAULT_MCP_TOOL_TIMEOUT_S
+
 if TYPE_CHECKING:
     import mcp.types as mt
     from fastmcp.server.middleware import CallNext, MiddlewareContext
@@ -26,7 +28,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOOL_TIMEOUT_S = 45.0
+# Single source of truth lives in env_utils (used by get_mcp_tool_timeout_default).
+DEFAULT_TOOL_TIMEOUT_S = DEFAULT_MCP_TOOL_TIMEOUT_S
 
 # Heavy tools that legitimately run long get an elevated budget so the default does
 # not kill them (ROB-469: "global default + exempt heavy tools"). Generous on
