@@ -109,6 +109,23 @@ GENERATE_FROM_BUNDLE_DESCRIPTION = (
 )
 
 
+CREATE_DESCRIPTION = (
+    "Persist one ROB-265 investment_report bundle (report + items). "
+    "Idempotent on (report_type, market, market_session, account_scope, "
+    "execution_mode, kst_date, generator_version). No broker / order "
+    "submission is performed. "
+    "items[] each require: client_item_key, item_kind (action|watch|risk), "
+    "intent (buy_review|sell_review|risk_review|trend_recovery_review|"
+    "rebalance_review), rationale. "
+    "watch items also require watch_condition + valid_until unless "
+    "operation='review'. "
+    "target_kind (asset|index|fx, default 'asset') is a SEPARATE optional field "
+    "— it is NOT item_kind. "
+    "decision_bucket (optional) must be one of: new_buy_candidate, open_action, "
+    "completed_or_existing, deferred_no_action, risk_watch."
+)
+
+
 def _default_generator_user_id() -> int:
     """ROB-352 — resolve the default operator user_id the same way the
     portfolio/holdings tools do (``MCP_USER_ID`` env, default 1), so a
@@ -340,6 +357,13 @@ async def investment_report_create_impl(
     published_at: str | None = None,
     generator_version: str = "v1",
 ) -> dict:
+    # ROB-458 — validate items with per-item, all-at-once errors BEFORE opening
+    # a DB session, so a malformed call never gets a partial write or a raw
+    # ValidationError. Mirrors investment_report_generate_from_bundle.
+    validated_items, item_error = _validate_report_items(items)
+    if item_error is not None:
+        return item_error
+
     payload: dict[str, Any] = {
         "report_type": report_type,
         "market": market,
@@ -359,7 +383,7 @@ async def investment_report_create_impl(
         "metadata": metadata or {},
         "valid_until": valid_until,
         "published_at": published_at,
-        "items": [IngestReportItem.model_validate(it) for it in (items or [])],
+        "items": validated_items,
         "generator_version": generator_version,
         "kst_date": kst_date,
     }
@@ -861,12 +885,7 @@ async def investment_report_generate_from_bundle_impl(
 def register_investment_report_tools(mcp: FastMCP) -> None:
     mcp.tool(
         name="investment_report_create",
-        description=(
-            "Persist one ROB-265 investment_report bundle (report + items). "
-            "Idempotent on (report_type, market, market_session, account_scope, "
-            "execution_mode, kst_date, generator_version). "
-            "No broker / order submission is performed."
-        ),
+        description=CREATE_DESCRIPTION,
     )(investment_report_create_impl)
     mcp.tool(
         name="investment_report_list",
