@@ -47,6 +47,7 @@ from app.services.action_report.snapshot_backed.action_verdict import (
     VERDICT_TO_BUCKET,
     classify_candidate_symbol,
     classify_held_symbol,
+    demote_for_quality,
 )
 from app.services.market_events.catalyst.contract import CatalystEvent
 from app.services.market_events.catalyst.guard import evaluate_catalyst_guard
@@ -56,6 +57,18 @@ from app.services.market_events.catalyst.polarity import (
 )
 
 _KST = ZoneInfo("Asia/Seoul")
+
+_REASON_KO: dict[str, str] = {
+    "low_liquidity": "저유동성",
+    "beyond_candidate_budget": "후보 예산 초과",
+    "screener_stale": "스크리너 stale",
+    "penny": "저가주",
+    "illiquid": "초저유동성",
+    "abnormal_spike": "비정상 급등",
+    "non_common_stock": "일반주 아님(ETF/우선주 등)",
+    "common_stock_unknown": "종목 분류 미확인",
+    "quote_missing": "호가 스냅샷 없음",
+}
 CATALYST_GUARD_WITHIN_DAYS = 7
 
 
@@ -268,6 +281,10 @@ def _candidate_item(
         "candidate_source_preset": cand.get("source_preset"),
         "candidate_data_state": cand.get("data_state"),
         "candidate_toss_parity_status": cand.get("toss_parity_status"),
+        # ROB-346 quality fields
+        "quality_flags": cand.get("quality_flags"),
+        "confidence_cap": cand.get("confidence_cap"),
+        "candidate_priority_score": cand.get("priority_score"),
         "news_matches": news_match_count,
         "quote_status": q.get("status") if quote is not None else "no_snapshot",
         "best_bid": q.get("best_bid"),
@@ -289,16 +306,13 @@ def _candidate_item(
             f"quote best_bid {q.get('best_bid')}, spread_bps {q.get('spread_bps')})"
         )
     elif is_gap:
-        rationale = f"신규 후보 판단 보류 — {sym} (호가 스냅샷 없음)"
-    elif reject_or_wait_reason == "low_liquidity":
-        rationale = (
-            f"신규 후보 관망 {priority}순위 — {sym} "
-            f"(저유동성: spread_bps {q.get('spread_bps')})"
-        )
-    elif reject_or_wait_reason == "beyond_candidate_budget":
-        rationale = f"신규 후보 관망 {priority}순위 — {sym} (후보 예산 초과)"
-    else:  # screener_stale
-        rationale = f"신규 후보 관망 {priority}순위 — {sym} (스크리너 stale)"
+        if reject_or_wait_reason == "common_stock_unknown":
+            rationale = f"신규 후보 판단 보류 — {sym} (종목 분류 미확인)"
+        else:
+            rationale = f"신규 후보 판단 보류 — {sym} (호가 스냅샷 없음)"
+    else:
+        reason_ko = _REASON_KO.get(reject_or_wait_reason or "", "관망")
+        rationale = f"신규 후보 관망 {priority}순위 — {sym} ({reason_ko})"
 
     return IngestReportItem(
         client_item_key=(f"auto-buy-{sym}" if is_buy else f"auto-cand-{verdict}-{sym}"),
@@ -461,22 +475,28 @@ class EvidenceAutoEmitter:
         # candidate is silently dropped (ROB-350). Always-on whenever a
         # candidate_universe snapshot is present, independent of intraday_floor.
         buy_emitted = 0
+        demoted_emitted = 0
+        _MAX_DEMOTED_SHOWN = 10
         for cand in sorted(candidate_order, key=_candidate_sort_key):
             sym = cand.get("symbol")
             if not isinstance(sym, str) or sym in held:
                 continue  # held names handled by held_and_trending below
             symbol_pair = symbol_quotes.get(sym)
             quote = symbol_pair[1] if symbol_pair else None
-            verdict = classify_candidate_symbol(
+            base_verdict = classify_candidate_symbol(
                 quote,
                 universe_useful=candidate_actionable,
                 quote_snapshot_present=symbol_pair is not None,
                 candidate_fresh=(cand.get("data_state") or "fresh") == "fresh",
             )
-            reject_or_wait_reason: str | None = None
-            if verdict == "data_gap":
+            # ROB-346 — quality demotion (pure, no signature change).
+            quality_flags = frozenset(cand.get("quality_flags") or [])
+            verdict, reject_or_wait_reason = demote_for_quality(
+                base_verdict, quality_flags
+            )
+            if verdict == "data_gap" and reject_or_wait_reason is None:
                 reject_or_wait_reason = "quote_missing"
-            elif verdict == "watch_only":
+            elif verdict == "watch_only" and reject_or_wait_reason is None:
                 reject_or_wait_reason = (
                     "low_liquidity"
                     if symbol_pair is not None and not _quote_is_actionable(quote)
@@ -488,6 +508,11 @@ class EvidenceAutoEmitter:
                     reject_or_wait_reason = "beyond_candidate_budget"
                 else:
                     buy_emitted += 1
+
+            if verdict != "buy_review":
+                if demoted_emitted >= _MAX_DEMOTED_SHOWN:
+                    continue  # 노이즈 방지: 상위 N개 데모션만 카드화(집계는 candidate snapshot)
+                demoted_emitted += 1
 
             candidate_rank = _candidate_rank(cand)
             priority = candidate_rank if candidate_rank is not None else buy_emitted

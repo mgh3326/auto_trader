@@ -22,6 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.symbol import to_db_symbol
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+from app.services.action_report.snapshot_backed.candidate_quality import (
+    compute_priority_score,
+    compute_quality_flags,
+    confidence_cap_for,
+    dollar_volume_usd,
+)
 from app.services.action_report.snapshot_backed.collectors._base import (
     build_result,
     unavailable_result,
@@ -39,12 +45,6 @@ from app.services.investment_snapshots.collectors import (
     SnapshotCollectResult,
 )
 from app.services.screener_evidence import CandidateEvidence, build_candidate_evidence
-from app.services.action_report.snapshot_backed.candidate_quality import (
-    compute_priority_score,
-    compute_quality_flags,
-    confidence_cap_for,
-    dollar_volume_usd,
-)
 
 TOP_N = 10
 logger = logging.getLogger(__name__)
@@ -368,7 +368,9 @@ class CandidateUniverseSnapshotCollector:
                 )
                 quality_by_symbol[r.symbol] = {
                     "quality_flags": sorted(qf),
-                    "dollar_volume_usd": dollar_volume_usd(r.latest_close, r.daily_volume),
+                    "dollar_volume_usd": dollar_volume_usd(
+                        r.latest_close, r.daily_volume
+                    ),
                     "priority_score": compute_priority_score(
                         latest_close=r.latest_close,
                         daily_volume=r.daily_volume,
@@ -378,7 +380,8 @@ class CandidateUniverseSnapshotCollector:
                     "confidence_cap": confidence_cap_for(qf),
                     "is_common_stock": flags_by_symbol.get(r.symbol),
                     "week_change_rate": float(r.week_change_rate)
-                    if r.week_change_rate is not None else None,
+                    if r.week_change_rate is not None
+                    else None,
                 }
 
         return [
@@ -542,7 +545,10 @@ class CandidateUniverseSnapshotCollector:
                 evidence,
                 key=lambda e: (
                     -(quality_by_symbol.get(e.symbol, {}).get("priority_score") or 0.0),
-                    -(quality_by_symbol.get(e.symbol, {}).get("dollar_volume_usd") or 0.0),
+                    -(
+                        quality_by_symbol.get(e.symbol, {}).get("dollar_volume_usd")
+                        or 0.0
+                    ),
                     e.symbol,
                 ),
             )

@@ -165,9 +165,7 @@ class InvestScreenerSnapshotsRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def common_stock_flags(
-        self, symbols: list[str]
-    ) -> dict[str, bool | None]:
+    async def common_stock_flags(self, symbols: list[str]) -> dict[str, bool | None]:
         """ROB-346 — us_symbol_universe.is_common_stock by symbol (US-only).
         Missing symbols are absent from the dict (caller treats as unknown)."""
         if not symbols:
@@ -179,7 +177,7 @@ class InvestScreenerSnapshotsRepository:
                 USSymbolUniverse.symbol.in_(symbols)
             )
         )
-        return {sym: flag for sym, flag in result.all()}
+        return dict(result.all())
 
     async def breadth(self, *, market: str) -> Breadth:
         latest = await self.latest_partition(market=market)

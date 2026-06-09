@@ -96,3 +96,29 @@ def classify_candidate_symbol(
     if not universe_useful or not candidate_fresh:
         return "watch_only"
     return "buy_review"
+
+
+_QUALITY_WATCH_ORDER: tuple[str, ...] = (
+    "penny",
+    "illiquid",
+    "abnormal_spike",
+    "screener_stale",
+)
+
+
+def demote_for_quality(
+    verdict: str, quality_flags: frozenset[str]
+) -> tuple[str, str | None]:
+    """ROB-346 — post-verdict quality demotion. Quality only DEMOTES (never
+    upgrades). non_common_stock is always rejected; otherwise only buy_review
+    is touched. Returns (new_verdict, reason | None)."""
+    if "non_common_stock" in quality_flags:
+        return "rejected", "non_common_stock"
+    if verdict != "buy_review":
+        return verdict, None
+    if "common_stock_unknown" in quality_flags:
+        return "data_gap", "common_stock_unknown"
+    for flag in _QUALITY_WATCH_ORDER:
+        if flag in quality_flags:
+            return "watch_only", flag
+    return "buy_review", None
