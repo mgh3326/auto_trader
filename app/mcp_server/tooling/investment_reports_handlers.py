@@ -131,7 +131,14 @@ CREATE_DESCRIPTION = (
     "target_kind (asset|index|fx, default 'asset') is a SEPARATE optional field "
     "— it is NOT item_kind. "
     "decision_bucket (optional) must be one of: new_buy_candidate, open_action, "
-    "completed_or_existing, deferred_no_action, risk_watch."
+    "completed_or_existing, deferred_no_action, risk_watch. "
+    "Optional structured evidence per item: evidence=[{source, metric, value, "
+    "as_of, freshness}] (source required) plus item-level freshness "
+    "(fresh|soft_stale|stale|unknown) — source-links consensus/flow/forum "
+    "signals instead of burying them in rationale (ROB-459). "
+    "For prior-report chaining set created_by_profile='CLAUDE_ADVISOR' so the "
+    "draft is admitted by investment_report_context_get(draft_policy="
+    "'advisory_only')."
 )
 
 
