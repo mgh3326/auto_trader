@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.mcp_server.tooling.fundamentals._cost_basis_distribution import (
+    _DEFAULT_GET_COST_BASIS_DISTRIBUTION_IMPL,
+)
+from app.mcp_server.tooling.fundamentals._cost_basis_distribution import (
+    get_cost_basis_distribution_impl as _get_cost_basis_distribution_impl,
+)
 from app.mcp_server.tooling.fundamentals._crypto import (
     handle_get_crypto_order_flow,
     handle_get_crypto_social,
@@ -81,6 +87,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_upbit_index",
     "get_upbit_altseason",
     "get_support_resistance",
+    "get_cost_basis_distribution",
     "get_sector_peers",
 }
 
@@ -414,6 +421,26 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         return await impl(symbol, market)
 
     @mcp.tool(
+        name="get_cost_basis_distribution",
+        description=(
+            "ESTIMATE holder cost-basis distribution (volume-by-price/VPVR) from the "
+            "symbol's own trailing OHLCV — buckets with holder_share_pct, "
+            "pct_holders_underwater/in_profit vs current price, vwap_estimate, "
+            "heaviest_bucket. A proxy (estimate=true), NOT an exact holder file. "
+            "kr/us/crypto. buckets in [2,100]."
+        ),
+    )
+    async def get_cost_basis_distribution(
+        symbol: str,
+        market: str | None = None,
+        buckets: int = 10,
+    ) -> dict[str, Any]:
+        impl = _get_cost_basis_distribution_impl
+        if not callable(impl):
+            impl = _DEFAULT_GET_COST_BASIS_DISTRIBUTION_IMPL
+        return await impl(symbol, market, buckets)
+
+    @mcp.tool(
         name="get_sector_peers",
         description=(
             "Get sector peer stocks for comparison. Supports Korean and US stocks. "
@@ -433,4 +460,5 @@ __all__ = [
     "FUNDAMENTALS_TOOL_NAMES",
     "_register_fundamentals_tools_impl",
     "_get_support_resistance_impl",
+    "_get_cost_basis_distribution_impl",
 ]
