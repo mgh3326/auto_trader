@@ -21,10 +21,18 @@ from app.models.review import TradeRetrospective
 from app.models.trade_journal import TradeJournal
 
 _VALID_ACCOUNT_MODES = {
-    "kis_mock", "kiwoom_mock", "kis_live", "alpaca_paper", "upbit_live",
+    "kis_mock",
+    "kiwoom_mock",
+    "kis_live",
+    "alpaca_paper",
+    "upbit_live",
 }
 _VALID_OUTCOMES = {
-    "filled", "partially_filled", "unfilled", "rejected", "cancelled",
+    "filled",
+    "partially_filled",
+    "unfilled",
+    "rejected",
+    "cancelled",
 }
 _NO_FILL_ACCOUNT_MODES = {"kiwoom_mock"}  # fills not readable (ROB-460)
 _KST = ZoneInfo("Asia/Seoul")
@@ -166,7 +174,10 @@ async def save_retrospective(
         raise RetrospectiveValidationError(f"invalid outcome: {outcome}")
     if side is not None and side not in ("buy", "sell"):
         raise RetrospectiveValidationError(f"invalid side: {side}")
-    if realized_pnl_currency is not None and realized_pnl_currency not in ("KRW", "USD"):
+    if realized_pnl_currency is not None and realized_pnl_currency not in (
+        "KRW",
+        "USD",
+    ):
         raise RetrospectiveValidationError(
             f"invalid realized_pnl_currency: {realized_pnl_currency}"
         )
@@ -257,7 +268,9 @@ async def get_retrospectives(
     if correlation_id is not None:
         filters.append(TradeRetrospective.correlation_id == correlation_id)
     if days is not None:
-        filters.append(TradeRetrospective.created_at >= now_kst() - timedelta(days=days))
+        filters.append(
+            TradeRetrospective.created_at >= now_kst() - timedelta(days=days)
+        )
     stmt = (
         select(TradeRetrospective)
         .where(*filters)
@@ -309,8 +322,8 @@ async def build_retrospective_aggregate(
         filters.append(TradeRetrospective.created_at <= _kst_day_end(kst_date_to))
 
     rows = (
-        await db.execute(select(TradeRetrospective).where(*filters))
-    ).scalars().all()
+        (await db.execute(select(TradeRetrospective).where(*filters))).scalars().all()
+    )
 
     groups: dict[str, list[TradeRetrospective]] = {}
     excluded_no_evidence = 0
@@ -318,7 +331,11 @@ async def build_retrospective_aggregate(
         if not r.fill_evidence_available:
             excluded_no_evidence += 1
             continue
-        key = (r.strategy_key or "no_strategy") if group_by == "strategy" else _kst_date_str(r.created_at)
+        key = (
+            (r.strategy_key or "no_strategy")
+            if group_by == "strategy"
+            else _kst_date_str(r.created_at)
+        )
         groups.setdefault(key, []).append(r)
 
     out: list[dict[str, Any]] = []
@@ -329,23 +346,24 @@ async def build_retrospective_aggregate(
         realized_sum: dict[str, float] = {}
         for it in items:
             if it.realized_pnl is not None and it.realized_pnl_currency:
-                realized_sum[it.realized_pnl_currency] = (
-                    realized_sum.get(it.realized_pnl_currency, 0.0)
-                    + float(it.realized_pnl)
-                )
+                realized_sum[it.realized_pnl_currency] = realized_sum.get(
+                    it.realized_pnl_currency, 0.0
+                ) + float(it.realized_pnl)
         by_outcome: dict[str, int] = {}
         for it in items:
             by_outcome[it.outcome] = by_outcome.get(it.outcome, 0) + 1
-        out.append({
-            "group": key,
-            "sample_size": len(items),
-            "wins": wins,
-            "misses": misses,
-            "win_rate_pct": (wins / len(decided) * 100.0) if decided else None,
-            "avg_pnl_pct": _avg([it.pnl_pct for it in items]),
-            "realized_pnl_sum": realized_sum,
-            "by_outcome": by_outcome,
-        })
+        out.append(
+            {
+                "group": key,
+                "sample_size": len(items),
+                "wins": wins,
+                "misses": misses,
+                "win_rate_pct": (wins / len(decided) * 100.0) if decided else None,
+                "avg_pnl_pct": _avg([it.pnl_pct for it in items]),
+                "realized_pnl_sum": realized_sum,
+                "by_outcome": by_outcome,
+            }
+        )
     out.sort(key=lambda g: -g["sample_size"])
     return {
         "group_by": group_by,

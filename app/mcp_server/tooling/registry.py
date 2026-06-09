@@ -73,11 +73,11 @@ from app.mcp_server.tooling.portfolio_registration import register_portfolio_too
 from app.mcp_server.tooling.trade_journal_registration import (
     register_trade_journal_tools,
 )
-from app.mcp_server.tooling.trade_retrospective_registration import (
-    register_trade_retrospective_tools,
-)
 from app.mcp_server.tooling.trade_profile_registration import (
     register_trade_profile_tools,
+)
+from app.mcp_server.tooling.trade_retrospective_registration import (
+    register_trade_retrospective_tools,
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (

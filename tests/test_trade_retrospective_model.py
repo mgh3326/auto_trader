@@ -19,7 +19,9 @@ pytestmark = [
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _cleanup(db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession):
+async def _cleanup(
+    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+):
     await db_session.execute(delete(TradeRetrospective))
     await db_session.commit()
 
@@ -46,7 +48,9 @@ async def test_insert_and_read_back(db_session: AsyncSession):
 
     got = (
         await db_session.execute(
-            select(TradeRetrospective).where(TradeRetrospective.correlation_id == "cid-1")
+            select(TradeRetrospective).where(
+                TradeRetrospective.correlation_id == "cid-1"
+            )
         )
     ).scalar_one()
     assert got.account_mode == "kis_mock"

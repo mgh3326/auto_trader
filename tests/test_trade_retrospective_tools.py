@@ -22,7 +22,9 @@ pytestmark = [
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _cleanup(db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession):
+async def _cleanup(
+    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+):
     await db_session.execute(delete(TradeRetrospective))
     await db_session.commit()
 
@@ -30,9 +32,14 @@ async def _cleanup(db_session: AsyncSession, investment_reports_cleanup_lock: As
 @pytest.mark.asyncio
 async def test_save_success_envelope():
     res = await save_trade_retrospective(
-        symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled", strategy_key="A",
-        realized_pnl=100.0, realized_pnl_currency="KRW", lesson="ok",
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="A",
+        realized_pnl=100.0,
+        realized_pnl_currency="KRW",
+        lesson="ok",
     )
     assert res["success"] is True
     assert res["action"] == "created"
@@ -42,8 +49,10 @@ async def test_save_success_envelope():
 @pytest.mark.asyncio
 async def test_save_validation_error_envelope():
     res = await save_trade_retrospective(
-        symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="bogus",
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="bogus",
     )
     assert res["success"] is False
     assert "outcome" in res["error"]
@@ -52,8 +61,10 @@ async def test_save_validation_error_envelope():
 @pytest.mark.asyncio
 async def test_save_missing_symbol_envelope():
     res = await save_trade_retrospective(
-        symbol="", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled",
+        symbol="",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
     )
     assert res["success"] is False
     assert "symbol" in res["error"]
@@ -62,8 +73,11 @@ async def test_save_missing_symbol_envelope():
 @pytest.mark.asyncio
 async def test_get_list_envelope():
     await save_trade_retrospective(
-        symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled", strategy_key="A",
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="A",
     )
     res = await get_trade_retrospectives(strategy_key="A")
     assert res["success"] is True
@@ -74,9 +88,13 @@ async def test_get_list_envelope():
 @pytest.mark.asyncio
 async def test_aggregate_envelope():
     await save_trade_retrospective(
-        symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled", strategy_key="A",
-        realized_pnl=100.0, realized_pnl_currency="KRW",
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="A",
+        realized_pnl=100.0,
+        realized_pnl_currency="KRW",
     )
     res = await get_retrospective_aggregate(group_by="strategy")
     assert res["success"] is True
@@ -88,6 +106,7 @@ def test_tool_names_set_complete():
     from app.mcp_server.tooling.trade_retrospective_registration import (
         TRADE_RETROSPECTIVE_TOOL_NAMES,
     )
+
     assert TRADE_RETROSPECTIVE_TOOL_NAMES == {
         "save_trade_retrospective",
         "get_trade_retrospectives",
@@ -97,6 +116,7 @@ def test_tool_names_set_complete():
 
 def test_tools_in_available_surface():
     from app.mcp_server import AVAILABLE_TOOL_NAMES
+
     for name in (
         "save_trade_retrospective",
         "get_trade_retrospectives",

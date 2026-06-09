@@ -22,7 +22,9 @@ pytestmark = [
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _cleanup(db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession):
+async def _cleanup(
+    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+):
     await db_session.execute(delete(TradeRetrospective))
     await db_session.execute(delete(TradeJournal))
     await db_session.commit()
@@ -54,8 +56,11 @@ async def _mock_journal(db, *, cid="j1"):
 async def test_invalid_outcome_rejected(db_session: AsyncSession):
     with pytest.raises(svc.RetrospectiveValidationError):
         await svc.save_retrospective(
-            db_session, symbol="005930", instrument_type="equity_kr",
-            account_mode="kis_mock", outcome="bogus",
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_mock",
+            outcome="bogus",
         )
 
 
@@ -63,8 +68,11 @@ async def test_invalid_outcome_rejected(db_session: AsyncSession):
 async def test_invalid_account_mode_rejected(db_session: AsyncSession):
     with pytest.raises(svc.RetrospectiveValidationError):
         await svc.save_retrospective(
-            db_session, symbol="005930", instrument_type="equity_kr",
-            account_mode="bogus_mode", outcome="filled",
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="bogus_mode",
+            outcome="filled",
         )
 
 
@@ -72,17 +80,24 @@ async def test_invalid_account_mode_rejected(db_session: AsyncSession):
 async def test_kiwoom_guard_blocks_fabricated_pnl(db_session: AsyncSession):
     with pytest.raises(svc.RetrospectiveValidationError):
         await svc.save_retrospective(
-            db_session, symbol="005930", instrument_type="equity_kr",
-            account_mode="kiwoom_mock", outcome="filled",
-            realized_pnl=1000.0, realized_pnl_currency="KRW",
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kiwoom_mock",
+            outcome="filled",
+            realized_pnl=1000.0,
+            realized_pnl_currency="KRW",
         )
 
 
 @pytest.mark.asyncio
 async def test_kiwoom_forces_no_fill_evidence(db_session: AsyncSession):
     action, row = await svc.save_retrospective(
-        db_session, symbol="005930", instrument_type="equity_kr",
-        account_mode="kiwoom_mock", outcome="unfilled",
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kiwoom_mock",
+        outcome="unfilled",
     )
     await db_session.commit()
     assert action == "created"
@@ -92,9 +107,13 @@ async def test_kiwoom_forces_no_fill_evidence(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_caller_supplied_realized_pnl(db_session: AsyncSession):
     action, row = await svc.save_retrospective(
-        db_session, symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled",
-        realized_pnl=12345.67, realized_pnl_currency="KRW",
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        realized_pnl=12345.67,
+        realized_pnl_currency="KRW",
     )
     await db_session.commit()
     assert row.realized_pnl == Decimal("12345.6700")
@@ -105,9 +124,14 @@ async def test_caller_supplied_realized_pnl(db_session: AsyncSession):
 async def test_derive_realized_pnl_from_journal(db_session: AsyncSession):
     j = await _mock_journal(db_session, cid="j1")
     action, row = await svc.save_retrospective(
-        db_session, symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled", side="buy",
-        journal_id=j.id, realized_pnl_currency="KRW",
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        side="buy",
+        journal_id=j.id,
+        realized_pnl_currency="KRW",
     )
     await db_session.commit()
     # (55000 - 50000) * 10 = 50000
@@ -118,22 +142,38 @@ async def test_derive_realized_pnl_from_journal(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_upsert_idempotent_by_correlation_id(db_session: AsyncSession):
     a1, _ = await svc.save_retrospective(
-        db_session, symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled", correlation_id="dup",
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="dup",
         lesson="v1",
     )
     await db_session.commit()
     a2, _ = await svc.save_retrospective(
-        db_session, symbol="005930", instrument_type="equity_kr",
-        account_mode="kis_mock", outcome="filled", correlation_id="dup",
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="dup",
         lesson="v2",
     )
     await db_session.commit()
     assert a1 == "created"
     assert a2 == "updated"
-    rows = (await db_session.execute(
-        select(TradeRetrospective).where(TradeRetrospective.correlation_id == "dup")
-    )).scalars().all()
+    rows = (
+        (
+            await db_session.execute(
+                select(TradeRetrospective).where(
+                    TradeRetrospective.correlation_id == "dup"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].lesson == "v2"
 
@@ -142,8 +182,11 @@ async def test_upsert_idempotent_by_correlation_id(db_session: AsyncSession):
 async def test_null_correlation_id_appends(db_session: AsyncSession):
     for _ in range(2):
         await svc.save_retrospective(
-            db_session, symbol="005930", instrument_type="equity_kr",
-            account_mode="kis_mock", outcome="filled",
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_mock",
+            outcome="filled",
         )
         await db_session.commit()
     rows = (await db_session.execute(select(TradeRetrospective))).scalars().all()

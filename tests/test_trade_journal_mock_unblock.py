@@ -21,7 +21,9 @@ pytestmark = [
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _cleanup(db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession):
+async def _cleanup(
+    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+):
     await db_session.execute(delete(TradeJournal))
     await db_session.commit()
 
@@ -42,9 +44,7 @@ async def test_save_mock_journal_succeeds():
 
 @pytest.mark.asyncio
 async def test_mock_does_not_require_account():
-    res = await save_trade_journal(
-        symbol="005930", thesis="t", account_type="mock"
-    )
+    res = await save_trade_journal(symbol="005930", thesis="t", account_type="mock")
     assert res["success"] is True, res
 
 
