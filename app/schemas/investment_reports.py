@@ -54,6 +54,8 @@ ItemIntentLiteral = Literal[
     "rebalance_review",
 ]
 TargetKindLiteral = Literal["asset", "index", "fx"]
+# ROB-459 P1 — freshness of one structured evidence row / the item overall.
+ItemEvidenceFreshnessLiteral = Literal["fresh", "soft_stale", "stale", "unknown"]
 ItemStatusLiteral = Literal[
     "proposed", "approved", "denied", "deferred", "activated", "expired"
 ]
@@ -223,6 +225,25 @@ class MaxActionPayload(BaseModel):
         return self
 
 
+class ItemEvidencePayload(BaseModel):
+    """ROB-459 P1 — one structured evidence row backing a report item.
+
+    Lets consensus / flow / forum signals be source-linked instead of buried in
+    free-text ``rationale``. Only ``source`` is required so advisory callers keep
+    full freedom. Persisted with no migration under
+    ``evidence_snapshot['structured_evidence']`` and round-trips via
+    ``InvestmentReportItemResponse.evidence_snapshot``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1)
+    metric: str | None = None
+    value: Decimal | str | None = None
+    as_of: datetime | str | None = None
+    freshness: ItemEvidenceFreshnessLiteral | None = None
+
+
 class IngestReportItem(BaseModel):
     """One proposal item attached to an ingested report.
 
@@ -243,6 +264,10 @@ class IngestReportItem(BaseModel):
     confidence: Decimal | None = None
     rationale: str
     evidence_snapshot: dict[str, Any] = Field(default_factory=dict)
+    # ROB-459 P1 — 타입드 구조 근거(선택). evidence_snapshot(비정형)을 보강하며
+    # 영속화 시 evidence_snapshot["structured_evidence"]로 병합된다(마이그레이션 0).
+    evidence: list[ItemEvidencePayload] = Field(default_factory=list)
+    freshness: ItemEvidenceFreshnessLiteral | None = None
     watch_condition: WatchConditionPayload | None = None
     trigger_checklist: list[Any] = Field(default_factory=list)
     max_action: dict[str, Any] = Field(default_factory=dict)
