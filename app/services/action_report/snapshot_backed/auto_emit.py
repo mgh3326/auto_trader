@@ -47,6 +47,7 @@ from app.services.action_report.snapshot_backed.action_verdict import (
     VERDICT_TO_BUCKET,
     classify_candidate_symbol,
     classify_held_symbol,
+    demote_for_budget,
     demote_for_quality,
 )
 from app.services.market_events.catalyst.contract import CatalystEvent
@@ -68,6 +69,9 @@ _REASON_KO: dict[str, str] = {
     "non_common_stock": "일반주 아님(ETF/우선주 등)",
     "common_stock_unknown": "종목 분류 미확인",
     "quote_missing": "호가 스냅샷 없음",
+    "budget_gap": "신규매수 예산 부족",
+    "fx_required": "달러(USD) 환전 필요",
+    "operator_budget_required": "운영자 예산 설정 필요",
 }
 CATALYST_GUARD_WITHIN_DAYS = 7
 
@@ -265,6 +269,7 @@ def _candidate_item(
     reject_or_wait_reason: str | None,
     candidate_usefulness: str | None,
     news_match_count: int,
+    budget_evidence: dict[str, Any] | None = None,
 ) -> IngestReportItem:
     is_buy = verdict == "buy_review"
     is_gap = verdict == "data_gap"
@@ -298,6 +303,9 @@ def _candidate_item(
     }
     if reject_or_wait_reason is not None:
         extra["reject_or_wait_reason"] = reject_or_wait_reason
+
+    if budget_evidence:
+        extra.update(budget_evidence)
 
     if is_buy:
         rationale = (
@@ -350,6 +358,8 @@ class EvidenceAutoEmitter:
         snapshots: list[Any],
         request_market: str,
         account_scope: str | None,
+        budget_basis: str = "available_usd",
+        operator_budget_override_usd: Any | None = None,
         now: dt.datetime | None = None,
     ) -> list[IngestReportItem]:
         """Emit review-only ``IngestReportItem`` drafts from the bundle's
@@ -415,6 +425,14 @@ class EvidenceAutoEmitter:
                     )
                     for sym in citation.symbols:
                         run_card_evidence_by_symbol.setdefault(sym, evidence)
+
+        buying_power = portfolio_payload.get("buying_power") or {}
+        budget_state = {
+            "basis": budget_basis,
+            "override_usd": _to_float(operator_budget_override_usd),
+            "usd": _to_float(buying_power.get("usd")),
+            "krw": _to_float(buying_power.get("krw")),
+        }
 
         held = _held_kis_symbols(portfolio_payload)
         candidate_actionable = candidate_usefulness == "useful"
@@ -494,6 +512,11 @@ class EvidenceAutoEmitter:
             verdict, reject_or_wait_reason = demote_for_quality(
                 base_verdict, quality_flags
             )
+            # ROB-347 — budget demotion (buy_review only; never fabricates USD).
+            verdict, budget_reasons = demote_for_budget(verdict, budget_state)
+            if budget_reasons and reject_or_wait_reason is None:
+                reject_or_wait_reason = budget_reasons[0]
+
             if verdict == "data_gap" and reject_or_wait_reason is None:
                 reject_or_wait_reason = "quote_missing"
             elif verdict == "watch_only" and reject_or_wait_reason is None:
@@ -514,6 +537,15 @@ class EvidenceAutoEmitter:
                     continue  # 노이즈 방지: 상위 N개 데모션만 카드화(집계는 candidate snapshot)
                 demoted_emitted += 1
 
+            budget_evidence = {
+                "budget_basis": budget_state["basis"],
+                "available_usd": budget_state["usd"],
+                "krw_orderable_reference": budget_state["krw"],
+                "operator_budget_override_usd": budget_state["override_usd"],
+                "budget_reasons": budget_reasons,
+                "budget_fit": verdict == "buy_review" and not budget_reasons,
+            }
+
             candidate_rank = _candidate_rank(cand)
             priority = candidate_rank if candidate_rank is not None else buy_emitted
             cand_item = _stamp(
@@ -530,6 +562,7 @@ class EvidenceAutoEmitter:
                     reject_or_wait_reason=reject_or_wait_reason,
                     candidate_usefulness=candidate_usefulness,
                     news_match_count=news_matches.get(sym, 0),
+                    budget_evidence=budget_evidence,
                 ),
                 verdict,
             )
