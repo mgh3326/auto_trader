@@ -20,6 +20,10 @@ from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
+from app.mcp_server.tooling.market_session import (
+    DATA_STATE_FRESH,
+    kr_market_data_state,
+)
 from app.mcp_server.tooling.shared import (
     is_crypto_market as _is_crypto_market,
 )
@@ -170,6 +174,34 @@ async def get_top_stocks_impl(
             message=str(exc),
         )
 
+    kst_tz = datetime.timezone(datetime.timedelta(hours=9))
+
+    # ROB-464: outside the KRX regular session the gainers/losers rankings come
+    # back with every change rate at 0, alphabetically ordered — not a real
+    # ranking. Suppress that fake-0 garbage and tag the session instead of
+    # presenting it as live data.
+    data_state: str | None = None
+    if market == "kr":
+        data_state = kr_market_data_state()
+        if ranking_type in ("gainers", "losers"):
+            has_real_move = any(r.get("change_rate") for r in rankings)
+            if data_state != DATA_STATE_FRESH and not has_real_move:
+                return {
+                    "rankings": [],
+                    "total_count": 0,
+                    "market": market,
+                    "ranking_type": ranking_type,
+                    "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+                    "source": source,
+                    "data_state": data_state,
+                    "note": (
+                        "KRX is not in regular session; gainers/losers come back "
+                        "with all change rates at 0 (not a real ranking). Returning "
+                        "no rows instead of fake-0 entries — retry during market "
+                        "hours (09:00–15:30 KST)."
+                    ),
+                }
+
     if len(rankings) == 0 and market == "kr" and ranking_type == "losers":
         return analysis_screening._error_payload(
             source="kis",
@@ -184,8 +216,7 @@ async def get_top_stocks_impl(
             ),
         )
 
-    kst_tz = datetime.timezone(datetime.timedelta(hours=9))
-    return {
+    response: dict[str, Any] = {
         "rankings": rankings,
         "total_count": len(rankings),
         "market": market,
@@ -193,6 +224,9 @@ async def get_top_stocks_impl(
         "timestamp": datetime.datetime.now(kst_tz).isoformat(),
         "source": source,
     }
+    if data_state is not None:
+        response["data_state"] = data_state
+    return response
 
 
 async def get_disclosures_impl(
