@@ -133,3 +133,25 @@ def test_attach_lite_quality_does_not_clobber_caller_diagnostics():
         _request(profile="CLAUDE_ADVISOR", snapshot_report_diagnostics=caller)
     )
     assert out.snapshot_report_diagnostics == caller
+
+
+@pytest.mark.asyncio
+async def test_lite_diagnostics_persists_and_round_trips(session) -> None:
+    """글루가 붙인 lite grade가 저장되고 ORM으로 round-trip된다."""
+    from app.services.investment_reports.ingestion import (
+        InvestmentReportIngestionService,
+    )
+    from app.services.investment_reports.repository import (
+        InvestmentReportsRepository,
+    )
+
+    request = h._maybe_attach_lite_quality(_request(profile="CLAUDE_ADVISOR"))
+    repo = InvestmentReportsRepository(session)
+    svc = InvestmentReportIngestionService(session, repository=repo)
+    report = await svc.ingest(request)
+    await session.flush()
+
+    diag = report.snapshot_report_diagnostics
+    assert diag is not None
+    assert diag["report_quality_summary"]["grade"] == "informational_only"
+    assert diag["report_quality_summary"]["basis"] == "item_evidence_lite"
