@@ -337,7 +337,22 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
                 "stck_itgr_cash100_ord_psbl_amt": "100000.0",
             }
 
+        async def inquire_korea_orders(self):
+            return []
+
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    async def fetch_quote(symbol):
+        assert symbol == "005930"
+        return {"price": 5000000.0}
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_premarket_nxt_price_for_kr",
+        AsyncMock(return_value=None),
+    )
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
+
     _patch_runtime_attr(
         monkeypatch,
         "_preview_order",
@@ -378,7 +393,22 @@ async def test_place_order_insufficient_balance_kis_domestic_blocks_real_order(
                 "stck_itgr_cash100_ord_psbl_amt": "100000.0",
             }
 
+        async def inquire_korea_orders(self):
+            return []
+
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    async def fetch_quote(symbol):
+        assert symbol == "005930"
+        return {"price": 5000000.0}
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_premarket_nxt_price_for_kr",
+        AsyncMock(return_value=None),
+    )
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
+
     _patch_runtime_attr(
         monkeypatch,
         "_preview_order",

@@ -223,6 +223,11 @@ class TestScreenStocksKRRegression:
         monkeypatch.setattr(
             screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
+        monkeypatch.setattr(
+            screening_kr,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: False,
+        )
 
         tools = build_tools()
         await tools["screen_stocks"](
@@ -368,6 +373,11 @@ class TestScreenStocksKRRegression:
             screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
+        )
+        monkeypatch.setattr(
+            screening_kr,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: False,
         )
 
         tools = build_tools()
