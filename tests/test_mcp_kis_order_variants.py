@@ -339,6 +339,70 @@ class TestKisLivePlaceOrder:
         assert "kis_live" in result["error"]
         assert "account_mode" in result["error"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"venue": "nxt"},
+            {"venue": "krx"},
+            {"venue": "unified"},
+            {"order_validity": "gtc"},
+            {"order_validity": "예약"},
+            {"reserved_time": "093000"},
+        ],
+    )
+    async def test_nxt_venue_tif_reserved_are_gated_fail_closed(
+        self, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
+    ) -> None:
+        # ROB-463: NXT venue / TIF / 예약주문 require operator confirmation of the
+        # exact KIS wire codes — until then they MUST fail closed (no live order),
+        # even in dry_run.
+        mcp = _build_live_mcp()
+
+        called = {"placed": False}
+
+        async def fake_place_order_impl(**_kwargs: Any) -> dict[str, Any]:
+            called["placed"] = True
+            return {"success": True}
+
+        monkeypatch.setattr(order_execution, "_place_order_impl", fake_place_order_impl)
+
+        result = await mcp.tools["kis_live_place_order"](
+            symbol="005930", side="buy", price=50000.0, dry_run=True, **kwargs
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "venue_tif_pending_operator_confirmation"
+        assert "ROB-463" in result.get("linear", "") + result.get("reason", "")
+        # The order path must NOT have been reached.
+        assert called["placed"] is False
+
+    @pytest.mark.asyncio
+    async def test_default_and_auto_day_venue_proceed_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # venue=None/"auto" + order_validity=None/"day" is the existing behaviour
+        # (auto-routing, day order) and must still reach the order path.
+        mcp = _build_live_mcp()
+
+        captured: dict[str, Any] = {}
+
+        async def fake_place_order_impl(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {"success": True, "dry_run": True}
+
+        monkeypatch.setattr(order_execution, "_place_order_impl", fake_place_order_impl)
+
+        result = await mcp.tools["kis_live_place_order"](
+            symbol="005930",
+            side="buy",
+            price=50000.0,
+            venue="auto",
+            order_validity="day",
+        )
+        assert result["success"] is True
+        assert captured.get("is_mock") is False
+
 
 # ===========================================================================
 # kis_live_cancel_order
