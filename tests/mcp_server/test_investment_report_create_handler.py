@@ -129,3 +129,12 @@ def test_create_tool_description_documents_item_contract():
     # item_kind vs target_kind 혼동 방지 문구가 반드시 노출되어야 한다(ROB-458 핵심).
     assert "target_kind" in desc
     assert "NOT item_kind" in desc
+
+
+def test_create_description_documents_structured_evidence_and_chaining():
+    # ROB-459 — 이제 main에 evidence 필드(P1)와 CLAUDE_ADVISOR 체이닝(P3)이 있으므로
+    # create 도구 description이 둘을 정직하게 광고해야 한다.
+    desc = h.CREATE_DESCRIPTION
+    assert "evidence" in desc
+    assert "source" in desc
+    assert "CLAUDE_ADVISOR" in desc
