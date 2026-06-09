@@ -489,9 +489,7 @@ async def list_live_orders_by_report_item_uuid(
             "status": r.status,
             "account_scope": r.account_scope,
             "market": r.market,
-            "report_item_uuid": str(r.report_item_uuid)
-            if r.report_item_uuid
-            else None,
+            "report_item_uuid": str(r.report_item_uuid) if r.report_item_uuid else None,
         }
         for r in rows
     ]

@@ -596,9 +596,7 @@ async def list_kis_live_orders_by_report_item_uuid(
             "symbol": r.symbol,
             "side": r.side,
             "status": r.status,
-            "report_item_uuid": str(r.report_item_uuid)
-            if r.report_item_uuid
-            else None,
+            "report_item_uuid": str(r.report_item_uuid) if r.report_item_uuid else None,
         }
         for r in rows
     ]

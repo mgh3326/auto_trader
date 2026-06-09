@@ -26,9 +26,7 @@ async def test_execute_and_record_threads_report_item_uuid_to_kis_live(monkeypat
     monkeypatch.setattr(
         kis_live_ledger, "_record_kis_live_order", _fake_record_kis_live
     )
-    monkeypatch.setattr(
-        oe, "_execute_order", _fake_execute_order
-    )
+    monkeypatch.setattr(oe, "_execute_order", _fake_execute_order)
 
     rid = uuid.uuid4()
     await oe._execute_and_record(
