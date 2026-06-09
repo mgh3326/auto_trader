@@ -1,5 +1,3 @@
-import datetime as dt
-
 import pytest
 
 from app.models.trade_journal import TradeJournal
@@ -10,25 +8,36 @@ from app.services.action_report.snapshot_backed.collectors.journal import (
 from app.services.investment_snapshots.collectors import CollectorRequest
 
 
-def _journal(symbol, instrument_type, *, account="kis", account_type="live",
-             status="active"):
+def _journal(
+    symbol, instrument_type, *, account="kis", account_type="live", status="active"
+):
     return TradeJournal(
-        symbol=symbol, instrument_type=instrument_type, side="buy",
-        status=status, account_type=account_type, account=account,
-        entry_price=1.0, quantity=1.0, thesis="t",
+        symbol=symbol,
+        instrument_type=instrument_type,
+        side="buy",
+        status=status,
+        account_type=account_type,
+        account=account,
+        entry_price=1.0,
+        quantity=1.0,
+        thesis="t",
     )
 
 
 def _req(market):
-    return CollectorRequest(market=market, account_scope="kis_live", symbols=None, policy_snapshot={})
+    return CollectorRequest(
+        market=market, account_scope="kis_live", symbols=None, policy_snapshot={}
+    )
 
 
 @pytest.mark.asyncio
 async def test_us_scope_excludes_kr_live_journals(db_session):
-    db_session.add_all([
-        _journal("AAPL", InstrumentType.equity_us),
-        _journal("005930", InstrumentType.equity_kr),
-    ])
+    db_session.add_all(
+        [
+            _journal("AAPL", InstrumentType.equity_us),
+            _journal("005930", InstrumentType.equity_kr),
+        ]
+    )
     await db_session.flush()
     collector = JournalSnapshotCollector(db_session)
     results = await collector.collect(_req("us"))
@@ -41,10 +50,12 @@ async def test_us_scope_excludes_kr_live_journals(db_session):
 
 @pytest.mark.asyncio
 async def test_kr_scope_excludes_us_live_journals(db_session):
-    db_session.add_all([
-        _journal("AAPL", InstrumentType.equity_us),
-        _journal("005930", InstrumentType.equity_kr),
-    ])
+    db_session.add_all(
+        [
+            _journal("AAPL", InstrumentType.equity_us),
+            _journal("005930", InstrumentType.equity_kr),
+        ]
+    )
     await db_session.flush()
     collector = JournalSnapshotCollector(db_session)
     results = await collector.collect(_req("kr"))
@@ -83,4 +94,3 @@ async def test_query_failure_reports_unavailable(monkeypatch, db_session):
     payload = results[0].payload_json
     assert payload["collector_status"] == "unavailable"
     assert results[0].freshness_status == "unavailable"
-

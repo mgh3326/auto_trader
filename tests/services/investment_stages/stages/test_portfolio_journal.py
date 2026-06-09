@@ -347,8 +347,16 @@ async def test_journal_unavailable_marks_data_gap():
         bundle_uuid=uuid.uuid4(),
         snapshots_by_kind={
             "portfolio": [_snap("portfolio", {"buying_power_krw": 1, "nav_krw": 10})],
-            "journal": [_snap("journal", {"active": [], "recent_retrospective": [],
-                                          "collector_status": "unavailable"})],
+            "journal": [
+                _snap(
+                    "journal",
+                    {
+                        "active": [],
+                        "recent_retrospective": [],
+                        "collector_status": "unavailable",
+                    },
+                )
+            ],
         },
         bundle_metadata={},
     )
@@ -362,13 +370,19 @@ async def test_journal_empty_ok_is_not_data_gap():
         bundle_uuid=uuid.uuid4(),
         snapshots_by_kind={
             "portfolio": [_snap("portfolio", {"buying_power_krw": 1, "nav_krw": 10})],
-            "journal": [_snap("journal", {"active": [], "recent_retrospective": [],
-                                          "collector_status": "ok"})],
+            "journal": [
+                _snap(
+                    "journal",
+                    {
+                        "active": [],
+                        "recent_retrospective": [],
+                        "collector_status": "ok",
+                    },
+                )
+            ],
         },
         bundle_metadata={},
     )
     payload = await PortfolioJournalStage().run(ctx)
     assert "journal" not in (payload.missing_data or [])
     assert "open journal: none" in (payload.summary or "")
-
-

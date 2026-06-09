@@ -13,8 +13,6 @@ from typing import Any
 from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger(__name__)
-
 from app.models.trade_journal import TradeJournal
 from app.models.trading import InstrumentType
 from app.services.action_report.snapshot_backed.collectors._base import (
@@ -25,6 +23,8 @@ from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
 )
+
+logger = logging.getLogger(__name__)
 
 _ACTIVE_STATUSES: tuple[str, ...] = ("draft", "active")
 _RETROSPECTIVE_STATUSES: tuple[str, ...] = ("closed", "stopped", "expired")
@@ -87,8 +87,10 @@ class JournalSnapshotCollector:
                     market=request.market,
                     account_scope=request.account_scope,
                     payload={
-                        "active": [], "recent_retrospective": [],
-                        "active_count": 0, "retrospective_count": 0,
+                        "active": [],
+                        "recent_retrospective": [],
+                        "active_count": 0,
+                        "retrospective_count": 0,
                         "recent_limit": self._recent_limit,
                         "collector_status": "unavailable",
                         "error": "journal_query_failed",
