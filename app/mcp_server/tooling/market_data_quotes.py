@@ -8,6 +8,7 @@ ADX, Stochastic RSI, OBV, Fibonacci).
 from __future__ import annotations
 
 import datetime
+import logging
 from statistics import median
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
@@ -18,6 +19,7 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 import app.services.market_data as market_data_service
 from app.core.config import settings
+from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _compute_crypto_realtime_rsi_from_frame,
@@ -60,10 +62,37 @@ from app.services.market_data.constants import (
 )
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_intraday_candles_read_service import read_us_intraday_candles
-from app.services.us_symbol_universe_service import search_us_symbols
+from app.services.us_symbol_universe_service import (
+    USSymbolInactiveError,
+    USSymbolNotRegisteredError,
+    USSymbolUniverseEmptyError,
+    get_us_exchange_by_symbol,
+    search_us_symbols,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+
+logger = logging.getLogger(__name__)
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 _OHLCV_INDICATOR_ROW_KEYS = (
@@ -487,62 +516,96 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
     }
 
 
+async def _fetch_us_quote_from_kis(normalized_symbol: str) -> dict[str, Any] | None:
+    """KIS 해외 현재가(HHDFS00000300) primary arm.
+
+    dict → 성공. None → Yahoo fallback 신호(KIS가 응답했으나 무가격, 또는
+    거래소 미해석). KIS HTTP/transport 에러는 호출자가 infra로 처리하도록 전파.
+    """
+    try:
+        exchange_code = await get_us_exchange_by_symbol(to_db_symbol(normalized_symbol))
+    except (
+        USSymbolNotRegisteredError,
+        USSymbolInactiveError,
+        USSymbolUniverseEmptyError,
+    ):
+        return None
+
+    df = await KISClient().inquire_overseas_price(normalized_symbol, exchange_code)
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    price = _to_float_or_none(row.get("close"))
+    if price is None or price <= 0:
+        return None
+    return {
+        "symbol": normalized_symbol,
+        "instrument_type": "equity_us",
+        "price": price,
+        "previous_close": _to_float_or_none(row.get("previous_close")),
+        "open": None,
+        "high": None,
+        "low": None,
+        "volume": _to_int_or_none(row.get("volume")),
+        "source": "kis_overseas",
+        "delayed": True,
+    }
+
+
 async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
-    """Fetch US equity quote from Yahoo Finance."""
+    """Fetch US equity quote.
+
+    ROB-471: KIS 해외 현재가 primary(settings.us_quote_kis_primary), Yahoo
+    fast_info fallback. 정직 에러 분리:
+      - 둘 다 정상응답·무가격 → symbol_not_found (ValueError)
+      - 한쪽이라도 infra 실패 + 무가격 → quote_unavailable (RuntimeError)
+    """
     normalized_symbol = str(symbol or "").strip().upper()
     not_found_message = f"Symbol '{normalized_symbol}' not found"
+    unavailable_message = f"US quote temporarily unavailable for '{normalized_symbol}'"
 
+    kis_infra_error = False
+    if settings.us_quote_kis_primary:
+        try:
+            kis_quote = await _fetch_us_quote_from_kis(normalized_symbol)
+        except Exception as exc:  # noqa: BLE001 — KIS infra 실패 시 Yahoo로 degrade
+            kis_infra_error = True
+            logger.warning(
+                "KIS overseas quote failed for '%s'; falling back to Yahoo: %s",
+                normalized_symbol,
+                exc,
+            )
+        else:
+            if kis_quote is not None:
+                return kis_quote
+
+    # FALLBACK: Yahoo fast_info
     try:
         fast_info = await yahoo_service.fetch_fast_info(normalized_symbol)
     except Exception as exc:
         raise RuntimeError(
-            f"Yahoo quote fetch failed for '{normalized_symbol}': {exc}"
+            f"{unavailable_message} (yahoo fallback failed): {exc}"
         ) from exc
 
-    close_raw = fast_info.get("close")
-    if close_raw is None:
-        raise ValueError(not_found_message) from None
-
-    try:
-        price = float(close_raw)
-    except (TypeError, ValueError):
-        raise ValueError(not_found_message) from None
-
-    if price <= 0:
+    price = _to_float_or_none(fast_info.get("close"))
+    if price is None or price <= 0:
+        if kis_infra_error:
+            raise RuntimeError(
+                f"{unavailable_message} (kis errored, yahoo returned no price)"
+            )
         raise ValueError(not_found_message)
-
-    previous_close_raw = fast_info.get("previous_close")
-    open_raw = fast_info.get("open")
-    high_raw = fast_info.get("high")
-    low_raw = fast_info.get("low")
-    volume_raw = fast_info.get("volume")
-
-    def _to_float_or_none(value: Any) -> float | None:
-        try:
-            if value is None:
-                return None
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _to_int_or_none(value: Any) -> int | None:
-        try:
-            if value is None:
-                return None
-            return int(float(value))
-        except (TypeError, ValueError):
-            return None
 
     return {
         "symbol": normalized_symbol,
         "instrument_type": "equity_us",
         "price": price,
-        "previous_close": _to_float_or_none(previous_close_raw),
-        "open": _to_float_or_none(open_raw),
-        "high": _to_float_or_none(high_raw),
-        "low": _to_float_or_none(low_raw),
-        "volume": _to_int_or_none(volume_raw),
+        "previous_close": _to_float_or_none(fast_info.get("previous_close")),
+        "open": _to_float_or_none(fast_info.get("open")),
+        "high": _to_float_or_none(fast_info.get("high")),
+        "low": _to_float_or_none(fast_info.get("low")),
+        "volume": _to_int_or_none(fast_info.get("volume")),
         "source": "yahoo",
+        "delayed": True,
     }
 
 
