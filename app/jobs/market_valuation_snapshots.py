@@ -72,6 +72,8 @@ class MarketValuationSnapshotBuildResult:
     idempotency: dict[str, int] = field(default_factory=dict)
     samples: tuple[MarketValuationSnapshotSample, ...] = ()
     warnings: tuple[str, ...] = ()
+    finnhub_backfill: dict[str, int] = field(default_factory=dict)
+    field_nonnull_coverage: dict[str, int] = field(default_factory=dict)
 
 
 def _validate_market(market: str) -> str:
@@ -214,6 +216,37 @@ def _sample(payload: MarketValuationSnapshotUpsert) -> MarketValuationSnapshotSa
     )
 
 
+_COVERAGE_FIELDS: tuple[str, ...] = (
+    "per",
+    "pbr",
+    "roe",
+    "dividend_yield",
+    "market_cap",
+    "high_52w",
+    "low_52w",
+    "high_52w_date",
+)
+
+
+def _aggregate_report(
+    payloads: list[MarketValuationSnapshotUpsert],
+) -> tuple[dict[str, int], dict[str, int]]:
+    """ROB-434: per-field Finnhub-backfill counts + per-field non-null coverage,
+    derived from each payload's raw_payload['_field_provenance'] and column values.
+    Operator smoke (acceptance #5): provider attribution + coverage, works in dry-run."""
+    backfill: Counter[str] = Counter()
+    coverage: Counter[str] = Counter(dict.fromkeys(_COVERAGE_FIELDS, 0))
+    for payload in payloads:
+        provenance = (payload.raw_payload or {}).get("_field_provenance", {})
+        for field_name, src in provenance.items():
+            if src == "finnhub":
+                backfill[field_name] += 1
+        for field_name in _COVERAGE_FIELDS:
+            if getattr(payload, field_name) is not None:
+                coverage[field_name] += 1
+    return dict(backfill), dict(coverage)
+
+
 async def run_market_valuation_snapshot_build(
     request: MarketValuationSnapshotBuildRequest,
 ) -> MarketValuationSnapshotBuildResult:
@@ -254,6 +287,8 @@ async def run_market_valuation_snapshot_build(
     warnings: list[str] = []
     total_built = 0
     batches = 0
+    finnhub_backfill: Counter[str] = Counter()
+    coverage: Counter[str] = Counter(dict.fromkeys(_COVERAGE_FIELDS, 0))
     for start in range(0, len(symbols), effective_batch_size):
         batches += 1
         result = await build_valuation_snapshots_for_market(
@@ -269,6 +304,9 @@ async def run_market_valuation_snapshot_build(
         distribution.update(p.snapshot_date.isoformat() for p in payloads)
         idempotency.update(await _classify_idempotency(payloads))
         samples.extend(_sample(p) for p in payloads[: max(0, 10 - len(samples))])
+        batch_backfill, batch_coverage = _aggregate_report(payloads)
+        finnhub_backfill.update(batch_backfill)
+        coverage.update(batch_coverage)
         if request.commit and payloads:
             await _commit_payloads(payloads)
     finished_at = dt.datetime.now(dt.UTC)
@@ -284,6 +322,8 @@ async def run_market_valuation_snapshot_build(
         idempotency=dict(idempotency),
         samples=tuple(samples),
         warnings=tuple(warnings),
+        finnhub_backfill=dict(finnhub_backfill),
+        field_nonnull_coverage=dict(coverage),
     )
 
 

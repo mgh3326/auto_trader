@@ -322,6 +322,12 @@ class Settings(BaseSettings):
     # Finnhub API (optional - for news and fundamentals)
     finnhub_api_key: str | None = None
 
+    # ROB-434 — US market_valuation Finnhub fallback (field-fill). When ON and
+    # FINNHUB_API_KEY is set, default_valuation_fetcher backfills valuation fields
+    # yahoo .info left null (operator "ROE rows 0") from company_basic_financials.
+    # Default False → inert until an operator enables it. No key → also inert.
+    market_valuation_finnhub_fallback_enabled: bool = False
+
     # WiseFn KR earnings calendar (ROB-171)
     # Default False until the upstream contract is confirmed; CI never calls live.
     wisefn_earnings_enabled: bool = False

@@ -101,6 +101,16 @@ def _print_result(result) -> None:
         print("snapshot distribution:")
         for snapshot_key, count in distribution.items():
             print(f"  {snapshot_key}: {count}")
+    finnhub_backfill = getattr(result, "finnhub_backfill", {})
+    if finnhub_backfill:
+        print("finnhub backfill (fields filled where yahoo was null):")
+        for field_name, count in sorted(finnhub_backfill.items()):
+            print(f"  {field_name}: {count}")
+    coverage = getattr(result, "field_nonnull_coverage", {})
+    if coverage:
+        print("non-null field coverage:")
+        for field_name, count in sorted(coverage.items()):
+            print(f"  {field_name}: {count}/{result.snapshots_built}")
     if result.samples:
         print("samples:")
         for sample in result.samples[:10]:
