@@ -180,6 +180,11 @@ class Settings(BaseSettings):
     kis_mock_access_token: str | None = None
     kis_mock_scalping_enabled: bool = False
 
+    # ROB-471: US get_quote 가격 소스 선택. True → KIS 해외 현재가(HHDFS00000300)
+    # primary + Yahoo fast_info fallback. False → Yahoo primary(레거시).
+    # 라이브 파싱 이상 시 operator가 US_QUOTE_KIS_PRIMARY=false 로 즉시 롤백.
+    us_quote_kis_primary: bool = True
+
     # Kiwoom Securities mock account. Disabled by default; mock-only foundation
     # added in ROB-97. Live URL is recorded so the runtime can defensively
     # reject it — no code path may target the live host in this PR.

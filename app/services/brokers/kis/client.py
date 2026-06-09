@@ -252,6 +252,11 @@ class KISClient(BaseKISClient):
             symbol, exchange_code, n, period
         )
 
+    async def inquire_overseas_price(
+        self, symbol: str, exchange_code: str = "NASD"
+    ) -> DataFrame:
+        return await self._market_data.inquire_overseas_price(symbol, exchange_code)
+
     async def inquire_overseas_daily_price_unclamped(
         self,
         symbol: str,

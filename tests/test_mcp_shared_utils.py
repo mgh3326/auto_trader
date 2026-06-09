@@ -17,6 +17,7 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.mcp_server.tooling import shared
 from app.services import naver_finance
+from app.services.us_symbol_universe_service import USSymbolNotRegisteredError
 from tests._mcp_tooling_support import _patch_runtime_attr, build_tools
 
 # ---------------------------------------------------------------------------
@@ -379,6 +380,13 @@ class TestSymbolNotFound:
     @pytest.mark.asyncio
     async def test_get_quote_us_equity_not_found_raises(self, monkeypatch):
         tools = build_tools()
+        # ROB-471: KIS-primary 디폴트 하에서 KIS 경로를 clean no-route로 고정해
+        # 실 DB 거래소 해석에 의존하지 않도록 한다(Yahoo fallback → 무가격 → not found).
+        _patch_runtime_attr(
+            monkeypatch,
+            "get_us_exchange_by_symbol",
+            AsyncMock(side_effect=USSymbolNotRegisteredError("not registered")),
+        )
         mock_fetch_fast_info = AsyncMock(
             return_value={
                 "symbol": "INVALID",
