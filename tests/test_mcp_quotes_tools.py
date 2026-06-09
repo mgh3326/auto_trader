@@ -364,18 +364,21 @@ async def test_fetch_quote_equity_kr_passes_market_j(monkeypatch, symbol, label)
 
 @pytest.mark.asyncio
 async def test_get_quote_us_equity(monkeypatch):
-    """KIS-primary happy path: source=kis_overseas, Yahoo 미호출."""
+    """KIS-primary happy path: source=kis_overseas, Yahoo 미호출, resolved exchange 전달."""
     tools = build_tools()
 
     _patch_runtime_attr(
-        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NYSE")
     )
     price_df = pd.DataFrame(
         [{"close": 205.0, "previous_close": 201.5, "volume": 123456789}]
     )
+    captured: dict[str, object] = {}
 
     class DummyKISClient:
         async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            captured["symbol"] = symbol
+            captured["exchange_code"] = exchange_code
             return price_df
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
@@ -395,6 +398,71 @@ async def test_get_quote_us_equity(monkeypatch):
     assert result["open"] is None
     assert result["high"] is None
     assert result["low"] is None
+    assert result["delayed"] is True
+    # ROB-471: the DB-resolved exchange + symbol are threaded into the KIS call
+    # (regression guard — a dropped exchange_code arg would default to NASD).
+    assert captured["exchange_code"] == "NYSE"
+    assert captured["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc_name", ["USSymbolInactiveError", "USSymbolUniverseEmptyError"]
+)
+async def test_get_quote_us_lookup_exc_falls_back_then_not_found(monkeypatch, exc_name):
+    """inactive/empty 거래소 해석 예외도 clean fallback → symbol_not_found(ValueError)."""
+    import app.services.us_symbol_universe_service as uss
+
+    exc = getattr(uss, exc_name)
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_us_exchange_by_symbol",
+        AsyncMock(side_effect=exc("no route")),
+    )
+    monkeypatch.setattr(
+        yahoo_service, "fetch_fast_info", AsyncMock(return_value={"close": None})
+    )
+
+    # clean no-route (not infra) → symbol_not_found, NOT quote_unavailable
+    with pytest.raises(ValueError, match="not found"):
+        await tools["get_quote"]("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_kis_raises_then_yahoo_succeeds(monkeypatch):
+    """KIS infra error + Yahoo 정상가격 → fallback 성공(source=yahoo, no raise)."""
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+    )
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            raise RuntimeError("kis http 500")
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(
+            return_value={
+                "close": 205.0,
+                "previous_close": 201.5,
+                "open": 202.0,
+                "high": 206.2,
+                "low": 200.8,
+                "volume": 123456789,
+            }
+        ),
+    )
+
+    result = await tools["get_quote"]("AAPL")
+
+    assert result["source"] == "yahoo"
+    assert result["price"] == pytest.approx(205.0)
     assert result["delayed"] is True
 
 

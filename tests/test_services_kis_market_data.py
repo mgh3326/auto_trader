@@ -1734,3 +1734,34 @@ class TestKISOverseasPrice:
         result = await client.inquire_overseas_price(symbol="AAPL")
         assert result.empty
         assert list(result.columns) == ["close", "previous_close", "volume"]
+
+    @pytest.mark.parametrize("last_val", ["0", "0.0", "-1.5", ""])
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
+    async def test_inquire_overseas_price_empty_when_last_non_positive(
+        self, mock_settings, mock_client_class, last_val
+    ):
+        """ROB-471: last가 0/음수/빈문자열이면 위조 금지 → empty frame (zero-price guard)."""
+        from app.services.brokers.kis.client import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output": {"last": last_val, "base": "100.0", "tvol": "500"},
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._token_manager = AsyncMock()
+
+        result = await client.inquire_overseas_price(symbol="AAPL")
+        assert result.empty
+        assert list(result.columns) == ["close", "previous_close", "volume"]
