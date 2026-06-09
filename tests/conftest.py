@@ -1020,6 +1020,33 @@ async def db_session():
                         "CHECK (account_type IN ('live','paper','mock'))"
                     )
                 )
+                # ROB-473 — report_item_uuid column on live order ledgers
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.kis_live_order_ledger "
+                        "ADD COLUMN IF NOT EXISTS report_item_uuid UUID"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.live_order_ledger "
+                        "ADD COLUMN IF NOT EXISTS report_item_uuid UUID"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_kis_live_ledger_report_item_uuid "
+                        "ON review.kis_live_order_ledger (report_item_uuid)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_live_ledger_report_item_uuid "
+                        "ON review.live_order_ledger (report_item_uuid)"
+                    )
+                )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so
