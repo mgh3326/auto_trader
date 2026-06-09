@@ -55,28 +55,67 @@ def evaluate_heartbeat(
 
 
 def _job_is_loaded(label: str, *, uid: int) -> bool:
-    result = subprocess.run(
-        ["launchctl", "print", f"gui/{uid}/{label}"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        # Fail safe: treat a hung launchctl as not-loaded so we don't kickstart.
+        logger.error("mcp.watchdog.launchctl_print_timeout label=%s", label)
+        return False
     return result.returncode == 0
 
 
 def _kickstart(label: str, *, uid: int) -> None:
-    subprocess.run(
-        ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("mcp.watchdog.kickstart_timeout label=%s", label)
+        return
+    if result.returncode != 0:
+        logger.error(
+            "mcp.watchdog.kickstart_failed label=%s rc=%s stderr=%s",
+            label,
+            result.returncode,
+            result.stderr.strip(),
+        )
 
 
 def check_once(
-    heartbeat_dir: Path, *, stale_threshold_s: float, dry_run: bool, uid: int
+    heartbeat_dir: Path,
+    *,
+    stale_threshold_s: float,
+    dry_run: bool,
+    uid: int,
+    now: float | None = None,
+    last_kickstart_at: dict[str, float] | None = None,
+    grace_s: float = 60.0,
+    is_loaded=_job_is_loaded,
+    kickstart=_kickstart,
 ) -> dict[str, str]:
-    """One pass over both colors. Returns {color: status}. Kickstarts a wedged color
-    whose launchd job is loaded, unless dry_run."""
-    now = time.time()
+    """One pass over both colors. Returns {color: status}.
+
+    Kickstarts a wedged color whose launchd job is loaded, unless ``dry_run`` — but
+    SUPPRESSES a repeat kickstart of the same color within ``grace_s``. This closes the
+    flap loop: after a kickstart the restarting process keeps the previous (stale)
+    heartbeat on disk for ~15s while it boots (init_sentry + 128 tools), during which a
+    naive watchdog would re-kickstart a healthy-but-starting process forever. The grace
+    window must comfortably exceed cold-start time. ``last_kickstart_at`` carries the
+    per-color decision time across poll iterations. ``is_loaded``/``kickstart`` are
+    injectable for tests.
+    """
+    if now is None:
+        now = time.time()
+    if last_kickstart_at is None:
+        last_kickstart_at = {}
     statuses: dict[str, str] = {}
     for color in COLORS:
         label = LABEL_FMT.format(color=color)
@@ -85,14 +124,23 @@ def check_once(
         statuses[color] = status
         if status != "wedged":
             continue
-        if not _job_is_loaded(label, uid=uid):
+        if not is_loaded(label, uid=uid):
             logger.info("mcp.watchdog.skip color=%s wedged-but-not-loaded", color)
             continue
+        last = last_kickstart_at.get(color)
+        if last is not None and (now - last) < grace_s:
+            logger.info(
+                "mcp.watchdog.skip color=%s in-grace-period since_s=%.0f",
+                color,
+                now - last,
+            )
+            continue
+        last_kickstart_at[color] = now
         if dry_run:
             logger.warning("mcp.watchdog.would_kickstart color=%s (dry-run)", color)
         else:
             logger.warning("mcp.watchdog.kickstart color=%s (stale heartbeat)", color)
-            _kickstart(label, uid=uid)
+            kickstart(label, uid=uid)
     return statuses
 
 
@@ -100,7 +148,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="mcp_watchdog")
     p.add_argument("--heartbeat-dir", type=Path, default=None)
     p.add_argument("--interval-s", type=float, default=15.0)
-    p.add_argument("--stale-threshold-s", type=float, default=30.0)
+    # 45s comfortably exceeds a clean restart-to-first-heartbeat (~14s import + ~10s
+    # launchd throttle), so a normally-restarting process is not mistaken for wedged.
+    p.add_argument("--stale-threshold-s", type=float, default=45.0)
+    p.add_argument(
+        "--grace-s",
+        type=float,
+        default=90.0,
+        help="After a kickstart, suppress re-kickstart of the same color for this "
+        "many seconds so a slow restart cannot flap. Must exceed cold-start time.",
+    )
     p.add_argument("--once", action="store_true", help="One pass then exit.")
     dry = os.getenv("MCP_WATCHDOG_DRY_RUN", "true").strip().lower() not in (
         "0",
@@ -121,18 +178,22 @@ def main(argv: list[str] | None = None) -> int:
     hb_dir = args.heartbeat_dir or Path(base) / "state" / "heartbeat"
     uid = os.getuid()
     logger.info(
-        "mcp.watchdog.start dir=%s interval_s=%s stale_s=%s dry_run=%s",
+        "mcp.watchdog.start dir=%s interval_s=%s stale_s=%s grace_s=%s dry_run=%s",
         hb_dir,
         args.interval_s,
         args.stale_threshold_s,
+        args.grace_s,
         args.dry_run,
     )
+    last_kickstart_at: dict[str, float] = {}
     while True:
         check_once(
             hb_dir,
             stale_threshold_s=args.stale_threshold_s,
             dry_run=args.dry_run,
             uid=uid,
+            last_kickstart_at=last_kickstart_at,
+            grace_s=args.grace_s,
         )
         if args.once:
             return 0
