@@ -325,7 +325,6 @@ class TestFilledOrdersService:
         assert [order["order_id"] for order in orders] == ["dup-fill"]
 
 
-
 @pytest.mark.unit
 class TestTradeReviewService:
     def _make_review_item(self, **overrides):

@@ -34,7 +34,9 @@ def parse_cutover(value: str) -> datetime:
 
 async def _run(*, brokers: list[str], cutover: datetime, dry_run: bool) -> int:
     if not dry_run and not settings.EXECUTION_LEDGER_COMMIT_ENABLED:
-        raise RuntimeError("EXECUTION_LEDGER_COMMIT_ENABLED is false; commit mode is disabled")
+        raise RuntimeError(
+            "EXECUTION_LEDGER_COMMIT_ENABLED is false; commit mode is disabled"
+        )
     async with AsyncSessionLocal() as db:
         repo = ExecutionLedgerRepository(db)
         candidates = await load_opening_lot_candidates(brokers)

@@ -114,7 +114,9 @@ class TestDomesticOrdersTransientRetry:
             ]
         )
 
-        with pytest.raises(RuntimeError, match="domestic daily order history truncated"):
+        with pytest.raises(
+            RuntimeError, match="domestic daily order history truncated"
+        ):
             await instance.inquire_daily_order_domestic(
                 start_date="20260201",
                 end_date="20260208",

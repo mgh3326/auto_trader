@@ -14,7 +14,6 @@ from app.schemas.execution_ledger import (
     InstrumentTypeValue,
 )
 
-
 MatchKey = tuple[str, str, str, str, str, str]
 
 
@@ -64,8 +63,7 @@ def _match_key(candidate: OpeningLotCandidate) -> MatchKey:
 
 def _seed_order_id(candidate: OpeningLotCandidate, cutover: datetime) -> str:
     return (
-        f"SEED-{cutover:%Y%m%d}-"
-        f"{candidate.broker}-{candidate.venue}-{candidate.symbol}"
+        f"SEED-{cutover:%Y%m%d}-{candidate.broker}-{candidate.venue}-{candidate.symbol}"
     )
 
 
@@ -81,24 +79,38 @@ def build_opening_lot_plan(
         ledger_net_qty = ledger_net_by_key.get(key, Decimal("0"))
         if candidate.current_qty <= 0:
             plan.skipped.append(
-                OpeningLotSkip(key, "non_positive_current_qty", candidate.current_qty, ledger_net_qty)
+                OpeningLotSkip(
+                    key,
+                    "non_positive_current_qty",
+                    candidate.current_qty,
+                    ledger_net_qty,
+                )
             )
             continue
         if candidate.avg_price <= 0:
             plan.skipped.append(
-                OpeningLotSkip(key, "non_positive_avg_price", candidate.current_qty, ledger_net_qty)
+                OpeningLotSkip(
+                    key, "non_positive_avg_price", candidate.current_qty, ledger_net_qty
+                )
             )
             continue
         if candidate.broker == "upbit" and candidate.avg_price_modified:
             plan.skipped.append(
-                OpeningLotSkip(key, "upbit_avg_price_modified", candidate.current_qty, ledger_net_qty)
+                OpeningLotSkip(
+                    key,
+                    "upbit_avg_price_modified",
+                    candidate.current_qty,
+                    ledger_net_qty,
+                )
             )
             continue
 
         opening_qty = candidate.current_qty - ledger_net_qty
         if opening_qty <= 0:
             plan.skipped.append(
-                OpeningLotSkip(key, "covered_by_ledger_net", candidate.current_qty, ledger_net_qty)
+                OpeningLotSkip(
+                    key, "covered_by_ledger_net", candidate.current_qty, ledger_net_qty
+                )
             )
             continue
 
@@ -142,6 +154,7 @@ async def load_opening_lot_candidates(
 
 async def load_kis_opening_lot_candidates() -> list[OpeningLotCandidate]:
     from app.services.brokers.kis.client import KISClient
+
     kis = KISClient()
     candidates: list[OpeningLotCandidate] = []
     for row in await kis.fetch_my_stocks():
@@ -187,7 +200,11 @@ async def load_kis_opening_lot_candidates() -> list[OpeningLotCandidate]:
 
 
 async def load_upbit_opening_lot_candidates() -> list[OpeningLotCandidate]:
-    from app.services.brokers.upbit.client import fetch_my_coins, parse_upbit_account_row
+    from app.services.brokers.upbit.client import (
+        fetch_my_coins,
+        parse_upbit_account_row,
+    )
+
     rows = await fetch_my_coins()
     candidates: list[OpeningLotCandidate] = []
     for row in rows:

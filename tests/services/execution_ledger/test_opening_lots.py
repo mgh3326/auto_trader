@@ -31,7 +31,9 @@ def test_opening_lot_quantity_subtracts_ledger_net_since_cutover() -> None:
     cutover = datetime(2026, 5, 10, tzinfo=UTC)
     plan = build_opening_lot_plan(
         candidates=[_candidate()],
-        ledger_net_by_key={("kis", "live", "krx", "equity_kr", "005930", "KRW"): Decimal("3")},
+        ledger_net_by_key={
+            ("kis", "live", "krx", "equity_kr", "005930", "KRW"): Decimal("3")
+        },
         cutover=cutover,
     )
 
@@ -48,7 +50,9 @@ def test_opening_lot_quantity_subtracts_ledger_net_since_cutover() -> None:
 def test_opening_lot_skips_when_ledger_net_covers_current_position() -> None:
     plan = build_opening_lot_plan(
         candidates=[_candidate(current_qty=Decimal("10"))],
-        ledger_net_by_key={("kis", "live", "krx", "equity_kr", "005930", "KRW"): Decimal("10")},
+        ledger_net_by_key={
+            ("kis", "live", "krx", "equity_kr", "005930", "KRW"): Decimal("10")
+        },
         cutover=datetime(2026, 5, 10, tzinfo=UTC),
     )
 

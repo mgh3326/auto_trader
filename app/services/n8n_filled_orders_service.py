@@ -29,11 +29,9 @@ def _resolve_kst_window(
     start_at: datetime | None,
     end_at: datetime | None,
 ) -> tuple[datetime, datetime]:
-    resolved_end = (end_at.astimezone(KST) if end_at else now_kst())
+    resolved_end = end_at.astimezone(KST) if end_at else now_kst()
     resolved_start = (
-        start_at.astimezone(KST)
-        if start_at
-        else resolved_end - timedelta(days=days)
+        start_at.astimezone(KST) if start_at else resolved_end - timedelta(days=days)
     )
     if resolved_start >= resolved_end:
         raise ValueError("start_at must be before end_at")
@@ -113,7 +111,9 @@ async def _fetch_upbit_filled(
 ) -> tuple[list[dict], list[dict]]:  # NOSONAR
     """Paginate through Upbit closed orders and expand each into per-trade fills."""
     try:
-        start_kst, end_kst = _resolve_kst_window(days=days, start_at=start_at, end_at=end_at)
+        start_kst, end_kst = _resolve_kst_window(
+            days=days, start_at=start_at, end_at=end_at
+        )
         all_fills: list[dict[str, Any]] = []
         seen_order_uuids: set[str] = set()
 
@@ -168,7 +168,9 @@ async def _fetch_kis_domestic_filled(
 ) -> tuple[list[dict], list[dict]]:
     try:
         kis = KISClient()
-        start_kst, end_kst = _resolve_kst_window(days=days, start_at=start_at, end_at=end_at)
+        start_kst, end_kst = _resolve_kst_window(
+            days=days, start_at=start_at, end_at=end_at
+        )
         raw_orders = await kis.inquire_daily_order_domestic(
             start_date=start_kst.strftime("%Y%m%d"),
             end_date=end_kst.strftime("%Y%m%d"),
@@ -195,7 +197,9 @@ async def _fetch_kis_overseas_filled(
 ) -> tuple[list[dict], list[dict]]:
     try:
         kis = KISClient()
-        start_kst, end_kst = _resolve_kst_window(days=days, start_at=start_at, end_at=end_at)
+        start_kst, end_kst = _resolve_kst_window(
+            days=days, start_at=start_at, end_at=end_at
+        )
 
         all_orders: list[dict] = []
         seen_fill_keys: set[tuple[str, int]] = set()
@@ -302,11 +306,23 @@ async def fetch_filled_orders(
 
     tasks = []
     if "crypto" in market_set:
-        tasks.append(_fetch_upbit_filled(days, start_at=start_at, end_at=end_at, max_pages=max_pages))
+        tasks.append(
+            _fetch_upbit_filled(
+                days, start_at=start_at, end_at=end_at, max_pages=max_pages
+            )
+        )
     if "kr" in market_set:
-        tasks.append(_fetch_kis_domestic_filled(days, start_at=start_at, end_at=end_at, max_pages=max_pages))
+        tasks.append(
+            _fetch_kis_domestic_filled(
+                days, start_at=start_at, end_at=end_at, max_pages=max_pages
+            )
+        )
     if "us" in market_set:
-        tasks.append(_fetch_kis_overseas_filled(days, start_at=start_at, end_at=end_at, max_pages=max_pages))
+        tasks.append(
+            _fetch_kis_overseas_filled(
+                days, start_at=start_at, end_at=end_at, max_pages=max_pages
+            )
+        )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for result in results:

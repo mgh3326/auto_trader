@@ -200,4 +200,3 @@ def test_parse_upbit_account_row_preserves_modified_average_flag():
     assert parsed["total_quantity"] == 2.0
     assert parsed["avg_buy_price"] == 100000.0
     assert parsed["avg_buy_price_modified"] is True
-

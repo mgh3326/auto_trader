@@ -202,7 +202,9 @@ class TestOverseasOrdersTransientRetry:
             ]
         )
 
-        with pytest.raises(RuntimeError, match="overseas daily order history truncated"):
+        with pytest.raises(
+            RuntimeError, match="overseas daily order history truncated"
+        ):
             await instance.inquire_daily_order_overseas(
                 start_date="20260201",
                 end_date="20260208",

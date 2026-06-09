@@ -6,8 +6,8 @@ Market data functions remain in client.py.
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
+from datetime import datetime
 from typing import Any
 
 import app.services.brokers.upbit.client as _client

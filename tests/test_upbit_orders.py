@@ -10,7 +10,9 @@ import pytest
 @pytest.mark.unit
 class TestUpbitClosedOrders:
     @pytest.mark.asyncio
-    async def test_closed_orders_passes_time_window_and_state_filters(self, monkeypatch):
+    async def test_closed_orders_passes_time_window_and_state_filters(
+        self, monkeypatch
+    ):
         from datetime import UTC, datetime
 
         from app.services.brokers.upbit import orders

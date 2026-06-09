@@ -144,4 +144,3 @@ async def test_reconciler_passes_explicit_window_to_fetcher(
     assert captured["max_pages"] == 25
     assert repo.runs[0].window_start == start_at
     assert repo.runs[0].window_end == end_at
-

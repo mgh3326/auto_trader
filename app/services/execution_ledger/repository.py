@@ -175,6 +175,7 @@ class ExecutionLedgerRepository:
         self, *, cutover: datetime
     ) -> dict[tuple[str, str, str, str, str, str], Decimal]:
         from sqlalchemy import case
+
         signed_qty = case(
             (ExecutionLedger.side == "buy", ExecutionLedger.filled_qty),
             else_=-ExecutionLedger.filled_qty,
@@ -201,6 +202,13 @@ class ExecutionLedgerRepository:
             )
         )
         return {
-            (broker, account_mode, venue, str(instrument_type), symbol, currency): Decimal(str(net_qty))
+            (
+                broker,
+                account_mode,
+                venue,
+                str(instrument_type),
+                symbol,
+                currency,
+            ): Decimal(str(net_qty))
             for broker, account_mode, venue, instrument_type, symbol, currency, net_qty in rows.all()
         }

@@ -5,13 +5,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from datetime import UTC, datetime, time
 
 from app.core.db import AsyncSessionLocal
 from app.services.execution_ledger.reconciler import ExecutionLedgerReconciler
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
-
-
-from datetime import UTC, datetime, time
 
 
 def _parse_cli_date(value: str, *, end_of_day: bool) -> datetime:
@@ -22,7 +20,9 @@ def _parse_cli_date(value: str, *, end_of_day: bool) -> datetime:
     return datetime.combine(day, boundary, tzinfo=UTC)
 
 
-def resolve_window_args(args: argparse.Namespace) -> tuple[datetime | None, datetime | None]:
+def resolve_window_args(
+    args: argparse.Namespace,
+) -> tuple[datetime | None, datetime | None]:
     if args.start_date is None and args.end_date is None:
         return None, None
     if args.start_date is None or args.end_date is None:
