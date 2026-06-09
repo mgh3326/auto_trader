@@ -48,7 +48,9 @@ def test_health_bypasses_auth_while_mcp_is_gated() -> None:
 
 @pytest.mark.unit
 def test_lifespan_logs_startup_and_shutdown(caplog: pytest.LogCaptureFixture) -> None:
-    mcp = FastMCP(name="lifecycle-test", lifespan=build_server_lifespan(service="test-mcp"))
+    mcp = FastMCP(
+        name="lifecycle-test", lifespan=build_server_lifespan(service="test-mcp")
+    )
 
     @mcp.tool
     def echo(x: int) -> int:
@@ -61,3 +63,16 @@ def test_lifespan_logs_startup_and_shutdown(caplog: pytest.LogCaptureFixture) ->
     assert "mcp.lifecycle.startup_complete" in caplog.text
     assert "tools=1" in caplog.text  # the single registered tool was counted
     assert "mcp.lifecycle.shutdown" in caplog.text
+
+
+@pytest.mark.unit
+def test_main_module_wires_health_route() -> None:
+    # Importing the production module must register /health on the real server
+    # instance. _additional_http_routes is where @custom_route appends (fastmcp 3.2.0).
+    # (Lifespan wiring is covered by test_lifespan_logs_startup_and_shutdown + the
+    # visible FastMCP(lifespan=...) ctor change; FastMCP's default _lifespan is a
+    # non-None default_lifespan, so an "is not None" check here would false-pass.)
+    import app.mcp_server.main as main_mod
+
+    paths = {getattr(r, "path", None) for r in main_mod.mcp._additional_http_routes}
+    assert "/health" in paths

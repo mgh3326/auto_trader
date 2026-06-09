@@ -32,6 +32,10 @@ from app.mcp_server.auth import build_auth_provider  # noqa: E402
 from app.mcp_server.caller_identity_middleware import (  # noqa: E402
     CallerIdentityMiddleware,
 )
+from app.mcp_server.lifecycle import (  # noqa: E402
+    build_server_lifespan,
+    register_health_route,
+)
 from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
@@ -49,12 +53,17 @@ mcp = FastMCP(
     # (last-registration-silently-wins), which had let the brief판 shadow the report판's
     # get_market_reports / get_latest_market_brief. Any future collision now raises.
     on_duplicate="error",
+    # ROB-469: startup/shutdown lifecycle logging (diagnose disconnect root cause).
+    lifespan=build_server_lifespan(),
 )
 
 mcp.add_middleware(McpToolCallSentryMiddleware())
 mcp.add_middleware(CallerIdentityMiddleware())
 _mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
 register_all_tools(mcp, profile=_mcp_profile)
+# ROB-469: unauthenticated, dependency-free liveness probe for HAProxy / native
+# healthcheck / docker healthcheck. Registered after tools so the count is final.
+register_health_route(mcp, version="0.1.0")
 
 
 def _validate_caller_agent_id_fallback(mcp_type: str) -> None:
@@ -83,9 +92,18 @@ def main() -> None:
     mcp_host = _env("MCP_HOST", "0.0.0.0")
     mcp_port = _env_int("MCP_PORT", 8765)
     mcp_path = _env("MCP_PATH", "/mcp")
+    graceful_shutdown_timeout = get_mcp_graceful_shutdown_timeout()
+    auth_enabled = bool(_auth_token and _auth_token.strip())
 
     logging.info(
-        f"Starting MCP server: type={mcp_type} host={mcp_host} port={mcp_port} path={mcp_path}"
+        "mcp.lifecycle.starting type=%s host=%s port=%s path=%s "
+        "graceful_shutdown_timeout=%s auth_enabled=%s",
+        mcp_type,
+        mcp_host,
+        mcp_port,
+        mcp_path,
+        graceful_shutdown_timeout,
+        auth_enabled,
     )
 
     try:
@@ -94,7 +112,6 @@ def main() -> None:
         if mcp_type == "stdio":
             mcp.run(transport="stdio")
         elif mcp_type == "sse":
-            graceful_shutdown_timeout = get_mcp_graceful_shutdown_timeout()
             mcp.run(
                 transport="sse",
                 host=mcp_host,
@@ -103,7 +120,6 @@ def main() -> None:
                 uvicorn_config={"timeout_graceful_shutdown": graceful_shutdown_timeout},
             )
         elif mcp_type == "streamable-http":
-            graceful_shutdown_timeout = get_mcp_graceful_shutdown_timeout()
             mcp.run(
                 transport="streamable-http",
                 host=mcp_host,
@@ -114,6 +130,14 @@ def main() -> None:
         else:
             raise ValueError(f"Unsupported MCP_TYPE: {mcp_type}")
     except Exception as exc:
+        # ROB-469: an unhandled mcp.run() exception is a CRASH, distinct from a
+        # graceful mcp.lifecycle.shutdown. Log it explicitly before Sentry capture.
+        logging.exception(
+            "mcp.lifecycle.crashed type=%s host=%s port=%s",
+            mcp_type,
+            mcp_host,
+            mcp_port,
+        )
         capture_exception(
             exc,
             mcp_type=mcp_type,

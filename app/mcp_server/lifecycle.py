@@ -26,7 +26,7 @@ STARTED_MONOTONIC = time.monotonic()
 
 
 def register_health_route(
-    mcp: "FastMCP",
+    mcp: FastMCP,
     *,
     service: str = "auto-trader-mcp",
     version: str = "0.1.0",
@@ -61,7 +61,7 @@ def build_server_lifespan(*, service: str = "auto-trader-mcp"):
     """
 
     @fastmcp_lifespan
-    async def _server_lifespan(server: "FastMCP") -> AsyncIterator[dict]:
+    async def _server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
         try:
             tool_count = len(await server.list_tools())
         except Exception:  # never block startup on a best-effort count
