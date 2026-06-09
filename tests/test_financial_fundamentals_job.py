@@ -5,8 +5,10 @@ from contextlib import AbstractAsyncContextManager
 
 import pandas as pd
 import pytest
+import sqlalchemy as sa
 
 from app.jobs import financial_fundamentals_snapshots as job
+from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services.financial_fundamentals_snapshots.builder import (
     RawAnnualFiling,
     RawFundamentalsBundle,
@@ -54,6 +56,82 @@ async def _fake_fetcher(
         annual=(RawAnnualFiling(bsns_year=2024, rcept_no="r1", income_statement=df),),
         filing_dates={"r1": dt.date(2025, 3, 20)},
     )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "name", "expected"),
+    [
+        ("005930", "삼성전자", True),
+        ("035420", "NAVER", True),
+        ("000087", "하이트진로2우B", False),
+        ("005935", "삼성전자우", False),
+        ("069500", "KODEX 200", False),
+        ("0000H0", "KODEX 인도Nifty미드캡100", False),
+        ("0004Y0", "디비금융제14호스팩", False),
+        ("123456", "맥쿼리인프라", False),
+    ],
+)
+def test_dart_common_kr_equity_filter_excludes_non_common(symbol, name, expected):
+    assert job.is_dart_common_kr_equity(symbol, name) is expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_symbols_filters_common_kr_equities_before_limit(
+    bind_job_session, db_session
+):
+    symbols = ["0000H0", "000001", "000002", "000003", "000004", "000005"]
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_(symbols))
+    )
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol="0000H0",
+                name="KODEX 인도Nifty미드캡100",
+                exchange="KOSPI",
+                is_active=True,
+            ),
+            KRSymbolUniverse(
+                symbol="000001",
+                name="테스트보통주A",
+                exchange="KOSPI",
+                is_active=True,
+            ),
+            KRSymbolUniverse(
+                symbol="000002",
+                name="테스트보통주A우",
+                exchange="KOSPI",
+                is_active=True,
+            ),
+            KRSymbolUniverse(
+                symbol="000003",
+                name="TIGER 테스트ETF",
+                exchange="KOSPI",
+                is_active=True,
+            ),
+            KRSymbolUniverse(
+                symbol="000004",
+                name="테스트제1호스팩",
+                exchange="KOSDAQ",
+                is_active=True,
+            ),
+            KRSymbolUniverse(
+                symbol="000005",
+                name="테스트보통주B",
+                exchange="KOSDAQ",
+                is_active=True,
+            ),
+        ]
+    )
+    await db_session.commit()
+    try:
+        assert await job.resolve_symbols("kr", [], 2) == ["000001", "000005"]
+    finally:
+        await db_session.execute(
+            sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_(symbols))
+        )
+        await db_session.commit()
 
 
 @pytest.mark.integration
