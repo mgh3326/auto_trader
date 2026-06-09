@@ -62,6 +62,11 @@ _COINGECKO_PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 _COINGECKO_REDIS_CLIENT: redis.Redis | None = None
 _COINGECKO_LIST_LOCK = asyncio.Lock()
 _COINGECKO_PROFILE_LOCK = asyncio.Lock()
+# ROB-452 P2: social fetch needs community_data/developer_data=true. The profile cache
+# above is keyed by coin_id with those toggles OFF, so reusing it would return a payload
+# missing the social blocks — keep a separate cache for the social-toggled response.
+_COINGECKO_SOCIAL_CACHE: dict[str, dict[str, Any]] = {}
+_COINGECKO_SOCIAL_LOCK = asyncio.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +392,55 @@ async def _fetch_coingecko_coin_profile(coin_id: str) -> dict[str, Any]:
             data = response.json()
 
         _COINGECKO_PROFILE_CACHE[cache_key] = {
+            "expires_at": now + COINGECKO_CACHE_TTL_SECONDS,
+            "data": data,
+        }
+        return data
+
+
+async def _fetch_coingecko_coin_social(coin_id: str) -> dict[str, Any]:
+    """ROB-452 P2: CoinGecko coin detail with community + developer blocks enabled.
+
+    Mirrors ``_fetch_coingecko_coin_profile`` but flips community_data/developer_data on
+    (and market_data off — social tool doesn't need price), with its own cache so the
+    profile cache (toggles off) is never mistaken for a social payload.
+    """
+    cache_key = coin_id.strip().lower()
+    if not cache_key:
+        raise ValueError("coin_id is required")
+
+    now = time.time()
+    cached = _COINGECKO_SOCIAL_CACHE.get(cache_key)
+    if cached and _coingecko_cache_valid(cached.get("expires_at"), now):
+        data = cached.get("data")
+        if isinstance(data, dict):
+            return data
+
+    async with _COINGECKO_SOCIAL_LOCK:
+        now = time.time()
+        cached = _COINGECKO_SOCIAL_CACHE.get(cache_key)
+        if cached and _coingecko_cache_valid(cached.get("expires_at"), now):
+            data = cached.get("data")
+            if isinstance(data, dict):
+                return data
+
+        async with httpx.AsyncClient(timeout=15) as cli:
+            response = await cli.get(
+                COINGECKO_COIN_DETAIL_URL.format(coin_id=cache_key),
+                params={
+                    "localization": "false",
+                    "tickers": "false",
+                    "market_data": "false",
+                    "community_data": "true",
+                    "developer_data": "true",
+                    "sparkline": "false",
+                    "include_categories_details": "false",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        _COINGECKO_SOCIAL_CACHE[cache_key] = {
             "expires_at": now + COINGECKO_CACHE_TTL_SECONDS,
             "data": data,
         }

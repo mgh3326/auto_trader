@@ -906,8 +906,15 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         name="investment_report_create",
         description=(
             "Persist one ROB-265 investment_report bundle (report + items). "
-            "Idempotent on (report_type, market, market_session, account_scope, "
-            "execution_mode, kst_date, generator_version). "
+            "Idempotent on the 7-tuple (report_type, market, market_session, "
+            "account_scope, execution_mode, kst_date, generator_version) — "
+            "created_by_profile is NOT part of the key, so to mint a new row bump "
+            "generator_version (recommended) or another keyed field, not "
+            "created_by_profile. "
+            "account_scope accepts kis_live | kis_mock | alpaca_paper | upbit_live "
+            "(alpaca_paper IS accepted here; only "
+            "investment_report_generate_from_bundle restricts to the live "
+            "KIS/Upbit pairs and steers paper to the Hermes composition path). "
             "No broker / order submission is performed."
         ),
     )(investment_report_create_impl)
@@ -965,9 +972,11 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
             "Read-only intraday delta vs a baseline report. Given report_uuid "
             "(the open/prior report), returns three deterministic deltas for Hermes "
             "to compose: levels_delta (journal target/stop touch x live), "
-            "holdings_pnl_delta (per-symbol live P/L vs the baseline snapshot "
-            "bundle's portfolio P/L), and index_delta (live index vs the report's "
-            "frozen market baseline). Per-signal fail-open: a degraded signal is "
+            "holdings_pnl_delta (per-symbol live P/L vs the baseline P/L from the "
+            "snapshot bundle, or the create-time portfolio_snapshot JSON when no "
+            "bundle is present), and index_delta (live index vs the report's "
+            "frozen market_snapshot baseline). Per-signal fail-open: a degraded "
+            "signal is "
             "null with a reason under 'unavailable'; missing data is never coerced "
             "to zero. No broker/order/watch mutation."
         ),
