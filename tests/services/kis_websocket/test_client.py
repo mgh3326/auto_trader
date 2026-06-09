@@ -8,6 +8,7 @@ from app.services.kis_websocket import (
     DOMESTIC_EXECUTION_TR_REAL,
     OVERSEAS_EXECUTION_TR_MOCK,
     OVERSEAS_EXECUTION_TR_REAL,
+    ApprovalKeyIssuanceUnavailable,
     KISAppKeyInUseError,
     KISExecutionWebSocket,
     KISSubscriptionAckError,
@@ -194,8 +195,9 @@ class TestKISWebSocketClient:
                 )
             client.is_connected = True
 
+        # ROB-262: OPSP0011 now routes through the controlled, single-flight
+        # reissue helper instead of hammering the approval endpoint directly.
         reissue_mock = AsyncMock(return_value="fresh-key")
-        cache_mock = AsyncMock()
         close_mock = AsyncMock()
 
         with (
@@ -218,21 +220,71 @@ class TestKISWebSocketClient:
             ),
             patch.object(client, "_close_websocket_best_effort", close_mock),
             patch(
-                "app.services.kis_websocket_internal.approval_keys._issue_approval_key",
+                "app.services.kis_websocket_internal.approval_keys."
+                "invalidate_and_reissue_approval_key",
                 reissue_mock,
-            ),
-            patch(
-                "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
-                cache_mock,
             ),
         ):
             await client.connect_and_subscribe()
 
         assert client.is_connected is True
         assert client.approval_key == "fresh-key"
-        reissue_mock.assert_awaited_once()
-        cache_mock.assert_awaited_once_with("fresh-key", "kis_live")
+        reissue_mock.assert_awaited_once_with("kis_live")
         assert close_mock.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_repeated_opsp0011_reissues_once_without_churn(
+        self, execution_callback
+    ):
+        """Persistent OPSP0011 reissues once per streak, then backs off (no churn)."""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.is_running = True
+        client.reconnect_delay = 0
+        client.max_reconnect_attempts = 4
+        client.approval_key = "cached-key"
+
+        async def always_opsp0011() -> None:
+            raise KISSubscriptionAckError(
+                tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                rt_cd="1",
+                msg_cd="OPSP0011",
+                msg1="invalid approval : NOT FOUND",
+            )
+
+        reissue_mock = AsyncMock(return_value="fresh-key")
+        close_mock = AsyncMock()
+
+        with (
+            patch.object(
+                client,
+                "_issue_approval_key_if_needed",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                client,
+                "_build_websocket_url",
+                new=AsyncMock(
+                    return_value="ws://ops.koreainvestment.com:21000/tryitout"
+                ),
+            ),
+            patch.object(
+                client,
+                "_connect_and_subscribe_internal",
+                new=AsyncMock(side_effect=always_opsp0011),
+            ),
+            patch.object(client, "_close_websocket_best_effort", close_mock),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys."
+                "invalidate_and_reissue_approval_key",
+                reissue_mock,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="not established"):
+                await client.connect_and_subscribe()
+
+        # Exactly one controlled reissue across all attempts — not one per attempt.
+        reissue_mock.assert_awaited_once_with("kis_live")
+        assert client.approval_key == "fresh-key"
 
     @pytest.mark.asyncio
     async def test_already_in_use_msg_code_fails_fast_without_reissuing_key(
@@ -254,6 +306,7 @@ class TestKISWebSocketClient:
         )
         reissue_mock = AsyncMock(return_value="fresh-key-2")
         cache_mock = AsyncMock()
+        invalidate_mock = AsyncMock(return_value="fresh-key-2")
         close_mock = AsyncMock()
 
         with (
@@ -279,6 +332,11 @@ class TestKISWebSocketClient:
                 "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
                 cache_mock,
             ),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys."
+                "invalidate_and_reissue_approval_key",
+                invalidate_mock,
+            ),
         ):
             with pytest.raises(KISAppKeyInUseError, match="already in use"):
                 await client.connect_and_subscribe()
@@ -286,9 +344,134 @@ class TestKISWebSocketClient:
         assert client.is_connected is False
         assert client.approval_key == "cached-key"
         connect_mock.assert_awaited_once()
+        # OPSP8996 never reissues by any path (direct or controlled).
         reissue_mock.assert_not_awaited()
         cache_mock.assert_not_awaited()
+        invalidate_mock.assert_not_awaited()
         close_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_opsp0011_reissue_contended_backs_off_without_independent_issue(
+        self, execution_callback
+    ):
+        """A contended controlled reissue (ApprovalKeyIssuanceUnavailable) is caught
+        and backed off — the client never independently issues a second key, and the
+        cached key is left untouched (AC2: bounded, no deadlock, no churn)."""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.is_running = True
+        client.reconnect_delay = 0
+        client.max_reconnect_attempts = 4
+        client.approval_key = "cached-key"
+
+        async def always_opsp0011() -> None:
+            raise KISSubscriptionAckError(
+                tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                rt_cd="1",
+                msg_cd="OPSP0011",
+                msg1="invalid approval : NOT FOUND",
+            )
+
+        reissue_mock = AsyncMock(
+            side_effect=ApprovalKeyIssuanceUnavailable("issuance contended")
+        )
+
+        with (
+            patch.object(
+                client,
+                "_issue_approval_key_if_needed",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                client,
+                "_build_websocket_url",
+                new=AsyncMock(
+                    return_value="ws://ops.koreainvestment.com:21000/tryitout"
+                ),
+            ),
+            patch.object(
+                client,
+                "_connect_and_subscribe_internal",
+                new=AsyncMock(side_effect=always_opsp0011),
+            ),
+            patch.object(client, "_close_websocket_best_effort", AsyncMock()),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys."
+                "invalidate_and_reissue_approval_key",
+                reissue_mock,
+            ),
+        ):
+            # The contention exception is caught (not re-raised); the loop exhausts
+            # attempts and raises the generic not-established error instead.
+            with pytest.raises(RuntimeError, match="not established"):
+                await client.connect_and_subscribe()
+
+        # Reissue attempted once for the streak, then suppressed; key never changed.
+        reissue_mock.assert_awaited_once_with("kis_live")
+        assert client.approval_key == "cached-key"
+        assert client.is_connected is False
+
+    @pytest.mark.asyncio
+    async def test_flapping_opsp0011_reissue_stays_bounded_and_single_flight(
+        self, execution_callback
+    ):
+        """Characterize OPSP0011 <-> non-recoverable flapping (deliberate behavior).
+
+        A different intervening error ends the OPSP0011 streak, so a later OPSP0011
+        reissues again. This is NOT the churn AC4 forbids: each reissue routes through
+        the single-flight (Redis-locked) helper and the total count is hard-bounded by
+        max_reconnect_attempts — never a tight per-attempt unlocked loop.
+        """
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.is_running = True
+        client.reconnect_delay = 0
+        client.max_reconnect_attempts = 5
+        client.approval_key = "cached-key"
+
+        # One code per attempt: 3 OPSP0011 occurrences across 5 attempts.
+        codes = iter(["OPSP0011", "OPSP0001", "OPSP0011", "OPSP0001", "OPSP0011"])
+
+        async def flap() -> None:
+            raise KISSubscriptionAckError(
+                tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                rt_cd="1",
+                msg_cd=next(codes),
+                msg1="flapping ack",
+            )
+
+        reissue_mock = AsyncMock(return_value="fresh-key")
+
+        with (
+            patch.object(
+                client,
+                "_issue_approval_key_if_needed",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                client,
+                "_build_websocket_url",
+                new=AsyncMock(
+                    return_value="ws://ops.koreainvestment.com:21000/tryitout"
+                ),
+            ),
+            patch.object(
+                client,
+                "_connect_and_subscribe_internal",
+                new=AsyncMock(side_effect=flap),
+            ),
+            patch.object(client, "_close_websocket_best_effort", AsyncMock()),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys."
+                "invalidate_and_reissue_approval_key",
+                reissue_mock,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="not established"):
+                await client.connect_and_subscribe()
+
+        # 3 OPSP0011 occurrences -> 3 controlled (single-flight) reissues, strictly
+        # bounded by max_reconnect_attempts; not an unbounded per-attempt loop.
+        assert reissue_mock.await_count == 3
+        assert reissue_mock.await_count <= client.max_reconnect_attempts
 
     @pytest.mark.asyncio
     async def test_connect_and_subscribe_raises_after_max_attempts(
