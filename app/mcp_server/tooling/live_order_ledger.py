@@ -6,6 +6,7 @@ US/해외(equity_us)·crypto(crypto) live 주문 전용. KR domestic은 kis_live
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -69,6 +70,7 @@ async def _save_live_order_ledger(
     dt_approval_issue_id: str | None = None,
     dt_requester_agent_id: str | None = None,
     dt_caller_source: str | None = None,
+    report_item_uuid: uuid.UUID | None = None,
 ) -> int:
     async with _order_session_factory()() as db:
         row = LiveOrderLedger(
@@ -104,6 +106,7 @@ async def _save_live_order_ledger(
             dt_approval_issue_id=dt_approval_issue_id,
             dt_requester_agent_id=dt_requester_agent_id,
             dt_caller_source=dt_caller_source,
+            report_item_uuid=report_item_uuid,
         )
         db.add(row)
         # flush assigns the PK inside the transaction; read it before commit so
@@ -387,6 +390,7 @@ async def _record_live_order(
     dt_approval_issue_id: str | None = None,
     dt_requester_agent_id: str | None = None,
     dt_caller_source: str | None = None,
+    report_item_uuid: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
     qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
@@ -425,6 +429,7 @@ async def _record_live_order(
         dt_approval_issue_id=dt_approval_issue_id,
         dt_requester_agent_id=dt_requester_agent_id,
         dt_caller_source=dt_caller_source,
+        report_item_uuid=report_item_uuid,
     )
     fill_recorded = False
     inline_outcome: dict[str, Any] | None = None
