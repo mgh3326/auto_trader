@@ -62,7 +62,13 @@ async def get_symbol_news_mapping(
         # target 매핑을 앞으로 정렬(소비자 편의), 결정적 순서 유지.
         ordered = tuple(sorted(mapped, key=lambda m: (m.symbol != target, m.symbol)))
         mapped_articles.append(
-            MappedArticle(as_of=av.as_of, title=av.title, mapped_symbols=ordered)
+            MappedArticle(
+                as_of=av.as_of,
+                title=av.title,
+                mapped_symbols=ordered,
+                url=av.url,
+                summary=av.summary,
+            )
         )
         as_ofs.append(av.as_of)
 

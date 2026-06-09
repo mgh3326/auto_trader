@@ -89,3 +89,28 @@ async def test_candidate_row_article_maps_target():
     m = result.articles[0].mapped_symbols[0]
     assert m.mapping_source == "candidate"
     assert m.confidence == 0.8
+
+
+@pytest.mark.asyncio
+async def test_url_and_summary_passthrough_to_mapped_article():
+    async def provider(symbol, market, hours, limit):
+        return [
+            ArticleView(
+                market="kr",
+                stock_symbol="005930",
+                related_rows=(),
+                title="삼성전자 신규 투자",
+                summary="리드 문장",
+                keywords=(),
+                as_of=NOW,
+                url="https://n.news.naver.com/article/001/000",
+            )
+        ]
+
+    result = await get_symbol_news_mapping(
+        "005930", market="kr", now=NOW, article_provider=provider
+    )
+    assert len(result.articles) == 1
+    art = result.articles[0]
+    assert art.url == "https://n.news.naver.com/article/001/000"
+    assert art.summary == "리드 문장"

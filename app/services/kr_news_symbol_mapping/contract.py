@@ -53,6 +53,7 @@ class ArticleView:
     summary: str | None
     keywords: tuple[str, ...]
     as_of: datetime
+    url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,8 @@ class MappedArticle:
     as_of: datetime
     title: str | None
     mapped_symbols: tuple[MappedSymbol, ...]
+    url: str | None = None
+    summary: str | None = None
 
 
 @dataclass(frozen=True)
