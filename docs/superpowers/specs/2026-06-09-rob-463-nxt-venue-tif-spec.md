@@ -57,6 +57,18 @@ error is strictly better, and it lays the typed contract so enablement is a gate
 5. **Cancel/modify:** do reserved / non-default-venue orders need different
    cancel/modify handling (e.g., cancel a reserved order before its scheduled time)?
 
+## Phase 2 Part A — pre-market pricing (SHIPPED, no broker codes needed)
+
+The rejected-113k-buy root cause (Q4) is fixed in-repo without any KIS order wire
+codes: `order_validation._get_current_price_for_order` now prices a KR equity order
+off the **live NXT orderbook** during pre-market
+(`market_data.get_orderbook(symbol, "kr", venue="nxt")` — NXT 예상체결가, else best
+bid/ask mid) instead of the stale KRX previous close. Gated by ROB-464's
+`kr_market_data_state()`; best-effort with a KRX fallback on any error/empty book (the
+regular session and non-NXT-eligible symbols are unchanged). This stops the false
+*validation rejection*; whether the order then *fills* on NXT still depends on Q1
+(SOR↔NXT execution), which remains gated below.
+
 ## Phase 2 (after confirmation) — enablement plan
 
 1. Thread `venue` → `order_korea_stock` (map to confirmed `EXCG_ID_DVSN_CD`); add
@@ -64,9 +76,7 @@ error is strictly better, and it lays the typed contract so enablement is a gate
 2. Additive `KISLiveOrderLedger` columns (`venue`, `order_validity`, `reserved_time`),
    nullable, + alembic migration; record resolved venue on every live order (also fixes
    the "couldn't tell the order missed NXT" visibility gap).
-3. Pre-market pricing: session-aware current-price (reuse
-   `app/mcp_server/tooling/market_session.kr_market_data_state` from ROB-464) — route to
-   NXT quote during pre-market or relax the guard per Q4.
+3. ~~Pre-market pricing~~ — DONE (Part A above).
 4. Flip `_venue_tif_gate` to accept confirmed values; keep unsupported ones fail-closed.
 
 ## Safety
