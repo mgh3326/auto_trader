@@ -501,6 +501,10 @@ class Settings(BaseSettings):
     # importable but unreachable from caller surfaces until flipped post-merge.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-2-mcp-api.md §2.
     INVESTMENT_SNAPSHOTS_MCP_ENABLED: bool = False
+    # ROB-459 P3 — context_get(draft_policy="advisory_only")에서 baseline으로 admit할
+    # advisory 프로필을 운영자가 확장(default {HERMES_ADVISOR, CLAUDE_ADVISOR}와 UNION).
+    # 빈 값이면 기본만. 스모크/테스트 프로필은 명시하지 않는 한 제외(fail-closed).
+    INVESTMENT_ADVISORY_DRAFT_PROFILES: Annotated[list[str], NoDecode] = []
     # ROB-269 Phase 3 — gates service-side stale-gate enforcement on report
     # ingestion when account_scope='kis_live' + snapshot_bundle_uuid present.
     # DB CHECK ck_investment_reports_no_published_on_hard_stale is always live
@@ -629,6 +633,33 @@ class Settings(BaseSettings):
                     )
                 return [path.strip() for path in parsed if path.strip()]
             return [path.strip() for path in value.split(",") if path.strip()]
+        return v or []
+
+    @field_validator("INVESTMENT_ADVISORY_DRAFT_PROFILES", mode="before")
+    @classmethod
+    def _parse_advisory_draft_profiles(cls, v: list[str] | str) -> list[str]:
+        """Parse comma-separated or JSON-list env into a clean profile list.
+
+        Mirrors ``validate_public_api_paths`` so operators can set
+        ``INVESTMENT_ADVISORY_DRAFT_PROFILES=A_ADVISOR,B_ADVISOR`` (or a JSON
+        list) in env. ``NoDecode`` on the field keeps pydantic-settings from
+        JSON-decoding the raw string before this runs.
+        """
+        if isinstance(v, str):
+            value = v.strip()
+            if not value:
+                return []
+            if value.startswith("["):
+                parsed = json.loads(value)
+                if not isinstance(parsed, list) or not all(
+                    isinstance(p, str) for p in parsed
+                ):
+                    raise ValueError(
+                        "INVESTMENT_ADVISORY_DRAFT_PROFILES JSON value must be a "
+                        "string list"
+                    )
+                return [p.strip() for p in parsed if p.strip()]
+            return [p.strip() for p in value.split(",") if p.strip()]
         return v or []
 
     @field_validator("SENTRY_TRACES_SAMPLE_RATE", "SENTRY_PROFILES_SAMPLE_RATE")

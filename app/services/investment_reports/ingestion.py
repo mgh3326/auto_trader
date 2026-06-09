@@ -378,6 +378,17 @@ class InvestmentReportIngestionService:
             intent=item_req.intent,
             watch_condition=watch_condition_payload,
         )
+        # ROB-459 P1 — merge typed evidence into the existing evidence_snapshot
+        # JSONB under reserved keys (no migration). Round-trips via
+        # InvestmentReportItemResponse.evidence_snapshot. When evidence/freshness
+        # are unset the keys are NOT added (legacy shape unchanged).
+        evidence_payload = dict(item_req.evidence_snapshot or {})
+        if item_req.evidence:
+            evidence_payload["structured_evidence"] = [
+                e.model_dump(mode="json") for e in item_req.evidence
+            ]
+        if item_req.freshness is not None:
+            evidence_payload["item_freshness"] = item_req.freshness
         await self._repo.insert_item(
             report_id=report.id,
             idempotency_key=idempotency_key,
@@ -389,7 +400,7 @@ class InvestmentReportIngestionService:
             priority=item_req.priority,
             confidence=item_req.confidence,
             rationale=item_req.rationale,
-            evidence_snapshot=item_req.evidence_snapshot,
+            evidence_snapshot=evidence_payload,
             watch_condition=watch_condition_payload,
             trigger_checklist=item_req.trigger_checklist,
             max_action=item_req.max_action,

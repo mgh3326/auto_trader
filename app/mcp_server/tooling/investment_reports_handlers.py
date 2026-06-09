@@ -135,6 +135,20 @@ CREATE_DESCRIPTION = (
 )
 
 
+CONTEXT_GET_DESCRIPTION = (
+    "Return previous-report context for the next-report generator: "
+    "prior_reports, unresolved_deferred_items, active_watches, "
+    "triggered_events, recent_decisions. n_prior clamped to 1..10. "
+    "draft_policy (optional, default 'exclude'): 'exclude' drops all draft "
+    "reports; 'advisory_only' admits genuine advisory drafts "
+    "(created_by_profile in HERMES_ADVISOR / CLAUDE_ADVISOR, plus any profiles "
+    "configured via INVESTMENT_ADVISORY_DRAFT_PROFILES) as prior context while "
+    "still excluding smoke/test drafts. advisory reports persist as draft, so "
+    "use 'advisory_only' to chain the next delta report off the latest advisory "
+    "baseline. (Unknown values fall back to 'exclude'.)"
+)
+
+
 def _default_generator_user_id() -> int:
     """ROB-352 — resolve the default operator user_id the same way the
     portfolio/holdings tools do (``MCP_USER_ID`` env, default 1), so a
@@ -1035,17 +1049,7 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
     )(investment_report_activate_watch_impl)
     mcp.tool(
         name="investment_report_context_get",
-        description=(
-            "Return previous-report context for the next-report generator: "
-            "prior_reports, unresolved_deferred_items, active_watches, "
-            "triggered_events, recent_decisions. n_prior clamped to 1..10. "
-            "draft_policy (optional, default 'exclude'): 'exclude' drops all draft "
-            "reports; 'advisory_only' admits genuine advisory drafts "
-            "(created_by_profile=HERMES_ADVISOR) as prior context while still "
-            "excluding smoke/test drafts. advisory reports persist as draft, so use "
-            "'advisory_only' to chain the next delta report off the latest advisory "
-            "baseline. (Unknown values fall back to 'exclude'.)"
-        ),
+        description=CONTEXT_GET_DESCRIPTION,
     )(investment_report_context_get_impl)
     mcp.tool(
         name="investment_report_delta_get",

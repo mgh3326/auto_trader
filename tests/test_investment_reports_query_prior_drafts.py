@@ -108,3 +108,77 @@ async def test_prior_reports_rejects_unknown_draft_policy(
             report_type="snapshot_backed_advisory_v1",
             draft_policy="all",
         )
+
+
+@pytest.mark.asyncio
+async def test_prior_reports_advisory_only_admits_claude_advisor(
+    session: AsyncSession,
+) -> None:
+    """ROB-459 P3 — CLAUDE_ADVISOR draft도 advisory_only에서 admit, 스모크는 제외."""
+    repo = InvestmentReportsRepository(session)
+    await _make_report(repo, key="pub:1", status="published", title="real-1")
+    await _make_report(
+        repo, key="draft:smoke", status="draft", title="smoke-1", created_by_profile="t"
+    )
+    await _make_report(
+        repo,
+        key="draft:claude",
+        status="draft",
+        title="claude-adv-1",
+        created_by_profile="CLAUDE_ADVISOR",
+    )
+
+    svc = InvestmentReportQueryService(session)
+    ctx = await svc.previous_report_context(
+        market="us",
+        account_scope="kis_live",
+        report_type="snapshot_backed_advisory_v1",
+        n_prior=4,
+        draft_policy="advisory_only",
+    )
+    titles = {r.title for r in ctx["prior_reports"]}
+    assert "claude-adv-1" in titles
+    assert "smoke-1" not in titles
+
+
+@pytest.mark.asyncio
+async def test_prior_reports_advisory_only_honors_config_profiles(
+    session: AsyncSession, monkeypatch
+) -> None:
+    """운영자 설정 프로필이 default와 UNION으로 admit된다(기본값도 유지)."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings,
+        "INVESTMENT_ADVISORY_DRAFT_PROFILES",
+        ["OPERATOR_ADVISOR"],
+        raising=False,
+    )
+    repo = InvestmentReportsRepository(session)
+    await _make_report(repo, key="pub:1", status="published", title="real-1")
+    await _make_report(
+        repo,
+        key="draft:op",
+        status="draft",
+        title="op-adv-1",
+        created_by_profile="OPERATOR_ADVISOR",
+    )
+    # 기본값(HERMES_ADVISOR)도 여전히 admit되어야 한다(UNION).
+    await _make_report(
+        repo,
+        key="draft:hermes",
+        status="draft",
+        title="hermes-adv-1",
+        created_by_profile="HERMES_ADVISOR",
+    )
+
+    svc = InvestmentReportQueryService(session)
+    ctx = await svc.previous_report_context(
+        market="us",
+        account_scope="kis_live",
+        report_type="snapshot_backed_advisory_v1",
+        n_prior=4,
+        draft_policy="advisory_only",
+    )
+    titles = {r.title for r in ctx["prior_reports"]}
+    assert {"op-adv-1", "hermes-adv-1"} <= titles
