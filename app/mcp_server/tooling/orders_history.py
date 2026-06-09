@@ -32,6 +32,15 @@ from app.mcp_server.tooling.shared import (
 from app.services.brokers.kis.client import KISClient
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
+# ROB-466: status='all' without a symbol returns the symbol-free subset (open
+# orders across all markets). Broker fill/cancel history is keyed by symbol, so
+# it is omitted in that case; surface a warning rather than silently dropping it.
+ALL_SYMBOLS_CLOSED_HISTORY_WARNING = (
+    "status='all' without a symbol returns open/pending orders across markets "
+    "only; filled/cancelled history is broker-symbol-keyed — pass a symbol to "
+    "include it."
+)
+
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
     if is_mock:
@@ -85,10 +94,12 @@ def _validate_history_inputs(
         (symbol, order_id, market_hint, side, effective_days,
          limit_val, market_types, normalized_symbol)
     """
-    if status != "pending" and not symbol:
+    if status in ("filled", "cancelled") and not symbol:
         raise ValueError(
-            f"symbol is required when status='{status}'. "
-            "Use status='pending' for symbol-free queries, "
+            f"symbol is required when status='{status}' "
+            "(broker fill/cancel history is keyed by symbol). "
+            "Use status='pending' or status='all' for symbol-free queries "
+            "(open orders across markets), "
             "or provide a symbol (e.g. symbol='KRW-BTC')."
         )
 
@@ -119,7 +130,7 @@ def _validate_history_inputs(
         if norm:
             market_types = [norm]
 
-    if not market_types and status == "pending":
+    if not market_types and status in ("pending", "all"):
         market_types = ["crypto", "equity_kr", "equity_us"]
 
     if not market_types and order_id:
@@ -391,6 +402,12 @@ def _build_history_response(
     """Build the final order history response dict."""
     summary = _calculate_order_summary(response_orders)
 
+    warnings: list[str] = []
+    if any(o.get("source") == "kis_mock_ledger_shadow" for o in response_orders):
+        warnings.append(KIS_MOCK_SHADOW_PENDING_WARNING)
+    if status == "all" and normalized_symbol is None:
+        warnings.append(ALL_SYMBOLS_CLOSED_HISTORY_WARNING)
+
     ret_market = "mixed"
     if len(market_types) == 1:
         ret_market = _normalize_market_type_to_external(market_types[0])
@@ -417,9 +434,7 @@ def _build_history_response(
         "truncated": truncated,
         "total_available": total_available,
         "errors": errors,
-        "warnings": [KIS_MOCK_SHADOW_PENDING_WARNING]
-        if any(o.get("source") == "kis_mock_ledger_shadow" for o in response_orders)
-        else [],
+        "warnings": warnings,
     }
 
 

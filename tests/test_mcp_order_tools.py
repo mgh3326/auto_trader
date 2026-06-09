@@ -17,12 +17,86 @@ def _patch_kis_client(monkeypatch: pytest.MonkeyPatch, client_factory) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["all", "filled", "cancelled"])
-async def test_get_order_history_requires_symbol_for_non_pending_status(status):
+@pytest.mark.parametrize("status", ["filled", "cancelled"])
+async def test_get_order_history_requires_symbol_for_closed_status(status):
+    # filled/cancelled history is broker-symbol-keyed, so it still requires a symbol.
     tools = build_tools()
 
     with pytest.raises(ValueError, match="symbol is required when status="):
         await tools["get_order_history"](status=status, order_id="some-id")
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_all_without_symbol_returns_open_orders_with_warning(
+    monkeypatch,
+):
+    """status='all' without a symbol no longer hard-errors (ROB-466): it returns
+    open orders across markets and warns that closed history needs a symbol."""
+    tools = build_tools()
+
+    async def fetch_open_orders(market):
+        return [
+            {
+                "uuid": "uuid-open",
+                "side": "bid",
+                "ord_type": "limit",
+                "price": "50000000",
+                "volume": "0.1",
+                "remaining_volume": "0.1",
+                "market": "KRW-BTC",
+                "created_at": "2025-01-01T00:00:00",
+                "state": "wait",
+            }
+        ]
+
+    monkeypatch.setattr(upbit_service, "fetch_open_orders", fetch_open_orders)
+
+    class MockKIS:
+        async def inquire_korea_orders(self):
+            return []
+
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
+
+    _patch_kis_client(monkeypatch, lambda: MockKIS())
+
+    result = await tools["get_order_history"](status="all")
+
+    # Open orders are returned (no hard error)...
+    assert [o["order_id"] for o in result["orders"]] == ["uuid-open"]
+    # ...and the response warns that filled/cancelled history was omitted.
+    assert any("filled/cancelled" in w for w in result["warnings"])
+
+
+def test_validate_history_inputs_allows_all_status_without_symbol():
+    # status='all' without a symbol resolves to all markets and does not raise (ROB-466).
+    (_symbol, _oid, _mh, _side, _days, _lim, market_types, normalized_symbol) = (
+        orders_history._validate_history_inputs(
+            symbol=None,
+            status="all",
+            order_id=None,
+            market=None,
+            side=None,
+            days=None,
+            limit=50,
+        )
+    )
+    assert normalized_symbol is None
+    assert set(market_types) == {"crypto", "equity_kr", "equity_us"}
+
+
+@pytest.mark.parametrize("status", ["filled", "cancelled"])
+def test_validate_history_inputs_still_requires_symbol_for_closed(status):
+    with pytest.raises(ValueError, match="symbol is required when status="):
+        orders_history._validate_history_inputs(
+            symbol=None,
+            status=status,
+            order_id=None,
+            market=None,
+            side=None,
+            days=None,
+            limit=50,
+        )
 
 
 @pytest.mark.asyncio

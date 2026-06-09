@@ -322,6 +322,11 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "dry_run=True by default for safety. "
             "For buy orders (dry_run=False), thesis and strategy are required. "
             "Safety limit: max 20 orders/day. "
+            "Normal weight-management trims do NOT need defensive_trim — leave "
+            "it False. defensive_trim=True only bypasses the sell-side price "
+            "floor and requires side='sell', order_type='limit', and an "
+            "approval_issue_id (e.g. 'ROB-164'); approval_issue_id is mandatory "
+            "whenever defensive_trim=True, including dry_run (ROB-164 audit gate). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
