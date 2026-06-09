@@ -20,9 +20,11 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_context_get_impl,
     investment_report_create_impl,
     investment_report_decide_item_impl,
+    investment_report_delta_get_impl,
     investment_report_generate_from_bundle_impl,
     investment_report_get_impl,
     investment_report_list_impl,
+    investment_report_set_status_impl,
     investment_watch_recommend_impl,
 )
 from tests._investment_reports_helpers import future_datetime
@@ -120,6 +122,8 @@ def test_tool_names_match_registered_set() -> None:
         "investment_report_generate_from_bundle",
         "investment_watch_recommend",
         "investment_report_delta_get",
+        # ROB-455 — report status lifecycle transition writer.
+        "investment_report_set_status",
     }
 
 
@@ -764,3 +768,82 @@ async def test_watch_recommend_commit_rejected_on_data_gap(
             symbol="005930", market="kr", item_uuid=item_uuid, commit=True, actor="op"
         )
     assert "data_gap" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# ROB-455 PR1 — set_status tool + previous_report_uuid as delta baseline
+# ---------------------------------------------------------------------------
+async def _create_report(**overrides) -> str:
+    out = await investment_report_create_impl(**_create_kwargs(**overrides))
+    return out["report"]["report_uuid"]
+
+
+@pytest.mark.asyncio
+async def test_set_status_impl_transitions_report(session: AsyncSession) -> None:
+    report_uuid = await _create_report()
+    out = await investment_report_set_status_impl(
+        report_uuid=report_uuid, status="superseded", actor="operator", reason="v2"
+    )
+    assert out["success"] is True
+    assert out["status"] == "superseded"
+
+    fetched = await investment_report_get_impl(report_uuid)
+    assert fetched["report"]["status"] == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_set_status_impl_rejects_invalid_status(session: AsyncSession) -> None:
+    report_uuid = await _create_report()
+    # 'published' is not a lifecycle transition target; 'garbage' is unknown.
+    for bad in ("published", "garbage"):
+        out = await investment_report_set_status_impl(
+            report_uuid=report_uuid, status=bad
+        )
+        assert out["success"] is False
+        assert out["error"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_set_status_impl_unknown_uuid_returns_not_found(
+    session: AsyncSession,
+) -> None:
+    out = await investment_report_set_status_impl(
+        report_uuid=str(uuid.uuid4()), status="expired"
+    )
+    assert out == {
+        "success": False,
+        "error": "not_found",
+        "report_uuid": out["report_uuid"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_delta_get_resolves_previous_report_as_baseline(
+    session: AsyncSession, monkeypatch
+) -> None:
+    # ROB-455 — when use_previous_as_baseline=True, the delta baseline resolves to
+    # the report's previous_report_uuid (the report it chains from).
+    a_uuid = await _create_report(kst_date="2026-05-18")
+    b_uuid = await _create_report(kst_date="2026-05-19", previous_report_uuid=a_uuid)
+
+    captured: dict[str, str] = {}
+
+    class _StubDelta:
+        def __init__(self, _db):
+            pass
+
+        async def compute_delta(self, report_uuid, **_kw):
+            captured["uuid"] = str(report_uuid)
+            return {"success": True, "baseline_report_uuid": str(report_uuid)}
+
+    monkeypatch.setattr(
+        "app.services.investment_reports.delta_service.DeltaService", _StubDelta
+    )
+
+    await investment_report_delta_get_impl(
+        report_uuid=b_uuid, use_previous_as_baseline=True
+    )
+    assert captured["uuid"] == a_uuid  # resolved to the predecessor
+
+    await investment_report_delta_get_impl(report_uuid=b_uuid)
+    assert captured["uuid"] == b_uuid  # default: the report itself is the baseline

@@ -456,6 +456,9 @@ def register_investment_hermes_tools(mcp: FastMCP) -> None:
             "Auto-finalises any matching Hermes stage run "
             "(metadata.investment_stage_run_uuid) from 'running' to "
             "'completed' (§D4). "
+            "Accepts any account_scope (kis_live | kis_mock | alpaca_paper | "
+            "upbit_live) — this is the path for alpaca_paper / paper:<name> "
+            "reports that investment_report_generate_from_bundle rejects. "
             "Gated by SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
         ),
     )(investment_report_create_from_hermes_composition_impl)
