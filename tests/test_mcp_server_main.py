@@ -69,6 +69,21 @@ def _load_main_module(
     fake_monitoring.__dict__["capture_exception"] = MagicMock()
     fake_monitoring.__dict__["init_sentry"] = MagicMock()
 
+    # Pre-existing dependency of main.py (line 5). Previously relied on being
+    # already cached in sys.modules by an earlier test, so this harness failed
+    # in isolation; stub it explicitly so the isolation is real.
+    fake_profiles = ModuleType("app.mcp_server.profiles")
+    fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(return_value="profile")
+
+    # ROB-469: main.py now imports the lifecycle module (unauth /health route +
+    # startup/shutdown lifespan logging). Stub it like the other dependencies so
+    # main()'s transport/shutdown logic is tested in isolation.
+    fake_lifecycle = ModuleType("app.mcp_server.lifecycle")
+    fake_lifecycle.__dict__["build_server_lifespan"] = MagicMock(
+        return_value="server-lifespan"
+    )
+    fake_lifecycle.__dict__["register_health_route"] = MagicMock()
+
     env_utils_module = _load_env_utils_module()
 
     monkeypatch.setitem(sys.modules, "fastmcp", fake_fastmcp)
@@ -86,13 +101,18 @@ def _load_main_module(
     )
     monkeypatch.setitem(sys.modules, "app.mcp_server.tooling", fake_tooling)
     monkeypatch.setitem(sys.modules, "app.monitoring.sentry", fake_monitoring)
-    monkeypatch.delitem(sys.modules, "app.mcp_server.main", raising=False)
+    monkeypatch.setitem(sys.modules, "app.mcp_server.profiles", fake_profiles)
+    monkeypatch.setitem(sys.modules, "app.mcp_server.lifecycle", fake_lifecycle)
 
     spec = importlib.util.spec_from_file_location("app.mcp_server.main", main_path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules["app.mcp_server.main"] = module
+    # Use monkeypatch.setitem (NOT a raw `sys.modules[...] =`) so the fake module is
+    # restored/removed on teardown. A raw assignment paired with a no-op
+    # delitem(raising=False) leaked this fake `main` into sys.modules for the whole
+    # session, poisoning other tests that import the real app.mcp_server.main.
+    monkeypatch.setitem(sys.modules, "app.mcp_server.main", module)
     spec.loader.exec_module(module)
     return module, module.mcp, fake_monitoring.capture_exception
 
