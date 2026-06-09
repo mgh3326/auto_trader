@@ -282,6 +282,75 @@ def test_aggregate_reporting_from_payloads() -> None:
     assert coverage["pbr"] == 0
 
 
+import sqlalchemy as sa  # noqa: E402
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_backfilled_row_upserts_and_passes_quality_guard(db_session) -> None:
+    from decimal import Decimal
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.invest_view_model.us_quality_guards import (
+        apply_us_valuation_quality_guards,
+    )
+    from app.services.market_valuation_snapshots.builder import (
+        build_valuation_snapshots_for_market,
+    )
+    from app.services.market_valuation_snapshots.repository import (
+        MarketValuationSnapshotsRepository,
+    )
+
+    snapshot_date = dt.date(2026, 6, 9)
+    sym = "ZZQ434"
+
+    # Simulate the merged raw a yahoo-partial + finnhub-backfill produced:
+    async def fake_fetcher(symbol: str, market: str) -> dict[str, object]:
+        assert market == "us"
+        return {
+            "PER": "8",  # yahoo
+            "roe": 18.0,  # finnhub-filled (≤300 guard)
+            "market_cap": 3_000_000_000.0,  # finnhub-filled (≥$100M guard)
+            "_field_provenance": {"roe": "finnhub", "market_cap": "finnhub"},
+        }
+
+    result = await build_valuation_snapshots_for_market(
+        market="us", symbols=[sym], snapshot_date=snapshot_date, fetcher=fake_fetcher
+    )
+    assert len(result.payloads) == 1
+    payload = result.payloads[0]
+    assert payload.source == "yahoo"
+    assert payload.roe == Decimal("18.0")
+    assert payload.raw_payload["_field_provenance"] == {
+        "roe": "finnhub",
+        "market_cap": "finnhub",
+    }
+
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
+    )
+    await db_session.commit()
+    assert await MarketValuationSnapshotsRepository(db_session).upsert(result.payloads) == 1
+    await db_session.commit()
+
+    # The backfilled row survives the read-time quality guard (mcap≥$100M, roe≤300%).
+    stmt = apply_us_valuation_quality_guards(
+        sa.select(MarketValuationSnapshot.symbol).where(
+            MarketValuationSnapshot.symbol == sym,
+            MarketValuationSnapshot.snapshot_date == snapshot_date,
+        ),
+        uses_roe=True,
+    )
+    rows = (await db_session.execute(stmt)).all()
+    assert len(rows) == 1  # passes the guard
+
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
+    )
+    await db_session.commit()
+
+
+
 
 
 
