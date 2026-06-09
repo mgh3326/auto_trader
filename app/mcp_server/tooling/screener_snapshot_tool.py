@@ -80,17 +80,27 @@ def _filters_are_threaded(preset: str, market: str) -> bool:
     return (market or "").strip().lower() == "crypto" and preset in _CRYPTO_PRESET_IDS
 
 
+_DEFAULT_RESULT_LIMIT = 40
+_MAX_RESULT_LIMIT = 200
+
+
 async def screen_stocks_snapshot_impl(
     *,
     preset: str,
     market: str = "kr",
     filters: list[dict[str, Any]] | None = None,
+    limit: int = _DEFAULT_RESULT_LIMIT,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """Run a screener preset over its base snapshot with adjustable AND-filters.
 
     filters: list of {"field", "operator" (gte|lte|eq), "value"} conditions applied
     on top of the preset's starting set (adjust same field, add new). Returns the
     screener payload plus availableFilters (the adjustable catalog) and appliedFilters.
+
+    limit/offset: ROB-465 — results are capped (default 40, max 200) and paginated
+    at the tool boundary to keep responses inside the MCP token budget. The full
+    match count and a next_offset cursor are reported under ``pagination``.
     """
     from app.services.invest_view_model.screener_filters import (
         ScreenerFilterCondition,
@@ -157,4 +167,23 @@ async def screen_stocks_snapshot_impl(
             "기본 결과를 반환했습니다 (필터 미적용)."
         )
         payload["warnings"] = warnings
+
+    # ROB-465: cap + paginate at the tool boundary so large snapshots (e.g.
+    # high_yield_value ~161 rows / ~84k chars) don't blow the MCP token budget.
+    # The web screener path (build_screener_results) is left untouched.
+    all_results = payload.get("results") or []
+    total_available = len(all_results)
+    eff_limit = max(1, min(int(limit), _MAX_RESULT_LIMIT))
+    eff_offset = max(0, int(offset))
+    page = all_results[eff_offset : eff_offset + eff_limit]
+    next_offset = eff_offset + len(page)
+    payload["results"] = page
+    payload["pagination"] = {
+        "total_available": total_available,
+        "returned_count": len(page),
+        "offset": eff_offset,
+        "limit": eff_limit,
+        "has_more": next_offset < total_available,
+        "next_offset": next_offset if next_offset < total_available else None,
+    }
     return payload

@@ -76,6 +76,7 @@ class InvestmentReportsRepository:
         status: str | None = None,
         report_type: str | None = None,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[InvestmentReport]:
         stmt = sa.select(InvestmentReport).order_by(
             InvestmentReport.created_at.desc(), InvestmentReport.id.desc()
@@ -88,6 +89,8 @@ class InvestmentReportsRepository:
             status=status,
             report_type=report_type,
         )
+        if offset:
+            stmt = stmt.offset(offset)
         stmt = stmt.limit(limit)
         result = await self._session.scalars(stmt)
         return list(result.all())

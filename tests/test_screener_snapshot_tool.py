@@ -132,3 +132,62 @@ async def test_bad_filter_entry_fails_soft(patched) -> None:
     assert out["results"] == []
     # build_screener_results must NOT have been called (no DB work on bad input)
     assert patched == {}
+
+
+def _patch_build_with_n_results(monkeypatch, n: int) -> None:
+    class _BigResp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [{"symbol": f"S{i}"} for i in range(n)],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _BigResp:
+        return _BigResp()
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_caps_results_and_paginates(monkeypatch) -> None:
+    """ROB-465: a large snapshot is capped to a default page + pagination metadata."""
+    _patch_build_with_n_results(monkeypatch, 100)
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr"
+    )
+
+    assert len(out["results"]) == 40  # default cap
+    pg = out["pagination"]
+    assert pg["total_available"] == 100
+    assert pg["returned_count"] == 40
+    assert pg["offset"] == 0
+    assert pg["limit"] == 40
+    assert pg["has_more"] is True
+    assert pg["next_offset"] == 40
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_offset_paginates_last_partial_page(monkeypatch) -> None:
+    """ROB-465: offset + limit page through; the final partial page has no more."""
+    _patch_build_with_n_results(monkeypatch, 100)
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", limit=30, offset=90
+    )
+
+    assert [r["symbol"] for r in out["results"]] == [f"S{i}" for i in range(90, 100)]
+    pg = out["pagination"]
+    assert pg["returned_count"] == 10
+    assert pg["has_more"] is False
+    assert pg["next_offset"] is None

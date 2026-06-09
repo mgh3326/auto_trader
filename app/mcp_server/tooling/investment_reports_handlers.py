@@ -27,7 +27,6 @@ from app.schemas.investment_reports import (
     InvestmentReportDecideItemResponse,
     InvestmentReportItemDecisionResponse,
     InvestmentReportItemResponse,
-    InvestmentReportListResponse,
     InvestmentReportResponse,
     InvestmentWatchAlertResponse,
     InvestmentWatchEventResponse,
@@ -39,6 +38,7 @@ from app.services import market_data as market_data_service
 from app.services.investment_reports.decisions import (
     InvestmentReportDecisionService,
 )
+from app.services.investment_reports.idempotency import kst_date_from_report_key
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
@@ -327,22 +327,62 @@ async def investment_report_list_impl(
     status: str | None = None,
     report_type: str | None = None,
     limit: int = 20,
+    offset: int = 0,
 ) -> dict:
+    # ROB-465: the MCP list returns lightweight summaries (uuid/title/status/
+    # kst_date + filter context) instead of full report bodies — full reports
+    # (market_snapshot/portfolio_snapshot/report_metadata) blew the response
+    # token budget (~78k chars for ~20 reports). Detail lives in
+    # investment_report_get. The HTTP router keeps the full
+    # InvestmentReportListResponse contract (unchanged).
     capped = max(1, min(int(limit), 100))
+    eff_offset = max(0, int(offset))
     async with AsyncSessionLocal() as db:
         service = InvestmentReportQueryService(db)
+        # Fetch one extra row to derive has_more without a separate count query.
         rows = await service.list_reports(
             market=market,
             market_session=market_session,
             account_scope=account_scope,
             status=status,
             report_type=report_type,
-            limit=capped,
+            limit=capped + 1,
+            offset=eff_offset,
         )
-        response = InvestmentReportListResponse(
-            reports=[InvestmentReportResponse.model_validate(r) for r in rows]
-        )
-    return {"success": True, **response.model_dump(mode="json", by_alias=True)}
+        has_more = len(rows) > capped
+        page = rows[:capped]
+        summaries = [_report_summary(r) for r in page]
+    next_offset = eff_offset + len(page) if has_more else None
+    return {
+        "success": True,
+        "reports": summaries,
+        "pagination": {
+            "returned_count": len(summaries),
+            "offset": eff_offset,
+            "limit": capped,
+            "has_more": has_more,
+            "next_offset": next_offset,
+        },
+    }
+
+
+def _report_summary(row: Any) -> dict[str, Any]:
+    """ROB-465: lightweight list row — identifiers + filter context, no bodies.
+
+    Read straight off the ORM row (``InvestmentReport``); ``kst_date`` is not a
+    column, so recover it from the idempotency key.
+    """
+    return {
+        "report_uuid": str(row.report_uuid),
+        "report_type": row.report_type,
+        "market": row.market,
+        "market_session": row.market_session,
+        "account_scope": row.account_scope,
+        "title": row.title,
+        "status": row.status,
+        "kst_date": kst_date_from_report_key(row.idempotency_key),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -922,7 +962,11 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         name="investment_report_list",
         description=(
             "List investment_reports filtered by market / market_session / "
-            "account_scope / status / report_type. limit clamped to 1..100."
+            "account_scope / status / report_type. Returns lightweight summaries "
+            "(report_uuid/title/status/kst_date + filter context) — NOT full "
+            "report bodies; fetch detail via investment_report_get. limit clamped "
+            "to 1..100 (default 20); paginate with offset using "
+            "pagination.next_offset (null when no more)."
         ),
     )(investment_report_list_impl)
     mcp.tool(

@@ -78,6 +78,7 @@ class InvestmentReportQueryService:
         status: str | None = None,
         report_type: str | None = None,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[InvestmentReport]:
         return await self._repo.list_reports(
             market=market,
@@ -86,6 +87,7 @@ class InvestmentReportQueryService:
             status=status,
             report_type=report_type,
             limit=limit,
+            offset=offset,
         )
 
     async def latest_report(

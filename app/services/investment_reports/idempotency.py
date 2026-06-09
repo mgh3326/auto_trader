@@ -62,6 +62,22 @@ def report_key(
     )
 
 
+def kst_date_from_report_key(key: str | None) -> str | None:
+    """Recover the kst_date slot from a :func:`report_key` string.
+
+    Inverse of ``report_key`` — kept here so the two evolve together. Returns
+    ``None`` if the key is missing or doesn't match the expected 8-slot layout
+    (``report:type:market:session:scope:mode:kst_date:version``).
+    """
+    if not key:
+        return None
+    parts = key.split(":")
+    if len(parts) != 8 or parts[0] != "report":
+        return None
+    slot = parts[6]
+    return None if slot == _NONE_SLOT else slot
+
+
 def item_key(
     *,
     report_uuid: str,
