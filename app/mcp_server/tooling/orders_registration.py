@@ -165,6 +165,7 @@ def register_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
         paper_account: str | None = None,
+        report_item_uuid: str | None = None,
     ):
         routing = normalize_account_mode(
             account_mode=account_mode,
@@ -242,6 +243,7 @@ def register_order_tools(mcp: FastMCP) -> None:
                 defensive_trim=defensive_trim,
                 approval_issue_id=approval_issue_id,
                 is_mock=routing.is_kis_mock,
+                report_item_uuid=report_item_uuid,
             ),
             routing,
         )

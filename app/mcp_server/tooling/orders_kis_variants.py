@@ -212,6 +212,7 @@ async def _place_order_variant(
     approval_issue_id: str | None,
     account_mode: str | None,
     account_type: str | None,
+    report_item_uuid: str | None = None,
 ) -> dict[str, Any]:  # NOSONAR - mirrors the public MCP order contract.
     routing, early_response = _prepare_variant_call(
         tool_name, pinned_mode, account_mode, account_type
@@ -241,6 +242,7 @@ async def _place_order_variant(
             defensive_trim=defensive_trim,
             approval_issue_id=approval_issue_id,
             is_mock=_is_mock_mode(pinned_mode),
+            report_item_uuid=report_item_uuid,
         ),
         routing,
     )
@@ -392,6 +394,7 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "require operator confirmation of the exact KIS wire codes "
             "(ROB-463) and currently fail closed with an explicit error (no live "
             "order, even in dry_run); leave them unset for normal day orders. "
+            "report item에서 비롯된 주문이면 investment_report_get의 item_uuid를 report_item_uuid로 넘겨 감사 링크(ROB-473). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
@@ -420,6 +423,7 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         reserved_time: str | None = None,
         account_mode: str | None = None,
         account_type: str | None = None,
+        report_item_uuid: str | None = None,
     ) -> dict[str, Any]:
         gate = _venue_tif_gate(
             "kis_live_place_order",
@@ -453,6 +457,7 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             approval_issue_id=approval_issue_id,
             account_mode=account_mode,
             account_type=account_type,
+            report_item_uuid=report_item_uuid,
         )
 
     @mcp.tool(
@@ -648,6 +653,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         approval_issue_id: str | None = None,
         account_mode: str | None = None,
         account_type: str | None = None,
+        report_item_uuid: str | None = None,
     ) -> dict[str, Any]:
         return await _place_order_variant(
             tool_name="kis_mock_place_order",
@@ -672,6 +678,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
             approval_issue_id=approval_issue_id,
             account_mode=account_mode,
             account_type=account_type,
+            report_item_uuid=report_item_uuid,
         )
 
     @mcp.tool(
