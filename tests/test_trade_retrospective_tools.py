@@ -71,6 +71,18 @@ async def test_save_missing_symbol_envelope():
 
 
 @pytest.mark.asyncio
+async def test_save_whitespace_symbol_rejected():
+    res = await save_trade_retrospective(
+        symbol="   ",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+    )
+    assert res["success"] is False
+    assert "symbol" in res["error"]
+
+
+@pytest.mark.asyncio
 async def test_get_list_envelope():
     await save_trade_retrospective(
         symbol="005930",

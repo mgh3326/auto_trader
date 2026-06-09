@@ -49,6 +49,7 @@ async def save_trade_retrospective(
     evidence_snapshot: dict | None = None,
     created_by_profile: str | None = None,
 ) -> dict[str, Any]:
+    symbol = (symbol or "").strip()
     if not symbol:
         return {"success": False, "error": "symbol is required"}
     try:

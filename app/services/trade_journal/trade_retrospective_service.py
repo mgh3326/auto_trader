@@ -42,6 +42,35 @@ class RetrospectiveValidationError(ValueError):
     """Raised when a retrospective payload violates a typed constraint."""
 
 
+def _normalize_symbol(symbol: str, instrument_type: str) -> str:
+    """Instrument-aware symbol normalization.
+
+    Mirrors ``app.mcp_server.tooling.shared.normalize_position_symbol`` (inlined to
+    avoid a services -> mcp_server import): crypto keeps its dash (KRW-BTC stays
+    KRW-BTC; a bare ticker gets a KRW- prefix), equity_us is canonicalized to the
+    dot form (BRK-B -> BRK.B), everything else is just upper-cased. Bare
+    ``to_db_symbol`` would mangle crypto (KRW-BTC -> KRW.BTC) and diverge from
+    trade_journals/holdings.
+    """
+    normalized = symbol.strip().upper()
+    if instrument_type == "crypto":
+        if normalized and "-" not in normalized:
+            return f"KRW-{normalized}"
+        return normalized
+    if instrument_type == "equity_us":
+        return to_db_symbol(normalized).upper()
+    return normalized
+
+
+def _infer_currency(instrument_type: str) -> str | None:
+    """Best-effort settlement currency for an absolute realized_pnl amount."""
+    if instrument_type in ("equity_kr", "crypto"):
+        return "KRW"
+    if instrument_type == "equity_us":
+        return "USD"
+    return None
+
+
 def _to_decimal(x: float | None) -> Decimal | None:
     return Decimal(str(x)) if x is not None else None
 
@@ -201,8 +230,19 @@ async def save_retrospective(
             realized_pnl_value = derived
             realized_pnl_source = "derived_from_journal"
 
+    # An absolute realized_pnl with no currency would be silently dropped from the
+    # per-currency aggregate sum while still moving win_rate. Infer the currency so
+    # every realized_pnl row is countable; refuse if it cannot be determined.
+    if realized_pnl_value is not None and realized_pnl_currency is None:
+        realized_pnl_currency = _infer_currency(instrument_type)
+        if realized_pnl_currency is None:
+            raise RetrospectiveValidationError(
+                "realized_pnl requires realized_pnl_currency "
+                f"(could not infer from instrument_type={instrument_type})"
+            )
+
     payload: dict[str, Any] = {
-        "symbol": to_db_symbol(symbol),
+        "symbol": _normalize_symbol(symbol, instrument_type),
         "instrument_type": instrument_type,
         "account_mode": account_mode,
         "outcome": outcome,
@@ -258,7 +298,9 @@ async def get_retrospectives(
 ) -> dict[str, Any]:
     filters = []
     if symbol is not None:
-        filters.append(TradeRetrospective.symbol == to_db_symbol(symbol))
+        # Generic match for all stored forms (crypto keeps its dash, equity_us is
+        # dotted): strip+upper rather than to_db_symbol, which would mangle crypto.
+        filters.append(TradeRetrospective.symbol == symbol.strip().upper())
     if account_mode is not None:
         filters.append(TradeRetrospective.account_mode == account_mode)
     if strategy_key is not None:

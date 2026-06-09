@@ -8,6 +8,7 @@ import pytest_asyncio
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import now_kst
 from app.models.review import TradeRetrospective
 from app.services.trade_journal import trade_retrospective_service as svc
 
@@ -105,3 +106,84 @@ async def test_get_retrospectives_list_and_summary(db_session: AsyncSession):
     assert res["summary"]["count"] == 1
     assert res["summary"]["by_outcome"]["filled"] == 1
     assert res["entries"][0]["strategy_key"] == "A"
+
+
+@pytest.mark.asyncio
+async def test_win_rate_denominator_is_decided_rows(db_session: AsyncSession):
+    # one decided win + one evidence-available UNDECIDED row (no realized_pnl/pnl_pct).
+    # win_rate must use decided rows (1) as denominator -> 100.0, not sample_size (2) -> 50.0.
+    await _seed(db_session, strategy="A", pnl=100.0)
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="A",
+    )  # undecided: no realized_pnl, no pnl_pct
+    await db_session.commit()
+    g = (await svc.build_retrospective_aggregate(db_session, group_by="strategy"))[
+        "groups"
+    ][0]
+    assert g["sample_size"] == 2
+    assert g["wins"] == 1
+    assert g["misses"] == 0  # undecided row is NOT a miss
+    assert g["win_rate_pct"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_pnl_pct_only_win(db_session: AsyncSession):
+    # percent-only retro (realized_pnl=None, pnl_pct>0) must count as a win
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="A",
+        pnl_pct=2.5,
+    )
+    await db_session.commit()
+    g = (await svc.build_retrospective_aggregate(db_session, group_by="strategy"))[
+        "groups"
+    ][0]
+    assert g["wins"] == 1
+    assert g["win_rate_pct"] == 100.0
+    assert g["realized_pnl_sum"] == {}  # no absolute amount
+
+
+@pytest.mark.asyncio
+async def test_group_by_day(db_session: AsyncSession):
+    await _seed(db_session, strategy="A", pnl=100.0)
+    result = await svc.build_retrospective_aggregate(db_session, group_by="day")
+    assert result["group_by"] == "day"
+    today_kst = now_kst().date().isoformat()
+    assert result["groups"][0]["group"] == today_kst
+
+
+@pytest.mark.asyncio
+async def test_avg_pnl_pct_value_and_none(db_session: AsyncSession):
+    # two rows pnl_pct +1.0 / -1.0 -> avg 0.0 (computed, not None)
+    await _seed(db_session, strategy="A", pnl=100.0)  # pnl_pct 1.0
+    await _seed(db_session, strategy="A", pnl=-50.0)  # pnl_pct -1.0
+    g = (await svc.build_retrospective_aggregate(db_session, group_by="strategy"))[
+        "groups"
+    ][0]
+    assert g["avg_pnl_pct"] == 0.0
+    # a group whose only rows have no pnl_pct -> None (not 0)
+    await db_session.execute(delete(TradeRetrospective))
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="B",
+        realized_pnl=10.0,
+        realized_pnl_currency="KRW",
+    )  # decided by realized_pnl, but pnl_pct is None
+    await db_session.commit()
+    g2 = (await svc.build_retrospective_aggregate(db_session, group_by="strategy"))[
+        "groups"
+    ][0]
+    assert g2["avg_pnl_pct"] is None
