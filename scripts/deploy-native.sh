@@ -53,6 +53,8 @@ SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.scheduler"
   "com.robinco.auto-trader.kis-websocket"
   "com.robinco.auto-trader.upbit-websocket"
+  # ROB-469 PR3: single non-color-specific watchdog that restarts a wedged MCP color.
+  "com.robinco.auto-trader.mcp-watchdog"
 )
 
 NEW_RELEASE="$RELEASES/$SHA"
