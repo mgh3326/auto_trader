@@ -877,6 +877,8 @@ async def investment_report_generate_from_bundle_impl(
     user_id: int | None = None,
     overwrite_existing: bool = False,
     overwrite_reason: str | None = None,
+    budget_basis: str = "available_usd",
+    operator_budget_override_usd: float | None = None,
 ) -> dict:
     """Generate a snapshot-backed advisory report.
 
@@ -994,6 +996,8 @@ async def investment_report_generate_from_bundle_impl(
         "user_id": resolved_user_id,
         "overwrite_existing": overwrite_existing,
         "overwrite_reason": overwrite_reason,
+        "budget_basis": budget_basis,
+        "operator_budget_override_usd": operator_budget_override_usd,
     }
     request = ReportGenerationRequest.model_validate(payload)
 
