@@ -12,12 +12,17 @@ from typing import Any
 import httpx
 
 import app.services.brokers.upbit.client as upbit_service
+import app.services.market_data as market_data_service
 from app.core.config import settings
 from app.mcp_server.caller_identity import get_caller_agent_id, get_caller_source
 from app.mcp_server.tooling.kis_mock_ledger import _get_kis_mock_shadow_exposure
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
+)
+from app.mcp_server.tooling.market_session import (
+    DATA_STATE_PREMARKET_UNAVAILABLE,
+    kr_market_data_state,
 )
 from app.mcp_server.tooling.portfolio_cash import (
     extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
@@ -334,6 +339,34 @@ def _resolve_scalping_exit_context(
     return ScalpingExitContext(strategy_id=strategy_id, reason=resolved_reason)
 
 
+async def _premarket_nxt_price_for_kr(symbol: str) -> float | None:
+    """ROB-463: live NXT price for a KR equity during pre-market, else None.
+
+    Returns None (so the caller falls back to the KRX quote) when it is not the
+    KR pre-market session, when the symbol has no NXT book, or on any fetch error
+    — the order path must never be blocked by this best-effort price source.
+    Priced as the NXT 예상체결가 (expected_price) when present, else the best
+    bid/ask mid (or whichever single side exists).
+    """
+    if kr_market_data_state() != DATA_STATE_PREMARKET_UNAVAILABLE:
+        return None
+    try:
+        book = await market_data_service.get_orderbook(symbol, "kr", venue="nxt")
+    except Exception as exc:  # best-effort; never block the order on pricing
+        logger.warning("NXT pre-market price fetch failed for %s: %s", symbol, exc)
+        return None
+    if book is None or book.is_empty_book:
+        return None
+    if book.expected_price:
+        return float(book.expected_price)
+    best_ask = book.asks[0].price if book.asks else None
+    best_bid = book.bids[0].price if book.bids else None
+    if best_ask and best_bid:
+        return (best_ask + best_bid) / 2.0
+    single = best_ask or best_bid
+    return float(single) if single else None
+
+
 async def _get_current_price_for_order(symbol: str, market_type: str) -> float | None:
     if market_type == "crypto":
         prices = await upbit_service.fetch_multiple_current_prices(
@@ -341,6 +374,12 @@ async def _get_current_price_for_order(symbol: str, market_type: str) -> float |
         )
         return prices.get(symbol)
     if market_type == "equity_kr":
+        # ROB-463: during KR pre-market, the KRX quote is the prior close — using
+        # it as "current price" falsely rejected valid pre-market buys. Prefer the
+        # live NXT orderbook price when available; otherwise fall back to KRX.
+        nxt_price = await _premarket_nxt_price_for_kr(symbol)
+        if nxt_price is not None:
+            return nxt_price
         quote = await _fetch_quote_equity_kr(symbol)
         return float(quote.get("price")) if quote.get("price") else None
 

@@ -666,6 +666,143 @@ async def test_kis_overseas_order_payload_fields_buy(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class TestPremarketNxtPricing:
+    """ROB-463: KR pre-market orders price off the live NXT orderbook, not the
+    stale KRX previous close."""
+
+    @staticmethod
+    def _nxt_book(expected_price=None, asks=None, bids=None, empty=False):
+        import app.services.market_data as market_data_service
+
+        return market_data_service.OrderbookSnapshot(
+            symbol="005930",
+            instrument_type="equity_kr",
+            source="kis",
+            asks=[
+                market_data_service.OrderbookLevel(price=p, quantity=q)
+                for p, q in (asks or [])
+            ],
+            bids=[
+                market_data_service.OrderbookLevel(price=p, quantity=q)
+                for p, q in (bids or [])
+            ],
+            total_ask_qty=0.0,
+            total_bid_qty=0.0,
+            bid_ask_ratio=None,
+            expected_price=expected_price,
+            venue="nxt",
+            is_empty_book=empty,
+        )
+
+    @pytest.mark.asyncio
+    async def test_premarket_uses_nxt_expected_price(self, monkeypatch):
+        from app.mcp_server.tooling import order_validation
+        from app.mcp_server.tooling.market_session import (
+            DATA_STATE_PREMARKET_UNAVAILABLE,
+        )
+
+        monkeypatch.setattr(
+            order_validation,
+            "kr_market_data_state",
+            lambda *a, **k: DATA_STATE_PREMARKET_UNAVAILABLE,
+        )
+        monkeypatch.setattr(
+            order_validation.market_data_service,
+            "get_orderbook",
+            AsyncMock(return_value=self._nxt_book(expected_price=114300)),
+        )
+        monkeypatch.setattr(
+            order_validation,
+            "_fetch_quote_equity_kr",
+            AsyncMock(return_value={"price": 112400}),
+        )
+
+        price = await order_validation._get_current_price_for_order(
+            "005930", "equity_kr"
+        )
+        assert price == pytest.approx(114300.0)
+
+    @pytest.mark.asyncio
+    async def test_premarket_uses_nxt_mid_when_no_expected(self, monkeypatch):
+        from app.mcp_server.tooling import order_validation
+        from app.mcp_server.tooling.market_session import (
+            DATA_STATE_PREMARKET_UNAVAILABLE,
+        )
+
+        monkeypatch.setattr(
+            order_validation,
+            "kr_market_data_state",
+            lambda *a, **k: DATA_STATE_PREMARKET_UNAVAILABLE,
+        )
+        monkeypatch.setattr(
+            order_validation.market_data_service,
+            "get_orderbook",
+            AsyncMock(
+                return_value=self._nxt_book(asks=[(114500, 10)], bids=[(114100, 10)])
+            ),
+        )
+        monkeypatch.setattr(
+            order_validation,
+            "_fetch_quote_equity_kr",
+            AsyncMock(return_value={"price": 112400}),
+        )
+
+        price = await order_validation._get_current_price_for_order(
+            "005930", "equity_kr"
+        )
+        assert price == pytest.approx(114300.0)  # mid of 114500 / 114100
+
+    @pytest.mark.asyncio
+    async def test_premarket_empty_book_falls_back_to_krx(self, monkeypatch):
+        from app.mcp_server.tooling import order_validation
+        from app.mcp_server.tooling.market_session import (
+            DATA_STATE_PREMARKET_UNAVAILABLE,
+        )
+
+        monkeypatch.setattr(
+            order_validation,
+            "kr_market_data_state",
+            lambda *a, **k: DATA_STATE_PREMARKET_UNAVAILABLE,
+        )
+        monkeypatch.setattr(
+            order_validation.market_data_service,
+            "get_orderbook",
+            AsyncMock(return_value=self._nxt_book(empty=True)),
+        )
+        monkeypatch.setattr(
+            order_validation,
+            "_fetch_quote_equity_kr",
+            AsyncMock(return_value={"price": 112400}),
+        )
+
+        price = await order_validation._get_current_price_for_order(
+            "005930", "equity_kr"
+        )
+        assert price == pytest.approx(112400.0)
+
+    @pytest.mark.asyncio
+    async def test_regular_session_uses_krx_and_skips_nxt(self, monkeypatch):
+        from app.mcp_server.tooling import order_validation
+        from app.mcp_server.tooling.market_session import DATA_STATE_FRESH
+
+        ob = AsyncMock()
+        monkeypatch.setattr(
+            order_validation, "kr_market_data_state", lambda *a, **k: DATA_STATE_FRESH
+        )
+        monkeypatch.setattr(order_validation.market_data_service, "get_orderbook", ob)
+        monkeypatch.setattr(
+            order_validation,
+            "_fetch_quote_equity_kr",
+            AsyncMock(return_value={"price": 112400}),
+        )
+
+        price = await order_validation._get_current_price_for_order(
+            "005930", "equity_kr"
+        )
+        assert price == pytest.approx(112400.0)
+        ob.assert_not_awaited()  # NXT orderbook not consulted in regular session
+
+
 class TestPlaceOrderHighAmount:
     """Tests for place_order with high-amount orders."""
 
