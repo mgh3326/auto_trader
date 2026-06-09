@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -322,3 +324,75 @@ async def test_cited_snapshot_uuids_round_trip(session: AsyncSession) -> None:
     repo = InvestmentReportsRepository(session)
     items = await repo.list_items_for_report(report.id)
     assert items[0].cited_snapshot_uuids == [u1, u2]
+
+
+# ---------------------------------------------------------------------------
+# ROB-455 PR1 — versioning first-class (auto-supersede on chain + set_status)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_chain_supersedes_previous_report(session: AsyncSession) -> None:
+    service = InvestmentReportIngestionService(session)
+    a = await service.ingest(_base_request(kst_date="2026-05-18"))
+    assert a.status == "draft"
+    b = await service.ingest(
+        _base_request(kst_date="2026-05-19", previous_report_uuid=a.report_uuid)
+    )
+    await session.refresh(a)
+    assert a.status == "superseded"
+    assert a.report_metadata.get("superseded_by") == str(b.report_uuid)
+
+
+@pytest.mark.asyncio
+async def test_chain_supersede_noop_when_previous_missing(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    # A dangling previous_report_uuid is a trace hint that may not resolve — the
+    # new report must still be created without error.
+    b = await service.ingest(_base_request(previous_report_uuid=uuid.uuid4()))
+    assert b.report_uuid is not None
+
+
+@pytest.mark.asyncio
+async def test_chain_does_not_supersede_terminal_previous(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    a = await service.ingest(_base_request(kst_date="2026-05-18"))
+    await service.set_report_status(report_uuid=a.report_uuid, status="expired")
+    await service.ingest(
+        _base_request(kst_date="2026-05-19", previous_report_uuid=a.report_uuid)
+    )
+    await session.refresh(a)
+    assert a.status == "expired"  # only draft/published are auto-superseded
+
+
+@pytest.mark.asyncio
+async def test_set_report_status_transitions_and_is_idempotent(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    a = await service.ingest(_base_request())
+    updated = await service.set_report_status(
+        report_uuid=a.report_uuid,
+        status="decided",
+        actor="operator",
+        reason="all items resolved",
+    )
+    assert updated is not None
+    assert updated.status == "decided"
+    transitions = updated.report_metadata.get("status_transitions")
+    assert transitions and transitions[-1]["to"] == "decided"
+    assert transitions[-1]["actor"] == "operator"
+
+    # Idempotent: setting the same status again is a no-op success.
+    again = await service.set_report_status(
+        report_uuid=a.report_uuid, status="decided"
+    )
+    assert again is not None and again.status == "decided"
+
+    # Unknown report -> None (caller surfaces not_found).
+    assert (
+        await service.set_report_status(report_uuid=uuid.uuid4(), status="expired")
+        is None
+    )
