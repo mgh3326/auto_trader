@@ -31,6 +31,9 @@ from app.mcp_server.tooling.fundamentals._profiles import (
     handle_get_company_profile,
     handle_get_crypto_profile,
 )
+from app.mcp_server.tooling.fundamentals._retail_sentiment import (
+    handle_get_retail_sentiment,
+)
 from app.mcp_server.tooling.fundamentals._sector_peers import (
     handle_get_sector_peers,
 )
@@ -73,6 +76,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_crypto_catalysts",
     "get_crypto_order_flow",
     "get_crypto_social",
+    "get_retail_sentiment",
     "get_market_index",
     "get_upbit_index",
     "get_upbit_altseason",
@@ -329,6 +333,23 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     )
     async def get_crypto_social(symbol: str) -> dict[str, Any]:
         return await handle_get_crypto_social(symbol)
+
+    @mcp.tool(
+        name="get_retail_sentiment",
+        description=(
+            "Get aggregate retail-discussion activity for a KR stock from Naver 종목토론 "
+            "(rank + post/comment/reaction counts + overheat_flag). Aggregate-only — no "
+            "raw post text. Live fetch is operator-gated (status='disabled' until "
+            "enabled); a symbol outside the hot-discussion top-N returns status='not_ranked' "
+            "(not zero). KR 6-digit codes only."
+        ),
+    )
+    async def get_retail_sentiment(
+        symbol: str,
+        market: str = "kr",
+        window: str = "1d",
+    ) -> dict[str, Any]:
+        return await handle_get_retail_sentiment(symbol, market, window)
 
     @mcp.tool(
         name="get_market_index",
