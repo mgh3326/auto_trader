@@ -634,6 +634,10 @@ async def _preview_sell(
         if price is None:
             result["error"] = "price is required for limit sell orders"
             return result
+        # defensive_trim is live-only (Trader-agent + approval); allow_loss_sell is
+        # mock-only (is_mock=True, equity). Orthogonal by design. If they ever
+        # coexist, allow_loss_sell wins (it early-returns first in the guard), so the
+        # logging elif chain below also gates defensive_trim on `not allow_loss_sell`.
         allow_loss_sell = is_mock and market_type in ("equity_kr", "equity_us")
         guard_error = evaluate_sell_price_guards(
             price=price,
@@ -656,7 +660,11 @@ async def _preview_sell(
                 scalping_exit_ctx=scalping_exit_ctx,
                 phase="preview",
             )
-        elif price < avg_price * 1.01 and defensive_trim_ctx is not None:
+        elif (
+            not allow_loss_sell
+            and price < avg_price * 1.01
+            and defensive_trim_ctx is not None
+        ):
             _log_defensive_trim_bypass(
                 symbol=symbol,
                 market_type=market_type,
@@ -850,6 +858,10 @@ async def _validate_sell_side(
     avg_price = _to_float(holdings.get("avg_price"), default=0.0)
 
     if order_type == "limit" and price is not None:
+        # defensive_trim is live-only (Trader-agent + approval); allow_loss_sell is
+        # mock-only (is_mock=True, equity). Orthogonal by design. If they ever
+        # coexist, allow_loss_sell wins (it early-returns first in the guard), so the
+        # logging elif chain below also gates defensive_trim on `not allow_loss_sell`.
         allow_loss_sell = is_mock and market_type in ("equity_kr", "equity_us")
         guard_error = evaluate_sell_price_guards(
             price=price,
@@ -871,7 +883,11 @@ async def _validate_sell_side(
                 scalping_exit_ctx=scalping_exit_ctx,
                 phase="execution",
             )
-        elif price < avg_price * 1.01 and defensive_trim_ctx is not None:
+        elif (
+            not allow_loss_sell
+            and price < avg_price * 1.01
+            and defensive_trim_ctx is not None
+        ):
             _log_defensive_trim_bypass(
                 symbol=normalized_symbol,
                 market_type=market_type,

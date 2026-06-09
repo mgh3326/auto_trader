@@ -8,12 +8,15 @@ equities"); live (is_mock=False) and crypto (real Upbit funds) stay fully guarde
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from app.mcp_server.tooling import order_validation
-from app.mcp_server.tooling.order_validation import evaluate_sell_price_guards
+from app.mcp_server.tooling.order_validation import (
+    ScalpingExitContext,
+    evaluate_sell_price_guards,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -205,3 +208,103 @@ async def test_validate_sell_side_mock_crypto_still_blocks_loss(monkeypatch) -> 
     )
     assert err is not None
     assert "below minimum" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# Audit trail: the bypass must be logged (observability is the whole story)
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mock_equity_loss_sell_emits_audit_log(monkeypatch) -> None:
+    monkeypatch.setattr(
+        order_validation,
+        "_get_holdings_for_order",
+        AsyncMock(return_value={"avg_price": 90400.0, "quantity": 10}),
+    )
+    monkeypatch.setattr(
+        order_validation,
+        "_get_kis_mock_shadow_exposure",
+        AsyncMock(
+            return_value={
+                "confidence": "db_shadow_pending",
+                "sell_reserved_quantity": 0,
+            }
+        ),
+    )
+    # _log_mock_loss_sell_bypass is a sync function -> plain Mock (not AsyncMock).
+    log_mock = Mock()
+    monkeypatch.setattr(order_validation, "_log_mock_loss_sell_bypass", log_mock)
+
+    await order_validation._preview_sell(
+        symbol="375500",
+        order_type="limit",
+        quantity=10,
+        price=68000.0,
+        current_price=68500.0,
+        market_type="equity_kr",
+        is_mock=True,
+    )
+    await order_validation._validate_sell_side(
+        symbol="375500",
+        normalized_symbol="375500",
+        market_type="equity_kr",
+        quantity=10,
+        order_type="limit",
+        price=68000.0,
+        current_price=68500.0,
+        order_error_fn=lambda m: {"error": m},
+        is_mock=True,
+        dry_run=True,
+    )
+    # Both the preview and execution phases audit the bypass.
+    phases = {c.kwargs["phase"] for c in log_mock.call_args_list}
+    assert phases == {"preview", "execution"}
+    for call in log_mock.call_args_list:
+        assert call.kwargs["symbol"] == "375500"
+        assert call.kwargs["market_type"] == "equity_kr"
+        assert call.kwargs["price"] == 68000.0
+        assert call.kwargs["avg_price"] == 90400.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_sell_market_order_skips_price_guards(monkeypatch) -> None:
+    # Market sells never hit evaluate_sell_price_guards (limit-only) — a deep-loss
+    # market sell was always allowed and is unaffected by allow_loss_sell. Documents
+    # the intentional exemption + guards against a future maintainer adding a floor.
+    log_mock = Mock()
+    monkeypatch.setattr(order_validation, "_log_mock_loss_sell_bypass", log_mock)
+    monkeypatch.setattr(
+        order_validation,
+        "_get_holdings_for_order",
+        AsyncMock(return_value={"avg_price": 90400.0, "quantity": 10}),
+    )
+    result = await order_validation._preview_sell(
+        symbol="375500",
+        order_type="market",
+        quantity=10,
+        price=None,
+        current_price=68500.0,
+        market_type="equity_kr",
+        is_mock=True,
+    )
+    assert "error" not in result
+    assert result["price"] == 68500.0  # execution_price == current_price
+    assert result["realized_pnl"] < 0
+    log_mock.assert_not_called()  # market path never logs a guard bypass
+
+
+@pytest.mark.unit
+def test_scalping_exit_takes_precedence_over_allow_loss_sell() -> None:
+    # If a mock equity scalping exit and allow_loss_sell are both in play, the guard
+    # still returns None (both bypass), and the caller's elif chain attributes the
+    # bypass to scalping (checked first) — never double-counted as a loss-sell.
+    err = evaluate_sell_price_guards(
+        price=68000.0,
+        current_price=68500.0,
+        avg_price=90400.0,
+        defensive_trim_ctx=None,
+        scalping_exit_ctx=ScalpingExitContext(strategy_id="s", reason="stop_loss"),
+        allow_loss_sell=True,
+    )
+    assert err is None
