@@ -46,7 +46,9 @@ def _row(fill: ExecutionLedgerUpsert) -> ExecutionLedger:
 
 
 class _AggregateResult:
-    def __init__(self, rows: list[tuple[str, str, str, InstrumentType, str, str, Decimal]]):
+    def __init__(
+        self, rows: list[tuple[str, str, str, InstrumentType, str, str, Decimal]]
+    ):
         self._rows = rows
 
     def all(self) -> list[tuple[str, str, str, InstrumentType, str, str, Decimal]]:
@@ -149,7 +151,9 @@ def test_two_fills_same_order_different_fill_seq_are_distinct() -> None:
 
 
 @pytest.mark.asyncio
-async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows() -> None:
+async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows() -> (
+    None
+):
     cutover = datetime(2026, 5, 13, 0, 0, tzinfo=UTC)
     key_fields = {
         "broker": "upbit",
