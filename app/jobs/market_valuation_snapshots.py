@@ -236,7 +236,7 @@ def _aggregate_report(
     derived from each payload's raw_payload['_field_provenance'] and column values.
     Operator smoke (acceptance #5): provider attribution + coverage, works in dry-run."""
     backfill: Counter[str] = Counter()
-    coverage: Counter[str] = Counter({f: 0 for f in _COVERAGE_FIELDS})
+    coverage: Counter[str] = Counter(dict.fromkeys(_COVERAGE_FIELDS, 0))
     for payload in payloads:
         provenance = (payload.raw_payload or {}).get("_field_provenance", {})
         for field_name, src in provenance.items():
@@ -289,7 +289,7 @@ async def run_market_valuation_snapshot_build(
     total_built = 0
     batches = 0
     finnhub_backfill: Counter[str] = Counter()
-    coverage: Counter[str] = Counter({f: 0 for f in _COVERAGE_FIELDS})
+    coverage: Counter[str] = Counter(dict.fromkeys(_COVERAGE_FIELDS, 0))
     for start in range(0, len(symbols), effective_batch_size):
         batches += 1
         result = await build_valuation_snapshots_for_market(

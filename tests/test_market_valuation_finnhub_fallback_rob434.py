@@ -168,8 +168,13 @@ async def test_apply_fallback_no_gap_skips_finnhub(monkeypatch) -> None:
     monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
     # every field present → no finnhub call
     raw = {
-        "ROE": 15.0, "PER": 8.0, "PBR": 0.9, "Dividend Yield": 0.02,
-        "marketCap": 3e9, "yearHigh": 100.0, "yearLow": 80.0,
+        "ROE": 15.0,
+        "PER": 8.0,
+        "PBR": 0.9,
+        "Dividend Yield": 0.02,
+        "marketCap": 3e9,
+        "yearHigh": 100.0,
+        "yearLow": 80.0,
         "high_52w_date": "2026-01-01",
     }
     out = await fb.apply_valuation_fallback("AAPL", raw, yahoo_failed=False)
@@ -190,7 +195,9 @@ async def test_fetcher_backfills_roe_when_yahoo_null(monkeypatch) -> None:
         return {"PER": 8.0, "ROE": None, "marketCap": 3_000_000_000}  # ROE missing
 
     monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
-    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fundamental_info", _fund)
+    monkeypatch.setattr(
+        "app.services.brokers.yahoo.client.fetch_fundamental_info", _fund
+    )
     monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
 
     async def _metrics(symbol):  # noqa: ANN001
@@ -223,7 +230,9 @@ async def test_fetcher_recovers_total_yahoo_failure(monkeypatch) -> None:
         raise RuntimeError("Invalid Crumb / Session is closed")
 
     monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
-    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fundamental_info", _boom)
+    monkeypatch.setattr(
+        "app.services.brokers.yahoo.client.fetch_fundamental_info", _boom
+    )
     monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
 
     async def _metrics(symbol):  # noqa: ANN001
@@ -248,7 +257,9 @@ async def test_fetcher_total_failure_reraises_when_disabled(monkeypatch) -> None
         raise RuntimeError("Invalid Crumb")
 
     monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
-    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fundamental_info", _boom)
+    monkeypatch.setattr(
+        "app.services.brokers.yahoo.client.fetch_fundamental_info", _boom
+    )
     monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: False)  # disabled
 
     with pytest.raises(RuntimeError, match="Invalid Crumb"):
@@ -265,13 +276,23 @@ def test_aggregate_reporting_from_payloads() -> None:
     )
 
     p1 = MarketValuationSnapshotUpsert(
-        market="us", symbol="AAA", snapshot_date=dt.date(2026, 6, 9), source="yahoo",
-        per=Decimal("8"), roe=Decimal("18"), market_cap=Decimal("3e9"),
+        market="us",
+        symbol="AAA",
+        snapshot_date=dt.date(2026, 6, 9),
+        source="yahoo",
+        per=Decimal("8"),
+        roe=Decimal("18"),
+        market_cap=Decimal("3e9"),
         raw_payload={"_field_provenance": {"roe": "finnhub"}},
     )
     p2 = MarketValuationSnapshotUpsert(
-        market="us", symbol="BBB", snapshot_date=dt.date(2026, 6, 9), source="yahoo",
-        per=Decimal("9"), roe=None, market_cap=Decimal("5e9"),
+        market="us",
+        symbol="BBB",
+        snapshot_date=dt.date(2026, 6, 9),
+        source="yahoo",
+        per=Decimal("9"),
+        roe=None,
+        market_cap=Decimal("5e9"),
         raw_payload={},
     )
     backfill, coverage = _aggregate_report([p1, p2])
@@ -330,7 +351,10 @@ async def test_backfilled_row_upserts_and_passes_quality_guard(db_session) -> No
         sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
     )
     await db_session.commit()
-    assert await MarketValuationSnapshotsRepository(db_session).upsert(result.payloads) == 1
+    assert (
+        await MarketValuationSnapshotsRepository(db_session).upsert(result.payloads)
+        == 1
+    )
     await db_session.commit()
 
     # The backfilled row survives the read-time quality guard (mcap≥$100M, roe≤300%).
@@ -348,9 +372,3 @@ async def test_backfilled_row_upserts_and_passes_quality_guard(db_session) -> No
         sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol == sym)
     )
     await db_session.commit()
-
-
-
-
-
-

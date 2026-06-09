@@ -134,4 +134,3 @@ async def apply_valuation_fallback(
         for field in filled:
             provenance[field] = "finnhub"
     return raw
-
