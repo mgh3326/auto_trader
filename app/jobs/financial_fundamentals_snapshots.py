@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -75,6 +76,89 @@ def _validate_market(market: str) -> str:
     return market_norm
 
 
+_KR_COMMON_SYMBOL_RE = re.compile(r"^\d{6}$")
+_KR_PREFERRED_NAME_RE = re.compile(r"(?:\d+)?우B?$|우선주")
+_KR_ETF_OR_STRUCTURED_PREFIXES = (
+    "ACE",
+    "ARIRANG",
+    "BNK",
+    "HANARO",
+    "HK",
+    "IBK",
+    "ITF",
+    "KBSTAR",
+    "KODEX",
+    "KOSEF",
+    "KTOP",
+    "마이티",
+    "PLUS",
+    "RISE",
+    "SOL",
+    "TIMEFOLIO",
+    "TIGER",
+    "TREX",
+    "UNICORN",
+    "WOORI",
+    "1Q",
+)
+_KR_NON_COMMON_NAME_TOKENS = (
+    "ETF",
+    "ETN",
+    "스팩",
+    "기업인수목적",
+    "커버드콜",
+    "액티브",
+    "합성",
+    "회사채",
+    "국고채",
+    "채권",
+    "인프라",
+    "리츠",
+    "REIT",
+    "선박투자",
+    "부동산투자",
+)
+
+
+def _compact_name(name: str) -> str:
+    return "".join(str(name or "").split())
+
+
+def is_dart_common_kr_equity(symbol: str, name: str) -> bool:
+    """Return True for KR ordinary/common stocks suitable for DART fundamentals.
+
+    ``kr_symbol_universe`` is venue-sourced and includes ETFs/ETNs/SPACs,
+    alphanumeric issue codes, preferred shares, REITs, and infrastructure funds.
+    DART fundamentals backfill should spend request budget only on ordinary equity
+    stock codes; otherwise --skip-existing eventually burns the daily quota on the
+    non-common tail that OpenDART cannot resolve.
+    """
+
+    symbol_norm = str(symbol or "").strip().upper()
+    if _KR_COMMON_SYMBOL_RE.fullmatch(symbol_norm) is None:
+        return False
+
+    name_norm = _compact_name(name)
+    if not name_norm:
+        return False
+
+    name_upper = name_norm.upper()
+    if _KR_PREFERRED_NAME_RE.search(name_norm):
+        return False
+    if any(
+        name_upper.startswith(prefix.upper())
+        for prefix in _KR_ETF_OR_STRUCTURED_PREFIXES
+    ):
+        return False
+    if any(token.upper() in name_upper for token in _KR_NON_COMMON_NAME_TOKENS):
+        return False
+    return True
+
+
+def _common_symbols_from_rows(rows: list[tuple[str, str]]) -> list[str]:
+    return [symbol for symbol, name in rows if is_dart_common_kr_equity(symbol, name)]
+
+
 async def resolve_symbols(market: str, override: list[str], limit: int) -> list[str]:
     _validate_market(market)
     if override:
@@ -83,13 +167,12 @@ async def resolve_symbols(market: str, override: list[str], limit: int) -> list[
         from app.models.kr_symbol_universe import KRSymbolUniverse
 
         stmt = (
-            sa.select(KRSymbolUniverse.symbol)
+            sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name)
             .where(KRSymbolUniverse.is_active.is_(True))
             .order_by(KRSymbolUniverse.symbol)
-            .limit(limit)
         )
         result = await session.execute(stmt)
-        return [r[0] for r in result.all()]
+        return _common_symbols_from_rows(list(result.all()))[:limit]
 
 
 async def resolve_active_universe(market: str) -> list[str]:
@@ -98,12 +181,12 @@ async def resolve_active_universe(market: str) -> list[str]:
         from app.models.kr_symbol_universe import KRSymbolUniverse
 
         stmt = (
-            sa.select(KRSymbolUniverse.symbol)
+            sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name)
             .where(KRSymbolUniverse.is_active.is_(True))
             .order_by(KRSymbolUniverse.symbol)
         )
         result = await session.execute(stmt)
-        return [r[0] for r in result.all()]
+        return _common_symbols_from_rows(list(result.all()))
 
 
 async def _already_collected_symbols(market: str) -> set[str]:
