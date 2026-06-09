@@ -12,20 +12,6 @@ from decimal import Decimal
 from typing import Any, Literal
 from typing import cast as typing_cast
 
-
-def _coerce_report_item_uuid(value: str | None) -> uuid.UUID | None:
-    """ROB-473 — parse a report_item_uuid string fail-open.
-
-    Audit metadata only — a malformed value must never block the order, so a
-    bad string resolves to None (no linkage) rather than raising.
-    """
-    if not value:
-        return None
-    try:
-        return uuid.UUID(str(value))
-    except (ValueError, TypeError, AttributeError):
-        return None
-
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.caller_identity import get_caller_source
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
@@ -63,6 +49,21 @@ from app.mcp_server.tooling.shared import (
 from app.services.brokers.kis import KISClient
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+
+
+def _coerce_report_item_uuid(value: str | None) -> uuid.UUID | None:
+    """ROB-473 — parse a report_item_uuid string fail-open.
+
+    Audit metadata only — a malformed value must never block the order, so a
+    bad string resolves to None (no linkage) rather than raising.
+    """
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
 
 # Phase 2 strategy constants
 CRYPTO_STOP_LOSS_PCT = 0.045

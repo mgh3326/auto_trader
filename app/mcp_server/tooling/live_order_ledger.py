@@ -462,3 +462,36 @@ async def _record_live_order(
             )
         ),
     }
+
+
+async def list_live_orders_by_report_item_uuid(
+    report_item_uuid: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """ROB-473 — return live US/crypto orders linked to a report item (audit)."""
+    async with _order_session_factory()() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(LiveOrderLedger)
+                    .where(LiveOrderLedger.report_item_uuid == report_item_uuid)
+                    .order_by(LiveOrderLedger.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        {
+            "ledger_id": r.id,
+            "order_no": r.order_no,
+            "symbol": r.symbol,
+            "side": r.side,
+            "status": r.status,
+            "account_scope": r.account_scope,
+            "market": r.market,
+            "report_item_uuid": str(r.report_item_uuid)
+            if r.report_item_uuid
+            else None,
+        }
+        for r in rows
+    ]

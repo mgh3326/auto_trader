@@ -571,3 +571,34 @@ async def kis_live_reconcile_orders_impl(
             f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}"
         ),
     }
+
+
+async def list_kis_live_orders_by_report_item_uuid(
+    report_item_uuid: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """ROB-473 — return live KR orders linked to a report item (audit)."""
+    async with _order_session_factory()() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(KISLiveOrderLedger)
+                    .where(KISLiveOrderLedger.report_item_uuid == report_item_uuid)
+                    .order_by(KISLiveOrderLedger.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        {
+            "ledger_id": r.id,
+            "order_no": r.order_no,
+            "symbol": r.symbol,
+            "side": r.side,
+            "status": r.status,
+            "report_item_uuid": str(r.report_item_uuid)
+            if r.report_item_uuid
+            else None,
+        }
+        for r in rows
+    ]
