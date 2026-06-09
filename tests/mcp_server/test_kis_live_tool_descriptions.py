@@ -5,6 +5,7 @@ from app.mcp_server.tooling import orders_kis_variants as mod
 def _tool_desc(name: str) -> str:
     # descriptions live as string literals in the module source.
     import inspect
+
     return inspect.getsource(mod)
 
 

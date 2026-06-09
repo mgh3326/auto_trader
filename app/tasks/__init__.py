@@ -8,7 +8,7 @@ from app.tasks import (
     invest_screener_snapshot_tasks,
     investor_flow_snapshot_tasks,
     journal_verdict_tasks,
-    kis_live_reconcile_tasks,
+    kis_live_reconcile_tasks,  # noqa: F401
     kr_candles_tasks,
     kr_symbol_universe_tasks,
     market_quote_snapshot_tasks,
