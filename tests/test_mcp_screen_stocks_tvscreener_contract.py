@@ -1,5 +1,5 @@
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -13,6 +13,19 @@ from app.services.tvscreener_service import (
 from tests._mcp_tooling_support import build_tools
 
 pytest_plugins = ("tests._mcp_tooling_support",)
+
+
+@pytest.fixture(autouse=True)
+def _disable_kr_ranking_snapshot():
+    """ROB-388: these contract tests assert the *tvscreener* KR path specifically. The
+    snapshot-primary path (kr_market_ranking) now precedes tvscreener for plain eligible
+    KR requests and is covered in test_mcp_screen_stocks_kr.py, so disable it here to keep
+    exercising the tvscreener contract in isolation."""
+    with patch(
+        "app.mcp_server.tooling.screening.kr.load_kr_ranking_snapshot",
+        new=AsyncMock(return_value=None),
+    ):
+        yield
 
 
 def _stock_capability_snapshot(

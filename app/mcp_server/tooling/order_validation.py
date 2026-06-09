@@ -82,6 +82,7 @@ def evaluate_sell_price_guards(
     avg_price: float,
     defensive_trim_ctx: DefensiveTrimContext | None,
     scalping_exit_ctx: ScalpingExitContext | None,
+    allow_loss_sell: bool = False,
 ) -> str | None:
     """Single source of truth for limit-sell price guards.
 
@@ -89,10 +90,18 @@ def evaluate_sell_price_guards(
 
     Matrix:
       - scalping_exit_ctx present  -> both guards bypassed (mock scalping exit).
+      - allow_loss_sell True       -> both guards bypassed (ROB-461 kis_mock equity
+                                       practice: 손절 / stop-loss / loss rebalancing).
       - defensive_trim_ctx present -> floor bypassed, current-price guard enforced.
       - neither                    -> both guards enforced.
     """
     if scalping_exit_ctx is not None:
+        return None
+    # ROB-461 — kis_mock is a practice sandbox with no real money, so a loss-sell
+    # (below avg*1.01, possibly below current) must be allowed there. The caller
+    # scopes this to is_mock AND equity (never crypto/live); see _preview_sell /
+    # _validate_sell_side. Operator-requested: mock must let 손절/스톱로스 be practiced.
+    if allow_loss_sell:
         return None
     min_sell_price = avg_price * 1.01
     if price < min_sell_price and defensive_trim_ctx is None:
@@ -171,6 +180,30 @@ def _log_scalping_exit_bypass(
             "avg_price": avg_price,
             "strategy_id": scalping_exit_ctx.strategy_id,
             "reason": scalping_exit_ctx.reason,
+            "phase": phase,
+        },
+    )
+
+
+def _log_mock_loss_sell_bypass(
+    *,
+    symbol: str,
+    market_type: str,
+    price: float,
+    current_price: float,
+    avg_price: float,
+    phase: str,
+) -> None:
+    """ROB-461 — audit a plain kis_mock equity loss-sell bypassing the price guards."""
+    logger.warning(
+        "kis_mock_loss_sell_bypass: sell price guards bypassed (mock practice)",
+        extra={
+            "account_mode": "kis_mock",
+            "symbol": symbol,
+            "market_type": market_type,
+            "price": price,
+            "current_price": current_price,
+            "avg_price": avg_price,
             "phase": phase,
         },
     )
@@ -601,12 +634,18 @@ async def _preview_sell(
         if price is None:
             result["error"] = "price is required for limit sell orders"
             return result
+        # defensive_trim is live-only (Trader-agent + approval); allow_loss_sell is
+        # mock-only (is_mock=True, equity). Orthogonal by design. If they ever
+        # coexist, allow_loss_sell wins (it early-returns first in the guard), so the
+        # logging elif chain below also gates defensive_trim on `not allow_loss_sell`.
+        allow_loss_sell = is_mock and market_type in ("equity_kr", "equity_us")
         guard_error = evaluate_sell_price_guards(
             price=price,
             current_price=current_price,
             avg_price=avg_price,
             defensive_trim_ctx=defensive_trim_ctx,
             scalping_exit_ctx=scalping_exit_ctx,
+            allow_loss_sell=allow_loss_sell,
         )
         if guard_error is not None:
             result["error"] = guard_error
@@ -621,7 +660,11 @@ async def _preview_sell(
                 scalping_exit_ctx=scalping_exit_ctx,
                 phase="preview",
             )
-        elif price < avg_price * 1.01 and defensive_trim_ctx is not None:
+        elif (
+            not allow_loss_sell
+            and price < avg_price * 1.01
+            and defensive_trim_ctx is not None
+        ):
             _log_defensive_trim_bypass(
                 symbol=symbol,
                 market_type=market_type,
@@ -630,6 +673,15 @@ async def _preview_sell(
                 avg_price=avg_price,
                 min_sell_price=avg_price * 1.01,
                 defensive_trim_ctx=defensive_trim_ctx,
+                phase="preview",
+            )
+        elif allow_loss_sell and (price < avg_price * 1.01 or price < current_price):
+            _log_mock_loss_sell_bypass(
+                symbol=symbol,
+                market_type=market_type,
+                price=price,
+                current_price=current_price,
+                avg_price=avg_price,
                 phase="preview",
             )
         order_quantity = holdings["quantity"] if quantity is None else quantity
@@ -806,12 +858,18 @@ async def _validate_sell_side(
     avg_price = _to_float(holdings.get("avg_price"), default=0.0)
 
     if order_type == "limit" and price is not None:
+        # defensive_trim is live-only (Trader-agent + approval); allow_loss_sell is
+        # mock-only (is_mock=True, equity). Orthogonal by design. If they ever
+        # coexist, allow_loss_sell wins (it early-returns first in the guard), so the
+        # logging elif chain below also gates defensive_trim on `not allow_loss_sell`.
+        allow_loss_sell = is_mock and market_type in ("equity_kr", "equity_us")
         guard_error = evaluate_sell_price_guards(
             price=price,
             current_price=current_price,
             avg_price=avg_price,
             defensive_trim_ctx=defensive_trim_ctx,
             scalping_exit_ctx=scalping_exit_ctx,
+            allow_loss_sell=allow_loss_sell,
         )
         if guard_error is not None:
             return 0.0, 0.0, order_error_fn(guard_error)
@@ -825,7 +883,11 @@ async def _validate_sell_side(
                 scalping_exit_ctx=scalping_exit_ctx,
                 phase="execution",
             )
-        elif price < avg_price * 1.01 and defensive_trim_ctx is not None:
+        elif (
+            not allow_loss_sell
+            and price < avg_price * 1.01
+            and defensive_trim_ctx is not None
+        ):
             _log_defensive_trim_bypass(
                 symbol=normalized_symbol,
                 market_type=market_type,
@@ -834,6 +896,15 @@ async def _validate_sell_side(
                 avg_price=avg_price,
                 min_sell_price=avg_price * 1.01,
                 defensive_trim_ctx=defensive_trim_ctx,
+                phase="execution",
+            )
+        elif allow_loss_sell and (price < avg_price * 1.01 or price < current_price):
+            _log_mock_loss_sell_bypass(
+                symbol=normalized_symbol,
+                market_type=market_type,
+                price=price,
+                current_price=current_price,
+                avg_price=avg_price,
                 phase="execution",
             )
 

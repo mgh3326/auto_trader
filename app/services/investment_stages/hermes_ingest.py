@@ -74,6 +74,49 @@ from app.services.investment_stages.symbol_report_repository import (
 _logger = logging.getLogger(__name__)
 
 
+def _project_market_snapshot(bundle_pairs: list[tuple[Any, Any]]) -> dict[str, Any]:
+    """ROB-470 — project a bundle ``market`` snapshot into the report's
+    ``market_snapshot`` column shape the delta loader expects.
+
+    The bundle market payload stores indices at top level (``payload["indices"]``,
+    ``{symbol: {current, ...}}``) but ``_baseline_indices`` reads
+    ``market_snapshot["baseline"]["indices"]`` — so wrap. Returns ``{}`` when no
+    market snapshot / no indices are present (missing != fabricated baseline).
+    """
+    for _item, snap in bundle_pairs:
+        if getattr(snap, "snapshot_kind", None) != "market":
+            continue
+        indices = (getattr(snap, "payload_json", None) or {}).get("indices")
+        if isinstance(indices, dict) and indices:
+            return {"baseline": {"indices": indices}}
+        return {}
+    return {}
+
+
+def _project_portfolio_snapshot(bundle_pairs: list[tuple[Any, Any]]) -> dict[str, Any]:
+    """ROB-470 — project a bundle ``portfolio`` snapshot into the lightweight
+    ``{holdings: [{ticker, pnl_rate}]}`` shape the delta loader's holdings
+    fallback reads.
+
+    Keeps only ``ticker``/``pnl_rate`` per holding (lightweight; the heavy
+    payload stays in the bundle). Returns ``{}`` when no portfolio snapshot or no
+    usable holdings are present so an absent baseline is never fabricated.
+    """
+    for _item, snap in bundle_pairs:
+        if getattr(snap, "snapshot_kind", None) != "portfolio":
+            continue
+        holdings = (getattr(snap, "payload_json", None) or {}).get("holdings")
+        if not isinstance(holdings, list):
+            return {}
+        projected = [
+            {"ticker": h.get("ticker"), "pnl_rate": h.get("pnl_rate")}
+            for h in holdings
+            if isinstance(h, dict) and h.get("ticker") is not None
+        ]
+        return {"holdings": projected} if projected else {}
+    return {}
+
+
 class HermesCompositionIngestError(RuntimeError):
     """Raised when the Hermes-produced envelope cannot be ingested."""
 
@@ -395,6 +438,15 @@ class HermesCompositionIngestService:
         if dimension_report_refs:
             metadata["dimension_report_uuids"] = dimension_report_refs
 
+        # ROB-470 — project the bundle's portfolio/market snapshots into the
+        # report's lightweight JSON columns so delta_get's holdings/index deltas
+        # work for Hermes-created reports (index in particular is read ONLY from
+        # report.market_snapshot, never the bundle). Fetched once and reused for
+        # the news projection below.
+        bundle_pairs = await self._snapshots.list_bundle_items_with_snapshots(bundle.id)
+        market_snapshot = _project_market_snapshot(bundle_pairs)
+        portfolio_snapshot = _project_portfolio_snapshot(bundle_pairs)
+
         ingest_request = IngestReportRequest(
             report_type=request.report_type,
             market=cast(MarketLiteral, request.market),
@@ -410,6 +462,8 @@ class HermesCompositionIngestService:
             status=request.status,
             kst_date=request.kst_date,
             items=list(composition.items),
+            market_snapshot=market_snapshot,
+            portfolio_snapshot=portfolio_snapshot,
             snapshot_bundle_uuid=composition.snapshot_bundle_uuid,
             snapshot_policy_version=request.policy_version,
             snapshot_coverage_summary=dict(bundle.coverage_summary or {}),
@@ -426,9 +480,7 @@ class HermesCompositionIngestService:
         # snapshot. Fail-open: matching gaps never block report creation.
         news_payloads = [
             (snap.payload_json or {})
-            for _item, snap in await self._snapshots.list_bundle_items_with_snapshots(
-                bundle.id
-            )
+            for _item, snap in bundle_pairs
             if snap.snapshot_kind == "news"
         ]
         await self._news_service.persist_from_composition(
