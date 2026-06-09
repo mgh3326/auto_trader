@@ -43,7 +43,11 @@ def test_health_bypasses_auth_while_mcp_is_gated() -> None:
         mcp_route = client.get("/mcp")  # no Authorization header
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
-    assert mcp_route.status_code in (400, 401, 406)  # NOT 200 — auth/headers reject
+    # Auth-enabled /mcp rejects an unauthenticated request with 401 (RequireAuthMiddleware).
+    # Asserting exactly 401 — not a {400,401,406} set — keeps the gating signal real: a
+    # 406 (missing MCP Accept headers) is what /mcp returns when auth is DISABLED, so
+    # allowing it would let this test false-pass if auth were accidentally broken.
+    assert mcp_route.status_code == 401
 
 
 @pytest.mark.unit
