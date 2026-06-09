@@ -255,5 +255,33 @@ async def test_fetcher_total_failure_reraises_when_disabled(monkeypatch) -> None
         await builder.default_valuation_fetcher("AAPL", "us")
 
 
+@pytest.mark.unit
+def test_aggregate_reporting_from_payloads() -> None:
+    from decimal import Decimal
+
+    from app.jobs.market_valuation_snapshots import _aggregate_report
+    from app.services.market_valuation_snapshots.repository import (
+        MarketValuationSnapshotUpsert,
+    )
+
+    p1 = MarketValuationSnapshotUpsert(
+        market="us", symbol="AAA", snapshot_date=dt.date(2026, 6, 9), source="yahoo",
+        per=Decimal("8"), roe=Decimal("18"), market_cap=Decimal("3e9"),
+        raw_payload={"_field_provenance": {"roe": "finnhub"}},
+    )
+    p2 = MarketValuationSnapshotUpsert(
+        market="us", symbol="BBB", snapshot_date=dt.date(2026, 6, 9), source="yahoo",
+        per=Decimal("9"), roe=None, market_cap=Decimal("5e9"),
+        raw_payload={},
+    )
+    backfill, coverage = _aggregate_report([p1, p2])
+    assert backfill == {"roe": 1}  # only p1's roe was finnhub
+    assert coverage["per"] == 2
+    assert coverage["roe"] == 1  # p2 roe is None
+    assert coverage["market_cap"] == 2
+    assert coverage["pbr"] == 0
+
+
+
 
 
