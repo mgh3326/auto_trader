@@ -122,3 +122,28 @@ def demote_for_quality(
         if flag in quality_flags:
             return "watch_only", flag
     return "buy_review", None
+
+
+def demote_for_budget(
+    verdict: str, budget_state: dict[str, Any]
+) -> tuple[str, list[str]]:
+    """ROB-347 — post-verdict budget demotion. Only buy_review is touched;
+    budget never upgrades. KRW is reference-only (no KRW→USD fabrication).
+    Returns (new_verdict, reasons)."""
+    if verdict != "buy_review":
+        return verdict, []
+    basis = budget_state.get("basis") or "available_usd"
+    override = budget_state.get("override_usd")
+    krw = budget_state.get("krw") or 0
+    # request override (operator/report budget) takes precedence when present.
+    usd = override if override is not None else budget_state.get("usd")
+    if basis == "krw_orderable_reference" and override is None:
+        return "watch_only", ["fx_required"]
+    if usd is not None and usd > 0:
+        return "buy_review", []
+    reasons = ["budget_gap"]
+    if krw and krw > 0:
+        reasons.append("fx_required")
+    if override is None:
+        reasons.append("operator_budget_required")
+    return "watch_only", reasons
