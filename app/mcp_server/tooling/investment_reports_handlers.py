@@ -42,8 +42,12 @@ from app.services.investment_reports.idempotency import kst_date_from_report_key
 from app.services.investment_reports.ingestion import (
     InvestmentReportIngestionService,
 )
+from app.services.investment_reports.lite_grade import (
+    build_lite_report_quality_summary,
+)
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
+    _advisory_draft_profiles,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
@@ -361,6 +365,29 @@ def _validate_report_items(
     return validated_items, None
 
 
+def _maybe_attach_lite_quality(
+    request: IngestReportRequest,
+) -> IngestReportRequest:
+    """ROB-472 — attach a deterministic lite quality grade to advisory reports.
+
+    Pure metadata (grade gates nothing). Only for advisory profiles; never
+    clobbers caller-supplied diagnostics; fail-open (a helper error never blocks
+    report creation). snapshot_freshness_summary/coverage_summary stay None so
+    the published-report DB CHECK is never triggered.
+    """
+    if request.snapshot_report_diagnostics is not None:
+        return request
+    if request.created_by_profile not in _advisory_draft_profiles():
+        return request
+    try:
+        summary = build_lite_report_quality_summary(request.items)
+    except Exception:
+        return request
+    return request.model_copy(
+        update={"snapshot_report_diagnostics": {"report_quality_summary": summary}}
+    )
+
+
 # ---------------------------------------------------------------------------
 # investment_report_create
 # ---------------------------------------------------------------------------
@@ -418,6 +445,10 @@ async def investment_report_create_impl(
         "kst_date": kst_date,
     }
     request = IngestReportRequest.model_validate(payload)
+    # ROB-472 — advisory lite reports get a deterministic, evidence-derived
+    # quality grade (display/audit metadata only). No-op for non-advisory
+    # profiles and when the caller already supplied diagnostics.
+    request = _maybe_attach_lite_quality(request)
 
     async with AsyncSessionLocal() as db:
         repo = InvestmentReportsRepository(db)
