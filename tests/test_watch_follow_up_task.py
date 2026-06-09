@@ -7,6 +7,14 @@ import pytest
 import app.tasks.watch_follow_up_tasks as task_mod
 
 
+def test_task_registered_without_recurring_schedule():
+    import app.tasks as task_package
+
+    assert task_mod in task_package.TASKIQ_TASK_MODULES
+    labels = getattr(task_mod.watch_follow_up_sync, "labels", {}) or {}
+    assert labels.get("schedule") is None
+
+
 @pytest.mark.asyncio
 async def test_disabled_when_flag_off(monkeypatch):
     monkeypatch.setattr(task_mod.settings, "WATCH_FOLLOW_UP_LINK_ENABLED", False)

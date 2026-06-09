@@ -7,8 +7,10 @@ from app.tasks import (
     invest_momentum_event_tasks,
     invest_screener_snapshot_tasks,
     investor_flow_snapshot_tasks,
+    journal_counterfactual_tasks,
     journal_verdict_tasks,
     kis_live_reconcile_tasks,  # noqa: F401
+    kis_mock_reconciliation_tasks,
     kr_candles_tasks,
     kr_symbol_universe_tasks,
     market_quote_snapshot_tasks,
@@ -20,6 +22,7 @@ from app.tasks import (
     upbit_symbol_universe_tasks,
     us_candles_tasks,
     us_symbol_universe_tasks,
+    watch_follow_up_tasks,
     watch_scan_tasks,
 )
 
@@ -36,6 +39,9 @@ TASKIQ_TASK_MODULES = (
     market_valuation_snapshot_tasks,
     mock_roundtrip_journal_tasks,
     journal_verdict_tasks,
+    journal_counterfactual_tasks,
+    kis_mock_reconciliation_tasks,
+    watch_follow_up_tasks,
     research_reports_ingest_tasks,
     research_run_refresh_tasks,
     watch_scan_tasks,
