@@ -129,4 +129,3 @@ def test_create_tool_description_documents_item_contract():
     # item_kind vs target_kind 혼동 방지 문구가 반드시 노출되어야 한다(ROB-458 핵심).
     assert "target_kind" in desc
     assert "NOT item_kind" in desc
-
