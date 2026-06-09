@@ -78,21 +78,30 @@ async def default_valuation_fetcher(
                 fast_info, fundamentals, high_52w_date = await asyncio.gather(
                     fetch_fast_info(symbol),
                     fetch_fundamental_info(symbol),
-                    fetch_52w_high_date(symbol),  # ROB-440 PR3: 52w-high date (date-recency)
+                    fetch_52w_high_date(
+                        symbol
+                    ),  # ROB-440 PR3: 52w-high date (date-recency)
                 )
                 # isoformat string keeps raw_payload (JSONB) serializable; parsed back in
                 # _payload_from_raw → the high_52w_date column.
                 raw = {
                     **fast_info,
                     **fundamentals,
-                    "high_52w_date": high_52w_date.isoformat() if high_52w_date else None,
+                    "high_52w_date": high_52w_date.isoformat()
+                    if high_52w_date
+                    else None,
                 }
         except Exception as exc:  # noqa: BLE001 — try Finnhub before giving up
             raw, yahoo_failed, yahoo_exc = {}, True, exc
 
         # ROB-434: backfill yahoo's null/missing valuation fields from Finnhub when
         # gated on. No-op when disabled / no key / no gap. source stays 'yahoo'.
-        raw = await apply_valuation_fallback(symbol, raw, yahoo_failed=yahoo_failed)
+        # include_high_date is threaded so high_52w_date counts as a gap/fill target
+        # ONLY on the opt-in run that fetched it — otherwise every bulk-path symbol
+        # (which never has the date) would falsely look "gapped" and call Finnhub.
+        raw = await apply_valuation_fallback(
+            symbol, raw, yahoo_failed=yahoo_failed, include_high_date=include_high_date
+        )
 
         # Nothing recovered from a total yahoo failure → preserve today's skip+warn.
         if yahoo_failed and not raw and yahoo_exc is not None:
@@ -152,7 +161,6 @@ def _payload_from_raw(
         high_52w_date=_to_date(_resolve_raw_value(raw, "high_52w_date")),
         raw_payload=redact_sensitive_payload(dict(raw)),
     )
-
 
 
 async def build_valuation_snapshots_for_market(

@@ -82,8 +82,20 @@ def _finnhub_fallback_enabled() -> bool:
     return bool(getattr(settings, "market_valuation_finnhub_fallback_enabled", False))
 
 
-def _has_missing_fields(raw: dict[str, Any]) -> bool:
-    return any(_resolve_raw_value(raw, field) is None for field in _FIELD_SOURCE_KEYS)
+def _gap_field_names(include_high_date: bool) -> tuple[str, ...]:
+    """Fields that count toward gap-detection AND are eligible for backfill.
+
+    high_52w_date is EXCLUDED on the default bulk path (include_high_date=False):
+    that path never fetches the date from yahoo (it needs a separate heavy 1y-OHLC
+    call, deliberately opt-in), so treating its absence as a "gap" would make EVERY
+    symbol look gapped and fire Finnhub — defeating the per-symbol-only-on-gap
+    rate-limit boundary. The date is a gap/fill target only on the opt-in
+    (include_high_date=True) run that actually wants it (undervalued_breakout
+    date-recency).
+    """
+    if include_high_date:
+        return tuple(_FIELD_SOURCE_KEYS)
+    return tuple(field for field in _FIELD_SOURCE_KEYS if field != "high_52w_date")
 
 
 async def fetch_valuation_finnhub(symbol: str) -> dict[str, Any]:
@@ -105,17 +117,25 @@ async def fetch_valuation_finnhub(symbol: str) -> dict[str, Any]:
 
 
 async def apply_valuation_fallback(
-    symbol: str, raw: dict[str, Any], *, yahoo_failed: bool
+    symbol: str,
+    raw: dict[str, Any],
+    *,
+    yahoo_failed: bool,
+    include_high_date: bool = False,
 ) -> dict[str, Any]:
     """Backfill missing valuation fields in ``raw`` from Finnhub when gated on.
 
     No-op unless the settings flag is on AND there is a gap (or yahoo failed).
-    Fills only fields ``raw`` lacks; records provenance in raw['_field_provenance'].
+    Both gap-detection and the backfill are restricted to the gap field set for
+    this run mode (high_52w_date is in-scope only when include_high_date=True),
+    so a fully-populated bulk-path symbol never triggers Finnhub. Fills only
+    fields ``raw`` lacks; records provenance in raw['_field_provenance'].
     source stays 'yahoo' (caller never changes it). Fail-closed on any Finnhub error.
     """
     if not _finnhub_fallback_enabled():
         return raw
-    if not (yahoo_failed or _has_missing_fields(raw)):
+    targets = _gap_field_names(include_high_date)
+    if not (yahoo_failed or any(_resolve_raw_value(raw, f) is None for f in targets)):
         return raw
     try:
         metrics = await fetch_valuation_finnhub(symbol)
@@ -123,7 +143,8 @@ async def apply_valuation_fallback(
         logger.warning("finnhub valuation fallback failed symbol=%s: %s", symbol, exc)
         return raw
     filled: list[str] = []
-    for field, value in metrics.items():
+    for field in targets:
+        value = metrics.get(field)
         if value is None:
             continue
         if _resolve_raw_value(raw, field) is None:

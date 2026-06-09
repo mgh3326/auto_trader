@@ -76,7 +76,6 @@ class MarketValuationSnapshotBuildResult:
     field_nonnull_coverage: dict[str, int] = field(default_factory=dict)
 
 
-
 def _validate_market(market: str) -> str:
     market_norm = market.strip().lower()
     if market_norm not in {"kr", "us"}:

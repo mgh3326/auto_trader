@@ -166,7 +166,9 @@ async def test_apply_fallback_no_gap_skips_finnhub(monkeypatch) -> None:
         return {"roe": 1.0}
 
     monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
-    # every field present → no finnhub call
+    # all 7 CORE fields present, NO high_52w_date — the real default bulk-path state
+    # (the date needs a separate opt-in yahoo OHLC call). Must NOT count as a gap,
+    # else Finnhub fires for every fully-populated symbol. (ROB-434 review: major.)
     raw = {
         "ROE": 15.0,
         "PER": 8.0,
@@ -175,11 +177,105 @@ async def test_apply_fallback_no_gap_skips_finnhub(monkeypatch) -> None:
         "marketCap": 3e9,
         "yearHigh": 100.0,
         "yearLow": 80.0,
-        "high_52w_date": "2026-01-01",
     }
     out = await fb.apply_valuation_fallback("AAPL", raw, yahoo_failed=False)
     assert calls["n"] == 0
+    assert "high_52w_date" not in out
     assert "_field_provenance" not in out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_fallback_opt_in_treats_missing_date_as_gap(monkeypatch) -> None:
+    """ROB-434 review: on the opt-in run (include_high_date=True), a missing
+    high_52w_date IS a gap → Finnhub fills it (undervalued_breakout date-recency)."""
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+
+    async def _metrics(symbol):  # noqa: ANN001
+        return {"high_52w_date": "2026-03-14"}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
+    # all 7 core fields present, date missing — only a gap on the opt-in path
+    raw = {
+        "ROE": 15.0,
+        "PER": 8.0,
+        "PBR": 0.9,
+        "Dividend Yield": 0.02,
+        "marketCap": 3e9,
+        "yearHigh": 100.0,
+        "yearLow": 80.0,
+    }
+    out = await fb.apply_valuation_fallback(
+        "AAPL", raw, yahoo_failed=False, include_high_date=True
+    )
+    assert out["high_52w_date"] == "2026-03-14"
+    assert out["_field_provenance"] == {"high_52w_date": "finnhub"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetcher_partial_yahoo_multi_field_merge(monkeypatch) -> None:
+    """ROB-434 review (test adequacy): exercise the REAL default_valuation_fetcher
+    merge for a multi-field partial-yahoo case (not the fake-fetcher shortcut).
+    Yahoo supplies PER+marketCap+yearHigh; Finnhub fills roe/pbr/dividend_yield/
+    low_52w. Assert preserve/fill/provenance/source + the ÷100 dividend ratio
+    survives into the payload."""
+    from decimal import Decimal
+
+    from app.services.market_valuation_snapshots import builder
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    async def _fast(sym):  # noqa: ANN001
+        return {"symbol": sym}
+
+    async def _fund(sym):  # noqa: ANN001
+        return {
+            "PER": 8.0,
+            "marketCap": 3_000_000_000,
+            "yearHigh": 100.0,
+            "ROE": None,
+            "PBR": None,
+            "Dividend Yield": None,
+            "yearLow": None,
+        }
+
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
+    monkeypatch.setattr(
+        "app.services.brokers.yahoo.client.fetch_fundamental_info", _fund
+    )
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+
+    async def _metrics(symbol):  # noqa: ANN001
+        # the canonical shape _map_finnhub_metrics emits (dividend already ÷100 ratio)
+        return {"roe": 18.0, "pbr": 0.7, "dividend_yield": 0.03, "low_52w": 60.0}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
+
+    raw = await builder.default_valuation_fetcher("AAPL", "us")
+    # yahoo values preserved (never overwritten)
+    assert raw["PER"] == 8.0
+    assert raw["marketCap"] == 3_000_000_000
+    # finnhub-filled missing fields
+    assert raw["roe"] == 18.0
+    assert raw["pbr"] == 0.7
+    assert raw["dividend_yield"] == 0.03
+    assert raw["low_52w"] == 60.0
+    assert raw["_field_provenance"] == {
+        "roe": "finnhub",
+        "pbr": "finnhub",
+        "dividend_yield": "finnhub",
+        "low_52w": "finnhub",
+    }
+    # source stays yahoo; ratio + low_52w survive into the persisted payload
+    payload = builder._payload_from_raw(
+        market="us", symbol="AAPL", snapshot_date=dt.date(2026, 6, 9), raw=raw
+    )
+    assert payload.source == "yahoo"
+    assert payload.roe == Decimal("18.0")
+    assert payload.dividend_yield == Decimal("0.03")
+    assert payload.low_52w == Decimal("60.0")
 
 
 @pytest.mark.unit
