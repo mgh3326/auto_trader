@@ -113,9 +113,12 @@ class PortfolioJournalStage:
         else:
             nav, buying_power, _cash = _krw_totals(payload)
 
+        # ROB-345 — collector emits "active" (draft/active journals), not
+        # "entries". Reading the wrong key made every market show
+        # "open journal: none". Mirror the real journal payload contract.
         entries = []
         for snap in journal_snaps:
-            entries.extend((snap.payload_json or {}).get("entries", []))
+            entries.extend((snap.payload_json or {}).get("active", []))
         symbols = ", ".join(e.get("symbol", "?") for e in entries[:5])
 
         citations = [
@@ -130,7 +133,7 @@ class PortfolioJournalStage:
                 StageCitation(
                     snapshot_uuid=snap.snapshot_uuid,
                     snapshot_kind="journal",
-                    payload_path="$.entries",
+                    payload_path="$.active",
                 )
             )
 

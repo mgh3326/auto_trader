@@ -37,7 +37,16 @@ async def test_portfolio_journal_emits_neutral_with_buying_power():
                 _snap("portfolio", {"buying_power_krw": 200000, "nav_krw": 1000000})
             ],
             "journal": [
-                _snap("journal", {"entries": [{"symbol": "035420", "thesis": "tech"}]})
+                _snap(
+                    "journal",
+                    {
+                        "active": [{"symbol": "035420", "thesis": "tech"}],
+                        "recent_retrospective": [],
+                        "active_count": 1,
+                        "retrospective_count": 0,
+                        "collector_status": "ok",
+                    },
+                )
             ],
         },
         bundle_metadata={},
@@ -284,10 +293,50 @@ async def test_portfolio_journal_surfaces_nav_scope_label_in_key_points():
                 )
             ],
             "journal": [
-                _snap("journal", {"entries": [{"symbol": "005930", "thesis": "tech"}]})
+                _snap(
+                    "journal",
+                    {
+                        "active": [{"symbol": "005930", "thesis": "tech"}],
+                        "recent_retrospective": [],
+                        "active_count": 1,
+                        "retrospective_count": 0,
+                        "collector_status": "ok",
+                    },
+                )
             ],
         },
         bundle_metadata={},
     )
     artifact = await PortfolioJournalStage().run(ctx)
     assert label in artifact.key_points
+
+
+@pytest.mark.asyncio
+async def test_portfolio_journal_reads_active_from_real_collector_shape():
+    # ROB-345 회귀: collector는 active/recent_retrospective 를 emit한다.
+    # stage가 "entries"를 읽던 버그(=항상 open journal: none)를 방지한다.
+    ctx = StageContext(
+        bundle_uuid=uuid.uuid4(),
+        snapshots_by_kind={
+            "portfolio": [
+                _snap("portfolio", {"buying_power_krw": 200000, "nav_krw": 1000000})
+            ],
+            "journal": [
+                _snap(
+                    "journal",
+                    {
+                        "active": [{"symbol": "AAPL", "thesis": "earnings"}],
+                        "recent_retrospective": [],
+                        "active_count": 1,
+                        "retrospective_count": 0,
+                        "collector_status": "ok",
+                    },
+                )
+            ],
+        },
+        bundle_metadata={},
+    )
+    payload = await PortfolioJournalStage().run(ctx)
+    assert "AAPL" in (payload.summary or "")
+    assert "journal" not in (payload.missing_data or [])
+
