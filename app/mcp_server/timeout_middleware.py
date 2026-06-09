@@ -102,8 +102,15 @@ class ToolTimeoutMiddleware(Middleware):
         if budget <= 0:  # explicit exemption
             return await call_next(context)
         try:
-            return await asyncio.wait_for(call_next(context), timeout=budget)
+            async with asyncio.timeout(budget) as cm:
+                return await call_next(context)
         except TimeoutError:
+            if not cm.expired():
+                # The tool raised its OWN TimeoutError before the budget elapsed —
+                # propagate it unwrapped instead of misreporting a budget timeout
+                # (which would also poison the mcp.tool.timeout metric used to tune
+                # budgets). cm.expired() is True only when OUR deadline fired.
+                raise
             logger.warning("mcp.tool.timeout tool=%s budget_s=%.0f", tool_name, budget)
             raise ToolError(
                 f"Tool '{tool_name}' exceeded its {budget:.0f}s time budget "

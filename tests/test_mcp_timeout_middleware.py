@@ -85,3 +85,45 @@ def test_budget_resolution_default_and_overrides() -> None:
     assert mw._budget_for("a_tool_with_no_override") == 45.0
     assert mw._budget_for("investment_report_generate_from_bundle") == 240.0
     assert mw._budget_for("get_holdings") == 120.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_tool_own_timeouterror_propagates_unwrapped() -> None:
+    # A tool that raises its OWN TimeoutError BEFORE the budget elapses must NOT be
+    # reported as a budget timeout — it propagates unwrapped (not wrapped in ToolError),
+    # so the user-facing message and the mcp.tool.timeout metric stay accurate.
+    mw = ToolTimeoutMiddleware(default_timeout_s=5.0)
+
+    async def call_next(ctx):
+        raise TimeoutError("tool's own internal timeout")
+
+    with pytest.raises(TimeoutError) as exc_info:
+        await mw.on_call_tool(_ctx("tool"), call_next)
+    assert not isinstance(exc_info.value, ToolError)
+    assert "internal timeout" in str(exc_info.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_tool_other_exception_propagates_unwrapped() -> None:
+    mw = ToolTimeoutMiddleware(default_timeout_s=5.0)
+
+    async def call_next(ctx):
+        raise ValueError("tool error")
+
+    with pytest.raises(ValueError, match="tool error"):
+        await mw.on_call_tool(_ctx("tool"), call_next)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_cancellation_propagates() -> None:
+    # The middleware must NOT swallow CancelledError (e.g. server shutdown cancellation).
+    mw = ToolTimeoutMiddleware(default_timeout_s=5.0)
+
+    async def call_next(ctx):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await mw.on_call_tool(_ctx("tool"), call_next)
