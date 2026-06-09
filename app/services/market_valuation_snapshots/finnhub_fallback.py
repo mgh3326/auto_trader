@@ -13,6 +13,7 @@ client factory). Single consumer is default_valuation_fetcher.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from typing import Any
@@ -71,3 +72,66 @@ def _map_finnhub_metrics(metric: dict[str, Any]) -> dict[str, Any]:
         # iso string keeps raw_payload JSON-safe; _payload_from_raw parses to date.
         out["high_52w_date"] = high_date.strip()[:10]
     return out
+
+
+def _finnhub_fallback_enabled() -> bool:
+    try:
+        from app.core.config import settings
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(getattr(settings, "market_valuation_finnhub_fallback_enabled", False))
+
+
+def _has_missing_fields(raw: dict[str, Any]) -> bool:
+    return any(_resolve_raw_value(raw, field) is None for field in _FIELD_SOURCE_KEYS)
+
+
+async def fetch_valuation_finnhub(symbol: str) -> dict[str, Any]:
+    """Finnhub company_basic_financials metric → canonical valuation dict.
+
+    Raises ImportError (finnhub lib missing) / ValueError (no key) / API errors —
+    the caller (apply_valuation_fallback) catches and fail-closes.
+    """
+    from app.services.finnhub_news import _get_finnhub_client
+
+    client = _get_finnhub_client()
+
+    def _fetch_sync() -> dict[str, Any]:
+        data = client.company_basic_financials(symbol.upper(), "all")
+        return (data or {}).get("metric", {}) or {}
+
+    metric = await asyncio.to_thread(_fetch_sync)
+    return _map_finnhub_metrics(metric)
+
+
+async def apply_valuation_fallback(
+    symbol: str, raw: dict[str, Any], *, yahoo_failed: bool
+) -> dict[str, Any]:
+    """Backfill missing valuation fields in ``raw`` from Finnhub when gated on.
+
+    No-op unless the settings flag is on AND there is a gap (or yahoo failed).
+    Fills only fields ``raw`` lacks; records provenance in raw['_field_provenance'].
+    source stays 'yahoo' (caller never changes it). Fail-closed on any Finnhub error.
+    """
+    if not _finnhub_fallback_enabled():
+        return raw
+    if not (yahoo_failed or _has_missing_fields(raw)):
+        return raw
+    try:
+        metrics = await fetch_valuation_finnhub(symbol)
+    except Exception as exc:  # noqa: BLE001 — no key / lib / API / rate-limit
+        logger.warning("finnhub valuation fallback failed symbol=%s: %s", symbol, exc)
+        return raw
+    filled: list[str] = []
+    for field, value in metrics.items():
+        if value is None:
+            continue
+        if _resolve_raw_value(raw, field) is None:
+            raw[field] = value
+            filled.append(field)
+    if filled:
+        provenance = raw.setdefault("_field_provenance", {})
+        for field in filled:
+            provenance[field] = "finnhub"
+    return raw
+

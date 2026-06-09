@@ -82,3 +82,99 @@ def test_map_finnhub_metrics_bad_date_dropped() -> None:
     assert "high_52w_date" not in _map_finnhub_metrics({"52WeekHighDate": None})
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_fallback_disabled_is_noop(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: False)
+    calls = {"n": 0}
+
+    async def _never(symbol):  # noqa: ANN001
+        calls["n"] += 1
+        return {"roe": 22.0}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _never)
+    raw = {"PER": 8.0}  # roe missing
+    out = await fb.apply_valuation_fallback("AAPL", raw, yahoo_failed=False)
+    assert out == {"PER": 8.0}  # untouched
+    assert calls["n"] == 0  # finnhub never called
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_fallback_fills_only_missing_fields(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+
+    async def _metrics(symbol):  # noqa: ANN001
+        return {"roe": 18.0, "per": 99.0, "market_cap": 2_000_000_000.0}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
+    # yahoo gave PER (8.0) but no ROE/market_cap → fill ROE + market_cap, keep PER
+    raw = {"PER": 8.0}
+    out = await fb.apply_valuation_fallback("AAPL", raw, yahoo_failed=False)
+    assert out["roe"] == 18.0
+    assert out["market_cap"] == 2_000_000_000.0
+    assert "per" not in out  # PER already present (yahoo) → NOT overwritten
+    assert out["_field_provenance"] == {"roe": "finnhub", "market_cap": "finnhub"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_fallback_total_yahoo_failure_fills_all(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+
+    async def _metrics(symbol):  # noqa: ANN001
+        return {"roe": 18.0, "per": 8.0, "market_cap": 2_000_000_000.0}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
+    out = await fb.apply_valuation_fallback("AAPL", {}, yahoo_failed=True)
+    assert out["roe"] == 18.0 and out["per"] == 8.0
+    assert out["_field_provenance"]["per"] == "finnhub"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_fallback_finnhub_error_is_fail_closed(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+
+    async def _boom(symbol):  # noqa: ANN001
+        raise RuntimeError("finnhub rate limited")
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _boom)
+    raw = {"PER": 8.0}
+    out = await fb.apply_valuation_fallback("AAPL", raw, yahoo_failed=False)
+    assert out == {"PER": 8.0}  # unchanged, no crash
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_fallback_no_gap_skips_finnhub(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+    calls = {"n": 0}
+
+    async def _metrics(symbol):  # noqa: ANN001
+        calls["n"] += 1
+        return {"roe": 1.0}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
+    # every field present → no finnhub call
+    raw = {
+        "ROE": 15.0, "PER": 8.0, "PBR": 0.9, "Dividend Yield": 0.02,
+        "marketCap": 3e9, "yearHigh": 100.0, "yearLow": 80.0,
+        "high_52w_date": "2026-01-01",
+    }
+    out = await fb.apply_valuation_fallback("AAPL", raw, yahoo_failed=False)
+    assert calls["n"] == 0
+    assert "_field_provenance" not in out
+
+
+
