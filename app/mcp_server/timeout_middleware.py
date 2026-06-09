@@ -104,8 +104,13 @@ class ToolTimeoutMiddleware(Middleware):
         budget = self._budget_for(tool_name)
         if budget <= 0:  # explicit exemption
             return await call_next(context)
+        # Bind cm BEFORE the try so it is always defined in the except branch
+        # (asyncio.timeout(budget) constructs the context manager without entering it;
+        # entering binds nothing new). Keeps the type checker from flagging cm as
+        # possibly-unbound.
+        cm = asyncio.timeout(budget)
         try:
-            async with asyncio.timeout(budget) as cm:
+            async with cm:
                 return await call_next(context)
         except TimeoutError:
             if not cm.expired():
