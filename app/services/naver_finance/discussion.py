@@ -33,10 +33,16 @@ def _to_int(value: Any) -> int | None:
 
 
 def _extract_ranked_items(payload: Any) -> list[dict[str, Any]]:
-    """Find the ranked-items list across likely shapes (defensive, aggregate-only)."""
+    """Find the ranked-items list across likely shapes (defensive, aggregate-only).
+
+    ROB-449 live shape (operator-verified): items are under top-level ``contents[]``,
+    each ``{itemCode, ranking, sevenDayStats:{postCount,...}}``. The raw ``posts[]`` /
+    ``title`` / ``content`` are NEVER read (aggregate counts only).
+    """
     container: Any = payload
     if isinstance(payload, dict):
-        for key in ("rankings", "items", "list", "ranks", "result", "data"):
+        # "contents" is the verified live key; the rest are defensive fallbacks.
+        for key in ("contents", "rankings", "items", "list", "ranks", "result", "data"):
             seq = payload.get(key)
             if isinstance(seq, list):
                 container = seq
@@ -56,16 +62,27 @@ def _extract_ranked_items(payload: Any) -> list[dict[str, Any]]:
         )
         if not code:
             continue
-        rank = _to_int(row.get("rank")) or (idx + 1)
+        rank = _to_int(row.get("rank") or row.get("ranking")) or (idx + 1)
+        # Live shape nests aggregate counts under sevenDayStats; keep top-level fallbacks.
+        stats = row.get("sevenDayStats")
+        stats = stats if isinstance(stats, dict) else {}
         items.append(
             {
                 "code": str(code).strip().upper(),
                 "rank": rank,
-                # AGGREGATE counts only — never raw text fields.
-                "post_count": _to_int(row.get("postCount") or row.get("articleCount")),
-                "comment_count": _to_int(row.get("commentCount")),
+                # AGGREGATE counts only — never raw posts[]/title/content/author.
+                "post_count": _to_int(
+                    row.get("postCount")
+                    or row.get("articleCount")
+                    or stats.get("postCount")
+                ),
+                "comment_count": _to_int(
+                    row.get("commentCount") or stats.get("commentCount")
+                ),
                 "reaction_count": _to_int(
-                    row.get("reactionCount") or row.get("sympathyCount")
+                    row.get("reactionCount")
+                    or row.get("sympathyCount")
+                    or stats.get("reactionCount")
                 ),
             }
         )

@@ -38,6 +38,36 @@ def test_extract_ranked_items_defensive():
     assert items[1]["rank"] == 2  # index-derived
 
 
+def test_extract_live_contents_shape():
+    # ROB-449: operator-verified live shape — items under contents[], code=itemCode,
+    # rank=ranking, post_count=sevenDayStats.postCount; raw posts[]/title/content ignored.
+    payload = {
+        "totalCount": 100,
+        "contents": [
+            {
+                "itemCode": "005930",
+                "ranking": 1,
+                "sevenDayStats": {"postCount": 530, "commentCount": 1200},
+                "posts": [{"title": "RAW IGNORE", "content": "RAW IGNORE"}],
+                "title": "RAW IGNORE",
+            },
+            {"itemCode": "035420", "ranking": 7, "sevenDayStats": {"postCount": 88}},
+        ],
+    }
+    items = disc._extract_ranked_items(payload)
+    assert len(items) == 2
+    assert items[0]["code"] == "005930"
+    assert items[0]["rank"] == 1
+    assert items[0]["post_count"] == 530  # from sevenDayStats
+    assert items[0]["comment_count"] == 1200
+    assert items[1]["code"] == "035420"
+    assert items[1]["rank"] == 7
+    assert items[1]["post_count"] == 88
+    # aggregate-only: raw post text/title never surfaced in the extracted dict
+    for it in items:
+        assert "posts" not in it and "title" not in it and "content" not in it
+
+
 @pytest.mark.asyncio
 async def test_fetch_rankings_fail_open():
     async def boom():
