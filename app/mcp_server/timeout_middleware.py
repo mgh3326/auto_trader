@@ -103,7 +103,7 @@ class ToolTimeoutMiddleware(Middleware):
             return await call_next(context)
         try:
             return await asyncio.wait_for(call_next(context), timeout=budget)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             logger.warning("mcp.tool.timeout tool=%s budget_s=%.0f", tool_name, budget)
             raise ToolError(
                 f"Tool '{tool_name}' exceeded its {budget:.0f}s time budget "

@@ -1,7 +1,13 @@
 import logging
 
 from app.core.config import settings
-from app.mcp_server.env_utils import _env, _env_int, get_mcp_graceful_shutdown_timeout
+from app.mcp_server.env_utils import (
+    _env,
+    _env_int,
+    get_mcp_graceful_shutdown_timeout,
+    get_mcp_tool_timeout_default,
+    get_mcp_tool_timeout_enabled,
+)
 from app.mcp_server.profiles import resolve_mcp_profile
 from app.monitoring.sentry import capture_exception, init_sentry
 
@@ -33,6 +39,7 @@ from app.mcp_server.caller_identity_middleware import (  # noqa: E402
     CallerIdentityMiddleware,
 )
 from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware  # noqa: E402
+from app.mcp_server.timeout_middleware import ToolTimeoutMiddleware  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
@@ -53,6 +60,16 @@ mcp = FastMCP(
 
 mcp.add_middleware(McpToolCallSentryMiddleware())
 mcp.add_middleware(CallerIdentityMiddleware())
+# ROB-469 PR2: per-tool timeout — added LAST so it is the INNERMOST middleware
+# (wraps the tool) while Sentry stays outermost and captures the ToolError with the
+# tool-call context. Bounds the single event loop so one slow tool can't take all
+# 128 tools down (the ROB-469 SPOF).
+mcp.add_middleware(
+    ToolTimeoutMiddleware(
+        default_timeout_s=get_mcp_tool_timeout_default(),
+        enabled=get_mcp_tool_timeout_enabled(),
+    )
+)
 _mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
 register_all_tools(mcp, profile=_mcp_profile)
 
