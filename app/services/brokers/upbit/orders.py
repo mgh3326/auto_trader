@@ -6,6 +6,7 @@ Market data functions remain in client.py.
 
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 from typing import Any
 
@@ -190,37 +191,50 @@ async def place_market_buy_order(market: str, price: str) -> dict[str, Any]:
     return await place_buy_order(market, price, ord_type="price")
 
 
+def _format_upbit_time(value: datetime | str) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    text = str(value).strip()
+    if not text:
+        raise ValueError("Upbit time parameter must not be empty")
+    return text
+
+
 async def fetch_closed_orders(
     market: str | None = None,
-    limit: int = 20,
-    page: int = 1,
+    limit: int = 100,
     states: list[str] | None = None,
     order_by: str = "desc",
+    start_time: datetime | str | None = None,
+    end_time: datetime | str | None = None,
 ) -> list[dict[str, Any]]:
     """체결/취소 완료 주문 목록 조회.
 
     Args:
         market: 마켓코드 필터 (옵션), None이면 전체 조회
-        limit: 반환할 건수 (Upbit page size, 최대 100)
-        page: 페이지 번호 (1부터 시작)
+        limit: 반환할 건수 (Upbit page size, 최대 1000)
         states: 조회 상태 목록. 기본값은 ["done", "cancel"]
         order_by: 정렬 방향 ("asc" 또는 "desc")
+        start_time: 시작 시간 (ISO8601 string or datetime)
+        end_time: 종료 시간 (ISO8601 string or datetime)
 
     Returns:
         체결/취소 주문 목록 (list of dict)
     """
     url = f"{_client.UPBIT_REST}/orders/closed"
-    capped_limit = max(1, min(int(limit), 100))
-    normalized_page = max(1, int(page))
+    capped_limit = max(1, min(int(limit), 1000))
     normalized_states = states or ["done", "cancel"]
     params: dict[str, Any] = {
         "states[]": normalized_states,
         "limit": capped_limit,
-        "page": normalized_page,
         "order_by": order_by,
     }
     if market:
         params["market"] = market
+    if start_time is not None:
+        params["start_time"] = _format_upbit_time(start_time)
+    if end_time is not None:
+        params["end_time"] = _format_upbit_time(end_time)
 
     return await _client._request_with_auth("GET", url, query_params=params)
 

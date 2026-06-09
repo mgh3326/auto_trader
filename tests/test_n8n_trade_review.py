@@ -240,6 +240,91 @@ class TestFilledOrdersService:
 
         assert len(result["orders"]) == 0
 
+    @pytest.mark.asyncio
+    async def test_fetch_upbit_filled_does_not_stop_on_zero_fill_cancel_window(self):
+        from datetime import datetime
+
+        from app.core.timezone import KST
+        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+
+        cancel_only = [
+            {
+                "uuid": "cancel-zero",
+                "side": "bid",
+                "price": "1000",
+                "state": "cancel",
+                "market": "KRW-XRP",
+                "executed_volume": "0",
+                "paid_fee": "0",
+                "created_at": "2026-03-20T10:00:00+09:00",
+            }
+        ]
+        real_fill = [
+            {
+                "uuid": "real-fill",
+                "side": "bid",
+                "price": "1000",
+                "state": "done",
+                "market": "KRW-XRP",
+                "executed_volume": "5",
+                "paid_fee": "2.5",
+                "created_at": "2026-03-18T10:00:00+09:00",
+            }
+        ]
+        fixed_now = datetime(2026, 3, 21, 0, 0, tzinfo=KST)
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                new_callable=AsyncMock,
+                side_effect=[cancel_only, real_fill],
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service.now_kst",
+                return_value=fixed_now,
+            ),
+        ):
+            orders, errors = await _fetch_upbit_filled(days=14)
+
+        assert errors == []
+        assert [order["order_id"] for order in orders] == ["real-fill"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_upbit_filled_dedups_order_uuid_across_windows(self):
+        from datetime import datetime
+
+        from app.core.timezone import KST
+        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+
+        duplicate = {
+            "uuid": "dup-fill",
+            "side": "bid",
+            "price": "1000",
+            "state": "done",
+            "market": "KRW-XRP",
+            "executed_volume": "5",
+            "paid_fee": "2.5",
+            "created_at": "2026-03-18T10:00:00+09:00",
+        }
+        fixed_now = datetime(2026, 3, 21, 0, 0, tzinfo=KST)
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                new_callable=AsyncMock,
+                side_effect=[[duplicate], [duplicate]],
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service.now_kst",
+                return_value=fixed_now,
+            ),
+        ):
+            orders, errors = await _fetch_upbit_filled(days=14)
+
+        assert errors == []
+        assert [order["order_id"] for order in orders] == ["dup-fill"]
+
+
 
 @pytest.mark.unit
 class TestTradeReviewService:

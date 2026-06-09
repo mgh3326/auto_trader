@@ -64,6 +64,47 @@ def _parse_upbit_fill_datetime(value: object) -> datetime | None:
     return parsed.astimezone(KST)
 
 
+_UPBIT_CLOSED_ORDERS_WINDOW = timedelta(days=7)
+_UPBIT_CLOSED_ORDERS_LIMIT = 1000
+
+
+def _iter_upbit_windows(
+    start_at: datetime, end_at: datetime
+) -> list[tuple[datetime, datetime]]:
+    windows: list[tuple[datetime, datetime]] = []
+    cursor_end = end_at
+    while cursor_end > start_at:
+        cursor_start = max(start_at, cursor_end - _UPBIT_CLOSED_ORDERS_WINDOW)
+        windows.append((cursor_start, cursor_end))
+        cursor_end = cursor_start
+    return windows
+
+
+async def _fetch_upbit_closed_window(
+    start_at: datetime,
+    end_at: datetime,
+) -> list[dict[str, Any]]:
+    rows = await upbit_service.fetch_closed_orders(
+        market=None,
+        limit=_UPBIT_CLOSED_ORDERS_LIMIT,
+        states=["done", "cancel"],
+        order_by="desc",
+        start_time=start_at,
+        end_time=end_at,
+    )
+    if len(rows) >= _UPBIT_CLOSED_ORDERS_LIMIT:
+        if end_at - start_at <= timedelta(hours=1):
+            raise RuntimeError(
+                "Upbit closed orders may be truncated in a <=1h window; "
+                f"start={start_at.isoformat()} end={end_at.isoformat()}"
+            )
+        midpoint = start_at + (end_at - start_at) / 2
+        left = await _fetch_upbit_closed_window(start_at, midpoint)
+        right = await _fetch_upbit_closed_window(midpoint, end_at)
+        return left + right
+    return rows
+
+
 async def _fetch_upbit_filled(
     days: int,
     start_at: datetime | None = None,
@@ -74,31 +115,27 @@ async def _fetch_upbit_filled(
     try:
         start_kst, end_kst = _resolve_kst_window(days=days, start_at=start_at, end_at=end_at)
         all_fills: list[dict[str, Any]] = []
-        page = 1
-        limit = 100
+        seen_order_uuids: set[str] = set()
 
-        while True:
-            closed = await upbit_service.fetch_closed_orders(
-                market=None, limit=limit, page=page
-            )
-            if not closed:
-                break
-
-            page_had_relevant = False
+        for window_start, window_end in _iter_upbit_windows(start_kst, end_kst):
+            closed = await _fetch_upbit_closed_window(window_start, window_end)
             for raw in closed:
+                uuid = str(raw.get("uuid") or "")
+                if uuid and uuid in seen_order_uuids:
+                    continue
+                if uuid:
+                    seen_order_uuids.add(uuid)
                 executed_vol = float(raw.get("executed_volume") or 0)
                 if executed_vol <= 0:
                     continue
 
                 if not raw.get("trades"):
                     try:
-                        raw = await upbit_service.fetch_order_detail(
-                            str(raw.get("uuid", ""))
-                        )
+                        raw = await upbit_service.fetch_order_detail(uuid)
                     except Exception as exc:
                         logger.warning(
                             "Upbit order detail fetch failed for %s: %s",
-                            raw.get("uuid"),
+                            uuid,
                             exc,
                         )
 
@@ -115,14 +152,7 @@ async def _fetch_upbit_filled(
                         )
                         continue
                     if start_kst <= parsed_filled_at <= end_kst:
-                        page_had_relevant = True
                         all_fills.append(fill)
-
-            if not page_had_relevant:
-                break
-            if len(closed) < limit:
-                break
-            page += 1
 
         return all_fills, []
     except Exception as exc:
