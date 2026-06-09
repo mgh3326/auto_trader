@@ -20,6 +20,7 @@ import app.services.brokers.yahoo.client as yahoo_service
 import app.services.market_data as market_data_service
 from app.core.config import settings
 from app.core.symbol import to_db_symbol
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _compute_crypto_realtime_rsi_from_frame,
@@ -47,6 +48,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services import kis_ohlcv_cache
 from app.services.brokers.kis.client import KISClient
+from app.services.execution_strength.query_service import compute_execution_strength
 from app.services.kr_hourly_candles_read_service import (
     read_kr_hourly_candles_1h,
     read_kr_intraday_candles,
@@ -910,6 +912,7 @@ MARKET_DATA_TOOL_NAMES: set[str] = {
     "get_orderbook",
     "get_ohlcv",
     "get_indicators",
+    "get_execution_strength",
 }
 
 
@@ -1200,6 +1203,56 @@ async def _get_ohlcv_impl(
         )
 
 
+async def _get_execution_strength_impl(
+    symbol: str | int, market: str = "kr"
+) -> dict[str, Any]:
+    """ROB-462: KR 주식 체결강도 (execution strength) snapshot from KIS.
+
+    체결강도 = 매수체결량 / 매도체결량 × 100 (KIS FHKST01010100 ``cttr``).
+    KR equity only — crypto is served by get_crypto_order_flow.
+    """
+    requested = str(market or "kr").strip().lower() or "kr"
+    if requested not in ("kr", "kospi", "kosdaq"):
+        return _error_payload(
+            source="validation",
+            message=(
+                "get_execution_strength supports KR equity only "
+                "(crypto: use get_crypto_order_flow)."
+            ),
+            symbol=str(symbol),
+        )
+
+    normalized = _normalize_symbol_input(symbol, "kr")
+    if not normalized:
+        raise ValueError("symbol is required")
+    _, normalized = _resolve_market_type(normalized, "kr")
+
+    try:
+        raw = await KISClient().inquire_execution_strength(normalized)
+    except Exception as exc:
+        return _error_payload_from_exception(
+            source="kis",
+            exc=exc,
+            symbol=normalized,
+            instrument_type="equity_kr",
+        )
+
+    data = compute_execution_strength(
+        raw, symbol=normalized, as_of=now_kst().isoformat()
+    )
+    return {
+        "symbol": data.symbol,
+        "as_of": data.as_of,
+        "execution_strength_pct": data.execution_strength_pct,
+        "buy_volume": data.buy_volume,
+        "sell_volume": data.sell_volume,
+        "trend": data.trend,
+        "data_state": kr_market_data_state(),
+        "source": "kis",
+        "instrument_type": "equity_kr",
+    }
+
+
 def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol",
@@ -1235,6 +1288,22 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         symbol: str | int, market: str = "kr", venue: str | None = None
     ) -> dict[str, Any]:
         return await _get_orderbook_impl(symbol, market, venue)
+
+    @mcp.tool(
+        name="get_execution_strength",
+        description=(
+            "Get KR equity 체결강도 (execution strength = 매수체결량/매도체결량 × 100) "
+            "from KIS. >100 buy-dominant, <100 sell-dominant. Returns "
+            "execution_strength_pct, buy_volume/sell_volume (null when KIS omits "
+            "them — never a fabricated 0), trend, and data_state (premarket/closed "
+            "sessions are tagged stale). KR equity only — for crypto taker order "
+            "flow use get_crypto_order_flow."
+        ),
+    )
+    async def get_execution_strength(
+        symbol: str | int, market: str = "kr"
+    ) -> dict[str, Any]:
+        return await _get_execution_strength_impl(symbol, market)
 
     @mcp.tool(
         name="get_ohlcv",
