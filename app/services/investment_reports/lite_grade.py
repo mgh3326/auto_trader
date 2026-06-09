@@ -34,9 +34,7 @@ def build_lite_report_quality_summary(
     evidence row's ``freshness`` (None values are not counted).
     """
     total_item_count = len(items)
-    actionable_item_count = sum(
-        1 for it in items if it.item_kind in _ACTIONABLE_KINDS
-    )
+    actionable_item_count = sum(1 for it in items if it.item_kind in _ACTIONABLE_KINDS)
     evidence_item_count = sum(1 for it in items if it.evidence)
 
     sources: set[str] = set()
