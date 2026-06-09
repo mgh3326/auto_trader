@@ -278,6 +278,7 @@ class KISLiveOrderLedger(Base):
         UniqueConstraint("order_no", name="uq_kis_live_ledger_order_no"),
         Index("ix_kis_live_ledger_status", "status"),
         Index("ix_kis_live_ledger_symbol", "symbol"),
+        Index("ix_kis_live_ledger_report_item_uuid", "report_item_uuid"),
         {"schema": "review"},
     )
 
@@ -320,6 +321,11 @@ class KISLiveOrderLedger(Base):
     exit_reason: Mapped[str | None] = mapped_column(Text)
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
+    # ROB-473 — audit linkage to the report item that drove this order.
+    # send-time, immutable through reconcile; NO FK (mirrors
+    # AlpacaPaperOrderLedger.candidate_uuid). nullable: legacy/unlinked → NULL.
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+
     # reconcile outcomes
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
@@ -354,6 +360,7 @@ class LiveOrderLedger(Base):
         ),
         Index("ix_live_ledger_status", "status"),
         Index("ix_live_ledger_market_symbol", "market", "symbol"),
+        Index("ix_live_ledger_report_item_uuid", "report_item_uuid"),
         {"schema": "review"},
     )
 
@@ -400,6 +407,10 @@ class LiveOrderLedger(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+
+    # ROB-473 — audit linkage to the report item that drove this order (see
+    # KISLiveOrderLedger.report_item_uuid). send-time, immutable, no FK.
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
     # ROB-164 defensive-trim approval audit, captured at send so the
     # evidence-gated journal close (reconcile) can still append the

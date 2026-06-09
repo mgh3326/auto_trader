@@ -7,6 +7,7 @@ Business logic lives in order_validation and order_journal.
 from __future__ import annotations
 
 import datetime
+import uuid
 from decimal import Decimal
 from typing import Any, Literal
 from typing import cast as typing_cast
@@ -48,6 +49,21 @@ from app.mcp_server.tooling.shared import (
 from app.services.brokers.kis import KISClient
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+
+
+def _coerce_report_item_uuid(value: str | None) -> uuid.UUID | None:
+    """ROB-473 — parse a report_item_uuid string fail-open.
+
+    Audit metadata only — a malformed value must never block the order, so a
+    bad string resolves to None (no linkage) rather than raising.
+    """
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
 
 # Phase 2 strategy constants
 CRYPTO_STOP_LOSS_PCT = 0.045
@@ -643,6 +659,7 @@ async def _execute_and_record(
     order_error_fn: Any,
     is_mock: bool = False,
     correlation_id: str | None = None,
+    report_item_uuid: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
@@ -742,6 +759,7 @@ async def _execute_and_record(
             min_hold_days=min_hold_days,
             notes=notes,
             indicators_snapshot=indicators_snapshot,
+            report_item_uuid=report_item_uuid,
         )
 
     # ROB-407: US/해외 live 주문도 accepted-only 기록; fill/journal/pnl은
@@ -785,6 +803,7 @@ async def _execute_and_record(
                 defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
             ),
             dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
+            report_item_uuid=report_item_uuid,
         )
 
     # ROB-407: crypto live 주문. 지정가 pending은 accepted-only(reconcile 위임),
@@ -842,6 +861,7 @@ async def _execute_and_record(
                 defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
             ),
             dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
+            report_item_uuid=report_item_uuid,
         )
 
     # Record phase: fills + journals
@@ -918,6 +938,7 @@ async def _place_order_impl(
     scalping_strategy_id: str | None = None,
     scalping_exit_reason: str | None = None,
     correlation_id: str | None = None,
+    report_item_uuid: str | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1091,6 +1112,7 @@ async def _place_order_impl(
             order_error_fn=_order_error,
             is_mock=is_mock,
             correlation_id=correlation_id,
+            report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
         )
     except Exception as exc:
         logger.exception(

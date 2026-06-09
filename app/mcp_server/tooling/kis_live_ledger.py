@@ -8,6 +8,7 @@ isolated from the mock ledger (kis_live_order_ledger vs kis_mock_order_ledger).
 from __future__ import annotations
 
 import datetime
+import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
@@ -109,6 +110,7 @@ async def _save_kis_live_order_ledger(
     exit_reason: str | None,
     indicators_snapshot: dict[str, Any] | None,
     fee: float = 0.0,
+    report_item_uuid: uuid.UUID | None = None,
 ) -> int | None:
     """Insert one accepted/rejected live order row. Returns new id or None."""
     try:
@@ -145,6 +147,7 @@ async def _save_kis_live_order_ledger(
                     notes=notes,
                     exit_reason=exit_reason,
                     indicators_snapshot=indicators_snapshot,
+                    report_item_uuid=report_item_uuid,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_live_ledger_order_no")
             )
@@ -200,6 +203,7 @@ async def _record_kis_live_order(
     min_hold_days: int | None,
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
+    report_item_uuid: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Record a live KR order as accepted/rejected. No fill/journal/pnl booked."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -245,6 +249,7 @@ async def _record_kis_live_order(
         notes=notes,
         exit_reason=exit_reason,
         indicators_snapshot=indicators_snapshot,
+        report_item_uuid=report_item_uuid,
     )
 
     return {
@@ -614,3 +619,32 @@ async def kis_live_reconcile_orders_impl(
             f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}"
         ),
     }
+
+
+async def list_kis_live_orders_by_report_item_uuid(
+    report_item_uuid: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """ROB-473 — return live KR orders linked to a report item (audit)."""
+    async with _order_session_factory()() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(KISLiveOrderLedger)
+                    .where(KISLiveOrderLedger.report_item_uuid == report_item_uuid)
+                    .order_by(KISLiveOrderLedger.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        {
+            "ledger_id": r.id,
+            "order_no": r.order_no,
+            "symbol": r.symbol,
+            "side": r.side,
+            "status": r.status,
+            "report_item_uuid": str(r.report_item_uuid) if r.report_item_uuid else None,
+        }
+        for r in rows
+    ]
