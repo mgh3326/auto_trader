@@ -124,10 +124,13 @@ class TestMcpServerMain:
     ) -> None:
         _, mcp, _ = _load_main_module(monkeypatch)
 
-        assert [call.args[0] for call in mcp.add_middleware.call_args_list] == [
-            "middleware",
-            "caller-identity-middleware",
-        ]
+        calls = [call.args[0] for call in mcp.add_middleware.call_args_list]
+        # Sentry (outermost) then CallerIdentity, then ROB-469 PR2's
+        # ToolTimeoutMiddleware added LAST so it is innermost (wraps the tool) while
+        # Sentry stays outermost and captures the timeout ToolError.
+        assert calls[:2] == ["middleware", "caller-identity-middleware"]
+        assert type(calls[2]).__name__ == "ToolTimeoutMiddleware"
+        assert len(calls) == 3
 
     def test_non_integer_log_level_falls_back_to_info(
         self, monkeypatch: pytest.MonkeyPatch

@@ -32,3 +32,31 @@ def get_finnhub_api_key() -> str | None:
 def get_mcp_graceful_shutdown_timeout() -> int:
     """Get MCP HTTP graceful shutdown timeout in seconds."""
     return _env_int("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", 10)
+
+
+# Single source of truth for the per-tool timeout default (imported by
+# app.mcp_server.timeout_middleware so the two never drift).
+DEFAULT_MCP_TOOL_TIMEOUT_S = 45.0
+
+
+def get_mcp_tool_timeout_default() -> float:
+    """Default per-tool execution timeout (seconds) for the MCP timeout middleware."""
+    raw = _env("MCP_TOOL_TIMEOUT_DEFAULT_S")
+    if raw is None:
+        return DEFAULT_MCP_TOOL_TIMEOUT_S
+    try:
+        return float(raw)
+    except ValueError:
+        logging.warning(
+            f"Invalid float for MCP_TOOL_TIMEOUT_DEFAULT_S={raw!r}, "
+            f"using default={DEFAULT_MCP_TOOL_TIMEOUT_S}"
+        )
+        return DEFAULT_MCP_TOOL_TIMEOUT_S
+
+
+def get_mcp_tool_timeout_enabled() -> bool:
+    """Kill switch for the MCP per-tool timeout middleware (default enabled)."""
+    raw = _env("MCP_TOOL_TIMEOUT_ENABLED")
+    if raw is None:
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on")

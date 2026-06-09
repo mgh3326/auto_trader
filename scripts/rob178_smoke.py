@@ -164,9 +164,7 @@ async def _read_back_via_service() -> dict:
                 "detail_url": c.detail_url,
                 "pdf_url": c.pdf_url,
                 "excerpt_len": len(c.excerpt or ""),
-                "symbol_candidates": [
-                    sc.model_dump() for sc in c.symbol_candidates
-                ],
+                "symbol_candidates": [sc.model_dump() for sc in c.symbol_candidates],
                 "attribution_publisher": c.attribution_publisher,
                 "attribution_copyright_notice": c.attribution_copyright_notice,
             }
@@ -192,8 +190,11 @@ def _expect_full_text_rejection(payload: dict) -> dict:
     try:
         ResearchReportIngestionRequest.model_validate(mutated)
     except Exception as exc:
-        return {"rejected": True, "error_class": type(exc).__name__,
-                "error_message": str(exc)[:200]}
+        return {
+            "rejected": True,
+            "error_class": type(exc).__name__,
+            "error_message": str(exc)[:200],
+        }
     return {"rejected": False, "error_class": None, "error_message": None}
 
 
@@ -204,8 +205,11 @@ def _expect_forbidden_body_rejection(payload: dict) -> dict:
     try:
         ResearchReportIngestionRequest.model_validate(mutated)
     except Exception as exc:
-        return {"rejected": True, "error_class": type(exc).__name__,
-                "error_message": str(exc)[:200]}
+        return {
+            "rejected": True,
+            "error_class": type(exc).__name__,
+            "error_message": str(exc)[:200],
+        }
     return {"rejected": False, "error_class": None, "error_message": None}
 
 
@@ -232,10 +236,18 @@ def main() -> int:
         counts = asyncio.run(_table_counts())
         read_back = {"dry_run": True, "count": 0, "citations_sample": []}
     else:
-        first = asyncio.run(_ingest_via_service(request))
-        second = asyncio.run(_ingest_via_service(request))
-        counts = asyncio.run(_table_counts())
-        read_back = asyncio.run(_read_back_via_service())
+        # ROB-469 PR2: run all DB work in ONE event loop. The production default DB
+        # pool (AsyncAdaptedQueuePool) binds pooled connections to the loop that
+        # created them, so separate asyncio.run() calls would hit "attached to a
+        # different loop". A single asyncio.run keeps every checkout on one loop.
+        async def _apply_smoke() -> tuple[dict, dict, dict, dict]:
+            ingest_first = await _ingest_via_service(request)
+            ingest_second = await _ingest_via_service(request)
+            table_counts = await _table_counts()
+            read = await _read_back_via_service()
+            return ingest_first, ingest_second, table_counts, read
+
+        first, second, counts, read_back = asyncio.run(_apply_smoke())
 
     full_text_check = _expect_full_text_rejection(payload)
     forbidden_body_check = _expect_forbidden_body_rejection(payload)
@@ -277,7 +289,9 @@ def main() -> int:
     # args.evidence is constrained to the repo-local .smoke-out/ tree by
     # _resolve_smoke_output_path(), and the evidence payload contains only
     # Pydantic-validated compact metadata.
-    args.evidence.write_text(json.dumps(evidence, indent=2, ensure_ascii=False))  # NOSONAR pythonsecurity:S2083
+    args.evidence.write_text(
+        json.dumps(evidence, indent=2, ensure_ascii=False)
+    )  # NOSONAR pythonsecurity:S2083
     print(json.dumps(evidence, indent=2, ensure_ascii=False))
     return 0 if invariants_ok else 1
 

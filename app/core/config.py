@@ -375,7 +375,9 @@ class Settings(BaseSettings):
     redis_ssl: bool = False
 
     # Redis 연결 풀 설정
-    redis_max_connections: int = 10
+    # ROB-469 PR2: widened from 10 — a tight shared ceiling caused pool contention
+    # when several MCP tool fan-outs ran at once.
+    redis_max_connections: int = 20
     redis_socket_timeout: int = 5
     redis_socket_connect_timeout: int = 5
 
