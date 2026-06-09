@@ -87,6 +87,35 @@ def _source_for_market(market: str) -> str:
     return "naver_finance" if market == "kr" else "yahoo"
 
 
+# ROB-434: single source of truth for per-column raw-key priority. Used by
+# _payload_from_raw AND finnhub_fallback's gap detection so they never drift.
+# Mirrors _payload_from_raw's original or-chains exactly.
+_FIELD_SOURCE_KEYS: dict[str, tuple[str, ...]] = {
+    "per": ("per", "PER", "trailingPE"),
+    "pbr": ("pbr", "PBR", "priceToBook"),
+    "roe": ("roe", "ROE"),
+    "dividend_yield": (
+        "dividend_yield",
+        "Dividend Yield",
+        "trailingAnnualDividendYield",
+    ),
+    "market_cap": ("market_cap", "marketCap"),
+    "high_52w": ("high_52w", "yearHigh"),
+    "low_52w": ("low_52w", "yearLow"),
+    "high_52w_date": ("high_52w_date",),
+}
+
+
+def _resolve_raw_value(raw: dict[str, Any], field: str) -> Any:
+    """First truthy value among the field's priority keys (matches the original
+    or-chain: 0/None are treated as absent)."""
+    for key in _FIELD_SOURCE_KEYS[field]:
+        value = raw.get(key)
+        if value:
+            return value
+    return None
+
+
 def _payload_from_raw(
     *, market: str, symbol: str, snapshot_date: dt.date, raw: dict[str, Any]
 ) -> MarketValuationSnapshotUpsert:
@@ -95,20 +124,17 @@ def _payload_from_raw(
         symbol=symbol,
         snapshot_date=snapshot_date,
         source=_source_for_market(market),
-        per=_to_decimal(raw.get("per") or raw.get("PER") or raw.get("trailingPE")),
-        pbr=_to_decimal(raw.get("pbr") or raw.get("PBR") or raw.get("priceToBook")),
-        roe=_to_decimal(raw.get("roe") or raw.get("ROE")),
-        dividend_yield=_to_decimal(
-            raw.get("dividend_yield")
-            or raw.get("Dividend Yield")
-            or raw.get("trailingAnnualDividendYield")
-        ),
-        market_cap=_to_decimal(raw.get("market_cap") or raw.get("marketCap")),
-        high_52w=_to_decimal(raw.get("high_52w") or raw.get("yearHigh")),
-        low_52w=_to_decimal(raw.get("low_52w") or raw.get("yearLow")),
-        high_52w_date=_to_date(raw.get("high_52w_date")),
+        per=_to_decimal(_resolve_raw_value(raw, "per")),
+        pbr=_to_decimal(_resolve_raw_value(raw, "pbr")),
+        roe=_to_decimal(_resolve_raw_value(raw, "roe")),
+        dividend_yield=_to_decimal(_resolve_raw_value(raw, "dividend_yield")),
+        market_cap=_to_decimal(_resolve_raw_value(raw, "market_cap")),
+        high_52w=_to_decimal(_resolve_raw_value(raw, "high_52w")),
+        low_52w=_to_decimal(_resolve_raw_value(raw, "low_52w")),
+        high_52w_date=_to_date(_resolve_raw_value(raw, "high_52w_date")),
         raw_payload=redact_sensitive_payload(dict(raw)),
     )
+
 
 
 async def build_valuation_snapshots_for_market(
