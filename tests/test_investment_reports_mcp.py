@@ -172,6 +172,40 @@ async def test_list_filters_propagate(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_returns_summary_only_and_paginates(session: AsyncSession) -> None:
+    # ROB-465: list returns lightweight summaries (no heavy report bodies) and
+    # paginates via limit/offset so the response stays inside the token budget.
+    for d in ("2026-05-18", "2026-05-19", "2026-05-20"):
+        await investment_report_create_impl(
+            items=[_action_item_dict()],
+            **_create_kwargs(market="kr", kst_date=d),
+        )
+
+    page1 = await investment_report_list_impl(market="kr", limit=2)
+    assert page1["success"] is True
+    assert len(page1["reports"]) == 2
+
+    summary = page1["reports"][0]
+    # summary-only: heavy bodies are dropped, key identifiers retained.
+    assert {"report_uuid", "title", "status", "kst_date"} <= set(summary.keys())
+    assert "market_snapshot" not in summary
+    assert "portfolio_snapshot" not in summary
+    assert "report_metadata" not in summary
+
+    pg = page1["pagination"]
+    assert pg["returned_count"] == 2
+    assert pg["offset"] == 0
+    assert pg["limit"] == 2
+    assert pg["has_more"] is True
+    assert pg["next_offset"] == 2
+
+    page2 = await investment_report_list_impl(market="kr", limit=2, offset=2)
+    assert len(page2["reports"]) == 1
+    assert page2["pagination"]["has_more"] is False
+    assert page2["pagination"]["next_offset"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_returns_not_found_for_unknown(session: AsyncSession) -> None:
     response = await investment_report_get_impl(str(uuid.uuid4()))
     assert response == {"success": False, "error": "not_found"}

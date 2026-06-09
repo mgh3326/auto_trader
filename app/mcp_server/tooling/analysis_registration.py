@@ -266,18 +266,25 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             "preset's thresholds; the response includes availableFilters (the adjustable "
             "catalog for that preset's snapshot) and appliedFilters. Currently threaded for "
             "consecutive_gainers (e.g. loosen consecutive_up_days to 3 or tighten to 10); "
-            "other presets return default snapshot results and say so. Read-only."
+            "other presets return default snapshot results and say so. Read-only. "
+            "Results are capped (limit default 40, max 200) and paginated via "
+            "limit/offset; pagination.total_available + pagination.next_offset let you "
+            "page through without exceeding the response token budget."
         ),
     )
     async def screen_stocks_snapshot(
         preset: str,
         market: Literal["kr", "us", "crypto"] = "kr",
         filters: list[dict[str, Any]] | None = None,
+        limit: int = 40,
+        offset: int = 0,
     ) -> dict[str, Any]:
         return await screen_stocks_snapshot_impl(
             preset=preset,
             market=market,
             filters=filters,
+            limit=limit,
+            offset=offset,
         )
 
     # ROB-359: recommend_stocks is intentionally NOT registered on the MCP tool

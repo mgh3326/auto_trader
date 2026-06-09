@@ -5,10 +5,30 @@ from __future__ import annotations
 from app.services.investment_reports.idempotency import (
     canonical_watch_condition_hash,
     item_key,
+    kst_date_from_report_key,
     report_key,
     watch_activation_key,
     watch_event_key,
 )
+
+
+def test_kst_date_from_report_key_round_trips() -> None:
+    key = report_key(
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        kst_date="2026-05-18",
+        generator_version="v1",
+    )
+    assert kst_date_from_report_key(key) == "2026-05-18"
+
+
+def test_kst_date_from_report_key_handles_bad_input() -> None:
+    assert kst_date_from_report_key(None) is None
+    assert kst_date_from_report_key("") is None
+    assert kst_date_from_report_key("not-a-report-key") is None
 
 
 def test_report_key_is_stable() -> None:
