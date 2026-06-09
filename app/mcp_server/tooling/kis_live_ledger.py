@@ -158,6 +158,31 @@ async def _save_kis_live_order_ledger(
         return None
 
 
+_BROKER_EXCHANGE_KEYS = ("EXCG_ID_DVSN_CD", "excg_id_dvsn_cd", "exg_id_dvsn_cd")
+
+
+def _expected_krx_expiry(now: datetime.datetime) -> str | None:
+    """KRX day-order expiry = 15:30 KST of the send date (ISO 8601), or None."""
+    try:
+        kst = datetime.timezone(datetime.timedelta(hours=9))
+        local = now.astimezone(kst)
+        close = local.replace(hour=15, minute=30, second=0, microsecond=0)
+        return close.isoformat()
+    except (ValueError, OverflowError):
+        return None
+
+
+def _extract_broker_exchange(execution_result: dict[str, Any]) -> str | None:
+    """Read the broker-reported exchange factually; None if absent (no fabrication)."""
+    output = execution_result.get("output") or {}
+    for source in (execution_result, output):
+        for key in _BROKER_EXCHANGE_KEYS:
+            val = source.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+    return None
+
+
 async def _record_kis_live_order(
     *,
     normalized_symbol: str,
@@ -239,6 +264,13 @@ async def _record_kis_live_order(
         "response_message": msg,
         "fill_recorded": False,
         "journal_created": False,
+        "order_validity": "day",
+        "routing": {
+            "requested_venue": "auto",
+            "note": "SOR auto-route (KRX; NXT-eligible)",
+        },
+        "expected_expiry": _expected_krx_expiry(now_kst()),
+        "broker_exchange": _extract_broker_exchange(execution_result),
         "message": (
             "KIS live order accepted (pending fill); run kis_live_reconcile_orders "
             "to record fill/journal once the broker confirms execution"
