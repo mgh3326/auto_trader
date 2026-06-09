@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.trade_journal import TradeJournal
+from app.models.trading import InstrumentType
 from app.services.action_report.snapshot_backed.collectors._base import (
     build_result,
     utcnow,
@@ -25,6 +26,14 @@ from app.services.investment_snapshots.collectors import (
 _ACTIVE_STATUSES: tuple[str, ...] = ("draft", "active")
 _RETROSPECTIVE_STATUSES: tuple[str, ...] = ("closed", "stopped", "expired")
 _DEFAULT_RECENT_LIMIT: int = 20
+
+# Mirror get_trade_journal market_map (app/mcp_server/tooling/trade_journal_tools.py)
+# — the only no-migration market discriminator on trade_journals.
+_MARKET_TO_INSTRUMENT: dict[str, InstrumentType] = {
+    "crypto": InstrumentType.crypto,
+    "kr": InstrumentType.equity_kr,
+    "us": InstrumentType.equity_us,
+}
 
 
 class JournalSnapshotCollector:
@@ -41,20 +50,25 @@ class JournalSnapshotCollector:
     async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         now = utcnow()
 
+        scope_filters = [TradeJournal.account_type == "live"]
+        itype = _MARKET_TO_INSTRUMENT.get(request.market)
+        if itype is not None:
+            scope_filters.append(TradeJournal.instrument_type == itype)
+        if request.account_scope == "kis_live":
+            # KIS broker scope; legacy rows may carry account=NULL (kis_live_ledger
+            # now writes account="kis"). instrument_type already excludes crypto.
+            scope_filters.append(
+                or_(TradeJournal.account == "kis", TradeJournal.account.is_(None))
+            )
+
         active_stmt = (
             select(TradeJournal)
-            .where(
-                TradeJournal.account_type == "live",
-                TradeJournal.status.in_(_ACTIVE_STATUSES),
-            )
+            .where(*scope_filters, TradeJournal.status.in_(_ACTIVE_STATUSES))
             .order_by(desc(TradeJournal.updated_at))
         )
         recent_stmt = (
             select(TradeJournal)
-            .where(
-                TradeJournal.account_type == "live",
-                TradeJournal.status.in_(_RETROSPECTIVE_STATUSES),
-            )
+            .where(*scope_filters, TradeJournal.status.in_(_RETROSPECTIVE_STATUSES))
             .order_by(desc(TradeJournal.updated_at))
             .limit(self._recent_limit)
         )
@@ -106,6 +120,7 @@ def _journal_to_dict(j: TradeJournal) -> dict[str, Any]:
         "exit_reason": j.exit_reason,
         "pnl_pct": j.pnl_pct,
         "account_type": j.account_type,
+        "account": j.account,
         "created_at": j.created_at,
         "updated_at": j.updated_at,
     }
