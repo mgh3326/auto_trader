@@ -41,6 +41,7 @@ _STATUS_TO_LIFECYCLE: dict[str, str] = {
     "partial": "partial",
     "pending": "accepted",
     "cancelled": "cancelled",
+    "expired": "cancelled",  # ROB-476 — terminal, no journal side-effect
     "anomaly": "anomaly",
 }
 
