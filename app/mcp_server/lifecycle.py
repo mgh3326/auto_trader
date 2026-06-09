@@ -7,6 +7,8 @@ minimal FastMCP instance without importing the full 128-tool production server.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -15,6 +17,13 @@ from typing import TYPE_CHECKING
 from fastmcp.server.lifespan import lifespan as fastmcp_lifespan
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from app.mcp_server.env_utils import (
+    get_mcp_color,
+    get_mcp_heartbeat_interval_s,
+    get_mcp_heartbeat_path,
+)
+from app.mcp_server.heartbeat import heartbeat_loop
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -72,9 +81,25 @@ def build_server_lifespan(*, service: str = "auto-trader-mcp"):
             tool_count,
             time.monotonic() - STARTED_MONOTONIC,
         )
+        # ROB-469 PR3: liveness heartbeat task (no-op when MCP_HEARTBEAT_PATH unset).
+        heartbeat_task: asyncio.Task | None = None
+        hb_path = get_mcp_heartbeat_path()
+        if hb_path:
+            heartbeat_task = asyncio.create_task(
+                heartbeat_loop(
+                    hb_path,
+                    interval_s=get_mcp_heartbeat_interval_s(),
+                    color=get_mcp_color(),
+                )
+            )
+            logger.info("mcp.heartbeat.started path=%s", hb_path)
         try:
             yield {}
         finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_task
             logger.info(
                 "mcp.lifecycle.shutdown service=%s uptime_s=%.1f",
                 service,

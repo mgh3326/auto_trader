@@ -60,3 +60,28 @@ def get_mcp_tool_timeout_enabled() -> bool:
     if raw is None:
         return True
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_mcp_heartbeat_path() -> str | None:
+    """Path the MCP server writes its liveness heartbeat to. None disables it
+    (the watchdog only runs in the native deployment, which sets this)."""
+    return _env("MCP_HEARTBEAT_PATH")
+
+
+def get_mcp_heartbeat_interval_s() -> float:
+    """Seconds between MCP heartbeat writes (default 10)."""
+    raw = _env("MCP_HEARTBEAT_INTERVAL_S")
+    if raw is None:
+        return 10.0
+    try:
+        return float(raw)
+    except ValueError:
+        logging.warning(
+            f"Invalid float for MCP_HEARTBEAT_INTERVAL_S={raw!r}, using default=10.0"
+        )
+        return 10.0
+
+
+def get_mcp_color() -> str:
+    """Deployment color (blue/green) for heartbeat tagging; 'unknown' if unset."""
+    return _env("AUTO_TRADER_COLOR") or "unknown"
