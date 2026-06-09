@@ -44,7 +44,9 @@ def test_write_heartbeat_swallows_oserror(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_heartbeat_loop_writes_then_marks_stopped_on_cancel(tmp_path: Path) -> None:
+async def test_heartbeat_loop_writes_then_marks_stopped_on_cancel(
+    tmp_path: Path,
+) -> None:
     from app.mcp_server.heartbeat import heartbeat_loop
 
     hb = tmp_path / "mcp-blue.json"
