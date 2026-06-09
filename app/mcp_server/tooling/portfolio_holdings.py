@@ -16,6 +16,7 @@ from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
     normalize_account_mode,
 )
+from app.mcp_server.tooling.concurrency import bounded_gather
 from app.mcp_server.tooling.market_data_indicators import (
     _compute_crypto_realtime_rsi_from_frame,
     _compute_indicators,
@@ -133,6 +134,11 @@ CRYPTO_MEAN_REVERSION_RSI_EXIT = 46.0
 # read used to inherit the ``kis_live`` routing default and mislabel the source.
 # This descriptive provenance value never participates in order routing.
 UPBIT_LIVE_PROVENANCE = "upbit_live"
+
+# ROB-469 PR2: bound per-call fan-out concurrency so a large portfolio can't explode
+# the task count and stall the MCP event loop.
+_CRYPTO_SIGNAL_CONCURRENCY = 4
+_EQUITY_PRICE_CONCURRENCY = 5
 
 
 def _provenance_account_mode(
@@ -652,20 +658,23 @@ async def _fetch_price_map_for_positions(
         combined = "; ".join(part for part in (kis_error, yahoo_error) if part)
         return instrument_type, symbol, None, combined, "kis+yahoo"
 
-    equity_tasks = [
-        fetch_equity_price(instrument_type, symbol)
-        for instrument_type, symbol in sorted(
-            {
-                (position["instrument_type"], position["symbol"])
-                for position in positions
-                if position["instrument_type"] in {"equity_kr", "equity_us"}
-                and _position_needs_current_price_refresh(position)
-            }
-        )
-    ]
+    equity_pairs = sorted(
+        {
+            (position["instrument_type"], position["symbol"])
+            for position in positions
+            if position["instrument_type"] in {"equity_kr", "equity_us"}
+            and _position_needs_current_price_refresh(position)
+        }
+    )
 
-    if equity_tasks:
-        results = await asyncio.gather(*equity_tasks)
+    if equity_pairs:
+        results = await bounded_gather(
+            _EQUITY_PRICE_CONCURRENCY,
+            [
+                lambda it=it, sym=sym: fetch_equity_price(it, sym)
+                for it, sym in equity_pairs
+            ],
+        )
         for instrument_type, symbol, price, error, source in results:
             if price is not None:
                 price_map[(instrument_type, symbol)] = price
@@ -992,9 +1001,10 @@ async def _get_holdings_impl(
         ]
         if crypto_positions:
             try:
-                signal_results = await asyncio.gather(
-                    *[
-                        _compute_crypto_signals_for_position(position)
+                signal_results = await bounded_gather(
+                    _CRYPTO_SIGNAL_CONCURRENCY,
+                    [
+                        lambda p=position: _compute_crypto_signals_for_position(p)
                         for position in crypto_positions
                     ],
                     return_exceptions=True,
