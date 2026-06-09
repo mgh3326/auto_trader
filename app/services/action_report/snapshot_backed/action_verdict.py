@@ -98,6 +98,9 @@ def classify_candidate_symbol(
     return "buy_review"
 
 
+# Deterministic tiebreak when several watch-grade flags co-occur — the first
+# matching flag becomes the surfaced reason (penny > illiquid > abnormal_spike >
+# screener_stale). Order is policy, not derivable from code.
 _QUALITY_WATCH_ORDER: tuple[str, ...] = (
     "penny",
     "illiquid",

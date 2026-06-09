@@ -577,6 +577,11 @@ class CandidateUniverseSnapshotCollector:
             "candidate_limit": candidate_limit,
             "universe_count": universe_count,
             "capped": capped,
+            # ROB-346 — pool_size = wide pool evaluated for ranking (US fetches
+            # max(limit*5,50)); displayed_count = candidates after the priority
+            # slice. Makes pool-vs-display transparent to the report UI.
+            "pool_size": len(evidence),
+            "displayed_count": len(candidates),
             "candidates": candidates,
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,
@@ -653,6 +658,11 @@ class CandidateUniverseSnapshotCollector:
             "candidate_limit": candidate_limit,
             "universe_count": universe_count,
             "capped": capped,
+            # ROB-346 — pool_size = wide pool evaluated for ranking (US fetches
+            # max(limit*5,50)); displayed_count = candidates after the priority
+            # slice. Makes pool-vs-display transparent to the report UI.
+            "pool_size": len(evidence),
+            "displayed_count": len(candidates),
             "candidates": candidates,
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,

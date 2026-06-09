@@ -94,7 +94,14 @@ def test_clean_candidate_stays_buy_review():
         }
     ]
     snaps = [
-        _snap("portfolio", {"buying_power": {"usd": 1000.0, "krw": 0.0}, "primary_source": "kis", "holdings": []}),
+        _snap(
+            "portfolio",
+            {
+                "buying_power": {"usd": 1000.0, "krw": 0.0},
+                "primary_source": "kis",
+                "holdings": [],
+            },
+        ),
         _snap("candidate_universe", {"usefulness": "useful", "candidates": cands}),
         _snap(
             "symbol",
@@ -110,3 +117,75 @@ def test_clean_candidate_stays_buy_review():
     )
     item = next(i for i in items if i.symbol == "GOOD")
     assert item.evidence_snapshot["action_verdict"] == "buy_review"
+
+
+def test_quality_flag_priority_order_penny_over_illiquid():
+    # Input list order is ["illiquid", "penny"] but the surfaced reason must be
+    # "penny" — demote_for_quality iterates _QUALITY_WATCH_ORDER, not input order.
+    cands = [
+        {
+            "symbol": "PI",
+            "rank": 1,
+            "candidate_rank": 1,
+            "data_state": "fresh",
+            "quality_flags": ["illiquid", "penny"],
+            "priority_score": 0.1,
+        }
+    ]
+    snaps = [
+        _snap("candidate_universe", {"usefulness": "useful", "candidates": cands}),
+        _snap(
+            "symbol",
+            {"symbol": "PI", "quote": _actionable_quote("PI")},
+            symbol="PI",
+        ),
+    ]
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps,
+        request_market="us",
+        account_scope="kis_live",
+        now=dt.datetime(2026, 6, 9),
+    )
+    item = next(i for i in items if i.symbol == "PI")
+    assert item.evidence_snapshot["reject_or_wait_reason"] == "penny"
+
+
+def test_quality_reason_wins_over_budget_when_both_apply():
+    # Penny candidate (quality demotes buy→watch) AND USD=0 (budget would also
+    # demote). Quality runs first → verdict watch_only with the QUALITY reason;
+    # budget leaves an already-non-buy verdict untouched.
+    cands = [
+        {
+            "symbol": "PB",
+            "rank": 1,
+            "candidate_rank": 1,
+            "data_state": "fresh",
+            "quality_flags": ["penny"],
+            "priority_score": 0.1,
+        }
+    ]
+    snaps = [
+        _snap(
+            "portfolio",
+            {
+                "buying_power": {"usd": 0, "krw": 0},
+                "primary_source": "kis",
+                "holdings": [],
+            },
+        ),
+        _snap("candidate_universe", {"usefulness": "useful", "candidates": cands}),
+        _snap(
+            "symbol",
+            {"symbol": "PB", "quote": _actionable_quote("PB")},
+            symbol="PB",
+        ),
+    ]
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps,
+        request_market="us",
+        account_scope="kis_live",
+        now=dt.datetime(2026, 6, 9),
+    )
+    item = next(i for i in items if i.symbol == "PB")
+    assert item.evidence_snapshot["action_verdict"] == "watch_only"
+    assert item.evidence_snapshot["reject_or_wait_reason"] == "penny"

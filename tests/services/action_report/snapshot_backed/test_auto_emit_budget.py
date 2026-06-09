@@ -60,11 +60,23 @@ def test_usd_zero_demotes_with_budget_gap():
     assert ev["budget_basis"] == "available_usd"
 
 
-def test_usd_zero_with_krw_reference_adds_fx_required_not_summed():
+def test_usd_zero_with_krw_present_not_summed():
+    # default basis=available_usd; KRW present must NOT be summed into USD.
     ev = _item(_snaps({"usd": 0, "krw": 500000})).evidence_snapshot
     assert "fx_required" in ev["budget_reasons"]
     assert ev["available_usd"] in (0, 0.0)
     assert ev["krw_orderable_reference"] == 500000  # reference, not summed into USD
+
+
+def test_krw_orderable_reference_basis_flags_fx_required_only():
+    # basis=krw_orderable_reference (no override) → watch_only with fx_required
+    # ONLY (no budget_gap / operator_budget_required); KRW never fabricated to USD.
+    ev = _item(
+        _snaps({"usd": 0, "krw": 500000}),
+        budget_basis="krw_orderable_reference",
+    ).evidence_snapshot
+    assert ev["action_verdict"] == "watch_only"
+    assert ev["budget_reasons"] == ["fx_required"]
 
 
 def test_operator_override_keeps_buy():

@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.action_report.snapshot_backed.candidate_quality import (
     compute_priority_score,
     compute_quality_flags,
@@ -87,3 +89,35 @@ def test_priority_score_orders_liquid_over_illiquid():
 def test_confidence_cap_for_stale():
     assert confidence_cap_for(frozenset({"screener_stale"})) == 40
     assert confidence_cap_for(frozenset()) is None
+
+
+def test_priority_score_formula_exact_values():
+    # dollar_volume = 100 * 10_000_000 = 1e9 → log10(1e9)/9 = 1.0 → liquidity_term=1.0
+    # change_rate=10.0 (percent) → clamp(10,-5,10)/10 = 1.0 → momentum_term=1.0
+    # no flags → 1.0*1.0 + 0.5*1.0 = 1.5
+    score = compute_priority_score(
+        latest_close=100.0,
+        daily_volume=10_000_000,
+        change_rate=10.0,
+        quality_flags=frozenset(),
+    )
+    assert score == pytest.approx(1.5)
+    # same inputs + spike(-0.5) + stale(-0.3) penalties → 1.5 - 0.8 = 0.7
+    penalized = compute_priority_score(
+        latest_close=100.0,
+        daily_volume=10_000_000,
+        change_rate=10.0,
+        quality_flags=frozenset({"abnormal_spike", "screener_stale"}),
+    )
+    assert penalized == pytest.approx(0.7)
+
+
+def test_priority_score_momentum_clamps_at_boundaries():
+    # change_rate=-10% clamps to -5 → momentum_term=-0.5; liquidity_term=1.0 → 0.75
+    low = compute_priority_score(
+        latest_close=100.0,
+        daily_volume=10_000_000,
+        change_rate=-10.0,
+        quality_flags=frozenset(),
+    )
+    assert low == pytest.approx(1.0 + 0.5 * -0.5)  # 0.75

@@ -26,7 +26,7 @@ US 신규매수 후보는 `invest_screener_snapshots` top-gainers에서 **순수
 
 ### 1.1 가용 데이터 (필터 feasibility)
 `invest_screener_snapshots`: `latest_close`(Decimal, 가격), `daily_volume`(BigInt, 주),
-`change_rate`(Decimal, 비율 e.g. 0.12=+12%), `week_change_rate`, `closes_window`(JSONB),
+`change_rate`(Decimal, **percent** e.g. 12.0=+12%, ratio 아님), `week_change_rate`, `closes_window`(JSONB),
 `consecutive_up_days`. **`market_cap` 없음.**
 `us_symbol_universe`: `is_common_stock`(nullable Bool, ROB-204), `is_active`, `exchange`.
 **`market_cap`/`sector` 없음.**
@@ -71,7 +71,7 @@ US 신규매수 후보는 `invest_screener_snapshots` top-gainers에서 **순수
 |------|----------|
 | `penny` | `latest_close < 5.0` |
 | `illiquid` | `dollar_volume_usd < 5_000_000` |
-| `abnormal_spike` | `change_rate > 0.15` OR `week_change_rate > 0.50` |
+| `abnormal_spike` | `change_rate > 15.0` OR `week_change_rate > 50.0` (percent) |
 | `non_common_stock` | `is_common_stock is False` |
 | `common_stock_unknown` | `is_common_stock is None` (미분류) |
 | `screener_stale` | collector `days_stale > 0` 또는 usefulness != "useful" |
@@ -102,7 +102,7 @@ def demote_for_quality(verdict: str, quality_flags: frozenset[str]) -> tuple[str
 buy_review 후보 정렬용 `priority_score`(높을수록 우선; collector가 계산해 evidence에 저장):
 ```
 liquidity_term = min(1.0, log10(max(dollar_volume_usd, 1.0)) / 9.0)   # 9 ≈ log10($1B)
-momentum_term  = clamp(change_rate, -0.05, 0.10) / 0.10               # 적정 양(+) 선호, 상한
+momentum_term  = clamp(change_rate, -5.0, 10.0) / 10.0               # percent; 적정 양(+) 선호, 상한
 spike_penalty  = 1.0 if "abnormal_spike" in quality_flags else 0.0
 stale_penalty  = 1.0 if "screener_stale" in quality_flags else 0.0
 priority_score = 1.0*liquidity_term + 0.5*momentum_term - 0.5*spike_penalty - 0.3*stale_penalty
