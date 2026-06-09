@@ -1720,6 +1720,22 @@ class TestGetMarketIndex:
         assert len(result["history"]) == 3
         assert result["history"][0]["date"] == "2026-02-01"
 
+    async def test_single_kr_index_tags_premarket_data_state(self, monkeypatch):
+        """ROB-464: a pre-market KR index (change_pct frozen at prior close) is
+        tagged data_state so change_pct=0 is not read as a real flat session."""
+        tools = build_tools()
+        basic = _naver_basic_json()
+        history = _naver_price_history(3)
+        self._patch_naver(monkeypatch, basic, history)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.fundamentals._market_index.kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_market_index"](symbol="KOSPI")
+
+        assert result["indices"][0]["data_state"] == "premarket_unavailable"
+
     async def test_single_us_index(self, monkeypatch):
         """Test fetching a single US index (NASDAQ)."""
         tools = build_tools()

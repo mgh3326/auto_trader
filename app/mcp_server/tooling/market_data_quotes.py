@@ -24,6 +24,7 @@ from app.mcp_server.tooling.market_data_indicators import (
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
 )
+from app.mcp_server.tooling.market_session import kr_market_data_state
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
 )
@@ -992,7 +993,12 @@ async def _get_quote_impl(
     try:
         if market_type == "crypto":
             return await _fetch_quote_crypto(symbol)
-        return await _fetch_quote_equity_kr(symbol)
+        # ROB-464: tag the KRX session so a pre-market / closed-session prior
+        # close is not mistaken for a live price. The shared fetcher (used by
+        # orders/portfolio) is left untouched; only the get_quote tool adds this.
+        quote = await _fetch_quote_equity_kr(symbol)
+        quote["data_state"] = kr_market_data_state()
+        return quote
     except Exception as exc:
         return _error_payload_from_exception(
             source=source,

@@ -882,6 +882,100 @@ class TestMCPLosers:
         assert len(result["rankings"]) == 1
         assert float(result["rankings"][0]["change_rate"]) > 0
 
+    async def test_kr_gainers_premarket_suppresses_zero_garbage(self, monkeypatch):
+        """ROB-464: pre-market KRX gainers come back all-zero/alphabetical garbage.
+        Suppress the fake-0 rows and tag data_state instead of presenting them."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "000020",
+                        "hts_kor_isnm": "동화약품",
+                        "stck_prpr": "10000",
+                        "prdy_ctrt": "0.00",
+                        "acml_vol": "0",
+                    },
+                    {
+                        "stck_shrn_iscd": "000040",
+                        "hts_kor_isnm": "KR모터스",
+                        "stck_prpr": "2000",
+                        "prdy_ctrt": "0.00",
+                        "acml_vol": "0",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="gainers")
+
+        assert result["data_state"] == "premarket_unavailable"
+        assert result["rankings"] == []
+        assert result["total_count"] == 0
+        assert result.get("note")
+
+    async def test_kr_losers_premarket_empty_suppressed_with_data_state(
+        self, monkeypatch
+    ):
+        """ROB-464: pre-market losers filter to empty; return a premarket data_state
+        payload, not the legacy 'No losing stocks found' bullish-market error."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "000020",
+                        "hts_kor_isnm": "동화약품",
+                        "prdy_ctrt": "0.00",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="losers")
+
+        assert result["data_state"] == "premarket_unavailable"
+        assert result["rankings"] == []
+        assert "error" not in result
+
+    async def test_kr_gainers_fresh_keeps_rankings_and_tags_fresh(self, monkeypatch):
+        """ROB-464: during the regular session, real movers are kept and tagged fresh."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "5.0",
+                        "acml_vol": "10000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="gainers")
+
+        assert result["data_state"] == "fresh"
+        assert len(result["rankings"]) == 1
+
 
 @pytest.mark.asyncio
 class TestMCPEmptyLosersErrors:
@@ -910,6 +1004,10 @@ class TestMCPEmptyLosersErrors:
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        # Premise: a fresh, bullish trading session (no losers), not pre-market.
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="losers", limit=5

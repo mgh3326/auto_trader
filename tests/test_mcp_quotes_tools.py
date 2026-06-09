@@ -202,6 +202,34 @@ async def test_get_quote_korean_equity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_quote_korean_equity_tags_premarket_data_state(monkeypatch):
+    """ROB-464: KR get_quote tags data_state so a pre-market prior-close is not
+    mistaken for a live price."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: "premarket_unavailable",
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    assert result["instrument_type"] == "equity_kr"
+    assert result["data_state"] == "premarket_unavailable"
+    # The prior close is still surfaced as price (not dropped) — just flagged.
+    assert result["price"] == pytest.approx(105.0)
+
+
+@pytest.mark.asyncio
 async def test_get_quote_korean_equity_previous_close(monkeypatch):
     # ROB-448: with 2 candles, previous_close = the prior trading day's close.
     tools = build_tools()

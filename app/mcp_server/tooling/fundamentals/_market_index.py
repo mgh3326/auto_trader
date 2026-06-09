@@ -14,7 +14,19 @@ from app.mcp_server.tooling.fundamentals_sources_indices import (
     _fetch_index_us_current,
     _fetch_index_us_history,
 )
+from app.mcp_server.tooling.market_session import kr_market_data_state
 from app.mcp_server.tooling.shared import error_payload as _error_payload
+
+
+def _tag_kr_index_data_state(index: Any) -> Any:
+    """ROB-464: tag KR (naver) index dicts with the KRX session data_state.
+
+    Pre-market / closed sessions otherwise return change_pct=0 (frozen at the
+    prior close), which reads as a real flat session.
+    """
+    if isinstance(index, dict) and "error" not in index:
+        index["data_state"] = kr_market_data_state()
+    return index
 
 
 async def handle_get_market_index(
@@ -42,7 +54,10 @@ async def handle_get_market_index(
                     _fetch_index_kr_current(meta["naver_code"], meta["name"]),
                     _fetch_index_kr_history(meta["naver_code"], capped_count, period),
                 )
-                return {"indices": [current_data], "history": history}
+                return {
+                    "indices": [_tag_kr_index_data_state(current_data)],
+                    "history": history,
+                }
             if meta["source"] == "coingecko":
                 current_data = await _fetch_index_crypto_current(
                     meta["cg_metric"], meta["name"], sym
@@ -77,6 +92,8 @@ async def handle_get_market_index(
         if isinstance(r, BaseException):
             indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
         elif isinstance(r, dict):
+            if _INDEX_META[_DEFAULT_INDICES[i]]["source"] == "naver":
+                _tag_kr_index_data_state(r)
             indices.append(r)
         else:
             indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
