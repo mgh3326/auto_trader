@@ -279,6 +279,21 @@ async def session() -> AsyncSession:
                         "ADD CONSTRAINT ck_investment_watch_events_outcome "
                         "CHECK (outcome IN ('notified','review_required','preview_attached',"
                         "'executed','expired','ignored','failed'))",
+                        # ROB-455 — extend the decision-verb CHECK with the
+                        # order-lifecycle verbs cancel/reprice. create_all names
+                        # this via the convention hash; drop both forms then
+                        # recreate canonical with the new verb set. Mirrors
+                        # alembic 20260609_rob455.
+                        "ALTER TABLE review.investment_report_item_decisions "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_item_decisions_ck_investment_repor_9aa6",
+                        "ALTER TABLE review.investment_report_item_decisions "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_investment_report_item_decisions_decision",
+                        "ALTER TABLE review.investment_report_item_decisions "
+                        "ADD CONSTRAINT ck_investment_report_item_decisions_decision "
+                        "CHECK (decision IN ('approve','deny','defer','skip',"
+                        "'partial_approve','cancel','reprice'))",
                     ):
                         await conn.execute(sa.text(stmt))
                 factory = async_sessionmaker(engine, expire_on_commit=False)

@@ -872,10 +872,15 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
     mcp.tool(
         name="investment_report_decide_item",
         description=(
-            "Record an operator decision on one investment_report_item. "
-            "Idempotent per (item_uuid, verb, actor) by default; pass "
-            "idempotency_key to override. partial_approve requires a "
-            "non-empty approved_payload_snapshot."
+            "Record an operator decision on one investment_report_item. Verbs: "
+            "approve | deny | defer | skip | partial_approve | cancel | reprice "
+            "(ROB-455 order-lifecycle verbs: cancel = withdraw a tranche, "
+            "reprice = adjust levels). Idempotent per (item_uuid, verb, actor) by "
+            "default; pass idempotency_key to override. partial_approve and "
+            "reprice both require a non-empty approved_payload_snapshot (the "
+            "scoped/adjusted params). item.status projection: approve/reprice -> "
+            "approved, deny/cancel -> denied, defer -> deferred, skip -> "
+            "unchanged (the exact verb is preserved in the decision audit row)."
         ),
     )(investment_report_decide_item_impl)
     mcp.tool(
