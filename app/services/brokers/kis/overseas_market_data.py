@@ -233,6 +233,60 @@ class OverseasMarketDataMixin(MarketDataBase):
         rows = await self._paginate_overseas_daily(symbol, excd, n, period)
         return self._build_overseas_daily_frame(rows, n)
 
+    async def inquire_overseas_price(
+        self, symbol: str, exchange_code: str = "NASD"
+    ) -> pd.DataFrame:
+        """해외주식 현재가 조회 (HHDFS00000300).
+
+        Returns a single-row DataFrame with columns [close, previous_close,
+        volume]. 'last'(현재가)이 없거나 <= 0이면 empty DataFrame(예외 아님).
+        transport/auth 에러는 _request_with_token_retry에서 예외로 전파된다.
+        """
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+        js = await self._request_with_token_retry(
+            tr_id=constants.OVERSEAS_PRICE_TR,
+            url=self._kis_url(constants.OVERSEAS_PRICE_URL),
+            params={"AUTH": "", "EXCD": excd, "SYMB": to_kis_symbol(symbol)},
+            timeout=10,
+            api_name="inquire_overseas_price",
+        )
+        out = js.get("output") or {}
+        return self._build_overseas_price_frame(out)
+
+    @staticmethod
+    def _build_overseas_price_frame(out: dict[str, Any]) -> pd.DataFrame:
+        """HHDFS00000300 output dict → 단일행 현재가 DataFrame.
+
+        'last'(현재가) 없거나 <= 0 → empty frame. 위조 금지.
+        """
+        empty_cols = ["close", "previous_close", "volume"]
+
+        def _f(value: Any) -> float | None:
+            try:
+                return float(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        def _i(value: Any) -> int | None:
+            try:
+                return int(float(value)) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        close = _f(out.get("last"))
+        if close is None or close <= 0:
+            return pd.DataFrame(columns=empty_cols)
+        return pd.DataFrame(
+            [
+                {
+                    "close": close,
+                    "previous_close": _f(out.get("base")),
+                    "volume": _i(out.get("tvol")),
+                }
+            ]
+        )
+
     async def inquire_overseas_daily_price_unclamped(
         self,
         symbol: str,
