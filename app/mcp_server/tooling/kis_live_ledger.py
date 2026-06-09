@@ -18,6 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.market_session import (
+    DATA_STATE_MARKET_CLOSED,
+    kr_market_data_state,
+)
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
@@ -26,10 +30,6 @@ from app.mcp_server.tooling.order_journal import (
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
-from app.mcp_server.tooling.market_session import (
-    DATA_STATE_MARKET_CLOSED,
-    kr_market_data_state,
-)
 from app.models.review import KISLiveOrderLedger
 from app.services.brokers.kis.live_order_expiry import classify_day_order_expiry
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
@@ -475,9 +475,7 @@ async def _reconcile_one_ledger_row(
         )
         if expiry == "expired":
             base["verdict"] = "expired"
-            base["action"] = (
-                "marked_expired" if not dry_run else "would_mark_expired"
-            )
+            base["action"] = "marked_expired" if not dry_run else "would_mark_expired"
             if not dry_run:
                 await _update_ledger_outcome(ledger_id=row.id, status="expired")
             return base

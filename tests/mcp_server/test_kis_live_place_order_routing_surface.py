@@ -31,17 +31,30 @@ def test_extract_broker_exchange_absent_is_none():
 @pytest.mark.asyncio
 async def test_place_order_response_surfaces_routing_fields():
     execution_result = {
-        "odno": "0011001100", "ord_tmd": "094300", "rt_cd": "0",
-        "msg1": "정상", "output": {"EXCG_ID_DVSN_CD": "KRX"},
+        "odno": "0011001100",
+        "ord_tmd": "094300",
+        "rt_cd": "0",
+        "msg1": "정상",
+        "output": {"EXCG_ID_DVSN_CD": "KRX"},
     }
     dry_run_result = {"price": 209000, "quantity": 2, "estimated_value": 418000}
     with patch.object(mod, "_save_kis_live_order_ledger", AsyncMock(return_value=42)):
         resp = await mod._record_kis_live_order(
-            normalized_symbol="005930", market_type="equity_kr", side="buy",
-            order_type="limit", dry_run_result=dry_run_result,
-            execution_result=execution_result, reason=None, exit_reason=None,
-            thesis="t", strategy="s", target_price=None, stop_loss=None,
-            min_hold_days=None, notes=None, indicators_snapshot=None,
+            normalized_symbol="005930",
+            market_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            dry_run_result=dry_run_result,
+            execution_result=execution_result,
+            reason=None,
+            exit_reason=None,
+            thesis="t",
+            strategy="s",
+            target_price=None,
+            stop_loss=None,
+            min_hold_days=None,
+            notes=None,
+            indicators_snapshot=None,
         )
     assert resp["order_validity"] == "day"
     assert resp["routing"]["requested_venue"] == "auto"
