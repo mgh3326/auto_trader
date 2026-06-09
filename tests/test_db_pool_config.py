@@ -11,7 +11,10 @@ _URL = "postgresql+asyncpg://u:p@localhost:5432/db"
 
 
 @pytest.mark.unit
-def test_default_is_async_queue_pool() -> None:
+def test_default_is_async_queue_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # conftest forces DB_POOL_CLASS=null for the ambient test env (per-test event
+    # loops); clear it here to verify build_engine's TRUE default (queue).
+    monkeypatch.delenv("DB_POOL_CLASS", raising=False)
     engine = build_engine(_URL)
     assert type(engine.pool).__name__ == "AsyncAdaptedQueuePool"
     assert engine.pool.size() == 5  # default DB_POOL_SIZE
@@ -26,6 +29,7 @@ def test_db_pool_class_null_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.unit
 def test_env_overrides_pool_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DB_POOL_CLASS", raising=False)  # exercise the queue path
     monkeypatch.setenv("DB_POOL_SIZE", "9")
     engine = build_engine(_URL)
     assert engine.pool.size() == 9

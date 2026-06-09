@@ -94,6 +94,16 @@ def _ensure_test_env() -> None:
         "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db"
     )
 
+    # ROB-469 PR2: force tests onto NullPool. Production defaults to the async queue
+    # pool (DB_POOL_CLASS=queue), but pytest-asyncio uses a fresh event loop PER TEST,
+    # and the shared module-level engine (created once at import) would reuse pooled
+    # connections bound to a now-closed loop → "attached to a different loop" errors.
+    # NullPool checks out a fresh connection each time, avoiding that. Force-overwrite
+    # (not setdefault) is required because env.example sets DB_POOL_CLASS=queue and is
+    # loaded first. Tests that exercise build_engine() pool selection monkeypatch
+    # DB_POOL_CLASS themselves.
+    os.environ["DB_POOL_CLASS"] = "null"
+
     # Force disable Sentry during tests — prevent test-originated errors
     # from leaking to the real Sentry project (developer shell may have SENTRY_DSN set)
     os.environ["SENTRY_DSN"] = ""
