@@ -16,7 +16,7 @@ from app.services.market_news_briefing_formatter import (
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-NEWS_TOOL_NAMES = ["get_market_news", "get_market_issues"]
+NEWS_TOOL_NAMES = ["get_market_news", "get_market_issues", "get_symbol_news_mapping"]
 
 
 def _article_to_dict(
@@ -220,3 +220,27 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
             market=market, window_hours=window_hours, limit=limit
         )
         return response.model_dump(mode="json")
+
+    @mcp.tool(
+        name="get_symbol_news_mapping",
+        description=(
+            "Read-only: news mapped to a stock symbol from the news-symbol mapping "
+            "read-model (ROB-398). Returns per-article mapped_symbols "
+            "(symbol/mapping_source[naver_code|candidate|ner]/confidence/is_primary) "
+            "plus title/url/as_of and an honest data_state (fresh|stale|unavailable). "
+            "Use for symbol-level news evidence; empty mapping returns unavailable, not error."
+        ),
+    )
+    async def get_symbol_news_mapping(
+        symbol: str,
+        market: str = "kr",
+        hours: int = 24,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        from app.mcp_server.tooling.news_symbol_mapping import (
+            handle_get_symbol_news_mapping,
+        )
+
+        return await handle_get_symbol_news_mapping(
+            symbol=symbol, market=market, hours=hours, limit=limit
+        )

@@ -22,6 +22,7 @@ AVAILABLE_TOOL_NAMES = [
     "get_ohlcv",
     "get_indicators",
     "get_news",
+    "get_symbol_news_mapping",
     "get_company_profile",
     "get_crypto_profile",
     "get_financials",
