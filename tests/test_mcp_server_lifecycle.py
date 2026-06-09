@@ -44,3 +44,20 @@ def test_health_bypasses_auth_while_mcp_is_gated() -> None:
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
     assert mcp_route.status_code in (400, 401, 406)  # NOT 200 — auth/headers reject
+
+
+@pytest.mark.unit
+def test_lifespan_logs_startup_and_shutdown(caplog: pytest.LogCaptureFixture) -> None:
+    mcp = FastMCP(name="lifecycle-test", lifespan=build_server_lifespan(service="test-mcp"))
+
+    @mcp.tool
+    def echo(x: int) -> int:
+        return x
+
+    app = mcp.http_app()
+    with caplog.at_level(logging.INFO, logger="app.mcp_server.lifecycle"):
+        with TestClient(app):
+            pass  # entering runs startup, exiting runs shutdown teardown
+    assert "mcp.lifecycle.startup_complete" in caplog.text
+    assert "tools=1" in caplog.text  # the single registered tool was counted
+    assert "mcp.lifecycle.shutdown" in caplog.text
