@@ -82,3 +82,48 @@ async def test_aggregate_envelope():
     assert res["success"] is True
     assert "groups" in res
     assert res["groups"][0]["group"] == "A"
+
+
+def test_tool_names_set_complete():
+    from app.mcp_server.tooling.trade_retrospective_registration import (
+        TRADE_RETROSPECTIVE_TOOL_NAMES,
+    )
+    assert TRADE_RETROSPECTIVE_TOOL_NAMES == {
+        "save_trade_retrospective",
+        "get_trade_retrospectives",
+        "get_retrospective_aggregate",
+    }
+
+
+def test_tools_in_available_surface():
+    from app.mcp_server import AVAILABLE_TOOL_NAMES
+    for name in (
+        "save_trade_retrospective",
+        "get_trade_retrospectives",
+        "get_retrospective_aggregate",
+    ):
+        assert name in AVAILABLE_TOOL_NAMES
+
+
+def test_register_wires_three_tools():
+    from app.mcp_server.tooling.trade_retrospective_registration import (
+        register_trade_retrospective_tools,
+    )
+
+    registered: list[str] = []
+
+    class _FakeMCP:
+        def tool(self, *, name, description):
+            registered.append(name)
+
+            def _wrap(fn):
+                return fn
+
+            return _wrap
+
+    register_trade_retrospective_tools(_FakeMCP())
+    assert set(registered) == {
+        "save_trade_retrospective",
+        "get_trade_retrospectives",
+        "get_retrospective_aggregate",
+    }
