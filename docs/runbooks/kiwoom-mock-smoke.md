@@ -24,8 +24,16 @@ these boundaries:
 - **ROB-418 — account-read 필수 파라미터:** kt00018(잔고)는 `qry_tp`, kt00009(미체결/
   이력)는 `stk_bond_tp`를 요구한다(누락 시 `return_code 2` 필수입력 파라미터 오류).
   기본값(`qry_tp="1"`, `stk_bond_tp="0"`)은 Kiwoom enum 관례이며 **이 mock smoke로
-  값의 scope 정확성을 확정**한다. kt00010(주문가능, with-symbol)의 필수 파라미터는
-  smoke 확인 후 follow-up(추측 미추가). ROB-399와 동일 버그(이 fix로 covered).
+  값의 scope 정확성을 확정**한다. ROB-399와 동일 버그(이 fix로 covered).
+- **ROB-460 — account-cash reads의 `dmst_stex_tp`:** 2026-06-09 live에서
+  `kiwoom_mock_get_positions`/`get_orderable_cash`가 `return_code 2`
+  (필수입력 파라미터=`dmst_stex_tp`, 국내거래소구분)로 재실패했다. account-cash
+  reads **kt00018(잔고) + kt00010(주문가능, with-symbol)** 의 요청 본문에
+  `dmst_stex_tp="KRX"`를 채운다. 이 값은 order 엔드포인트(kt10000-kt10003)에서 이미
+  검증된 값(추측 아님)이며 mock은 KRX 전용이다. **경계 결정:** order-history reads
+  **kt00009/kt00007**는 의도적으로 미변경 — 이미 ROB-418로 복구됐고 `dmst_stex_tp`
+  필요가 입증되지 않았다(작동 중인 엔드포인트에 추측 파라미터를 더해 회귀시키지 않음).
+  아래 smoke 체크리스트로 4개 read 도구를 한 번에 검증하여 잔여 누락을 선제 포착한다.
 - **`dry_run=False` requires `confirm=True`** on every order-mutating tool.
 - **No live anything.** No KIS live, Kiwoom live, Alpaca live, or real-money
   calls. No scheduler / recurring automation.
@@ -99,6 +107,23 @@ stays deferred). To pick a conservative buy limit well below market that will
 8. `kiwoom_mock_cancel_order(dry_run=False, confirm=True)` — in a finally-block.
 9. Final `kiwoom_mock_get_order_history` + `kiwoom_mock_get_positions`
    reconciliation.
+
+## Account-read 필수 파라미터 검증 (ROB-418 / ROB-460)
+
+각 fix 후, 4개 read 도구를 **한 번에** 호출해 `return_code 2`
+(필수입력 파라미터 누락)가 없는지 전수 확인한다 — 부분 수정으로 인한 재실패를 막는다.
+
+| 도구 | broker API | 필수 파라미터 (현재 채움) | 기대 |
+|---|---|---|---|
+| `kiwoom_mock_get_positions` | kt00018 | `qry_tp`, `dmst_stex_tp` | `return_code 0` |
+| `kiwoom_mock_get_orderable_cash` (no symbol) | kt00018 | `qry_tp`, `dmst_stex_tp` | `return_code 0` |
+| `kiwoom_mock_get_orderable_cash` (with symbol) | kt00010 | `dmst_stex_tp`, `stk_cd` | `return_code 0` |
+| `kiwoom_mock_get_order_history` | kt00009 | `stk_bond_tp` | `return_code 0` |
+
+- 어떤 도구든 `필수입력 파라미터=<name>`(`return_code 2`)가 나오면 그 `<name>`을
+  기록하고 해당 broker API 본문에 추가하는 follow-up을 연다(추측 금지, 증명된 누락만).
+- 특히 kt00009/kt00007은 ROB-460에서 의도적으로 `dmst_stex_tp` 미추가 — 이 smoke가
+  실제로 그 파라미터를 요구하는지 확정한다.
 
 ## Cleanup / verification after smoke
 
