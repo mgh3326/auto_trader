@@ -15,6 +15,7 @@ but never commits).
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,6 +242,8 @@ class InvestmentReportIngestionService:
                 await self._insert_item(existing, item_req)
             await self._session.flush()
             await self._session.refresh(existing)
+            # ROB-455 — overwrite that (re)sets a predecessor chain supersedes it.
+            await self._maybe_supersede_previous(request.previous_report_uuid, existing)
             return existing, False, len(request.items)
 
         report = await self._repo.insert_report(
@@ -280,7 +283,72 @@ class InvestmentReportIngestionService:
             await self._insert_item(report, item_req)
 
         await self._session.flush()
+        # ROB-455 — a new report that chains from a predecessor supersedes it.
+        await self._maybe_supersede_previous(request.previous_report_uuid, report)
         return report, False, len(request.items)
+
+    async def set_report_status(
+        self,
+        *,
+        report_uuid: UUID,
+        status: str,
+        reason: str | None = None,
+        actor: str | None = None,
+        superseded_by: UUID | None = None,
+    ) -> InvestmentReport | None:
+        """ROB-455 — transition a report's lifecycle ``status`` first-class.
+
+        Returns the (refreshed) report, or ``None`` when no report matches
+        ``report_uuid`` so the caller can surface ``not_found``. Setting the
+        status it already has is an idempotent no-op. Each transition appends a
+        ``status_transitions`` entry to ``report_metadata`` for traceability;
+        the chosen 'superseded' target also records ``superseded_by``. The DB
+        CHECK is the authoritative gate on which status values are legal.
+        """
+        report = await self._repo.get_report_by_uuid(report_uuid)
+        if report is None:
+            return None
+        if report.status == status:
+            return report
+        metadata = dict(report.report_metadata or {})
+        entry: dict[str, Any] = {"to": status}
+        if reason is not None:
+            entry["reason"] = reason
+        if actor is not None:
+            entry["actor"] = actor
+        if superseded_by is not None:
+            metadata["superseded_by"] = str(superseded_by)
+            entry["superseded_by"] = str(superseded_by)
+        transitions = list(metadata.get("status_transitions") or [])
+        transitions.append(entry)
+        metadata["status_transitions"] = transitions
+        await self._repo.update_report(
+            report.id, status=status, report_metadata=metadata
+        )
+        await self._session.refresh(report)
+        return report
+
+    async def _maybe_supersede_previous(
+        self, previous_report_uuid: UUID | None, new_report: InvestmentReport
+    ) -> None:
+        """ROB-455 — make ``previous_report_uuid`` load-bearing: when a new report
+        chains from a predecessor, mark the predecessor 'superseded'.
+
+        No-op when the link is unset or dangles (a trace hint may not resolve),
+        and only draft/published predecessors are touched — already-terminal
+        (decided/expired/superseded) reports are left as-is.
+        """
+        if previous_report_uuid is None:
+            return
+        predecessor = await self._repo.get_report_by_uuid(previous_report_uuid)
+        if predecessor is None or predecessor.status not in ("draft", "published"):
+            return
+        await self.set_report_status(
+            report_uuid=previous_report_uuid,
+            status="superseded",
+            reason="auto_superseded_by_chain",
+            superseded_by=new_report.report_uuid,
+        )
 
     async def _insert_item(
         self, report: InvestmentReport, item_req: IngestReportItem

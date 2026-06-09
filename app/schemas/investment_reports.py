@@ -40,6 +40,9 @@ MarketSessionLiteral = Literal["regular", "nxt", "pre", "post", "24x7"]
 AccountScopeLiteral = Literal["kis_live", "kis_mock", "alpaca_paper", "upbit_live"]
 ExecutionModeLiteral = Literal["advisory_only", "mock_preview"]
 ReportStatusLiteral = Literal["draft", "published", "decided", "expired", "superseded"]
+# ROB-455 — the lifecycle targets an operator may transition a report TO. draft /
+# published are entry states (set at create), not transition targets here.
+ReportStatusTransitionLiteral = Literal["superseded", "decided", "expired"]
 
 ItemKindLiteral = Literal["action", "watch", "risk"]
 ItemSideLiteral = Literal["buy", "sell"]
@@ -406,6 +409,15 @@ class RecordDecisionRequest(BaseModel):
                 "partial_approve requires non-empty approved_payload_snapshot"
             )
         return self
+
+
+class SetReportStatusRequest(BaseModel):
+    """ROB-455 — operator request to transition a report's lifecycle status."""
+
+    report_uuid: UUID
+    status: ReportStatusTransitionLiteral
+    reason: str | None = None
+    actor: str | None = None
 
 
 class WatchInvalidation(BaseModel):
