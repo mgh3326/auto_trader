@@ -10,11 +10,59 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _created_at_sort_key(raw: Any) -> tuple[bool, datetime]:
+    """Sortable key for a journal entry's ``created_at`` isoformat string.
+
+    Returns ``(True, aware_datetime)`` when parseable; ``(False, _EPOCH)`` when
+    missing/unparseable so dated journals always rank above undated ones and two
+    undated entries compare equal (stable, keeps the first seen).
+    """
+    if not raw or not isinstance(raw, str):
+        return (False, _EPOCH)
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return (False, _EPOCH)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return (True, parsed)
+
+
+def _scope_from_items(items: Iterable[Any]) -> dict[str, set[str] | None]:
+    """Build the report's levels scope: ``{symbol: {sides} | None}``.
+
+    ``None`` means "any side" — used when any item for that symbol has a NULL
+    side (watch/risk items, or legacy action rows). A symbol with only
+    side-bearing items maps to the union of those sides. Symbols without a
+    symbol value are skipped. (ROB-454)
+    """
+    scope: dict[str, set[str] | None] = {}
+    for item in items:
+        symbol = getattr(item, "symbol", None)
+        if not symbol:
+            continue
+        side = getattr(item, "side", None)
+        if symbol not in scope:
+            scope[symbol] = None if side is None else {side}
+            continue
+        current = scope[symbol]
+        if current is None:
+            continue  # already "any side"
+        if side is None:
+            scope[symbol] = None  # widen to "any side"
+        else:
+            current.add(side)
+    return scope
 
 
 def _is_finite_number(value: Any) -> bool:
@@ -34,22 +82,59 @@ def _near(current: Any, level: Any, near_pct: float) -> bool:
 
 def _levels_delta(
     journal_result: Mapping[str, Any],
-    symbols: set[str],
+    scope: Mapping[str, set[str] | None],
     *,
     near_pct: float,
+    baseline_created_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Project the journal's already-computed live enrichment into a delta block.
 
     Reuses ``target_reached`` / ``stop_reached`` / ``pnl_pct_live`` (computed by
     ``get_trade_journal(enrich_live=True)``); computes per-entry ``near_*`` flags
-    here. When ``symbols`` is empty, all entries are kept.
+    here.
+
+    ROB-454 scoping — there is no item↔journal link, so the report's position is
+    approximated:
+
+    * In-scope: a journal entry's ``symbol`` must be a ``scope`` key AND
+      (``scope[symbol]`` is ``None`` ⇒ any side, else the entry's ``side`` must be
+      in that set). An empty ``scope`` keeps every symbol (no filter).
+    * Stale cutoff: when ``baseline_created_at`` is given, journals created
+      strictly before it are dropped — they predate this baseline report and
+      belong to pre-existing positions, not to this report's delta. Entries with
+      a missing/unparseable ``created_at`` are kept (fail-open; never fabricate an
+      exclusion).
+    * Dedup: when multiple in-scope journals share a ``(symbol, side)``, only the
+      most-recent (by ``created_at``) is counted, so a stale duplicate does not
+      inflate ``stop_hit`` / ``target_hit``.
     """
-    entries: list[dict[str, Any]] = []
-    near_target = near_stop = target_hit = stop_hit = 0
+    selected: dict[tuple[Any, Any], dict[str, Any]] = {}
     for entry in journal_result.get("entries") or []:
         symbol = entry.get("symbol")
-        if symbols and symbol not in symbols:
-            continue
+        side = entry.get("side")
+        if scope:
+            if symbol not in scope:
+                continue
+            allowed = scope[symbol]
+            if allowed is not None and side not in allowed:
+                continue
+        created_key = _created_at_sort_key(entry.get("created_at"))
+        if baseline_created_at is not None and created_key[0]:
+            if created_key[1] < baseline_created_at:
+                continue  # predates the baseline report — stale (ROB-454)
+        key = (symbol, side)
+        incumbent = selected.get(key)
+        if incumbent is None or created_key > _created_at_sort_key(
+            incumbent.get("created_at")
+        ):
+            selected[key] = entry
+
+    entries: list[dict[str, Any]] = []
+    near_target = near_stop = target_hit = stop_hit = 0
+    for entry in sorted(
+        selected.values(),
+        key=lambda e: ((e.get("symbol") or ""), (e.get("side") or "")),
+    ):
         current = entry.get("current_price")
         target = entry.get("target_price")
         stop = entry.get("stop_loss")
@@ -63,8 +148,10 @@ def _levels_delta(
         stop_hit += int(is_stop_reached)
         entries.append(
             {
-                "symbol": symbol,
+                "symbol": entry.get("symbol"),
                 "side": entry.get("side"),
+                "journal_id": entry.get("id"),
+                "created_at": entry.get("created_at"),
                 "target_price": target,
                 "stop_loss": stop,
                 "current_price": current,
@@ -276,7 +363,11 @@ class DeltaService:
             return {"success": False, "error": "baseline_not_found"}
 
         market = baseline["market"]
-        symbols = baseline["symbols"]
+        scope = baseline.get("scope")
+        if scope is None:
+            # Back-compat: derive an any-side scope from a plain symbols set.
+            scope = dict.fromkeys(baseline.get("symbols") or set())
+        baseline_created_at = baseline.get("baseline_created_at")
         market_snapshot = baseline["market_snapshot"]
         baseline_pnl = baseline["baseline_pnl"]
         unavailable: dict[str, str] = {}
@@ -285,7 +376,12 @@ class DeltaService:
         try:
             journal_fn = self._journal_fn or _default_journal_fn
             journal_result = await journal_fn(account_type=account_type, market=market)
-            levels_delta = _levels_delta(journal_result, symbols, near_pct=near_pct)
+            levels_delta = _levels_delta(
+                journal_result,
+                scope,
+                near_pct=near_pct,
+                baseline_created_at=baseline_created_at,
+            )
         except Exception as exc:  # noqa: BLE001 — fail-open per signal
             logger.info("levels_delta failed: %r", exc)
             unavailable["levels"] = _reason(exc)
@@ -344,11 +440,7 @@ class DeltaService:
         if bundle is None:
             return None
         report = bundle["report"]
-        symbols = {
-            item.symbol
-            for item in (bundle.get("items") or [])
-            if getattr(item, "symbol", None)
-        }
+        scope = _scope_from_items(bundle.get("items") or [])
         baseline_pnl: dict[str, float] | None = None
         bundle_uuid = getattr(report, "snapshot_bundle_uuid", None)
         if bundle_uuid is not None:
@@ -369,7 +461,9 @@ class DeltaService:
             )
         return {
             "market": report.market,
-            "symbols": symbols,
+            "symbols": set(scope),
+            "scope": scope,
+            "baseline_created_at": getattr(report, "created_at", None),
             "market_snapshot": report.market_snapshot or {},
             "baseline_pnl": baseline_pnl,
         }
