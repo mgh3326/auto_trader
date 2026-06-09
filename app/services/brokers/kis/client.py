@@ -147,6 +147,11 @@ class KISClient(BaseKISClient):
     async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         return await self._market_data.inquire_price(code, market)
 
+    async def inquire_execution_strength(
+        self, code: str, market: str = "J"
+    ) -> dict[str, Any]:
+        return await self._market_data.inquire_execution_strength(code, market)
+
     async def inquire_orderbook(self, code: str, market: str = "J") -> dict[str, Any]:
         return await self._market_data.inquire_orderbook(code, market)
 
