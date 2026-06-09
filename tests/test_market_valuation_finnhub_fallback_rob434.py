@@ -177,4 +177,83 @@ async def test_apply_fallback_no_gap_skips_finnhub(monkeypatch) -> None:
     assert "_field_provenance" not in out
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetcher_backfills_roe_when_yahoo_null(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import builder
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    async def _fast(sym):  # noqa: ANN001
+        return {"symbol": sym}
+
+    async def _fund(sym):  # noqa: ANN001
+        return {"PER": 8.0, "ROE": None, "marketCap": 3_000_000_000}  # ROE missing
+
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fundamental_info", _fund)
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+
+    async def _metrics(symbol):  # noqa: ANN001
+        return {"roe": 18.0}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
+
+    raw = await builder.default_valuation_fetcher("AAPL", "us")
+    assert raw["roe"] == 18.0  # backfilled
+    assert raw["PER"] == 8.0  # yahoo preserved
+    assert raw["_field_provenance"] == {"roe": "finnhub"}
+    # source unchanged downstream:
+    payload = builder._payload_from_raw(
+        market="us", symbol="AAPL", snapshot_date=dt.date(2026, 6, 9), raw=raw
+    )
+    assert payload.source == "yahoo"
+    assert payload.roe == __import__("decimal").Decimal("18.0")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetcher_recovers_total_yahoo_failure(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import builder
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    async def _fast(sym):  # noqa: ANN001
+        return {"symbol": sym}
+
+    async def _boom(sym):  # noqa: ANN001
+        raise RuntimeError("Invalid Crumb / Session is closed")
+
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fundamental_info", _boom)
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: True)
+
+    async def _metrics(symbol):  # noqa: ANN001
+        return {"roe": 18.0, "per": 8.0, "market_cap": 2_000_000_000.0}
+
+    monkeypatch.setattr(fb, "fetch_valuation_finnhub", _metrics)
+
+    raw = await builder.default_valuation_fetcher("AAPL", "us")  # no raise
+    assert raw["roe"] == 18.0 and raw["per"] == 8.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetcher_total_failure_reraises_when_disabled(monkeypatch) -> None:
+    from app.services.market_valuation_snapshots import builder
+    from app.services.market_valuation_snapshots import finnhub_fallback as fb
+
+    async def _fast(sym):  # noqa: ANN001
+        return {"symbol": sym}
+
+    async def _boom(sym):  # noqa: ANN001
+        raise RuntimeError("Invalid Crumb")
+
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fast_info", _fast)
+    monkeypatch.setattr("app.services.brokers.yahoo.client.fetch_fundamental_info", _boom)
+    monkeypatch.setattr(fb, "_finnhub_fallback_enabled", lambda: False)  # disabled
+
+    with pytest.raises(RuntimeError, match="Invalid Crumb"):
+        await builder.default_valuation_fetcher("AAPL", "us")
+
+
+
 

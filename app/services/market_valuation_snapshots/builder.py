@@ -57,29 +57,47 @@ async def default_valuation_fetcher(
             fetch_fast_info,
             fetch_fundamental_info,
         )
-
-        # ROB-440 PR4: the 52w-high DATE needs a heavy OHLC fetch (1y daily) — a 3rd
-        # yahoo call/symbol that over-loads yfinance at universe scale (FD/401). Opt-in
-        # so the bulk valuation backfill is 2 calls/symbol; only undervalued_breakout
-        # date-recency needs it (targeted run with include_high_date=True).
-        if not include_high_date:
-            fast_info, fundamentals = await asyncio.gather(
-                fetch_fast_info(symbol), fetch_fundamental_info(symbol)
-            )
-            return {**fast_info, **fundamentals}
-
-        fast_info, fundamentals, high_52w_date = await asyncio.gather(
-            fetch_fast_info(symbol),
-            fetch_fundamental_info(symbol),
-            fetch_52w_high_date(symbol),  # ROB-440 PR3: 52w-high date (date-recency)
+        from app.services.market_valuation_snapshots.finnhub_fallback import (
+            apply_valuation_fallback,
         )
-        # isoformat string keeps raw_payload (JSONB) serializable; parsed back in
-        # _payload_from_raw → the high_52w_date column.
-        return {
-            **fast_info,
-            **fundamentals,
-            "high_52w_date": high_52w_date.isoformat() if high_52w_date else None,
-        }
+
+        raw: dict[str, Any] = {}
+        yahoo_failed = False
+        yahoo_exc: Exception | None = None
+        try:
+            # ROB-440 PR4: the 52w-high DATE needs a heavy OHLC fetch (1y daily) — a 3rd
+            # yahoo call/symbol that over-loads yfinance at universe scale (FD/401). Opt-in
+            # so the bulk valuation backfill is 2 calls/symbol; only undervalued_breakout
+            # date-recency needs it (targeted run with include_high_date=True).
+            if not include_high_date:
+                fast_info, fundamentals = await asyncio.gather(
+                    fetch_fast_info(symbol), fetch_fundamental_info(symbol)
+                )
+                raw = {**fast_info, **fundamentals}
+            else:
+                fast_info, fundamentals, high_52w_date = await asyncio.gather(
+                    fetch_fast_info(symbol),
+                    fetch_fundamental_info(symbol),
+                    fetch_52w_high_date(symbol),  # ROB-440 PR3: 52w-high date (date-recency)
+                )
+                # isoformat string keeps raw_payload (JSONB) serializable; parsed back in
+                # _payload_from_raw → the high_52w_date column.
+                raw = {
+                    **fast_info,
+                    **fundamentals,
+                    "high_52w_date": high_52w_date.isoformat() if high_52w_date else None,
+                }
+        except Exception as exc:  # noqa: BLE001 — try Finnhub before giving up
+            raw, yahoo_failed, yahoo_exc = {}, True, exc
+
+        # ROB-434: backfill yahoo's null/missing valuation fields from Finnhub when
+        # gated on. No-op when disabled / no key / no gap. source stays 'yahoo'.
+        raw = await apply_valuation_fallback(symbol, raw, yahoo_failed=yahoo_failed)
+
+        # Nothing recovered from a total yahoo failure → preserve today's skip+warn.
+        if yahoo_failed and not raw and yahoo_exc is not None:
+            raise yahoo_exc
+        return raw
     raise ValueError(f"unsupported market: {market}")
 
 
