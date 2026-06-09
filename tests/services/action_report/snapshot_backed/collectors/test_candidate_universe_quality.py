@@ -79,32 +79,7 @@ async def test_us_unknown_common_stock_flagged(db_session):
     assert "common_stock_unknown" in cands["NOUNIV"]["quality_flags"]
 
 
-@pytest.mark.asyncio
-async def test_kr_candidates_have_no_quality_gate(db_session):
-    # ROB-346 is US-only: the KR path must not gain quality_flags (no regression).
-    today = dt.date(2026, 6, 9)
-    db_session.add(
-        InvestScreenerSnapshot(
-            market="kr",
-            symbol="005930",
-            snapshot_date=today,
-            latest_close=3.0,  # would be "penny" if US gate applied
-            change_rate=3.0,
-            week_change_rate=0,
-            closes_window=[],
-            source="kis",
-            daily_volume=100,
-        )
-    )
-    await db_session.flush()
-    collector = CandidateUniverseSnapshotCollector(db_session)
-    req = CollectorRequest(
-        market="kr",
-        account_scope="kis_live",
-        candidate_limit=5,
-        symbols=None,
-        policy_snapshot={},
-    )
-    results = await collector.collect(req)
-    for cand in results[0].payload_json["candidates"]:
-        assert "quality_flags" not in cand  # US-only gate: KR untouched
+# KR no-regression (US-only quality gate) is covered deterministically in
+# tests/services/action_report/test_candidate_universe_collector_evidence.py
+# (test_kr_equity_path_has_no_us_quality_gate) using the fake equity repo, which
+# avoids the real-DB KR preset path that was CI-flaky here.
