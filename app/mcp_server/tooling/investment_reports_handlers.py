@@ -850,8 +850,15 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
         name="investment_report_create",
         description=(
             "Persist one ROB-265 investment_report bundle (report + items). "
-            "Idempotent on (report_type, market, market_session, account_scope, "
-            "execution_mode, kst_date, generator_version). "
+            "Idempotent on the 7-tuple (report_type, market, market_session, "
+            "account_scope, execution_mode, kst_date, generator_version) — "
+            "created_by_profile is NOT part of the key, so to mint a new row bump "
+            "generator_version (recommended) or another keyed field, not "
+            "created_by_profile. "
+            "account_scope accepts kis_live | kis_mock | alpaca_paper | upbit_live "
+            "(alpaca_paper IS accepted here; only "
+            "investment_report_generate_from_bundle restricts to the live "
+            "KIS/Upbit pairs and steers paper to the Hermes composition path). "
             "No broker / order submission is performed."
         ),
     )(investment_report_create_impl)
