@@ -94,6 +94,7 @@ def test_clean_candidate_stays_buy_review():
         }
     ]
     snaps = [
+        _snap("portfolio", {"buying_power": {"usd": 1000.0, "krw": 0.0}, "primary_source": "kis", "holdings": []}),
         _snap("candidate_universe", {"usefulness": "useful", "candidates": cands}),
         _snap(
             "symbol",
