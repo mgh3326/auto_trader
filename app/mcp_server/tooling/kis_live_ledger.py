@@ -26,7 +26,12 @@ from app.mcp_server.tooling.order_journal import (
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
+from app.mcp_server.tooling.market_session import (
+    DATA_STATE_MARKET_CLOSED,
+    kr_market_data_state,
+)
 from app.models.review import KISLiveOrderLedger
+from app.services.brokers.kis.live_order_expiry import classify_day_order_expiry
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
@@ -432,6 +437,18 @@ async def _reconcile_one_ledger_row(
     }
 
     if evidence.verdict == FillVerdict.PENDING:
+        market_closed = kr_market_data_state() == DATA_STATE_MARKET_CLOSED
+        expiry = classify_day_order_expiry(
+            rows=rows, order_no=order_no, market_closed=market_closed
+        )
+        if expiry == "expired":
+            base["verdict"] = "expired"
+            base["action"] = (
+                "marked_expired" if not dry_run else "would_mark_expired"
+            )
+            if not dry_run:
+                await _update_ledger_outcome(ledger_id=row.id, status="expired")
+            return base
         base["action"] = "noop_pending"
         return base
 
