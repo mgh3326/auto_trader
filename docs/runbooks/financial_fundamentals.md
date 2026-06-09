@@ -41,6 +41,25 @@ To safeguard OpenDART API keys from hitting the daily limit (20,000 requests/day
   - **Annual-only:** `~11 requests per symbol`
   - **With Quarterly:** `~41 requests per symbol`
 
+### Bulk Upsert Chunking (ROB-442)
+
+The DB write path chunks the bulk upsert so a large bounded-by-symbol backfill
+no longer overflows the asyncpg/Postgres bind-parameter ceiling (32767 args per
+statement):
+
+- `FinancialFundamentalsSnapshotsRepository.upsert()` splits the payload into row
+  batches sized from the column count (`_MAX_BIND_PARAMS // columns`, capped at
+  30,000 params), issuing one `INSERT ... ON CONFLICT` per chunk and summing the
+  affected-row counts.
+- Duplicate `(market, symbol, fiscal_period, source)` keys are collapsed before
+  any statement is built (latest `source_collected_at` wins, deterministically),
+  so a repeated key can never trigger `ON CONFLICT DO UPDATE command cannot
+  affect row a second time`.
+- **Operator impact:** the large one-shot backfill path is safe again — size
+  `--limit` purely against the **DART daily budget** (e.g. `--limit 1500` ≈
+  16,500 annual requests), not against any DB statement-size limit. (Before this
+  landed, the workaround was smaller chunks such as `--limit 250 --skip-existing`.)
+
 ---
 
 ## 4. Toss Parity: 성장 기대주 (growth_expectation_toss)
