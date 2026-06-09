@@ -58,6 +58,12 @@ async def test_get_approval_key_miss_flow(mocker):
         f"{INTERNAL}._issue_approval_key", new=AsyncMock(return_value="fresh")
     )
     mock_cache = mocker.patch(f"{INTERNAL}._cache_approval_key", new=AsyncMock())
+    # The cache-miss path now acquires a single-flight lock (ROB-262); give it a
+    # lock-capable Redis so the test stays hermetic (no real Redis dependency).
+    mocker.patch(
+        f"{INTERNAL}._get_redis_client",
+        new=AsyncMock(return_value=_lock_capable_redis()),
+    )
 
     result = await mod.get_approval_key()
 
