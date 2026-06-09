@@ -380,23 +380,15 @@ class TestSymbolNotFound:
     @pytest.mark.asyncio
     async def test_get_quote_us_equity_not_found_raises(self, monkeypatch):
         tools = build_tools()
-        # ROB-471: KIS-primary 디폴트 하에서 KIS 경로를 clean no-route로 고정해
-        # 실 DB 거래소 해석에 의존하지 않도록 한다(Yahoo fallback → 무가격 → not found).
+        # ROB-416: true symbol_not_found requires an explicit provider not-found
+        # signal; a successful fast_info payload with no price is quote_unavailable.
         _patch_runtime_attr(
             monkeypatch,
             "get_us_exchange_by_symbol",
             AsyncMock(side_effect=USSymbolNotRegisteredError("not registered")),
         )
         mock_fetch_fast_info = AsyncMock(
-            return_value={
-                "symbol": "INVALID",
-                "close": None,
-                "previous_close": None,
-                "open": None,
-                "high": None,
-                "low": None,
-                "volume": None,
-            }
+            side_effect=ValueError("Quote not found for symbol: INVALID")
         )
         monkeypatch.setattr(yahoo_service, "fetch_fast_info", mock_fetch_fast_info)
 

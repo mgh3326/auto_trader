@@ -409,8 +409,10 @@ async def test_get_quote_us_equity(monkeypatch):
 @pytest.mark.parametrize(
     "exc_name", ["USSymbolInactiveError", "USSymbolUniverseEmptyError"]
 )
-async def test_get_quote_us_lookup_exc_falls_back_then_not_found(monkeypatch, exc_name):
-    """inactive/empty 거래소 해석 예외도 clean fallback → symbol_not_found(ValueError)."""
+async def test_get_quote_us_lookup_exc_then_yahoo_no_price_is_unavailable(
+    monkeypatch, exc_name
+):
+    """fast_info succeeds but has no price -> quote_unavailable, not symbol_not_found."""
     import app.services.us_symbol_universe_service as uss
 
     exc = getattr(uss, exc_name)
@@ -425,8 +427,7 @@ async def test_get_quote_us_lookup_exc_falls_back_then_not_found(monkeypatch, ex
         yahoo_service, "fetch_fast_info", AsyncMock(return_value={"close": None})
     )
 
-    # clean no-route (not infra) → symbol_not_found, NOT quote_unavailable
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
         await tools["get_quote"]("AAPL")
 
 
@@ -504,7 +505,7 @@ async def test_get_quote_us_falls_back_to_yahoo(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_quote_us_symbol_not_found(monkeypatch):
-    """KIS no-route(clean) + Yahoo close=None → ValueError symbol_not_found."""
+    """Yahoo explicit not-found errors stay symbol_not_found."""
     from app.services.us_symbol_universe_service import USSymbolNotRegisteredError
 
     tools = build_tools()
@@ -515,11 +516,13 @@ async def test_get_quote_us_symbol_not_found(monkeypatch):
         AsyncMock(side_effect=USSymbolNotRegisteredError("not registered")),
     )
     monkeypatch.setattr(
-        yahoo_service, "fetch_fast_info", AsyncMock(return_value={"close": None})
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(side_effect=ValueError("Quote not found for symbol: INVALID")),
     )
 
-    with pytest.raises(ValueError, match="Symbol 'AAPL' not found"):
-        await tools["get_quote"]("AAPL")
+    with pytest.raises(ValueError, match="Symbol 'INVALID' not found"):
+        await tools["get_quote"]("INVALID")
 
 
 @pytest.mark.asyncio
@@ -596,6 +599,21 @@ async def test_get_quote_us_flag_off_uses_yahoo(monkeypatch):
 
     assert result["source"] == "yahoo"
     assert result["price"] == pytest.approx(205.0)
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_flag_off_yahoo_no_price_is_unavailable(monkeypatch):
+    """Yahoo primary fast_info with no price is a runtime data gap, not not-found."""
+    from app.core.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "us_quote_kis_primary", False)
+    tools = build_tools()
+    monkeypatch.setattr(
+        yahoo_service, "fetch_fast_info", AsyncMock(return_value={"close": None})
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        await tools["get_quote"]("AAPL")
 
 
 # ---------------------------------------------------------------------------
