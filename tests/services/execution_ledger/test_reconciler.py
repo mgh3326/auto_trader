@@ -111,3 +111,37 @@ async def test_reconciler_commit_when_flag_enabled(
     assert diff.committed_insert == 1
     assert len(repo.upserts) == 1
     assert repo.upserts[0].filled_qty == Decimal("2")
+
+
+@pytest.mark.asyncio
+async def test_reconciler_passes_explicit_window_to_fetcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.execution_ledger.reconciler.settings",
+        SimpleNamespace(EXECUTION_LEDGER_COMMIT_ENABLED=False),
+    )
+    captured: dict[str, object] = {}
+
+    async def fetcher(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"orders": []}
+
+    start_at = datetime(2026, 2, 1, tzinfo=UTC)
+    end_at = datetime(2026, 2, 8, tzinfo=UTC)
+    repo = FakeRepo(status="inserted")
+
+    await ExecutionLedgerReconciler(repo, fetcher=fetcher).run(
+        "kis",
+        start_at=start_at,
+        end_at=end_at,
+        max_pages=25,
+        dry_run=True,
+    )
+
+    assert captured["start_at"] == start_at
+    assert captured["end_at"] == end_at
+    assert captured["max_pages"] == 25
+    assert repo.runs[0].window_start == start_at
+    assert repo.runs[0].window_end == end_at
+
