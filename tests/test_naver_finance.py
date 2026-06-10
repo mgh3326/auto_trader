@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -308,7 +308,18 @@ SAMPLE_INVESTOR_TRENDS_HTML = """
 </html>
 """
 
-SAMPLE_INVESTMENT_OPINIONS_HTML = """
+# ROB-486: 리스트 fixture 날짜를 상대값으로 생성해 recency 윈도우 시한폭탄을 막는다.
+_OPINION_LIST_DATE_RECENT_1 = date.today() - timedelta(days=30)
+_OPINION_LIST_DATE_RECENT_2 = date.today() - timedelta(days=45)
+_OPINION_LIST_DATE_STALE = date.today() - timedelta(days=400)
+
+
+def _naver_list_date(d: date) -> str:
+    """Naver 리스트 페이지의 2자리 연도 형식 (예: '26.01.15')."""
+    return d.strftime("%y.%m.%d")
+
+
+SAMPLE_INVESTMENT_OPINIONS_HTML = f"""
 <html>
 <body>
 <table class="type_1">
@@ -318,7 +329,7 @@ SAMPLE_INVESTMENT_OPINIONS_HTML = """
             <td><a href="company_read.naver?nid=12345&page=1">반도체 업황 개선 전망</a></td>
             <td>삼성증권</td>
             <td><a href="https://example.com/report1.pdf"></a></td>
-            <td class="date">26.01.15</td>
+            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
             <td>1234</td>
         </tr>
         <tr>
@@ -326,7 +337,7 @@ SAMPLE_INVESTMENT_OPINIONS_HTML = """
             <td><a href="company_read.naver?nid=12346&page=1">실적 호조 지속</a></td>
             <td>미래에셋</td>
             <td><a href="https://example.com/report2.pdf"></a></td>
-            <td class="date">26.01.14</td>
+            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_2)}</td>
             <td>5678</td>
         </tr>
     </tbody>
@@ -335,7 +346,7 @@ SAMPLE_INVESTMENT_OPINIONS_HTML = """
 </html>
 """
 
-SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML = """
+SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML = f"""
 <html>
 <body>
 <table class="type_1">
@@ -345,7 +356,7 @@ SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML = """
             <td><a href="company_read.naver?nid=12345&page=1">반도체 업황 개선 전망</a></td>
             <td>삼성증권</td>
             <td><a href="https://example.com/report1.pdf"></a></td>
-            <td class="date">26.01.15</td>
+            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
             <td>1234</td>
         </tr>
         <tr>
@@ -353,7 +364,7 @@ SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML = """
             <td><a href="company_read.naver?nid=12345&page=9">반도체 업황 개선 전망</a></td>
             <td>삼성증권</td>
             <td><a href="https://example.com/report1.pdf"></a></td>
-            <td class="date">26.01.15</td>
+            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
             <td>9999</td>
         </tr>
         <tr>
@@ -361,7 +372,7 @@ SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML = """
             <td><a href="company_read.naver?nid=12346&page=1">실적 호조 지속</a></td>
             <td>미래에셋</td>
             <td><a href="https://example.com/report2.pdf"></a></td>
-            <td class="date">26.01.14</td>
+            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_2)}</td>
             <td>5678</td>
         </tr>
     </tbody>
@@ -436,6 +447,63 @@ SAMPLE_CURRENT_PRICE_HTML = """
 </p>
 </body>
 </html>
+"""
+
+# ROB-486: 12개월 윈도우 테스트용 — 최근 1행 + 400일 전 1행 (005880 모양).
+SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML = f"""
+<html>
+<body>
+<table class="type_1">
+    <tbody>
+        <tr>
+            <td><a href="/item/main.naver?code=005880">대한해운</a></td>
+            <td><a href="company_read.naver?nid=22345&page=1">실적 전망</a></td>
+            <td>신한투자증권</td>
+            <td><a href="https://example.com/r1.pdf"></a></td>
+            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
+            <td>1234</td>
+        </tr>
+        <tr>
+            <td><a href="/item/main.naver?code=005880">대한해운</a></td>
+            <td><a href="company_read.naver?nid=22346&page=1">구 리포트</a></td>
+            <td>하나증권</td>
+            <td><a href="https://example.com/r2.pdf"></a></td>
+            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_STALE)}</td>
+            <td>5678</td>
+        </tr>
+    </tbody>
+</table>
+</body>
+</html>
+"""
+
+SAMPLE_DETAIL_HTML_TARGET_3000 = """
+<html><body>
+<div class="view_info_1">
+    목표가 <em class="money"><strong>3,000</strong></em>
+    <span class="division">|</span>
+    투자의견 <em class="coment">매수</em>
+</div>
+</body></html>
+"""
+
+SAMPLE_DETAIL_HTML_TARGET_23000 = """
+<html><body>
+<div class="view_info_1">
+    목표가 <em class="money"><strong>23,000</strong></em>
+    <span class="division">|</span>
+    투자의견 <em class="coment">매수</em>
+</div>
+</body></html>
+"""
+
+SAMPLE_CURRENT_PRICE_HTML_005880 = """
+<html><body>
+<p class="no_today">
+    <span class="blind">현재가</span>
+    <em><span class="blind">1,914</span></em>
+</p>
+</body></html>
 """
 
 SAMPLE_VALUATION_MAIN_HTML = """
@@ -759,7 +827,7 @@ class TestFetchInvestmentOpinions:
         assert op1["rating"] == "Buy"
         assert op1["rating_bucket"] == "buy"
         assert op1["target_price"] == 85000
-        assert op1["date"] == "2026-01-15"
+        assert op1["date"] == _OPINION_LIST_DATE_RECENT_1.isoformat()
 
         # Second opinion
         op2 = result["opinions"][1]
@@ -893,6 +961,83 @@ class TestFetchInvestmentOpinions:
         ]
         assert result["consensus"]["avg_target_price"] == 87500
         assert result["consensus"]["current_price"] == 75000
+
+    async def test_recency_window_excludes_stale_targets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ROB-486 (005880 모양): 12개월 밖 목표가는 집계 제외 + 메타데이터 보고."""
+
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "company_list.naver" in url:
+                return BeautifulSoup(
+                    SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML, "lxml"
+                )
+            elif "company_read.naver" in url:
+                nid = (params or {}).get("nid", "")
+                if nid == "22345":
+                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_3000, "lxml")
+                if nid == "22346":
+                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_23000, "lxml")
+            elif "main.naver" in url:
+                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML_005880, "lxml")
+            return BeautifulSoup("<html></html>", "lxml")
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investment_opinions("005880", limit=10)
+
+        # opinions 리스트에는 stale 행도 참고용으로 그대로 남는다.
+        assert result["count"] == 2
+        consensus = result["consensus"]
+        assert consensus["avg_target_price"] == 3000
+        assert consensus["median_target_price"] == 3000
+        assert consensus["upside_pct"] == pytest.approx(56.74, abs=0.01)
+        assert consensus["buy_count"] == 1
+        assert consensus["total_count"] == 1
+        assert consensus["rows_total"] == 2
+        assert consensus["rows_used"] == 1
+        assert consensus["rows_excluded_stale"] == 1
+        assert consensus["rows_excluded_undated"] == 0
+        assert consensus["window_months"] == 12
+        assert (
+            consensus["newest_opinion_date"] == _OPINION_LIST_DATE_RECENT_1.isoformat()
+        )
+
+    async def test_window_months_param_threads_to_consensus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ROB-486: window_months 파라미터가 build_consensus 까지 전달된다."""
+
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "company_list.naver" in url:
+                return BeautifulSoup(
+                    SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML, "lxml"
+                )
+            elif "company_read.naver" in url:
+                nid = (params or {}).get("nid", "")
+                if nid == "22345":
+                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_3000, "lxml")
+                if nid == "22346":
+                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_23000, "lxml")
+            elif "main.naver" in url:
+                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML_005880, "lxml")
+            return BeautifulSoup("<html></html>", "lxml")
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investment_opinions(
+            "005880", limit=10, window_months=24
+        )
+
+        consensus = result["consensus"]
+        assert consensus["window_months"] == 24
+        # 400일 전 행도 24개월 윈도우에는 생존 → (3000+23000)/2.
+        assert consensus["rows_used"] == 2
+        assert consensus["avg_target_price"] == 13000
 
 
 @pytest.mark.asyncio

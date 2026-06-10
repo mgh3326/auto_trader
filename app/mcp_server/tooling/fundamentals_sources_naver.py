@@ -99,8 +99,12 @@ async def _fetch_investor_trends_naver(symbol: str, days: int) -> dict[str, Any]
     }
 
 
-async def _fetch_investment_opinions_naver(symbol: str, limit: int) -> dict[str, Any]:
-    opinions = await naver_finance.fetch_investment_opinions(symbol, limit=limit)
+async def _fetch_investment_opinions_naver(
+    symbol: str, limit: int, window_months: int = 12
+) -> dict[str, Any]:
+    opinions = await naver_finance.fetch_investment_opinions(
+        symbol, limit=limit, window_months=window_months
+    )
     return {
         "instrument_type": "equity_kr",
         "source": "naver",
