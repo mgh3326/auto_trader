@@ -78,9 +78,9 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_valuation",
     "get_short_interest",
     "get_kimchi_premium",
-    "get_funding_rate",
-    "get_open_interest",
-    "get_long_short_ratio",
+    "get_crypto_funding_rate",
+    "get_crypto_open_interest",
+    "get_crypto_long_short_ratio",
     "get_crypto_market_regime",
     "get_crypto_catalysts",
     "get_crypto_order_flow",
@@ -98,9 +98,9 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
 CRYPTO_FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_crypto_profile",
     "get_kimchi_premium",
-    "get_funding_rate",
-    "get_open_interest",
-    "get_long_short_ratio",
+    "get_crypto_funding_rate",
+    "get_crypto_open_interest",
+    "get_crypto_long_short_ratio",
     "get_crypto_market_regime",
     "get_crypto_catalysts",
     "get_crypto_order_flow",
@@ -289,20 +289,20 @@ def _register_fundamentals_tools_impl(
             return await handle_get_kimchi_premium(symbol)
 
         @mcp.tool(
-            name="get_funding_rate",
+            name="get_crypto_funding_rate",
             description=(
                 "Get futures funding rate for a cryptocurrency from Binance. Positive = "
                 "longs pay shorts, negative = shorts pay longs."
             ),
         )
-        async def get_funding_rate(
+        async def get_crypto_funding_rate(
             symbol: str | None = None,
             limit: int = 10,
         ) -> dict[str, Any] | list[dict[str, Any]]:
             return await handle_get_funding_rate(symbol, limit)
 
         @mcp.tool(
-            name="get_open_interest",
+            name="get_crypto_open_interest",
             description=(
                 "Get Binance USD-M futures open interest for a crypto symbol: current "
                 "open interest plus recent history (sum OI and notional USD value) and "
@@ -310,7 +310,7 @@ def _register_fundamentals_tools_impl(
                 "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
             ),
         )
-        async def get_open_interest(
+        async def get_crypto_open_interest(
             symbol: str,
             period: str = "1h",
             limit: int = 30,
@@ -318,7 +318,7 @@ def _register_fundamentals_tools_impl(
             return await handle_get_open_interest(symbol, period, limit)
 
         @mcp.tool(
-            name="get_long_short_ratio",
+            name="get_crypto_long_short_ratio",
             description=(
                 "Get Binance USD-M long/short ratio for a crypto symbol: global account "
                 "ratio (retail sentiment) and top-trader position ratio (smart money), "
@@ -327,7 +327,7 @@ def _register_fundamentals_tools_impl(
                 "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
             ),
         )
-        async def get_long_short_ratio(
+        async def get_crypto_long_short_ratio(
             symbol: str,
             period: str = "1h",
             limit: int = 30,
