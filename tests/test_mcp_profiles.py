@@ -44,12 +44,12 @@ _US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
 _DB_PAPER_TOOL_NAMES = (
     PAPER_ACCOUNT_TOOL_NAMES | PAPER_ANALYTICS_TOOL_NAMES | PAPER_JOURNAL_TOOL_NAMES
 )
-_CRYPTO_PROFILE_TOOL_NAMES = {
+_CRYPTO_RESEARCH_TOOL_NAMES = {
     "get_crypto_profile",
     "get_kimchi_premium",
-    "get_funding_rate",
-    "get_open_interest",
-    "get_long_short_ratio",
+    "get_crypto_funding_rate",
+    "get_crypto_open_interest",
+    "get_crypto_long_short_ratio",
     "get_crypto_market_regime",
     "get_crypto_catalysts",
     "get_crypto_order_flow",
@@ -57,6 +57,14 @@ _CRYPTO_PROFILE_TOOL_NAMES = {
     "get_upbit_index",
     "get_upbit_altseason",
     "get_crypto_fear_greed",
+}
+# ROB-503: generic 이름은 제거됨 (crypto-only 구현인데 이름이 시장 비특정).
+# get_fear_greed_index는 ROB-488에서 get_crypto_fear_greed로 리네임.
+_REMOVED_GENERIC_TOOL_NAMES = {
+    "get_fear_greed_index",
+    "get_funding_rate",
+    "get_open_interest",
+    "get_long_short_ratio",
 }
 
 
@@ -82,10 +90,7 @@ class TestDefaultProfile:
     def test_does_not_register_split_profile_tools(self) -> None:
         mcp = _build_mcp(McpProfile.DEFAULT)
         split_only = (
-            _US_PAPER_TOOL_NAMES
-            | _DB_PAPER_TOOL_NAMES
-            | KIWOOM_MOCK_TOOL_NAMES
-            | _CRYPTO_PROFILE_TOOL_NAMES
+            _US_PAPER_TOOL_NAMES | _DB_PAPER_TOOL_NAMES | KIWOOM_MOCK_TOOL_NAMES
         )
         assert split_only.isdisjoint(mcp.tools.keys())
 
@@ -150,11 +155,6 @@ class TestDbPaperProfile:
 
 
 class TestCryptoProfile:
-    def test_registers_crypto_profile_tools(self) -> None:
-        mcp = _build_mcp(McpProfile.CRYPTO)
-        assert _CRYPTO_PROFILE_TOOL_NAMES <= mcp.tools.keys()
-        assert "get_fear_greed_index" not in mcp.tools
-
     def test_keeps_generic_research_surface(self) -> None:
         mcp = _build_mcp(McpProfile.CRYPTO)
         assert {"get_quote", "screen_stocks", "get_holdings"} <= mcp.tools.keys()
@@ -220,6 +220,27 @@ class TestOrderSurfaceMatrix:
             f"extra={sorted(registered_order_tools - _ORDER_SURFACE_MATRIX[profile])}, "
             f"missing={sorted(_ORDER_SURFACE_MATRIX[profile] - registered_order_tools)}"
         )
+
+
+class TestCryptoResearchToolsAllProfiles:
+    """ROB-503: crypto read-only research tools register on EVERY profile.
+
+    ROB-488 had gated them to MCP_PROFILE=crypto, which broke single-server
+    operation (crypto live trading runs on the DEFAULT server). Read-only
+    tools carry no order-surface risk, so profile isolation buys nothing.
+    """
+
+    @pytest.mark.parametrize("profile", list(McpProfile))
+    def test_crypto_research_tools_registered(self, profile: McpProfile) -> None:
+        mcp = _build_mcp(profile)
+        missing = _CRYPTO_RESEARCH_TOOL_NAMES - mcp.tools.keys()
+        assert not missing, f"profile={profile.value} missing: {sorted(missing)}"
+
+    @pytest.mark.parametrize("profile", list(McpProfile))
+    def test_removed_generic_names_absent(self, profile: McpProfile) -> None:
+        mcp = _build_mcp(profile)
+        leaked = _REMOVED_GENERIC_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"profile={profile.value} leaked old names: {sorted(leaked)}"
 
 
 class TestResolveMcpProfile:
