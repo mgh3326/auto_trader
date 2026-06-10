@@ -668,6 +668,7 @@ async def test_repoint_ledger_after_modify(db_session):
 async def test_reconcile_partial_rerun_is_delta_idempotent(db_session):
     """ROB-487 follow-up: re-reconciling an already-booked partial row must not
     re-create journals, double-close sells, or re-insert the same fill."""
+    import uuid
     from decimal import Decimal
     from unittest.mock import AsyncMock, patch
 
@@ -676,8 +677,6 @@ async def test_reconcile_partial_rerun_is_delta_idempotent(db_session):
         _save_kis_live_order_ledger,
         _update_ledger_outcome,
     )
-    import uuid
-
     from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
         FillEvidence,
         FillVerdict,

@@ -61,12 +61,12 @@ async def test_kis_facade_delegates_execution_strength():
     client = KISClient.__new__(KISClient)
     client._market_data = AsyncMock()
     client._market_data.inquire_execution_strength = AsyncMock(
-        return_value={"cttr": "120.3"}
+        return_value={"tday_rltv": "120.3"}
     )
 
     raw = await client.inquire_execution_strength("005930", market="J")
 
-    assert raw == {"cttr": "120.3"}
+    assert raw == {"tday_rltv": "120.3"}
     client._market_data.inquire_execution_strength.assert_awaited_once_with(
         "005930", "J"
     )
