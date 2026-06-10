@@ -1011,7 +1011,7 @@ class TestFetchInvestmentOpinions:
         assert consensus["rows_total"] == 2
         assert consensus["rows_used"] == 1
         assert consensus["rows_excluded_stale"] == 1
-        assert consensus["rows_excluded_undated"] == 0
+        assert consensus["rows_undated"] == 0
         assert consensus["window_months"] == 12
         assert (
             consensus["newest_opinion_date"] == _OPINION_LIST_DATE_RECENT_1.isoformat()

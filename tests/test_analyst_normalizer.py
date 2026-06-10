@@ -392,7 +392,7 @@ class TestBuildConsensusRecencyWindow:
         assert consensus["rows_total"] == 2
         assert consensus["rows_used"] == 0
         assert consensus["rows_excluded_stale"] == 2
-        assert consensus["rows_excluded_undated"] == 0
+        assert consensus["rows_undated"] == 0
         assert consensus["newest_opinion_date"] == "2019-12-27"
         assert consensus["window_months"] == 12
 
@@ -421,13 +421,13 @@ class TestBuildConsensusRecencyWindow:
         assert consensus["rows_total"] == 9
         assert consensus["rows_used"] == 2
         assert consensus["rows_excluded_stale"] == 7
-        assert consensus["rows_excluded_undated"] == 0
+        assert consensus["rows_undated"] == 0
         assert consensus["newest_opinion_date"] == "2026-05-18"
 
-    def test_undated_rows_excluded_and_counted(self) -> None:
+    def test_undated_rows_kept_fail_open_and_counted(self) -> None:
         """ROB-486+ROB-488 통합: undated 행은 fail-open으로 유지(ROB-488)하되
-        rows_excluded_undated 메타데이터로 카운트(ROB-486). 목표가 통계는 outlier
-        가드(ROB-488 ±300%/-75%)가 쓰레기 undated 목표가를 차단한다."""
+        rows_undated 메타데이터로 카운트(ROB-486). 목표가 통계는 outlier
+        가드(ROB-488 +300%/-75%)가 쓰레기 undated 목표가를 차단한다."""
         opinions = [
             {"rating": "Buy", "target_price": 100, "date": _days_ago(10)},
             {"rating": "Buy", "target_price": 999},  # date 키 자체 없음 — outlier (+1010%)
@@ -441,8 +441,8 @@ class TestBuildConsensusRecencyWindow:
         assert consensus["buy_count"] == 4
         assert consensus["rows_total"] == 4
         assert consensus["rows_used"] == 4
-        # undated 3개는 rows_excluded_undated 메타데이터로 카운트
-        assert consensus["rows_excluded_undated"] == 3
+        # undated 3개는 rows_undated 메타데이터로 카운트 (유지되되 보고)
+        assert consensus["rows_undated"] == 3
         assert consensus["rows_excluded_stale"] == 0
         # outlier 가드가 999/888/777 (모두 +700%+ > 300%)를 제거 → 100만 남음
         assert consensus["avg_target_price"] == 100
@@ -491,6 +491,6 @@ class TestBuildConsensusRecencyWindow:
         assert consensus["rows_total"] == 0
         assert consensus["rows_used"] == 0
         assert consensus["rows_excluded_stale"] == 0
-        assert consensus["rows_excluded_undated"] == 0
+        assert consensus["rows_undated"] == 0
         assert consensus["newest_opinion_date"] is None
         assert consensus["window_months"] == 12

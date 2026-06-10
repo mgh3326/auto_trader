@@ -29,7 +29,7 @@ _STALE_ONLY_WINDOWED_CONSENSUS = {
     "rows_total": 2,
     "rows_used": 0,
     "rows_excluded_stale": 2,
-    "rows_excluded_undated": 0,
+    "rows_undated": 0,
     "newest_opinion_date": "2019-12-27",
     "window_months": 12,
 }

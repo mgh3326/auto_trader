@@ -312,9 +312,10 @@ async def fetch_investment_opinions(
     Args:
         code: 6-digit Korean stock code
         limit: Maximum number of opinions to return
-        window_months: ROB-486 컨센서스 recency 윈도우(개월). 목표가 통계와
-            buy/hold/sell 카운트는 이 윈도우 내 date 가 있는 행에서만 집계되고,
-            opinions 리스트 자체는 윈도우 밖 행도 포함한다.
+        window_months: ROB-486 컨센서스 recency 윈도우(개월). 윈도우 밖 date 의
+            행은 집계 제외(rows_excluded_stale), undated 행은 fail-open 으로
+            유지(rows_undated 카운트, ROB-488)되며, opinions 리스트 자체는
+            윈도우 밖 행도 포함한다.
 
     Returns:
         Investment opinions with normalized ratings and consensus statistics:
@@ -323,7 +324,7 @@ async def fetch_investment_opinions(
         - opinions: List of individual opinions with normalized ratings
         - consensus: Windowed aggregated statistics (buy/hold/sell counts,
           target prices, upside_pct + rows_total/rows_used/rows_excluded_stale/
-          rows_excluded_undated/newest_opinion_date/window_months)
+          rows_undated/newest_opinion_date/window_months)
     """
     url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
     company_list_soup = await _fetch_html(

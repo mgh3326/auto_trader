@@ -221,12 +221,12 @@ def build_consensus(
     Unified ROB-486 + ROB-488 implementation:
     - ``as_of`` (ROB-488 compat alias) or ``now`` (ROB-486) set the anchor date.
     - ``window_months`` (ROB-486, default 12) defines the staleness cutoff.
-    - Undated opinions are kept (fail-open, ROB-488) but excluded from
-      ``rows_excluded_undated`` metadata so callers can distinguish.
-    - Outlier target prices (±300%/−75% vs current, ROB-488) are excluded
+    - Undated opinions are KEPT (fail-open, ROB-488) and counted in the
+      ``rows_undated`` metadata so callers can distinguish them.
+    - Outlier target prices (+300%/−75% vs current, ROB-488) are excluded
       from aggregates but counts are still credited.
     - Returns both ROB-486 metadata (rows_total/rows_used/rows_excluded_stale/
-      rows_excluded_undated/newest_opinion_date/window_months) and ROB-488
+      rows_undated/newest_opinion_date/window_months) and ROB-488
       metadata (raw_count/stale_opinion_count/target_price_honest/
       target_price_count/target_price_outlier_count/target_price_excluded_count).
 
@@ -245,7 +245,7 @@ def build_consensus(
     fresh_opinions: list[dict[str, Any]] = []
     stale_opinion_count = 0
     stale_target_price_count = 0
-    rows_excluded_undated = 0
+    rows_undated = 0
     newest_opinion_date: date | None = None
 
     for op in opinions:
@@ -260,7 +260,7 @@ def build_consensus(
             continue
         # Track undated separately but keep them (fail-open, ROB-488)
         if observed is None:
-            rows_excluded_undated += 1
+            rows_undated += 1
         fresh_opinions.append(op)
 
     rating_counts: dict[str, int] = {"buy": 0, "hold": 0, "sell": 0}
@@ -308,7 +308,8 @@ def build_consensus(
         "rows_total": len(opinions),
         "rows_used": rows_used,
         "rows_excluded_stale": rows_excluded_stale,
-        "rows_excluded_undated": rows_excluded_undated,
+        # Undated rows are kept (fail-open) — this counts them, NOT exclusions.
+        "rows_undated": rows_undated,
         "newest_opinion_date": (
             newest_opinion_date.isoformat() if newest_opinion_date else None
         ),
