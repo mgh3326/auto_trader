@@ -110,6 +110,7 @@ async def _build_investment_opinions_from_company_list_soup(
     *,
     current_price: int | None,
     detail_fetcher: Callable[[str], Awaitable[dict[str, Any] | None]],
+    window_months: int = 12,
 ) -> dict[str, Any]:
     opinions: dict[str, Any] = {
         "symbol": code,
@@ -144,7 +145,9 @@ async def _build_investment_opinions_from_company_list_soup(
             )
 
     opinions["count"] = len(opinions["opinions"])
-    opinions["consensus"] = build_consensus(opinions["opinions"], current_price)
+    opinions["consensus"] = build_consensus(
+        opinions["opinions"], current_price, window_months=window_months
+    )
     return opinions
 
 
@@ -298,7 +301,9 @@ async def _fetch_current_price(code: str) -> int | None:
         return None
 
 
-async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any]:
+async def fetch_investment_opinions(
+    code: str, limit: int = 10, *, window_months: int = 12
+) -> dict[str, Any]:
     """Fetch securities firm investment opinions and target prices.
 
     URL: finance.naver.com/research/company_list.naver
@@ -307,13 +312,19 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
     Args:
         code: 6-digit Korean stock code
         limit: Maximum number of opinions to return
+        window_months: ROB-486 컨센서스 recency 윈도우(개월). 윈도우 밖 date 의
+            행은 집계 제외(rows_excluded_stale), undated 행은 fail-open 으로
+            유지(rows_undated 카운트, ROB-488)되며, opinions 리스트 자체는
+            윈도우 밖 행도 포함한다.
 
     Returns:
         Investment opinions with normalized ratings and consensus statistics:
         - symbol: Stock code
         - count: Number of opinions
         - opinions: List of individual opinions with normalized ratings
-        - consensus: Aggregated statistics (buy/hold/sell counts, target prices, upside_pct)
+        - consensus: Windowed aggregated statistics (buy/hold/sell counts,
+          target prices, upside_pct + rows_total/rows_used/rows_excluded_stale/
+          rows_undated/newest_opinion_date/window_months)
     """
     url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
     company_list_soup = await _fetch_html(
@@ -326,6 +337,7 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
         limit,
         current_price=current_price,
         detail_fetcher=_fetch_report_detail,
+        window_months=window_months,
     )
 
 

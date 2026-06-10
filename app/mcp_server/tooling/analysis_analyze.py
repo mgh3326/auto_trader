@@ -416,6 +416,30 @@ def _apply_sector_peers_result(
         analysis["sector_peers"] = task_results["sector_peers"]
 
 
+def _consensus_rows_present(consensus: Any) -> bool:
+    """ROB-486: stale-only 컨센서스가 presence 플로어를 통과하지 못하게 한다.
+
+    KR(naver) windowed consensus 는 rows_used(윈도우 생존 row 수) 기준,
+    US(yfinance) consensus 는 rows_used 가 없으므로 total_count 기준.
+    둘 다 없거나 0 이면 consensus 부재로 본다 (fail-closed).
+    """
+    if not isinstance(consensus, dict) or not consensus:
+        return False
+    rows_used = consensus.get("rows_used")
+    if rows_used is not None:
+        try:
+            return int(rows_used) > 0
+        except (TypeError, ValueError):
+            return False
+    total = consensus.get("total_count")
+    if total is None:
+        return False
+    try:
+        return int(total) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _apply_recommendation(
     analysis: dict[str, Any],
     market_type: str,
@@ -427,7 +451,9 @@ def _apply_recommendation(
 
     quote = analysis.get("quote") or {}
     price_present = quote.get("price") is not None
-    consensus_present = bool((analysis.get("opinions") or {}).get("consensus"))
+    consensus_present = _consensus_rows_present(
+        (analysis.get("opinions") or {}).get("consensus")
+    )
 
     if recommendation is None:
         # price/quote 부재 → unavailable floor 레코멘데이션을 정직하게 부착.

@@ -249,33 +249,40 @@ def _fetch_fast_info_sync(ticker: str) -> dict[str, Any]:
         try:
             with yfinance_tracing_session() as session:
                 info = yf.Ticker(yahoo_ticker, session=session).fast_info
-            return {
-                "symbol": ticker,
-                "previous_close": _to_float_or_none(
-                    _fast_info_get(
-                        info,
-                        "regular_market_previous_close",
-                        "regularMarketPreviousClose",
-                        "previous_close",
-                        "previousClose",
-                    )
-                ),
-                "open": _to_float_or_none(_fast_info_get(info, "open")),
-                "high": _to_float_or_none(_fast_info_get(info, "day_high", "dayHigh")),
-                "low": _to_float_or_none(_fast_info_get(info, "day_low", "dayLow")),
-                "close": _to_float_or_none(
-                    _fast_info_get(
-                        info,
-                        "last_price",
-                        "lastPrice",
-                        "regular_market_price",
-                        "regularMarketPrice",
-                    )
-                ),
-                "volume": _to_int_or_none(
-                    _fast_info_get(info, "last_volume", "lastVolume", "volume")
-                ),
-            }
+                # FastInfo is lazy — each attribute access performs the HTTP
+                # request, so the payload must be materialized while the
+                # session is still open. Building it after the with-block
+                # closed the session degraded every field to None (ROB-416
+                # "all US quotes report no price" root cause).
+                return {
+                    "symbol": ticker,
+                    "previous_close": _to_float_or_none(
+                        _fast_info_get(
+                            info,
+                            "regular_market_previous_close",
+                            "regularMarketPreviousClose",
+                            "previous_close",
+                            "previousClose",
+                        )
+                    ),
+                    "open": _to_float_or_none(_fast_info_get(info, "open")),
+                    "high": _to_float_or_none(
+                        _fast_info_get(info, "day_high", "dayHigh")
+                    ),
+                    "low": _to_float_or_none(_fast_info_get(info, "day_low", "dayLow")),
+                    "close": _to_float_or_none(
+                        _fast_info_get(
+                            info,
+                            "last_price",
+                            "lastPrice",
+                            "regular_market_price",
+                            "regularMarketPrice",
+                        )
+                    ),
+                    "volume": _to_int_or_none(
+                        _fast_info_get(info, "last_volume", "lastVolume", "volume")
+                    ),
+                }
         except Exception as exc:
             last_exc = exc
             if _is_crumb_auth_error(exc) and attempt < _CRUMB_RETRY_MAX:

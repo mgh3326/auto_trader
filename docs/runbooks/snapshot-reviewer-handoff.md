@@ -56,20 +56,14 @@ Recent bundle headers, filtered by purpose / market / account_scope /
 status. Use when a reviewer wants to see "what bundles have been built
 today for ``kr_action_report``?"
 
-### 4. ``investment_snapshot_refresh_request``
+### 4. ~~``investment_snapshot_refresh_request``~~ (retired, ROB-488)
 
-Records a refresh request. Phase 2 inserts a single
-``investment_snapshot_runs`` row with ``purpose='manual_refresh'`` or
-``'reviewer_requested'``. **No collection happens in Phase 2** — the
-Phase 5+ scheduler picks the row up and acts on it. A reviewer agent
-that needs fresher data should:
-
-1. Call ``investment_snapshot_refresh_request`` with a clear ``reason``.
-2. Wait for the scheduler (or operator) to process the run.
-3. Re-fetch the report / bundle.
-
-Set ``requested_by="reviewer"`` and (optionally) ``snapshot_kinds=[...]``
-or ``symbols=[...]`` to focus the request.
+The refresh-request tool was retired from the MCP surface in ROB-488: no
+scheduler ever consumed the rows it inserted, so it was an honest no-op.
+A reviewer that needs fresher data should ask the operator to rebuild the
+bundle (``investment_report_prepare_bundle`` on a Hermes-enabled deployment,
+or the snapshot build CLI). The implementation function remains in
+``investment_snapshots_tools.py`` for a future Phase 5+ scheduler track.
 
 ## Interpreting ``snapshot_freshness_summary``
 

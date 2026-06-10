@@ -72,6 +72,7 @@ async def handle_get_investment_opinions(
     symbol: str | int,
     limit: int = 10,
     market: str | None = None,
+    opinion_window_months: int = 12,
 ) -> dict[str, Any]:
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
@@ -91,10 +92,15 @@ async def handle_get_investment_opinions(
 
     normalized_market = normalize_equity_market(str(market))
     capped_limit = min(max(limit, 1), 30)
+    # ROB-486: KR 컨센서스 recency 윈도우 (1~60개월 클램프). US(yfinance)는
+    # 벤더 컨센서스를 그대로 쓰므로 적용되지 않는다.
+    capped_window = min(max(opinion_window_months, 1), 60)
 
     try:
         if normalized_market == "kr":
-            return await _fetch_investment_opinions_naver(symbol, capped_limit)
+            return await _fetch_investment_opinions_naver(
+                symbol, capped_limit, window_months=capped_window
+            )
         return await _fetch_investment_opinions_yfinance(symbol, capped_limit)
     except Exception as exc:
         source = "naver" if normalized_market == "kr" else "yfinance"

@@ -6,16 +6,18 @@ import pytest
 
 from app.mcp_server.tooling import kis_live_ledger as mod
 from app.mcp_server.tooling.kis_live_ledger import (
-    _expected_krx_expiry,
+    _expected_day_order_expiry,
     _extract_broker_exchange,
 )
 
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
-def test_expected_krx_expiry_is_1530_kst_of_send_date():
-    now = datetime.datetime(2026, 6, 9, 9, 43, tzinfo=KST)
-    assert _expected_krx_expiry(now) == "2026-06-09T15:30:00+09:00"
+def test_expected_day_order_expiry_is_2000_kst_of_send_date():
+    # ROB-487: SOR day order는 NXT 마감(20:00 KST)까지 유효 — 15:31 NXT 세션
+    # 주문이 과거 시각(15:30)의 expected_expiry를 받던 모순 해소.
+    now = datetime.datetime(2026, 6, 9, 15, 31, 25, tzinfo=KST)
+    assert _expected_day_order_expiry(now) == "2026-06-09T20:00:00+09:00"
 
 
 def test_extract_broker_exchange_present():
@@ -59,4 +61,4 @@ async def test_place_order_response_surfaces_routing_fields():
     assert resp["order_validity"] == "day"
     assert resp["routing"]["requested_venue"] == "auto"
     assert resp["broker_exchange"] == "KRX"
-    assert resp["expected_expiry"].endswith("15:30:00+09:00")
+    assert resp["expected_expiry"].endswith("20:00:00+09:00")

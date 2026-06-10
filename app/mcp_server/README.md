@@ -92,7 +92,6 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `save_trade_journal(symbol, thesis, ..., paperclip_issue_id=None)` - Save the thesis, strategy, account context, and optional Paperclip issue link for a trade.
 - `get_trade_journal(symbol=None, status=None, ..., paperclip_issue_id=None)` - Query active journal entries by symbol/account or reverse-lookup a journal from a Paperclip issue ID.
 - `update_trade_journal(journal_id=None, symbol=None, ...)` - Activate, close, stop, or adjust the latest matching journal entry.
-- `format_execution_comment(stage, symbol, side, filled_qty, filled_price, ...)` - Format Discord/Paperclip-ready Markdown for `fill` and `follow_up` execution stages.
 - `get_latest_market_brief(symbols=None, market=None, limit=10)` - Return concise latest AI analysis context for recent or selected symbols.
 - `get_market_reports(symbol, days=7, limit=10)` - Return detailed AI analysis report history and decision trend for one symbol.
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None, account_mode=None)`
@@ -128,10 +127,25 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Default `quick=True` returns compact summary with: symbol, current_price,
     rsi_14, consensus, recommendation, supports (top 3), resistances (top 3).
 
+### Snapshot-backed report generation
+
+Snapshot-backed generator/Hermes MCP tools are registered only when
+`SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true`. With the default `false`
+setting they are physically absent from the MCP surface instead of returning
+disabled no-op payloads:
+
+- `investment_report_generate_from_bundle`
+- `investment_report_prepare_bundle`
+- `investment_report_get_hermes_context`
+- `investment_report_create_from_hermes_composition`
+- `investment_stage_artifacts_ingest_from_hermes`
+- `investment_report_prepare_intraday_context`
+
 ### Alpaca paper read-only smoke tools
 
 ROB-69 exposes Alpaca paper broker inspection via explicit read-only MCP tool
-names only:
+names only. These tools are registered under `MCP_PROFILE=us-paper`; they are
+not part of the default or `hermes-paper-kis` surfaces.
 
 - `alpaca_paper_get_account()`
 - `alpaca_paper_get_cash()`
@@ -493,6 +507,32 @@ Symbol contract:
 - Company-name inputs such as `삼성전자` or `Apple Inc.` are rejected with:
   - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
 - When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
+
+### `get_earnings_calendar` spec
+
+Parameters:
+- `symbol`: Optional equity ticker/code. US examples: `AAPL`, `MSFT`; KR examples: `005930`, `A005930`.
+- `from_date`: Optional ISO start date, inclusive. Defaults to server `today`.
+- `to_date`: Optional ISO end date, inclusive. Defaults to `from_date + 30 days`.
+- `market`: Optional explicit market (`us`, `kr`). If omitted, 6-digit or A-prefixed KR codes route to KR; other non-crypto symbols route to US.
+
+Behavior:
+- US requests keep the existing Finnhub path and response shape: `symbol`, `instrument_type`, `source`, `from_date`, `to_date`, `count`, `earnings`.
+- KR requests read existing `market_events` rows where `category="earnings"` and `market="kr"`.
+- KR rows are read-only and may come from `source="wisefn"` scheduled earnings or `source="dart"` filings classified as earnings.
+- KR response top-level includes `source="market_events"`, `sources`, `market="kr"`, `warning`, and the existing `earnings` list.
+- KR `earnings` items include `symbol`, `company_name`, `date`, `hour`, `time_hint`, `quarter`, `year`, `status`, `source`, `source_event_id`, `source_url`, and `title`.
+- KR `eps_*` and `revenue_*` fields are present for shape compatibility but usually `null` until realized-value joins are implemented.
+
+Limitations:
+- KR shareholder meetings, ex-dividend dates, IR, and conferences are not collected by this tool yet.
+- Empty KR results mean no matching `market_events` rows are currently stored for the requested window; they do not prove there is no real-world event.
+- Production WiseFn ingestion enablement and scheduler activation are operational follow-ups, not part of this MCP read-path contract.
+
+Errors:
+- Crypto symbols return an explicit error because earnings calendars apply to equities only.
+- `from_date > to_date` is rejected.
+- Explicit `market="us"` with a Korean equity code is rejected with guidance to use `market="kr"`.
 
 ### `get_disclosures` spec
 Parameters:
@@ -1140,8 +1180,12 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 
 | Profile | Value | Order surface |
 |---|---|---|
-| Default (unchanged) | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*` |
+| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; crypto-only, Alpaca/us-dual paper, and Kiwoom tools are absent |
 | Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` only — live surface **physically absent** |
+| Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
+| US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
+| DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
+| Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
 
 ### Profile: `hermes-paper-kis`
 
@@ -1150,13 +1194,14 @@ Set `MCP_PROFILE=hermes-paper-kis` on paper-only deployments (e.g., where `KIS_M
 - `kis_live_place_order`, `kis_live_cancel_order`, `kis_live_modify_order`, `kis_live_get_order_history` are **not registered**.
 - The legacy ambiguous `place_order`, `cancel_order`, `modify_order`, `get_order_history` are **not registered**.
 - Only `kis_mock_*` typed order tools are registered.
-- All read-only research and portfolio tools remain available.
+- Shared read-only research and portfolio tools remain available; split-profile-only tools such as Alpaca paper, crypto-only, and Kiwoom are absent.
 
 **Operator validation:** after deploying with `hermes-paper-kis`, check the MCP `/mcp` listing and confirm that none of `kis_live_*` or the legacy ambiguous order tools appear.
 
 ### Typed KIS order tools
 
-Both profiles (including `default`) provide explicitly-named typed variants:
+The `default` and `hermes-paper-kis` profiles provide explicitly-named KIS
+typed variants:
 
 **Mock (KIS official mock / paper):**
 - `kis_mock_place_order` — hard-pinned `is_mock=True`; fails closed if KIS mock config missing
