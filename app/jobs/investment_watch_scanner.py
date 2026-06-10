@@ -47,6 +47,9 @@ from app.jobs.watch_market_data import (
 from app.services.hermes_client import (
     HermesNotificationClient,
     ReviewTriggerPayload,
+    build_invest_links,
+    build_operator_action_guidance,
+    price_guidance_from_watch_recommendation,
 )
 from app.services.investment_reports.idempotency import watch_event_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
@@ -310,6 +313,22 @@ class InvestmentWatchScanner:
                 return None
             is_first_attempt = False
 
+        # ROB-500 — operator-facing price guidance from the source item's
+        # advisory watch_recommendation. Fail-open: a lookup problem must
+        # never block the trigger notification itself.
+        price_guidance = None
+        try:
+            item = await repo.get_item_by_uuid(event.source_item_uuid)
+            price_guidance = price_guidance_from_watch_recommendation(
+                item.watch_recommendation if item is not None else None
+            )
+        except Exception:  # noqa: BLE001 - guidance is advisory, never fatal
+            logger.warning(
+                "watch_recommendation lookup failed for item %s — "
+                "sending trigger without price guidance",
+                event.source_item_uuid,
+            )
+
         # Build the Hermes payload from the event row's persisted fields so
         # a retry sends the exact same identity snapshot that's on disk.
         payload = ReviewTriggerPayload(
@@ -340,6 +359,17 @@ class InvestmentWatchScanner:
             ),
             scanner_snapshot=event.scanner_snapshot,
             outcome=event.outcome,
+            invest_links=build_invest_links(
+                market=event.market,
+                symbol=event.symbol,
+                source_report_uuid=event.source_report_uuid,
+                event_uuid=event.event_uuid,
+                alert_uuid=alert_uuid_value,
+            ),
+            operator_action_guidance=build_operator_action_guidance(
+                action_mode=event.action_mode, outcome=event.outcome
+            ),
+            price_guidance=price_guidance,
         )
         return {
             "event": event,

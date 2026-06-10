@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -197,3 +198,42 @@ async def test_keep_is_not_notified(session: AsyncSession, monkeypatch) -> None:
     summary = await svc.review_market("kr", dry_run=False)
     assert summary["verdict_counts"].get("keep") == 1
     assert hermes.calls == []
+
+
+# --- ROB-500 Tests ---
+
+
+@pytest.mark.asyncio
+async def test_notify_payload_carries_links_and_price_guidance(
+    session: AsyncSession, _stub_md
+) -> None:
+    """ROB-500 — validity review 통지에도 링크/가이드 포함."""
+    alert = await _seed_active_alert(session, recommendation=_rec())
+    hermes = _StubHermes()
+
+    @asynccontextmanager
+    async def fake_factory():
+        yield session
+
+    svc = WatchValidityReviewService(hermes_client=hermes, session_factory=fake_factory)
+    await svc.review_market("kr", dry_run=False)
+
+    assert len(hermes.calls) == 1
+    payload = hermes.calls[0]
+
+    assert payload.invest_links is not None
+    assert payload.invest_links.report_path == (
+        f"/invest/reports/{alert.source_report_uuid}"
+    )
+    assert payload.invest_links.stock_path == "/invest/stocks/kr/005930"
+    # 이벤트 row가 없는 경로 — event anchor는 없고 alert anchor만.
+    assert payload.invest_links.event_anchor is None
+    assert payload.invest_links.alert_anchor == (
+        f"/invest/reports/{alert.source_report_uuid}#watch-alert-{alert.alert_uuid}"
+    )
+
+    assert payload.operator_action_guidance is not None
+    assert payload.operator_action_guidance.requires_operator_review is True
+
+    assert payload.price_guidance is not None
+    assert payload.price_guidance.entry_review_below_price == Decimal("100")
