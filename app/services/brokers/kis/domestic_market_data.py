@@ -50,6 +50,19 @@ def normalize_daily_chart_lookback(n: int) -> int:
     return min(n, constants.DEFAULT_CANDLES)
 
 
+def _select_latest_ccnl_row(rows: list[Any]) -> dict[str, Any] | None:
+    """FHKST01010300 tick rows 중 최신 체결 row 선택 (ROB-485).
+
+    KIS 응답이 최신-우선 정렬로 관측되었지만 (2026-06-10 라이브 프로브)
+    문서 보장이 없으므로 index 0 을 신뢰하지 않고 ``stck_cntg_hour``
+    (HHMMSS zero-padded → 사전순 == 시간순) 최대값으로 고른다.
+    """
+    candidates: list[dict[str, Any]] = [row for row in rows if isinstance(row, dict)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: str(row.get("stck_cntg_hour") or ""))
+
+
 class DomesticMarketDataMixin(MarketDataBase):
     """Domestic (국내) market data methods.
 
@@ -217,31 +230,38 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def inquire_execution_strength(
         self, code: str, market: str = "J"
     ) -> dict[str, Any]:
-        """ROB-462: KIS FHKST01010100 (주식현재가 시세) 체결강도 raw 필드.
+        """ROB-485: KIS FHKST01010300 (주식현재가 체결) 체결강도 raw 필드.
 
-        ``cttr`` 가 체결강도(매수/매도 × 100). 매수/매도 체결량(shnu/seln)·현재가·
-        누적거래량·체결시각을 raw 문자열 그대로 반환하고, 파싱/분류는
-        execution_strength.query_service 가 담당한다. 정확한 필드명은 라이브
-        스모크로 확정한다(없는 필드는 None 처리, 0 날조 금지).
+        ``output`` 은 최근 체결 tick row 의 **리스트**다. ``tday_rltv`` 가
+        당일 (누적) 체결강도. 최신 row 는 ``stck_cntg_hour`` 최대값으로
+        고르고, 빈 리스트(개장 직전/거래정지 등)는 all-None 으로 graceful
+        처리한다 — 절대 raise 하지 않는다. 파싱/분류는
+        execution_strength.query_service 담당 (결측 시 None, 0 날조 금지).
+
+        매수/매도 체결량 분리 필드는 KIS REST 에 없다 (FHKST01010100 80-key
+        및 FHKST01010300 row 키 전수 라이브 검증, 2026-06-10) — WebSocket
+        H0STCNT0 전용이며 WS 소스 연동은 follow-up.
         """
         js = await self._request_with_token_retry(
-            tr_id=constants.DOMESTIC_PRICE_TR,
-            url=self._kis_url(constants.DOMESTIC_PRICE_URL),
+            tr_id=constants.DOMESTIC_CCNL_TR,
+            url=self._kis_url(constants.DOMESTIC_CCNL_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": code.zfill(6),
             },
             api_name="inquire_execution_strength",
         )
-        out = js.get("output") or {}
+        output = js.get("output")
+        rows = output if isinstance(output, list) else []
+        row = _select_latest_ccnl_row(rows) or {}
         return {
-            "symbol": out.get("stck_shrn_iscd") or code,
-            "cttr": out.get("cttr"),
-            "shnu_cntg_qty": out.get("shnu_cntg_qty"),
-            "seln_cntg_qty": out.get("seln_cntg_qty"),
-            "last_price": out.get("stck_prpr"),
-            "acml_vol": out.get("acml_vol"),
-            "time": out.get("stck_cntg_hour") or out.get("stck_cntg_time"),
+            "symbol": code,
+            "tday_rltv": row.get("tday_rltv"),
+            "stck_cntg_hour": row.get("stck_cntg_hour"),
+            "stck_prpr": row.get("stck_prpr"),
+            # FHKST01010300 row 에는 acml_vol 없음 (per-tick cntg_vol 만)
+            # — 결측은 None 유지, 합산 날조 금지.
+            "acml_vol": None,
         }
 
     async def _request_orderbook_snapshot(self, code: str, market: str = "J") -> dict:

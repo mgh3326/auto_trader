@@ -389,6 +389,24 @@ class InvestmentReportIngestionService:
             ]
         if item_req.freshness is not None:
             evidence_payload["item_freshness"] = item_req.freshness
+        if item_req.entry_plan:
+            evidence_payload["entry_plan"] = [
+                level.model_dump(mode="json", exclude_none=True)
+                for level in item_req.entry_plan
+            ]
+        if item_req.stop_loss is not None:
+            evidence_payload["stop_loss"] = item_req.stop_loss.model_dump(
+                mode="json", exclude_none=True
+            )
+        if item_req.target_price is not None:
+            evidence_payload["target_price"] = item_req.target_price.model_dump(
+                mode="json", exclude_none=True
+            )
+        if item_req.linked_order_ids:
+            evidence_payload["linked_order_ids"] = [
+                ref.model_dump(mode="json", exclude_none=True)
+                for ref in item_req.linked_order_ids
+            ]
         await self._repo.insert_item(
             report_id=report.id,
             idempotency_key=idempotency_key,

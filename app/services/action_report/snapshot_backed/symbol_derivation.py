@@ -32,12 +32,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.manual_holdings import ManualHolding, MarketType
 from app.models.trade_journal import TradeJournal
+from app.models.trading import InstrumentType
 from app.services.investment_reports.repository import InvestmentReportsRepository
 
 _MARKET_TO_TYPES: dict[str, tuple[MarketType, ...]] = {
     "kr": (MarketType.KR,),
     "us": (MarketType.US,),
     "crypto": (MarketType.CRYPTO,),
+}
+
+# Mirror the journal snapshot collector and MCP get_trade_journal market map.
+# trade_journals has no market column, so instrument_type is the canonical
+# no-migration discriminator for report symbol derivation.
+_JOURNAL_MARKET_TO_INSTRUMENT: dict[str, InstrumentType] = {
+    "crypto": InstrumentType.crypto,
+    "kr": InstrumentType.equity_kr,
+    "us": InstrumentType.equity_us,
 }
 
 
@@ -75,7 +85,9 @@ class _ManualHoldingsRepoProtocol(Protocol):
 
 
 class _JournalRepoProtocol(Protocol):
-    async def list_active_journal_symbols(self, *, market: str) -> list[str]: ...
+    async def list_active_journal_symbols(
+        self, *, market: str, account_scope: str | None = None
+    ) -> list[str]: ...
 
 
 class _WatchRepoProtocol(Protocol):
@@ -119,15 +131,25 @@ class _DefaultJournalRepo:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list_active_journal_symbols(self, *, market: str) -> list[str]:
-        # TradeJournal model has no market column; we filter by instrument_type
-        # downstream if needed. For PR1 derivation, we include all active
-        # journals because they are operator-curated and rare.
-        stmt = (
-            sa.select(TradeJournal.symbol)
-            .where(TradeJournal.status == "active")
-            .distinct()
-        )
+    async def list_active_journal_symbols(
+        self, *, market: str, account_scope: str | None = None
+    ) -> list[str]:
+        filters = [
+            TradeJournal.status == "active",
+            TradeJournal.account_type == "live",
+        ]
+        instrument_type = _JOURNAL_MARKET_TO_INSTRUMENT.get(market)
+        if instrument_type is not None:
+            filters.append(TradeJournal.instrument_type == instrument_type)
+        if account_scope == "kis_live":
+            # KIS live journal rows are written with account="kis" today; older
+            # live rows may have NULL account. Keep both, but do not let Upbit,
+            # paper/mock, or other-market journals into US/KR KIS reports.
+            filters.append(
+                sa.or_(TradeJournal.account == "kis", TradeJournal.account.is_(None))
+            )
+
+        stmt = sa.select(TradeJournal.symbol).where(*filters).distinct()
         result = await self._session.execute(stmt)
         return [s for (s,) in result.all()]
 
@@ -306,7 +328,10 @@ class SymbolDerivationService:
             portfolio.append(sym)
         portfolio = portfolio[: self._top_held]
         journal = await _safe(
-            "journal", self._journal.list_active_journal_symbols(market=market)
+            "journal",
+            self._journal.list_active_journal_symbols(
+                market=market, account_scope=account_scope
+            ),
         )
         watch = await _safe(
             "watch", self._watch.list_active_watch_symbols(market=market)

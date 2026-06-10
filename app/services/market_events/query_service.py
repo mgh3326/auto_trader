@@ -24,6 +24,19 @@ from app.services.market_events.taxonomy import (
 )
 
 
+def _normalize_symbol_filter(symbol: str | None) -> str | None:
+    if symbol is None:
+        return None
+    normalized = str(symbol).strip().upper()
+    if not normalized:
+        return None
+    if len(normalized) == 7 and normalized.startswith("A") and normalized[1:].isdigit():
+        return normalized[1:]
+    if normalized.isdigit() and len(normalized) < 6:
+        return normalized.zfill(6)
+    return normalized
+
+
 class MarketEventsQueryService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -35,6 +48,7 @@ class MarketEventsQueryService:
         category: str | None = None,
         market: str | None = None,
         source: str | None = None,
+        symbol: str | None = None,
     ) -> MarketEventsDayResponse:
         events = await self._query(
             from_date=target_date,
@@ -42,6 +56,7 @@ class MarketEventsQueryService:
             category=category,
             market=market,
             source=source,
+            symbol=symbol,
         )
         return MarketEventsDayResponse(date=target_date, events=events)
 
@@ -53,6 +68,7 @@ class MarketEventsQueryService:
         category: str | None = None,
         market: str | None = None,
         source: str | None = None,
+        symbol: str | None = None,
     ) -> MarketEventsRangeResponse:
         if from_date > to_date:
             raise ValueError("from_date must be <= to_date")
@@ -62,6 +78,7 @@ class MarketEventsQueryService:
             category=category,
             market=market,
             source=source,
+            symbol=symbol,
         )
         return MarketEventsRangeResponse(
             from_date=from_date,
@@ -78,11 +95,14 @@ class MarketEventsQueryService:
         category: str | None,
         market: str | None,
         source: str | None,
+        symbol: str | None,
     ) -> list[MarketEventResponse]:
         if category is not None:
             validate_category(category)
         if market is not None:
             validate_market(market)
+
+        normalized_symbol = _normalize_symbol_filter(symbol)
 
         stmt = (
             select(MarketEvent)
@@ -98,6 +118,8 @@ class MarketEventsQueryService:
             stmt = stmt.where(MarketEvent.market == market)
         if source is not None:
             stmt = stmt.where(MarketEvent.source == source)
+        if normalized_symbol is not None:
+            stmt = stmt.where(MarketEvent.symbol == normalized_symbol)
 
         rows = (await self.db.execute(stmt)).scalars().all()
 

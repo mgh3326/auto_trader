@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
@@ -431,13 +432,14 @@ async def test_defensive_trim_sell_accepted_only_persists_audit_to_ledger(
         "_fetch_approval_issue_status",
         AsyncMock(return_value="done"),
     )
+    order_uuid = f"defensive-trim-{uuid.uuid4()}"
 
     record_mock = AsyncMock()
     monkeypatch.setattr(order_execution, "_record_order_history", record_mock)
     monkeypatch.setattr(
         upbit_service,
         "place_sell_order",
-        AsyncMock(return_value={"uuid": "defensive-trim-uuid"}),
+        AsyncMock(return_value={"uuid": order_uuid}),
     )
     monkeypatch.setattr(
         order_execution, "_save_order_fill", AsyncMock(return_value=9191)
@@ -485,7 +487,7 @@ async def test_defensive_trim_sell_accepted_only_persists_audit_to_ledger(
             (
                 await db.execute(
                     select(LiveOrderLedger).where(
-                        LiveOrderLedger.order_no == "defensive-trim-uuid"
+                        LiveOrderLedger.order_no == order_uuid
                     )
                 )
             )

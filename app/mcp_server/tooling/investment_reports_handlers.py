@@ -107,6 +107,10 @@ GENERATE_FROM_BUNDLE_DESCRIPTION = (
     "client_item_key, item_kind (action|watch|risk), intent (buy_review|"
     "sell_review|risk_review|trend_recovery_review|rebalance_review), rationale; "
     "watch items also need watch_condition+valid_until unless operation='review'. "
+    "ROB-347 budget controls: budget_basis defaults to 'available_usd'; "
+    "'krw_orderable_reference' keeps KRW as reference-only and marks fx_required; "
+    "'operator_budget_override' uses operator_budget_override_usd when present "
+    "so USD=0 candidates remain visible without fabricating KRW→USD. "
     "Invalid items return error:'invalid_items' naming the offending index/field. "
     "Deterministic regeneration: by default an existing report for the same key "
     "is RETURNED FROM THE STORED ROW (reused_existing=true); pass "
@@ -138,8 +142,19 @@ CREATE_DESCRIPTION = (
     "completed_or_existing, deferred_no_action, risk_watch. "
     "Optional structured evidence per item: evidence=[{source, metric, value, "
     "as_of, freshness}] (source required) plus item-level freshness "
-    "(fresh|soft_stale|stale|unknown) — source-links consensus/flow/forum "
-    "signals instead of burying them in rationale (ROB-459). "
+    "(fresh|soft_stale|stale|unknown). item_evidence_lite quality grading reads "
+    "these typed evidence[]/freshness fields, not arbitrary evidence_snapshot "
+    "keys. evidence_snapshot remains an advanced raw JSON object for reserved "
+    "read-side hints such as action_verdict/candidate_rank; typed fields are "
+    "preferred for new inputs. "
+    "Optional trade plan fields per item: entry_plan=[{label, price, quantity, "
+    "notional, currency, condition, rationale}], stop_loss={price,...}, "
+    "target_price={price,...}, linked_order_ids=[{broker, account_scope, "
+    "order_no, odno, ledger_id, report_item_uuid, raw}]. These are advisory "
+    "report fields only; they do not submit broker orders. Live audit linkage "
+    "for new orders should still pass report_item_uuid to the order tool "
+    "(ROB-473). Unknown item keys are rejected; put extension data under "
+    "metadata or evidence_snapshot explicitly. "
     "For prior-report chaining set created_by_profile='CLAUDE_ADVISOR' so the "
     "draft is admitted by investment_report_context_get(draft_policy="
     "'advisory_only')."
@@ -1041,7 +1056,11 @@ async def investment_report_generate_from_bundle_impl(
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-def register_investment_report_tools(mcp: FastMCP) -> None:
+def register_investment_report_tools(
+    mcp: FastMCP,
+    *,
+    include_snapshot_generator: bool = True,
+) -> None:
     mcp.tool(
         name="investment_report_create",
         description=CREATE_DESCRIPTION,
@@ -1108,10 +1127,11 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
             "to zero. No broker/order/watch mutation."
         ),
     )(investment_report_delta_get_impl)
-    mcp.tool(
-        name="investment_report_generate_from_bundle",
-        description=GENERATE_FROM_BUNDLE_DESCRIPTION,
-    )(investment_report_generate_from_bundle_impl)
+    if include_snapshot_generator:
+        mcp.tool(
+            name="investment_report_generate_from_bundle",
+            description=GENERATE_FROM_BUNDLE_DESCRIPTION,
+        )(investment_report_generate_from_bundle_impl)
     mcp.tool(
         name="investment_watch_recommend",
         description=(

@@ -1598,6 +1598,22 @@ class TestScreenStocksFundamentalsExpansion:
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
+        monkeypatch.setattr(
+            screening_crypto,
+            "_screen_crypto_via_tvscreener",
+            AsyncMock(
+                return_value={
+                    "results": [
+                        {"code": coin["market"], "name": coin["korean_name"]}
+                        for coin in mock_upbit_coins
+                    ],
+                    "returned_count": len(mock_upbit_coins),
+                    "total_count": len(mock_upbit_coins),
+                    "filters_applied": {"sort_by": "trade_amount"},
+                    "market": "crypto",
+                }
+            ),
+        )
         tools = build_tools()
         result = await tools["screen_stocks"](
             market="crypto",
@@ -1624,6 +1640,22 @@ class TestScreenStocksFundamentalsExpansion:
             upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
+        )
+        monkeypatch.setattr(
+            screening_crypto,
+            "_screen_crypto_via_tvscreener",
+            AsyncMock(
+                return_value={
+                    "results": [
+                        {"code": coin["market"], "name": coin["korean_name"]}
+                        for coin in mock_upbit_coins
+                    ],
+                    "returned_count": len(mock_upbit_coins),
+                    "total_count": len(mock_upbit_coins),
+                    "filters_applied": {"sort_by": "rsi"},
+                    "market": "crypto",
+                }
+            ),
         )
         tools = build_tools()
         result = await tools["screen_stocks"](

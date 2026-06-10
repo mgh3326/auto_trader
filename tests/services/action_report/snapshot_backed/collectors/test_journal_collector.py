@@ -1,5 +1,8 @@
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
+from app.core.db import AsyncSessionLocal
 from app.models.trade_journal import TradeJournal
 from app.models.trading import InstrumentType
 from app.services.action_report.snapshot_backed.collectors.journal import (
@@ -28,6 +31,19 @@ def _req(market):
     return CollectorRequest(
         market=market, account_scope="kis_live", symbols=None, policy_snapshot={}
     )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_trade_journals(db_session):
+    await _delete_trade_journals()
+    yield
+    await _delete_trade_journals()
+
+
+async def _delete_trade_journals():
+    async with AsyncSessionLocal() as cleanup_session:
+        await cleanup_session.execute(delete(TradeJournal))
+        await cleanup_session.commit()
 
 
 @pytest.mark.asyncio

@@ -93,3 +93,56 @@ def test_buy_zones_sorted_descending_and_below_price():
     prices = [z.price for z in d.buy_zones]
     assert prices == sorted(prices, reverse=True)
     assert all(p < 1000.0 for p in prices)  # 현재가 이상 support 는 제외
+
+
+def _negative_upside_consensus():
+    # 475150 실측 모양: 8 buy / 0 sell, avg target 32,625 vs current 44,350 → -26.44%
+    return ConsensusData(
+        buy=8,
+        hold=0,
+        sell=0,
+        strong_buy=0,
+        total=8,
+        target_avg=32625.0,
+        upside_pct=-26.44,
+    )
+
+
+@pytest.mark.unit
+def test_rule_version_bumped_for_upside_demotion():
+    # ROB-486: 스코어링 규칙 변경 → contract-versioned RULE_VERSION 범프.
+    assert RULE_VERSION == "symbol_analysis.derived.v2"
+
+
+@pytest.mark.unit
+def test_negative_upside_consensus_blocks_count_buy():
+    d = derive_recommendation(
+        price=_block(PriceData(44350.0)),
+        technicals=_block(TechnicalData(rsi14=50.0, supports=(43000.0,))),
+        consensus=_block(_negative_upside_consensus()),
+    )
+    assert d.action == "hold"
+    assert d.confidence == "low"
+    assert d.insufficient_inputs == ()
+
+
+@pytest.mark.unit
+def test_negative_upside_demotes_rsi_driven_buy():
+    d = derive_recommendation(
+        price=_block(PriceData(44350.0)),
+        technicals=_block(TechnicalData(rsi14=25.0, supports=(43000.0,))),
+        consensus=_block(_negative_upside_consensus()),
+    )
+    assert d.action == "hold"
+    assert d.confidence == "low"
+
+
+@pytest.mark.unit
+def test_mildly_negative_upside_keeps_count_buy():
+    cons = ConsensusData(buy=8, hold=0, sell=0, strong_buy=0, total=8, upside_pct=-5.0)
+    d = derive_recommendation(
+        price=_block(PriceData(1000.0)),
+        technicals=_block(TechnicalData(rsi14=50.0, supports=(950.0,))),
+        consensus=_block(cons),
+    )
+    assert d.action == "buy"

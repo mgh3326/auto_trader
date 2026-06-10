@@ -60,6 +60,51 @@ async def test_us_candidates_carry_quality_flags_and_priority(db_session):
 
 
 @pytest.mark.asyncio
+async def test_us_candidate_pool_size_and_displayed_count_are_exposed(db_session):
+    today = dt.date(2026, 6, 9)
+    rows = []
+    for idx in range(55):
+        symbol = f"POOL{idx:02d}"
+        rows.extend(
+            [
+                _snap(
+                    symbol,
+                    close=100.0 + idx,
+                    vol=20_000_000 + idx,
+                    change=3.0 + idx / 100,
+                    d=today,
+                ),
+                USSymbolUniverse(
+                    symbol=symbol,
+                    exchange="NASDAQ",
+                    is_active=True,
+                    is_common_stock=True,
+                ),
+            ]
+        )
+    db_session.add_all(rows)
+    await db_session.flush()
+    collector = CandidateUniverseSnapshotCollector(db_session)
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        candidate_limit=5,
+        symbols=None,
+        policy_snapshot={},
+    )
+
+    results = await collector.collect(req)
+    payload = results[0].payload_json
+
+    # US path evaluates a wide pool of max(limit*5, 50), not the entire DB partition.
+    assert payload["pool_size"] == 50
+    assert payload["displayed_count"] == 5
+    assert len(payload["candidates"]) == 5
+    assert payload["candidate_limit"] == 5
+    assert payload["capped"] is True
+
+
+@pytest.mark.asyncio
 async def test_us_unknown_common_stock_flagged(db_session):
     # Liquid, non-penny US symbol with NO us_symbol_universe row → is_common_stock
     # is None → "common_stock_unknown" (data_gap-grade), never silently rejected.

@@ -282,3 +282,52 @@ def test_result_row_accepts_market_cap_source():
         metricValueLabel="-",
     )
     assert bare.marketCapSource is None
+
+
+@pytest.mark.unit
+def test_result_row_accepts_analysis_context():
+    from app.schemas.invest_screener import (
+        ScreenerAnalysisConsensus,
+        ScreenerAnalysisContext,
+        ScreenerResultRow,
+    )
+
+    row = ScreenerResultRow(
+        rank=1,
+        symbol="005930",
+        market="kr",
+        name="삼성전자",
+        priceLabel="70,000원",
+        changePctLabel="+1.0%",
+        changeAmountLabel="+700원",
+        changeDirection="up",
+        category="반도체",
+        marketCapLabel="418조원",
+        volumeLabel="1,000,000",
+        analystLabel="매수 2 / 보유 1 / 매도 0 · 목표 +12.3%",
+        metricValueLabel="+5.0%",
+        analysisContext=ScreenerAnalysisContext(
+            consensus=ScreenerAnalysisConsensus(
+                source="naver",
+                buyCount=2,
+                holdCount=1,
+                sellCount=0,
+                strongBuyCount=0,
+                totalCount=3,
+                avgTargetPrice=78500.0,
+                medianTargetPrice=78000.0,
+                minTargetPrice=76000.0,
+                maxTargetPrice=81000.0,
+                upsidePct=12.3,
+                currentPrice=69900.0,
+            ),
+            rsi14=58.42,
+            dataState="fresh",
+            warnings=[],
+        ),
+    )
+
+    assert row.analysisContext is not None
+    assert row.analysisContext.consensus is not None
+    assert row.analysisContext.consensus.buyCount == 2
+    assert row.analysisContext.rsi14 == pytest.approx(58.42)

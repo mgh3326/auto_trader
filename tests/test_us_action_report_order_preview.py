@@ -66,6 +66,101 @@ def test_sell_preview_passes_with_kis_live_sellable_qty_and_submit_disabled():
     assert preview.check_details["sellableQty"] == 4.0
 
 
+def test_sell_preview_warns_when_ladder_is_entirely_above_market():
+    preview = preview_kis_us_live_order(
+        account_snapshot=_snapshot(holdings=[_holding("IONQ", sellable_qty=8.0)]),
+        request=KISUSOrderPreviewRequest(
+            symbol="IONQ",
+            side="sell",
+            quantity=2.0,
+            limit_price_usd=64.0,
+            reference_price_usd=63.95,
+            ladder_rungs=[
+                {"quantity": 2.0, "limitPriceUsd": 64.0},
+                {"quantity": 3.0, "limitPriceUsd": 66.0},
+                {"quantity": 3.0, "limitPriceUsd": 68.0},
+            ],
+        ),
+    )
+
+    assert preview.status == "pass"
+    assert "ladder_all_above_market" in preview.warnings
+    assert "ladder_missing_near_market_anchor" not in preview.warnings
+    fill_safety = preview.check_details["fillSafety"]
+    assert fill_safety["allRungsAboveMarket"] is True
+    assert fill_safety["hasMarketableAnchor"] is False
+    assert fill_safety["hasNearMarketAnchor"] is True
+    assert fill_safety["suggestedAnchorRung"]["limitPriceUsd"] == 63.95
+    assert fill_safety["rungs"][0]["distancePct"] == pytest.approx(0.0782)
+    assert fill_safety["rungs"][0]["nearAboveMarket"] is True
+
+
+def test_sell_preview_warns_missing_anchor_when_all_rungs_far_above_market():
+    preview = preview_kis_us_live_order(
+        account_snapshot=_snapshot(holdings=[_holding("IONQ", sellable_qty=8.0)]),
+        request=KISUSOrderPreviewRequest(
+            symbol="IONQ",
+            side="sell",
+            quantity=2.0,
+            limit_price_usd=66.0,
+            reference_price_usd=63.95,
+            ladder_rungs=[
+                {"quantity": 2.0, "limitPriceUsd": 66.0},
+                {"quantity": 3.0, "limitPriceUsd": 68.0},
+                {"quantity": 3.0, "limitPriceUsd": 70.0},
+            ],
+        ),
+    )
+    assert "ladder_all_above_market" in preview.warnings
+    assert "ladder_missing_near_market_anchor" in preview.warnings
+
+
+def test_sell_preview_without_explicit_ladder_analyzes_main_order_as_single_rung():
+    # P2 fix: analyze the order limit as an implicit rung when ladder_rungs is absent.
+    preview = preview_kis_us_live_order(
+        account_snapshot=_snapshot(holdings=[_holding("IONQ", sellable_qty=8.0)]),
+        request=KISUSOrderPreviewRequest(
+            symbol="IONQ",
+            side="sell",
+            quantity=2.0,
+            limit_price_usd=70.0,
+            reference_price_usd=63.95,
+        ),
+    )
+    assert "ladder_all_above_market" in preview.warnings
+    fill_safety = preview.check_details["fillSafety"]
+    assert fill_safety["impliedFromSingleOrder"] is True
+    assert len(fill_safety["rungs"]) == 1
+
+
+def test_sell_preview_keeps_near_market_anchor_ladder_warning_free():
+    preview = preview_kis_us_live_order(
+        account_snapshot=_snapshot(holdings=[_holding("IONQ", sellable_qty=8.0)]),
+        request=KISUSOrderPreviewRequest(
+            symbol="IONQ",
+            side="sell",
+            quantity=2.0,
+            limit_price_usd=63.95,
+            reference_price_usd=63.95,
+            atr_usd=4.0,
+            ladder_rungs=[
+                {"quantity": 2.0, "limitPriceUsd": 63.95},
+                {"quantity": 3.0, "limitPriceUsd": 66.0},
+                {"quantity": 3.0, "limitPriceUsd": 68.0},
+            ],
+        ),
+    )
+
+    assert preview.status == "pass"
+    assert "ladder_all_above_market" not in preview.warnings
+    assert "ladder_missing_near_market_anchor" not in preview.warnings
+    fill_safety = preview.check_details["fillSafety"]
+    assert fill_safety["allRungsAboveMarket"] is False
+    assert fill_safety["hasMarketableAnchor"] is True
+    assert fill_safety["hasNearMarketAnchor"] is True
+    assert fill_safety["rungs"][1]["atrMultiple"] == pytest.approx(0.5125)
+
+
 def test_sell_preview_rejects_manual_only_quantity_as_not_sellable():
     preview = preview_kis_us_live_order(
         account_snapshot=_snapshot(

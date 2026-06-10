@@ -244,6 +244,56 @@ class ItemEvidencePayload(BaseModel):
     freshness: ItemEvidenceFreshnessLiteral | None = None
 
 
+class ReportItemPriceLevelPayload(BaseModel):
+    """One price level in a report item's trade plan.
+
+    Used for `entry_plan[]`, `stop_loss`, and `target_price`. This is an
+    advisory/reporting structure only; it never submits broker orders.
+    """
+
+    label: str | None = None
+    price: Decimal
+    quantity: Decimal | None = None
+    notional: Decimal | None = None
+    currency: str | None = None
+    condition: str | None = None
+    rationale: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LinkedOrderRefPayload(BaseModel):
+    """Reference to an order already linked or mentioned by a report item.
+
+    ROB-473's live audit linkage remains `report_item_uuid` on ledger rows.
+    This payload is a report-side reference for post-facto/manual context.
+    """
+
+    broker: str | None = None
+    account_scope: AccountScopeLiteral | None = None
+    order_no: str | None = None
+    odno: str | None = None
+    ledger_id: int | None = None
+    report_item_uuid: UUID | None = None
+    raw: dict[str, Any] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _requires_identifier(self) -> LinkedOrderRefPayload:
+        if (
+            self.order_no is None
+            and self.odno is None
+            and self.ledger_id is None
+            and self.report_item_uuid is None
+        ):
+            raise ValueError(
+                "linked_order_ids[] requires one of order_no, odno, ledger_id, "
+                "report_item_uuid"
+            )
+        return self
+
+
 class IngestReportItem(BaseModel):
     """One proposal item attached to an ingested report.
 
@@ -252,6 +302,8 @@ class IngestReportItem(BaseModel):
     report bundle. Use it to disambiguate items that share natural
     fields — multiple risk items, scoped buys on the same symbol, etc.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     client_item_key: str = Field(min_length=1)
     item_kind: ItemKindLiteral
@@ -268,6 +320,10 @@ class IngestReportItem(BaseModel):
     # 영속화 시 evidence_snapshot["structured_evidence"]로 병합된다(마이그레이션 0).
     evidence: list[ItemEvidencePayload] = Field(default_factory=list)
     freshness: ItemEvidenceFreshnessLiteral | None = None
+    entry_plan: list[ReportItemPriceLevelPayload] = Field(default_factory=list)
+    stop_loss: ReportItemPriceLevelPayload | None = None
+    target_price: ReportItemPriceLevelPayload | None = None
+    linked_order_ids: list[LinkedOrderRefPayload] = Field(default_factory=list)
     watch_condition: WatchConditionPayload | None = None
     trigger_checklist: list[Any] = Field(default_factory=list)
     max_action: dict[str, Any] = Field(default_factory=dict)
@@ -297,6 +353,28 @@ class IngestReportItem(BaseModel):
         if v is not None and v not in DECISION_BUCKETS:
             raise ValueError(f"decision_bucket={v!r} not in {DECISION_BUCKETS!r}")
         return v
+
+    @model_validator(mode="after")
+    def _validate_reserved_evidence_snapshot_keys(self) -> IngestReportItem:
+        conflicts: list[str] = []
+        if self.evidence and "structured_evidence" in self.evidence_snapshot:
+            conflicts.append("structured_evidence")
+        if self.freshness is not None and "item_freshness" in self.evidence_snapshot:
+            conflicts.append("item_freshness")
+        if self.entry_plan and "entry_plan" in self.evidence_snapshot:
+            conflicts.append("entry_plan")
+        if self.stop_loss is not None and "stop_loss" in self.evidence_snapshot:
+            conflicts.append("stop_loss")
+        if self.target_price is not None and "target_price" in self.evidence_snapshot:
+            conflicts.append("target_price")
+        if self.linked_order_ids and "linked_order_ids" in self.evidence_snapshot:
+            conflicts.append("linked_order_ids")
+        if conflicts:
+            raise ValueError(
+                "typed item fields must not duplicate reserved evidence_snapshot keys: "
+                f"{conflicts}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_watch_invariants(self) -> IngestReportItem:

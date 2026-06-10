@@ -539,6 +539,30 @@ class DomesticOrderClient:
 
         Returns:
             체결 주문 목록 (list of dict)
+
+            실 응답 키 (TTTC8001R, 2026-06-10 read-only 라이브 프로브로 확정):
+            - odno: 주문번호
+            - orgn_odno: 원주문번호 (정정/취소 확인 행이 원주문을 가리킴)
+            - sll_buy_dvsn_cd / sll_buy_dvsn_cd_name: 매도매수구분 (취소 확인
+              행은 '매수취소'/'매도취소' 형태의 이름을 가짐)
+            - pdno / prdt_name: 종목코드 / 상품명
+            - ord_qty / ord_unpr: 주문수량 / 주문단가
+            - tot_ccld_qty / tot_ccld_amt: 총체결수량 / 총체결금액
+            - rmn_qty: 잔여수량 (> 0 이면 주문 생존)
+            - rjct_qty: 거부수량 (미체결 day order는 EOD에 rjct_qty == ord_qty)
+            - cncl_yn: 취소 여부 플래그
+            - excg_id_dvsn_cd: 거래소 구분 (SOR/KRX/...)
+            - ord_dt / ord_tmd: 주문일자 / 주문시각
+            (체결가격은 fill_evidence가 avg_prvs → ccld_unpr → tot_ccld_amt
+            순으로 해석한다.)
+
+            주의 (ROB-487 실측):
+            - prcs_stat_name / rvse_cncl_dvsn_cd / rvse_cncl_dvsn_name 키는
+              실 응답에 존재하지 않는다.
+            - 조회 윈도우(INQR_STRT_DT~INQR_END_DT)는 **주문일** 기준이다 —
+              전일 주문/체결은 전일을 포함한 윈도우로만 보인다.
+            - 페이지네이션이 동일 행을 중복 반환할 수 있다(실측: 모든 행 2회)
+              — 소비자는 dedupe 필요 (fill_evidence._dedupe_rows 참고).
         """
         await self._parent._ensure_token()
 

@@ -117,6 +117,33 @@ class ScreenerCandidateContext(BaseModel):
     source: ScreenerDataSourceKind | None = None
 
 
+ScreenerAnalysisDataState = Literal["fresh", "partial", "missing", "error"]
+
+
+class ScreenerAnalysisConsensus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str | None = None
+    buyCount: int | None = None
+    holdCount: int | None = None
+    sellCount: int | None = None
+    strongBuyCount: int | None = None
+    totalCount: int | None = None
+    avgTargetPrice: float | None = None
+    medianTargetPrice: float | None = None
+    minTargetPrice: float | None = None
+    maxTargetPrice: float | None = None
+    upsidePct: float | None = None
+    currentPrice: float | None = None
+
+
+class ScreenerAnalysisContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    consensus: ScreenerAnalysisConsensus | None = None
+    rsi14: float | None = None
+    dataState: ScreenerAnalysisDataState = "missing"
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ScreenerResultRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rank: int = Field(ge=1)
@@ -141,6 +168,7 @@ class ScreenerResultRow(BaseModel):
     candidateContext: ScreenerCandidateContext | None = None
     # ROB-426 PR3: provenance of marketCapLabel for the non-valuation KR presets.
     marketCapSource: Literal["primary", "fallback"] | None = None
+    analysisContext: ScreenerAnalysisContext | None = None
 
 
 class ScreenerPresetsResponse(BaseModel):
