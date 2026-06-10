@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from app.services.execution_ledger.opening_lots import (
     OpeningLotCandidate,
     build_opening_lot_plan,
@@ -89,3 +91,42 @@ def test_opening_lot_skips_zero_average_price() -> None:
 
     assert plan.upserts == []
     assert plan.skipped[0].reason == "non_positive_avg_price"
+
+
+@pytest.mark.asyncio
+async def test_upbit_candidates_only_cover_krw_markets(monkeypatch) -> None:
+    import app.services.brokers.upbit.client as upbit_client
+    from app.services.execution_ledger.opening_lots import (
+        load_upbit_opening_lot_candidates,
+    )
+
+    async def _fake_fetch_my_coins():
+        return [
+            {"currency": "KRW", "balance": "1000", "locked": "0"},
+            {
+                "currency": "SOL",
+                "unit_currency": "KRW",
+                "balance": "2",
+                "locked": "0",
+                "avg_buy_price": "200000",
+                "avg_buy_price_modified": "false",
+            },
+            {
+                "currency": "ETH",
+                "unit_currency": "BTC",
+                "balance": "0.5",
+                "locked": "0",
+                "avg_buy_price": "0.05",
+                "avg_buy_price_modified": "false",
+            },
+        ]
+
+    monkeypatch.setattr(upbit_client, "fetch_my_coins", _fake_fetch_my_coins)
+
+    candidates = await load_upbit_opening_lot_candidates()
+
+    assert [c.symbol for c in candidates] == ["SOL"]
+    sol = candidates[0]
+    assert sol.venue == "upbit_krw"
+    assert sol.currency == "KRW"
+    assert sol.raw_symbol == "KRW-SOL"

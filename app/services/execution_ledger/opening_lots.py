@@ -212,6 +212,11 @@ async def load_upbit_opening_lot_candidates() -> list[OpeningLotCandidate]:
         if not currency or currency == "KRW":
             continue
         unit_currency = str(row.get("unit_currency") or "KRW").strip().upper()
+        if unit_currency != "KRW":
+            # The ledger normalizer only ever writes venue='upbit_krw' with
+            # currency='KRW'; a BTC/USDT-market seed could never match a sell
+            # and its avg price is not KRW-denominated.
+            continue
         parsed = parse_upbit_account_row(row)
         current_qty = Decimal(str(parsed["total_quantity"]))
         avg_price = Decimal(str(parsed["avg_buy_price"]))
@@ -219,11 +224,11 @@ async def load_upbit_opening_lot_candidates() -> list[OpeningLotCandidate]:
             OpeningLotCandidate(
                 broker="upbit",
                 account_mode="live",
-                venue=f"upbit_{unit_currency.lower()}",
+                venue="upbit_krw",
                 instrument_type="crypto",
                 symbol=currency,
-                raw_symbol=f"{unit_currency}-{currency}",
-                currency="KRW" if unit_currency == "KRW" else "USD",
+                raw_symbol=f"KRW-{currency}",
+                currency="KRW",
                 current_qty=current_qty,
                 avg_price=avg_price,
                 avg_price_modified=bool(parsed["avg_buy_price_modified"]),

@@ -137,17 +137,21 @@ class ExecutionLedgerRepository:
         self.db.add(ExecutionLedgerReconcileRun(**run.model_dump()))
 
     async def latest_run_per_broker(self) -> dict[str, ReconcileRunRecord]:
+        # Dry-run audit rows are persisted for observability but commit no
+        # fills, so they must not make ledger freshness look "fresh".
         latest_started = (
             select(
                 ExecutionLedgerReconcileRun.broker,
                 func.max(ExecutionLedgerReconcileRun.started_at).label("started_at"),
             )
             .where(ExecutionLedgerReconcileRun.error_summary.is_(None))
+            .where(ExecutionLedgerReconcileRun.dry_run.is_(False))
             .group_by(ExecutionLedgerReconcileRun.broker)
             .subquery()
         )
         rows = await self.db.execute(
-            select(ExecutionLedgerReconcileRun).join(
+            select(ExecutionLedgerReconcileRun)
+            .join(
                 latest_started,
                 (ExecutionLedgerReconcileRun.broker == latest_started.c.broker)
                 & (
@@ -155,6 +159,7 @@ class ExecutionLedgerRepository:
                     == latest_started.c.started_at
                 ),
             )
+            .where(ExecutionLedgerReconcileRun.dry_run.is_(False))
         )
         return {
             row.broker: ReconcileRunRecord.model_validate(row)

@@ -206,3 +206,53 @@ async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows()
     assert session.executed is True
     assert len(next(iter(result))) == 6
     assert isinstance(next(iter(result))[3], str)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_latest_run_per_broker_ignores_dry_run_audit_rows(db_session) -> None:
+    """Persisted dry-run audit rows must not drive ledger freshness.
+
+    The CLI/TaskIQ layers commit the reconcile-run audit row even in dry-run
+    mode; a dry-run commits zero fills, so freshness must keep reporting the
+    latest commit-mode run.
+    """
+    import uuid as _uuid
+    from datetime import timedelta
+
+    from app.models.execution_ledger import ExecutionLedgerReconcileRun
+
+    far_future = datetime(2099, 1, 1, tzinfo=UTC)
+    commit_run_id = _uuid.uuid4()
+    dry_run_id = _uuid.uuid4()
+    rows = [
+        ExecutionLedgerReconcileRun(
+            run_id=commit_run_id,
+            broker="kis",
+            window_start=far_future - timedelta(days=2),
+            window_end=far_future - timedelta(days=1),
+            started_at=far_future - timedelta(days=1),
+            finished_at=far_future - timedelta(days=1),
+            dry_run=False,
+        ),
+        ExecutionLedgerReconcileRun(
+            run_id=dry_run_id,
+            broker="kis",
+            window_start=far_future - timedelta(days=1),
+            window_end=far_future,
+            started_at=far_future,
+            finished_at=far_future,
+            dry_run=True,
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        latest = await ExecutionLedgerRepository(db_session).latest_run_per_broker()
+        assert "kis" in latest
+        assert latest["kis"].run_id != dry_run_id
+        assert latest["kis"].dry_run is False
+    finally:
+        for row in rows:
+            await db_session.delete(row)
+        await db_session.commit()
