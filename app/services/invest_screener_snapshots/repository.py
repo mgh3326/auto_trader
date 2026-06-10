@@ -140,6 +140,45 @@ class InvestScreenerSnapshotsRepository:
         )
         return list(result.scalars().all())
 
+    async def list_candidate_pool(
+        self, *, market: str, limit: int | None = None
+    ) -> list[InvestScreenerSnapshot]:
+        """ROB-346 — wide candidate pool from the latest partition. ``limit=None``
+        returns the whole partition (no early cap); quality/priority filtering
+        happens downstream in the collector."""
+        latest = await self.latest_partition(market=market)
+        if latest is None:
+            return []
+        stmt = (
+            select(InvestScreenerSnapshot)
+            .where(
+                InvestScreenerSnapshot.market == market,
+                InvestScreenerSnapshot.snapshot_date == latest,
+            )
+            .order_by(
+                InvestScreenerSnapshot.change_rate.desc().nullslast(),
+                InvestScreenerSnapshot.symbol.asc(),
+            )
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def common_stock_flags(self, symbols: list[str]) -> dict[str, bool | None]:
+        """ROB-346 — us_symbol_universe.is_common_stock by symbol (US-only).
+        Missing symbols are absent from the dict (caller treats as unknown)."""
+        if not symbols:
+            return {}
+        from app.models.us_symbol_universe import USSymbolUniverse
+
+        result = await self._session.execute(
+            select(USSymbolUniverse.symbol, USSymbolUniverse.is_common_stock).where(
+                USSymbolUniverse.symbol.in_(symbols)
+            )
+        )
+        return dict(result.all())
+
     async def breadth(self, *, market: str) -> Breadth:
         latest = await self.latest_partition(market=market)
         if latest is None:

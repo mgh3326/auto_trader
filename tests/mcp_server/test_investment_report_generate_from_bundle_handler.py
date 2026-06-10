@@ -216,3 +216,45 @@ async def test_non_dict_item_does_not_crash(_enabled):
     assert res["error"] == "invalid_items"
     assert res["item_errors"][0]["index"] == 0
     assert "object" in str(res["item_errors"][0]["errors"])
+
+
+@pytest.mark.asyncio
+async def test_generate_from_bundle_budget_params_passed(_enabled, monkeypatch):
+    from app.services.action_report.snapshot_backed import generator as gen_mod
+    from app.services.action_report.snapshot_backed.request import (
+        ReportGenerationResponse,
+    )
+
+    captured = {}
+
+    async def _fake_generate(self, request):
+        captured["request"] = request
+        return ReportGenerationResponse(
+            report_uuid=uuid.uuid4(),
+            snapshot_bundle_uuid=uuid.uuid4(),
+            snapshot_policy_version="p",
+            snapshot_coverage_summary={},
+            snapshot_freshness_summary={},
+            source_conflicts={},
+            unavailable_sources={},
+            items_count=0,
+            warnings=[],
+            bundle_status="complete",
+            bundle_reused=False,
+            stale_gate={},
+        )
+
+    monkeypatch.setattr(
+        gen_mod.SnapshotBackedReportGenerator, "generate", _fake_generate
+    )
+
+    res = await h.investment_report_generate_from_bundle_impl(
+        **_kwargs(
+            budget_basis="operator_budget_override",
+            operator_budget_override_usd=750.0,
+        )
+    )
+    assert res["success"] is True
+    req = captured["request"]
+    assert req.budget_basis == "operator_budget_override"
+    assert req.operator_budget_override_usd == 750.0

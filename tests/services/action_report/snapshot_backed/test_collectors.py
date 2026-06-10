@@ -871,6 +871,7 @@ async def test_journal_collector_returns_active_and_recent():
         exit_reason = None
         pnl_pct = None
         account_type = "live"
+        account = "kis"
         created_at = dt.datetime(2026, 5, 18, tzinfo=dt.UTC)
         updated_at = dt.datetime(2026, 5, 19, tzinfo=dt.UTC)
 

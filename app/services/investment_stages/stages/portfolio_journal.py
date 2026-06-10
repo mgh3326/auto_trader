@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.schemas.investment_stages import (
     StageArtifactPayload,
     StageCitation,
@@ -113,9 +115,12 @@ class PortfolioJournalStage:
         else:
             nav, buying_power, _cash = _krw_totals(payload)
 
+        # ROB-345 — collector emits "active" (draft/active journals), not
+        # "entries". Reading the wrong key made every market show
+        # "open journal: none". Mirror the real journal payload contract.
         entries = []
         for snap in journal_snaps:
-            entries.extend((snap.payload_json or {}).get("entries", []))
+            entries.extend((snap.payload_json or {}).get("active", []))
         symbols = ", ".join(e.get("symbol", "?") for e in entries[:5])
 
         citations = [
@@ -130,11 +135,17 @@ class PortfolioJournalStage:
                 StageCitation(
                     snapshot_uuid=snap.snapshot_uuid,
                     snapshot_kind="journal",
-                    payload_path="$.entries",
+                    payload_path="$.active",
                 )
             )
 
-        missing_data = [] if journal_snaps else ["journal"]
+        def _journal_collector_status(snap: Any) -> str | None:
+            return (getattr(snap, "payload_json", None) or {}).get("collector_status")
+
+        journal_unavailable = (not journal_snaps) or any(
+            _journal_collector_status(s) == "unavailable" for s in journal_snaps
+        )
+        missing_data = ["journal"] if journal_unavailable else []
         key_points = [e.get("thesis", "") for e in entries[:5] if e.get("thesis")]
         # ROB-392 — surface the NAV scope label (byte-identical summary stays
         # unchanged; the label rides only in key_points).
