@@ -354,10 +354,6 @@ async def test_fetch_quote_equity_kr_passes_market_j(monkeypatch, symbol, label)
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
     assert result["price"] == pytest.approx(105.0)
-    assert called["market"] == "J", f"Expected market='J' for {label} symbol {symbol}"
-    assert result["instrument_type"] == "equity_kr"
-    assert result["source"] == "kis"
-    assert result["price"] == pytest.approx(105.0)
     assert result["symbol"] == symbol
 
 
