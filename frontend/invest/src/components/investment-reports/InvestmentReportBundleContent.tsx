@@ -3,8 +3,8 @@
 // Surfaces the Plan 4 delivery_status on each watch event so operators
 // can see whether the Hermes notification actually reached them.
 
-import type { ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, type ReactNode } from "react";
+import { Link, useLocation, useParams } from "react-router-dom";
 
 import { Card, Pill } from "../../ds";
 import { useInvestmentReportBundle } from "../../hooks/useInvestmentReportBundle";
@@ -217,6 +217,7 @@ function ItemRow({
     !!confidenceLabel || !!item.citedSymbolReportUuid || dimensionCitations > 0;
   return (
     <section
+      id={`watch-item-${item.itemUuid}`}
       style={{
         display: "grid",
         gap: 8,
@@ -340,6 +341,7 @@ function ItemRow({
 function AlertRow({ alert }: { alert: InvestmentWatchAlert }) {
   return (
     <section
+      id={`watch-alert-${alert.alertUuid}`}
       style={{
         display: "grid",
         gap: 6,
@@ -376,6 +378,7 @@ function EventRow({ event }: { event: InvestmentWatchEvent }) {
   const deliveryColor = DELIVERY_STATUS_COLORS[event.deliveryStatus];
   return (
     <section
+      id={`watch-event-${event.eventUuid}`}
       style={{
         display: "grid",
         gap: 6,
@@ -552,6 +555,15 @@ export function InvestmentReportBundleContent({
 }) {
   const { reportUuid } = useParams<{ reportUuid: string }>();
   const { status, bundle, error, reload } = useInvestmentReportBundle(reportUuid);
+  const location = useLocation();
+
+  // ROB-500 — Discord 딥링크(`#watch-event-…` / `#watch-alert-…`)로 진입하면
+  // bundle 렌더 후 해당 row로 스크롤한다.
+  useEffect(() => {
+    if (!bundle || !location.hash) return;
+    const el = document.getElementById(location.hash.slice(1));
+    el?.scrollIntoView({ block: "center" });
+  }, [bundle, location.hash]);
 
   if (status === "loading") {
     return (
@@ -604,6 +616,11 @@ export function InvestmentReportBundleContent({
   }
 
   const buckets = groupItems(bundle.items);
+  // ROB-500 — `active watches`에 triggered가 섞여 operator가 혼동하던 문제:
+  // 상태별로 섹션을 분리한다.
+  const activeAlerts = bundle.alerts.filter((alert) => alert.status === "active");
+  const settledAlerts = bundle.alerts.filter((alert) => alert.status !== "active");
+
   // ROB-322 — when the backend ships the five-section projection (and it has
   // content), render the report-scoped review surface instead of the flat
   // itemKind queue. Legacy reports / older backend keep the flat grouping.
@@ -675,12 +692,23 @@ export function InvestmentReportBundleContent({
         <ActionPacketView packet={bundle.actionPacket} />
       ) : null}
 
-      {bundle.alerts.length > 0 ? (
+      {activeAlerts.length > 0 ? (
         <section style={{ display: "grid", gap: 10 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>
-            active watches ({bundle.alerts.length})
+            active watches ({activeAlerts.length})
           </h2>
-          {bundle.alerts.map((alert) => (
+          {activeAlerts.map((alert) => (
+            <AlertRow key={alert.alertUuid} alert={alert} />
+          ))}
+        </section>
+      ) : null}
+
+      {settledAlerts.length > 0 ? (
+        <section style={{ display: "grid", gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>
+            triggered / closed watches ({settledAlerts.length})
+          </h2>
+          {settledAlerts.map((alert) => (
             <AlertRow key={alert.alertUuid} alert={alert} />
           ))}
         </section>

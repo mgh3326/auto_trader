@@ -12,6 +12,9 @@ from pydantic import ValidationError
 from app.services.hermes_client import (
     HermesNotificationClient,
     ReviewTriggerPayload,
+    build_invest_links,
+    build_operator_action_guidance,
+    price_guidance_from_watch_recommendation,
 )
 
 
@@ -161,3 +164,136 @@ async def test_enabled_client_without_token_omits_auth_header() -> None:
     await client.send_review_trigger(_base_payload())
     await client.close()
     assert "authorization" not in captured["headers"]
+
+
+# --- ROB-500 Tests ---
+
+_REPORT_UUID = uuid.UUID("70019e8d-1ee6-493f-adeb-5d9301d5ea48")
+_EVENT_UUID = uuid.UUID("f912d55f-d1b3-4971-a362-998bd9ffa6b4")
+_ALERT_UUID = uuid.UUID("5e32ec11-f4ed-4ef7-9a84-561a5fb2be79")
+
+
+def test_build_invest_links_full() -> None:
+    links = build_invest_links(
+        market="crypto",
+        symbol="KRW-BTC",
+        source_report_uuid=_REPORT_UUID,
+        event_uuid=_EVENT_UUID,
+        alert_uuid=_ALERT_UUID,
+    )
+    assert links.report_path == f"/invest/reports/{_REPORT_UUID}"
+    assert links.stock_path == "/invest/stocks/crypto/KRW-BTC"
+    assert links.event_anchor == (
+        f"/invest/reports/{_REPORT_UUID}#watch-event-{_EVENT_UUID}"
+    )
+    assert links.alert_anchor == (
+        f"/invest/reports/{_REPORT_UUID}#watch-alert-{_ALERT_UUID}"
+    )
+
+
+def test_build_invest_links_without_event_uuid_omits_event_anchor() -> None:
+    links = build_invest_links(
+        market="kr", symbol="005930", source_report_uuid=_REPORT_UUID
+    )
+    assert links.event_anchor is None
+    assert links.alert_anchor is None
+    assert links.stock_path == "/invest/stocks/kr/005930"
+
+
+def test_build_invest_links_quotes_symbol() -> None:
+    links = build_invest_links(
+        market="us", symbol="BRK.B", source_report_uuid=_REPORT_UUID
+    )
+    assert links.stock_path == "/invest/stocks/us/BRK.B"
+
+
+def test_operator_action_guidance_mapping() -> None:
+    g = build_operator_action_guidance(action_mode="notify_only", outcome="notified")
+    assert g.requires_operator_review is False
+    assert g.order_behavior == "none"
+    assert "자동 주문 없음" in g.headline
+
+    g = build_operator_action_guidance(
+        action_mode="approval_required", outcome="review_required"
+    )
+    assert g.requires_operator_review is True
+    assert g.order_behavior == "none"
+
+    g = build_operator_action_guidance(
+        action_mode="preview_only", outcome="preview_attached"
+    )
+    assert g.order_behavior == "preview_only"
+
+    g = build_operator_action_guidance(
+        action_mode="auto_execute_mock", outcome="executed"
+    )
+    assert g.order_behavior == "mock_only"
+
+
+def test_operator_action_guidance_review_required_overrides() -> None:
+    # validity review path: notify_only watch이지만 outcome=review_required
+    g = build_operator_action_guidance(
+        action_mode="notify_only", outcome="review_required"
+    )
+    assert g.requires_operator_review is True
+
+
+def _full_recommendation() -> dict:
+    return {
+        "watch_reason": "r",
+        "data_state": "ok",
+        "reference_price": "110",
+        "entry_review_below_price": "100",
+        "suggested_limit_price_range": {"low": "95", "high": "100"},
+        "max_chase_price": "102",
+        "invalidation": {"kind": "price_below", "price": "80"},
+        "review_cadence": "daily",
+        "source_evidence": {"lookback_days": 20},
+        "policy_version": "v1",
+        "computed_at": "2026-06-01T00:00:00+00:00",
+    }
+
+
+def test_price_guidance_extracts_advisory_subset() -> None:
+    guidance = price_guidance_from_watch_recommendation(_full_recommendation())
+    assert guidance is not None
+    assert guidance.entry_review_below_price == Decimal("100")
+    assert guidance.suggested_limit_price_range is not None
+    assert guidance.suggested_limit_price_range.low == Decimal("95")
+    assert guidance.suggested_limit_price_range.high == Decimal("100")
+    assert guidance.max_chase_price == Decimal("102")
+    assert guidance.invalidation is not None
+    assert guidance.invalidation.kind == "price_below"
+    assert guidance.invalidation.price == Decimal("80")
+
+
+def test_price_guidance_none_when_recommendation_missing() -> None:
+    assert price_guidance_from_watch_recommendation(None) is None
+    assert price_guidance_from_watch_recommendation("not-a-dict") is None  # type: ignore[arg-type]
+
+
+def test_price_guidance_none_when_all_advisory_fields_absent() -> None:
+    rec = _full_recommendation()
+    for key in (
+        "entry_review_below_price",
+        "suggested_limit_price_range",
+        "max_chase_price",
+        "invalidation",
+    ):
+        rec[key] = None
+    assert price_guidance_from_watch_recommendation(rec) is None
+
+
+def test_price_guidance_none_when_subset_malformed() -> None:
+    rec = _full_recommendation()
+    rec["suggested_limit_price_range"] = {"low": "100", "high": "90"}  # low > high
+    assert price_guidance_from_watch_recommendation(rec) is None
+
+
+def test_payload_accepts_new_optional_fields_and_still_forbids_extras() -> None:
+    payload = _base_payload()  # 기존 헬퍼 (tests/test_hermes_client.py:18)
+    assert payload.invest_links is None
+    assert payload.operator_action_guidance is None
+    assert payload.price_guidance is None
+    with pytest.raises(ValidationError):
+        _base_payload(unknown_field=1)

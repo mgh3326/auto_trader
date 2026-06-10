@@ -29,6 +29,9 @@ from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_financials,
     handle_get_insider_transactions,
 )
+from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
+    handle_get_intraday_investor_flow,
+)
 from app.mcp_server.tooling.fundamentals._market_index import (
     handle_get_market_index,
 )
@@ -73,6 +76,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_insider_transactions",
     "get_earnings_calendar",
     "get_investor_trends",
+    "get_intraday_investor_flow",
     "get_investment_opinions",
     "get_valuation",
     "get_short_interest",
@@ -210,6 +214,20 @@ def _register_fundamentals_tools_impl(
         period: str = "day",
     ) -> dict[str, Any]:
         return await handle_get_investor_trends(symbol, days, period)
+
+    @mcp.tool(
+        name="get_intraday_investor_flow",
+        description=(
+            "Get same-day intraday provisional foreign/institution net-buy "
+            "quantity estimates for a Korean stock. Returns KIS "
+            "investor-trend-estimate rows with provisional/as_of metadata. "
+            "Korean stocks only."
+        ),
+    )
+    async def get_intraday_investor_flow(
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await handle_get_intraday_investor_flow(symbol)
 
     @mcp.tool(
         name="get_investment_opinions",

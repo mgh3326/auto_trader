@@ -52,6 +52,11 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.13"]
+        # Duration-based shards via pytest-split (.test_durations is committed;
+        # refresh it periodically with: uv run pytest tests/ -m "not live"
+        # --store-durations -n 4 --dist=loadfile). Unrecorded new tests fall
+        # back to an even-split assumption until the next refresh.
+        group: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -119,14 +124,19 @@ jobs:
         # added before Python 3.14, coverage falls back to ctrace and CI slows
         # down again.
         COVERAGE_CORE: sysmon
+      # --cov-fail-under is intentionally absent: each shard only covers a
+      # subset of app/, so a per-shard threshold would fail spuriously.
+      # Coverage gating lives in Codecov (uploads from all shards are merged
+      # per commit).
       run: |
-        uv run pytest tests/ -m "not live" -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30
+        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v6
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: coverage.xml
+        flags: shard${{ matrix.group }}
         disable_search: true
 
   taskiq-smoke:

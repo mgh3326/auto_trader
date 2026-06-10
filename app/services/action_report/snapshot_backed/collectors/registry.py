@@ -78,17 +78,27 @@ class _UpbitOpenOrdersAdapter:
 
 # ROB-390 — venue -> KIS domestic market-division code. "J"=KRX, "NX"=NXT.
 _VENUE_TO_KIS_MARKET_CODE = {"krx": "J", "nxt": "NX"}
+_US_OVERSEAS_EXCHANGE_CODES_BY_VENUE = {
+    "us": ("NASD", "NYSE", "AMEX"),
+    "nasd": ("NASD",),
+    "nas": ("NASD",),
+    "nasdaq": ("NASD",),
+    "nyse": ("NYSE",),
+    "nys": ("NYSE",),
+    "amex": ("AMEX",),
+    "ams": ("AMEX",),
+}
 
 
 class _KISDomesticQuoteOrderbookAdapter:
-    """ROB-278 Phase 2 — read-only adapter wrapping the existing KIS quote
-    + orderbook calls. Exposes a single ``fetch_quote_orderbook(symbol)``
-    method so the symbol collector cannot reach order placement, cancel,
-    or modify paths via the bound client.
+    """ROB-278 Phase 2 — read-only adapter wrapping existing KIS quote paths.
 
-    The adapter pulls last price from ``inquire_price`` and top-of-book
-    from ``inquire_orderbook``; both are existing read-only methods on
-    the KIS domestic market data client. No new HTTP surface is added.
+    KR requests use domestic current-price + orderbook calls. US requests use
+    the existing KIS overseas current-price call and intentionally leave
+    top-of-book fields ``None`` because that endpoint does not provide depth.
+    Exposes a single ``fetch_quote_orderbook(symbol, venue)`` method so the
+    symbol collector cannot reach order placement, cancel, or modify paths via
+    the bound client.
     """
 
     def __init__(self, kis_client: KISClient | None) -> None:
@@ -99,6 +109,8 @@ class _KISDomesticQuoteOrderbookAdapter:
     ) -> dict[str, Any]:
         if self._client is None:
             raise RuntimeError("kis client unavailable")
+        if (venue or "").lower() in _US_OVERSEAS_EXCHANGE_CODES_BY_VENUE:
+            return await self._fetch_overseas_quote(symbol, venue=venue)
         # Two read-only calls — both already exist on the KIS client. No
         # new HTTP surface, no order placement/cancellation paths reached.
         market_code = _VENUE_TO_KIS_MARKET_CODE.get(venue, "J")
@@ -140,6 +152,51 @@ class _KISDomesticQuoteOrderbookAdapter:
             "as_of": None,  # KIS orderbook payload has no clean as_of; UI uses snapshot.as_of
             "session": "regular" if best_bid > 0 and best_ask > 0 else "closed",
             "nxt_eligible": bool(nxt_eligible),
+        }
+
+    async def _fetch_overseas_quote(
+        self, symbol: str, venue: str = "us"
+    ) -> dict[str, Any]:
+        if self._client is None:
+            raise RuntimeError("kis client unavailable")
+        venue_key = (venue or "us").lower()
+        exchange_codes = _US_OVERSEAS_EXCHANGE_CODES_BY_VENUE.get(
+            venue_key, _US_OVERSEAS_EXCHANGE_CODES_BY_VENUE["us"]
+        )
+        last_df = None
+        used_exchange = exchange_codes[0]
+        for exchange_code in exchange_codes:
+            price_df = await self._client.inquire_overseas_price(
+                symbol, exchange_code=exchange_code
+            )
+            last_df = price_df
+            used_exchange = exchange_code
+            if len(price_df):
+                break
+
+        def _df_num(column: str) -> float | int | None:
+            if last_df is None or not len(last_df) or column not in last_df:
+                return None
+            value = last_df[column].iloc[0]
+            try:
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        last_price = _df_num("close")
+        return {
+            "last_price": last_price,
+            "best_bid": None,
+            "best_ask": None,
+            "bid_depth": None,
+            "ask_depth": None,
+            "venue": "us",
+            "exchange_code": used_exchange,
+            "previous_close": _df_num("previous_close"),
+            "volume": _df_num("volume"),
+            "as_of": None,
+            "session": "delayed" if (last_price or 0) > 0 else "closed",
+            "nxt_eligible": False,
         }
 
 

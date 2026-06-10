@@ -7,6 +7,9 @@ quote/orderbook evidence (best bid/ask, spread, depth, venue):
 * KR equities: metadata from ``stock_info``; quote enrichment for
   ``(market=kr, account_scope=kis_live)`` with an explicit ``user_id``
   via the KIS domestic quote/orderbook adapter.
+* US equities: metadata from ``stock_info`` or ``us_symbol_universe``;
+  quote enrichment for ``(market=us, account_scope=kis_live)`` with an
+  explicit ``user_id`` via the KIS overseas current-price adapter.
 * Crypto (ROB-369 2c): metadata from ``upbit_symbol_universe`` (crypto is
   not in ``stock_info``); quote enrichment for
   ``(market=crypto, account_scope=upbit_live)`` via the Upbit orderbook
@@ -128,11 +131,14 @@ class SymbolSnapshotCollector:
 
         Returns ``(client, requires_user_id, default_venue, scope_label)``:
         * KR + ``kis_live`` → KIS client, ``user_id`` required (broker auth).
+        * US + ``kis_live`` → KIS overseas current-price client, ``user_id`` required.
         * crypto + ``upbit_live`` → Upbit client, NO ``user_id`` (public data).
         """
         if request.market == "kr" and request.account_scope == "kis_live":
             venue = "nxt" if request.market_session == "nxt" else "krx"
             return (self._kis_quote_client, True, venue, "kis_live")
+        if request.market == "us" and request.account_scope == "kis_live":
+            return (self._kis_quote_client, True, "us", "kis_live")
         if request.market == "crypto" and request.account_scope == "upbit_live":
             return (self._upbit_quote_client, False, "upbit", "upbit_live")
         return None

@@ -14,6 +14,8 @@ from app.services.brokers.kis.constants import (
     FLUCTUATION_RANK_URL,
     FOREIGN_BUYING_RANK_TR,
     FOREIGN_BUYING_RANK_URL,
+    INVESTOR_TREND_ESTIMATE_TR,
+    INVESTOR_TREND_ESTIMATE_URL,
     MARKET_CAP_RANK_TR,
     MARKET_CAP_RANK_URL,
 )
@@ -677,6 +679,89 @@ class TestKISRankingAPIParams:
 
         assert captured_requests[0]["params"]["FID_COND_MRKT_DIV_CODE"] == "K"
         assert len(result) == 5
+
+
+@pytest.mark.asyncio
+class TestKISInvestorTrendEstimateAPIParams:
+    async def test_investor_trend_estimate_api_params(self, monkeypatch):
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output2": [
+                    {
+                        "bsop_hour_gb": "5",
+                        "frgn_fake_ntby_qty": "-120000",
+                        "orgn_fake_ntby_qty": "50000",
+                        "sum_fake_ntby_qty": "-70000",
+                    }
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().investor_trend_estimate("000660")
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert (
+            req["url"]
+            == f"https://openapi.koreainvestment.com:9443{INVESTOR_TREND_ESTIMATE_URL}"
+        )
+        assert req["headers"]["tr_id"] == INVESTOR_TREND_ESTIMATE_TR
+        assert req["headers"]["authorization"] == "Bearer test_token"
+        assert req["params"] == {"MKSC_SHRN_ISCD": "000660"}
+        assert result == [
+            {
+                "bsop_hour_gb": "5",
+                "frgn_fake_ntby_qty": "-120000",
+                "orgn_fake_ntby_qty": "50000",
+                "sum_fake_ntby_qty": "-70000",
+            }
+        ]
+
+    async def test_investor_trend_estimate_filters_malformed_output(self, monkeypatch):
+        async def mock_get(self, url, headers, params, timeout):
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output2": [
+                    {"bsop_hour_gb": "1", "frgn_fake_ntby_qty": "10"},
+                    "not-a-row",
+                    None,
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().investor_trend_estimate("660")
+
+        assert result == [{"bsop_hour_gb": "1", "frgn_fake_ntby_qty": "10"}]
 
 
 @pytest.mark.asyncio
