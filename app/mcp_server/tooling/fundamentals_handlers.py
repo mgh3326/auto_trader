@@ -63,9 +63,8 @@ from app.mcp_server.tooling.fundamentals._valuation import (
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-# Full fundamentals tool namespace (profile-independent). Crypto-only names
-# (CRYPTO_FUNDAMENTALS_TOOL_NAMES) register only when include_crypto=True
-# (MCP_PROFILE=crypto) — do not read this set as "registered on DEFAULT".
+# Full fundamentals tool namespace. Crypto research tools register on every
+# profile (ROB-503 restored them from the ROB-488 crypto-profile gate).
 FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_news",
     "get_company_profile",
@@ -94,7 +93,8 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_sector_peers",
 }
 
-# Crypto-only subset: registers only when include_crypto=True (MCP_PROFILE=crypto).
+# Crypto research subset (registered on all profiles; kept as metadata for
+# tests/surface audits).
 CRYPTO_FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_crypto_profile",
     "get_kimchi_premium",
@@ -112,8 +112,6 @@ CRYPTO_FUNDAMENTALS_TOOL_NAMES: set[str] = {
 
 def _register_fundamentals_tools_impl(
     mcp: FastMCP,
-    *,
-    include_crypto: bool = True,
 ) -> None:
     @mcp.tool(
         name="get_news",
@@ -142,17 +140,15 @@ def _register_fundamentals_tools_impl(
     ) -> dict[str, Any]:
         return await handle_get_company_profile(symbol, market)
 
-    if include_crypto:
-
-        @mcp.tool(
-            name="get_crypto_profile",
-            description=(
-                "Get cryptocurrency profile data from CoinGecko. Accepts Upbit market "
-                "code (e.g. KRW-BTC) or plain symbol (e.g. BTC)."
-            ),
-        )
-        async def get_crypto_profile(symbol: str) -> dict[str, Any]:
-            return await handle_get_crypto_profile(symbol)
+    @mcp.tool(
+        name="get_crypto_profile",
+        description=(
+            "Get cryptocurrency profile data from CoinGecko. Accepts Upbit market "
+            "code (e.g. KRW-BTC) or plain symbol (e.g. BTC)."
+        ),
+    )
+    async def get_crypto_profile(symbol: str) -> dict[str, Any]:
+        return await handle_get_crypto_profile(symbol)
 
     @mcp.tool(
         name="get_financials",
@@ -274,124 +270,120 @@ def _register_fundamentals_tools_impl(
     ) -> dict[str, Any]:
         return await handle_get_short_interest(symbol, days)
 
-    if include_crypto:
+    @mcp.tool(
+        name="get_kimchi_premium",
+        description=(
+            "Get kimchi premium (김치 프리미엄) for cryptocurrencies. Compares Upbit "
+            "KRW prices with Binance USDT prices to calculate premium percentage."
+        ),
+    )
+    async def get_kimchi_premium(
+        symbol: str | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        return await handle_get_kimchi_premium(symbol)
 
-        @mcp.tool(
-            name="get_kimchi_premium",
-            description=(
-                "Get kimchi premium (김치 프리미엄) for cryptocurrencies. Compares Upbit "
-                "KRW prices with Binance USDT prices to calculate premium percentage."
-            ),
-        )
-        async def get_kimchi_premium(
-            symbol: str | None = None,
-        ) -> dict[str, Any] | list[dict[str, Any]]:
-            return await handle_get_kimchi_premium(symbol)
+    @mcp.tool(
+        name="get_crypto_funding_rate",
+        description=(
+            "Get futures funding rate for a cryptocurrency from Binance. Positive = "
+            "longs pay shorts, negative = shorts pay longs."
+        ),
+    )
+    async def get_crypto_funding_rate(
+        symbol: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        return await handle_get_funding_rate(symbol, limit)
 
-        @mcp.tool(
-            name="get_crypto_funding_rate",
-            description=(
-                "Get futures funding rate for a cryptocurrency from Binance. Positive = "
-                "longs pay shorts, negative = shorts pay longs."
-            ),
-        )
-        async def get_crypto_funding_rate(
-            symbol: str | None = None,
-            limit: int = 10,
-        ) -> dict[str, Any] | list[dict[str, Any]]:
-            return await handle_get_funding_rate(symbol, limit)
+    @mcp.tool(
+        name="get_crypto_open_interest",
+        description=(
+            "Get Binance USD-M futures open interest for a crypto symbol: current "
+            "open interest plus recent history (sum OI and notional USD value) and "
+            "the OI change over the window. Read-only public Binance data. "
+            "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
+        ),
+    )
+    async def get_crypto_open_interest(
+        symbol: str,
+        period: str = "1h",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        return await handle_get_open_interest(symbol, period, limit)
 
-        @mcp.tool(
-            name="get_crypto_open_interest",
-            description=(
-                "Get Binance USD-M futures open interest for a crypto symbol: current "
-                "open interest plus recent history (sum OI and notional USD value) and "
-                "the OI change over the window. Read-only public Binance data. "
-                "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
-            ),
-        )
-        async def get_crypto_open_interest(
-            symbol: str,
-            period: str = "1h",
-            limit: int = 30,
-        ) -> dict[str, Any]:
-            return await handle_get_open_interest(symbol, period, limit)
+    @mcp.tool(
+        name="get_crypto_long_short_ratio",
+        description=(
+            "Get Binance USD-M long/short ratio for a crypto symbol: global account "
+            "ratio (retail sentiment) and top-trader position ratio (smart money), "
+            "each with current value, recent history, and a retail-vs-smart-money "
+            "divergence note. Read-only public Binance data. "
+            "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
+        ),
+    )
+    async def get_crypto_long_short_ratio(
+        symbol: str,
+        period: str = "1h",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        return await handle_get_long_short_ratio(symbol, period, limit)
 
-        @mcp.tool(
-            name="get_crypto_long_short_ratio",
-            description=(
-                "Get Binance USD-M long/short ratio for a crypto symbol: global account "
-                "ratio (retail sentiment) and top-trader position ratio (smart money), "
-                "each with current value, recent history, and a retail-vs-smart-money "
-                "divergence note. Read-only public Binance data. "
-                "period in {5m,15m,30m,1h,2h,4h,6h,12h,1d}."
-            ),
-        )
-        async def get_crypto_long_short_ratio(
-            symbol: str,
-            period: str = "1h",
-            limit: int = 30,
-        ) -> dict[str, Any]:
-            return await handle_get_long_short_ratio(symbol, period, limit)
+    @mcp.tool(
+        name="get_crypto_market_regime",
+        description=(
+            "Get crypto market-regime signals from the crypto_insight_snapshots "
+            "store (read-only): Fear&Greed (fng), DeFi TVL by protocol, "
+            "stablecoin supply, TradingView breadth, aggregate open interest. "
+            "Each field is independently fresh/stale/missing/disabled — only "
+            "fng is populated by default; tvl/stablecoin/breadth need "
+            "operator-enabled providers and aggregate_oi (coinglass) is a "
+            "disabled PoC. No arguments."
+        ),
+    )
+    async def get_crypto_market_regime() -> dict[str, Any]:
+        return await handle_get_crypto_market_regime()
 
-        @mcp.tool(
-            name="get_crypto_market_regime",
-            description=(
-                "Get crypto market-regime signals from the crypto_insight_snapshots "
-                "store (read-only): Fear&Greed (fng), DeFi TVL by protocol, "
-                "stablecoin supply, TradingView breadth, aggregate open interest. "
-                "Each field is independently fresh/stale/missing/disabled — only "
-                "fng is populated by default; tvl/stablecoin/breadth need "
-                "operator-enabled providers and aggregate_oi (coinglass) is a "
-                "disabled PoC. No arguments."
-            ),
-        )
-        async def get_crypto_market_regime() -> dict[str, Any]:
-            return await handle_get_crypto_market_regime()
+    @mcp.tool(
+        name="get_crypto_catalysts",
+        description=(
+            "Get crypto supply/event catalysts (read-only): token unlocks "
+            "(Tokenomist, disabled PoC today), Upbit notices (listings / 유의 / "
+            "점검), and Upbit market warnings (CAUTION). Each source is "
+            "independently fresh/disabled/unavailable. Pass symbol (e.g. 'XRP') "
+            "to scope to one coin, or omit for market-wide. days windows the "
+            "notices feed."
+        ),
+    )
+    async def get_crypto_catalysts(
+        symbol: str | None = None,
+        days: int = 14,
+    ) -> dict[str, Any]:
+        return await handle_get_crypto_catalysts(symbol, days)
 
-        @mcp.tool(
-            name="get_crypto_catalysts",
-            description=(
-                "Get crypto supply/event catalysts (read-only): token unlocks "
-                "(Tokenomist, disabled PoC today), Upbit notices (listings / 유의 / "
-                "점검), and Upbit market warnings (CAUTION). Each source is "
-                "independently fresh/disabled/unavailable. Pass symbol (e.g. 'XRP') "
-                "to scope to one coin, or omit for market-wide. days windows the "
-                "notices feed."
-            ),
-        )
-        async def get_crypto_catalysts(
-            symbol: str | None = None,
-            days: int = 14,
-        ) -> dict[str, Any]:
-            return await handle_get_crypto_catalysts(symbol, days)
+    @mcp.tool(
+        name="get_crypto_order_flow",
+        description=(
+            "Get Upbit recent-trade taker order-flow for a KRW crypto market "
+            "(retail buy/sell pressure proxy): volume-weighted taker_buy_ratio, "
+            "taker_sell_ratio, and net (buy-sell, in [-1,1]; >0 = net buying). "
+            "Read-only public Upbit /v1/trades/ticks. count in [1,500]. None "
+            "when no usable ticks."
+        ),
+    )
+    async def get_crypto_order_flow(symbol: str, count: int = 200) -> dict[str, Any]:
+        return await handle_get_crypto_order_flow(symbol, count)
 
-        @mcp.tool(
-            name="get_crypto_order_flow",
-            description=(
-                "Get Upbit recent-trade taker order-flow for a KRW crypto market "
-                "(retail buy/sell pressure proxy): volume-weighted taker_buy_ratio, "
-                "taker_sell_ratio, and net (buy-sell, in [-1,1]; >0 = net buying). "
-                "Read-only public Upbit /v1/trades/ticks. count in [1,500]. None "
-                "when no usable ticks."
-            ),
-        )
-        async def get_crypto_order_flow(
-            symbol: str, count: int = 200
-        ) -> dict[str, Any]:
-            return await handle_get_crypto_order_flow(symbol, count)
-
-        @mcp.tool(
-            name="get_crypto_social",
-            description=(
-                "Get CoinGecko community/developer social signals for a crypto symbol: "
-                "sentiment_votes_up_pct, twitter_followers, reddit_subscribers, "
-                "dev_commits_4w. Read-only; degrades (null fields) when CoinGecko "
-                "lacks social data for the coin."
-            ),
-        )
-        async def get_crypto_social(symbol: str) -> dict[str, Any]:
-            return await handle_get_crypto_social(symbol)
+    @mcp.tool(
+        name="get_crypto_social",
+        description=(
+            "Get CoinGecko community/developer social signals for a crypto symbol: "
+            "sentiment_votes_up_pct, twitter_followers, reddit_subscribers, "
+            "dev_commits_4w. Read-only; degrades (null fields) when CoinGecko "
+            "lacks social data for the coin."
+        ),
+    )
+    async def get_crypto_social(symbol: str) -> dict[str, Any]:
+        return await handle_get_crypto_social(symbol)
 
     @mcp.tool(
         name="get_retail_sentiment",
@@ -427,36 +419,34 @@ def _register_fundamentals_tools_impl(
     ) -> dict[str, Any]:
         return await handle_get_market_index(symbol, period, count)
 
-    if include_crypto:
+    @mcp.tool(
+        name="get_upbit_index",
+        description=(
+            "Get Upbit digital-asset indices (디지털 자산 지수): market indices "
+            "(UBMI=Upbit Market Index, UBAI=Upbit Altcoin Index, top-10/30) plus "
+            "sector/strategy/theme indices, each with current value, 24h change, "
+            "and yield/risk stats (daily~yearly yield, beta, sharpe, winRate). "
+            "Read-only public data from datalab-static. Optional category in "
+            "{market,sector,strategy,theme} filters the result."
+        ),
+    )
+    async def get_upbit_index(
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        return await handle_get_upbit_index(category)
 
-        @mcp.tool(
-            name="get_upbit_index",
-            description=(
-                "Get Upbit digital-asset indices (디지털 자산 지수): market indices "
-                "(UBMI=Upbit Market Index, UBAI=Upbit Altcoin Index, top-10/30) plus "
-                "sector/strategy/theme indices, each with current value, 24h change, "
-                "and yield/risk stats (daily~yearly yield, beta, sharpe, winRate). "
-                "Read-only public data from datalab-static. Optional category in "
-                "{market,sector,strategy,theme} filters the result."
-            ),
-        )
-        async def get_upbit_index(
-            category: str | None = None,
-        ) -> dict[str, Any]:
-            return await handle_get_upbit_index(category)
-
-        @mcp.tool(
-            name="get_upbit_altseason",
-            description=(
-                "Get an Upbit altseason snapshot: the UBAI/UBMI ratio (altcoin index "
-                "vs market index) and 24h breadth (fraction of KRW-quoted alts beating "
-                "BTC over 24h, derived from the official Upbit ticker). Higher ratio + "
-                "higher breadth lean altseason. Read-only public data. Note: breadth is "
-                "24h only (multi-period breadth is a separate follow-up)."
-            ),
-        )
-        async def get_upbit_altseason() -> dict[str, Any]:
-            return await handle_get_upbit_altseason()
+    @mcp.tool(
+        name="get_upbit_altseason",
+        description=(
+            "Get an Upbit altseason snapshot: the UBAI/UBMI ratio (altcoin index "
+            "vs market index) and 24h breadth (fraction of KRW-quoted alts beating "
+            "BTC over 24h, derived from the official Upbit ticker). Higher ratio + "
+            "higher breadth lean altseason. Read-only public data. Note: breadth is "
+            "24h only (multi-period breadth is a separate follow-up)."
+        ),
+    )
+    async def get_upbit_altseason() -> dict[str, Any]:
+        return await handle_get_upbit_altseason()
 
     @mcp.tool(
         name="get_support_resistance",

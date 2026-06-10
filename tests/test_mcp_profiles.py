@@ -90,10 +90,7 @@ class TestDefaultProfile:
     def test_does_not_register_split_profile_tools(self) -> None:
         mcp = _build_mcp(McpProfile.DEFAULT)
         split_only = (
-            _US_PAPER_TOOL_NAMES
-            | _DB_PAPER_TOOL_NAMES
-            | KIWOOM_MOCK_TOOL_NAMES
-            | _CRYPTO_RESEARCH_TOOL_NAMES
+            _US_PAPER_TOOL_NAMES | _DB_PAPER_TOOL_NAMES | KIWOOM_MOCK_TOOL_NAMES
         )
         assert split_only.isdisjoint(mcp.tools.keys())
 
@@ -158,11 +155,6 @@ class TestDbPaperProfile:
 
 
 class TestCryptoProfile:
-    def test_registers_crypto_profile_tools(self) -> None:
-        mcp = _build_mcp(McpProfile.CRYPTO)
-        assert _CRYPTO_RESEARCH_TOOL_NAMES <= mcp.tools.keys()
-        assert _REMOVED_GENERIC_TOOL_NAMES.isdisjoint(mcp.tools.keys())
-
     def test_keeps_generic_research_surface(self) -> None:
         mcp = _build_mcp(McpProfile.CRYPTO)
         assert {"get_quote", "screen_stocks", "get_holdings"} <= mcp.tools.keys()
@@ -228,6 +220,27 @@ class TestOrderSurfaceMatrix:
             f"extra={sorted(registered_order_tools - _ORDER_SURFACE_MATRIX[profile])}, "
             f"missing={sorted(_ORDER_SURFACE_MATRIX[profile] - registered_order_tools)}"
         )
+
+
+class TestCryptoResearchToolsAllProfiles:
+    """ROB-503: crypto read-only research tools register on EVERY profile.
+
+    ROB-488 had gated them to MCP_PROFILE=crypto, which broke single-server
+    operation (crypto live trading runs on the DEFAULT server). Read-only
+    tools carry no order-surface risk, so profile isolation buys nothing.
+    """
+
+    @pytest.mark.parametrize("profile", list(McpProfile))
+    def test_crypto_research_tools_registered(self, profile: McpProfile) -> None:
+        mcp = _build_mcp(profile)
+        missing = _CRYPTO_RESEARCH_TOOL_NAMES - mcp.tools.keys()
+        assert not missing, f"profile={profile.value} missing: {sorted(missing)}"
+
+    @pytest.mark.parametrize("profile", list(McpProfile))
+    def test_removed_generic_names_absent(self, profile: McpProfile) -> None:
+        mcp = _build_mcp(profile)
+        leaked = _REMOVED_GENERIC_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"profile={profile.value} leaked old names: {sorted(leaked)}"
 
 
 class TestResolveMcpProfile:

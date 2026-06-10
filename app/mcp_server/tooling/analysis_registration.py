@@ -27,8 +27,8 @@ from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-# Full analysis tool namespace (profile-independent). get_crypto_fear_greed
-# registers only when include_crypto=True (MCP_PROFILE=crypto).
+# Full analysis tool namespace. get_crypto_fear_greed registers on every
+# profile (ROB-503).
 ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_stock",
     "analyze_portfolio",
@@ -54,8 +54,6 @@ ANALYSIS_TOOL_NAMES: set[str] = {
 
 def register_analysis_tools(
     mcp: FastMCP,
-    *,
-    include_crypto: bool = True,
 ) -> None:
     """Register MCP tools for analysis, screening, and ranking utilities."""
 
@@ -309,17 +307,15 @@ def register_analysis_tools(
     async def get_dividends(symbol: str) -> dict[str, Any]:
         return await get_dividends_impl(symbol=symbol)
 
-    if include_crypto:
-
-        @mcp.tool(
-            name="get_crypto_fear_greed",
-            description=(
-                "Get the Crypto Fear & Greed Index from Alternative.me with current "
-                "and history."
-            ),
-        )
-        async def get_crypto_fear_greed(days: int = 7) -> dict[str, Any]:
-            return await get_fear_greed_index_impl(days=days)
+    @mcp.tool(
+        name="get_crypto_fear_greed",
+        description=(
+            "Get the Crypto Fear & Greed Index from Alternative.me with current "
+            "and history."
+        ),
+    )
+    async def get_crypto_fear_greed(days: int = 7) -> dict[str, Any]:
+        return await get_fear_greed_index_impl(days=days)
 
     @mcp.tool(
         name="research_session_get",
