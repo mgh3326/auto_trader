@@ -135,6 +135,69 @@ class TestYahooService:
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.yahoo.client.yf.Ticker")
+    async def test_fetch_fast_info_materializes_inside_session_scope(
+        self, mock_ticker_class, monkeypatch
+    ):
+        """yfinance FastInfo is lazy: network IO happens at attribute access, not at
+        `.fast_info` binding. The payload must therefore be materialized while the
+        tracing session is still open — reading it after yfinance_tracing_session
+        closes the session degrades every field to None via _fast_info_get, which is
+        the ROB-416 "all US quotes report no price" root cause.
+        """
+
+        class _FakeSession:
+            closed = False
+
+        session = _FakeSession()
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            lambda: session,
+        )
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.close_yfinance_session",
+            lambda s: setattr(s, "closed", True),
+        )
+
+        data = {
+            "last_price": 290.5,
+            "previous_close": 288.0,
+            "open": 289.0,
+            "day_high": 291.0,
+            "day_low": 287.5,
+            "last_volume": 1_000_000,
+        }
+
+        class _LazyFastInfo:
+            def __getattr__(self, name):
+                if session.closed:
+                    raise RuntimeError("Session is closed, cannot send request.")
+                if name in data:
+                    return data[name]
+                raise AttributeError(name)
+
+            def get(self, key, default=None):
+                if session.closed:
+                    raise RuntimeError("Session is closed, cannot send request.")
+                return data.get(key, default)
+
+        mock_ticker = MagicMock()
+        mock_ticker.fast_info = _LazyFastInfo()
+        mock_ticker_class.return_value = mock_ticker
+
+        from app.services.brokers.yahoo.client import fetch_fast_info
+
+        result = await fetch_fast_info("AAPL")
+
+        assert result["close"] == 290.5
+        assert result["previous_close"] == 288.0
+        assert result["open"] == 289.0
+        assert result["high"] == 291.0
+        assert result["low"] == 287.5
+        assert result["volume"] == 1_000_000
+        assert session.closed is True  # session must still be released afterwards
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
     async def test_fetch_fast_info_still_retries_and_raises_on_crumb_error(
         self, mock_ticker_class, monkeypatch
     ):
