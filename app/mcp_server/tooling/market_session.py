@@ -62,3 +62,8 @@ def kr_market_data_state(now: Any = None) -> str:
     if cal.is_session(session_day) and local.time() < _KR_OPEN:
         return DATA_STATE_PREMARKET_UNAVAILABLE
     return DATA_STATE_MARKET_CLOSED
+
+
+def is_kr_session_day(date: Any) -> bool:
+    """True when ``date`` (a KST calendar date) is an XKRX trading session."""
+    return bool(_get_kr_calendar().is_session(pd.Timestamp(date)))

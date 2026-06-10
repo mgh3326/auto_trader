@@ -6,7 +6,10 @@ import datetime
 from typing import Any
 
 from app.core.timezone import KST, now_kst
-from app.mcp_server.tooling.market_session import kr_market_data_state
+from app.mcp_server.tooling.market_session import (
+    is_kr_session_day,
+    kr_market_data_state,
+)
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
 )
@@ -28,6 +31,11 @@ _SLOT_TIMES: dict[str, str] = {
 _PROVISIONAL_NOTE = (
     "KIS investor-trend-estimate is intraday provisional cumulative input, "
     "not a confirmed daily close figure."
+)
+
+_PRIOR_SESSION_NOTE = (
+    " Rows likely belong to the previous trading session (the KIS payload "
+    "carries no date field), so as_of is null."
 )
 
 
@@ -63,14 +71,26 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _as_of(slot_time: str | None) -> str | None:
+    """Attribute the latest KIS slot to today's KST date, only when honest.
+
+    The KIS payload carries no date field, and outside trading hours KIS keeps
+    serving the prior session's rows. Stamping today's date is only valid when
+    today is an XKRX session day and the slot time is not in the future;
+    otherwise the rows belong to a previous session and as_of must be null.
+    """
     if slot_time is None:
         return None
+    now = now_kst()
     hour, minute = (int(part) for part in slot_time.split(":", maxsplit=1))
     dt = datetime.datetime.combine(
-        now_kst().date(),
+        now.date(),
         datetime.time(hour=hour, minute=minute),
         tzinfo=KST,
     )
+    if dt > now:
+        return None
+    if not is_kr_session_day(now.date()):
+        return None
     return dt.isoformat()
 
 
@@ -99,6 +119,14 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
     rows.sort(key=_slot_sort_key)
     latest = rows[-1] if rows else None
     latest_time = latest.get("as_of_time_kst") if latest is not None else None
+    as_of = _as_of(latest_time)
+
+    if not rows:
+        note = "No KIS provisional investor-flow rows were returned."
+    elif as_of is None and latest_time is not None:
+        note = _PROVISIONAL_NOTE + _PRIOR_SESSION_NOTE
+    else:
+        note = _PROVISIONAL_NOTE
 
     return {
         "symbol": symbol,
@@ -107,7 +135,7 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
         "data_state": DATA_STATE_INTRADAY_PROVISIONAL,
         "market_session_state": kr_market_data_state(),
         "provisional": True,
-        "as_of": _as_of(latest_time),
+        "as_of": as_of,
         "as_of_time_kst": latest_time,
         "foreign_net_qty": (
             latest.get("foreign_net_qty") if latest is not None else None
@@ -119,9 +147,5 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
             latest.get("combined_net_qty") if latest is not None else None
         ),
         "rows": rows,
-        "note": (
-            _PROVISIONAL_NOTE
-            if rows
-            else "No KIS provisional investor-flow rows were returned."
-        ),
+        "note": note,
     }

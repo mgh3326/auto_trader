@@ -90,6 +90,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Returns quantity estimates only: `foreign_net_qty`, `institution_net_qty`, `combined_net_qty`.
   - The response always marks successful data as `provisional: true` and `data_state: "intraday_provisional"`.
   - `as_of` is inferred from the latest returned KIS slot (`bsop_hour_gb`: 09:30, 10:00, 11:20, 13:20, 14:30) on the KST request date because the KIS payload does not include a date field.
+  - When the date attribution would be dishonest — the slot time is in the future (after-midnight/pre-market calls) or the request date is not an XKRX session day (weekend/holiday) — `as_of` is `null` and the `note` flags that rows likely belong to the previous trading session.
   - This is not a confirmed daily close figure and should not be mixed with `get_investor_trends` day/week/month history.
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50, account_mode=None)`
