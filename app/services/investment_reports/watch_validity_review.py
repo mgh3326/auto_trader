@@ -35,6 +35,9 @@ from app.services import market_data as market_data_service
 from app.services.hermes_client import (
     HermesNotificationClient,
     ReviewTriggerPayload,
+    build_invest_links,
+    build_operator_action_guidance,
+    price_guidance_from_watch_recommendation,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_recommendation_policy import (
@@ -158,7 +161,13 @@ class WatchValidityReviewService:
                     "verdict"
                 ) or kst_date != last.get("kst_date")
                 if result.verdict in _ACTIONABLE and material:
-                    if await self._notify(alert, result, current_price, kst_date):
+                    if await self._notify(
+                        alert,
+                        result,
+                        current_price,
+                        kst_date,
+                        stored_recommendation=stored,
+                    ):
                         stats.notified += 1
 
                 new_meta = dict(alert.alert_metadata or {})
@@ -215,7 +224,13 @@ class WatchValidityReviewService:
         )
 
     async def _notify(
-        self, alert: Any, result: Any, current_price: Decimal | None, kst_date: str
+        self,
+        alert: Any,
+        result: Any,
+        current_price: Decimal | None,
+        kst_date: str,
+        *,
+        stored_recommendation: dict[str, Any] | None = None,
     ) -> bool:
         payload = ReviewTriggerPayload(
             event_uuid=uuid4(),
@@ -240,6 +255,20 @@ class WatchValidityReviewService:
                 "signals": result.signals,
             },
             outcome="review_required",
+            # ROB-500 — no event row on this path, so no event anchor;
+            # the alert row anchor is the operator's landing point.
+            invest_links=build_invest_links(
+                market=alert.market,
+                symbol=alert.symbol,
+                source_report_uuid=alert.source_report_uuid,
+                alert_uuid=alert.alert_uuid,
+            ),
+            operator_action_guidance=build_operator_action_guidance(
+                action_mode=alert.action_mode, outcome="review_required"
+            ),
+            price_guidance=price_guidance_from_watch_recommendation(
+                stored_recommendation
+            ),
         )
         try:
             res = await self._hermes.send_review_trigger(payload)
