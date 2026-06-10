@@ -1,4 +1,4 @@
-"""ROB-462: get_execution_strength MCP tool + KIS broker fetch (KR equity)."""
+"""ROB-462/ROB-485: get_execution_strength MCP tool + KIS FHKST01010300 fetch."""
 
 from __future__ import annotations
 
@@ -62,9 +62,10 @@ async def test_get_execution_strength_kr_returns_strength(monkeypatch):
         async def inquire_execution_strength(self, code, market="J"):
             return {
                 "symbol": code,
-                "cttr": "135.5",
-                "shnu_cntg_qty": "1200",
-                "seln_cntg_qty": "800",
+                "tday_rltv": "135.5",
+                "stck_cntg_hour": "100000",
+                "stck_prpr": "80000",
+                "acml_vol": None,
             }
 
     monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
@@ -77,8 +78,9 @@ async def test_get_execution_strength_kr_returns_strength(monkeypatch):
     assert result["symbol"] == "005930"
     assert result["execution_strength_pct"] == pytest.approx(135.5)
     assert result["trend"] == "buy_dominant"
-    assert result["buy_volume"] == pytest.approx(1200.0)
-    assert result["sell_volume"] == pytest.approx(800.0)
+    # KIS REST 미제공 (WebSocket H0STCNT0 전용) — 항상 None, 0 날조 금지.
+    assert result["buy_volume"] is None
+    assert result["sell_volume"] is None
     assert result["data_state"] == "fresh"
     assert result["source"] == "kis"
     assert result["instrument_type"] == "equity_kr"
@@ -89,7 +91,7 @@ async def test_get_execution_strength_kr_returns_strength(monkeypatch):
 async def test_get_execution_strength_tags_premarket_data_state(monkeypatch):
     class _MockKIS:
         async def inquire_execution_strength(self, code, market="J"):
-            return {"cttr": "88.0"}
+            return {"tday_rltv": "88.0"}
 
     monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
     monkeypatch.setattr(
