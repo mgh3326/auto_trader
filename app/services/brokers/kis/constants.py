@@ -15,8 +15,9 @@ DOMESTIC_VOLUME_TR = "FHPST01710000"  # 실전 전용
 DOMESTIC_PRICE_URL = "/uapi/domestic-stock/v1/quotations/inquire-price"
 DOMESTIC_PRICE_TR = "FHKST01010100"
 
-DOMESTIC_EXECUTION_STRENGTH_URL = "/uapi/domestic-stock/v1/quotations/inquire-ccnl"
-DOMESTIC_EXECUTION_STRENGTH_TR = "FHKST01010300"
+# ROB-485: 주식현재가 체결 — 최근 체결 tick rows (tday_rltv = 당일 체결강도)
+DOMESTIC_CCNL_URL = "/uapi/domestic-stock/v1/quotations/inquire-ccnl"
+DOMESTIC_CCNL_TR = "FHKST01010300"
 
 DOMESTIC_DAILY_CHART_URL = (
     "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
