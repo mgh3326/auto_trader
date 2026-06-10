@@ -98,8 +98,7 @@ class NewsRelevanceJudgmentClient:
             )
         except httpx.HTTPError as exc:
             logger.warning(
-                "news-relevance judgment request raised: market=%s symbol=%s "
-                "error=%s",
+                "news-relevance judgment request raised: market=%s symbol=%s error=%s",
                 market,
                 symbol,
                 type(exc).__name__,
@@ -108,8 +107,7 @@ class NewsRelevanceJudgmentClient:
 
         if not (200 <= response.status_code < 300):
             logger.warning(
-                "news-relevance judgment non-2xx: market=%s symbol=%s "
-                "http_status=%s",
+                "news-relevance judgment non-2xx: market=%s symbol=%s http_status=%s",
                 market,
                 symbol,
                 response.status_code,

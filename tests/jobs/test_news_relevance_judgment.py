@@ -42,9 +42,7 @@ class _FakeClient:
         return self.result
 
 
-def _judgment(
-    article_id: int, symbol: str, *, relevance="high", relationship="direct"
-):
+def _judgment(article_id: int, symbol: str, *, relevance="high", relationship="direct"):
     return NewsRelevanceJudgment(
         article_id=article_id,
         market="kr",
