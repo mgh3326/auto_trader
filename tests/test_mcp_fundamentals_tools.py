@@ -7,7 +7,7 @@ This module contains tests for:
 - get_valuation tool
 - get_short_interest tool
 - get_kimchi_premium tool
-- get_funding_rate tool
+- get_crypto_funding_rate tool
 - get_market_index tool
 - get_sector_peers tool
 - simulate_avg_cost tool
@@ -1484,7 +1484,7 @@ class TestGetKimchiPremium:
 @pytest.mark.asyncio
 @pytest.mark.unit
 class TestGetFundingRate:
-    """Test get_funding_rate tool."""
+    """Test get_crypto_funding_rate tool."""
 
     def _patch_binance(self, monkeypatch, premium_resp, history_resp):
         """Helper to monkeypatch Binance futures API responses."""
@@ -1541,7 +1541,7 @@ class TestGetFundingRate:
 
         self._patch_binance(monkeypatch, premium, history)
 
-        result = await tools["get_funding_rate"]("BTC")
+        result = await tools["get_crypto_funding_rate"]("BTC")
 
         assert result["symbol"] == "BTCUSDT"
         assert result["current_funding_rate"] == pytest.approx(0.0001)
@@ -1566,7 +1566,7 @@ class TestGetFundingRate:
 
         self._patch_binance(monkeypatch, premium, history)
 
-        result = await tools["get_funding_rate"]("KRW-ETH")
+        result = await tools["get_crypto_funding_rate"]("KRW-ETH")
 
         assert result["symbol"] == "ETHUSDT"
 
@@ -1583,7 +1583,7 @@ class TestGetFundingRate:
 
         self._patch_binance(monkeypatch, premium, history)
 
-        result = await tools["get_funding_rate"]("BTCUSDT")
+        result = await tools["get_crypto_funding_rate"]("BTCUSDT")
 
         assert result["symbol"] == "BTCUSDT"
 
@@ -1592,7 +1592,7 @@ class TestGetFundingRate:
         tools = build_tools()
 
         with pytest.raises(ValueError, match="symbol is required"):
-            await tools["get_funding_rate"]("")
+            await tools["get_crypto_funding_rate"]("")
 
     async def test_error_handling(self, monkeypatch):
         """Test error handling when Binance API fails."""
@@ -1613,7 +1613,7 @@ class TestGetFundingRate:
 
         _patch_httpx_async_client(monkeypatch, MockClient)
 
-        result = await tools["get_funding_rate"]("BTC")
+        result = await tools["get_crypto_funding_rate"]("BTC")
 
         assert "error" in result
         assert result["source"] == "binance"
@@ -1675,7 +1675,7 @@ class TestGetFundingRate:
 
         _patch_httpx_async_client(monkeypatch, MockClient)
 
-        result = await tools["get_funding_rate"]()
+        result = await tools["get_crypto_funding_rate"]()
 
         assert isinstance(result, list)
         assert len(result) == 2
@@ -1724,7 +1724,7 @@ class TestGetFundingRate:
 
         _patch_httpx_async_client(monkeypatch, MockClient)
 
-        await tools["get_funding_rate"]("BTC", limit=200)
+        await tools["get_crypto_funding_rate"]("BTC", limit=200)
 
         assert captured_params["limit"] == 100
 
@@ -1751,7 +1751,7 @@ class TestGetFundingRate:
 
         self._patch_binance(monkeypatch, premium, history)
 
-        result = await tools["get_funding_rate"]("BTC", limit=2)
+        result = await tools["get_crypto_funding_rate"]("BTC", limit=2)
 
         assert result["avg_funding_rate_pct"] == pytest.approx(0.03)
 
@@ -1766,7 +1766,7 @@ class TestGetFundingRate:
 
         self._patch_binance(monkeypatch, premium, [])
 
-        result = await tools["get_funding_rate"]("BTC")
+        result = await tools["get_crypto_funding_rate"]("BTC")
 
         assert result["funding_history"] == []
         assert result["avg_funding_rate_pct"] is None
@@ -1782,7 +1782,7 @@ class TestGetFundingRate:
 
         self._patch_binance(monkeypatch, premium, [])
 
-        result = await tools["get_funding_rate"]("BTC")
+        result = await tools["get_crypto_funding_rate"]("BTC")
 
         assert "interpretation" in result
         assert "positive" in result["interpretation"]
@@ -5160,7 +5160,7 @@ class TestFetchIndexCryptoCurrent:
 
 @pytest.mark.asyncio
 class TestGetOpenInterest:
-    """ROB-377 PR2: get_open_interest (Binance USD-M, read-only)."""
+    """ROB-377 PR2: get_crypto_open_interest (Binance USD-M, read-only)."""
 
     def _patch_binance(self, monkeypatch, current_resp, hist_resp, captured=None):
         class MockResponse:
@@ -5216,7 +5216,7 @@ class TestGetOpenInterest:
         ]
         self._patch_binance(monkeypatch, current, hist)
 
-        result = await tools["get_open_interest"]("BTC")
+        result = await tools["get_crypto_open_interest"]("BTC")
 
         assert result["symbol"] == "BTCUSDT"
         assert result["current_open_interest"] == pytest.approx(120000.0)
@@ -5248,7 +5248,7 @@ class TestGetOpenInterest:
         ]
         self._patch_binance(monkeypatch, current, hist)
 
-        result = await tools["get_open_interest"]("BTC")
+        result = await tools["get_crypto_open_interest"]("BTC")
 
         assert result["oi_change_pct"] is None
         assert "판단 불가" in result["interpretation"]
@@ -5256,12 +5256,12 @@ class TestGetOpenInterest:
     async def test_empty_symbol_raises(self):
         tools = build_tools()
         with pytest.raises(ValueError, match="symbol is required"):
-            await tools["get_open_interest"]("")
+            await tools["get_crypto_open_interest"]("")
 
     async def test_invalid_period_raises(self):
         tools = build_tools()
         with pytest.raises(ValueError, match="period"):
-            await tools["get_open_interest"]("BTC", period="7m")
+            await tools["get_crypto_open_interest"]("BTC", period="7m")
 
     async def test_limit_is_clamped(self, monkeypatch):
         tools = build_tools()
@@ -5270,12 +5270,12 @@ class TestGetOpenInterest:
         captured: list = []
         self._patch_binance(monkeypatch, current, hist, captured=captured)
 
-        await tools["get_open_interest"]("BTC", limit=9999)
+        await tools["get_crypto_open_interest"]("BTC", limit=9999)
         hist_calls = [c for c in captured if "openInterestHist" in c["url"]]
         assert hist_calls and hist_calls[0]["params"]["limit"] == 500
 
         captured.clear()
-        await tools["get_open_interest"]("BTC", limit=0)
+        await tools["get_crypto_open_interest"]("BTC", limit=0)
         hist_calls = [c for c in captured if "openInterestHist" in c["url"]]
         assert hist_calls and hist_calls[0]["params"]["limit"] == 1
 
@@ -5297,7 +5297,7 @@ class TestGetOpenInterest:
 
         _patch_httpx_async_client(monkeypatch, MockClient)
 
-        result = await tools["get_open_interest"]("BTC")
+        result = await tools["get_crypto_open_interest"]("BTC")
         assert result.get("error")
         assert result.get("source") == "binance"
         assert "open_interest_history" not in result
@@ -5309,16 +5309,16 @@ class TestGetOpenInterest:
         self._patch_binance(monkeypatch, current, hist)
 
         # KRW- prefix and USDT suffix both normalize to the BTCUSDT pair.
-        result_krw = await tools["get_open_interest"]("KRW-BTC")
+        result_krw = await tools["get_crypto_open_interest"]("KRW-BTC")
         assert result_krw["symbol"] == "BTCUSDT"
 
-        result_suffix = await tools["get_open_interest"]("BTCUSDT")
+        result_suffix = await tools["get_crypto_open_interest"]("BTCUSDT")
         assert result_suffix["symbol"] == "BTCUSDT"
 
 
 @pytest.mark.asyncio
 class TestGetLongShortRatio:
-    """ROB-377 PR2: get_long_short_ratio (Binance USD-M, read-only)."""
+    """ROB-377 PR2: get_crypto_long_short_ratio (Binance USD-M, read-only)."""
 
     def _patch_binance(self, monkeypatch, global_resp, top_resp, captured=None):
         class MockResponse:
@@ -5372,7 +5372,7 @@ class TestGetLongShortRatio:
         ]
         self._patch_binance(monkeypatch, global_resp, top_resp)
 
-        result = await tools["get_long_short_ratio"]("BTC")
+        result = await tools["get_crypto_long_short_ratio"]("BTC")
 
         assert result["symbol"] == "BTCUSDT"
         assert result["period"] == "1h"
@@ -5391,18 +5391,18 @@ class TestGetLongShortRatio:
         top_resp = [self._row(1.2, 0.545, 0.455, 1707210000000)]
         self._patch_binance(monkeypatch, global_resp, top_resp)
 
-        result = await tools["get_long_short_ratio"]("BTC")
+        result = await tools["get_crypto_long_short_ratio"]("BTC")
         assert "정렬" in result["divergence_note"]
 
     async def test_empty_symbol_raises(self):
         tools = build_tools()
         with pytest.raises(ValueError, match="symbol is required"):
-            await tools["get_long_short_ratio"]("")
+            await tools["get_crypto_long_short_ratio"]("")
 
     async def test_invalid_period_raises(self):
         tools = build_tools()
         with pytest.raises(ValueError, match="period"):
-            await tools["get_long_short_ratio"]("BTC", period="3m")
+            await tools["get_crypto_long_short_ratio"]("BTC", period="3m")
 
     async def test_limit_is_clamped(self, monkeypatch):
         tools = build_tools()
@@ -5413,7 +5413,7 @@ class TestGetLongShortRatio:
             [self._row(1.0, 0.5, 0.5, 1)],
             captured=captured,
         )
-        await tools["get_long_short_ratio"]("BTC", limit=9999)
+        await tools["get_crypto_long_short_ratio"]("BTC", limit=9999)
         assert captured and all(c["params"]["limit"] == 500 for c in captured)
 
     async def test_error_handling(self, monkeypatch):
@@ -5434,7 +5434,7 @@ class TestGetLongShortRatio:
 
         _patch_httpx_async_client(monkeypatch, MockClient)
 
-        result = await tools["get_long_short_ratio"]("BTC")
+        result = await tools["get_crypto_long_short_ratio"]("BTC")
         assert result.get("error")
         assert result.get("source") == "binance"
         assert "global_account" not in result
@@ -5446,7 +5446,7 @@ class TestGetLongShortRatio:
         top_resp = []
         self._patch_binance(monkeypatch, global_resp, top_resp)
 
-        result = await tools["get_long_short_ratio"]("BTC")
+        result = await tools["get_crypto_long_short_ratio"]("BTC")
 
         assert result["global_account"] is not None
         assert result["top_position"] is None

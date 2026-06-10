@@ -56,11 +56,22 @@ async def handle_get_news(
             instrument_type=instrument_type,
         )
 
-    news = [a.provider_metadata.get("source_item", {}) for a in result.articles]
-    return {
+    news = []
+    for article in result.articles:
+        source_item = article.provider_metadata.get("source_item", {})
+        item = dict(source_item) if isinstance(source_item, dict) else {}
+        if relevance := article.provider_metadata.get("relevance"):
+            item["relevance"] = relevance
+        news.append(item)
+    payload: dict[str, Any] = {
         "symbol": symbol,
         "market": normalized_market,
         "source": result.provider,
         "count": len(news),
+        "excluded_count": result.excluded_count,
         "news": news,
     }
+    if result.degraded:
+        payload["degraded"] = True
+        payload["fetch_error"] = result.fetch_error
+    return payload

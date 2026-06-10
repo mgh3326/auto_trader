@@ -8,6 +8,7 @@ fixture manages; the fixture's per-test TRUNCATE keeps state clean.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.mcp_server.tooling.investment_reports_handlers import (
     INVESTMENT_REPORT_TOOL_NAMES,
     investment_report_activate_watch_impl,
+    investment_report_add_items_impl,
     investment_report_context_get_impl,
     investment_report_create_impl,
     investment_report_decide_item_impl,
@@ -25,8 +27,10 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_get_impl,
     investment_report_list_impl,
     investment_report_set_status_impl,
+    investment_report_update_impl,
     investment_watch_recommend_impl,
 )
+from app.services.investment_reports.ingestion import InvestmentReportIngestionService
 from tests._investment_reports_helpers import future_datetime
 
 
@@ -124,6 +128,8 @@ def test_tool_names_match_registered_set() -> None:
         "investment_report_delta_get",
         # ROB-455 — report status lifecycle transition writer.
         "investment_report_set_status",
+        "investment_report_add_items",
+        "investment_report_update",
     }
 
 
@@ -881,3 +887,174 @@ async def test_delta_get_resolves_previous_report_as_baseline(
 
     await investment_report_delta_get_impl(report_uuid=b_uuid)
     assert captured["uuid"] == b_uuid  # default: the report itself is the baseline
+
+
+@pytest.mark.asyncio
+async def test_add_items_impl_appends_to_draft_report(session: AsyncSession) -> None:
+    created = await investment_report_create_impl(
+        items=[_action_item_dict("base-1")], **_create_kwargs()
+    )
+    report_uuid = created["report"]["report_uuid"]
+
+    out = await investment_report_add_items_impl(
+        report_uuid=report_uuid,
+        items=[_action_item_dict("increment-1") | {"symbol": "000660"}],
+        actor="operator",
+    )
+
+    assert out["success"] is True
+    assert out["inserted_count"] == 1
+    assert out["existing_count"] == 0
+
+    fetched = await investment_report_get_impl(report_uuid)
+    assert len(fetched["items"]) == 2
+    assert {it["metadata"].get("client_item_key") for it in fetched["items"]} == {
+        "base-1",
+        "increment-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_add_items_impl_replays_duplicate_as_existing(
+    session: AsyncSession,
+) -> None:
+    created = await investment_report_create_impl(
+        items=[], **_create_kwargs(kst_date="2026-05-20")
+    )
+    report_uuid = created["report"]["report_uuid"]
+    item = _action_item_dict("increment-1") | {"symbol": "000660"}
+
+    first = await investment_report_add_items_impl(
+        report_uuid=report_uuid, items=[item]
+    )
+    second = await investment_report_add_items_impl(
+        report_uuid=report_uuid, items=[item]
+    )
+
+    assert first["success"] is True
+    assert first["inserted_count"] == 1
+    assert second["success"] is True
+    assert second["inserted_count"] == 0
+    assert second["existing_count"] == 1
+
+    fetched = await investment_report_get_impl(report_uuid)
+    assert len(fetched["items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_items_impl_serializes_concurrent_same_client_key(
+    session: AsyncSession, monkeypatch
+) -> None:
+    created = await investment_report_create_impl(
+        items=[], **_create_kwargs(kst_date="2026-05-21")
+    )
+    report_uuid = created["report"]["report_uuid"]
+
+    original_insert = InvestmentReportIngestionService._insert_item
+    first_insert_started = asyncio.Event()
+    release_first_insert = asyncio.Event()
+    delayed = False
+
+    async def delayed_insert(self, report, item_req):
+        nonlocal delayed
+        if item_req.client_item_key == "increment-1" and not delayed:
+            delayed = True
+            first_insert_started.set()
+            await release_first_insert.wait()
+        return await original_insert(self, report, item_req)
+
+    monkeypatch.setattr(
+        InvestmentReportIngestionService, "_insert_item", delayed_insert
+    )
+
+    first = asyncio.create_task(
+        investment_report_add_items_impl(
+            report_uuid=report_uuid,
+            items=[_action_item_dict("increment-1") | {"symbol": "000660"}],
+        )
+    )
+    await asyncio.wait_for(first_insert_started.wait(), timeout=2)
+
+    second = asyncio.create_task(
+        investment_report_add_items_impl(
+            report_uuid=report_uuid,
+            items=[_action_item_dict("increment-1") | {"symbol": "005930"}],
+        )
+    )
+
+    await asyncio.sleep(0.2)
+    release_first_insert.set()
+    first_out, second_out = await asyncio.gather(first, second)
+
+    assert first_out["success"] is True
+    assert second_out["success"] is True
+    assert first_out["inserted_count"] + second_out["inserted_count"] == 1
+    assert first_out["existing_count"] + second_out["existing_count"] == 1
+
+    fetched = await investment_report_get_impl(report_uuid)
+    matching = [
+        item
+        for item in fetched["items"]
+        if item["metadata"].get("client_item_key") == "increment-1"
+    ]
+    assert len(matching) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_items_impl_rejects_published_report(session: AsyncSession) -> None:
+    created = await investment_report_create_impl(
+        items=[_action_item_dict("base-1")], **_create_kwargs()
+    )
+    report_uuid = created["report"]["report_uuid"]
+    await _publish_by_uuid(report_uuid)
+
+    out = await investment_report_add_items_impl(
+        report_uuid=report_uuid,
+        items=[_action_item_dict("increment-1") | {"symbol": "000660"}],
+    )
+
+    assert out["success"] is False
+    assert out["error"] == "not_draft"
+    assert out["status"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_update_impl_updates_draft_summary_and_snapshots(
+    session: AsyncSession,
+) -> None:
+    created = await investment_report_create_impl(
+        items=[_action_item_dict("base-1")],
+        **_create_kwargs(summary="old summary", kst_date="2026-05-21"),
+    )
+    report_uuid = created["report"]["report_uuid"]
+
+    out = await investment_report_update_impl(
+        report_uuid=report_uuid,
+        summary="new intraday summary",
+        market_snapshot={"kospi": {"last": 2860.12}},
+        portfolio_snapshot={"cash": 12345},
+        metadata={"source": "intraday_update"},
+        actor="operator",
+        reason="market moved",
+    )
+
+    assert out["success"] is True
+    assert out["report"]["summary"] == "new intraday summary"
+    assert out["report"]["market_snapshot"] == {"kospi": {"last": 2860.12}}
+    assert out["report"]["metadata"]["source"] == "intraday_update"
+    assert out["report"]["metadata"]["draft_updates"][-1]["actor"] == "operator"
+
+
+@pytest.mark.asyncio
+async def test_update_impl_rejects_empty_update(session: AsyncSession) -> None:
+    created = await investment_report_create_impl(
+        items=[_action_item_dict("base-1")], **_create_kwargs(kst_date="2026-05-22")
+    )
+
+    out = await investment_report_update_impl(
+        report_uuid=created["report"]["report_uuid"],
+        actor="operator",
+    )
+
+    assert out["success"] is False
+    assert out["error"] == "invalid_request"

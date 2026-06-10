@@ -3,11 +3,12 @@
 Profile → tool surface mapping
 ────────────────────────────────────────────────────────────────────────────
 "default" (McpProfile.DEFAULT):
-  All side-effect-free research tools + read-only portfolio tools +
+  All side-effect-free research tools (crypto research included — ROB-503) +
+  read-only portfolio tools +
   legacy ambiguous order tools (place_order / cancel_order / modify_order /
   get_order_history with account_mode switching) +
   typed kis_live_* and kis_mock_* variants (additive). Split-profile tools
-  (crypto-only, Alpaca/us-dual paper, Kiwoom mock) are omitted.
+  (Alpaca/us-dual paper, DB paper, Kiwoom mock) are omitted.
 
 "hermes-paper-kis" (McpProfile.HERMES_PAPER_KIS):
   All side-effect-free research tools + read-only portfolio tools +
@@ -15,9 +16,10 @@ Profile → tool surface mapping
   Explicitly omits: register_order_tools, register_kis_live_order_tools.
 
 "crypto" (McpProfile.CRYPTO):
-  Default research/read-only surface plus crypto-only research/regime tools,
-  the generic account_mode order tools (crypto live trading entry point),
-  and live_reconcile_orders (US/crypto evidence-gated settle).
+  Default research/read-only surface (crypto research tools register on every
+  profile since ROB-503), the generic account_mode order tools (crypto live
+  trading entry point), and live_reconcile_orders (US/crypto evidence-gated
+  settle).
 
 "us-paper" (McpProfile.US_PAPER):
   Default research/read-only surface plus Alpaca paper and us_dual_paper tools.
@@ -107,10 +109,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
     # Always: side-effect-free research + read-only tools
-    include_crypto_tools = profile is McpProfile.CRYPTO
     register_market_data_tools(mcp)
-    register_fundamentals_tools(mcp, include_crypto=include_crypto_tools)
-    register_analysis_tools(mcp, include_crypto=include_crypto_tools)
+    register_fundamentals_tools(mcp)
+    register_analysis_tools(mcp)
     # ROB-488 — snapshot-backed report generation/Hermes tools are default-off
     # by physical registration, matching the investment_snapshot gate. The
     # implementation functions keep their disabled checks for direct/internal

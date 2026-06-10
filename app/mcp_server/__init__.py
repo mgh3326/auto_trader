@@ -51,12 +51,12 @@ AVAILABLE_TOOL_NAMES = [
     "save_trade_retrospective",
     "get_trade_retrospectives",
     "get_retrospective_aggregate",
-    # Crypto-profile-only tools
+    # Crypto research tools
     "get_crypto_profile",
     "get_kimchi_premium",
-    "get_funding_rate",
-    "get_open_interest",
-    "get_long_short_ratio",
+    "get_crypto_funding_rate",
+    "get_crypto_open_interest",
+    "get_crypto_long_short_ratio",
     "get_crypto_fear_greed",
 ]
 

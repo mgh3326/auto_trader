@@ -16,10 +16,8 @@ if TYPE_CHECKING:
 
 def register_fundamentals_tools(
     mcp: FastMCP,
-    *,
-    include_crypto: bool = True,
 ) -> None:
-    _register_fundamentals_tools_impl(mcp, include_crypto=include_crypto)
+    _register_fundamentals_tools_impl(mcp)
 
 
 __all__ = [

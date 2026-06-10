@@ -175,7 +175,7 @@ async def test_fetch_live_daily_rows_for_order():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_fetch_live_daily_rows_uses_order_date_to_today_window():
+async def test_fetch_live_daily_rows_uses_exact_order_date_window():
     import datetime
     from unittest.mock import AsyncMock, patch
 
@@ -197,7 +197,7 @@ async def test_fetch_live_daily_rows_uses_order_date_to_today_window():
     assert rows == []
     _, kwargs = fake_client.inquire_daily_order_domestic.await_args
     assert kwargs["start_date"] == "20260609"
-    assert kwargs["end_date"] == "20260610"
+    assert kwargs["end_date"] == "20260609"
     assert kwargs["order_number"] == "0006366300"
     assert kwargs["is_mock"] is False
 

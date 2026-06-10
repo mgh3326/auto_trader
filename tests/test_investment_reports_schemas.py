@@ -15,12 +15,14 @@ from pydantic import ValidationError
 
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
+    AddReportItemsRequest,
     IngestReportItem,
     IngestReportRequest,
     MaxActionPayload,
     RecordDecisionRequest,
     ReportSnapshotBundleResponse,
     ReportSnapshotDetailResponse,
+    UpdateDraftReportRequest,
     WatchConditionClause,
     WatchConditionPayload,
 )
@@ -363,3 +365,39 @@ def test_auto_execute_mock_action_mode_flag_and_literal():
         metric="price", operator="below", threshold="5", action_mode="auto_execute_mock"
     )
     assert p.action_mode == "auto_execute_mock"
+
+
+def test_add_report_items_request_requires_non_empty_items() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AddReportItemsRequest(report_uuid=uuid.uuid4(), items=[])
+    assert "items" in str(exc_info.value)
+
+
+def test_add_report_items_request_accepts_ingest_items() -> None:
+    req = AddReportItemsRequest(
+        report_uuid=uuid.uuid4(),
+        items=[IngestReportItem(**_base_item_kwargs(client_item_key="increment-1"))],
+        actor="operator",
+    )
+    assert req.items[0].client_item_key == "increment-1"
+    assert req.actor == "operator"
+
+
+def test_update_draft_report_request_requires_at_least_one_update_field() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        UpdateDraftReportRequest(report_uuid=uuid.uuid4(), actor="operator")
+    assert "at least one draft report field" in str(exc_info.value)
+
+
+def test_update_draft_report_request_accepts_summary_and_snapshots() -> None:
+    req = UpdateDraftReportRequest(
+        report_uuid=uuid.uuid4(),
+        summary="fresh intraday summary",
+        market_snapshot={"kospi": {"last": 2860.12}},
+        portfolio_snapshot={"cash": 12345},
+        metadata={"source": "intraday_update"},
+        reason="market moved",
+    )
+    assert req.summary == "fresh intraday summary"
+    assert req.market_snapshot == {"kospi": {"last": 2860.12}}
+    assert req.reason == "market moved"

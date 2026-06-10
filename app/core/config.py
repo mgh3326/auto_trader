@@ -486,6 +486,13 @@ class Settings(BaseSettings):
     # endpoints respond ``403 "token not configured"`` regardless of body.
     HERMES_INGEST_TOKEN: str = ""
     HERMES_INGEST_TOKEN_HEADER: str = "X-Hermes-Ingest-Token"
+
+    # ROB-491 — external news-relevance judgment job surface. Same prefix-token
+    # shape as the Hermes branch; gates the whole
+    # ``/trading/api/news-relevance/*`` family (pending read + judgment
+    # ingest). Unset → all endpoints respond ``403 "token not configured"``.
+    NEWS_RELEVANCE_INGEST_TOKEN: str = ""
+    NEWS_RELEVANCE_INGEST_TOKEN_HEADER: str = "X-News-Relevance-Ingest-Token"
     # ROB-287 Phase B — operational activation gate for the
     # ``hermes_bundle_preparation_flow`` Prefect entry. Default ``False``
     # makes the flow a structured dry-run (no ``SnapshotBundleEnsureService``

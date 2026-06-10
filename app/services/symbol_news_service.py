@@ -14,13 +14,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from app.services import naver_finance
+from app.core.db import AsyncSessionLocal
+from app.services import naver_finance, symbol_news_store
 from app.services.finnhub_news import fetch_news_finnhub
+from app.services.symbol_news_store import FeedArticleInput, StoredSymbolNews
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,9 @@ class SymbolNewsFetchResult:
     returned_count: int
     articles: list[SymbolNewsArticle]
     error_code: str | None = None
+    excluded_count: int = 0
+    degraded: bool = False
+    fetch_error: str | None = None
 
 
 def _utcnow() -> datetime:
@@ -91,16 +96,40 @@ def _url_hash(url: str) -> str | None:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
 
 
+_PENDING_RELEVANCE: dict[str, Any] = {
+    "status": "pending",
+    "relationship": None,
+    "relevance": None,
+    "price_relevance": None,
+    "score": None,
+    "reason": None,
+    "judged_by": None,
+    "judged_at": None,
+    "hints": None,
+}
+
+
+def symbol_news_store_hints(symbol: str, title: str) -> dict[str, Any] | None:
+    from app.services.symbol_news_relevance import build_relevance_hints
+
+    return build_relevance_hints(symbol=symbol, market="kr", title=title)
+
+
 async def _fetch_naver(
     symbol: str, limit: int, fetched_at: datetime
 ) -> list[SymbolNewsArticle]:
+    """Pure normalize: URL dedupe only — no filtering, no relevance verdicts."""
     items = await naver_finance.fetch_news(symbol, limit=limit)
     out: list[SymbolNewsArticle] = []
+    seen_urls: set[str] = set()
     for raw in items:
         url = (raw.get("url") or "").strip()
         title = (raw.get("title") or "").strip()
         if not url or not title:
             continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
         out.append(
             SymbolNewsArticle(
                 provider="naver",
@@ -118,6 +147,76 @@ async def _fetch_naver(
             )
         )
     return out
+
+
+def _stored_to_article(
+    row: StoredSymbolNews,
+    symbol: str,
+    fetched_at: datetime,
+    raw_by_url: dict[str, Any],
+) -> SymbolNewsArticle:
+    source_item = raw_by_url.get(row.url) or {
+        "title": row.title,
+        "url": row.url,
+        "source": row.source or "",
+        "datetime": row.published_at.isoformat() if row.published_at else None,
+    }
+    return SymbolNewsArticle(
+        provider="naver",
+        market="kr",
+        symbol=symbol,
+        external_article_id=_naver_external_id(row.url),
+        title=row.title,
+        source_name=row.source,
+        canonical_url=row.url,
+        summary=None,
+        published_at=row.published_at,
+        fetched_at=fetched_at,
+        related_symbols=[],
+        provider_metadata={"source_item": source_item, "relevance": row.relevance},
+    )
+
+
+async def _kr_persist_and_load(
+    symbol: str,
+    fetched: list[SymbolNewsArticle],
+    limit: int,
+    fetched_at: datetime,
+) -> tuple[list[SymbolNewsArticle], int] | None:
+    """Persist this window then serve canonical DB state. None → DB unavailable."""
+    try:
+        async with AsyncSessionLocal() as db:
+            if fetched:
+                await symbol_news_store.upsert_kr_feed_articles(
+                    db,
+                    symbol,
+                    [
+                        FeedArticleInput(
+                            url=a.canonical_url,
+                            title=a.title,
+                            source=a.source_name,
+                            published_at=a.published_at,
+                        )
+                        for a in fetched
+                    ],
+                )
+            stored, excluded_count = await symbol_news_store.load_symbol_news(
+                db, symbol, "kr", limit
+            )
+    except Exception as exc:  # noqa: BLE001 — cache layer must not kill the tool
+        logger.warning(
+            "symbol_news_service: store unavailable, degrading: symbol=%s err=%s",
+            symbol,
+            exc,
+        )
+        return None
+    raw_by_url = {
+        a.canonical_url: a.provider_metadata.get("source_item") for a in fetched
+    }
+    articles = [
+        _stored_to_article(row, symbol, fetched_at, raw_by_url) for row in stored
+    ]
+    return articles, excluded_count
 
 
 async def _fetch_finnhub(
@@ -167,12 +266,83 @@ async def fetch_symbol_news(
     market = (market or "").lower()
     provider = "naver" if market == "kr" else "finnhub"
     fetched_at = _utcnow()
-    try:
-        if market == "kr":
-            articles = await asyncio.wait_for(
+
+    if market == "kr":
+        fetched: list[SymbolNewsArticle] | None
+        fetch_error: str | None = None
+        try:
+            fetched = await asyncio.wait_for(
                 _fetch_naver(symbol, limit, fetched_at), timeout=timeout_s
             )
-        elif market in ("us", "crypto"):
+        except Exception as exc:  # noqa: BLE001 — fall back to DB cache
+            logger.warning(
+                "symbol_news_service: naver fetch failed: symbol=%s err=%s",
+                symbol,
+                exc,
+            )
+            fetched = None
+            fetch_error = type(exc).__name__
+
+        persisted = await _kr_persist_and_load(symbol, fetched or [], limit, fetched_at)
+        if persisted is not None:
+            articles, excluded_count = persisted
+            if fetched is None and not articles:
+                return SymbolNewsFetchResult(
+                    symbol,
+                    market,
+                    provider,
+                    "error",
+                    limit,
+                    0,
+                    [],
+                    fetch_error or "naver_fetch_failed",
+                )
+            status = "ok" if articles else "empty"
+            return SymbolNewsFetchResult(
+                symbol,
+                market,
+                provider,
+                status,
+                limit,
+                len(articles),
+                articles,
+                None,
+                excluded_count=excluded_count,
+                degraded=fetched is None,
+                fetch_error=fetch_error,
+            )
+        # DB 불가 — 기존 on-demand 동작으로 degrade (전부 pending 표시)
+        if fetched is None:
+            return SymbolNewsFetchResult(
+                symbol,
+                market,
+                provider,
+                "error",
+                limit,
+                0,
+                [],
+                fetch_error or "naver_fetch_failed",
+            )
+        articles = [
+            replace(
+                a,
+                provider_metadata={
+                    **a.provider_metadata,
+                    "relevance": {
+                        **_PENDING_RELEVANCE,
+                        "hints": symbol_news_store_hints(symbol, a.title),
+                    },
+                },
+            )
+            for a in fetched
+        ]
+        status = "ok" if articles else "empty"
+        return SymbolNewsFetchResult(
+            symbol, market, provider, status, limit, len(articles), articles, None
+        )
+
+    try:
+        if market in ("us", "crypto"):
             articles = await asyncio.wait_for(
                 _fetch_finnhub(symbol, market, limit, fetched_at), timeout=timeout_s
             )

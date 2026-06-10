@@ -394,3 +394,157 @@ async def test_set_report_status_transitions_and_is_idempotent(
         await service.set_report_status(report_uuid=uuid.uuid4(), status="expired")
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_add_items_to_draft_appends_and_mirrors_client_key(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    report = await service.ingest(_base_request(items=[_action_item("base-1")]))
+
+    stored_report, inserted, existing = await service.add_items_to_draft(
+        report_uuid=report.report_uuid,
+        items=[_action_item("increment-1", symbol="000660")],
+    )
+
+    assert stored_report is not None
+    assert len(inserted) == 1
+    assert existing == []
+
+    repo = InvestmentReportsRepository(session)
+    items = await repo.list_items_for_report(report.id)
+    assert len(items) == 2
+    assert {it.item_metadata.get("client_item_key") for it in items} == {
+        "base-1",
+        "increment-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_add_items_to_draft_is_idempotent_by_client_item_key(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    report = await service.ingest(_base_request(items=[]))
+    item = _action_item("increment-1", symbol="000660")
+
+    first_report, first_inserted, first_existing = await service.add_items_to_draft(
+        report_uuid=report.report_uuid,
+        items=[item],
+    )
+    second_report, second_inserted, second_existing = await service.add_items_to_draft(
+        report_uuid=report.report_uuid,
+        items=[item],
+    )
+
+    assert first_report is not None
+    assert second_report is not None
+    assert len(first_inserted) == 1
+    assert first_existing == []
+    assert second_inserted == []
+    assert len(second_existing) == 1
+
+    repo = InvestmentReportsRepository(session)
+    items = await repo.list_items_for_report(report.id)
+    assert len(items) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_items_to_draft_rejects_non_draft_report(
+    session: AsyncSession,
+) -> None:
+    from app.services.investment_reports.ingestion import (
+        DraftReportMutationBlockedError,
+    )
+
+    service = InvestmentReportIngestionService(session)
+    report = await service.ingest(_base_request(items=[_action_item("base-1")]))
+    # Transition the report to 'decided' to make it a non-draft report
+    await service.set_report_status(report_uuid=report.report_uuid, status="decided")
+
+    with pytest.raises(DraftReportMutationBlockedError) as exc_info:
+        await service.add_items_to_draft(
+            report_uuid=report.report_uuid,
+            items=[_action_item("increment-1", symbol="000660")],
+        )
+
+    assert exc_info.value.status == "decided"
+
+
+@pytest.mark.asyncio
+async def test_update_draft_report_updates_header_and_audit_metadata(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    report = await service.ingest(_base_request(summary="old summary"))
+
+    updated = await service.update_draft_report(
+        report_uuid=report.report_uuid,
+        updates={
+            "summary": "new intraday summary",
+            "market_snapshot": {"kospi": {"last": 2860.12}},
+            "metadata": {"source": "intraday_update"},
+        },
+        actor="operator",
+        reason="market moved",
+    )
+
+    assert updated is not None
+    assert updated.summary == "new intraday summary"
+    assert updated.market_snapshot == {"kospi": {"last": 2860.12}}
+    assert updated.report_metadata["source"] == "intraday_update"
+    assert updated.report_metadata["draft_updates"][-1] == {
+        "fields": ["market_snapshot", "metadata", "summary"],
+        "actor": "operator",
+        "reason": "market moved",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_draft_report_metadata_cannot_clobber_audit_keys(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    report = await service.ingest(_base_request(summary="old summary"))
+
+    updated = await service.update_draft_report(
+        report_uuid=report.report_uuid,
+        updates={
+            "summary": "new intraday summary",
+            "metadata": {
+                "source": "intraday_update",
+                "draft_updates": "caller-supplied",
+                "status_transitions": [{"to": "decided"}],
+                "superseded_by": str(uuid.uuid4()),
+            },
+        },
+        actor="operator",
+        reason="market moved",
+    )
+
+    assert updated is not None
+    assert updated.report_metadata["source"] == "intraday_update"
+    assert updated.report_metadata["draft_updates"] == [
+        {
+            "fields": ["metadata", "summary"],
+            "actor": "operator",
+            "reason": "market moved",
+        }
+    ]
+    assert "status_transitions" not in updated.report_metadata
+    assert "superseded_by" not in updated.report_metadata
+
+
+@pytest.mark.asyncio
+async def test_update_draft_report_returns_none_for_unknown_report(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+
+    updated = await service.update_draft_report(
+        report_uuid=uuid.uuid4(),
+        updates={"summary": "new"},
+    )
+
+    assert updated is None

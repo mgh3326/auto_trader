@@ -534,6 +534,48 @@ class SetReportStatusRequest(BaseModel):
     actor: str | None = None
 
 
+class AddReportItemsRequest(BaseModel):
+    """ROB-499 - append new items to an existing draft report."""
+
+    report_uuid: UUID
+    items: list[IngestReportItem] = Field(min_length=1)
+    actor: str | None = None
+
+
+class UpdateDraftReportRequest(BaseModel):
+    """ROB-499 - update draft report header fields without changing identity."""
+
+    report_uuid: UUID
+    title: str | None = None
+    summary: str | None = None
+    risk_summary: str | None = None
+    thesis_text: str | None = None
+    no_action_note: str | None = None
+    market_snapshot: dict[str, Any] | None = None
+    portfolio_snapshot: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    valid_until: datetime | None = None
+    actor: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_has_update(self) -> UpdateDraftReportRequest:
+        update_fields = (
+            "title",
+            "summary",
+            "risk_summary",
+            "thesis_text",
+            "no_action_note",
+            "market_snapshot",
+            "portfolio_snapshot",
+            "metadata",
+            "valid_until",
+        )
+        if all(getattr(self, name) is None for name in update_fields):
+            raise ValueError("at least one draft report field must be supplied")
+        return self
+
+
 class WatchInvalidation(BaseModel):
     """ROB-337 — when a dip-buy watch thesis is invalidated."""
 
