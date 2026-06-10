@@ -1,10 +1,14 @@
 # ROB-449 / ROB-450 / ROB-452 MCP 도구 활성화 · 검증 런북
 
-> **MCP_PROFILE (ROB-488)**: 크립토 전용 도구(`get_crypto_*`, `get_funding_rate`,
-> `get_open_interest`, `get_long_short_ratio`, `get_kimchi_premium`, `get_upbit_*`,
-> `get_crypto_fear_greed`(구 `get_fear_greed_index`))는 default surface에서 분리되어
-> `MCP_PROFILE=crypto` 서버에서만 등록된다. 크립토 검증/운영 세션은 crypto 프로파일을
-> 사용할 것 (generic 주문 도구 + `live_reconcile_orders`는 crypto 프로파일에 포함).
+> **MCP_PROFILE (ROB-488 → ROB-503)**: 크립토 리서치 도구는 ROB-488에서
+> `MCP_PROFILE=crypto` 전용으로 분리되었다가, **ROB-503에서 모든 프로파일 상시
+> 등록으로 복원**되었다 (read-only라 프로파일 격리 실익이 없고, 크립토 라이브
+> 운영이 default 서버에서 이루어짐). Binance 파생 3종은
+> `get_crypto_funding_rate` / `get_crypto_open_interest` /
+> `get_crypto_long_short_ratio`로 리네임되었다 (구 generic 이름 제거).
+> `get_crypto_fear_greed`(구 `get_fear_greed_index`)는 ROB-488 이름 유지.
+> 주문 surface의 프로파일 분기는 그대로다 (generic 주문 도구 +
+> `live_reconcile_orders`는 default/crypto 프로파일에 포함).
 
 ## 개요
 
