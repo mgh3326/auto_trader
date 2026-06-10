@@ -24,6 +24,8 @@ from app.services.symbol_news_relevance import build_relevance_hints
 logger = logging.getLogger(__name__)
 
 KR_FEED_SOURCE = "naver_item_news"
+FINNHUB_COMPANY_FEED_SOURCE = "finnhub_company_news"  # us
+FINNHUB_GENERAL_FEED_SOURCE = "finnhub_general_news"  # crypto (심볼 키 아님)
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ class FeedArticleInput:
     title: str
     source: str | None
     published_at: datetime | None
+    summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class StoredSymbolNews:
     source: str | None
     published_at: datetime | None
     relevance: dict[str, Any]
+    summary: str | None = None
 
 
 def _utcnow() -> datetime:
@@ -70,12 +74,13 @@ def _relevance_block(link: SymbolNewsRelevance) -> dict[str, Any]:
     }
 
 
-async def upsert_kr_feed_articles(
+async def upsert_feed_articles(
     db: AsyncSession,
+    market: str,
     symbol: str,
     items: list[FeedArticleInput],
     *,
-    feed_source: str = KR_FEED_SOURCE,
+    feed_source: str,
 ) -> int:
     """Set-difference upsert: new urls insert, known urls no-op (idempotent).
 
@@ -90,7 +95,8 @@ async def upsert_kr_feed_articles(
             "url": item.url,
             "title": item.title[:500],
             "source": item.source,
-            "market": "kr",
+            "summary": item.summary,
+            "market": market,
             "feed_source": feed_source,
             "article_published_at": item.published_at.replace(tzinfo=None)
             if item.published_at
@@ -123,13 +129,13 @@ async def upsert_kr_feed_articles(
         link_values.append(
             {
                 "article_id": article_id,
-                "market": "kr",
+                "market": market,
                 "symbol": symbol,
                 "feed_source": feed_source,
                 "first_seen_at": now,
                 "status": "pending",
                 "hints": build_relevance_hints(
-                    symbol=symbol, market="kr", title=item.title
+                    symbol=symbol, market=market, title=item.title
                 ),
                 "created_at": now,
                 "updated_at": now,
@@ -151,6 +157,19 @@ async def upsert_kr_feed_articles(
         new_links = int(result.rowcount or 0)
     await db.commit()
     return new_links
+
+
+async def upsert_kr_feed_articles(
+    db: AsyncSession,
+    symbol: str,
+    items: list[FeedArticleInput],
+    *,
+    feed_source: str = KR_FEED_SOURCE,
+) -> int:
+    """KR 호환 래퍼 — 기존 호출부 보존용 (ROB-491)."""
+    return await upsert_feed_articles(
+        db, "kr", symbol, items, feed_source=feed_source
+    )
 
 
 async def list_pending(
@@ -271,6 +290,7 @@ async def load_symbol_news(
             source=article.source,
             published_at=article.article_published_at,
             relevance=_relevance_block(link),
+            summary=article.summary,
         )
         for article, link in rows.all()
     ]

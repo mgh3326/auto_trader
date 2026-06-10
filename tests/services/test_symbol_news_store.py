@@ -273,3 +273,111 @@ async def test_upsert_returns_new_pending_link_count(db_session) -> None:
 
     # 빈 입력 — 0
     assert await symbol_news_store.upsert_kr_feed_articles(db_session, symbol, []) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_upsert_feed_articles_us_market_and_summary(db_session) -> None:
+    symbol = f"U-{uuid.uuid4()}"[:20]
+    url = _unique_url("us1")
+    items = [
+        FeedArticleInput(
+            url=url,
+            title="AAPL beats estimates",
+            source="Reuters",
+            published_at=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+            summary="Apple Q2 revenue beat.",
+        )
+    ]
+
+    created = await symbol_news_store.upsert_feed_articles(
+        db_session,
+        "us",
+        symbol,
+        items,
+        feed_source=symbol_news_store.FINNHUB_COMPANY_FEED_SOURCE,
+    )
+    assert created == 1
+
+    article = (
+        await db_session.execute(select(NewsArticle).where(NewsArticle.url == url))
+    ).scalar_one()
+    assert article.market == "us"
+    assert article.summary == "Apple Q2 revenue beat."
+    assert article.feed_source == "finnhub_company_news"
+
+    link = (
+        await db_session.execute(
+            select(SymbolNewsRelevance).where(
+                SymbolNewsRelevance.article_id == article.id,
+                SymbolNewsRelevance.market == "us",
+                SymbolNewsRelevance.symbol == symbol,
+            )
+        )
+    ).scalar_one()
+    assert link.status == "pending"
+    assert link.feed_source == "finnhub_company_news"
+
+    # 멱등: 재호출 시 신규 링크 0
+    again = await symbol_news_store.upsert_feed_articles(
+        db_session,
+        "us",
+        symbol,
+        items,
+        feed_source=symbol_news_store.FINNHUB_COMPANY_FEED_SOURCE,
+    )
+    assert again == 0
+
+    # load가 summary를 복원
+    stored, _ = await symbol_news_store.load_symbol_news(db_session, symbol, "us", 10)
+    assert stored[0].summary == "Apple Q2 revenue beat."
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_upsert_feed_articles_crypto_shared_article_two_symbols(
+    db_session,
+) -> None:
+    """crypto는 general 피드 — 같은 기사가 심볼별 링크로 공유된다."""
+    url = _unique_url("cr1")
+    sym_a = f"KRW-BTC-{uuid.uuid4()}"[:30]
+    sym_b = f"KRW-ETH-{uuid.uuid4()}"[:30]
+    items = [
+        FeedArticleInput(
+            url=url, title="Crypto rally", source="CoinDesk", published_at=None
+        )
+    ]
+
+    a = await symbol_news_store.upsert_feed_articles(
+        db_session, "crypto", sym_a, items,
+        feed_source=symbol_news_store.FINNHUB_GENERAL_FEED_SOURCE,
+    )
+    b = await symbol_news_store.upsert_feed_articles(
+        db_session, "crypto", sym_b, items,
+        feed_source=symbol_news_store.FINNHUB_GENERAL_FEED_SOURCE,
+    )
+    assert (a, b) == (1, 1)
+
+    count = (
+        await db_session.execute(
+            select(NewsArticle).where(NewsArticle.url == url)
+        )
+    ).scalars().all()
+    assert len(count) == 1  # 기사 1건, 링크 2건
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_upsert_kr_wrapper_unchanged(db_session) -> None:
+    """기존 KR 래퍼는 동작 불변 (market='kr', naver feed_source)."""
+    symbol = f"S-{uuid.uuid4()}"[:20]
+    url = _unique_url("krw1")
+    created = await symbol_news_store.upsert_kr_feed_articles(
+        db_session, symbol, [_item(url, f"{symbol} 투자")]
+    )
+    assert created == 1
+    article = (
+        await db_session.execute(select(NewsArticle).where(NewsArticle.url == url))
+    ).scalar_one()
+    assert article.market == "kr"
+    assert article.feed_source == "naver_item_news"
