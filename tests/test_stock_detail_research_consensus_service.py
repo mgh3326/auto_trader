@@ -469,3 +469,68 @@ async def test_stock_detail_consensus_stale_only_reports_missing():
     assert response.consensus is None
     assert response.state == "missing"
     assert response.emptyReason == "no_analyst_consensus_or_research_reports"
+
+
+@pytest.mark.unit
+def test_build_consensus_model_applies_recency_and_outlier_guards():
+    """ROB-488 (ported): the web path must apply the same consensus guards as
+    MCP — report dates pass through _normalize_opinion and current_price falls
+    back to the embedded consensus dict (which also arms the outlier guard)."""
+    from app.services.invest_view_model.stock_detail_research_consensus_service import (
+        _build_consensus_model,
+    )
+
+    today = datetime.now(UTC).date()
+    payload = {
+        "source": "naver",
+        # no top-level current_price — must fall back to consensus dict
+        "consensus": {"current_price": 15_380},
+        "opinions": [
+            # pre-corporate-action garbage: old date AND absurd target
+            {
+                "rating": "매수",
+                "target_price": 2_700,
+                "date": (today - timedelta(days=400)).isoformat(),
+            },
+            # fresh sane opinion
+            {
+                "rating": "매수",
+                "target_price": 17_000,
+                "date": (today - timedelta(days=10)).isoformat(),
+            },
+        ],
+    }
+
+    warnings: list[str] = []
+    model = _build_consensus_model(payload, warnings)
+
+    assert model is not None
+    assert model.totalCount == 1  # stale opinion excluded
+    assert model.avgTargetPrice == 17_000  # garbage target not averaged in
+    assert model.currentPrice == 15_380  # embedded fallback survived
+    assert model.upsidePct == pytest.approx(10.53, abs=0.01)
+
+
+@pytest.mark.unit
+def test_normalize_opinion_passes_alt_date_keys():
+    """ROB-488 (ported): rows dated under report_date/published_date/published_at
+    must not become undated — undated rows are kept fail-open and would lose
+    recency protection."""
+    from app.services.invest_view_model.stock_detail_research_consensus_service import (
+        _normalize_opinion,
+    )
+
+    assert _normalize_opinion({"rating": "매수", "date": "2026-05-18"})["date"] == (
+        "2026-05-18"
+    )
+    assert _normalize_opinion({"rating": "매수", "report_date": "2026-05-18"})[
+        "date"
+    ] == "2026-05-18"
+    assert _normalize_opinion({"rating": "매수", "published_date": "2026-05-18"})[
+        "date"
+    ] == "2026-05-18"
+    assert _normalize_opinion({"rating": "매수", "published_at": "2026-05-18"})[
+        "date"
+    ] == "2026-05-18"
+    assert _normalize_opinion({"rating": "매수"})["date"] is None
+    assert _normalize_opinion("not-a-dict")["date"] is None

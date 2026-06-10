@@ -311,6 +311,42 @@ class TestAnalyzeStock:
             for t in recommendation["sell_targets"]
         )
 
+    async def test_below_market_target_excluded_from_sell_targets_without_demotion(
+        self,
+    ):
+        """ROB-488 per-value 가드 (486 gate 와 compose): upside (-10%, 0) 밴드는
+        강등 게이트 미발화지만, 현재가 아래 avg_target 은 sell *target* 이 아니므로
+        제외 — 현재가 위 max_target 만 들어간다."""
+        mock_analysis = {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 100_000},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 9,
+                    "hold_count": 1,
+                    "sell_count": 0,
+                    "strong_buy_count": 5,
+                    "total_count": 10,
+                    "avg_target_price": 95_000,
+                    "max_target_price": 105_000,
+                    "upside_pct": -5.0,
+                }
+            },
+        }
+
+        recommendation = shared.build_recommendation_for_equity(
+            mock_analysis, "equity_kr"
+        )
+
+        assert recommendation is not None
+        target_types = [t["type"] for t in recommendation["sell_targets"]]
+        # 현재가(100,000) 아래의 avg 95,000 은 제외, 위의 max 105,000 은 포함.
+        assert "consensus_avg" not in target_types
+        assert "consensus_max" in target_types
+
     async def test_build_recommendation_for_equity_exposes_rsi14(self):
         """Test that rsi14 value is exposed in recommendation payload."""
         analysis = {

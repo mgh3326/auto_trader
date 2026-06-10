@@ -232,11 +232,21 @@ def _build_consensus_model(
     if not isinstance(raw_opinions, list) or not raw_opinions:
         return None
 
+    # ROB-488: fall back to the embedded consensus dict's current_price —
+    # without it, payloads lacking a top-level price leave current_price=None,
+    # which nulls upside_pct AND disarms the outlier guard on the web path.
+    embedded_consensus = payload.get("consensus")
+    embedded_current = (
+        embedded_consensus.get("current_price")
+        if isinstance(embedded_consensus, dict)
+        else None
+    )
     current_price = _to_float(
         payload.get("current_price")
         or payload.get("currentPrice")
         or payload.get("price")
         or payload.get("current")
+        or embedded_current
     )
     normalized_opinions = [_normalize_opinion(row) for row in raw_opinions]
     consensus = build_consensus(normalized_opinions, current_price=current_price)
@@ -270,9 +280,16 @@ def _normalize_opinion(row: Any) -> dict[str, Any]:
             or row.get("target")
             or row.get("tp")
         ),
-        # ROB-486: build_consensus 의 recency 윈도우가 패널에서도 동작하도록
-        # 행별 date 를 보존한다 (드롭하면 모든 행이 undated 로 제외됨).
-        "date": row.get("date"),
+        # ROB-486+488: build_consensus 의 recency 윈도우가 패널에서도 동작하도록
+        # 행별 date 를 보존한다. 키는 analyst_normalizer._OPINION_DATE_KEYS 의
+        # alias 들을 미러링 — 대체 키로만 날짜가 오는 행이 undated 로 떨어지면
+        # fail-open 으로 유지는 되지만 recency 제외(stale 차단)를 받지 못한다.
+        "date": (
+            row.get("date")
+            or row.get("report_date")
+            or row.get("published_date")
+            or row.get("published_at")
+        ),
     }
 
 
