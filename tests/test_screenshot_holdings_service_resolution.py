@@ -520,6 +520,7 @@ async def test_market_section_missing_skip_warning(
         user_id=1,
         holdings_data=[
             {
+                "symbol": "ETH",
                 "stock_name": "이더리움",
                 "quantity": 1,
                 "market_section": "",
@@ -532,6 +533,7 @@ async def test_market_section_missing_skip_warning(
     assert result["success"] is True
     assert len(result["warnings"]) >= 1
     assert "market_section" in result["warnings"][0].lower()
+    assert "ETH" in result["warnings"][0]
     assert result["parsed_count"] == 0
 
 
@@ -617,11 +619,19 @@ async def test_dry_run_response_contract(
 
     assert result_dry["success"] is True
     assert result_dry["dry_run"] is True
-    assert "added_count" not in result_dry
-    assert "updated_count" not in result_dry
-    assert "removed_count" not in result_dry
-    assert "unchanged_count" not in result_dry
-    assert "diff" not in result_dry
+    assert result_dry["added_count"] == 1
+    assert result_dry["updated_count"] == 0
+    assert result_dry["removed_count"] == 0
+    assert result_dry["unchanged_count"] == 0
+    assert result_dry["diff"] == [
+        {
+            "action": "would_add",
+            "ticker": "KRW-ETH",
+            "market_type": "CRYPTO",
+            "quantity": 1.0,
+            "avg_buy_price": 3000000.0,
+        }
+    ]
     assert "Preview only" in result_dry["message"]
 
     result_real = await service.resolve_and_update(
@@ -646,6 +656,160 @@ async def test_dry_run_response_contract(
     assert "unchanged_count" in result_real
     assert "diff" in result_real
     assert "updated successfully" in result_real["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_dry_run_remove_returns_preview_diff_and_counts(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    existing_ionq = MagicMock()
+    existing_ionq.id = 101
+    existing_ionq.ticker = "IONQ"
+    existing_ionq.market_type = MagicMock()
+    existing_ionq.market_type.value = "US"
+    existing_ionq.quantity = Decimal("3")
+    existing_ionq.avg_price = Decimal("42")
+
+    existing_tsm = MagicMock()
+    existing_tsm.id = 102
+    existing_tsm.ticker = "TSM"
+    existing_tsm.market_type = MagicMock()
+    existing_tsm.market_type.value = "US"
+    existing_tsm.quantity = Decimal("2")
+    existing_tsm.avg_price = Decimal("180")
+
+    _setup_mocks(
+        monkeypatch,
+        mock_db,
+        mock_broker_account,
+        existing_holdings=[existing_ionq, existing_tsm],
+    )
+
+    delete_calls = []
+
+    async def mock_delete_holding(self, holding_id):
+        delete_calls.append(holding_id)
+        return True
+
+    monkeypatch.setattr(
+        "app.services.screenshot_holdings_service.ManualHoldingsService.delete_holding",
+        mock_delete_holding,
+    )
+
+    result = await service.resolve_and_update(
+        user_id=1,
+        holdings_data=[
+            {"symbol": "IONQ", "market_section": "us", "action": "remove"},
+            {"symbol": "TSM", "market_section": "us", "action": "remove"},
+        ],
+        broker="toss",
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["parsed_count"] == 0
+    assert result["holdings"] == []
+    assert result["added_count"] == 0
+    assert result["updated_count"] == 0
+    assert result["removed_count"] == 2
+    assert result["unchanged_count"] == 0
+    assert result["diff"] == [
+        {"action": "would_remove", "ticker": "IONQ", "market_type": "US"},
+        {"action": "would_remove", "ticker": "TSM", "market_type": "US"},
+    ]
+    assert delete_calls == []
+
+
+@pytest.mark.asyncio
+async def test_dry_run_mixed_upsert_remove_returns_preview_diff_and_counts(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    existing_remove = MagicMock()
+    existing_remove.id = 201
+    existing_remove.ticker = "IONQ"
+    existing_remove.market_type = MagicMock()
+    existing_remove.market_type.value = "US"
+    existing_remove.quantity = Decimal("3")
+    existing_remove.avg_price = Decimal("42")
+
+    existing_update = MagicMock()
+    existing_update.id = 202
+    existing_update.ticker = "AAPL"
+    existing_update.market_type = MagicMock()
+    existing_update.market_type.value = "US"
+    existing_update.quantity = Decimal("1")
+    existing_update.avg_price = Decimal("100")
+
+    existing_unchanged = MagicMock()
+    existing_unchanged.id = 203
+    existing_unchanged.ticker = "NVDA"
+    existing_unchanged.market_type = MagicMock()
+    existing_unchanged.market_type.value = "US"
+    existing_unchanged.quantity = Decimal("2")
+    existing_unchanged.avg_price = Decimal("120")
+
+    _setup_mocks(
+        monkeypatch,
+        mock_db,
+        mock_broker_account,
+        existing_holdings=[existing_remove, existing_update, existing_unchanged],
+    )
+
+    result = await service.resolve_and_update(
+        user_id=1,
+        holdings_data=[
+            {"symbol": "IONQ", "market_section": "us", "action": "remove"},
+            {
+                "symbol": "AAPL",
+                "quantity": 2,
+                "avg_buy_price": 110,
+                "market_section": "us",
+            },
+            {
+                "symbol": "MSFT",
+                "quantity": 4,
+                "avg_buy_price": 300,
+                "market_section": "us",
+            },
+            {
+                "symbol": "NVDA",
+                "quantity": 2,
+                "avg_buy_price": 120,
+                "market_section": "us",
+            },
+        ],
+        broker="toss",
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["parsed_count"] == 3
+    assert result["added_count"] == 1
+    assert result["updated_count"] == 1
+    assert result["removed_count"] == 1
+    assert result["unchanged_count"] == 1
+    assert result["diff"] == [
+        {"action": "would_remove", "ticker": "IONQ", "market_type": "US"},
+        {
+            "action": "would_update",
+            "ticker": "AAPL",
+            "market_type": "US",
+            "old_quantity": 1.0,
+            "new_quantity": 2.0,
+            "old_avg_price": 100.0,
+            "new_avg_price": 110.0,
+        },
+        {
+            "action": "would_add",
+            "ticker": "MSFT",
+            "market_type": "US",
+            "quantity": 4.0,
+            "avg_buy_price": 300.0,
+        },
+        {"action": "unchanged", "ticker": "NVDA", "market_type": "US"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -859,4 +1023,53 @@ async def test_qty_zero_upsert_deletes_existing_holding(
     assert result["removed_count"] == 1
     assert {"action": "removed", "ticker": "BITX", "market_type": "US"} in result[
         "diff"
+    ]
+    assert all(item["action"] != "would_remove" for item in result["diff"])
+
+
+@pytest.mark.asyncio
+async def test_live_update_keeps_mutation_diff_action(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    existing = MagicMock()
+    existing.id = 401
+    existing.ticker = "AAPL"
+    existing.market_type = MagicMock()
+    existing.market_type.value = "US"
+    existing.quantity = Decimal("1")
+    existing.avg_price = Decimal("100")
+
+    _setup_mocks(
+        monkeypatch,
+        mock_db,
+        mock_broker_account,
+        existing_holdings=[existing],
+    )
+
+    result = await service.resolve_and_update(
+        user_id=1,
+        holdings_data=[
+            {
+                "symbol": "AAPL",
+                "quantity": 2,
+                "avg_buy_price": 110,
+                "market_section": "us",
+            }
+        ],
+        broker="toss",
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["updated_count"] == 1
+    assert result["diff"] == [
+        {
+            "action": "updated",
+            "ticker": "AAPL",
+            "market_type": "US",
+            "old_quantity": 1.0,
+            "new_quantity": 2.0,
+            "old_avg_price": 100.0,
+            "new_avg_price": 110.0,
+        }
     ]
