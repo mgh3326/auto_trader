@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 
@@ -44,6 +45,24 @@ _UPSERTABLE_COLUMNS = (
     "data_state",
     "raw_payload",
     "schema_version",
+)
+
+_LATEST_PERIODS_LOAD_COLUMNS = (
+    FinancialFundamentalsSnapshot.symbol,
+    FinancialFundamentalsSnapshot.fiscal_period,
+    FinancialFundamentalsSnapshot.period_type,
+    FinancialFundamentalsSnapshot.period_end_date,
+    FinancialFundamentalsSnapshot.filing_date,
+    FinancialFundamentalsSnapshot.source_collected_at,
+    FinancialFundamentalsSnapshot.revenue,
+    FinancialFundamentalsSnapshot.net_income,
+    FinancialFundamentalsSnapshot.gross_profit,
+    FinancialFundamentalsSnapshot.cost_of_sales,
+    FinancialFundamentalsSnapshot.roe,
+    FinancialFundamentalsSnapshot.payout_ratio,
+    FinancialFundamentalsSnapshot.dividend_per_share,
+    FinancialFundamentalsSnapshot.discrete_revenue,
+    FinancialFundamentalsSnapshot.discrete_net_income,
 )
 
 
@@ -181,9 +200,13 @@ class FinancialFundamentalsSnapshotsRepository:
         norm_symbols = {s.strip().upper() for s in symbols if s.strip()}
         if not norm_symbols:
             return {}
-        stmt = select(FinancialFundamentalsSnapshot).where(
-            FinancialFundamentalsSnapshot.market == norm_market,
-            FinancialFundamentalsSnapshot.symbol.in_(norm_symbols),
+        stmt = (
+            select(FinancialFundamentalsSnapshot)
+            .options(load_only(*_LATEST_PERIODS_LOAD_COLUMNS))
+            .where(
+                FinancialFundamentalsSnapshot.market == norm_market,
+                FinancialFundamentalsSnapshot.symbol.in_(norm_symbols),
+            )
         )
         if period_type is not None:
             stmt = stmt.where(FinancialFundamentalsSnapshot.period_type == period_type)

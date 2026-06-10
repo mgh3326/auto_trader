@@ -198,3 +198,39 @@ async def test_latest_periods_for_symbols_groups_by_symbol(db_session):
     assert set(grouped) == {"005930", "000660"}  # missing symbol absent, not error
     assert [r.fiscal_period for r in grouped["005930"]] == ["2023A", "2024A"]  # asc
     assert len(grouped["000660"]) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_latest_periods_for_symbols_does_not_load_raw_payload(db_session):
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(["005930", "000660"])
+        )
+    )
+    await db_session.commit()
+
+    repo = FinancialFundamentalsSnapshotsRepository(db_session)
+    await repo.upsert(
+        [
+            _row("2023A", 100, filing_date=dt.date(2024, 3, 20)).model_copy(
+                update={"raw_payload": {"large": "x" * 4096}}
+            ),
+            _row("2024A", 200, filing_date=dt.date(2025, 3, 20)).model_copy(
+                update={"raw_payload": {"large": "y" * 4096}}
+            ),
+        ]
+    )
+    await db_session.commit()
+    db_session.expunge_all()
+
+    grouped = await repo.latest_periods_for_symbols(market="kr", symbols=["005930"])
+    rows = grouped["005930"]
+
+    assert [r.fiscal_period for r in rows] == ["2023A", "2024A"]
+    assert rows[0].source_collected_at == dt.datetime(
+        2026, 6, 2, 0, 0, tzinfo=dt.UTC
+    )
+    assert rows[0].revenue == Decimal("3000000")
+    assert "raw_payload" in sa.inspect(rows[0]).unloaded
+    assert "raw_payload" in sa.inspect(rows[1]).unloaded
