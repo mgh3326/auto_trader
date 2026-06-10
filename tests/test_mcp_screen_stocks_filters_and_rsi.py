@@ -309,6 +309,17 @@ class TestScreenStocksLimit:
 
 
 class TestScreenStocksDividendYieldNormalization:
+    @pytest.fixture(autouse=True)
+    def _mock_kr_valuation_fetch(self, monkeypatch):
+        async def mock_fetch_valuation_all_cached(market):
+            return {}
+
+        monkeypatch.setattr(
+            screening_kr,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
+        )
+
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_normalization_decimal_input(
         self, mock_krx_stocks, monkeypatch
@@ -594,6 +605,16 @@ class TestScreenStocksPhase2Spec:
             "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
+        monkeypatch.setattr(
+            screening_kr,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            screening_kr,
+            "_get_tvscreener_stock_capability_snapshot",
+            AsyncMock(return_value=object()),
+        )
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -663,6 +684,16 @@ class TestScreenStocksPhase2Spec:
         monkeypatch.setattr(
             "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            screening_kr,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            screening_kr,
+            "_get_tvscreener_stock_capability_snapshot",
+            AsyncMock(return_value=object()),
         )
 
         tools = build_tools()
@@ -809,6 +840,16 @@ class TestScreenStocksPhase2Spec:
         monkeypatch.setattr(
             "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            screening_us,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            screening_us,
+            "_get_tvscreener_stock_capability_snapshot",
+            AsyncMock(return_value=object()),
         )
 
         tools = build_tools()
