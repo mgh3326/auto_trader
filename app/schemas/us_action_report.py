@@ -116,6 +116,13 @@ class KISUSAccountSnapshot(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class KISUSOrderPreviewLadderRung(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    quantity: float | None = None
+    limit_price_usd: float = Field(alias="limitPriceUsd")
+
+
 class KISUSOrderPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -125,6 +132,11 @@ class KISUSOrderPreviewRequest(BaseModel):
     quantity: float
     limit_price_usd: float = Field(alias="limitPriceUsd")
     reference_price_usd: float | None = Field(default=None, alias="referencePriceUsd")
+    best_bid_usd: float | None = Field(default=None, alias="bestBidUsd")
+    atr_usd: float | None = Field(default=None, alias="atrUsd")
+    ladder_rungs: list[KISUSOrderPreviewLadderRung] = Field(
+        default_factory=list, alias="ladderRungs"
+    )
     thesis: str | None = None
     strategy: str | None = None
     target_price_usd: float | None = Field(default=None, alias="targetPriceUsd")
