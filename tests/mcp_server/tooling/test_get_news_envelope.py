@@ -215,3 +215,56 @@ async def test_get_news_error_status_returns_error_payload(
 
     assert out.get("error") or out.get("source") == "finnhub"
     assert "news" not in out or out.get("count", 0) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_us_surfaces_relevance_and_degraded(monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling.fundamentals import _news
+    from app.services.symbol_news_service import (
+        SymbolNewsArticle,
+        SymbolNewsFetchResult,
+    )
+
+    article = SymbolNewsArticle(
+        provider="finnhub",
+        market="us",
+        symbol="AAPL",
+        external_article_id="abc123",
+        title="Cached headline",
+        source_name="Reuters",
+        canonical_url="https://r/cached",
+        summary="cached summary",
+        published_at=datetime(2026, 6, 10, 9, 0),
+        fetched_at=datetime.now(tz=UTC),
+        provider_metadata={
+            "source_item": {"title": "Cached headline", "url": "https://r/cached"},
+            "relevance": {"status": "pending"},
+        },
+    )
+    result = SymbolNewsFetchResult(
+        symbol="AAPL",
+        market="us",
+        provider="finnhub",
+        status="ok",
+        requested_limit=10,
+        returned_count=1,
+        articles=[article],
+        excluded_count=3,
+        degraded=True,
+        fetch_error="TimeoutError",
+    )
+    monkeypatch.setattr(
+        _news.symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(return_value=result),
+    )
+
+    payload = await _news.handle_get_news("AAPL", market="us")
+
+    assert payload["degraded"] is True
+    assert payload["fetch_error"] == "TimeoutError"
+    assert payload["excluded_count"] == 3
+    assert payload["news"][0]["relevance"]["status"] == "pending"
