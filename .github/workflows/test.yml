@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -109,6 +113,12 @@ jobs:
         echo "PYTHON_VERSION: ${{ matrix.python-version }}"
 
     - name: Run tests
+      env:
+        # Python 3.13 coverage.py sysmon tracing is compatible here because
+        # [tool.coverage.run] does not enable branch coverage. If branch=true is
+        # added before Python 3.14, coverage falls back to ctrace and CI slows
+        # down again.
+        COVERAGE_CORE: sysmon
       run: |
         uv run pytest tests/ -m "not live" -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30
 

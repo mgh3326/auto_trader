@@ -216,6 +216,7 @@ def test_dashboard_deprecated_api_path_bypasses_auth_401(client, mock_session_lo
 def test_protected_route_redirects_cleanly_with_sentry_fastapi_enabled(monkeypatch):
     import sentry_sdk
     from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
 
     test_app = FastAPI()
     test_app.add_middleware(AuthMiddleware)
@@ -234,7 +235,12 @@ def test_protected_route_redirects_cleanly_with_sentry_fastapi_enabled(monkeypat
         staticmethod(AsyncMock(return_value=None)),
     )
 
-    sentry_sdk.init(dsn=None, integrations=[FastApiIntegration()])
+    sentry_sdk.init(
+        dsn=None,
+        integrations=[StarletteIntegration(), FastApiIntegration()],
+        default_integrations=False,
+        auto_enabling_integrations=False,
+    )
     client = TestClient(test_app)
 
     response = client.get("/test-protected", follow_redirects=False)

@@ -251,6 +251,43 @@ def _mock_nxt_eligible(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _mock_kr_market_session_calendar(monkeypatch):
+    """Use a deterministic lightweight KRX calendar in fast tests.
+
+    Tests that need precise holiday behavior patch market_session._get_kr_calendar
+    directly. The default fast gate only needs weekday/session arithmetic and must
+    not pay the exchange_calendars XKRX construction cost in every xdist worker.
+    """
+
+    class _FastKrCalendar:
+        tz = "Asia/Seoul"
+
+        def _local(self, value):
+            ts = pd.Timestamp(value)
+            if ts.tz is None:
+                return ts.tz_localize(self.tz)
+            return ts.tz_convert(self.tz)
+
+        def is_trading_minute(self, value):
+            local = self._local(value)
+            if local.weekday() >= 5:
+                return False
+            start = pd.Timestamp(local.date(), tz=self.tz) + pd.Timedelta(hours=9)
+            end = pd.Timestamp(local.date(), tz=self.tz) + pd.Timedelta(
+                hours=15, minutes=30
+            )
+            return start <= local < end
+
+        def is_session(self, value):
+            return self._local(value).weekday() < 5
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.market_session._get_kr_calendar",
+        lambda: _FastKrCalendar(),
+    )
+
+
+@pytest.fixture(autouse=True)
 def mock_auth_middleware_db():
     """Mock AsyncSessionLocal in AuthMiddleware to prevent DB connection attempts."""
     with patch("app.middleware.auth.AsyncSessionLocal") as mock:
