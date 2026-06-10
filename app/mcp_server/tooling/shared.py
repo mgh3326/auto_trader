@@ -467,6 +467,26 @@ def _to_optional_consensus_count(value: Any) -> int | None:
         return None
 
 
+# ROB-486: 컨센서스 평균 목표가의 upside 가 이 값(%) 이하면 — 즉 현재가가 평균
+# 목표가를 ~10% 이상 초과(target_exceeded) — count 기반 buy 가산을 차단하고
+# 최종 buy 를 hold 로 강등한다.
+CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT = -10.0
+
+
+def _to_optional_consensus_upside(value: Any) -> float | None:
+    """consensus.upside_pct 방어 파싱 — 숫자만 (bool/NaN/문자 제외)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+        return float(value)
+    return None
+
+
 def _extract_rsi14(indicators: dict[str, Any] | None) -> float | None:
     """Extract RSI(14) value from various indicator payload shapes.
 
@@ -533,6 +553,11 @@ def build_recommendation_for_equity(
     score = 0
     max_score = 0
 
+    # ROB-486: 컨센서스 평균 목표가가 현재가 대비 임계 이하(음수 upside)면
+    # count 기반 buy 가산 차단 + 최종 buy 강등에 사용.
+    consensus_target_exceeded = False
+    consensus_demotion_reason: str | None = None
+
     # Use helper for RSI extraction
     rsi = _extract_rsi14(indicators)
     if rsi is not None:  # FIX: use "is not None" to keep 0.0
@@ -559,6 +584,17 @@ def build_recommendation_for_equity(
         )
         total = _to_optional_consensus_count(consensus.get("total_count"))
 
+        upside_pct = _to_optional_consensus_upside(consensus.get("upside_pct"))
+        if (
+            upside_pct is not None
+            and upside_pct <= CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT
+        ):
+            consensus_target_exceeded = True
+            consensus_demotion_reason = (
+                "Analyst target below current price "
+                f"(upside {upside_pct:.1f}%) — target_exceeded"
+            )
+
         if (
             total is not None
             and total > 0
@@ -571,15 +607,21 @@ def build_recommendation_for_equity(
             sell_ratio = sell_count / total
 
             if buy_ratio > 0.6:
-                score += 2
-                if strong_buy_count > 0 and strong_buy_count >= buy_count / 2:
-                    reasoning_parts.append(
-                        f"Analyst consensus strong bullish ({buy_count} buy, {strong_buy_count} strong buy vs {sell_count} sell)"
-                    )
+                if consensus_target_exceeded:
+                    # ROB-486 (a): 목표가 초과 상태에서는 +2 가산도, bullish
+                    # 문구도 내지 않는다.
+                    if consensus_demotion_reason is not None:
+                        reasoning_parts.append(consensus_demotion_reason)
                 else:
-                    reasoning_parts.append(
-                        f"Analyst consensus bullish ({buy_count} buy vs {sell_count} sell)"
-                    )
+                    score += 2
+                    if strong_buy_count > 0 and strong_buy_count >= buy_count / 2:
+                        reasoning_parts.append(
+                            f"Analyst consensus strong bullish ({buy_count} buy, {strong_buy_count} strong buy vs {sell_count} sell)"
+                        )
+                    else:
+                        reasoning_parts.append(
+                            f"Analyst consensus bullish ({buy_count} buy vs {sell_count} sell)"
+                        )
             elif buy_ratio > 0.4:
                 score += 1
                 reasoning_parts.append(
@@ -605,6 +647,17 @@ def build_recommendation_for_equity(
     else:
         recommendation["action"] = "hold"
         recommendation["confidence"] = "low"
+
+    # ROB-486 (c): 다른 경로(RSI 단독 +2, moderate +1 조합 등)로 buy 가 산출돼도
+    # 컨센서스 목표가 초과 상태면 hold 로 강등한다.
+    if consensus_target_exceeded and recommendation["action"] == "buy":
+        recommendation["action"] = "hold"
+        recommendation["confidence"] = "low"
+        if (
+            consensus_demotion_reason is not None
+            and consensus_demotion_reason not in reasoning_parts
+        ):
+            reasoning_parts.append(consensus_demotion_reason)
 
     buy_zones_indicators: list[dict[str, Any]] = []
 
@@ -692,10 +745,16 @@ def build_recommendation_for_equity(
                     }
                 )
 
-    if consensus:
+    if consensus and not consensus_target_exceeded:
+        # ROB-488: a consensus target below the current price is not a sell
+        # *target* — same above-market rule as the resistance entries, else a
+        # stale low target sorts first and evicts real resistance levels.
+        # Composes with the ROB-486 target_exceeded gate above: the gate drops
+        # both targets when upside <= -10%, the per-value check closes the
+        # (-10%, 0) below-market hole.
         avg_target = consensus.get("avg_target_price")
         max_target = consensus.get("max_target_price")
-        if avg_target:
+        if avg_target and float(avg_target) > current_price:
             sell_targets.append(
                 {
                     "price": float(avg_target),
@@ -703,7 +762,7 @@ def build_recommendation_for_equity(
                     "reasoning": "Analyst consensus average target",
                 }
             )
-        if max_target:
+        if max_target and float(max_target) > current_price:
             sell_targets.append(
                 {
                     "price": float(max_target),
@@ -789,6 +848,7 @@ __all__ = [
     "instrument_to_manual_market_type",
     "normalize_position_symbol",
     # Recommendation builder
+    "CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT",
     "build_recommendation_for_equity",
     # Logger
     "logger",

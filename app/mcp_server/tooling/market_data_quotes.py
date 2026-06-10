@@ -27,7 +27,10 @@ from app.mcp_server.tooling.market_data_indicators import (
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
 )
-from app.mcp_server.tooling.market_session import kr_market_data_state
+from app.mcp_server.tooling.market_session import (
+    DATA_STATE_FRESH,
+    kr_market_data_state,
+)
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
 )
@@ -1217,13 +1220,24 @@ async def _get_ohlcv_impl(
         )
 
 
+# ROB-485: 장중(fresh)인데 KIS 가 체결강도 필드를 안 준 경우의 정직 신호.
+# market_session.kr_market_data_state (ROB-464 공유 분류기)는 수정하지 않고
+# 이 도구 페이로드에서만 로컬로 대체한다.
+DATA_STATE_FIELD_UNAVAILABLE = "field_unavailable"
+
+
 async def _get_execution_strength_impl(
     symbol: str | int, market: str = "kr"
 ) -> dict[str, Any]:
-    """ROB-462: KR 주식 체결강도 (execution strength) snapshot from KIS.
+    """ROB-462/ROB-485: KR 주식 체결강도 (execution strength) snapshot.
 
-    체결강도 = 매수체결량 / 매도체결량 × 100 (KIS FHKST01010100 ``cttr``).
-    KR equity only — crypto is served by get_crypto_order_flow.
+    체결강도 = 매수체결량 / 매도체결량 × 100 (당일 누적). 소스는 KIS
+    FHKST01010300 (주식현재가 체결, inquire-ccnl) tick row 의 ``tday_rltv``
+    — FHKST01010100 에는 체결강도 필드가 없다 (2026-06-10 라이브 검증).
+    buy_volume/sell_volume 은 KIS REST 미제공 (WebSocket H0STCNT0 전용,
+    WS 소스 follow-up) — 항상 null. ``as_of`` 는 조회 시각(now_kst),
+    ``tick_time`` 은 broker 최신 체결 시각 (HHMMSS KST). KR equity only —
+    crypto 는 get_crypto_order_flow.
     """
     requested = str(market or "kr").strip().lower() or "kr"
     if requested not in ("kr", "kospi", "kosdaq"):
@@ -1254,14 +1268,19 @@ async def _get_execution_strength_impl(
     data = compute_execution_strength(
         raw, symbol=normalized, as_of=now_kst().isoformat()
     )
+    data_state = kr_market_data_state()
+    if data.execution_strength_pct is None and data_state == DATA_STATE_FRESH:
+        # 장중인데 필드가 비어 있으면 "fresh + 전부 null" 로 위장하지 않는다.
+        data_state = DATA_STATE_FIELD_UNAVAILABLE
     return {
         "symbol": data.symbol,
         "as_of": data.as_of,
+        "tick_time": data.tick_time,
         "execution_strength_pct": data.execution_strength_pct,
         "buy_volume": data.buy_volume,
         "sell_volume": data.sell_volume,
         "trend": data.trend,
-        "data_state": kr_market_data_state(),
+        "data_state": data_state,
         "source": "kis",
         "instrument_type": "equity_kr",
     }
@@ -1306,12 +1325,16 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_execution_strength",
         description=(
-            "Get KR equity 체결강도 (execution strength = 매수체결량/매도체결량 × 100) "
-            "from KIS. >100 buy-dominant, <100 sell-dominant. Returns "
-            "execution_strength_pct, buy_volume/sell_volume (null when KIS omits "
-            "them — never a fabricated 0), trend, and data_state (premarket/closed "
-            "sessions are tagged stale). KR equity only — for crypto taker order "
-            "flow use get_crypto_order_flow."
+            "Get KR equity 체결강도 (execution strength = 매수체결량/매도체결량 "
+            "× 100, 당일 누적) from KIS FHKST01010300 (주식현재가 체결) tick "
+            "rows. >100 buy-dominant, <100 sell-dominant. Returns "
+            "execution_strength_pct, tick_time (latest tick HHMMSS KST), trend, "
+            "and data_state (premarket/closed sessions tagged stale; "
+            "'field_unavailable' when KIS omits the field during a live "
+            "session). buy_volume/sell_volume are always null — per-side "
+            "contracted volume is not provided by KIS REST (WebSocket H0STCNT0 "
+            "only; WS-sourced follow-up). KR equity only — for crypto taker "
+            "order flow use get_crypto_order_flow."
         ),
     )
     async def get_execution_strength(

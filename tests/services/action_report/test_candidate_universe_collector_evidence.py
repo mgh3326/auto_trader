@@ -67,6 +67,29 @@ class _FakeEquityRepository:
 
 
 @pytest.mark.asyncio
+async def test_collect_fail_open_does_not_print_traceback(db_session, capsys):
+    class _BrokenCollector(CandidateUniverseSnapshotCollector):
+        async def _collect_equity(self, request, now):
+            raise RuntimeError("synthetic collector failure")
+
+    collector = _BrokenCollector(db_session)
+    results = await collector.collect(
+        CollectorRequest(
+            market="us",
+            account_scope=None,
+            symbols=[],
+            policy_snapshot={},
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert results[0].freshness_status == "unavailable"
+    assert "synthetic collector failure" in results[0].errors_json["reason"]
+
+
+@pytest.mark.asyncio
 async def test_equity_collector_respects_candidate_limit(db_session):
     repo = _FakeEquityRepository()
     collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)

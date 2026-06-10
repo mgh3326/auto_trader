@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.execution_comment_tools import format_execution_comment
 from tests._mcp_tooling_support import build_tools
 
 
@@ -99,16 +100,14 @@ async def test_execution_tools_are_registered() -> None:
     tools = build_tools()
 
     assert "get_trade_journal" in tools
-    assert "format_execution_comment" in tools
+    assert "format_execution_comment" not in tools
     assert "get_latest_market_brief" in tools
     assert "get_market_reports" in tools
 
 
 @pytest.mark.asyncio
 async def test_format_execution_comment_fill_markdown() -> None:
-    tools = build_tools()
-
-    result = await tools["format_execution_comment"](
+    result = await format_execution_comment(
         stage="fill",
         symbol="005930",
         side="buy",
@@ -136,9 +135,7 @@ async def test_format_execution_comment_fill_markdown() -> None:
 
 @pytest.mark.asyncio
 async def test_format_execution_comment_follow_up_markdown() -> None:
-    tools = build_tools()
-
-    result = await tools["format_execution_comment"](
+    result = await format_execution_comment(
         stage="follow_up",
         symbol="005930",
         side="sell",

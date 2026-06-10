@@ -23,6 +23,10 @@ EXPECTED_KIS_API_RATE_LIMITS = {
         "rate": 20,
         "period": 1.0,
     },
+    "FHKST01010300|/uapi/domestic-stock/v1/quotations/inquire-ccnl": {
+        "rate": 20,
+        "period": 1.0,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,

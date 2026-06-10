@@ -260,7 +260,7 @@ def _build_macro_crypto_sections(
             title="FX·금리·원자재 준비도",
             subtitle="현재는 공포·탐욕 지표를 우선 노출하고 환율/금리/원자재 확장은 데이터 준비 상태로 표시합니다.",
             state=_section_state(macro_metrics, [w for w in [fear_greed_warning] if w]),
-            sourceOfTruth="get_fear_greed_index",
+            sourceOfTruth="get_crypto_fear_greed",
             updatedAt=as_of if fg_value is not None else None,
             staleAfterMinutes=240,
             metrics=macro_metrics,

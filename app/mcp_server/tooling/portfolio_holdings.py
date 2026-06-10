@@ -27,9 +27,6 @@ from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_us,
     fetch_us_live_last_price,
 )
-from app.mcp_server.tooling.portfolio_avg_cost import (
-    simulate_avg_cost_impl,
-)
 from app.mcp_server.tooling.portfolio_cash import (
     get_available_capital_impl as _get_available_capital_impl,
 )
@@ -120,7 +117,6 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
     "get_position",
     "get_cash_balance",
     "get_available_capital",
-    "simulate_avg_cost",
     "update_manual_holdings",
 }
 
@@ -1311,27 +1307,6 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             account_mode=account_mode,
             account_type=account_type,
             paper_account=paper_account,
-        )
-
-    @mcp.tool(
-        name="simulate_avg_cost",
-        description=(
-            "Simulate dollar-cost averaging / adding to a position. "
-            "Given current holdings and additional buy plans, "
-            "calculates the new average cost, breakeven %, and unrealised P&L."
-        ),
-    )
-    async def simulate_avg_cost(
-        holdings: dict[str, float],
-        plans: list[dict[str, float]],
-        current_market_price: float | None = None,
-        target_price: float | None = None,
-    ) -> dict[str, Any]:
-        return await simulate_avg_cost_impl(
-            holdings=holdings,
-            plans=plans,
-            current_market_price=current_market_price,
-            target_price=target_price,
         )
 
     @mcp.tool(

@@ -74,6 +74,70 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
     )
 
 
+def _install_crypto_tvscreener_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, object]],
+) -> None:
+    async def mock_execute_crypto_query(**_kwargs):
+        return pd.DataFrame(rows)
+
+    async def mock_fetch_multiple_tickers(market_codes: list[str]):
+        return [
+            {
+                "market": code,
+                "acc_trade_volume_24h": 1_000.0,
+                "acc_trade_price_24h": 1_000_000.0,
+                "signed_change_rate": 1.0,
+            }
+            for code in market_codes
+        ]
+
+    async def mock_get_upbit_market_display_names(market_codes, db=None):
+        _ = db
+        return {
+            code: {"korean_name": code, "english_name": code} for code in market_codes
+        }
+
+    class _NoCooldownService:
+        async def filter_symbols_in_cooldown(self, symbols):
+            _ = list(symbols)
+            return set()
+
+    monkeypatch.setattr(
+        screening_crypto, "_execute_crypto_query", mock_execute_crypto_query
+    )
+    monkeypatch.setattr(
+        upbit_service, "fetch_multiple_tickers", mock_fetch_multiple_tickers
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "get_upbit_market_display_names",
+        mock_get_upbit_market_display_names,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "_get_crypto_trade_cooldown_service",
+        lambda: _NoCooldownService(),
+    )
+
+
+def _crypto_row(
+    symbol: str, *, rsi: float | None, trade_amount: float
+) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "name": symbol.replace("KRW-", ""),
+        "description": symbol,
+        "price": 100.0,
+        "change_percent": 1.0,
+        "value_traded": trade_amount,
+        "market_cap": trade_amount * 10,
+        "relative_strength_index_14": rsi,
+        "average_directional_index_14": 20.0,
+        "volume_24h_in_usd": None,
+    }
+
+
 class TestCandleCoefficient:
     def test_bullish_candle(self):
         coef, ctype = calculate_candle_coefficient(
@@ -478,6 +542,14 @@ class TestScreenStocksCryptoScore:
             "app.mcp_server.tooling.market_data_indicators._fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
+        _install_crypto_tvscreener_rows(
+            monkeypatch,
+            [
+                _crypto_row("KRW-A", rsi=70.0, trade_amount=1_000.0),
+                _crypto_row("KRW-B", rsi=30.0, trade_amount=1_000.0),
+                _crypto_row("KRW-C", rsi=None, trade_amount=1_000.0),
+            ],
+        )
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -525,6 +597,14 @@ class TestRsiSortingNoneValues:
         monkeypatch.setattr(
             "app.mcp_server.tooling.market_data_indicators._fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
+        )
+        _install_crypto_tvscreener_rows(
+            monkeypatch,
+            [
+                _crypto_row("KRW-A", rsi=70.0, trade_amount=1_000.0),
+                _crypto_row("KRW-B", rsi=30.0, trade_amount=1_000.0),
+                _crypto_row("KRW-C", rsi=None, trade_amount=1_000.0),
+            ],
         )
 
         tools = build_tools()
@@ -685,6 +765,14 @@ class TestCryptoScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.market_data_indicators._fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
+        _install_crypto_tvscreener_rows(
+            monkeypatch,
+            [
+                _crypto_row("KRW-A", rsi=70.0, trade_amount=1_000.0),
+                _crypto_row("KRW-B", rsi=30.0, trade_amount=1_000.0),
+                _crypto_row("KRW-C", rsi=None, trade_amount=1_000.0),
+            ],
+        )
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -769,6 +857,13 @@ class TestRecommendStocksCryptoScore:
             portfolio_holdings,
             "_collect_portfolio_positions",
             mock_collect_portfolio_positions,
+        )
+        _install_crypto_tvscreener_rows(
+            monkeypatch,
+            [
+                _crypto_row("KRW-BTC", rsi=40.0, trade_amount=1_000_000_000_000.0),
+                _crypto_row("KRW-ETH", rsi=45.0, trade_amount=800_000_000_000.0),
+            ],
         )
 
         # ROB-359: recommend_stocks is registry-hidden; call the retained impl.

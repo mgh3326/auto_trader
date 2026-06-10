@@ -7,6 +7,7 @@ extracted from test_mcp_server_tools.py for better organization.
 
 import logging
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -15,6 +16,7 @@ import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.mcp_server.tooling import (
     order_execution,
+    order_validation,
     orders_kis_variants,
     orders_registration,
 )
@@ -26,6 +28,10 @@ from tests._mcp_tooling_support import (
 EXPECTED_MARKET_ERROR = (
     "MCP place_order only supports limit orders; market orders are not allowed."
 )
+
+
+def _unique_order_id(prefix: str) -> str:
+    return f"{prefix}-{uuid4().hex[:12]}"
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -645,7 +651,7 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
                     "price": price,
                 }
             )
-            return {"odno": "99999", "success": True}
+            return {"odno": _unique_order_id("us-nyse"), "success": True}
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
     _patch_runtime_attr(
@@ -986,7 +992,7 @@ class TestPlaceOrderHighAmount:
                         "price": price,
                     }
                 )
-                return {"odno": "kr-12345", "ord_qty": quantity}
+                return {"odno": _unique_order_id("kr-high"), "ord_qty": quantity}
 
         async def fetch_quote(symbol):
             return {"price": 120000.0}
@@ -1048,7 +1054,7 @@ class TestPlaceOrderHighAmount:
                         "price": price,
                     }
                 )
-                return {"odno": "us-12345", "success": True}
+                return {"odno": _unique_order_id("us-high"), "success": True}
 
         async def fetch_quote(symbol):
             return {"price": 250.0}
@@ -1092,7 +1098,7 @@ class TestPlaceOrderHighAmount:
             return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
         )
         mock.place_buy_order = AsyncMock(
-            return_value={"uuid": "crypto-12345", "side": "bid"}
+            return_value={"uuid": _unique_order_id("crypto-high"), "side": "bid"}
         )
 
         monkeypatch.setattr(
@@ -1147,7 +1153,7 @@ class TestPlaceOrderHighAmount:
             return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
         )
         mock.place_market_buy_order = AsyncMock(
-            return_value={"uuid": "crypto-12345", "side": "bid"}
+            return_value={"uuid": _unique_order_id("crypto-limit"), "side": "bid"}
         )
 
         monkeypatch.setattr(
@@ -1208,7 +1214,11 @@ async def test_place_order_kr_limit_keeps_valid_tick_without_adjustment_metadata
 
     class MockKISClient:
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
-            return {"odno": "12345", "ord_qty": quantity, "ord_unpr": price}
+            return {
+                "odno": _unique_order_id("kr-tick"),
+                "ord_qty": quantity,
+                "ord_unpr": price,
+            }
 
         async def inquire_integrated_margin(self):
             return {
@@ -1257,7 +1267,11 @@ async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
 
     class MockKISClient:
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
-            return {"odno": "67890", "ord_qty": quantity, "ord_unpr": price}
+            return {
+                "odno": _unique_order_id("kr-tick-adjust"),
+                "ord_qty": quantity,
+                "ord_unpr": price,
+            }
 
         async def inquire_integrated_margin(self):
             return {
@@ -1461,7 +1475,7 @@ async def test_place_order_kr_equity_balance_lookup_failure_blocks_real_order(
                     "price": price,
                 }
             )
-            return {"odno": "kr-99999", "ord_qty": quantity}
+            return {"odno": _unique_order_id("kr-balance"), "ord_qty": quantity}
 
     async def fetch_quote(symbol):
         return {"price": 70000.0}
@@ -1801,7 +1815,7 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
 
         async def place_sell_order(self, symbol, volume, price):
             return {
-                "uuid": "cd-sell-loss-uuid",
+                "uuid": _unique_order_id("cd-sell-loss"),
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
@@ -1905,7 +1919,7 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
 
         async def place_sell_order(self, symbol, volume, price):
             return {
-                "uuid": "cd-sell-profit-uuid",
+                "uuid": _unique_order_id("cd-sell-profit"),
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
@@ -1980,7 +1994,7 @@ async def test_real_sell_is_accepted_only_no_journal_close_at_send(monkeypatch) 
         "place_sell_order",
         AsyncMock(
             return_value={
-                "uuid": "rc-sell-close-uuid",
+                "uuid": _unique_order_id("rc-sell-close"),
                 "side": "ask",
                 "market": "KRW-BTC",
                 "price": "95000000",
@@ -2046,7 +2060,7 @@ async def test_sell_send_does_not_touch_journals_even_if_close_would_fail(
         "place_sell_order",
         AsyncMock(
             return_value={
-                "uuid": "rc-sell-closefail-uuid",
+                "uuid": _unique_order_id("rc-sell-closefail"),
                 "side": "ask",
                 "market": "KRW-BTC",
                 "price": "95000000",
@@ -2233,7 +2247,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "test-fill-uuid",
+                    "uuid": _unique_order_id("test-fill"),
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2342,7 +2356,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "rc-buy-journal-uuid",
+                    "uuid": _unique_order_id("rc-buy-journal"),
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2407,7 +2421,7 @@ class TestOrderFillRecording:
             "place_sell_order",
             AsyncMock(
                 return_value={
-                    "uuid": "ofr-sell-uuid",
+                    "uuid": _unique_order_id("ofr-sell"),
                     "side": "ask",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2461,7 +2475,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "ofr-buy-jfail-uuid",
+                    "uuid": _unique_order_id("ofr-buy-jfail"),
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2550,3 +2564,111 @@ async def test_place_order_limit_still_works_after_market_block(monkeypatch):
     )
     # limit dry-run should succeed (or at least not be the market-rejection error)
     assert result.get("error") != EXPECTED_MARKET_ERROR
+
+
+# ----------------------------------------------------------------------
+# ROB-477: sell limit above market fill-risk warning (per-order)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preview_sell_limit_above_market_warns(monkeypatch):
+    """Limit sell above current price returns informational fill-risk details."""
+    monkeypatch.setattr(
+        order_validation,
+        "_get_holdings_for_order",
+        AsyncMock(return_value={"quantity": 8.0, "avg_price": 40.0}),
+    )
+    result = await order_validation._preview_sell(
+        symbol="IONQ",
+        order_type="limit",
+        quantity=2.0,
+        price=64.0,
+        current_price=63.95,
+        market_type="equity_us",
+    )
+    assert "error" not in result
+    assert "sell_limit_above_market" in result.get("warnings", [])
+    assert result["fill_distance"]["distance_usd"] == pytest.approx(0.05)
+    assert result["fill_distance"]["distance_pct"] == pytest.approx(0.0782, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_preview_sell_limit_at_market_no_warning(monkeypatch):
+    monkeypatch.setattr(
+        order_validation,
+        "_get_holdings_for_order",
+        AsyncMock(return_value={"quantity": 8.0, "avg_price": 40.0}),
+    )
+    result = await order_validation._preview_sell(
+        symbol="IONQ",
+        order_type="limit",
+        quantity=2.0,
+        price=63.95,
+        current_price=63.95,
+        market_type="equity_us",
+    )
+    assert "error" not in result
+    assert "sell_limit_above_market" not in result.get("warnings", [])
+    assert "fill_distance" not in result
+
+
+# ----------------------------------------------------------------------
+# ROB-477: sell_ladder_fill_preview read-only tool
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_all_above_market():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=63.95,
+        rungs=[
+            {"limit_price": 66.0, "quantity": 2.0},
+            {"limit_price": 68.0, "quantity": 3.0},
+        ],
+    )
+    assert result["success"] is True
+    assert result["read_only"] is True
+    assert "ladder_all_above_market" in result["warnings"]
+    assert "ladder_missing_near_market_anchor" in result["warnings"]
+    assert result["fill_safety"]["suggestedAnchorRung"]["limitPriceUsd"] == 63.95
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_near_anchor_only_all_above():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=63.95,
+        rungs=[
+            {"limit_price": 64.0, "quantity": 2.0},
+            {"limit_price": 68.0, "quantity": 3.0},
+        ],
+    )
+    assert "ladder_all_above_market" in result["warnings"]
+    assert "ladder_missing_near_market_anchor" not in result["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_rejects_bad_payload():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=63.95,
+        rungs=[{"price_typo": 64.0}],
+    )
+    assert result["success"] is False
+    assert "limit_price" in result["error"] or "invalid" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_rejects_non_positive_anchor():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=0.0,
+        rungs=[{"limit_price": 64.0}],
+    )
+    assert result["success"] is False

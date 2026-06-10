@@ -28,6 +28,11 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 20,
         "period": 1.0,
     },
+    # ROB-485: get_execution_strength (주식현재가 체결, tick rows)
+    "FHKST01010300|/uapi/domestic-stock/v1/quotations/inquire-ccnl": {
+        "rate": 20,
+        "period": 1.0,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,
@@ -501,7 +506,11 @@ class Settings(BaseSettings):
 
     # ROB-475 — paused periodic auto-reconcile for KIS live KR orders.
     # Default off; operator flips + adds cron in robin-prefect-automations.
+    # ROB-487 adds a second default-off gate: flipping only the legacy flag
+    # is no longer enough — a deployment must carry the fail-closed reconcile
+    # semantics AND pass the safety review before unattended booking runs.
     KIS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
+    KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
     # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
     # (no real mock orders) until an operator flips this.
     WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False

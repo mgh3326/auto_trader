@@ -1,5 +1,9 @@
 # Kiwoom Mock Order Smoke
 
+> **MCP_PROFILE (ROB-488)**: `kiwoom_mock_*` 도구는 더 이상 default MCP surface에
+> 등록되지 않는다. MCP 도구로 smoke를 수행하려면 `MCP_PROFILE=kiwoom`으로 서버를
+> 띄운 세션에서 호출해야 한다 (CLI smoke 스크립트는 프로파일과 무관).
+
 ROB-319. Operator-safe smoke for the Kiwoom **mock-investment** (모의투자) order
 lifecycle: submit → order history → modify (if supported) → cancel → reconcile.
 

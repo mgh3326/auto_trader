@@ -636,16 +636,16 @@ async def test_submit_signature_has_no_endpoint_or_base_url_param() -> None:
 
 
 @pytest.mark.unit
-def test_registers_alpaca_paper_orders_tools_default_profile() -> None:
+def test_alpaca_paper_orders_tools_not_registered_default_profile() -> None:
     mcp = DummyMCP()
     register_all_tools(mcp, profile=McpProfile.DEFAULT)  # type: ignore[arg-type]
-    assert ALPACA_PAPER_MUTATING_TOOL_NAMES <= mcp.tools.keys()
+    assert ALPACA_PAPER_MUTATING_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
 
 @pytest.mark.unit
-def test_registers_alpaca_paper_orders_tools_paper_profile() -> None:
+def test_registers_alpaca_paper_orders_tools_us_paper_profile() -> None:
     mcp = DummyMCP()
-    register_all_tools(mcp, profile=McpProfile.HERMES_PAPER_KIS)  # type: ignore[arg-type]
+    register_all_tools(mcp, profile=McpProfile.US_PAPER)  # type: ignore[arg-type]
     assert ALPACA_PAPER_MUTATING_TOOL_NAMES <= mcp.tools.keys()
 
 

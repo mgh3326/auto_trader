@@ -186,4 +186,17 @@ async def screen_stocks_snapshot_impl(
         "has_more": next_offset < total_available,
         "next_offset": next_offset if next_offset < total_available else None,
     }
+
+    from app.services.invest_view_model.screener_analysis_enrichment import (
+        enrich_snapshot_page,
+    )
+
+    enrichment = await enrich_snapshot_page(
+        rows=page,
+        market=market,
+        session_factory=_session_factory(),
+    )
+    payload["results"] = enrichment["results"]
+    payload["analysisEnrichment"] = enrichment["summary"]
+
     return payload

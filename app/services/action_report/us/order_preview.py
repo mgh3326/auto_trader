@@ -6,10 +6,15 @@ from typing import Any
 from app.core.symbol import to_db_symbol
 from app.schemas.us_action_report import (
     KISUSAccountSnapshot,
+    KISUSOrderPreviewLadderRung,
     KISUSOrderPreviewRequest,
     KISUSOrderPreviewResult,
     KISUSOrderSubmitDisabledError,
     USHolding,
+)
+from app.services.orders.ladder_fill_safety import (
+    LadderRung,
+    evaluate_ladder_fill_safety,
 )
 
 _DEFAULT_MAX_QUANTITY = 5.0
@@ -119,6 +124,32 @@ def _holding_reference_price(holding: USHolding | None) -> float | None:
     if holding.value_usd is not None and holding.quantity:
         return holding.value_usd / holding.quantity
     return None
+
+
+def _reference_price_with_source(
+    *,
+    request: KISUSOrderPreviewRequest,
+    holding: USHolding | None,
+) -> tuple[float | None, str | None]:
+    if request.reference_price_usd is not None and request.reference_price_usd > 0:
+        return request.reference_price_usd, "referencePriceUsd"
+    holding_price = _holding_reference_price(holding)
+    if holding_price is None:
+        return None, None
+    return holding_price, "holdingReferencePrice"
+
+
+def _fill_anchor_price_with_source(
+    *,
+    request: KISUSOrderPreviewRequest,
+    reference_price: float | None,
+    reference_price_source: str | None,
+) -> tuple[float | None, str | None]:
+    if request.best_bid_usd is not None and request.best_bid_usd > 0:
+        return request.best_bid_usd, "bestBidUsd"
+    if reference_price is not None and reference_price > 0:
+        return reference_price, reference_price_source
+    return None, None
 
 
 def _first_non_blank(*values: Any) -> str | None:
@@ -255,8 +286,12 @@ def preview_kis_us_live_order(
         if missing:
             blocked.append("buy_journal_required_fields_missing")
 
-    reference_price = request.reference_price_usd or _holding_reference_price(holding)
+    reference_price, reference_price_source = _reference_price_with_source(
+        request=request,
+        holding=holding,
+    )
     details["referencePriceUsd"] = reference_price
+    details["referencePriceSource"] = reference_price_source
     if reference_price is None or reference_price <= 0:
         warnings.append("reference_price_missing_for_limit_sanity")
     elif request.limit_price_usd > 0:
@@ -267,6 +302,33 @@ def preview_kis_us_live_order(
         details["maxLimitDeviationPct"] = max_limit_deviation_pct
         if deviation_pct > max_limit_deviation_pct:
             blocked.append("limit_price_deviation_exceeds_bound")
+
+    if side == "sell":
+        fill_anchor_price, fill_anchor_source = _fill_anchor_price_with_source(
+            request=request,
+            reference_price=reference_price,
+            reference_price_source=reference_price_source,
+        )
+        implied_single_rung = not request.ladder_rungs
+        ladder = request.ladder_rungs or [
+            KISUSOrderPreviewLadderRung(
+                quantity=request.quantity,
+                limit_price_usd=request.limit_price_usd,
+            )
+        ]
+        fill_warnings, fill_safety = evaluate_ladder_fill_safety(
+            rungs=[
+                LadderRung(limit_price=rung.limit_price_usd, quantity=rung.quantity)
+                for rung in ladder
+            ],
+            anchor_price=fill_anchor_price,
+            anchor_source=fill_anchor_source,
+            atr=request.atr_usd,
+        )
+        warnings.extend(fill_warnings)
+        if fill_safety is not None:
+            fill_safety["impliedFromSingleOrder"] = implied_single_rung
+            details["fillSafety"] = fill_safety
 
     return KISUSOrderPreviewResult(
         symbol=symbol,

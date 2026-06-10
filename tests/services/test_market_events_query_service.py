@@ -143,6 +143,7 @@ async def test_query_service_filters_economic_events(db_session):
     from app.services.market_events.query_service import MarketEventsQueryService
     from app.services.market_events.repository import MarketEventsRepository
 
+    target_date = date(2099, 5, 14)
     repo = MarketEventsRepository(db_session)
     await repo.upsert_event_with_values(
         {
@@ -151,10 +152,10 @@ async def test_query_service_filters_economic_events(db_session):
             "currency": "USD",
             "country": "USD",
             "title": "US CPI",
-            "event_date": date(2026, 5, 13),
+            "event_date": target_date,
             "status": "released",
             "source": "forexfactory",
-            "source_event_id": "ff::USD::US CPI::2026-05-13T12:30:00Z",
+            "source_event_id": "ff::USD::US CPI::2099-05-14T12:30:00Z",
         },
         [],
     )
@@ -163,7 +164,7 @@ async def test_query_service_filters_economic_events(db_session):
             "category": "earnings",
             "market": "us",
             "symbol": "IONQ",
-            "event_date": date(2026, 5, 13),
+            "event_date": target_date,
             "status": "released",
             "source": "finnhub",
             "fiscal_year": 2026,
@@ -174,7 +175,87 @@ async def test_query_service_filters_economic_events(db_session):
     await db_session.flush()
 
     svc = MarketEventsQueryService(db_session)
-    only_econ = await svc.list_for_date(date(2026, 5, 13), category="economic")
+    only_econ = await svc.list_for_date(target_date, category="economic")
     assert len(only_econ.events) == 1
     assert only_econ.events[0].source == "forexfactory"
     assert only_econ.events[0].currency == "USD"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_list_events_filters_by_symbol(db_session):
+    from app.services.market_events.query_service import MarketEventsQueryService
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    await repo.upsert_event_with_values(
+        {
+            "category": "earnings",
+            "market": "kr",
+            "symbol": "005930",
+            "company_name": "삼성전자",
+            "title": "삼성전자 2026년 1분기 실적발표 예정",
+            "event_date": date(2026, 5, 13),
+            "time_hint": "after_close",
+            "status": "scheduled",
+            "source": "wisefn",
+            "source_event_id": "wisefn::005930::2026-05-13::2026::1",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 1,
+        },
+        [],
+    )
+    await repo.upsert_event_with_values(
+        {
+            "category": "earnings",
+            "market": "kr",
+            "symbol": "000660",
+            "company_name": "SK하이닉스",
+            "title": "SK하이닉스 2026년 1분기 실적발표 예정",
+            "event_date": date(2026, 5, 13),
+            "time_hint": "before_open",
+            "status": "scheduled",
+            "source": "wisefn",
+            "source_event_id": "wisefn::000660::2026-05-13::2026::1",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 1,
+        },
+        [],
+    )
+    await repo.upsert_event_with_values(
+        {
+            "category": "earnings",
+            "market": "us",
+            "symbol": "AAPL",
+            "title": "AAPL earnings release",
+            "event_date": date(2026, 5, 13),
+            "status": "scheduled",
+            "source": "finnhub",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 2,
+        },
+        [],
+    )
+    await db_session.flush()
+
+    svc = MarketEventsQueryService(db_session)
+
+    response = await svc.list_for_range(
+        date(2026, 5, 13),
+        date(2026, 5, 13),
+        category="earnings",
+        market="kr",
+        symbol="A005930",
+    )
+
+    assert response.count == 1
+    assert response.events[0].symbol == "005930"
+    assert response.events[0].company_name == "삼성전자"
+
+    unfiltered = await svc.list_for_range(
+        date(2026, 5, 13),
+        date(2026, 5, 13),
+        category="earnings",
+        market="kr",
+    )
+    assert unfiltered.count == 2
