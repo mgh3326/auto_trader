@@ -41,6 +41,9 @@ from app.mcp_server.tooling import (
     market_data_indicators,
     shared,
 )
+from app.mcp_server.tooling.fundamentals import (
+    _intraday_investor_flow as intraday_investor_flow,
+)
 from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.services import market_data as market_data_service
 from app.services import naver_finance
@@ -4847,6 +4850,231 @@ class TestGetInvestorTrends:
         result = await tools["get_investor_trends"]("005930")
 
         assert "error" in result or "message" in result
+
+
+@pytest.mark.asyncio
+class TestGetIntradayInvestorFlow:
+    async def test_maps_latest_kis_intraday_estimate(self, monkeypatch):
+        import datetime as _dt
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def investor_trend_estimate(self, code):
+                assert code == "000660"
+                return [
+                    {
+                        "bsop_hour_gb": "1",
+                        "frgn_fake_ntby_qty": "-10000",
+                        "orgn_fake_ntby_qty": "",
+                        "sum_fake_ntby_qty": "-10000",
+                    },
+                    {
+                        "bsop_hour_gb": "5",
+                        "frgn_fake_ntby_qty": "-120000",
+                        "orgn_fake_ntby_qty": "50000",
+                        "sum_fake_ntby_qty": "-70000",
+                    },
+                ]
+
+        monkeypatch.setattr(intraday_investor_flow, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "now_kst",
+            lambda: _dt.datetime(2026, 6, 10, 15, 1, tzinfo=intraday_investor_flow.KST),
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "kr_market_data_state",
+            lambda: "fresh",
+        )
+
+        result = await tools["get_intraday_investor_flow"]("000660")
+
+        assert result["symbol"] == "000660"
+        assert result["source"] == "kis"
+        assert result["data_state"] == "intraday_provisional"
+        assert result["market_session_state"] == "fresh"
+        assert result["provisional"] is True
+        assert result["as_of"] == "2026-06-10T14:30:00+09:00"
+        assert result["as_of_time_kst"] == "14:30"
+        assert result["foreign_net_qty"] == -120000
+        assert result["institution_net_qty"] == 50000
+        assert result["combined_net_qty"] == -70000
+        assert len(result["rows"]) == 2
+        assert result["rows"][0]["institution_net_qty"] is None
+
+    async def test_returns_empty_success_when_kis_has_no_rows(self, monkeypatch):
+        import datetime as _dt
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def investor_trend_estimate(self, code):
+                return []
+
+        monkeypatch.setattr(intraday_investor_flow, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "now_kst",
+            lambda: _dt.datetime(2026, 6, 10, 8, 30, tzinfo=intraday_investor_flow.KST),
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "kr_market_data_state",
+            lambda: "premarket_unavailable",
+        )
+
+        result = await tools["get_intraday_investor_flow"]("000660")
+
+        assert result["rows"] == []
+        assert result["as_of"] is None
+        assert result["foreign_net_qty"] is None
+        assert result["institution_net_qty"] is None
+        assert result["combined_net_qty"] is None
+        assert result["market_session_state"] == "premarket_unavailable"
+        assert "No KIS provisional investor-flow rows" in result["note"]
+
+    async def test_as_of_null_when_latest_slot_is_in_future(self, monkeypatch):
+        """After midnight KIS still serves the prior session's rows; a
+        same-date stamp would be a future timestamp, so as_of must be null."""
+        import datetime as _dt
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def investor_trend_estimate(self, code):
+                return [
+                    {
+                        "bsop_hour_gb": "5",
+                        "frgn_fake_ntby_qty": "-120000",
+                        "orgn_fake_ntby_qty": "50000",
+                        "sum_fake_ntby_qty": "-70000",
+                    },
+                ]
+
+        monkeypatch.setattr(intraday_investor_flow, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "now_kst",
+            lambda: _dt.datetime(2026, 6, 11, 0, 30, tzinfo=intraday_investor_flow.KST),
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow, "is_kr_session_day", lambda date: True
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "kr_market_data_state",
+            lambda: "premarket_unavailable",
+        )
+
+        result = await tools["get_intraday_investor_flow"]("000660")
+
+        assert result["as_of"] is None
+        assert result["as_of_time_kst"] == "14:30"
+        assert result["foreign_net_qty"] == -120000
+        assert "previous trading session" in result["note"]
+
+    async def test_as_of_null_on_non_session_day(self, monkeypatch):
+        """On weekends/holidays KIS rows belong to the prior session, so a
+        same-date stamp would carry the wrong date even when not in the
+        future."""
+        import datetime as _dt
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def investor_trend_estimate(self, code):
+                return [
+                    {
+                        "bsop_hour_gb": "5",
+                        "frgn_fake_ntby_qty": "-120000",
+                        "orgn_fake_ntby_qty": "50000",
+                        "sum_fake_ntby_qty": "-70000",
+                    },
+                ]
+
+        monkeypatch.setattr(intraday_investor_flow, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "now_kst",
+            lambda: _dt.datetime(2026, 6, 13, 15, 0, tzinfo=intraday_investor_flow.KST),
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow, "is_kr_session_day", lambda date: False
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "kr_market_data_state",
+            lambda: "market_closed",
+        )
+
+        result = await tools["get_intraday_investor_flow"]("000660")
+
+        assert result["as_of"] is None
+        assert result["as_of_time_kst"] == "14:30"
+        assert result["combined_net_qty"] == -70000
+        assert "previous trading session" in result["note"]
+
+    async def test_as_of_stamped_after_close_on_session_day(self, monkeypatch):
+        """After the close on a trading day the rows are today's final
+        provisional figures — the same-date stamp is correct."""
+        import datetime as _dt
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def investor_trend_estimate(self, code):
+                return [
+                    {
+                        "bsop_hour_gb": "5",
+                        "frgn_fake_ntby_qty": "-120000",
+                        "orgn_fake_ntby_qty": "50000",
+                        "sum_fake_ntby_qty": "-70000",
+                    },
+                ]
+
+        monkeypatch.setattr(intraday_investor_flow, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "now_kst",
+            lambda: _dt.datetime(2026, 6, 10, 16, 0, tzinfo=intraday_investor_flow.KST),
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow, "is_kr_session_day", lambda date: True
+        )
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "kr_market_data_state",
+            lambda: "market_closed",
+        )
+
+        result = await tools["get_intraday_investor_flow"]("000660")
+
+        assert result["as_of"] == "2026-06-10T14:30:00+09:00"
+        assert "previous trading session" not in result["note"]
+
+    async def test_rejects_non_kr_symbol(self):
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_intraday_investor_flow"]("AAPL")
+
+    async def test_upstream_error_returns_error_payload(self, monkeypatch):
+        tools = build_tools()
+
+        class MockKISClient:
+            async def investor_trend_estimate(self, code):
+                raise RuntimeError("KIS down")
+
+        monkeypatch.setattr(intraday_investor_flow, "KISClient", MockKISClient)
+
+        result = await tools["get_intraday_investor_flow"]("000660")
+
+        assert result["source"] == "kis"
+        assert result["symbol"] == "000660"
+        assert result["instrument_type"] == "equity_kr"
+        assert "KIS down" in (result.get("error") or result.get("message") or "")
 
 
 # ---------------------------------------------------------------------------
