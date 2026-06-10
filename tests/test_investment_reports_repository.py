@@ -304,4 +304,3 @@ async def test_find_item_by_report_client_key_ignores_missing_metadata(
     fetched = await repo.find_item_by_report_client_key(report.id, "increment-1")
 
     assert fetched is None
-

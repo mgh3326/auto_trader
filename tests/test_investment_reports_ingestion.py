@@ -459,9 +459,7 @@ async def test_add_items_to_draft_rejects_non_draft_report(
     )
 
     service = InvestmentReportIngestionService(session)
-    report = await service.ingest(
-        _base_request(items=[_action_item("base-1")])
-    )
+    report = await service.ingest(_base_request(items=[_action_item("base-1")]))
     # Transition the report to 'decided' to make it a non-draft report
     await service.set_report_status(report_uuid=report.report_uuid, status="decided")
 
@@ -515,4 +513,3 @@ async def test_update_draft_report_returns_none_for_unknown_report(
     )
 
     assert updated is None
-

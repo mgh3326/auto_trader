@@ -922,8 +922,12 @@ async def test_add_items_impl_replays_duplicate_as_existing(
     report_uuid = created["report"]["report_uuid"]
     item = _action_item_dict("increment-1") | {"symbol": "000660"}
 
-    first = await investment_report_add_items_impl(report_uuid=report_uuid, items=[item])
-    second = await investment_report_add_items_impl(report_uuid=report_uuid, items=[item])
+    first = await investment_report_add_items_impl(
+        report_uuid=report_uuid, items=[item]
+    )
+    second = await investment_report_add_items_impl(
+        report_uuid=report_uuid, items=[item]
+    )
 
     assert first["success"] is True
     assert first["inserted_count"] == 1

@@ -185,7 +185,9 @@ class InvestmentReportsRepository:
     ) -> InvestmentReportItem | None:
         items = await self.list_items_for_report(report_id)
         for item in items:
-            metadata = item.item_metadata if isinstance(item.item_metadata, dict) else {}
+            metadata = (
+                item.item_metadata if isinstance(item.item_metadata, dict) else {}
+            )
             if metadata.get("client_item_key") == client_item_key:
                 return item
         return None
