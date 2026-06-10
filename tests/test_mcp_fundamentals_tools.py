@@ -40,6 +40,9 @@ from app.mcp_server.tooling import (
     market_data_indicators,
     shared,
 )
+from app.mcp_server.tooling.fundamentals import (
+    _intraday_investor_flow as intraday_investor_flow,
+)
 from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.services import market_data as market_data_service
 from app.services import naver_finance
@@ -48,9 +51,6 @@ from tests._mcp_tooling_support import (
     _patch_runtime_attr,
     _patch_yf_ticker,
     build_tools,
-)
-from app.mcp_server.tooling.fundamentals import (
-    _intraday_investor_flow as intraday_investor_flow,
 )
 
 # ---------------------------------------------------------------------------

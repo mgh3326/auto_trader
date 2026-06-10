@@ -29,6 +29,9 @@ from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_financials,
     handle_get_insider_transactions,
 )
+from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
+    handle_get_intraday_investor_flow,
+)
 from app.mcp_server.tooling.fundamentals._market_index import (
     handle_get_market_index,
 )
@@ -52,9 +55,6 @@ from app.mcp_server.tooling.fundamentals._support_resistance import (
 from app.mcp_server.tooling.fundamentals._upbit_index import (
     handle_get_upbit_altseason,
     handle_get_upbit_index,
-)
-from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
-    handle_get_intraday_investor_flow,
 )
 from app.mcp_server.tooling.fundamentals._valuation import (
     handle_get_investment_opinions,

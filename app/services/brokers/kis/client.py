@@ -200,9 +200,7 @@ class KISClient(BaseKISClient):
     ) -> list[dict[str, Any]]:
         return await self._market_data.inquire_investor(code, market)
 
-    async def investor_trend_estimate(
-        self, code: str
-    ) -> list[dict[str, Any]]:
+    async def investor_trend_estimate(self, code: str) -> list[dict[str, Any]]:
         return await self._market_data.investor_trend_estimate(code)
 
     async def inquire_short_selling(
