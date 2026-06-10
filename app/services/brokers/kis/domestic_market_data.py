@@ -57,9 +57,7 @@ def _select_latest_ccnl_row(rows: list[Any]) -> dict[str, Any] | None:
     문서 보장이 없으므로 index 0 을 신뢰하지 않고 ``stck_cntg_hour``
     (HHMMSS zero-padded → 사전순 == 시간순) 최대값으로 고른다.
     """
-    candidates: list[dict[str, Any]] = [
-        row for row in rows if isinstance(row, dict)
-    ]
+    candidates: list[dict[str, Any]] = [row for row in rows if isinstance(row, dict)]
     if not candidates:
         return None
     return max(candidates, key=lambda row: str(row.get("stck_cntg_hour") or ""))

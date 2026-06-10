@@ -28,6 +28,11 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 20,
         "period": 1.0,
     },
+    # ROB-485: get_execution_strength (주식현재가 체결, tick rows)
+    "FHKST01010300|/uapi/domestic-stock/v1/quotations/inquire-ccnl": {
+        "rate": 20,
+        "period": 1.0,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,

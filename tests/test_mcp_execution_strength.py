@@ -8,7 +8,6 @@ import pytest
 
 from app.mcp_server.tooling import market_data_quotes
 
-
 # 2026-06-10 09:42 KST 라이브 프로브 실측 row (012450). FHKST01010300 row 키
 # 전수: cntg_vol, prdy_ctrt, prdy_vrss, prdy_vrss_sign, stck_cntg_hour,
 # stck_prpr, tday_rltv — per-side 매수/매도 체결량 필드는 없다.
@@ -84,9 +83,7 @@ async def test_inquire_execution_strength_empty_list_returns_all_none():
 @pytest.mark.asyncio
 async def test_inquire_execution_strength_dict_output_returns_all_none():
     # 옛 FHKST01010100 식 단일 dict output 형태는 더 이상 가정하지 않는다.
-    md = _make_market_data_mixin(
-        {"output": {"cttr": "120.3", "stck_prpr": "80000"}}
-    )
+    md = _make_market_data_mixin({"output": {"cttr": "120.3", "stck_prpr": "80000"}})
 
     raw = await md.inquire_execution_strength("005930")
 
@@ -245,9 +242,7 @@ async def test_get_execution_strength_null_outside_session_keeps_session_state(
             "kr_market_data_state",
             lambda *a, _state=state, **k: _state,
         )
-        result = await market_data_quotes._get_execution_strength_impl(
-            "005930", "kr"
-        )
+        result = await market_data_quotes._get_execution_strength_impl("005930", "kr")
         # field_unavailable 은 fresh 일 때만 — 세션 외 상태는 그대로 보존.
         assert result["data_state"] == state
 
