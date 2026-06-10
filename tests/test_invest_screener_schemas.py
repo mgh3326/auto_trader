@@ -283,6 +283,7 @@ def test_result_row_accepts_market_cap_source():
     )
     assert bare.marketCapSource is None
 
+
 @pytest.mark.unit
 def test_result_row_accepts_analysis_context():
     from app.schemas.invest_screener import (

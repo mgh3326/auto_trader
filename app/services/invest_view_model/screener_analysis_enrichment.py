@@ -109,11 +109,9 @@ def normalize_consensus_payload(
             and abs(computed - consensus.upsidePct) > 1.0
         ):
             warnings.append("consensus_upside_mismatch")
-        if (
-            consensus.avgTargetPrice < consensus.currentPrice
-            and (consensus.buyCount or 0)
-            > ((consensus.holdCount or 0) + (consensus.sellCount or 0))
-        ):
+        if consensus.avgTargetPrice < consensus.currentPrice and (
+            consensus.buyCount or 0
+        ) > ((consensus.holdCount or 0) + (consensus.sellCount or 0)):
             warnings.append("consensus_target_below_current_with_bullish_votes")
     return consensus, warnings
 
@@ -191,9 +189,9 @@ async def _rsi_by_symbol(
 
         latest_date = (
             await db.execute(
-                sa.select(sa.func.max(InvestCryptoScreenerSnapshot.snapshot_date)).where(
-                    InvestCryptoScreenerSnapshot.symbol.in_(symbols)
-                )
+                sa.select(
+                    sa.func.max(InvestCryptoScreenerSnapshot.snapshot_date)
+                ).where(InvestCryptoScreenerSnapshot.symbol.in_(symbols))
             )
         ).scalar_one_or_none()
         if latest_date is None:
@@ -209,11 +207,7 @@ async def _rsi_by_symbol(
                 )
             )
         ).all()
-        return {
-            row.symbol: float(row.rsi)
-            for row in rows
-            if row.rsi is not None
-        }
+        return {row.symbol: float(row.rsi) for row in rows if row.rsi is not None}
 
     return {}
 
@@ -225,7 +219,9 @@ async def enrich_snapshot_page(
     session_factory: async_sessionmaker[AsyncSession],
     opinion_provider: OpinionProvider = handle_get_investment_opinions,
 ) -> dict[str, Any]:
-    symbols = [str(row.get("symbol") or "").strip() for row in rows if row.get("symbol")]
+    symbols = [
+        str(row.get("symbol") or "").strip() for row in rows if row.get("symbol")
+    ]
     symbols = list(dict.fromkeys(symbols))
     summary = {
         "attempted": len(rows),

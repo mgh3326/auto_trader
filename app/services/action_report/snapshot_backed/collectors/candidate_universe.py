@@ -271,8 +271,7 @@ class CandidateUniverseSnapshotCollector:
             if request.market == "crypto":
                 return await self._collect_crypto(request, now)
         except Exception as exc:  # noqa: BLE001 — optional, fail open
-            import traceback
-            traceback.print_exc()
+            logger.warning("candidate_universe query failed", exc_info=True)
             return [
                 unavailable_result(
                     snapshot_kind=self.snapshot_kind,
