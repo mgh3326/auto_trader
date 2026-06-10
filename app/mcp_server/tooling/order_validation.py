@@ -726,6 +726,15 @@ async def _preview_sell(
         order_quantity = holdings["quantity"] if quantity is None else quantity
         execution_price = price
         result["price"] = execution_price
+        # ROB-477: informational fill-risk surface. A sell limit above the
+        # current price can miss the fill entirely if the market reverses.
+        if current_price > 0 and price > current_price:
+            distance_usd = price - current_price
+            result.setdefault("warnings", []).append("sell_limit_above_market")
+            result["fill_distance"] = {
+                "distance_usd": round(distance_usd, 4),
+                "distance_pct": round(distance_usd / current_price * 100.0, 4),
+            }
 
     if defensive_trim_ctx is not None:
         result["defensive_trim"] = True
