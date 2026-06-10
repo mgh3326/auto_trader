@@ -15,6 +15,7 @@ from app.services.tvscreener_capabilities import (
     TvScreenerCapabilitySnapshot,
     TvScreenerCapabilityState,
 )
+from app.services.tvscreener_retry import TvScreenerError
 from tests._mcp_screen_stocks_support import (
     TestScreenStocksFundamentalsExpansion,
     TestScreenStocksKR,
@@ -55,8 +56,8 @@ def mock_kr_tvscreener_network_by_default(monkeypatch: pytest.MonkeyPatch):
     async def fake_capability_snapshot(**kwargs: Any):
         return snapshot
 
-    async def fail_tvscreener_network(*args: Any, **kwargs: Any):
-        return pd.DataFrame()
+    async def fail_kr_tvscreener_query(*args: Any, **kwargs: Any):
+        raise TvScreenerError("tvscreener network disabled in fast tests")
 
     monkeypatch.setattr(
         kr_mod,
@@ -67,14 +68,7 @@ def mock_kr_tvscreener_network_by_default(monkeypatch: pytest.MonkeyPatch):
         "app.mcp_server.tooling.screening.us._get_tvscreener_stock_capability_snapshot",
         fake_capability_snapshot,
     )
-    monkeypatch.setattr(
-        "app.services.tvscreener_retry.fetch_tvscreener_with_retry",
-        fail_tvscreener_network,
-    )
-    monkeypatch.setattr(
-        "app.services.tvscreener_service.fetch_tvscreener_with_retry",
-        fail_tvscreener_network,
-    )
+    monkeypatch.setattr(kr_mod, "_execute_kr_query", fail_kr_tvscreener_query)
 
 
 def test_analysis_screening_reexports_screen_contract_helpers() -> None:
