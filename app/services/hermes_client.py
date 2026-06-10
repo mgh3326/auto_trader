@@ -108,10 +108,14 @@ def build_invest_links(
         report_path=report_path,
         stock_path=stock_path,
         event_anchor=(
-            f"{report_path}#watch-event-{event_uuid}" if event_uuid is not None else None
+            f"{report_path}#watch-event-{event_uuid}"
+            if event_uuid is not None
+            else None
         ),
         alert_anchor=(
-            f"{report_path}#watch-alert-{alert_uuid}" if alert_uuid is not None else None
+            f"{report_path}#watch-alert-{alert_uuid}"
+            if alert_uuid is not None
+            else None
         ),
     )
 

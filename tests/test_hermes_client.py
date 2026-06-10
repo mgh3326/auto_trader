@@ -12,6 +12,9 @@ from pydantic import ValidationError
 from app.services.hermes_client import (
     HermesNotificationClient,
     ReviewTriggerPayload,
+    build_invest_links,
+    build_operator_action_guidance,
+    price_guidance_from_watch_recommendation,
 )
 
 
@@ -165,15 +168,6 @@ async def test_enabled_client_without_token_omits_auth_header() -> None:
 
 # --- ROB-500 Tests ---
 
-from app.services.hermes_client import (
-    InvestLinks,
-    OperatorActionGuidance,
-    PriceGuidance,
-    build_invest_links,
-    build_operator_action_guidance,
-    price_guidance_from_watch_recommendation,
-)
-
 _REPORT_UUID = uuid.UUID("70019e8d-1ee6-493f-adeb-5d9301d5ea48")
 _EVENT_UUID = uuid.UUID("f912d55f-d1b3-4971-a362-998bd9ffa6b4")
 _ALERT_UUID = uuid.UUID("5e32ec11-f4ed-4ef7-9a84-561a5fb2be79")
@@ -303,4 +297,3 @@ def test_payload_accepts_new_optional_fields_and_still_forbids_extras() -> None:
     assert payload.price_guidance is None
     with pytest.raises(ValidationError):
         _base_payload(unknown_field=1)
-

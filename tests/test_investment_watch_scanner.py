@@ -657,12 +657,10 @@ async def test_trigger_payload_carries_links_guidance_and_price_guidance(
     )
     assert payload.invest_links.stock_path == "/invest/stocks/kr/005930"
     assert payload.invest_links.event_anchor == (
-        f"/invest/reports/{alert.source_report_uuid}"
-        f"#watch-event-{payload.event_uuid}"
+        f"/invest/reports/{alert.source_report_uuid}#watch-event-{payload.event_uuid}"
     )
     assert payload.invest_links.alert_anchor == (
-        f"/invest/reports/{alert.source_report_uuid}"
-        f"#watch-alert-{alert.alert_uuid}"
+        f"/invest/reports/{alert.source_report_uuid}#watch-alert-{alert.alert_uuid}"
     )
 
     assert payload.operator_action_guidance is not None
@@ -687,6 +685,7 @@ async def test_trigger_payload_price_guidance_none_without_recommendation(
 
     async def _fake_current_value(**_kwargs) -> float:
         return 25.0
+
     monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
 
     stub = _StubHermesClient()
@@ -696,4 +695,3 @@ async def test_trigger_payload_price_guidance_none_without_recommendation(
     assert len(stub.calls) == 1
     assert stub.calls[0].price_guidance is None
     assert stub.calls[0].invest_links is not None  # 링크는 항상 채움
-

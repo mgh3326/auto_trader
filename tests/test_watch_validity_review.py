@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -201,7 +202,6 @@ async def test_keep_is_not_notified(session: AsyncSession, monkeypatch) -> None:
 
 # --- ROB-500 Tests ---
 
-from decimal import Decimal
 
 @pytest.mark.asyncio
 async def test_notify_payload_carries_links_and_price_guidance(
@@ -229,8 +229,7 @@ async def test_notify_payload_carries_links_and_price_guidance(
     # 이벤트 row가 없는 경로 — event anchor는 없고 alert anchor만.
     assert payload.invest_links.event_anchor is None
     assert payload.invest_links.alert_anchor == (
-        f"/invest/reports/{alert.source_report_uuid}"
-        f"#watch-alert-{alert.alert_uuid}"
+        f"/invest/reports/{alert.source_report_uuid}#watch-alert-{alert.alert_uuid}"
     )
 
     assert payload.operator_action_guidance is not None
@@ -238,4 +237,3 @@ async def test_notify_payload_carries_links_and_price_guidance(
 
     assert payload.price_guidance is not None
     assert payload.price_guidance.entry_review_below_price == Decimal("100")
-
