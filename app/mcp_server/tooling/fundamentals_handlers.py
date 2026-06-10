@@ -185,16 +185,20 @@ def _register_fundamentals_tools_impl(
     @mcp.tool(
         name="get_earnings_calendar",
         description=(
-            "Get earnings calendar for a US stock or date range. Returns earnings "
-            "dates, EPS estimates and actuals. US stocks only."
+            "Get earnings calendar for a US or Korean stock/date range. "
+            "US uses Finnhub and includes EPS/revenue estimates when available. "
+            "Korean equities read existing market_events rows from WiseFn/DART; "
+            "KR shareholder meetings, ex-dividend dates, IR, and conferences are "
+            "not included yet."
         ),
     )
     async def get_earnings_calendar(
         symbol: str | None = None,
         from_date: str | None = None,
         to_date: str | None = None,
+        market: str | None = None,
     ) -> dict[str, Any]:
-        return await handle_get_earnings_calendar(symbol, from_date, to_date)
+        return await handle_get_earnings_calendar(symbol, from_date, to_date, market)
 
     @mcp.tool(
         name="get_investor_trends",

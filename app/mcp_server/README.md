@@ -495,6 +495,32 @@ Symbol contract:
   - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
 - When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
 
+### `get_earnings_calendar` spec
+
+Parameters:
+- `symbol`: Optional equity ticker/code. US examples: `AAPL`, `MSFT`; KR examples: `005930`, `A005930`.
+- `from_date`: Optional ISO start date, inclusive. Defaults to server `today`.
+- `to_date`: Optional ISO end date, inclusive. Defaults to `from_date + 30 days`.
+- `market`: Optional explicit market (`us`, `kr`). If omitted, 6-digit or A-prefixed KR codes route to KR; other non-crypto symbols route to US.
+
+Behavior:
+- US requests keep the existing Finnhub path and response shape: `symbol`, `instrument_type`, `source`, `from_date`, `to_date`, `count`, `earnings`.
+- KR requests read existing `market_events` rows where `category="earnings"` and `market="kr"`.
+- KR rows are read-only and may come from `source="wisefn"` scheduled earnings or `source="dart"` filings classified as earnings.
+- KR response top-level includes `source="market_events"`, `sources`, `market="kr"`, `warning`, and the existing `earnings` list.
+- KR `earnings` items include `symbol`, `company_name`, `date`, `hour`, `time_hint`, `quarter`, `year`, `status`, `source`, `source_event_id`, `source_url`, and `title`.
+- KR `eps_*` and `revenue_*` fields are present for shape compatibility but usually `null` until realized-value joins are implemented.
+
+Limitations:
+- KR shareholder meetings, ex-dividend dates, IR, and conferences are not collected by this tool yet.
+- Empty KR results mean no matching `market_events` rows are currently stored for the requested window; they do not prove there is no real-world event.
+- Production WiseFn ingestion enablement and scheduler activation are operational follow-ups, not part of this MCP read-path contract.
+
+Errors:
+- Crypto symbols return an explicit error because earnings calendars apply to equities only.
+- `from_date > to_date` is rejected.
+- Explicit `market="us"` with a Korean equity code is rejected with guidance to use `market="kr"`.
+
 ### `get_disclosures` spec
 Parameters:
 - `symbol`: Korean corporation lookup input (required)
