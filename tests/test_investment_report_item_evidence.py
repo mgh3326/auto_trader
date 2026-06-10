@@ -140,3 +140,76 @@ async def test_no_evidence_leaves_snapshot_keys_absent(session) -> None:
     snap = items[0].evidence_snapshot or {}
     assert "structured_evidence" not in snap
     assert "item_freshness" not in snap
+
+
+def test_item_forbids_unknown_top_level_keys():
+    with pytest.raises(ValidationError) as exc:
+        IngestReportItem(
+            client_item_key="k1",
+            item_kind="action",
+            intent="buy_review",
+            rationale="r",
+            entry_price=Decimal("100.0"),
+        )
+    assert "entry_price" in str(exc.value)
+
+
+def test_item_accepts_typed_trade_plan_fields():
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="action",
+        symbol="005930",
+        side="buy",
+        intent="buy_review",
+        rationale="1차/2차 분할 진입",
+        entry_plan=[
+            {"label": "1차", "price": Decimal("70000"), "quantity": Decimal("1")},
+            {"label": "2차", "price": Decimal("68000"), "quantity": Decimal("1")},
+        ],
+        stop_loss={"price": Decimal("65000"), "condition": "종가 이탈"},
+        target_price={"price": Decimal("78000"), "condition": "저항 돌파"},
+        linked_order_ids=[
+            {
+                "broker": "kis",
+                "account_scope": "kis_live",
+                "odno": "0026500500",
+                "ledger_id": 123,
+            }
+        ],
+    )
+
+    assert item.entry_plan[0].label == "1차"
+    assert item.entry_plan[0].price == Decimal("70000")
+    assert item.stop_loss is not None
+    assert item.stop_loss.price == Decimal("65000")
+    assert item.target_price is not None
+    assert item.target_price.price == Decimal("78000")
+    assert item.linked_order_ids[0].odno == "0026500500"
+
+
+def test_linked_order_ref_requires_identifier():
+    with pytest.raises(ValidationError) as exc:
+        IngestReportItem(
+            client_item_key="k1",
+            item_kind="action",
+            intent="buy_review",
+            rationale="r",
+            linked_order_ids=[{"broker": "kis"}],
+        )
+    assert "linked_order_ids" in str(exc.value)
+    assert "one of order_no, odno, ledger_id, report_item_uuid" in str(exc.value)
+
+
+def test_typed_trade_plan_rejects_evidence_snapshot_reserved_key_conflict():
+    with pytest.raises(ValidationError) as exc:
+        IngestReportItem(
+            client_item_key="k1",
+            item_kind="action",
+            intent="buy_review",
+            rationale="r",
+            evidence_snapshot={"target_price": {"price": "76000"}},
+            target_price={"price": Decimal("78000")},
+        )
+    assert "target_price" in str(exc.value)
+    assert "reserved evidence_snapshot keys" in str(exc.value)
+

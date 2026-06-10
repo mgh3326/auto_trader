@@ -138,3 +138,21 @@ def test_create_description_documents_structured_evidence_and_chaining():
     assert "evidence" in desc
     assert "source" in desc
     assert "CLAUDE_ADVISOR" in desc
+
+
+def test_validate_report_items_rejects_unknown_keys():
+    _validated, error = h._validate_report_items(
+        [
+            {
+                "client_item_key": "k1",
+                "item_kind": "action",
+                "intent": "buy_review",
+                "rationale": "r",
+                "entry_price": 100,
+            }
+        ]
+    )
+    assert error is not None
+    assert error["error"] == "invalid_items"
+    assert error["item_errors"][0]["errors"][0]["field"] == "entry_price"
+
