@@ -113,7 +113,9 @@ def _parse_iso_date(value: str | None, *, field_name: str) -> datetime.date | No
     try:
         return datetime.date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError(f"{field_name} must be ISO format (e.g., '2024-01-15')") from exc
+        raise ValueError(
+            f"{field_name} must be ISO format (e.g., '2024-01-15')"
+        ) from exc
 
 
 def _normalize_kr_calendar_symbol(symbol: str | None) -> str | None:
@@ -130,9 +132,7 @@ def _normalize_kr_calendar_symbol(symbol: str | None) -> str | None:
 def _is_kr_earnings_calendar_symbol(symbol: str) -> bool:
     normalized = symbol.strip().upper()
     return (len(normalized) == 6 and normalized.isdigit()) or (
-        len(normalized) == 7
-        and normalized.startswith("A")
-        and normalized[1:].isdigit()
+        len(normalized) == 7 and normalized.startswith("A") and normalized[1:].isdigit()
     )
 
 

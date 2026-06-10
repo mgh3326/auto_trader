@@ -258,4 +258,3 @@ async def test_list_events_filters_by_symbol(db_session):
         market="kr",
     )
     assert unfiltered.count == 2
-
