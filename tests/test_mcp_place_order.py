@@ -15,6 +15,7 @@ import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.mcp_server.tooling import (
     order_execution,
+    order_validation,
     orders_kis_variants,
     orders_registration,
 )
@@ -2550,3 +2551,50 @@ async def test_place_order_limit_still_works_after_market_block(monkeypatch):
     )
     # limit dry-run should succeed (or at least not be the market-rejection error)
     assert result.get("error") != EXPECTED_MARKET_ERROR
+
+
+# ----------------------------------------------------------------------
+# ROB-477: sell limit above market fill-risk warning (per-order)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preview_sell_limit_above_market_warns(monkeypatch):
+    """Limit sell above current price returns informational fill-risk details."""
+    monkeypatch.setattr(
+        order_validation,
+        "_get_holdings_for_order",
+        AsyncMock(return_value={"quantity": 8.0, "avg_price": 40.0}),
+    )
+    result = await order_validation._preview_sell(
+        symbol="IONQ",
+        order_type="limit",
+        quantity=2.0,
+        price=64.0,
+        current_price=63.95,
+        market_type="equity_us",
+    )
+    assert "error" not in result
+    assert "sell_limit_above_market" in result.get("warnings", [])
+    assert result["fill_distance"]["distance_usd"] == pytest.approx(0.05)
+    assert result["fill_distance"]["distance_pct"] == pytest.approx(0.0782, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_preview_sell_limit_at_market_no_warning(monkeypatch):
+    monkeypatch.setattr(
+        order_validation,
+        "_get_holdings_for_order",
+        AsyncMock(return_value={"quantity": 8.0, "avg_price": 40.0}),
+    )
+    result = await order_validation._preview_sell(
+        symbol="IONQ",
+        order_type="limit",
+        quantity=2.0,
+        price=63.95,
+        current_price=63.95,
+        market_type="equity_us",
+    )
+    assert "error" not in result
+    assert "sell_limit_above_market" not in result.get("warnings", [])
+    assert "fill_distance" not in result
