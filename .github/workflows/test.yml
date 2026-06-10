@@ -120,7 +120,7 @@ jobs:
         # down again.
         COVERAGE_CORE: sysmon
       run: |
-        uv run pytest tests/ -m "not live" -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30
+        uv run pytest tests/ -m "not live" -n auto --dist=worksteal -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v6
