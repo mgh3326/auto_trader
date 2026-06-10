@@ -7,6 +7,7 @@ extracted from test_mcp_server_tools.py for better organization.
 
 import logging
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -27,6 +28,10 @@ from tests._mcp_tooling_support import (
 EXPECTED_MARKET_ERROR = (
     "MCP place_order only supports limit orders; market orders are not allowed."
 )
+
+
+def _unique_order_id(prefix: str) -> str:
+    return f"{prefix}-{uuid4().hex[:12]}"
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -646,7 +651,7 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
                     "price": price,
                 }
             )
-            return {"odno": "99999", "success": True}
+            return {"odno": _unique_order_id("us-nyse"), "success": True}
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
     _patch_runtime_attr(
@@ -987,7 +992,7 @@ class TestPlaceOrderHighAmount:
                         "price": price,
                     }
                 )
-                return {"odno": "kr-12345", "ord_qty": quantity}
+                return {"odno": _unique_order_id("kr-high"), "ord_qty": quantity}
 
         async def fetch_quote(symbol):
             return {"price": 120000.0}
@@ -1049,7 +1054,7 @@ class TestPlaceOrderHighAmount:
                         "price": price,
                     }
                 )
-                return {"odno": "us-12345", "success": True}
+                return {"odno": _unique_order_id("us-high"), "success": True}
 
         async def fetch_quote(symbol):
             return {"price": 250.0}
@@ -1093,7 +1098,7 @@ class TestPlaceOrderHighAmount:
             return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
         )
         mock.place_buy_order = AsyncMock(
-            return_value={"uuid": "crypto-12345", "side": "bid"}
+            return_value={"uuid": _unique_order_id("crypto-high"), "side": "bid"}
         )
 
         monkeypatch.setattr(
@@ -1148,7 +1153,7 @@ class TestPlaceOrderHighAmount:
             return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
         )
         mock.place_market_buy_order = AsyncMock(
-            return_value={"uuid": "crypto-12345", "side": "bid"}
+            return_value={"uuid": _unique_order_id("crypto-limit"), "side": "bid"}
         )
 
         monkeypatch.setattr(
@@ -1209,7 +1214,11 @@ async def test_place_order_kr_limit_keeps_valid_tick_without_adjustment_metadata
 
     class MockKISClient:
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
-            return {"odno": "12345", "ord_qty": quantity, "ord_unpr": price}
+            return {
+                "odno": _unique_order_id("kr-tick"),
+                "ord_qty": quantity,
+                "ord_unpr": price,
+            }
 
         async def inquire_integrated_margin(self):
             return {
@@ -1258,7 +1267,11 @@ async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
 
     class MockKISClient:
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
-            return {"odno": "67890", "ord_qty": quantity, "ord_unpr": price}
+            return {
+                "odno": _unique_order_id("kr-tick-adjust"),
+                "ord_qty": quantity,
+                "ord_unpr": price,
+            }
 
         async def inquire_integrated_margin(self):
             return {
@@ -1462,7 +1475,7 @@ async def test_place_order_kr_equity_balance_lookup_failure_blocks_real_order(
                     "price": price,
                 }
             )
-            return {"odno": "kr-99999", "ord_qty": quantity}
+            return {"odno": _unique_order_id("kr-balance"), "ord_qty": quantity}
 
     async def fetch_quote(symbol):
         return {"price": 70000.0}
@@ -1802,7 +1815,7 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
 
         async def place_sell_order(self, symbol, volume, price):
             return {
-                "uuid": "cd-sell-loss-uuid",
+                "uuid": _unique_order_id("cd-sell-loss"),
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
@@ -1906,7 +1919,7 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
 
         async def place_sell_order(self, symbol, volume, price):
             return {
-                "uuid": "cd-sell-profit-uuid",
+                "uuid": _unique_order_id("cd-sell-profit"),
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
@@ -1981,7 +1994,7 @@ async def test_real_sell_is_accepted_only_no_journal_close_at_send(monkeypatch) 
         "place_sell_order",
         AsyncMock(
             return_value={
-                "uuid": "rc-sell-close-uuid",
+                "uuid": _unique_order_id("rc-sell-close"),
                 "side": "ask",
                 "market": "KRW-BTC",
                 "price": "95000000",
@@ -2047,7 +2060,7 @@ async def test_sell_send_does_not_touch_journals_even_if_close_would_fail(
         "place_sell_order",
         AsyncMock(
             return_value={
-                "uuid": "rc-sell-closefail-uuid",
+                "uuid": _unique_order_id("rc-sell-closefail"),
                 "side": "ask",
                 "market": "KRW-BTC",
                 "price": "95000000",
@@ -2234,7 +2247,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "test-fill-uuid",
+                    "uuid": _unique_order_id("test-fill"),
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2343,7 +2356,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "rc-buy-journal-uuid",
+                    "uuid": _unique_order_id("rc-buy-journal"),
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2408,7 +2421,7 @@ class TestOrderFillRecording:
             "place_sell_order",
             AsyncMock(
                 return_value={
-                    "uuid": "ofr-sell-uuid",
+                    "uuid": _unique_order_id("ofr-sell"),
                     "side": "ask",
                     "market": "KRW-BTC",
                     "price": "95000000",
@@ -2462,7 +2475,7 @@ class TestOrderFillRecording:
             "place_buy_order",
             AsyncMock(
                 return_value={
-                    "uuid": "ofr-buy-jfail-uuid",
+                    "uuid": _unique_order_id("ofr-buy-jfail"),
                     "side": "bid",
                     "market": "KRW-BTC",
                     "price": "95000000",
