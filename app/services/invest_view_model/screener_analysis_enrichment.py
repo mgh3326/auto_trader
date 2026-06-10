@@ -122,3 +122,170 @@ def build_analyst_label(
     if consensus.upsidePct is None:
         return base
     return f"{base} · 목표 {consensus.upsidePct:+.1f}%"
+
+import asyncio
+from collections.abc import Callable
+
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.mcp_server.tooling.fundamentals._valuation import (
+    handle_get_investment_opinions,
+)
+from app.schemas.invest_screener import ScreenerAnalysisContext
+
+OpinionProvider = Callable[..., Any]
+
+
+async def _opinion_payload(
+    provider: OpinionProvider, *, symbol: str, market: str
+) -> dict[str, Any] | None:
+    try:
+        result = provider(symbol=symbol, market=market, limit=10)
+        if asyncio.iscoroutine(result):
+            result = await asyncio.wait_for(result, timeout=4.5)
+        return result
+    except TimeoutError:
+        return {"error": "analyst_consensus_timeout"}
+    except Exception:
+        return {"error": "analyst_consensus_unavailable"}
+
+
+async def _rsi_by_symbol(
+    db: AsyncSession, *, market: str, symbols: list[str]
+) -> dict[str, float]:
+    if not symbols:
+        return {}
+    if market in {"kr", "us"}:
+        from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+
+        latest_date = (
+            await db.execute(
+                sa.select(sa.func.max(InvestScreenerSnapshot.snapshot_date)).where(
+                    InvestScreenerSnapshot.market == market,
+                    InvestScreenerSnapshot.symbol.in_(symbols),
+                )
+            )
+        ).scalar_one_or_none()
+        if latest_date is None:
+            return {}
+        rows = (
+            await db.execute(
+                sa.select(
+                    InvestScreenerSnapshot.symbol,
+                    InvestScreenerSnapshot.closes_window,
+                ).where(
+                    InvestScreenerSnapshot.market == market,
+                    InvestScreenerSnapshot.snapshot_date == latest_date,
+                    InvestScreenerSnapshot.symbol.in_(symbols),
+                )
+            )
+        ).all()
+        return {
+            row.symbol: rsi
+            for row in rows
+            if (rsi := build_rsi14_from_closes(row.closes_window or [])) is not None
+        }
+
+    if market == "crypto":
+        from app.models.invest_crypto_screener_snapshot import (
+            InvestCryptoScreenerSnapshot,
+        )
+
+        latest_date = (
+            await db.execute(
+                sa.select(sa.func.max(InvestCryptoScreenerSnapshot.snapshot_date)).where(
+                    InvestCryptoScreenerSnapshot.symbol.in_(symbols)
+                )
+            )
+        ).scalar_one_or_none()
+        if latest_date is None:
+            return {}
+        rows = (
+            await db.execute(
+                sa.select(
+                    InvestCryptoScreenerSnapshot.symbol,
+                    InvestCryptoScreenerSnapshot.rsi,
+                ).where(
+                    InvestCryptoScreenerSnapshot.snapshot_date == latest_date,
+                    InvestCryptoScreenerSnapshot.symbol.in_(symbols),
+                )
+            )
+        ).all()
+        return {
+            row.symbol: float(row.rsi)
+            for row in rows
+            if row.rsi is not None
+        }
+
+    return {}
+
+
+async def enrich_snapshot_page(
+    *,
+    rows: list[dict[str, Any]],
+    market: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    opinion_provider: OpinionProvider = handle_get_investment_opinions,
+) -> dict[str, Any]:
+    symbols = [str(row.get("symbol") or "").strip() for row in rows if row.get("symbol")]
+    symbols = list(dict.fromkeys(symbols))
+    summary = {
+        "attempted": len(rows),
+        "consensusSucceeded": 0,
+        "rsiSucceeded": 0,
+        "warnings": [],
+    }
+    if not rows:
+        return {"results": rows, "summary": summary}
+
+    async with session_factory() as db:
+        try:
+            rsi_map = await _rsi_by_symbol(db, market=market, symbols=symbols)
+        except Exception:
+            rsi_map = {}
+            summary["warnings"].append("rsi_enrichment_unavailable")
+
+    consensus_map: dict[str, tuple[ScreenerAnalysisConsensus | None, list[str]]] = {}
+    if market in {"kr", "us"}:
+        sem = asyncio.Semaphore(4)
+
+        async def _one(symbol: str) -> None:
+            async with sem:
+                payload = await _opinion_payload(
+                    opinion_provider, symbol=symbol, market=market
+                )
+                consensus_map[symbol] = normalize_consensus_payload(payload)
+
+        await asyncio.gather(*[_one(symbol) for symbol in symbols])
+
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        consensus, warnings = consensus_map.get(symbol, (None, []))
+        rsi14 = rsi_map.get(symbol)
+        if consensus is not None:
+            summary["consensusSucceeded"] += 1
+        if rsi14 is not None:
+            summary["rsiSucceeded"] += 1
+        context = ScreenerAnalysisContext(
+            consensus=consensus,
+            rsi14=rsi14,
+            dataState=(
+                "fresh"
+                if consensus is not None and rsi14 is not None
+                else "partial"
+                if consensus is not None or rsi14 is not None
+                else "missing"
+            ),
+            warnings=warnings,
+        )
+        enriched.append(
+            {
+                **row,
+                "analystLabel": build_analyst_label(consensus, warnings=warnings),
+                "analysisContext": context.model_dump(mode="json"),
+            }
+        )
+
+    return {"results": enriched, "summary": summary}
