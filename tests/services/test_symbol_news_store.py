@@ -136,3 +136,120 @@ def test_derive_status_rules() -> None:
     assert symbol_news_store.derive_status("direct", "low") == "excluded"
     assert symbol_news_store.derive_status("direct", "high") == "confirmed"
     assert symbol_news_store.derive_status("incidental", "medium") == "confirmed"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_apply_judgment_transitions_and_is_idempotent(db_session) -> None:
+    symbol = f"S-{uuid.uuid4()}"[:20]
+    url = _unique_url("j1")
+    await symbol_news_store.upsert_kr_feed_articles(
+        db_session, symbol, [_item(url, f"{symbol} 신규 투자")]
+    )
+    link = (
+        await db_session.execute(
+            select(SymbolNewsRelevance)
+            .join(NewsArticle, NewsArticle.id == SymbolNewsRelevance.article_id)
+            .where(NewsArticle.url == url, SymbolNewsRelevance.symbol == symbol)
+        )
+    ).scalar_one()
+
+    status = await symbol_news_store.apply_judgment(
+        db_session,
+        article_id=link.article_id,
+        market="kr",
+        symbol=symbol,
+        relationship="direct",
+        relevance="high",
+        price_relevance="catalyst",
+        score=0.9,
+        reason="직접 관련",
+        judged_by="hermes",
+    )
+    assert status == "confirmed"
+
+    # 재판정(overwrite) — unrelated → excluded
+    status2 = await symbol_news_store.apply_judgment(
+        db_session,
+        article_id=link.article_id,
+        market="kr",
+        symbol=symbol,
+        relationship="unrelated",
+        relevance="low",
+        price_relevance="none",
+        score=0.2,
+        reason="재검토 결과 무관",
+        judged_by="hermes",
+    )
+    assert status2 == "excluded"
+    await db_session.refresh(link)
+    assert link.status == "excluded"
+    assert link.judged_at is not None
+    assert link.judged_by == "hermes"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_apply_judgment_missing_link_returns_none(db_session) -> None:
+    status = await symbol_news_store.apply_judgment(
+        db_session,
+        article_id=999999999,
+        market="kr",
+        symbol="000000",
+        relationship="direct",
+        relevance="high",
+        price_relevance="none",
+        score=None,
+        reason="x",
+        judged_by="hermes",
+    )
+    assert status is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_pending_returns_article_fields_and_hints(db_session) -> None:
+    symbol = f"S-{uuid.uuid4()}"[:20]
+    url = _unique_url("p1")
+    await symbol_news_store.upsert_kr_feed_articles(
+        db_session, symbol, [_item(url, f"{symbol} D2SF 펀딩")]
+    )
+    rows = await symbol_news_store.list_pending(
+        db_session, "kr", limit=50, symbol=symbol
+    )
+    assert rows
+    row = rows[0]
+    assert row["url"] == url
+    assert row["title"] == f"{symbol} D2SF 펀딩"
+    assert row["hints"] is not None
+    assert isinstance(row["article_id"], int)
+    assert row["symbol"] == symbol
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_pending_omits_judged_links(db_session) -> None:
+    symbol = f"S-{uuid.uuid4()}"[:20]
+    url = _unique_url("p2")
+    await symbol_news_store.upsert_kr_feed_articles(
+        db_session, symbol, [_item(url, f"{symbol} 판정 완료 기사")]
+    )
+    rows = await symbol_news_store.list_pending(
+        db_session, "kr", limit=50, symbol=symbol
+    )
+    await symbol_news_store.apply_judgment(
+        db_session,
+        article_id=rows[0]["article_id"],
+        market="kr",
+        symbol=symbol,
+        relationship="direct",
+        relevance="high",
+        price_relevance="background",
+        score=None,
+        reason="r",
+        judged_by="hermes",
+    )
+    assert (
+        await symbol_news_store.list_pending(db_session, "kr", limit=50, symbol=symbol)
+        == []
+    )

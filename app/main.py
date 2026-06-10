@@ -44,6 +44,7 @@ from app.routers import (
     news_analysis,
     news_issues,
     news_radar,
+    news_relevance,
     openclaw_callback,
     order_estimation,
     order_previews,
@@ -177,6 +178,7 @@ def create_app() -> FastAPI:
     app.include_router(order_previews.router)
     app.include_router(investment_reports.router)
     app.include_router(investment_hermes_http.router)
+    app.include_router(news_relevance.router)
     app.include_router(investment_stage_runs.router)
     app.include_router(investment_dimension_reports.router)
     # ROB-269 Phase 2 — flag-gated. Default off keeps the router fully absent

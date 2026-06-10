@@ -146,6 +146,92 @@ async def upsert_kr_feed_articles(
     await db.commit()
 
 
+async def list_pending(
+    db: AsyncSession,
+    market: str,
+    limit: int,
+    symbol: str | None = None,
+) -> list[dict[str, Any]]:
+    """Pending links oldest-first with the article fields a judge needs."""
+    conditions = [
+        SymbolNewsRelevance.market == market,
+        SymbolNewsRelevance.status == "pending",
+    ]
+    if symbol:
+        conditions.append(SymbolNewsRelevance.symbol == symbol)
+    stmt = (
+        select(NewsArticle, SymbolNewsRelevance)
+        .join(SymbolNewsRelevance, SymbolNewsRelevance.article_id == NewsArticle.id)
+        .where(*conditions)
+        .order_by(
+            SymbolNewsRelevance.first_seen_at.asc(),
+            SymbolNewsRelevance.id.asc(),
+        )
+        .limit(limit)
+    )
+    rows = await db.execute(stmt)
+    return [
+        {
+            "article_id": article.id,
+            "market": link.market,
+            "symbol": link.symbol,
+            "url": article.url,
+            "title": article.title,
+            "source": article.source,
+            "published_at": (
+                article.article_published_at.isoformat()
+                if article.article_published_at
+                else None
+            ),
+            "first_seen_at": link.first_seen_at.isoformat(),
+            "hints": link.hints,
+        }
+        for article, link in rows.all()
+    ]
+
+
+async def apply_judgment(
+    db: AsyncSession,
+    *,
+    article_id: int,
+    market: str,
+    symbol: str,
+    relationship: str,
+    relevance: str,
+    price_relevance: str,
+    score: float | None,
+    reason: str,
+    judged_by: str,
+) -> str | None:
+    """Idempotent judgment write-back. Returns new status, None if link missing.
+
+    Status is derived server-side (``derive_status``) — the job never sets it.
+    """
+    link = (
+        await db.execute(
+            select(SymbolNewsRelevance).where(
+                SymbolNewsRelevance.article_id == article_id,
+                SymbolNewsRelevance.market == market,
+                SymbolNewsRelevance.symbol == symbol,
+            )
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        return None
+    now = _utcnow()
+    link.relationship = relationship
+    link.relevance = relevance
+    link.price_relevance = price_relevance
+    link.score = score
+    link.reason = reason
+    link.judged_by = judged_by
+    link.judged_at = now
+    link.updated_at = now
+    link.status = derive_status(relationship, relevance)
+    await db.flush()
+    return link.status
+
+
 async def load_symbol_news(
     db: AsyncSession,
     symbol: str,

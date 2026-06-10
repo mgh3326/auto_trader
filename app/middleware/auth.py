@@ -56,6 +56,7 @@ class AuthMiddleware:
         "/trading/api/research-reports/ingest/bulk"
     )
     HERMES_INGEST_PATH_PREFIX: ClassVar[str] = "/trading/api/investment-reports/hermes/"
+    NEWS_RELEVANCE_PATH_PREFIX: ClassVar[str] = "/trading/api/news-relevance/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
     def __init__(self, app: ASGIApp):
@@ -221,6 +222,33 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid Hermes ingest token"},
+                )
+            return None
+
+        # ROB-491 — external news-relevance judgment job surface (pending read
+        # + judgment ingest). Same prefix-token shape as the Hermes branch;
+        # both GET and POST require the token because the payloads expose
+        # article batches.
+        if path.startswith(self.NEWS_RELEVANCE_PATH_PREFIX):
+            expected_token = settings.NEWS_RELEVANCE_INGEST_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "News relevance ingest token not configured"},
+                )
+            header_name = settings.NEWS_RELEVANCE_INGEST_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "News relevance ingest token header not configured"
+                    },
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid news relevance ingest token"},
                 )
             return None
 
