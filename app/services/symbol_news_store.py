@@ -76,10 +76,14 @@ async def upsert_kr_feed_articles(
     items: list[FeedArticleInput],
     *,
     feed_source: str = KR_FEED_SOURCE,
-) -> None:
-    """Set-difference upsert: new urls insert, known urls no-op (idempotent)."""
+) -> int:
+    """Set-difference upsert: new urls insert, known urls no-op (idempotent).
+
+    Returns the number of *newly created* pending links (ROB-506 enqueue
+    trigger). 0 when every (article, symbol) pair already existed.
+    """
     if not items:
-        return
+        return 0
     now = _utcnow()
     article_values = [
         {
@@ -131,8 +135,9 @@ async def upsert_kr_feed_articles(
                 "updated_at": now,
             }
         )
+    new_links = 0
     if link_values:
-        await db.execute(
+        result = await db.execute(
             pg_insert(SymbolNewsRelevance)
             .values(link_values)
             .on_conflict_do_nothing(
@@ -143,7 +148,9 @@ async def upsert_kr_feed_articles(
                 ]
             )
         )
+        new_links = int(result.rowcount or 0)
     await db.commit()
+    return new_links
 
 
 async def list_pending(
