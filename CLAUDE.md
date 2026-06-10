@@ -110,25 +110,13 @@ app/analysis/
 - 보유 자산 정보가 있으면 `position_info`로 전달
 - 분봉 데이터가 있으면 `minute_candles`로 전달
 
-### Redis 기반 스마트 모델 제한 시스템
+### Runtime LLM ownership boundary
 
-**목적:** Google Gemini API 429 에러(할당량 초과) 발생 시 API 키별로 해당 모델 사용 자동 제한
-
-**구조:**
-```
-app/core/model_rate_limiter.py   # ModelRateLimiter 클래스
-app/analysis/analyzer.py          # _call_gemini_with_retry 메서드에서 활용
-```
-
-**동작 방식:**
-1. API 호출 전: Redis에서 해당 API 키의 모델 제한 상태 확인
-2. 429 에러 발생 시: `retry_delay` 정보를 Redis에 저장하여 API 키별로 모델 제한
-3. 제한된 경우: 다음 사용 가능한 모델로 자동 전환
-4. 제한 해제: TTL 만료 시 자동 해제 (필요 시 Redis 키/TTL 점검으로 상태 확인)
-
-**Redis 키 구조:**
-- `model_rate_limit:{model}:{masked_api_key}` - 제한 정보
-- `model_retry_info:{model}:{masked_api_key}` - 재시도 정보
+auto_trader runtime code must not import or instantiate in-process LLM providers
+(Gemini/OpenAI/Grok/etc.). LLM judgment belongs to MCP consumers or Hermes
+out-of-process flows. The static guard in
+`tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`
+scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 
 ### Alpaca Paper 실행 레저 (ROB-84)
 
@@ -580,9 +568,6 @@ docker compose exec redis redis-cli ttl "model_rate_limit:<model>:<masked_api_ke
 **필수 환경 변수 (.env 파일):**
 
 ```bash
-# Google AI
-GOOGLE_API_KEY=xxx                    # 또는
-GOOGLE_API_KEYS=key1,key2,key3        # 콤마로 구분된 여러 키
 
 # 한국투자증권 (KIS)
 KIS_APP_KEY=xxx
@@ -688,10 +673,6 @@ uv run alembic downgrade <revision>
 uv run alembic history
 ```
 
-### Google API 429 에러
-- Redis 기반 자동 제한 시스템이 작동 중
-- 제한은 TTL 만료로 자동 해제되며, 필요 시 `model_rate_limit:*` 키와 TTL을 Redis에서 점검
-- 여러 API 키 사용: `GOOGLE_API_KEYS=key1,key2,key3`
 
 ## 참고 문서
 
