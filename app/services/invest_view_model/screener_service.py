@@ -816,6 +816,61 @@ async def _load_investor_flow_discovery_from_snapshots(
                     "investor_flow: market_cap lookup failed: %s", exc, exc_info=True
                 )
 
+    # ROB-512 갭1: 현재가/등락률/거래량 — healthy KR 가격 파티션에서 보조 표시
+    # 필드를 가져온다(위 market_cap lookup 미러). fail-open: 가격 파티션이
+    # 없거나 조회가 실패해도 수급 행 자격에는 영향이 없고 키만 None이다.
+    price_map: dict[str, dict[str, Any]] = {}
+    if candidate_snaps:
+        from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+
+        price_hp = await resolve_healthy_partition(
+            session,
+            model=InvestScreenerSnapshot,
+            date_col=InvestScreenerSnapshot.snapshot_date,
+            market_col=InvestScreenerSnapshot.market,
+            market="kr",
+        )
+        if price_hp is not None:
+            try:
+                _pq = await session.execute(
+                    sa.select(
+                        InvestScreenerSnapshot.symbol,
+                        InvestScreenerSnapshot.latest_close,
+                        InvestScreenerSnapshot.change_rate,
+                        InvestScreenerSnapshot.change_amount,
+                        InvestScreenerSnapshot.daily_volume,
+                    ).where(
+                        InvestScreenerSnapshot.market == "kr",
+                        InvestScreenerSnapshot.snapshot_date == price_hp.partition_date,
+                        InvestScreenerSnapshot.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        ),
+                    )
+                )
+                price_map = {
+                    r.symbol: {
+                        "close": (
+                            float(r.latest_close)
+                            if r.latest_close is not None
+                            else None
+                        ),
+                        "change_rate": (
+                            float(r.change_rate) if r.change_rate is not None else None
+                        ),
+                        "change_amount": (
+                            float(r.change_amount)
+                            if r.change_amount is not None
+                            else None
+                        ),
+                        "volume": r.daily_volume,
+                    }
+                    for r in _pq.all()
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "investor_flow: price lookup failed: %s", exc, exc_info=True
+                )
+
     from app.services.invest_screener_snapshots.freshness import (
         classify_investor_flow_partition,
         today_trading_date,
@@ -840,11 +895,16 @@ async def _load_investor_flow_discovery_from_snapshots(
         )
         if partition_degraded:
             state = cap_degraded(state)
+        price = price_map.get(snap.symbol) or {}
         rows.append(
             {
                 "symbol": snap.symbol,
                 "market": "kr",
                 "name": symbol_names.get(snap.symbol),
+                "close": price.get("close"),
+                "change_rate": price.get("change_rate"),
+                "change_amount": price.get("change_amount"),
+                "volume": price.get("volume"),
                 "foreign_net": snap.foreign_net,
                 "institution_net": snap.institution_net,
                 "individual_net": snap.individual_net,

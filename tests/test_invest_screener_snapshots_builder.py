@@ -85,7 +85,7 @@ async def test_build_snapshot_for_symbol_kr(monkeypatch):
     assert payload.consecutive_up_days == 9
     assert payload.daily_volume == 1_000_000
     assert payload.source == "kis"
-    fetcher.assert_awaited_once_with("005930", "equity_kr", count=10)
+    fetcher.assert_awaited_once_with("005930", "equity_kr", count=30)
 
 
 @pytest.mark.asyncio
@@ -177,3 +177,41 @@ async def test_build_snapshot_for_symbol_returns_none_on_empty_df(monkeypatch):
         )
         is None
     )
+
+
+def test_lookback_supports_rsi14():
+    """ROB-512: build_rsi14_from_closes는 최소 15종가가 필요하다. _LOOKBACK이
+    그 밑이면 closes_window 기반 RSI enrichment가 전 심볼에서 구조적으로 None이
+    된다(rsiSucceeded=0 회귀 가드)."""
+    from app.services.invest_screener_snapshots import builder
+
+    assert builder._LOOKBACK >= 15
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_stores_rsi_capable_closes_window(monkeypatch):
+    """ROB-512: 30세션 OHLCV가 주어지면 closes_window에 15개 이상 저장되고,
+    저장된 윈도우만으로 RSI14가 계산 가능해야 한다."""
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-04-01", periods=30),
+            "close": [100.0 + (i % 3) for i in range(30)],
+            "volume": [1_000_000] * 30,
+        }
+    )
+    monkeypatch.setattr(
+        "app.services.invest_screener_snapshots.builder._fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    payload = await build_snapshot_for_symbol(
+        market="kr", symbol="005930", today=dt.date(2026, 5, 9)
+    )
+    assert payload is not None
+    assert len(payload.closes_window) >= 15
+
+    from app.services.invest_view_model.screener_analysis_enrichment import (
+        build_rsi14_from_closes,
+    )
+
+    assert build_rsi14_from_closes(payload.closes_window) is not None
