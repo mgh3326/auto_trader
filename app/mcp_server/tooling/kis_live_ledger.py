@@ -338,10 +338,18 @@ def _live_daily_order_window(
     today = datetime.datetime.strptime(_today_yyyymmdd(), "%Y%m%d").date()
     earliest = today - datetime.timedelta(days=_LIVE_DAILY_ORDER_LOOKBACK_DAYS - 1)
     order_date = _coerce_order_date(order_trade_date)
-    start = max(order_date or earliest, earliest)
+    if order_date is None:
+        return earliest.strftime("%Y%m%d"), today.strftime("%Y%m%d")
+
+    # ROB-487 follow-up: live TTTC8001R accepted exact order-date probes for
+    # prior-day rows, while a broad order_date..today range can fail with
+    # KIER2570 "조회일자를 확인하십시오". For known ledger rows, reconcile the
+    # broker evidence on the single order date; keep the 90-day cap/future clamp
+    # as a fail-closed boundary for stale or malformed rows.
+    start = max(order_date, earliest)
     if start > today:
         start = today
-    return start.strftime("%Y%m%d"), today.strftime("%Y%m%d")
+    return start.strftime("%Y%m%d"), start.strftime("%Y%m%d")
 
 
 def _order_date_kst(row: Any) -> datetime.date | None:
@@ -373,8 +381,10 @@ async def _fetch_live_daily_rows(
     zero rows for prior-day orders (live-verified 2026-06-10: the 20260610
     window contained none of the 6/9 orders). Callers must pass the ledger
     row's order date as ``order_trade_date`` so next-day reconciles can still
-    see prior-day fills; the window is anchored on that date with a 90-day cap
-    (``_live_daily_order_window``) and ``end_date`` stays today.
+    see prior-day fills. Follow-up live smoke showed that a broad
+    order_date..today range can fail with KIER2570; known ledger rows therefore
+    query the exact order date (start_date == end_date == order_date), bounded
+    by the 90-day cap in ``_live_daily_order_window``.
     """
     kis = _create_live_kis_client()
     start_date, end_date = _live_daily_order_window(order_trade_date)
