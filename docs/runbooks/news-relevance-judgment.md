@@ -4,8 +4,9 @@
 
 get_news(KR)가 수집·저장한 기사의 종목 관련성 판정을 **외부 LLM Job**(Hermes류
 세션 또는 operator 수동 실행)이 수행해 write-back하는 절차. auto_trader는
-판정하지 않으며 어떤 기사도 자동 제외하지 않는다. 스케줄러(TaskIQ/cron/Prefect)
-연결 없음 — 이 런북의 절차는 항상 레포 밖에서 호출된다.
+판정하지 않으며 어떤 기사도 자동 제외하지 않는다. recurring 스케줄러
+(cron/Prefect) 연결 없음 — ROB-506의 TaskIQ enqueue는 get_news 호출 시에만
+발생하며 default-off다. production 활성화는 별도 operator gate.
 
 - 데이터: `news_articles` + `symbol_news_relevance` (상태 `pending` →
   `confirmed`/`excluded`, 전이는 ingest 경로로만)
@@ -65,6 +66,62 @@ get_news(KR)가 수집·저장한 기사의 종목 관련성 판정을 **외부 
 4. **검증**
    - 판정 후 `get_news(symbol)` 호출 → `excluded_count` 증가 + 해당 기사 미노출
      + confirmed 기사의 `relevance` 블록에 판정 필드 채워짐 확인.
+
+## TaskIQ 비동기 판정 worker (ROB-506)
+
+`get_news`(KR)가 새 pending link를 만들면 `news_relevance.judge_pending`
+task를 enqueue한다 (fail-open — enqueue 실패해도 get_news는 성공). Task는
+pending batch를 외부 Hermes-호환 judgment webhook에 POST하고, 응답에
+inline `judgments`가 있으면 기존 ingest 규칙(서버 status 파생)으로
+적용한다. 응답이 dispatch-only(2xx, judgments 없음)면 외부 세션이 위의
+ingest/bulk 경로로 write-back할 때까지 pending이 유지된다. 실패/검증 실패
+시에도 pending 유지 — excluded로 오판정되는 경로는 없다.
+
+### 활성화 (default-off)
+
+| env | default | 의미 |
+| --- | --- | --- |
+| `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED` | `false` | off면 enqueue 없음 + commit-mode task는 `disabled` 반환 |
+| `NEWS_RELEVANCE_JUDGMENT_WEBHOOK_URL` | `""` | 외부 judgment endpoint. 미설정 시 client `skipped` |
+| `NEWS_RELEVANCE_JUDGMENT_TOKEN` | `""` | outbound Bearer 토큰 (로그/결과에 출력 안 됨) |
+| `NEWS_RELEVANCE_JUDGMENT_TIMEOUT_S` | `120` | webhook 호출 timeout |
+| `NEWS_RELEVANCE_JUDGMENT_BATCH_LIMIT` | `50` | run당 pending batch 상한 (하드캡 200) |
+
+`HERMES_WEBHOOK_URL`/`HERMES_TOKEN`(ROB-265 알림)과
+`NEWS_RELEVANCE_INGEST_TOKEN`(inbound write-back 인증)과는 별개 설정이다.
+inline 응답을 안 쓰는 Hermes 구성이라면 write-back을 위해 기존
+`NEWS_RELEVANCE_INGEST_TOKEN`도 함께 설정되어 있어야 한다.
+
+### 수동 smoke (worker 로컬 실행)
+
+```bash
+# 1. 의존 서비스 + worker
+docker compose up -d            # postgres, redis
+make taskiq-worker              # uv run taskiq worker app.core.taskiq_broker:broker app.tasks
+
+# 2. dry-run (flag off에서도 허용 — client 호출/DB write 없음)
+uv run python - <<'PY'
+import asyncio
+from app.jobs.news_relevance_judgment import run_news_relevance_judgment
+
+print(asyncio.run(run_news_relevance_judgment(market="kr", dry_run=True)))
+PY
+# 기대: {"status": "dry_run" | "no_pending", "fetched_pending": N, ...}
+
+# 3. commit-mode (operator gate: flag + webhook 설정 후)
+#    get_news(MCP)로 pending을 만든 뒤 worker 로그에서
+#    "news_relevance judgment run: ... status=judged|dispatched" 확인.
+
+# 4. 검증 — 기존 §Job 절차 4와 동일: get_news 재호출로
+#    excluded_count 증가 / confirmed relevance 블록 확인.
+```
+
+### Task result 필드
+
+`fetched_pending`, `judged`, `applied_confirmed`, `applied_excluded`,
+`skipped_unrequested`, `invalid_judgments`, `link_not_found`,
+`client_mode`, `dry_run`, `http_status`, `reason`. 토큰 값은 어디에도
+포함되지 않는다.
 
 ## 트러블슈팅
 

@@ -278,3 +278,139 @@ async def test_unsupported_market_is_unavailable() -> None:
     result = await symbol_news_service.fetch_symbol_news("FOO", "jp")
     assert result.status == "unavailable"
     assert result.error_code == "unsupported_market"
+
+
+# ---------------------------------------------------------------------------
+# ROB-506 — async judgment enqueue from the KR persist path
+# ---------------------------------------------------------------------------
+
+
+def _patch_naver(monkeypatch, items):
+    async def fake_fetch(symbol, limit=20):
+        return items
+
+    monkeypatch.setattr(symbol_news_service.naver_finance, "fetch_news", fake_fetch)
+
+
+_RAW_ITEM = {
+    "title": "네이버 신규 투자",
+    "url": "https://x/rob506-enqueue",
+    "source": "매일경제",
+    "datetime": "2026-06-10T09:00:00",
+}
+
+
+def _patch_store_with_insert_count(monkeypatch, *, stored, new_links: int):
+    """upsert가 신규 link 수(int)를 반환하는 ROB-506 계약으로 store를 fake."""
+
+    async def upsert(db, symbol, items, **kwargs):
+        return new_links
+
+    async def load(db, symbol, market, limit):
+        return stored, 0
+
+    monkeypatch.setattr(
+        symbol_news_service.symbol_news_store, "upsert_kr_feed_articles", upsert
+    )
+    monkeypatch.setattr(symbol_news_service.symbol_news_store, "load_symbol_news", load)
+    fake_session = MagicMock()
+    fake_cm = MagicMock()
+    fake_cm.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        symbol_news_service, "AsyncSessionLocal", MagicMock(return_value=fake_cm)
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_new_pending_enqueues_judgment_when_flag_on(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.tasks import news_relevance_judgment_tasks
+
+    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", True)
+    _patch_naver(monkeypatch, [_RAW_ITEM])
+    _patch_store_with_insert_count(
+        monkeypatch,
+        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"])],
+        new_links=1,
+    )
+    kiq = AsyncMock()
+    monkeypatch.setattr(
+        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("035420", "kr")
+    assert result.status == "ok"
+    kiq.assert_awaited_once_with(market="kr", symbol="035420", dry_run=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_enqueue_failure_is_fail_open(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.tasks import news_relevance_judgment_tasks
+
+    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", True)
+    _patch_naver(monkeypatch, [_RAW_ITEM])
+    _patch_store_with_insert_count(
+        monkeypatch,
+        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"])],
+        new_links=1,
+    )
+    kiq = AsyncMock(side_effect=RuntimeError("redis down"))
+    monkeypatch.setattr(
+        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("035420", "kr")
+    assert result.status == "ok"  # enqueue 실패가 get_news를 죽이지 않음
+    assert result.returned_count == 1
+    kiq.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_no_enqueue_when_flag_off(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.tasks import news_relevance_judgment_tasks
+
+    # flag 기본 off — 명시적으로 고정
+    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", False)
+    _patch_naver(monkeypatch, [_RAW_ITEM])
+    _patch_store_with_insert_count(
+        monkeypatch,
+        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"])],
+        new_links=1,
+    )
+    kiq = AsyncMock()
+    monkeypatch.setattr(
+        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("035420", "kr")
+    assert result.status == "ok"
+    kiq.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_no_enqueue_when_no_new_pending(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.tasks import news_relevance_judgment_tasks
+
+    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", True)
+    _patch_naver(monkeypatch, [_RAW_ITEM])
+    _patch_store_with_insert_count(
+        monkeypatch,
+        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"])],
+        new_links=0,  # 전부 기존 link — 신규 pending 없음
+    )
+    kiq = AsyncMock()
+    monkeypatch.setattr(
+        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("035420", "kr")
+    assert result.status == "ok"
+    kiq.assert_not_awaited()

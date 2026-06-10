@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services import naver_finance, symbol_news_store
 from app.services.finnhub_news import fetch_news_finnhub
@@ -177,6 +178,30 @@ def _stored_to_article(
     )
 
 
+async def _maybe_enqueue_judgment(symbol: str, new_pending: int) -> None:
+    """ROB-506: fire-and-forget judgment enqueue. Never raises into get_news."""
+    if new_pending <= 0:
+        return
+    if not settings.NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED:
+        return
+    try:
+        # Lazy import — keeps the taskiq broker out of plain MCP import paths.
+        from app.tasks.news_relevance_judgment_tasks import (
+            news_relevance_judge_pending,
+        )
+
+        await news_relevance_judge_pending.kiq(
+            market="kr", symbol=symbol, dry_run=False
+        )
+    except Exception as exc:  # noqa: BLE001 — enqueue must be fail-open
+        logger.warning(
+            "symbol_news_service: judgment enqueue failed (fail-open): "
+            "symbol=%s err=%s",
+            symbol,
+            exc,
+        )
+
+
 async def _kr_persist_and_load(
     symbol: str,
     fetched: list[SymbolNewsArticle],
@@ -184,10 +209,11 @@ async def _kr_persist_and_load(
     fetched_at: datetime,
 ) -> tuple[list[SymbolNewsArticle], int] | None:
     """Persist this window then serve canonical DB state. None → DB unavailable."""
+    inserted: Any = 0
     try:
         async with AsyncSessionLocal() as db:
             if fetched:
-                await symbol_news_store.upsert_kr_feed_articles(
+                inserted = await symbol_news_store.upsert_kr_feed_articles(
                     db,
                     symbol,
                     [
@@ -210,6 +236,9 @@ async def _kr_persist_and_load(
             exc,
         )
         return None
+    # isinstance guard: 구형 fake/None 반환이어도 enqueue 판단만 0으로 처리
+    new_pending = inserted if isinstance(inserted, int) else 0
+    await _maybe_enqueue_judgment(symbol, new_pending)
     raw_by_url = {
         a.canonical_url: a.provider_metadata.get("source_item") for a in fetched
     }
