@@ -7,12 +7,10 @@ statistics with extended fields.
 """
 
 import calendar
-import statistics
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
-# ROB-488: recency / outlier guard constants (180d ≈ 6 months, configurable via window_months)
-CONSENSUS_RECENCY_DAYS = 180
+# ROB-488: outlier guard thresholds for target-price aggregation.
 # Corporate-action (액면분할/병합·감자) garbage shows up as absurd upside in
 # either direction, but the math is asymmetric: upside is unbounded above yet
 # floored at -100%, so the downside needs its own (tighter) threshold —
