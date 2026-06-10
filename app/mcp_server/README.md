@@ -84,6 +84,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - 6자리 KR 종목코드만 지원 (예: `005930`)
   - US ticker (`AAPL`, `SMCI`) 와 crypto symbol (`KRW-BTC`) 은 지원하지 않음
   - `days` 는 1~60 범위로 cap 됨
+- `get_intraday_investor_flow(symbol)`
+  - KR-only read-only tool for same-day provisional foreign/institution flow by symbol.
+  - Source: KIS `investor-trend-estimate` (`/uapi/domestic-stock/v1/quotations/investor-trend-estimate`, TR `HHPTJ04160200`).
+  - Returns quantity estimates only: `foreign_net_qty`, `institution_net_qty`, `combined_net_qty`.
+  - The response always marks successful data as `provisional: true` and `data_state: "intraday_provisional"`.
+  - `as_of` is inferred from the latest returned KIS slot (`bsop_hour_gb`: 09:30, 10:00, 11:20, 13:20, 14:30) on the KST request date because the KIS payload does not include a date field.
+  - This is not a confirmed daily close figure and should not be mixed with `get_investor_trends` day/week/month history.
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50, account_mode=None)`
   - `status="pending"` 만 symbol 없이 호출 가능

@@ -28,6 +28,7 @@ AVAILABLE_TOOL_NAMES = [
     "get_insider_transactions",
     "get_earnings_calendar",
     "get_investor_trends",
+    "get_intraday_investor_flow",
     "get_investment_opinions",
     "get_valuation",
     "get_short_interest",
