@@ -523,14 +523,17 @@ def test_normalize_opinion_passes_alt_date_keys():
     assert _normalize_opinion({"rating": "매수", "date": "2026-05-18"})["date"] == (
         "2026-05-18"
     )
-    assert _normalize_opinion({"rating": "매수", "report_date": "2026-05-18"})[
-        "date"
-    ] == "2026-05-18"
-    assert _normalize_opinion({"rating": "매수", "published_date": "2026-05-18"})[
-        "date"
-    ] == "2026-05-18"
-    assert _normalize_opinion({"rating": "매수", "published_at": "2026-05-18"})[
-        "date"
-    ] == "2026-05-18"
+    assert (
+        _normalize_opinion({"rating": "매수", "report_date": "2026-05-18"})["date"]
+        == "2026-05-18"
+    )
+    assert (
+        _normalize_opinion({"rating": "매수", "published_date": "2026-05-18"})["date"]
+        == "2026-05-18"
+    )
+    assert (
+        _normalize_opinion({"rating": "매수", "published_at": "2026-05-18"})["date"]
+        == "2026-05-18"
+    )
     assert _normalize_opinion({"rating": "매수"})["date"] is None
     assert _normalize_opinion("not-a-dict")["date"] is None

@@ -430,9 +430,16 @@ class TestBuildConsensusRecencyWindow:
         가드(ROB-488 +300%/-75%)가 쓰레기 undated 목표가를 차단한다."""
         opinions = [
             {"rating": "Buy", "target_price": 100, "date": _days_ago(10)},
-            {"rating": "Buy", "target_price": 999},  # date 키 자체 없음 — outlier (+1010%)
+            {
+                "rating": "Buy",
+                "target_price": 999,
+            },  # date 키 자체 없음 — outlier (+1010%)
             {"rating": "Buy", "target_price": 888, "date": None},  # outlier (+887%)
-            {"rating": "Buy", "target_price": 777, "date": "not-a-date"},  # outlier (+763%)
+            {
+                "rating": "Buy",
+                "target_price": 777,
+                "date": "not-a-date",
+            },  # outlier (+763%)
         ]
         consensus = build_consensus(opinions, 90, now=_NOW)
 

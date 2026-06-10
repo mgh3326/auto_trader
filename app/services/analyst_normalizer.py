@@ -17,7 +17,13 @@ from typing import Any, Literal
 # abs(upside) > 300 can never fire below zero.
 TARGET_PRICE_MAX_UPSIDE_PCT = 300.0
 TARGET_PRICE_MIN_UPSIDE_PCT = -75.0
-_OPINION_DATE_KEYS = ("date", "report_date", "published_date", "published_at", "datetime")
+_OPINION_DATE_KEYS = (
+    "date",
+    "report_date",
+    "published_date",
+    "published_at",
+    "datetime",
+)
 
 # Rating label to standard English label mapping
 RATING_LABEL_MAP: dict[str, str] = {
@@ -114,7 +120,6 @@ def is_strong_buy(label: str) -> bool:
         return False
     label_lower = label.strip().lower()
     return "strong" in label_lower and "buy" in label_lower
-
 
 
 def _months_before(anchor: date, months: int) -> date:
