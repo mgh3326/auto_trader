@@ -97,6 +97,21 @@ class TestKISOverseasFilledOrdersFetch:
         assert all(o["order_id"] == "PARTIAL-ORDER" for o in orders)
         assert orders[0]["fill_seq"] != orders[1]["fill_seq"]
 
+    @pytest.mark.asyncio
+    async def test_us_wide_history_failure_returns_error(self, monkeypatch):
+        from app.services import n8n_filled_orders_service as svc
+
+        fake_kis = MagicMock()
+        fake_kis.inquire_daily_order_overseas = AsyncMock(
+            side_effect=RuntimeError("history unavailable")
+        )
+        monkeypatch.setattr(svc, "KISClient", lambda: fake_kis)
+
+        orders, errors = await svc._fetch_kis_overseas_filled(days=7)
+
+        assert orders == []
+        assert errors == [{"market": "us", "error": "history unavailable"}]
+
 
 @pytest.mark.unit
 class TestUpbitFilledOrdersFetch:
@@ -139,67 +154,84 @@ class TestUpbitFilledOrdersFetch:
         assert abs(orders[0]["quantity"] - 0.5) < 1e-9
 
     @pytest.mark.asyncio
-    async def test_pagination_fetches_multiple_pages(self, monkeypatch):
-        """Issue 2 regression: pagination must continue until an empty or out-of-window page."""
+    async def test_time_window_crawl_continues_after_cancel_only_window(
+        self, monkeypatch
+    ):
         from app.services import n8n_filled_orders_service as svc
 
-        recent_ts = (now_kst() - timedelta(hours=1)).isoformat()
+        end_at = now_kst().replace(microsecond=0)
+        start_at = end_at - timedelta(days=8)
 
-        def _make_order(uuid_val: str) -> dict:
+        def _make_order(
+            uuid_val: str,
+            ts: str,
+            *,
+            state: str = "done",
+            executed_volume: str = "0.01",
+        ) -> dict:
             return {
-                "state": "done",
+                "state": state,
                 "market": "KRW-BTC",
                 "side": "bid",
-                "executed_volume": "0.01",
+                "executed_volume": executed_volume,
                 "price": "100000000",
                 "avg_price": "100000000",
                 "paid_fee": "500",
                 "uuid": uuid_val,
-                "created_at": recent_ts,
+                "created_at": ts,
                 "trades": [
                     {
                         "uuid": f"trade-{uuid_val}",
                         "volume": "0.01",
                         "funds": "1000000",
-                        "created_at": recent_ts,
+                        "created_at": ts,
                     }
                 ],
             }
 
-        # Page 1: full page (100 orders) → trigger page 2
-        page1 = [_make_order(f"order-p1-{i}") for i in range(100)]
-        # Page 2: partial page (3 orders) → last page, stop
-        page2 = [_make_order(f"order-p2-{i}") for i in range(3)]
+        older_ts = (start_at + timedelta(hours=1)).isoformat()
+        calls = []
 
-        call_count = 0
-
-        def fake_fetch_closed(market, limit, page, **_kw):
-            nonlocal call_count
-            call_count += 1
-            return page1 if page == 1 else page2
+        def fake_fetch_closed(market, limit, **kwargs):
+            calls.append((market, limit, kwargs["start_time"], kwargs["end_time"]))
+            if len(calls) == 1:
+                cancel_ts = (kwargs["end_time"] - timedelta(minutes=1)).isoformat()
+                return [
+                    _make_order(
+                        "cancel-only",
+                        cancel_ts,
+                        state="cancel",
+                        executed_volume="0",
+                    )
+                ]
+            return [_make_order("older-fill", older_ts)]
 
         fake_upbit = MagicMock()
         fake_upbit.fetch_closed_orders = AsyncMock(side_effect=fake_fetch_closed)
         fake_upbit.fetch_order_detail = AsyncMock(
-            side_effect=lambda uuid: _make_order(uuid)
+            side_effect=lambda uuid: _make_order(uuid, older_ts)
         )
         monkeypatch.setattr(svc, "upbit_service", fake_upbit)
 
-        orders, errors = await svc._fetch_upbit_filled(days=1)
+        orders, errors = await svc._fetch_upbit_filled(
+            days=8, start_at=start_at, end_at=end_at
+        )
 
         assert errors == []
-        # Both pages must be consumed
-        assert call_count == 2
-        # 100 + 3 orders × 1 trade each = 103 fills
-        assert len(orders) == 103
+        assert len(calls) == 2
+        assert calls[0][2] == end_at - timedelta(days=7)
+        assert calls[0][3] == end_at
+        assert calls[1][2] == start_at
+        assert calls[1][3] == end_at - timedelta(days=7)
+        assert [order["order_id"] for order in orders] == ["older-fill"]
 
     @pytest.mark.asyncio
-    async def test_pagination_stops_when_page_is_out_of_window(self, monkeypatch):
-        """Pagination must stop once a page contains no orders within the time window."""
+    async def test_saturated_time_window_is_recursively_split(self, monkeypatch):
         from app.services import n8n_filled_orders_service as svc
 
-        recent_ts = (now_kst() - timedelta(hours=1)).isoformat()
-        old_ts = (now_kst() - timedelta(days=10)).isoformat()
+        end_at = now_kst().replace(microsecond=0)
+        start_at = end_at - timedelta(hours=2)
+        midpoint = start_at + timedelta(hours=1)
 
         def _make_order(uuid_val: str, ts: str) -> dict:
             return {
@@ -222,31 +254,39 @@ class TestUpbitFilledOrdersFetch:
                 ],
             }
 
-        page1 = [_make_order("order-recent", recent_ts)] * 100  # full page, in window
-        page2 = [_make_order("order-old", old_ts)] * 5  # all out of window → stop
+        calls = []
 
-        call_count = 0
-
-        def fake_fetch_closed(market, limit, page, **_kw):
-            nonlocal call_count
-            call_count += 1
-            return page1 if page == 1 else page2
+        def fake_fetch_closed(market, limit, **kwargs):
+            calls.append((market, limit, kwargs["start_time"], kwargs["end_time"]))
+            if kwargs["start_time"] == start_at and kwargs["end_time"] == end_at:
+                return [
+                    _make_order("saturated-a", start_at.isoformat()),
+                    _make_order("saturated-b", start_at.isoformat()),
+                ]
+            if kwargs["end_time"] == midpoint:
+                return []
+            return [
+                _make_order("split-fill", (midpoint + timedelta(minutes=1)).isoformat())
+            ]
 
         fake_upbit = MagicMock()
+        monkeypatch.setattr(svc, "_UPBIT_CLOSED_ORDERS_LIMIT", 2)
         fake_upbit.fetch_closed_orders = AsyncMock(side_effect=fake_fetch_closed)
         fake_upbit.fetch_order_detail = AsyncMock(
-            side_effect=lambda uuid: _make_order(
-                uuid, recent_ts if "recent" in uuid else old_ts
-            )
+            side_effect=lambda uuid: _make_order(uuid, end_at.isoformat())
         )
         monkeypatch.setattr(svc, "upbit_service", fake_upbit)
 
-        orders, errors = await svc._fetch_upbit_filled(days=1)
+        orders, errors = await svc._fetch_upbit_filled(
+            days=1, start_at=start_at, end_at=end_at
+        )
 
         assert errors == []
-        assert call_count == 2  # stopped after finding out-of-window page
-        # Only page-1 orders are within the window
-        assert len(orders) == 100
+        assert len(calls) == 3
+        assert calls[0][2:] == (start_at, end_at)
+        assert calls[1][2:] == (start_at, midpoint)
+        assert calls[2][2:] == (midpoint, end_at)
+        assert [order["order_id"] for order in orders] == ["split-fill"]
 
     @pytest.mark.asyncio
     async def test_detail_fetch_failure_falls_back_to_aggregate_fill(self, monkeypatch):

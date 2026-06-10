@@ -204,24 +204,21 @@ async def _fetch_kis_overseas_filled(
         all_orders: list[dict] = []
         seen_fill_keys: set[tuple[str, int]] = set()
 
-        try:
-            raw_orders = await kis.inquire_daily_order_overseas(
-                start_date=start_kst.strftime("%Y%m%d"),
-                end_date=end_kst.strftime("%Y%m%d"),
-                symbol="%",
-                exchange_code="NASD",
-                side="00",
-                max_pages=max_pages,
-            )
-            for raw in raw_orders or []:
-                normalized = _normalize_kis_overseas_filled(raw)
-                if normalized:
-                    fill_key = (normalized["order_id"], normalized["fill_seq"])
-                    if fill_key not in seen_fill_keys:
-                        seen_fill_keys.add(fill_key)
-                        all_orders.append(normalized)
-        except Exception as exc:
-            logger.warning("KIS overseas US-wide fetch failed: %s", exc)
+        raw_orders = await kis.inquire_daily_order_overseas(
+            start_date=start_kst.strftime("%Y%m%d"),
+            end_date=end_kst.strftime("%Y%m%d"),
+            symbol="%",
+            exchange_code="NASD",
+            side="00",
+            max_pages=max_pages,
+        )
+        for raw in raw_orders or []:
+            normalized = _normalize_kis_overseas_filled(raw)
+            if normalized:
+                fill_key = (normalized["order_id"], normalized["fill_seq"])
+                if fill_key not in seen_fill_keys:
+                    seen_fill_keys.add(fill_key)
+                    all_orders.append(normalized)
 
         return all_orders, []
     except Exception as exc:

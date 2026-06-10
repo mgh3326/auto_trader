@@ -144,3 +144,31 @@ async def test_reconciler_passes_explicit_window_to_fetcher(
     assert captured["max_pages"] == 25
     assert repo.runs[0].window_start == start_at
     assert repo.runs[0].window_end == end_at
+
+
+@pytest.mark.asyncio
+async def test_reconciler_rejects_fetch_errors_and_records_failed_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.execution_ledger.reconciler.settings",
+        SimpleNamespace(EXECUTION_LEDGER_COMMIT_ENABLED=False),
+    )
+
+    async def fetcher(**_kwargs):  # noqa: ANN003
+        await asyncio.sleep(0)
+        return {
+            "orders": [],
+            "errors": [{"market": "crypto", "error": "truncated window"}],
+        }
+
+    repo = FakeRepo(status="inserted")
+
+    with pytest.raises(RuntimeError, match="crypto.*truncated window"):
+        await ExecutionLedgerReconciler(repo, fetcher=fetcher).run(
+            "upbit", dry_run=True
+        )
+
+    assert len(repo.runs) == 1
+    assert "crypto" in repo.runs[0].error_summary
+    assert "truncated window" in repo.runs[0].error_summary

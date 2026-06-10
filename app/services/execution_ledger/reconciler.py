@@ -23,6 +23,18 @@ Broker = Literal["kis", "upbit"]
 FilledOrdersFetcher = Callable[..., Awaitable[dict[str, Any]]]
 
 
+def _format_fetch_errors(errors: list[Any]) -> str:
+    parts = []
+    for error in errors:
+        if isinstance(error, dict):
+            market = error.get("market") or "unknown"
+            message = error.get("error") or error
+            parts.append(f"{market}: {message}")
+        else:
+            parts.append(str(error))
+    return "; ".join(parts)
+
+
 def _resolve_run_window(
     *,
     window_hours: int = 24,
@@ -140,6 +152,14 @@ class ExecutionLedgerReconciler:
             end_at=end_at,
             max_pages=max_pages,
         )
+        errors = result.get("errors") or []
+        if errors:
+            raise RuntimeError(
+                "Filled-orders fetch returned errors "
+                f"broker={broker} markets={markets} "
+                f"start_at={start_at.isoformat()} end_at={end_at.isoformat()}: "
+                f"{_format_fetch_errors(errors)}"
+            )
         rows = result.get("orders") or result.get("items") or []
         upserts: list[ExecutionLedgerUpsert] = []
         for row in rows:

@@ -55,18 +55,24 @@ async def _main() -> int:
     start_at, end_at = resolve_window_args(args)
     async with AsyncSessionLocal() as db:
         reconciler = ExecutionLedgerReconciler(ExecutionLedgerRepository(db))
-        diff = await reconciler.run(
-            args.broker,
-            window_hours=args.window_hours,
-            start_at=start_at,
-            end_at=end_at,
-            max_pages=args.max_pages,
-            dry_run=dry_run,
-        )
-        if not dry_run:
-            await db.commit()
-        else:
-            await db.rollback()
+        try:
+            diff = await reconciler.run(
+                args.broker,
+                window_hours=args.window_hours,
+                start_at=start_at,
+                end_at=end_at,
+                max_pages=args.max_pages,
+                dry_run=dry_run,
+            )
+        except Exception:
+            if dry_run:
+                # Dry-run skips ledger upserts; commit only preserves the run audit row.
+                await db.commit()
+            else:
+                await db.rollback()
+            raise
+        # Dry-run skips ledger upserts; commit only preserves the run audit row.
+        await db.commit()
     print(json.dumps(diff.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
     return 0
 
