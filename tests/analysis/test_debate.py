@@ -118,6 +118,3 @@ async def test_build_summary_unavailable_warning():
     }
     summary, links = await build_summary(stage_outputs)
     assert any("market: UNAVAILABLE" in w for w in summary.warnings)
-
-
-

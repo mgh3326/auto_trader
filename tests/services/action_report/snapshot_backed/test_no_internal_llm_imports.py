@@ -116,8 +116,7 @@ def test_no_runtime_in_process_llm_imports(path: pathlib.Path) -> None:
         for access in accesses
         if access.endswith(".ask")
         and any(
-            access.startswith(f"{forbidden}.")
-            for forbidden in FORBIDDEN_DEFINED_NAMES
+            access.startswith(f"{forbidden}.") for forbidden in FORBIDDEN_DEFINED_NAMES
         )
     }
 
@@ -149,4 +148,3 @@ def test_guard_paths_actually_scan_app_runtime() -> None:
         assert root.exists(), f"guard root missing: {root}"
     files = _iter_python_files(GUARDED_PATHS)
     assert len(files) > 100, "expected guard to inspect the app runtime package"
-

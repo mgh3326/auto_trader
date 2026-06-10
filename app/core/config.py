@@ -707,8 +707,6 @@ class Settings(BaseSettings):
     # API Documentation
     DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
 
-
-
     # TradingAgents advisory runner (ROB-9)
     tradingagents_repo_path: str | None = None
     tradingagents_python: str | None = None

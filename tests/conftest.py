@@ -417,9 +417,6 @@ def sample_yahoo_data():
     }
 
 
-
-
-
 # Markers for different test types
 pytest_plugins = ["pytest_asyncio", "tests._investment_reports_helpers"]
 
