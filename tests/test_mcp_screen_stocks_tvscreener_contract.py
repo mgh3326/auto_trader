@@ -1078,6 +1078,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -1393,6 +1394,7 @@ class TestScreenStocksTvScreenerContract:
             "_fetch_screen_enrichment_us",
             fail_enrichment,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -1472,6 +1474,7 @@ class TestScreenStocksTvScreenerContract:
             "_fetch_screen_enrichment_us",
             fail_enrichment,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](

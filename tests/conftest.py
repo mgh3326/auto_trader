@@ -287,6 +287,35 @@ def _mock_kr_market_session_calendar(monkeypatch):
     )
 
 
+@pytest.fixture
+def allow_tvscreener_http():
+    """Opt out of the default tvscreener HTTP boundary block."""
+
+
+@pytest.fixture(autouse=True)
+def _block_tvscreener_http_boundary(request, monkeypatch):
+    """Prevent accidental TradingView scanner HTTP calls in non-live tests."""
+    if "allow_tvscreener_http" in request.fixturenames:
+        return
+    if request.node.get_closest_marker("live") and request.config.getoption(
+        "--run-live"
+    ):
+        return
+
+    from app.services.tvscreener_retry import TvScreenerError
+
+    async def _raise_tvscreener_blocked(*_args, **_kwargs):
+        raise TvScreenerError(
+            "TvScreener HTTP is disabled during pytest; patch TvScreenerService "
+            "with a fake or request allow_tvscreener_http for boundary/live tests."
+        )
+
+    monkeypatch.setattr(
+        "app.services.tvscreener_service.TvScreenerService.fetch_with_retry",
+        _raise_tvscreener_blocked,
+    )
+
+
 @pytest.fixture(autouse=True)
 def mock_auth_middleware_db():
     """Mock AsyncSessionLocal in AuthMiddleware to prevent DB connection attempts."""

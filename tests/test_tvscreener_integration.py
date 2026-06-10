@@ -76,7 +76,7 @@ async def test_query_crypto_screener_normalizes_real_column_labels(
         }
     )
     screener = FakeCryptoScreener(raw)
-    service = TvScreenerService()
+    service = TvScreenerService(max_retries=1, base_delay=0)
 
     async def fake_fetch(
         screener_callable: Callable[[], pd.DataFrame],
@@ -132,7 +132,7 @@ async def test_query_stock_screener_sets_markets_and_applies_filters_individuall
         }
     )
     screener = FakeStockScreener(raw)
-    service = TvScreenerService()
+    service = TvScreenerService(max_retries=1, base_delay=0)
 
     async def fake_fetch(
         screener_callable: Callable[[], pd.DataFrame],
@@ -189,7 +189,7 @@ async def test_query_stock_screener_sets_markets_and_applies_filters_individuall
 async def test_query_stock_screener_raises_when_import_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = TvScreenerService()
+    service = TvScreenerService(max_retries=1, base_delay=0)
     monkeypatch.setattr(
         "app.services.tvscreener_service._import_tvscreener",
         lambda: (_ for _ in ()).throw(ImportError("missing")),
@@ -238,10 +238,11 @@ def _make_none_stock_module(*, none_on_where: bool = False) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_tvscreener_http")
 async def test_crypto_screener_raises_when_where_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = TvScreenerService()
+    service = TvScreenerService(max_retries=1, base_delay=0)
     module = _make_none_crypto_module(none_on_where=True)
     monkeypatch.setattr(
         "app.services.tvscreener_service._import_tvscreener", lambda: module
@@ -255,10 +256,11 @@ async def test_crypto_screener_raises_when_where_returns_none(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_tvscreener_http")
 async def test_stock_screener_raises_when_where_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = TvScreenerService()
+    service = TvScreenerService(max_retries=1, base_delay=0)
     module = _make_none_stock_module(none_on_where=True)
     monkeypatch.setattr(
         "app.services.tvscreener_service._import_tvscreener", lambda: module
