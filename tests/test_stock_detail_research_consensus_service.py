@@ -352,3 +352,41 @@ def test_research_consensus_route_maps_symbol_not_found(
 
     assert response.status_code == 404
     assert response.json()["detail"] == "symbol_not_found"
+
+
+@pytest.mark.unit
+def test_build_consensus_model_applies_recency_and_outlier_guards():
+    """ROB-486: the web path must apply the same consensus guards as MCP —
+    report dates pass through _normalize_opinion and current_price falls back
+    to the embedded consensus dict."""
+    from app.services.invest_view_model.stock_detail_research_consensus_service import (
+        _build_consensus_model,
+    )
+
+    today = datetime.now(UTC).date()
+    payload = {
+        "source": "naver",
+        # no top-level current_price — must fall back to consensus dict
+        "consensus": {"current_price": 15_380},
+        "opinions": [
+            # pre-corporate-action garbage: old date AND absurd target
+            {
+                "rating": "매수",
+                "target_price": 2_700,
+                "date": (today - timedelta(days=400)).isoformat(),
+            },
+            # fresh sane opinion
+            {
+                "rating": "매수",
+                "target_price": 17_000,
+                "date": (today - timedelta(days=10)).isoformat(),
+            },
+        ],
+    }
+
+    warnings: list[str] = []
+    model = _build_consensus_model(payload, warnings)
+
+    assert model is not None
+    assert model.totalCount == 1  # stale opinion excluded
+    assert model.avgTargetPrice == 17_000  # garbage target not averaged in

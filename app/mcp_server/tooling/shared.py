@@ -714,9 +714,12 @@ def build_recommendation_for_equity(
                 )
 
     if consensus:
+        # ROB-486: a consensus target below the current price is not a sell
+        # *target* — same above-market rule as the resistance entries, else a
+        # stale low target sorts first and evicts real resistance levels.
         avg_target = consensus.get("avg_target_price")
         max_target = consensus.get("max_target_price")
-        if avg_target:
+        if avg_target and float(avg_target) > current_price:
             sell_targets.append(
                 {
                     "price": float(avg_target),
@@ -724,7 +727,7 @@ def build_recommendation_for_equity(
                     "reasoning": "Analyst consensus average target",
                 }
             )
-        if max_target:
+        if max_target and float(max_target) > current_price:
             sell_targets.append(
                 {
                     "price": float(max_target),

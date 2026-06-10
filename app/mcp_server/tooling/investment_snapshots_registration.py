@@ -2,8 +2,9 @@
 
 Gated by ``settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED`` in ``registry.py``.
 When the flag is off, this module is imported but
-``register_investment_snapshots_tools`` is not called — the 4 tools are
-absent from the MCP surface.
+``register_investment_snapshots_tools`` is not called — the 3 read tools
+are absent from the MCP surface (bundle_ensure/refresh_request were retired
+in ROB-488).
 """
 
 from __future__ import annotations

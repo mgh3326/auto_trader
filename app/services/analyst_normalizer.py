@@ -4,7 +4,12 @@ from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
 CONSENSUS_RECENCY_DAYS = 180
-TARGET_PRICE_MAX_ABS_UPSIDE_PCT = 300.0
+# Corporate-action (액면분할/병합·감자) garbage shows up as absurd upside in
+# either direction, but the math is asymmetric: upside is unbounded above yet
+# floored at -100%, so the downside needs its own (tighter) threshold —
+# abs(upside) > 300 can never fire below zero.
+TARGET_PRICE_MAX_UPSIDE_PCT = 300.0
+TARGET_PRICE_MIN_UPSIDE_PCT = -75.0
 _OPINION_DATE_KEYS = (
     "date",
     "report_date",
@@ -141,6 +146,9 @@ def _opinion_date(opinion: dict[str, Any]) -> date | None:
 
 
 def _is_stale_opinion(opinion: dict[str, Any], as_of: date) -> bool:
+    """Undated opinions are kept (fail-open): recency only excludes reports we
+    can positively date past the cutoff; the outlier guard still covers
+    undated corporate-action garbage when current_price is known."""
     observed = _opinion_date(opinion)
     if observed is None:
         return False
@@ -161,7 +169,10 @@ def _is_target_price_outlier(
     if not isinstance(current_price, (int, float)) or current_price <= 0:
         return False
     upside_pct = (target_price - current_price) / current_price * 100
-    return abs(upside_pct) > TARGET_PRICE_MAX_ABS_UPSIDE_PCT
+    return (
+        upside_pct > TARGET_PRICE_MAX_UPSIDE_PCT
+        or upside_pct < TARGET_PRICE_MIN_UPSIDE_PCT
+    )
 
 
 def build_consensus(

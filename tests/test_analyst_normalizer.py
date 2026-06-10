@@ -284,6 +284,50 @@ class TestBuildConsensus:
         assert consensus["target_price_outlier_count"] == 1
         assert consensus["target_price_honest"] is False
 
+    def test_masks_downside_corporate_action_outlier(self) -> None:
+        """ROB-486 repro 에스에이엠티: 현재가 15,380 vs 목표가 2,700 (-82.4%).
+
+        abs-upside 가드는 하한 -100% 때문에 하방에서 절대 발화하지 못하므로
+        별도 하방 임계(-75%)가 필요하다.
+        """
+        opinions = [
+            {"rating": "Buy", "target_price": 2_700, "date": "2026-06-01"},
+            {"rating": "Buy", "target_price": 17_000, "date": "2026-06-01"},
+        ]
+
+        consensus = build_consensus(opinions, 15_380, as_of="2026-06-10")
+
+        assert consensus["buy_count"] == 2  # 등급 카운트는 보존
+        assert consensus["target_price_count"] == 1
+        assert consensus["target_price_outlier_count"] == 1
+        assert consensus["avg_target_price"] == 17_000
+        assert consensus["target_price_honest"] is False
+
+    def test_keeps_genuine_bearish_target(self) -> None:
+        """진성 약세 목표가(-30%대)는 하방 가드(-75%)에 걸리지 않아야 한다."""
+        opinions = [{"rating": "Sell", "target_price": 70_000, "date": "2026-06-01"}]
+
+        consensus = build_consensus(opinions, 100_000, as_of="2026-06-10")
+
+        assert consensus["target_price_count"] == 1
+        assert consensus["avg_target_price"] == 70_000
+        assert consensus["target_price_honest"] is True
+
+    def test_undated_opinion_is_kept_fail_open(self) -> None:
+        """날짜 없는 의견은 recency 가드에서 제외하지 않는다(fail-open) —
+        outlier 가드가 여전히 명목가 쓰레기를 방어한다."""
+        opinions = [
+            {"rating": "Buy", "target_price": 110_000},  # undated, sane
+            {"rating": "Buy", "target_price": 2_000_000},  # undated, garbage
+        ]
+
+        consensus = build_consensus(opinions, 100_000, as_of="2026-06-10")
+
+        assert consensus["total_count"] == 2
+        assert consensus["stale_opinion_count"] == 0
+        assert consensus["target_price_count"] == 1
+        assert consensus["avg_target_price"] == 110_000
+
     def test_rating_label_bucket_fallback(self) -> None:
         """Test that rating_label is used when rating_bucket is not provided."""
         opinions = [

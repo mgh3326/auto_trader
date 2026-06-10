@@ -15,7 +15,9 @@ Profile → tool surface mapping
   Explicitly omits: register_order_tools, register_kis_live_order_tools.
 
 "crypto" (McpProfile.CRYPTO):
-  Default research/read-only surface plus crypto-only research/regime tools.
+  Default research/read-only surface plus crypto-only research/regime tools,
+  the generic account_mode order tools (crypto live trading entry point),
+  and live_reconcile_orders (US/crypto evidence-gated settle).
 
 "us-paper" (McpProfile.US_PAPER):
   Default research/read-only surface plus Alpaca paper and us_dual_paper tools.
@@ -68,6 +70,7 @@ from app.mcp_server.tooling.news_registration import register_news_tools
 from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
     register_kis_mock_order_tools,
+    register_live_reconcile_tools,
 )
 from app.mcp_server.tooling.orders_registration import register_order_tools
 from app.mcp_server.tooling.paper_account_registration import (
@@ -138,7 +141,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_trade_retrospective_tools(mcp)
 
     # ROB-269 Phase 2 — investment-snapshot MCP surface. Gated by
-    # ``settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED`` so the 4 tools are
+    # ``settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED`` so the 3 read tools are
     # physically absent unless the flag is flipped post-PR-merge.
     if settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED:
         register_investment_snapshots_tools(mcp)
@@ -150,6 +153,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_order_tools(mcp)
         register_kis_live_order_tools(mcp)
         register_kis_mock_order_tools(mcp)
+        register_live_reconcile_tools(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
@@ -167,7 +171,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     elif profile is McpProfile.KIWOOM:
         orders_kiwoom_variants.register(mcp)
     elif profile is McpProfile.CRYPTO:
-        pass
+        # Crypto live trading enters through the generic account_mode order
+        # tools (the only MCP entry point for Upbit orders, with ROB-407
+        # inline reconcile) and settles through live_reconcile_orders.
+        # Without these a crypto session could research but never trade.
+        register_order_tools(mcp)
+        register_live_reconcile_tools(mcp)
 
 
 __all__ = ["register_all_tools"]

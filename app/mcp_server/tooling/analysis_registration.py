@@ -27,6 +27,8 @@ from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
+# Full analysis tool namespace (profile-independent). get_crypto_fear_greed
+# registers only when include_crypto=True (MCP_PROFILE=crypto).
 ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_stock",
     "analyze_portfolio",

@@ -63,6 +63,9 @@ from app.mcp_server.tooling.fundamentals._valuation import (
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
+# Full fundamentals tool namespace (profile-independent). Crypto-only names
+# (CRYPTO_FUNDAMENTALS_TOOL_NAMES) register only when include_crypto=True
+# (MCP_PROFILE=crypto) — do not read this set as "registered on DEFAULT".
 FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_news",
     "get_company_profile",
@@ -91,6 +94,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_sector_peers",
 }
 
+# Crypto-only subset: registers only when include_crypto=True (MCP_PROFILE=crypto).
 CRYPTO_FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_crypto_profile",
     "get_kimchi_premium",

@@ -21,6 +21,7 @@ from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOO
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
+    LIVE_RECONCILE_TOOL_NAMES,
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
@@ -158,11 +159,67 @@ class TestCryptoProfile:
         mcp = _build_mcp(McpProfile.CRYPTO)
         assert {"get_quote", "screen_stocks", "get_holdings"} <= mcp.tools.keys()
 
+    def test_registers_crypto_trading_surface(self) -> None:
+        # A crypto session must be able to trade and settle: generic
+        # account_mode order tools are the only Upbit entry point and
+        # live_reconcile_orders is the US/crypto settle path.
+        mcp = _build_mcp(McpProfile.CRYPTO)
+        assert _LEGACY_ORDER_TOOL_NAMES <= mcp.tools.keys()
+        assert LIVE_RECONCILE_TOOL_NAMES <= mcp.tools.keys()
+
+    def test_does_not_register_kis_typed_order_tools(self) -> None:
+        mcp = _build_mcp(McpProfile.CRYPTO)
+        assert KIS_LIVE_ORDER_TOOL_NAMES.isdisjoint(mcp.tools.keys())
+        assert KIS_MOCK_ORDER_TOOL_NAMES.isdisjoint(mcp.tools.keys())
+
 
 class TestKiwoomProfile:
     def test_registers_kiwoom_mock_tools(self) -> None:
         mcp = _build_mcp(McpProfile.KIWOOM)
         assert KIWOOM_MOCK_TOOL_NAMES <= mcp.tools.keys()
+
+
+_ALPACA_MUTATING = ALPACA_PAPER_MUTATING_TOOL_NAMES
+_ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
+    McpProfile.DEFAULT: (
+        _LEGACY_ORDER_TOOL_NAMES
+        | KIS_LIVE_ORDER_TOOL_NAMES
+        | KIS_MOCK_ORDER_TOOL_NAMES
+        | LIVE_RECONCILE_TOOL_NAMES
+    ),
+    McpProfile.HERMES_PAPER_KIS: set(KIS_MOCK_ORDER_TOOL_NAMES),
+    McpProfile.CRYPTO: _LEGACY_ORDER_TOOL_NAMES | LIVE_RECONCILE_TOOL_NAMES,
+    McpProfile.US_PAPER: set(_ALPACA_MUTATING),
+    McpProfile.DB_PAPER: set(),
+    McpProfile.KIWOOM: set(KIWOOM_MOCK_TOOL_NAMES),
+}
+_ALL_ORDER_TOOL_NAMES = (
+    _LEGACY_ORDER_TOOL_NAMES
+    | KIS_LIVE_ORDER_TOOL_NAMES
+    | KIS_MOCK_ORDER_TOOL_NAMES
+    | LIVE_RECONCILE_TOOL_NAMES
+    | KIWOOM_MOCK_TOOL_NAMES
+    | _ALPACA_MUTATING
+)
+
+
+class TestOrderSurfaceMatrix:
+    """Pin the exact order/mutation surface per profile (ROB-488).
+
+    Catches both accidental additions (e.g. live tools leaking into a paper
+    profile) and accidental removals (e.g. crypto losing its trading entry
+    point) — set equality, not just subset.
+    """
+
+    @pytest.mark.parametrize("profile", list(McpProfile))
+    def test_order_surface_matches_matrix(self, profile: McpProfile) -> None:
+        mcp = _build_mcp(profile)
+        registered_order_tools = _ALL_ORDER_TOOL_NAMES & mcp.tools.keys()
+        assert registered_order_tools == _ORDER_SURFACE_MATRIX[profile], (
+            f"profile={profile.value} order surface drifted: "
+            f"extra={sorted(registered_order_tools - _ORDER_SURFACE_MATRIX[profile])}, "
+            f"missing={sorted(_ORDER_SURFACE_MATRIX[profile] - registered_order_tools)}"
+        )
 
 
 class TestResolveMcpProfile:

@@ -31,6 +31,8 @@ def _row():
         instrument_type="equity_kr",
         fee=0,
         currency="KRW",
+        trade_date=None,
+        filled_qty=None,
     )
 
 

@@ -1142,10 +1142,10 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 |---|---|---|
 | Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; crypto-only, Alpaca/us-dual paper, and Kiwoom tools are absent |
 | Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` only — live surface **physically absent** |
-| Crypto research | `crypto` | Default read-only/research surface plus crypto-only tools such as `get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index` |
-| US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools |
-| DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools |
-| Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants |
+| Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
+| US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
+| DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
+| Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
 
 ### Profile: `hermes-paper-kis`
 

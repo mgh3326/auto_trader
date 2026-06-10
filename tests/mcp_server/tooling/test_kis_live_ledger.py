@@ -661,3 +661,112 @@ async def test_repoint_ledger_after_modify(db_session):
         )
         == 0
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_partial_rerun_is_delta_idempotent(db_session):
+    """ROB-487 follow-up: re-reconciling an already-booked partial row must not
+    re-create journals, double-close sells, or re-insert the same fill."""
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.mcp_server.tooling.kis_live_ledger import (
+        _save_kis_live_order_ledger,
+        _update_ledger_outcome,
+    )
+    import uuid
+
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    idem_order_no = f"TEST-RC-IDEM-{uuid.uuid4().hex[:8]}"
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=3.0,
+        price=1000.0,
+        amount=3000.0,
+        currency="KRW",
+        order_no=idem_order_no,
+        order_time="0930",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    # First reconcile already booked a partial fill of 2 with journal 7.
+    await _update_ledger_outcome(
+        ledger_id=lid,
+        status="partial",
+        filled_qty=Decimal("2"),
+        avg_fill_price=Decimal("1005"),
+        trade_id=42,
+        journal_id=7,
+    )
+    row = await kl._load_ledger_row(lid)
+
+    partial_same = FillEvidence(
+        FillVerdict.PARTIAL, Decimal("2"), Decimal("1005"), None, "partial", ""
+    )
+    with (
+        patch.object(
+            kl,
+            "_fetch_live_daily_rows",
+            new=AsyncMock(return_value=[{"odno": idem_order_no}]),
+        ),
+        patch.object(kl, "classify_fill_evidence", return_value=partial_same),
+        patch.object(kl, "_save_order_fill", new=AsyncMock()) as m_fill,
+        patch.object(kl, "_create_trade_journal_for_buy", new=AsyncMock()) as m_buy,
+    ):
+        result = await kl._reconcile_one_ledger_row(row, dry_run=False)
+
+    assert result["action"] == "noop_already_booked"
+    assert result["delta_qty"] == 0.0
+    m_fill.assert_not_awaited()
+    m_buy.assert_not_awaited()
+
+    # Cumulative fill grows 2 -> 3: book only the delta, reuse the journal.
+    row = await kl._load_ledger_row(lid)
+    partial_grown = FillEvidence(
+        FillVerdict.FILLED, Decimal("3"), Decimal("1006"), None, "filled", ""
+    )
+    with (
+        patch.object(
+            kl,
+            "_fetch_live_daily_rows",
+            new=AsyncMock(return_value=[{"odno": idem_order_no}]),
+        ),
+        patch.object(kl, "classify_fill_evidence", return_value=partial_grown),
+        patch.object(
+            kl, "_save_order_fill", new=AsyncMock(return_value=None)
+        ) as m_fill,
+        patch.object(kl, "_create_trade_journal_for_buy", new=AsyncMock()) as m_buy,
+    ):
+        result = await kl._reconcile_one_ledger_row(row, dry_run=False)
+
+    assert result["action"] == "booked_filled"
+    assert result["delta_qty"] == 1.0
+    _, fkw = m_fill.await_args
+    assert float(fkw["quantity"]) == 1.0
+    m_buy.assert_not_awaited()  # journal_id already set — no orphan draft
+
+    row = await kl._load_ledger_row(lid)
+    assert row.status == "filled"
+    assert float(row.filled_qty) == 3.0
+    assert row.journal_id == 7

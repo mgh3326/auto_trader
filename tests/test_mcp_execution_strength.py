@@ -101,6 +101,49 @@ async def test_get_execution_strength_tags_premarket_data_state(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_execution_strength_null_during_session_tags_field_unavailable(
+    monkeypatch,
+):
+    """ROB-485: a null strength while the market is open means the KIS field
+    mapping broke — surface field_unavailable instead of a healthy 'fresh'."""
+
+    class _MockKIS:
+        async def inquire_execution_strength(self, code, market="J"):
+            return {"symbol": code, "tday_rltv": None}
+
+    monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
+    monkeypatch.setattr(
+        market_data_quotes, "kr_market_data_state", lambda *a, **k: "fresh"
+    )
+
+    result = await market_data_quotes._get_execution_strength_impl("005930", "kr")
+
+    assert result["execution_strength_pct"] is None
+    assert result["data_state"] == "field_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_get_execution_strength_null_when_closed_keeps_session_state(
+    monkeypatch,
+):
+    """Null strength outside trading hours is expected — keep the session tag."""
+
+    class _MockKIS:
+        async def inquire_execution_strength(self, code, market="J"):
+            return {"symbol": code, "tday_rltv": None}
+
+    monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
+    monkeypatch.setattr(
+        market_data_quotes, "kr_market_data_state", lambda *a, **k: "market_closed"
+    )
+
+    result = await market_data_quotes._get_execution_strength_impl("005930", "kr")
+
+    assert result["execution_strength_pct"] is None
+    assert result["data_state"] == "market_closed"
+
+
+@pytest.mark.asyncio
 async def test_get_execution_strength_rejects_non_kr():
     result = await market_data_quotes._get_execution_strength_impl("AAPL", "us")
     assert result.get("error") or result.get("success") is False

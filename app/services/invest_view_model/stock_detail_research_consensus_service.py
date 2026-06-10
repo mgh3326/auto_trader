@@ -232,11 +232,18 @@ def _build_consensus_model(
     if not isinstance(raw_opinions, list) or not raw_opinions:
         return None
 
+    embedded_consensus = payload.get("consensus")
+    embedded_current = (
+        embedded_consensus.get("current_price")
+        if isinstance(embedded_consensus, dict)
+        else None
+    )
     current_price = _to_float(
         payload.get("current_price")
         or payload.get("currentPrice")
         or payload.get("price")
         or payload.get("current")
+        or embedded_current
     )
     normalized_opinions = [_normalize_opinion(row) for row in raw_opinions]
     consensus = build_consensus(normalized_opinions, current_price=current_price)
@@ -258,7 +265,7 @@ def _build_consensus_model(
 
 def _normalize_opinion(row: Any) -> dict[str, Any]:
     if not isinstance(row, dict):
-        return {"rating": None, "target_price": None}
+        return {"rating": None, "target_price": None, "date": None}
     return {
         "rating": row.get("rating")
         or row.get("opinion")
@@ -270,6 +277,13 @@ def _normalize_opinion(row: Any) -> dict[str, Any]:
             or row.get("target")
             or row.get("tp")
         ),
+        # ROB-486: keep the report date so build_consensus' recency guard can
+        # exclude stale (pre-corporate-action) target prices on the web path
+        # too, not just the MCP path.
+        "date": row.get("date")
+        or row.get("report_date")
+        or row.get("published_date")
+        or row.get("published_at"),
     }
 
 

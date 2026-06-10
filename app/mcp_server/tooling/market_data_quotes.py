@@ -1240,6 +1240,12 @@ async def _get_execution_strength_impl(
     data = compute_execution_strength(
         raw, symbol=normalized, as_of=now_kst().isoformat()
     )
+    data_state = kr_market_data_state()
+    if data.execution_strength_pct is None and data_state == "fresh":
+        # ROB-485: a null strength during regular hours means the KIS field
+        # mapping broke (or the response was empty) — never report that as a
+        # healthy "fresh" read, so the caller can tell silence from data.
+        data_state = "field_unavailable"
     return {
         "symbol": data.symbol,
         "as_of": data.as_of,
@@ -1247,7 +1253,7 @@ async def _get_execution_strength_impl(
         "buy_volume": data.buy_volume,
         "sell_volume": data.sell_volume,
         "trend": data.trend,
-        "data_state": kr_market_data_state(),
+        "data_state": data_state,
         "source": "kis",
         "instrument_type": "equity_kr",
     }

@@ -291,12 +291,15 @@ def _create_live_kis_client() -> Any:
     return KISClient()
 
 
-def _today_yyyymmdd() -> str:
-    return datetime.datetime.now().strftime("%Y%m%d")
-
-
-_LIVE_DAILY_ORDER_LOOKBACK_DAYS = 7
 _KST = datetime.timezone(datetime.timedelta(hours=9))
+
+# KIS inquire-daily-ccld supports up to ~3 months; anchor the window on the
+# order's trade_date so older stuck rows can still recover their evidence.
+_LIVE_DAILY_ORDER_LOOKBACK_DAYS = 90
+
+
+def _today_yyyymmdd() -> str:
+    return datetime.datetime.now(_KST).strftime("%Y%m%d")
 
 
 def _coerce_order_date(
@@ -510,7 +513,7 @@ async def _reconcile_one_ledger_row(
     rows = await _fetch_live_daily_rows(
         symbol=row.symbol,
         order_no=order_no,
-        order_trade_date=row.trade_date,
+        order_trade_date=getattr(row, "trade_date", None),
     )
     evidence = classify_fill_evidence(order_no=order_no, rows=rows)
 
@@ -553,10 +556,27 @@ async def _reconcile_one_ledger_row(
         )
         return base
 
-    # FILLED or PARTIAL — broker-confirmed values only.
-    filled_qty = evidence.filled_qty or Decimal("0")
+    # FILLED or PARTIAL — broker-confirmed values only. Booking is
+    # delta-idempotent (ROB-407 커널 패턴): the broker reports *cumulative*
+    # filled qty, so repeated reconciles of the same partial row must not
+    # re-create journals or double-close sells.
+    broker_cum = evidence.filled_qty or Decimal("0")
+    already_booked = getattr(row, "filled_qty", None) or Decimal("0")
+    delta_qty = broker_cum - already_booked
     avg_price = evidence.avg_price or Decimal("0")
     new_status = "filled" if evidence.verdict == FillVerdict.FILLED else "partial"
+    base["delta_qty"] = float(delta_qty)
+
+    if delta_qty <= 0:
+        base["action"] = "noop_already_booked"
+        if not dry_run:
+            await _update_ledger_outcome(
+                ledger_id=row.id,
+                status=new_status,
+                filled_qty=broker_cum,
+                avg_fill_price=avg_price,
+            )
+        return base
 
     if dry_run:
         base["action"] = f"would_book_{new_status}"
@@ -567,20 +587,20 @@ async def _reconcile_one_ledger_row(
         instrument_type=row.instrument_type,
         side=row.side,
         price=float(avg_price),
-        quantity=float(filled_qty),
-        total_amount=float(avg_price) * float(filled_qty),
+        quantity=float(delta_qty),
+        total_amount=float(avg_price) * float(delta_qty),
         fee=float(row.fee or 0.0),
         currency=row.currency or "KRW",
         account="kis",
         order_id=order_no,
     )
 
-    journal_id: int | None = None
-    if row.side == "buy":
+    journal_id: int | None = getattr(row, "journal_id", None)
+    if row.side == "buy" and journal_id is None:
         buy_preview = {
             "price": float(avg_price),
-            "quantity": float(filled_qty),
-            "estimated_value": float(avg_price) * float(filled_qty),
+            "quantity": float(broker_cum),
+            "estimated_value": float(avg_price) * float(broker_cum),
         }
         journal_result = await _create_trade_journal_for_buy(
             symbol=row.symbol,
@@ -603,10 +623,10 @@ async def _reconcile_one_ledger_row(
             await _link_journal_to_fill(
                 row.symbol, trade_id, account_type="live", account="kis"
             )
-    else:  # sell
+    elif row.side == "sell":
         close_result = await _close_journals_on_sell(
             symbol=row.symbol,
-            sell_quantity=float(filled_qty),
+            sell_quantity=float(delta_qty),
             sell_price=float(avg_price),
             exit_reason=row.exit_reason or row.reason,
             account_type="live",
@@ -619,7 +639,7 @@ async def _reconcile_one_ledger_row(
     await _update_ledger_outcome(
         ledger_id=row.id,
         status=new_status,
-        filled_qty=filled_qty,
+        filled_qty=broker_cum,
         avg_fill_price=avg_price,
         trade_id=trade_id,
         journal_id=journal_id,
