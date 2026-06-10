@@ -39,6 +39,8 @@ EXPECTED_KIS_API_RATE_LIMITS = {
 
 EXPECTED_UPBIT_API_RATE_LIMITS = {
     "GET /v1/accounts": {"rate": 30, "period": 1.0},
+    "GET /v1/order": {"rate": 30, "period": 1.0},
+    "GET /v1/orders/closed": {"rate": 30, "period": 1.0},
     "GET /v1/ticker": {"rate": 10, "period": 1.0},
 }
 

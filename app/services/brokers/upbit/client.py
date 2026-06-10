@@ -205,17 +205,21 @@ async def fetch_my_coins() -> list[dict[str, Any]]:
     return await _request_with_auth("GET", f"{UPBIT_REST}/accounts")
 
 
-def parse_upbit_account_row(account: dict[str, Any]) -> dict[str, float]:
-    """Parse a single ``/v1/accounts`` row → ``balance, locked, total_quantity, orderable_quantity, avg_buy_price``."""
+def parse_upbit_account_row(account: dict[str, Any]) -> dict[str, float | bool]:
+    """Parse a single ``/v1/accounts`` row → ``balance, locked, total_quantity, orderable_quantity, avg_buy_price, avg_buy_price_modified``."""
     balance = float(account.get("balance", 0) or 0)
     locked = float(account.get("locked", 0) or 0)
     avg_buy_price = float(account.get("avg_buy_price", 0) or 0)
+    avg_buy_price_modified = str(
+        account.get("avg_buy_price_modified", "false")
+    ).lower() in {"true", "1", "yes"}
     return {
         "balance": balance,
         "locked": locked,
         "total_quantity": balance + locked,
         "orderable_quantity": balance,
         "avg_buy_price": avg_buy_price,
+        "avg_buy_price_modified": avg_buy_price_modified,
     }
 
 

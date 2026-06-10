@@ -23,6 +23,32 @@ Broker = Literal["kis", "upbit"]
 FilledOrdersFetcher = Callable[..., Awaitable[dict[str, Any]]]
 
 
+def _format_fetch_errors(errors: list[Any]) -> str:
+    parts = []
+    for error in errors:
+        if isinstance(error, dict):
+            market = error.get("market") or "unknown"
+            message = error.get("error") or error
+            parts.append(f"{market}: {message}")
+        else:
+            parts.append(str(error))
+    return "; ".join(parts)
+
+
+def _resolve_run_window(
+    *,
+    window_hours: int = 24,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    now = datetime.now(UTC)
+    window_end = end_at or now
+    window_start = start_at or (window_end - timedelta(hours=window_hours))
+    if window_start >= window_end:
+        raise ValueError("start_at must be before end_at")
+    return window_start, window_end
+
+
 class ExecutionLedgerReconciler:
     def __init__(
         self,
@@ -33,21 +59,35 @@ class ExecutionLedgerReconciler:
         self.fetcher = fetcher or fetch_filled_orders
 
     async def run(  # NOSONAR
-        self, broker: Broker, *, window_hours: int = 24, dry_run: bool = True
+        self,
+        broker: Broker,
+        *,
+        window_hours: int = 24,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        max_pages: int = 100,
+        dry_run: bool = True,
     ) -> ReconcileDiff:
         if not dry_run and not settings.EXECUTION_LEDGER_COMMIT_ENABLED:
             raise ExecutionLedgerCommitDisabledError(
                 "EXECUTION_LEDGER_COMMIT_ENABLED is false; commit mode is disabled"
             )
         run_id = uuid.uuid4()
-        now = datetime.now(UTC)
-        window_start = now - timedelta(hours=window_hours)
-        window_end = now
+        window_start, window_end = _resolve_run_window(
+            window_hours=window_hours,
+            start_at=start_at,
+            end_at=end_at,
+        )
         diff = ReconcileDiff(source_run_id=run_id)
         error_summary: str | None = None
         try:
             fills = await self._fetch_normalized(
-                broker, window_hours=window_hours, source_run_id=run_id
+                broker,
+                window_hours=window_hours,
+                start_at=window_start,
+                end_at=window_end,
+                max_pages=max_pages,
+                source_run_id=run_id,
             )
             for fill in fills:
                 status = await self.repo.classify_fill(fill)
@@ -92,13 +132,34 @@ class ExecutionLedgerReconciler:
         return diff
 
     async def _fetch_normalized(
-        self, broker: Broker, *, window_hours: int, source_run_id: uuid.UUID
+        self,
+        broker: Broker,
+        *,
+        window_hours: int,
+        start_at: datetime,
+        end_at: datetime,
+        max_pages: int,
+        source_run_id: uuid.UUID,
     ) -> list[ExecutionLedgerUpsert]:
-        days = max(1, int((window_hours + 23) / 24))
+        days = max(1, int(((end_at - start_at).total_seconds() + 86399) / 86400))
         markets = "crypto" if broker == "upbit" else "kr,us"
         result = await self.fetcher(
-            days=days, markets=markets, min_amount=0, include_indicators=False
+            days=days,
+            markets=markets,
+            min_amount=0,
+            include_indicators=False,
+            start_at=start_at,
+            end_at=end_at,
+            max_pages=max_pages,
         )
+        errors = result.get("errors") or []
+        if errors:
+            raise RuntimeError(
+                "Filled-orders fetch returned errors "
+                f"broker={broker} markets={markets} "
+                f"start_at={start_at.isoformat()} end_at={end_at.isoformat()}: "
+                f"{_format_fetch_errors(errors)}"
+            )
         rows = result.get("orders") or result.get("items") or []
         upserts: list[ExecutionLedgerUpsert] = []
         for row in rows:

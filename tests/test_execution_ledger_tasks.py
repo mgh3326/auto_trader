@@ -61,11 +61,11 @@ def test_reconciliation_task_defaults_to_dry_run_when_commit_gate_disabled(
         async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
             return None
 
-        async def commit(self) -> None:  # pragma: no cover - should not be called
-            raise AssertionError("dry-run reconciliation must not commit")
+        async def commit(self) -> None:
+            captured["committed"] = True
 
-        async def rollback(self) -> None:
-            captured["rolled_back"] = True
+        async def rollback(self) -> None:  # pragma: no cover - should not be called
+            raise AssertionError("dry-run reconciliation must not roll back audit row")
 
     monkeypatch.setattr(mod.settings, "EXECUTION_LEDGER_COMMIT_ENABLED", False)
     monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FakeSession())
@@ -80,5 +80,56 @@ def test_reconciliation_task_defaults_to_dry_run_when_commit_gate_disabled(
     assert captured["broker"] == "kis"
     assert captured["window_hours"] == 6
     assert captured["dry_run"] is True
-    assert captured["rolled_back"] is True
+    assert captured["committed"] is True
     assert captured["mode"] == "json"
+
+
+@pytest.mark.unit
+def test_reconciliation_task_commits_dry_run_audit_when_reconciler_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tasks import execution_ledger as mod
+
+    captured: dict[str, object] = {}
+
+    class FakeReconciler:
+        def __init__(self, repository: object) -> None:
+            captured["repository"] = repository
+
+        async def run(self, broker: str, *, window_hours: int, dry_run: bool) -> None:
+            captured["broker"] = broker
+            captured["window_hours"] = window_hours
+            captured["dry_run"] = dry_run
+            raise RuntimeError("filled-orders fetch returned errors")
+
+    class FakeRepository:
+        def __init__(self, db: object) -> None:
+            captured["db"] = db
+
+    class FakeSession:
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        async def commit(self) -> None:
+            captured["committed"] = True
+
+        async def rollback(self) -> None:  # pragma: no cover - should not be called
+            raise AssertionError("dry-run failure audit row must be committed")
+
+    monkeypatch.setattr(mod.settings, "EXECUTION_LEDGER_COMMIT_ENABLED", False)
+    monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(mod, "ExecutionLedgerReconciler", FakeReconciler)
+    monkeypatch.setattr(mod, "ExecutionLedgerRepository", FakeRepository)
+
+    with pytest.raises(RuntimeError, match="filled-orders fetch returned errors"):
+        asyncio.run(
+            mod.reconcile_execution_ledger_smoke(broker="upbit", window_hours=6)
+        )
+
+    assert captured["broker"] == "upbit"
+    assert captured["window_hours"] == 6
+    assert captured["dry_run"] is True
+    assert captured["committed"] is True

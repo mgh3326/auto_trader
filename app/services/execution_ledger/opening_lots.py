@@ -1,0 +1,237 @@
+# app/services/execution_ledger/opening_lots.py
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal
+from typing import Literal
+
+from app.schemas.execution_ledger import (
+    AccountMode,
+    Broker,
+    Currency,
+    ExecutionLedgerUpsert,
+    InstrumentTypeValue,
+)
+
+MatchKey = tuple[str, str, str, str, str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningLotCandidate:
+    broker: Broker
+    account_mode: AccountMode
+    venue: str
+    instrument_type: InstrumentTypeValue
+    symbol: str
+    raw_symbol: str
+    currency: Currency
+    current_qty: Decimal
+    avg_price: Decimal
+    avg_price_modified: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningLotSkip:
+    key: MatchKey
+    reason: Literal[
+        "covered_by_ledger_net",
+        "non_positive_current_qty",
+        "non_positive_avg_price",
+        "upbit_avg_price_modified",
+    ]
+    current_qty: Decimal
+    ledger_net_qty: Decimal
+
+
+@dataclass(slots=True)
+class OpeningLotPlan:
+    upserts: list[ExecutionLedgerUpsert] = field(default_factory=list)
+    skipped: list[OpeningLotSkip] = field(default_factory=list)
+
+
+def _match_key(candidate: OpeningLotCandidate) -> MatchKey:
+    return (
+        candidate.broker,
+        candidate.account_mode,
+        candidate.venue,
+        candidate.instrument_type,
+        candidate.symbol,
+        candidate.currency,
+    )
+
+
+def _seed_order_id(candidate: OpeningLotCandidate, cutover: datetime) -> str:
+    return (
+        f"SEED-{cutover:%Y%m%d}-{candidate.broker}-{candidate.venue}-{candidate.symbol}"
+    )
+
+
+def build_opening_lot_plan(
+    *,
+    candidates: list[OpeningLotCandidate],
+    ledger_net_by_key: dict[MatchKey, Decimal],
+    cutover: datetime,
+) -> OpeningLotPlan:
+    plan = OpeningLotPlan()
+    for candidate in candidates:
+        key = _match_key(candidate)
+        ledger_net_qty = ledger_net_by_key.get(key, Decimal("0"))
+        if candidate.current_qty <= 0:
+            plan.skipped.append(
+                OpeningLotSkip(
+                    key,
+                    "non_positive_current_qty",
+                    candidate.current_qty,
+                    ledger_net_qty,
+                )
+            )
+            continue
+        if candidate.avg_price <= 0:
+            plan.skipped.append(
+                OpeningLotSkip(
+                    key, "non_positive_avg_price", candidate.current_qty, ledger_net_qty
+                )
+            )
+            continue
+        if candidate.broker == "upbit" and candidate.avg_price_modified:
+            plan.skipped.append(
+                OpeningLotSkip(
+                    key,
+                    "upbit_avg_price_modified",
+                    candidate.current_qty,
+                    ledger_net_qty,
+                )
+            )
+            continue
+
+        opening_qty = candidate.current_qty - ledger_net_qty
+        if opening_qty <= 0:
+            plan.skipped.append(
+                OpeningLotSkip(
+                    key, "covered_by_ledger_net", candidate.current_qty, ledger_net_qty
+                )
+            )
+            continue
+
+        plan.upserts.append(
+            ExecutionLedgerUpsert(
+                broker=candidate.broker,
+                account_mode=candidate.account_mode,
+                venue=candidate.venue,
+                instrument_type=candidate.instrument_type,
+                symbol=candidate.symbol,
+                raw_symbol=candidate.raw_symbol,
+                side="buy",
+                broker_order_id=_seed_order_id(candidate, cutover),
+                fill_seq=0,
+                filled_qty=opening_qty,
+                filled_price=candidate.avg_price,
+                filled_at=cutover,
+                currency=candidate.currency,
+                source="manual_import",
+                raw_payload_json={
+                    "seed_kind": "opening_lot",
+                    "current_qty": str(candidate.current_qty),
+                    "ledger_net_qty": str(ledger_net_qty),
+                    "cutover": cutover.isoformat(),
+                },
+            )
+        )
+    return plan
+
+
+async def load_opening_lot_candidates(
+    brokers: list[str],
+) -> list[OpeningLotCandidate]:
+    candidates: list[OpeningLotCandidate] = []
+    if "kis" in brokers:
+        candidates.extend(await load_kis_opening_lot_candidates())
+    if "upbit" in brokers:
+        candidates.extend(await load_upbit_opening_lot_candidates())
+    return candidates
+
+
+async def load_kis_opening_lot_candidates() -> list[OpeningLotCandidate]:
+    from app.services.brokers.kis.client import KISClient
+
+    kis = KISClient()
+    candidates: list[OpeningLotCandidate] = []
+    for row in await kis.fetch_my_stocks():
+        qty = Decimal(str(row.get("hldg_qty") or "0"))
+        avg_price = Decimal(str(row.get("pchs_avg_pric") or "0"))
+        symbol = str(row.get("pdno") or "").strip().upper()
+        if symbol:
+            candidates.append(
+                OpeningLotCandidate(
+                    broker="kis",
+                    account_mode="live",
+                    venue="krx",
+                    instrument_type="equity_kr",
+                    symbol=symbol,
+                    raw_symbol=symbol,
+                    currency="KRW",
+                    current_qty=qty,
+                    avg_price=avg_price,
+                )
+            )
+    for row in await kis.fetch_my_us_stocks():
+        symbol = str(row.get("ovrs_pdno") or "").strip().upper()
+        venue = str(row.get("ovrs_excg_cd") or row.get("excg_cd") or "").strip().upper()
+        if not venue:
+            venue = "NASD"
+        qty = Decimal(str(row.get("ovrs_cblc_qty") or "0"))
+        avg_price = Decimal(str(row.get("pchs_avg_pric") or "0"))
+        if symbol:
+            candidates.append(
+                OpeningLotCandidate(
+                    broker="kis",
+                    account_mode="live",
+                    venue=venue,
+                    instrument_type="equity_us",
+                    symbol=symbol,
+                    raw_symbol=symbol,
+                    currency="USD",
+                    current_qty=qty,
+                    avg_price=avg_price,
+                )
+            )
+    return candidates
+
+
+async def load_upbit_opening_lot_candidates() -> list[OpeningLotCandidate]:
+    from app.services.brokers.upbit.client import (
+        fetch_my_coins,
+        parse_upbit_account_row,
+    )
+
+    rows = await fetch_my_coins()
+    candidates: list[OpeningLotCandidate] = []
+    for row in rows:
+        currency = str(row.get("currency") or "").strip().upper()
+        if not currency or currency == "KRW":
+            continue
+        unit_currency = str(row.get("unit_currency") or "KRW").strip().upper()
+        if unit_currency != "KRW":
+            # The ledger normalizer only ever writes venue='upbit_krw' with
+            # currency='KRW'; a BTC/USDT-market seed could never match a sell
+            # and its avg price is not KRW-denominated.
+            continue
+        parsed = parse_upbit_account_row(row)
+        current_qty = Decimal(str(parsed["total_quantity"]))
+        avg_price = Decimal(str(parsed["avg_buy_price"]))
+        candidates.append(
+            OpeningLotCandidate(
+                broker="upbit",
+                account_mode="live",
+                venue="upbit_krw",
+                instrument_type="crypto",
+                symbol=currency,
+                raw_symbol=f"KRW-{currency}",
+                currency="KRW",
+                current_qty=current_qty,
+                avg_price=avg_price,
+                avg_price_modified=bool(parsed["avg_buy_price_modified"]),
+            )
+        )
+    return candidates

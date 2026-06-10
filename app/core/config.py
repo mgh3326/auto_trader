@@ -44,6 +44,8 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
 
 DEFAULT_UPBIT_API_RATE_LIMITS: ApiRateLimitMap = {
     "GET /v1/accounts": {"rate": 30, "period": 1.0},
+    "GET /v1/order": {"rate": 30, "period": 1.0},
+    "GET /v1/orders/closed": {"rate": 30, "period": 1.0},
     "GET /v1/ticker": {"rate": 10, "period": 1.0},
 }
 

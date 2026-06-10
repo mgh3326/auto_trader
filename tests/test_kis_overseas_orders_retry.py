@@ -179,3 +179,34 @@ class TestOverseasOrdersTransientRetry:
         _, kwargs = parent._request_with_rate_limit.call_args
         assert kwargs["tr_id"] == "VTTT1006U"
         assert kwargs["headers"]["tr_id"] == "VTTT1006U"
+
+    @pytest.mark.asyncio
+    async def test_raises_when_overseas_history_reaches_max_pages_with_cursor(
+        self, _mock_overseas_orders
+    ):
+        instance, parent = _mock_overseas_orders
+        parent._request_with_rate_limit = AsyncMock(
+            side_effect=[
+                {
+                    "rt_cd": "0",
+                    "output1": [{"odno": "001", "pdno": "AAPL"}],
+                    "ctx_area_fk200": "FK2",
+                    "ctx_area_nk200": "NK2",
+                },
+                {
+                    "rt_cd": "0",
+                    "output1": [{"odno": "002", "pdno": "AAPL"}],
+                    "ctx_area_fk200": "FK3",
+                    "ctx_area_nk200": "NK3",
+                },
+            ]
+        )
+
+        with pytest.raises(
+            RuntimeError, match="overseas daily order history truncated"
+        ):
+            await instance.inquire_daily_order_overseas(
+                start_date="20260201",
+                end_date="20260208",
+                max_pages=2,
+            )

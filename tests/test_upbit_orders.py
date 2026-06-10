@@ -10,7 +10,11 @@ import pytest
 @pytest.mark.unit
 class TestUpbitClosedOrders:
     @pytest.mark.asyncio
-    async def test_closed_orders_passes_pagination_and_state_filters(self, monkeypatch):
+    async def test_closed_orders_passes_time_window_and_state_filters(
+        self, monkeypatch
+    ):
+        from datetime import UTC, datetime
+
         from app.services.brokers.upbit import orders
 
         request = AsyncMock(return_value=[])
@@ -18,10 +22,11 @@ class TestUpbitClosedOrders:
 
         result = await orders.fetch_closed_orders(
             market="KRW-BTC",
-            limit=500,
-            page=3,
+            limit=1500,
             states=["done"],
             order_by="asc",
+            start_time=datetime(2026, 2, 1, 0, 0, tzinfo=UTC),
+            end_time=datetime(2026, 2, 7, 0, 0, tzinfo=UTC),
         )
 
         assert result == []
@@ -31,8 +36,9 @@ class TestUpbitClosedOrders:
         assert url.endswith("/orders/closed")
         assert request.await_args.kwargs["query_params"] == {
             "states[]": ["done"],
-            "limit": 100,
-            "page": 3,
+            "limit": 1000,
             "order_by": "asc",
             "market": "KRW-BTC",
+            "start_time": "2026-02-01T00:00:00+00:00",
+            "end_time": "2026-02-07T00:00:00+00:00",
         }
