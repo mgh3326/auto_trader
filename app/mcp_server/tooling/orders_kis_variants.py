@@ -46,6 +46,13 @@ KIS_MOCK_ORDER_TOOL_NAMES: set[str] = {
     "kis_mock_get_order_history",
 }
 
+# US/overseas + crypto live reconcile (ROB-407 generic ledger). Registered
+# separately from the KIS KR live variants so the crypto profile can expose
+# order reconcile without pulling in the KIS KR live order surface.
+LIVE_RECONCILE_TOOL_NAMES: set[str] = {
+    "live_reconcile_orders",
+}
+
 
 # ---------------------------------------------------------------------------
 # Shared guard/delegation helpers
@@ -565,8 +572,9 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         description=(
             "Reconcile accepted/pending KIS live (real-money) KR orders against "
             "order-id-keyed broker fill evidence (inquire_daily_order_domestic). "
-            "Books fills/journals/realized_pnl ONLY from confirmed fills; marks "
-            "unfilled/cancelled orders without journal side-effects. "
+            "Books fills/journals/realized_pnl ONLY from confirmed fills "
+            "(delta-idempotent). Missing evidence is fail-closed: rows are left "
+            "open with requires_manual_review instead of being marked cancelled. "
             "Stale unfilled day orders are resolved to 'expired' once the "
             "KRX session has closed (fail-closed: a live broker status keeps "
             "them pending in case of NXT carryover). "
@@ -593,6 +601,15 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             account_mode=account_mode,
             account_type=account_type,
         )
+
+
+# ---------------------------------------------------------------------------
+# US/overseas + crypto live reconcile (broker-generic ledger, ROB-407)
+# ---------------------------------------------------------------------------
+
+
+def register_live_reconcile_tools(mcp: FastMCP) -> None:
+    """Register the US/overseas + crypto live reconcile tool."""
 
     @mcp.tool(
         name="live_reconcile_orders",
@@ -795,6 +812,8 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
 __all__ = [
     "KIS_LIVE_ORDER_TOOL_NAMES",
     "KIS_MOCK_ORDER_TOOL_NAMES",
+    "LIVE_RECONCILE_TOOL_NAMES",
     "register_kis_live_order_tools",
     "register_kis_mock_order_tools",
+    "register_live_reconcile_tools",
 ]

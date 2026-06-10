@@ -165,16 +165,16 @@ def fake_service() -> FakeAlpacaPaperService:
 
 
 @pytest.mark.unit
-def test_registers_explicit_alpaca_paper_readonly_tools_default_profile() -> None:
+def test_alpaca_paper_readonly_tools_not_registered_default_profile() -> None:
     mcp = DummyMCP()
     register_all_tools(mcp, profile=McpProfile.DEFAULT)  # type: ignore[arg-type]
-    assert ALPACA_PAPER_READONLY_TOOL_NAMES <= mcp.tools.keys()
+    assert ALPACA_PAPER_READONLY_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
 
 @pytest.mark.unit
-def test_registers_explicit_alpaca_paper_readonly_tools_paper_profile() -> None:
+def test_registers_explicit_alpaca_paper_readonly_tools_us_paper_profile() -> None:
     mcp = DummyMCP()
-    register_all_tools(mcp, profile=McpProfile.HERMES_PAPER_KIS)  # type: ignore[arg-type]
+    register_all_tools(mcp, profile=McpProfile.US_PAPER)  # type: ignore[arg-type]
     assert ALPACA_PAPER_READONLY_TOOL_NAMES <= mcp.tools.keys()
 
 
@@ -348,16 +348,16 @@ def fake_preview_service_with_cash_error() -> FakeAlpacaPaperServiceWithCashErro
 
 
 @pytest.mark.unit
-def test_registers_alpaca_paper_preview_tool_default_profile() -> None:
+def test_alpaca_paper_preview_tool_not_registered_default_profile() -> None:
     mcp = DummyMCP()
     register_all_tools(mcp, profile=McpProfile.DEFAULT)  # type: ignore[arg-type]
-    assert "alpaca_paper_preview_order" in mcp.tools
+    assert "alpaca_paper_preview_order" not in mcp.tools
 
 
 @pytest.mark.unit
-def test_registers_alpaca_paper_preview_tool_paper_profile() -> None:
+def test_registers_alpaca_paper_preview_tool_us_paper_profile() -> None:
     mcp = DummyMCP()
-    register_all_tools(mcp, profile=McpProfile.HERMES_PAPER_KIS)  # type: ignore[arg-type]
+    register_all_tools(mcp, profile=McpProfile.US_PAPER)  # type: ignore[arg-type]
     assert "alpaca_paper_preview_order" in mcp.tools
 
 

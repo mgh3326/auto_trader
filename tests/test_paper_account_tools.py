@@ -9,9 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.paper_account_registration import _serialize_account
 from app.models.paper_trading import PaperAccount
-from tests._mcp_tooling_support import build_tools
+from tests._mcp_tooling_support import build_tools as _build_tools
+
+
+def build_tools():
+    return _build_tools(profile=McpProfile.DB_PAPER)
 
 
 @pytest.mark.asyncio

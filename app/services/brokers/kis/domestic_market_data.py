@@ -217,31 +217,35 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def inquire_execution_strength(
         self, code: str, market: str = "J"
     ) -> dict[str, Any]:
-        """ROB-462: KIS FHKST01010100 (주식현재가 시세) 체결강도 raw 필드.
+        """ROB-485: KIS FHKST01010300 (주식현재가 체결) 체결강도 raw 필드.
 
-        ``cttr`` 가 체결강도(매수/매도 × 100). 매수/매도 체결량(shnu/seln)·현재가·
-        누적거래량·체결시각을 raw 문자열 그대로 반환하고, 파싱/분류는
-        execution_strength.query_service 가 담당한다. 정확한 필드명은 라이브
-        스모크로 확정한다(없는 필드는 None 처리, 0 날조 금지).
+        REST 현재가 체결 TR의 ``tday_rltv``가 당일 체결강도다. 매수/매도
+        체결량은 이 REST 응답에서 제공되지 않으므로 MCP read model은 None을
+        반환한다(0 날조 금지).
         """
         js = await self._request_with_token_retry(
-            tr_id=constants.DOMESTIC_PRICE_TR,
-            url=self._kis_url(constants.DOMESTIC_PRICE_URL),
+            tr_id=constants.DOMESTIC_EXECUTION_STRENGTH_TR,
+            url=self._kis_url(constants.DOMESTIC_EXECUTION_STRENGTH_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": code.zfill(6),
             },
             api_name="inquire_execution_strength",
         )
-        out = js.get("output") or {}
+        output = js.get("output") or []
+        if isinstance(output, list):
+            out = next((row for row in output if isinstance(row, dict)), {})
+        elif isinstance(output, dict):
+            out = output
+        else:
+            out = {}
         return {
-            "symbol": out.get("stck_shrn_iscd") or code,
-            "cttr": out.get("cttr"),
-            "shnu_cntg_qty": out.get("shnu_cntg_qty"),
-            "seln_cntg_qty": out.get("seln_cntg_qty"),
+            "symbol": code.zfill(6),
+            "tday_rltv": out.get("tday_rltv"),
             "last_price": out.get("stck_prpr"),
-            "acml_vol": out.get("acml_vol"),
-            "time": out.get("stck_cntg_hour") or out.get("stck_cntg_time"),
+            "cntg_vol": out.get("cntg_vol"),
+            "prdy_ctrt": out.get("prdy_ctrt"),
+            "time": out.get("stck_cntg_hour"),
         }
 
     async def _request_orderbook_snapshot(self, code: str, market: str = "J") -> dict:

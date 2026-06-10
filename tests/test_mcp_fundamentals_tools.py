@@ -27,6 +27,7 @@ import pytest
 import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import (
     analysis_analyze,
     analysis_screen_core,
@@ -47,8 +48,15 @@ from tests._mcp_tooling_support import (
     _patch_httpx_async_client,
     _patch_runtime_attr,
     _patch_yf_ticker,
-    build_tools,
 )
+from tests._mcp_tooling_support import (
+    build_tools as _build_tools,
+)
+
+
+def build_tools():
+    return _build_tools(profile=McpProfile.CRYPTO)
+
 
 # ---------------------------------------------------------------------------
 # analyze_stock Tool
@@ -234,6 +242,74 @@ class TestAnalyzeStock:
         assert recommendation["action"] == "hold"
         assert recommendation["confidence"] == "low"
         assert "Analyst consensus" not in recommendation["reasoning"]
+
+    async def test_recommendation_does_not_buy_when_target_upside_is_negative(self):
+        mock_analysis = {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 100_000},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 8,
+                    "hold_count": 1,
+                    "sell_count": 1,
+                    "strong_buy_count": 4,
+                    "total_count": 10,
+                    "avg_target_price": 90_000,
+                    "max_target_price": 95_000,
+                    "upside_pct": -10.0,
+                }
+            },
+        }
+
+        recommendation = shared.build_recommendation_for_equity(
+            mock_analysis, "equity_kr"
+        )
+
+        assert recommendation is not None
+        assert recommendation["action"] == "hold"
+        assert recommendation["confidence"] == "low"
+        assert "Analyst target below current price" in recommendation["reasoning"]
+
+    async def test_negative_upside_demotes_even_when_score_reaches_buy(self):
+        """ROB-486 override 발화 경로: 과매도 RSI(+2) + 강세 컨센서스(+2)로
+        score>=2가 되어도 목표가<현재가면 buy를 hold로 강등한다."""
+        mock_analysis = {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 100_000},
+            "indicators": {"indicators": {"rsi": {"14": 25.0}}},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 9,
+                    "hold_count": 1,
+                    "sell_count": 0,
+                    "strong_buy_count": 5,
+                    "total_count": 10,
+                    "avg_target_price": 90_000,
+                    "max_target_price": 95_000,
+                    "upside_pct": -10.0,
+                }
+            },
+        }
+
+        recommendation = shared.build_recommendation_for_equity(
+            mock_analysis, "equity_kr"
+        )
+
+        assert recommendation is not None
+        assert recommendation["action"] == "hold"
+        assert recommendation["confidence"] == "low"
+        assert "Analyst target below current price" in recommendation["reasoning"]
+        # 현재가 아래의 consensus 목표가는 sell_targets에 들어가지 않는다
+        assert all(
+            t["type"] not in ("consensus_avg", "consensus_max")
+            for t in recommendation["sell_targets"]
+        )
 
     async def test_build_recommendation_for_equity_exposes_rsi14(self):
         """Test that rsi14 value is exposed in recommendation payload."""

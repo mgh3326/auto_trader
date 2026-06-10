@@ -1222,7 +1222,7 @@ async def _get_execution_strength_impl(
 ) -> dict[str, Any]:
     """ROB-462: KR 주식 체결강도 (execution strength) snapshot from KIS.
 
-    체결강도 = 매수체결량 / 매도체결량 × 100 (KIS FHKST01010100 ``cttr``).
+    체결강도 = 매수체결량 / 매도체결량 × 100 (KIS FHKST01010300 ``tday_rltv``).
     KR equity only — crypto is served by get_crypto_order_flow.
     """
     requested = str(market or "kr").strip().lower() or "kr"
@@ -1254,6 +1254,12 @@ async def _get_execution_strength_impl(
     data = compute_execution_strength(
         raw, symbol=normalized, as_of=now_kst().isoformat()
     )
+    data_state = kr_market_data_state()
+    if data.execution_strength_pct is None and data_state == "fresh":
+        # ROB-485: a null strength during regular hours means the KIS field
+        # mapping broke (or the response was empty) — never report that as a
+        # healthy "fresh" read, so the caller can tell silence from data.
+        data_state = "field_unavailable"
     return {
         "symbol": data.symbol,
         "as_of": data.as_of,
@@ -1261,7 +1267,7 @@ async def _get_execution_strength_impl(
         "buy_volume": data.buy_volume,
         "sell_volume": data.sell_volume,
         "trend": data.trend,
-        "data_state": kr_market_data_state(),
+        "data_state": data_state,
         "source": "kis",
         "instrument_type": "equity_kr",
     }
@@ -1308,8 +1314,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         description=(
             "Get KR equity 체결강도 (execution strength = 매수체결량/매도체결량 × 100) "
             "from KIS. >100 buy-dominant, <100 sell-dominant. Returns "
-            "execution_strength_pct, buy_volume/sell_volume (null when KIS omits "
-            "them — never a fabricated 0), trend, and data_state (premarket/closed "
+            "execution_strength_pct from KIS inquire-ccnl tday_rltv, "
+            "buy_volume/sell_volume as null because REST does not provide them, "
+            "trend, and data_state (premarket/closed "
             "sessions are tagged stale). KR equity only — for crypto taker order "
             "flow use get_crypto_order_flow."
         ),
