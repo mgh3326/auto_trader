@@ -2598,3 +2598,64 @@ async def test_preview_sell_limit_at_market_no_warning(monkeypatch):
     assert "error" not in result
     assert "sell_limit_above_market" not in result.get("warnings", [])
     assert "fill_distance" not in result
+
+
+# ----------------------------------------------------------------------
+# ROB-477: sell_ladder_fill_preview read-only tool
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_all_above_market():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=63.95,
+        rungs=[
+            {"limit_price": 66.0, "quantity": 2.0},
+            {"limit_price": 68.0, "quantity": 3.0},
+        ],
+    )
+    assert result["success"] is True
+    assert result["read_only"] is True
+    assert "ladder_all_above_market" in result["warnings"]
+    assert "ladder_missing_near_market_anchor" in result["warnings"]
+    assert result["fill_safety"]["suggestedAnchorRung"]["limitPriceUsd"] == 63.95
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_near_anchor_only_all_above():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=63.95,
+        rungs=[
+            {"limit_price": 64.0, "quantity": 2.0},
+            {"limit_price": 68.0, "quantity": 3.0},
+        ],
+    )
+    assert "ladder_all_above_market" in result["warnings"]
+    assert "ladder_missing_near_market_anchor" not in result["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_rejects_bad_payload():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=63.95,
+        rungs=[{"price_typo": 64.0}],
+    )
+    assert result["success"] is False
+    assert "limit_price" in result["error"] or "invalid" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_sell_ladder_fill_preview_rejects_non_positive_anchor():
+    tools = build_tools()
+    result = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=0.0,
+        rungs=[{"limit_price": 64.0}],
+    )
+    assert result["success"] is False

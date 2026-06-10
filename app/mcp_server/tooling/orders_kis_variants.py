@@ -401,6 +401,8 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "fill/journal/realized_pnl. reconcile is the LOCAL bookkeeping "
             "layer; the live-account truth is get_holdings / "
             "get_available_capital. "
+            "For multi-rung SELL limit ladders, run sell_ladder_fill_preview "
+            "first to check zero-fill risk (ROB-477). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
