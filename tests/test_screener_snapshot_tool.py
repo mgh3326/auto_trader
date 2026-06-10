@@ -191,3 +191,68 @@ async def test_offset_paginates_last_partial_page(monkeypatch) -> None:
     assert pg["returned_count"] == 10
     assert pg["has_more"] is False
     assert pg["next_offset"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enriches_only_returned_page(monkeypatch) -> None:
+    _patch_build_with_n_results(monkeypatch, 5)
+    captured: dict[str, Any] = {}
+
+    async def _fake_enrich_page(
+        *, rows: list[dict[str, Any]], market: str, session_factory
+    ):
+        captured["symbols"] = [row["symbol"] for row in rows]
+        captured["market"] = market
+        captured["session_factory"] = session_factory
+        enriched = []
+        for row in rows:
+            enriched.append(
+                {
+                    **row,
+                    "analystLabel": "매수 1 / 보유 0 / 매도 0 · 목표 +10.0%",
+                    "analysisContext": {
+                        "consensus": {
+                            "source": "naver",
+                            "buyCount": 1,
+                            "holdCount": 0,
+                            "sellCount": 0,
+                            "strongBuyCount": 0,
+                            "totalCount": 1,
+                            "avgTargetPrice": 110.0,
+                            "medianTargetPrice": 110.0,
+                            "minTargetPrice": 110.0,
+                            "maxTargetPrice": 110.0,
+                            "upsidePct": 10.0,
+                            "currentPrice": 100.0,
+                        },
+                        "rsi14": 58.0,
+                        "dataState": "fresh",
+                        "warnings": [],
+                    },
+                }
+            )
+        return {
+            "results": enriched,
+            "summary": {
+                "attempted": len(rows),
+                "consensusSucceeded": len(rows),
+                "rsiSucceeded": len(rows),
+                "warnings": [],
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
+        _fake_enrich_page,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", limit=2, offset=1
+    )
+
+    assert captured["symbols"] == ["S1", "S2"]
+    assert captured["market"] == "kr"
+    assert len(out["results"]) == 2
+    assert out["results"][0]["analysisContext"]["rsi14"] == pytest.approx(58.0)
+    assert out["analysisEnrichment"]["attempted"] == 2

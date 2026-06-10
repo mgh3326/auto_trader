@@ -143,6 +143,7 @@ async def test_query_service_filters_economic_events(db_session):
     from app.services.market_events.query_service import MarketEventsQueryService
     from app.services.market_events.repository import MarketEventsRepository
 
+    target_date = date(2099, 5, 14)
     repo = MarketEventsRepository(db_session)
     await repo.upsert_event_with_values(
         {
@@ -151,10 +152,10 @@ async def test_query_service_filters_economic_events(db_session):
             "currency": "USD",
             "country": "USD",
             "title": "US CPI",
-            "event_date": date(2026, 5, 13),
+            "event_date": target_date,
             "status": "released",
             "source": "forexfactory",
-            "source_event_id": "ff::USD::US CPI::2026-05-13T12:30:00Z",
+            "source_event_id": "ff::USD::US CPI::2099-05-14T12:30:00Z",
         },
         [],
     )
@@ -163,7 +164,7 @@ async def test_query_service_filters_economic_events(db_session):
             "category": "earnings",
             "market": "us",
             "symbol": "IONQ",
-            "event_date": date(2026, 5, 13),
+            "event_date": target_date,
             "status": "released",
             "source": "finnhub",
             "fiscal_year": 2026,
@@ -174,7 +175,7 @@ async def test_query_service_filters_economic_events(db_session):
     await db_session.flush()
 
     svc = MarketEventsQueryService(db_session)
-    only_econ = await svc.list_for_date(date(2026, 5, 13), category="economic")
+    only_econ = await svc.list_for_date(target_date, category="economic")
     assert len(only_econ.events) == 1
     assert only_econ.events[0].source == "forexfactory"
     assert only_econ.events[0].currency == "USD"

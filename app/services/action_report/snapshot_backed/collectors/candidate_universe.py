@@ -271,6 +271,7 @@ class CandidateUniverseSnapshotCollector:
             if request.market == "crypto":
                 return await self._collect_crypto(request, now)
         except Exception as exc:  # noqa: BLE001 — optional, fail open
+            logger.warning("candidate_universe query failed", exc_info=True)
             return [
                 unavailable_result(
                     snapshot_kind=self.snapshot_kind,
@@ -435,7 +436,8 @@ class CandidateUniverseSnapshotCollector:
         any_rows = False
         for preset_id, module, attr in loaders:
             loader = getattr(module, attr)
-            rows = await loader(self._session, market="kr", limit=pool_limit)
+            result = await loader(self._session, market="kr", limit=pool_limit)
+            rows = getattr(result, "rows", result) if result is not None else None
             if not rows:  # None (missing) or [] (stale-empty)
                 continue
             any_rows = True
