@@ -106,6 +106,7 @@ async def load_double_buy_from_snapshots(
             InvestScreenerSnapshot.latest_close,
             InvestScreenerSnapshot.prev_close,
             InvestScreenerSnapshot.change_rate,
+            InvestScreenerSnapshot.change_amount,
             InvestScreenerSnapshot.daily_volume,
             InvestScreenerSnapshot.snapshot_date.label("price_snapshot_date"),
             InvestorFlowSnapshot.snapshot_date.label("flow_snapshot_date"),
@@ -255,6 +256,14 @@ async def load_double_buy_from_snapshots(
                 "symbol": sym,
                 "market": "kr",
                 "name": name,
+                "close": (
+                    float(r["latest_close"]) if r["latest_close"] is not None else None
+                ),
+                "change_amount": (
+                    float(r["change_amount"])
+                    if r["change_amount"] is not None
+                    else None
+                ),
                 "latest_close": (
                     float(r["latest_close"]) if r["latest_close"] is not None else None
                 ),
