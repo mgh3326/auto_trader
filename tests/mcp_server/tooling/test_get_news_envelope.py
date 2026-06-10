@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -77,7 +78,7 @@ async def test_get_news_kr_envelope_unchanged(monkeypatch: pytest.MonkeyPatch) -
         "fetch_symbol_news",
         AsyncMock(
             return_value=SymbolNewsFetchResult(
-                "005930", "kr", "naver", "ok", 10, 1, [art]
+                "005930", "kr", "naver", "ok", 10, 1, [art], excluded_count=0
             )
         ),
     )
@@ -89,8 +90,77 @@ async def test_get_news_kr_envelope_unchanged(monkeypatch: pytest.MonkeyPatch) -
         "market": "kr",
         "source": "naver",
         "count": 1,
+        "excluded_count": 0,
         "news": [art.provider_metadata["source_item"]],
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_kr_exposes_relevance_block_and_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relevance = {
+        "status": "confirmed",
+        "relationship": "direct",
+        "relevance": "high",
+        "price_relevance": "catalyst",
+        "score": 0.9,
+        "reason": "본문이 NAVER 실적을 직접 다룸",
+        "judged_by": "hermes",
+        "judged_at": "2026-06-10T10:00:00+00:00",
+        "hints": {"alias_match": ["네이버"]},
+    }
+    art = replace(
+        _naver_article(),
+        provider_metadata={
+            **_naver_article().provider_metadata,
+            "relevance": relevance,
+        },
+    )
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(
+            return_value=SymbolNewsFetchResult(
+                "005930", "kr", "naver", "ok", 10, 1, [art], excluded_count=4
+            )
+        ),
+    )
+
+    out = await _news.handle_get_news("005930", market="kr", limit=10)
+
+    assert out["news"][0]["relevance"] == relevance
+    assert out["excluded_count"] == 4
+    assert "degraded" not in out
+    assert "relevance" not in art.provider_metadata["source_item"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_kr_degraded_meta_surfaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(
+            return_value=SymbolNewsFetchResult(
+                "005930",
+                "kr",
+                "naver",
+                "ok",
+                10,
+                1,
+                [_naver_article()],
+                degraded=True,
+                fetch_error="RuntimeError",
+            )
+        ),
+    )
+    out = await _news.handle_get_news("005930", market="kr", limit=10)
+    assert out["degraded"] is True
+    assert out["fetch_error"] == "RuntimeError"
 
 
 @pytest.mark.unit
@@ -123,6 +193,7 @@ async def test_get_news_us_envelope_keys_preserved(
         "related",
     }
     assert out["news"][0]["sentiment"] == "positive"
+    assert "relevance" not in out["news"][0]
 
 
 @pytest.mark.unit

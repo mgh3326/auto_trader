@@ -26,6 +26,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 ### News Tools (Pre-Market Briefing Pipeline)
 
+- `get_news(symbol, market=None, limit=10)`
+  - Fetch symbol-level recent news for decision diagnostics (`kr`: Naver Finance, `us`/`crypto`: Finnhub)
+  - KR: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
+  - `degraded: true` + `fetch_error` appear when the Naver fetch failed and the response was served from DB cache only.
+  - `pending` means "not yet judged" — treat as unverified recall, not confirmed evidence.
+  - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
+
 - `get_market_news(market=None, hours=24, feed_source=None, source=None, keyword=None, limit=20, briefing_filter=False)` [LEGACY — briefing only, not decision evidence]
   - Fetch recent market news for OpenClaw pre-market briefing
   - `market`: Optional market scope (`kr`, `us`, `crypto`) for market-separated briefing inputs
