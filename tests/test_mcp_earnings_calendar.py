@@ -127,6 +127,68 @@ async def test_us_earnings_calendar_keeps_finnhub_path(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_six_letter_us_symbol_routes_to_finnhub_path(monkeypatch):
+    from app.mcp_server.tooling.fundamentals import _financials as financials
+
+    fake = AsyncMock(
+        return_value={
+            "symbol": "ABCDEF",
+            "instrument_type": "equity_us",
+            "source": "finnhub",
+            "from_date": "2026-05-01",
+            "to_date": "2026-05-31",
+            "count": 0,
+            "earnings": [],
+        }
+    )
+    monkeypatch.setattr(financials, "_fetch_earnings_calendar_finnhub", fake)
+    monkeypatch.setattr(
+        financials,
+        "AsyncSessionLocal",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("US symbols must not open the KR market_events path")
+        ),
+    )
+
+    result = await financials.handle_get_earnings_calendar(
+        symbol="ABCDEF",
+        from_date="2026-05-01",
+        to_date="2026-05-31",
+    )
+
+    assert result["source"] == "finnhub"
+    fake.assert_awaited_once_with("ABCDEF", "2026-05-01", "2026-05-31")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_us_earnings_calendar_defaults_to_from_date_plus_30(monkeypatch):
+    from app.mcp_server.tooling.fundamentals import _financials as financials
+
+    fake = AsyncMock(
+        return_value={
+            "symbol": "AAPL",
+            "instrument_type": "equity_us",
+            "source": "finnhub",
+            "from_date": "2026-05-01",
+            "to_date": "2026-05-31",
+            "count": 0,
+            "earnings": [],
+        }
+    )
+    monkeypatch.setattr(financials, "_fetch_earnings_calendar_finnhub", fake)
+
+    result = await financials.handle_get_earnings_calendar(
+        symbol="AAPL",
+        from_date="2026-05-01",
+    )
+
+    assert result["source"] == "finnhub"
+    fake.assert_awaited_once_with("AAPL", "2026-05-01", "2026-05-31")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_explicit_us_rejects_korean_symbol():
     from app.mcp_server.tooling.fundamentals import _financials as financials
 

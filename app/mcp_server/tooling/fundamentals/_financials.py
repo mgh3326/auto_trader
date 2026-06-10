@@ -127,6 +127,28 @@ def _normalize_kr_calendar_symbol(symbol: str | None) -> str | None:
     return normalized
 
 
+def _is_kr_earnings_calendar_symbol(symbol: str) -> bool:
+    normalized = symbol.strip().upper()
+    return (len(normalized) == 6 and normalized.isdigit()) or (
+        len(normalized) == 7
+        and normalized.startswith("A")
+        and normalized[1:].isdigit()
+    )
+
+
+def _normalize_calendar_date_window(
+    from_date: str | None,
+    to_date: str | None,
+) -> tuple[datetime.date, datetime.date]:
+    start = _parse_iso_date(from_date, field_name="from_date") or datetime.date.today()
+    end = _parse_iso_date(to_date, field_name="to_date") or (
+        start + datetime.timedelta(days=30)
+    )
+    if start > end:
+        raise ValueError("from_date must be <= to_date")
+    return start, end
+
+
 def _resolve_earnings_calendar_market(
     symbol: str | None,
     market: str | None,
@@ -138,7 +160,7 @@ def _resolve_earnings_calendar_market(
         if normalized == "crypto":
             raise ValueError("Earnings calendar is not available for cryptocurrencies")
         return normalized
-    if symbol and _is_korean_equity_code(symbol):
+    if symbol and _is_kr_earnings_calendar_symbol(symbol):
         return "kr"
     return "us"
 
@@ -165,15 +187,12 @@ async def _fetch_earnings_calendar_market_events_kr(
     to_date: str | None,
 ) -> dict[str, Any]:
     normalized_symbol = _normalize_kr_calendar_symbol(symbol)
-    if normalized_symbol and not _is_korean_equity_code(normalized_symbol):
+    if normalized_symbol and not (
+        len(normalized_symbol) == 6 and normalized_symbol.isdigit()
+    ):
         raise ValueError("KR earnings calendar requires a Korean equity code")
 
-    start = _parse_iso_date(from_date, field_name="from_date") or datetime.date.today()
-    end = _parse_iso_date(to_date, field_name="to_date") or (
-        start + datetime.timedelta(days=30)
-    )
-    if start > end:
-        raise ValueError("from_date must be <= to_date")
+    start, end = _normalize_calendar_date_window(from_date, to_date)
 
     async with AsyncSessionLocal() as db:
         svc = MarketEventsQueryService(db)
@@ -243,14 +262,17 @@ async def handle_get_earnings_calendar(
             to_date,
         )
 
-    if symbol and _is_korean_equity_code(symbol):
+    if symbol and _is_kr_earnings_calendar_symbol(symbol):
         raise ValueError("Use market='kr' for Korean equities")
 
-    _parse_iso_date(from_date, field_name="from_date")
-    _parse_iso_date(to_date, field_name="to_date")
+    start, end = _normalize_calendar_date_window(from_date, to_date)
 
     try:
-        return await _fetch_earnings_calendar_finnhub(symbol, from_date, to_date)
+        return await _fetch_earnings_calendar_finnhub(
+            symbol,
+            start.isoformat(),
+            end.isoformat(),
+        )
     except Exception as exc:
         return _error_payload(
             source="finnhub",
