@@ -11,6 +11,11 @@ from app.mcp_server.tooling import analysis_screening
 from app.mcp_server.tooling.screening import kr as kr_mod
 from app.mcp_server.tooling.screening import kr as kr_screening
 from app.mcp_server.tooling.screening.kr_ranking_snapshot import KrRankingSnapshotResult
+from app.services.tvscreener_capabilities import (
+    TvScreenerCapabilitySnapshot,
+    TvScreenerCapabilityState,
+)
+from app.services.tvscreener_retry import TvScreenerError
 from tests._mcp_screen_stocks_support import (
     TestScreenStocksFundamentalsExpansion,
     TestScreenStocksKR,
@@ -36,6 +41,34 @@ def mock_disable_kr_ranking_snapshot_by_default():
         new=AsyncMock(return_value=None),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def mock_kr_tvscreener_network_by_default(monkeypatch: pytest.MonkeyPatch):
+    capabilities = {"volume", "change_rate", "rsi", "adx"}
+    snapshot = TvScreenerCapabilitySnapshot(
+        screener="stock",
+        market="kr",
+        statuses=dict.fromkeys(capabilities, TvScreenerCapabilityState.USABLE),
+        fields={capability: object() for capability in capabilities},
+    )
+
+    async def fake_capability_snapshot(**kwargs: Any):
+        return snapshot
+
+    async def fail_kr_tvscreener_query(*args: Any, **kwargs: Any):
+        raise TvScreenerError("tvscreener network disabled in fast tests")
+
+    monkeypatch.setattr(
+        kr_mod,
+        "_get_tvscreener_stock_capability_snapshot",
+        fake_capability_snapshot,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.screening.us._get_tvscreener_stock_capability_snapshot",
+        fake_capability_snapshot,
+    )
+    monkeypatch.setattr(kr_mod, "_execute_kr_query", fail_kr_tvscreener_query)
 
 
 def test_analysis_screening_reexports_screen_contract_helpers() -> None:

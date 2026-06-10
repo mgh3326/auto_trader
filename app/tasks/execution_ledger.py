@@ -32,15 +32,22 @@ def _scheduled_reconcile_labels() -> list[dict[str, str]]:
 
 async def _run_reconciliation(broker: ExecutionLedgerBroker, window_hours: int) -> dict:
     async with AsyncSessionLocal() as db:
-        diff = await ExecutionLedgerReconciler(ExecutionLedgerRepository(db)).run(
-            broker,
-            window_hours=window_hours,
-            dry_run=not settings.EXECUTION_LEDGER_COMMIT_ENABLED,
-        )
-        if settings.EXECUTION_LEDGER_COMMIT_ENABLED:
-            await db.commit()
-        else:
-            await db.rollback()
+        dry_run = not settings.EXECUTION_LEDGER_COMMIT_ENABLED
+        try:
+            diff = await ExecutionLedgerReconciler(ExecutionLedgerRepository(db)).run(
+                broker,
+                window_hours=window_hours,
+                dry_run=dry_run,
+            )
+        except Exception:
+            if dry_run:
+                # Dry-run skips ledger upserts; commit only preserves the run audit row.
+                await db.commit()
+            else:
+                await db.rollback()
+            raise
+        # Dry-run skips ledger upserts; commit only preserves the run audit row.
+        await db.commit()
     return diff.model_dump(mode="json")
 
 

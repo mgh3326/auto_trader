@@ -96,3 +96,57 @@ def classify_candidate_symbol(
     if not universe_useful or not candidate_fresh:
         return "watch_only"
     return "buy_review"
+
+
+# Deterministic tiebreak when several watch-grade flags co-occur — the first
+# matching flag becomes the surfaced reason (penny > illiquid > abnormal_spike >
+# screener_stale). Order is policy, not derivable from code.
+_QUALITY_WATCH_ORDER: tuple[str, ...] = (
+    "penny",
+    "illiquid",
+    "abnormal_spike",
+    "screener_stale",
+)
+
+
+def demote_for_quality(
+    verdict: str, quality_flags: frozenset[str]
+) -> tuple[str, str | None]:
+    """ROB-346 — post-verdict quality demotion. Quality only DEMOTES (never
+    upgrades). non_common_stock is always rejected; otherwise only buy_review
+    is touched. Returns (new_verdict, reason | None)."""
+    if "non_common_stock" in quality_flags:
+        return "rejected", "non_common_stock"
+    if verdict != "buy_review":
+        return verdict, None
+    if "common_stock_unknown" in quality_flags:
+        return "data_gap", "common_stock_unknown"
+    for flag in _QUALITY_WATCH_ORDER:
+        if flag in quality_flags:
+            return "watch_only", flag
+    return "buy_review", None
+
+
+def demote_for_budget(
+    verdict: str, budget_state: dict[str, Any]
+) -> tuple[str, list[str]]:
+    """ROB-347 — post-verdict budget demotion. Only buy_review is touched;
+    budget never upgrades. KRW is reference-only (no KRW→USD fabrication).
+    Returns (new_verdict, reasons)."""
+    if verdict != "buy_review":
+        return verdict, []
+    basis = budget_state.get("basis") or "available_usd"
+    override = budget_state.get("override_usd")
+    krw = budget_state.get("krw") or 0
+    # request override (operator/report budget) takes precedence when present.
+    usd = override if override is not None else budget_state.get("usd")
+    if basis == "krw_orderable_reference" and override is None:
+        return "watch_only", ["fx_required"]
+    if usd is not None and usd > 0:
+        return "buy_review", []
+    reasons = ["budget_gap"]
+    if krw and krw > 0:
+        reasons.append("fx_required")
+    if override is None:
+        reasons.append("operator_budget_required")
+    return "watch_only", reasons

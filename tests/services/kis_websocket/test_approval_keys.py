@@ -13,6 +13,20 @@ from app.services.kis_websocket_internal.constants import (
 INTERNAL = "app.services.kis_websocket_internal.approval_keys"
 
 
+def _lock_capable_redis() -> AsyncMock:
+    """AsyncMock Redis whose ``SET NX`` always wins and ``EVAL`` release is inert.
+
+    Lets the ROB-262 single-flight issuance lock run in single-caller cache-miss
+    tests without a live Redis. Concurrency semantics are covered separately in
+    test_approval_key_single_flight.py with a faithful in-memory fake.
+    """
+    redis = AsyncMock()
+    redis.set = AsyncMock(return_value=True)
+    redis.eval = AsyncMock(return_value=1)
+    redis.delete = AsyncMock(return_value=1)
+    return redis
+
+
 @pytest.mark.asyncio
 async def test_is_valid_approval_key_semantics():
     """Pin the semantics of _is_valid_approval_key"""
@@ -44,6 +58,12 @@ async def test_get_approval_key_miss_flow(mocker):
         f"{INTERNAL}._issue_approval_key", new=AsyncMock(return_value="fresh")
     )
     mock_cache = mocker.patch(f"{INTERNAL}._cache_approval_key", new=AsyncMock())
+    # The cache-miss path now acquires a single-flight lock (ROB-262); give it a
+    # lock-capable Redis so the test stays hermetic (no real Redis dependency).
+    mocker.patch(
+        f"{INTERNAL}._get_redis_client",
+        new=AsyncMock(return_value=_lock_capable_redis()),
+    )
 
     result = await mod.get_approval_key()
 
@@ -91,17 +111,17 @@ class TestKISWebSocketApprovalKey:
             )
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch(
-                f"{INTERNAL}._get_cached_approval_key",
-                return_value=None,
+            with (
+                patch(f"{INTERNAL}._get_cached_approval_key", return_value=None),
+                patch(f"{INTERNAL}._cache_approval_key", return_value=None),
+                patch(
+                    f"{INTERNAL}._get_redis_client",
+                    return_value=_lock_capable_redis(),
+                ),
             ):
-                with patch(
-                    f"{INTERNAL}._cache_approval_key",
-                    return_value=None,
-                ):
-                    approval_key = await mod.get_approval_key()
+                approval_key = await mod.get_approval_key()
 
-                    assert approval_key == "test_approval_key"
+                assert approval_key == "test_approval_key"
 
     @pytest.mark.asyncio
     async def test_issue_approval_key_missing_key(self):
@@ -119,16 +139,16 @@ class TestKISWebSocketApprovalKey:
             )
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch(
-                f"{INTERNAL}._get_cached_approval_key",
-                return_value=None,
+            with (
+                patch(f"{INTERNAL}._get_cached_approval_key", return_value=None),
+                patch(f"{INTERNAL}._cache_approval_key", return_value=None),
+                patch(
+                    f"{INTERNAL}._get_redis_client",
+                    return_value=_lock_capable_redis(),
+                ),
             ):
-                with patch(
-                    f"{INTERNAL}._cache_approval_key",
-                    return_value=None,
-                ):
-                    with pytest.raises(Exception, match="Approval Key not found"):
-                        await mod.get_approval_key()
+                with pytest.raises(Exception, match="Approval Key not found"):
+                    await mod.get_approval_key()
 
 
 @pytest.mark.unit
@@ -242,18 +262,18 @@ class TestApprovalKeyRedisCache:
             )
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch(
-                f"{INTERNAL}._get_cached_approval_key",
-                return_value=None,
+            with (
+                patch(f"{INTERNAL}._get_cached_approval_key", return_value=None),
+                patch(f"{INTERNAL}._cache_approval_key", cache_spy),
+                patch(
+                    f"{INTERNAL}._get_redis_client",
+                    return_value=_lock_capable_redis(),
+                ),
             ):
-                with patch(
-                    f"{INTERNAL}._cache_approval_key",
-                    cache_spy,
-                ):
-                    result = await mod.get_approval_key()
+                result = await mod.get_approval_key()
 
-                    assert result == "fresh_key_abc"
-                    cache_spy.assert_called_once_with("fresh_key_abc", "kis_live")
+                assert result == "fresh_key_abc"
+                cache_spy.assert_called_once_with("fresh_key_abc", "kis_live")
 
     @pytest.mark.asyncio
     async def test_cache_constants_are_correct(self):
@@ -310,18 +330,21 @@ class TestApprovalKeyEmptyCacheMiss:
             )
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch(
-                f"{INTERNAL}._get_cached_approval_key",
-                return_value="",  # Empty string from cache
+            with (
+                patch(
+                    f"{INTERNAL}._get_cached_approval_key",
+                    return_value="",  # Empty string from cache
+                ),
+                patch(f"{INTERNAL}._cache_approval_key", cache_spy),
+                patch(
+                    f"{INTERNAL}._get_redis_client",
+                    return_value=_lock_capable_redis(),
+                ),
             ):
-                with patch(
-                    f"{INTERNAL}._cache_approval_key",
-                    cache_spy,
-                ):
-                    result = await mod.get_approval_key()
+                result = await mod.get_approval_key()
 
-                    assert result == "fresh_key_empty"
-                    cache_spy.assert_called_once_with("fresh_key_empty", "kis_live")
+                assert result == "fresh_key_empty"
+                cache_spy.assert_called_once_with("fresh_key_empty", "kis_live")
 
     @pytest.mark.asyncio
     async def test_whitespace_cache_treated_as_miss(self):
@@ -341,18 +364,21 @@ class TestApprovalKeyEmptyCacheMiss:
             )
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch(
-                f"{INTERNAL}._get_cached_approval_key",
-                return_value="   ",  # Whitespace from cache
+            with (
+                patch(
+                    f"{INTERNAL}._get_cached_approval_key",
+                    return_value="   ",  # Whitespace from cache
+                ),
+                patch(f"{INTERNAL}._cache_approval_key", cache_spy),
+                patch(
+                    f"{INTERNAL}._get_redis_client",
+                    return_value=_lock_capable_redis(),
+                ),
             ):
-                with patch(
-                    f"{INTERNAL}._cache_approval_key",
-                    cache_spy,
-                ):
-                    result = await mod.get_approval_key()
+                result = await mod.get_approval_key()
 
-                    assert result == "fresh_key_ws"
-                    cache_spy.assert_called_once_with("fresh_key_ws", "kis_live")
+                assert result == "fresh_key_ws"
+                cache_spy.assert_called_once_with("fresh_key_ws", "kis_live")
 
 
 @pytest.mark.unit

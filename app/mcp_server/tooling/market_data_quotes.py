@@ -554,13 +554,25 @@ async def _fetch_us_quote_from_kis(normalized_symbol: str) -> dict[str, Any] | N
     }
 
 
+def _is_yahoo_symbol_not_found_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "quote not found",
+            "symbol not found",
+            "not found for symbol",
+        )
+    )
+
+
 async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     """Fetch US equity quote.
 
     ROB-471: KIS 해외 현재가 primary(settings.us_quote_kis_primary), Yahoo
     fast_info fallback. 정직 에러 분리:
-      - 둘 다 정상응답·무가격 → symbol_not_found (ValueError)
-      - 한쪽이라도 infra 실패 + 무가격 → quote_unavailable (RuntimeError)
+      - provider 명시적 not-found → symbol_not_found (ValueError)
+      - fast_info 정상응답·무가격 → quote_unavailable (RuntimeError)
     """
     normalized_symbol = str(symbol or "").strip().upper()
     not_found_message = f"Symbol '{normalized_symbol}' not found"
@@ -585,6 +597,8 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     try:
         fast_info = await yahoo_service.fetch_fast_info(normalized_symbol)
     except Exception as exc:
+        if _is_yahoo_symbol_not_found_error(exc):
+            raise ValueError(not_found_message) from exc
         raise RuntimeError(
             f"{unavailable_message} (yahoo fallback failed): {exc}"
         ) from exc
@@ -595,7 +609,7 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
             raise RuntimeError(
                 f"{unavailable_message} (kis errored, yahoo returned no price)"
             )
-        raise ValueError(not_found_message)
+        raise RuntimeError(f"{unavailable_message} (yahoo returned no price)")
 
     return {
         "symbol": normalized_symbol,

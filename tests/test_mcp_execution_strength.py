@@ -55,6 +55,24 @@ async def test_inquire_execution_strength_uses_inquire_ccnl_tday_rltv():
 
 
 @pytest.mark.asyncio
+async def test_kis_facade_delegates_execution_strength():
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient.__new__(KISClient)
+    client._market_data = AsyncMock()
+    client._market_data.inquire_execution_strength = AsyncMock(
+        return_value={"cttr": "120.3"}
+    )
+
+    raw = await client.inquire_execution_strength("005930", market="J")
+
+    assert raw == {"cttr": "120.3"}
+    client._market_data.inquire_execution_strength.assert_awaited_once_with(
+        "005930", "J"
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_execution_strength_kr_returns_strength(monkeypatch):
     class _MockKIS:
         async def inquire_execution_strength(self, code, market="J"):

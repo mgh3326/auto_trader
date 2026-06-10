@@ -137,17 +137,21 @@ class ExecutionLedgerRepository:
         self.db.add(ExecutionLedgerReconcileRun(**run.model_dump()))
 
     async def latest_run_per_broker(self) -> dict[str, ReconcileRunRecord]:
+        # Dry-run audit rows are persisted for observability but commit no
+        # fills, so they must not make ledger freshness look "fresh".
         latest_started = (
             select(
                 ExecutionLedgerReconcileRun.broker,
                 func.max(ExecutionLedgerReconcileRun.started_at).label("started_at"),
             )
             .where(ExecutionLedgerReconcileRun.error_summary.is_(None))
+            .where(ExecutionLedgerReconcileRun.dry_run.is_(False))
             .group_by(ExecutionLedgerReconcileRun.broker)
             .subquery()
         )
         rows = await self.db.execute(
-            select(ExecutionLedgerReconcileRun).join(
+            select(ExecutionLedgerReconcileRun)
+            .join(
                 latest_started,
                 (ExecutionLedgerReconcileRun.broker == latest_started.c.broker)
                 & (
@@ -155,6 +159,7 @@ class ExecutionLedgerRepository:
                     == latest_started.c.started_at
                 ),
             )
+            .where(ExecutionLedgerReconcileRun.dry_run.is_(False))
         )
         return {
             row.broker: ReconcileRunRecord.model_validate(row)
@@ -170,3 +175,45 @@ class ExecutionLedgerRepository:
         if market == "crypto":
             return stmt.where(ExecutionLedger.instrument_type == "crypto")
         return stmt
+
+    async def net_quantity_by_match_key_since(
+        self, *, cutover: datetime
+    ) -> dict[tuple[str, str, str, str, str, str], Decimal]:
+        from sqlalchemy import case
+
+        signed_qty = case(
+            (ExecutionLedger.side == "buy", ExecutionLedger.filled_qty),
+            else_=-ExecutionLedger.filled_qty,
+        )
+        rows = await self.db.execute(
+            select(
+                ExecutionLedger.broker,
+                ExecutionLedger.account_mode,
+                ExecutionLedger.venue,
+                ExecutionLedger.instrument_type,
+                ExecutionLedger.symbol,
+                ExecutionLedger.currency,
+                func.coalesce(func.sum(signed_qty), 0),
+            )
+            .where(ExecutionLedger.filled_at >= cutover)
+            .where(ExecutionLedger.source != "manual_import")
+            .group_by(
+                ExecutionLedger.broker,
+                ExecutionLedger.account_mode,
+                ExecutionLedger.venue,
+                ExecutionLedger.instrument_type,
+                ExecutionLedger.symbol,
+                ExecutionLedger.currency,
+            )
+        )
+        return {
+            (
+                broker,
+                account_mode,
+                venue,
+                str(instrument_type),
+                symbol,
+                currency,
+            ): Decimal(str(net_qty))
+            for broker, account_mode, venue, instrument_type, symbol, currency, net_qty in rows.all()
+        }

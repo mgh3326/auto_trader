@@ -5,12 +5,14 @@ KIS (한국투자증권) WebSocket Client for Execution Data
 """
 
 from app.services.kis_websocket_internal.approval_keys import (
+    ApprovalKeyIssuanceUnavailable,
     _cache_approval_key,
     _get_cached_approval_key,
     _is_valid_approval_key,
     _issue_approval_key,
     close_approval_key_redis,
     get_approval_key,
+    invalidate_and_reissue_approval_key,
 )
 from app.services.kis_websocket_internal.client import (
     KISAppKeyInUseError,
@@ -69,6 +71,7 @@ __all__ = [
     "OVERSEAS_FILL_FIELDS",
     "OVERSEAS_SIDE_MAP",
     "RECOVERABLE_APPROVAL_MSG_CODES",
+    "ApprovalKeyIssuanceUnavailable",
     "_SIDE_MAP",
     "_US_SYMBOL_RESERVED_TOKENS",
     "_cache_approval_key",
@@ -78,4 +81,5 @@ __all__ = [
     "build_lifecycle_event",
     "close_approval_key_redis",
     "get_approval_key",
+    "invalidate_and_reissue_approval_key",
 ]

@@ -171,29 +171,53 @@ class KISExecutionWebSocket:
                 await self._close_websocket_best_effort()
 
                 if recoverable_ack_failure:
-                    if (
-                        ack_error is not None
-                        and self._last_reissue_msg_code == ack_error.msg_cd
-                    ):
-                        # 동일한 ACK 오류가 연속으로 반복되면 최소 1초 대기 후 재발급합니다.
-                        await asyncio.sleep(1)
-                    self.approval_key = await approval_keys._issue_approval_key(
-                        self.account_mode
-                    )
-                    await approval_keys._cache_approval_key(
-                        self.approval_key, self.account_mode
-                    )
-                    self._last_reissue_msg_code = (
-                        ack_error.msg_cd if ack_error else None
-                    )
-                    logger.info(
-                        "Approval key reissued after recoverable ACK failure: "
-                        "msg_cd=%s attempt=%s messages_received=%s execution_events_received=%s",
-                        ack_error.msg_cd if ack_error else None,
-                        self.current_attempt,
-                        self.messages_received,
-                        self.execution_events_received,
-                    )
+                    ack_msg_cd = ack_error.msg_cd if ack_error else None
+                    if self._last_reissue_msg_code == ack_msg_cd:
+                        # A controlled reissue was already attempted for this streak
+                        # (it either succeeded and KIS still rejected the fresh key,
+                        # or it was contended) — so this is not a stale-key problem we
+                        # can fix by reissuing again. Do NOT churn the approval key;
+                        # just back off via reconnect_delay below. The single-flight
+                        # holder / next reconnect cycle resolves a genuine reissue.
+                        logger.warning(
+                            "KIS WebSocket recoverable ACK persists after controlled "
+                            "reissue; backing off without reissuing key: "
+                            "msg_cd=%s attempt=%s/%s",
+                            ack_msg_cd,
+                            self.current_attempt,
+                            self.max_reconnect_attempts,
+                        )
+                    else:
+                        # First occurrence in this streak: controlled, single-flight
+                        # reissue. It overwrites the rejected key under a Redis lock so
+                        # concurrent owners do not each hammer the approval endpoint.
+                        try:
+                            self.approval_key = (
+                                await approval_keys.invalidate_and_reissue_approval_key(
+                                    self.account_mode
+                                )
+                            )
+                            logger.info(
+                                "KIS approval key controlled reissue after recoverable "
+                                "ACK failure: msg_cd=%s attempt=%s messages_received=%s "
+                                "execution_events_received=%s",
+                                ack_msg_cd,
+                                self.current_attempt,
+                                self.messages_received,
+                                self.execution_events_received,
+                            )
+                        except approval_keys.ApprovalKeyIssuanceUnavailable:
+                            # Another owner holds the issuance lock and published no key
+                            # in time; back off instead of issuing a second key.
+                            logger.warning(
+                                "KIS approval key issuance contended during reconnect; "
+                                "backing off without independent reissue: "
+                                "msg_cd=%s attempt=%s/%s",
+                                ack_msg_cd,
+                                self.current_attempt,
+                                self.max_reconnect_attempts,
+                            )
+                        self._last_reissue_msg_code = ack_msg_cd
                 else:
                     self._last_reissue_msg_code = None
 

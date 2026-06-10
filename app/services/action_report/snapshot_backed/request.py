@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
@@ -62,6 +63,15 @@ class ReportGenerationRequest(BaseModel):
     # Snapshot-bundle inputs forwarded to SnapshotBundleEnsureService.
     symbols: list[str] | None = None
     candidate_limit: int | None = None
+
+    # ROB-347 — US new-buy budget basis policy. Default available_usd: USD
+    # buying power gates buy_review. USD<=0 demotes buy_review → watch_only with
+    # budget_gap/fx_required/operator_budget_required (never a silent buy). KRW
+    # is reference-only; no KRW→USD fabrication.
+    budget_basis: Literal[
+        "available_usd", "krw_orderable_reference", "operator_budget_override"
+    ] = "available_usd"
+    operator_budget_override_usd: Decimal | None = None
 
     # ROB-287 — fail-closed legacy field. The ROB-279 in-process LLM
     # composition path (Gemini-backed FinalComposer + LLM reducer stages)

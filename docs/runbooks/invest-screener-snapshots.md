@@ -178,6 +178,21 @@ uv run python -m scripts.diagnose_invest_screener_snapshots --market us
 - UI: open `/invest/screener`, toggle 미국, confirm `consecutive_gainers` returns >0 rows.
 - API: confirm `freshness.dataState="fresh"` and non-empty `results[]`.
 
+### US valuation Finnhub fallback (ROB-434, default-off)
+
+`market_valuation_snapshots` US builds can backfill valuation fields that yahoo
+`.info` left null (operator "ROE rows 0" / Invalid Crumb) from Finnhub
+`company_basic_financials`. **Disabled by default.** To enable for a build:
+
+1. Set `FINNHUB_API_KEY` (operator secret manager — never commit).
+2. Set `MARKET_VALUATION_FINNHUB_FALLBACK_ENABLED=true`.
+3. Run `uv run python -m scripts.build_market_valuation_snapshots --market us --common-stocks-only --concurrency 4` (dry-run first). The summary prints `finnhub backfill` per-field counts and `non-null field coverage`.
+
+Without the key or flag the build is byte-identical to today (yahoo-only,
+fail-closed). `source` stays `yahoo`; per-field provenance is in
+`raw_payload._field_provenance`. Finnhub free tier ~60/min — keep `--concurrency`
+modest. Fallback fires only on a per-symbol gap, never per-symbol unconditionally.
+
 ---
 
 ## 8. Prefect Deployment (DEFERRED — ROB-204)

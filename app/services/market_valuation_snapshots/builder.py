@@ -57,34 +57,90 @@ async def default_valuation_fetcher(
             fetch_fast_info,
             fetch_fundamental_info,
         )
-
-        # ROB-440 PR4: the 52w-high DATE needs a heavy OHLC fetch (1y daily) — a 3rd
-        # yahoo call/symbol that over-loads yfinance at universe scale (FD/401). Opt-in
-        # so the bulk valuation backfill is 2 calls/symbol; only undervalued_breakout
-        # date-recency needs it (targeted run with include_high_date=True).
-        if not include_high_date:
-            fast_info, fundamentals = await asyncio.gather(
-                fetch_fast_info(symbol), fetch_fundamental_info(symbol)
-            )
-            return {**fast_info, **fundamentals}
-
-        fast_info, fundamentals, high_52w_date = await asyncio.gather(
-            fetch_fast_info(symbol),
-            fetch_fundamental_info(symbol),
-            fetch_52w_high_date(symbol),  # ROB-440 PR3: 52w-high date (date-recency)
+        from app.services.market_valuation_snapshots.finnhub_fallback import (
+            apply_valuation_fallback,
         )
-        # isoformat string keeps raw_payload (JSONB) serializable; parsed back in
-        # _payload_from_raw → the high_52w_date column.
-        return {
-            **fast_info,
-            **fundamentals,
-            "high_52w_date": high_52w_date.isoformat() if high_52w_date else None,
-        }
+
+        raw: dict[str, Any] = {}
+        yahoo_failed = False
+        yahoo_exc: Exception | None = None
+        try:
+            # ROB-440 PR4: the 52w-high DATE needs a heavy OHLC fetch (1y daily) — a 3rd
+            # yahoo call/symbol that over-loads yfinance at universe scale (FD/401). Opt-in
+            # so the bulk valuation backfill is 2 calls/symbol; only undervalued_breakout
+            # date-recency needs it (targeted run with include_high_date=True).
+            if not include_high_date:
+                fast_info, fundamentals = await asyncio.gather(
+                    fetch_fast_info(symbol), fetch_fundamental_info(symbol)
+                )
+                raw = {**fast_info, **fundamentals}
+            else:
+                fast_info, fundamentals, high_52w_date = await asyncio.gather(
+                    fetch_fast_info(symbol),
+                    fetch_fundamental_info(symbol),
+                    fetch_52w_high_date(
+                        symbol
+                    ),  # ROB-440 PR3: 52w-high date (date-recency)
+                )
+                # isoformat string keeps raw_payload (JSONB) serializable; parsed back in
+                # _payload_from_raw → the high_52w_date column.
+                raw = {
+                    **fast_info,
+                    **fundamentals,
+                    "high_52w_date": high_52w_date.isoformat()
+                    if high_52w_date
+                    else None,
+                }
+        except Exception as exc:  # noqa: BLE001 — try Finnhub before giving up
+            raw, yahoo_failed, yahoo_exc = {}, True, exc
+
+        # ROB-434: backfill yahoo's null/missing valuation fields from Finnhub when
+        # gated on. No-op when disabled / no key / no gap. source stays 'yahoo'.
+        # include_high_date is threaded so high_52w_date counts as a gap/fill target
+        # ONLY on the opt-in run that fetched it — otherwise every bulk-path symbol
+        # (which never has the date) would falsely look "gapped" and call Finnhub.
+        raw = await apply_valuation_fallback(
+            symbol, raw, yahoo_failed=yahoo_failed, include_high_date=include_high_date
+        )
+
+        # Nothing recovered from a total yahoo failure → preserve today's skip+warn.
+        if yahoo_failed and not raw and yahoo_exc is not None:
+            raise yahoo_exc
+        return raw
     raise ValueError(f"unsupported market: {market}")
 
 
 def _source_for_market(market: str) -> str:
     return "naver_finance" if market == "kr" else "yahoo"
+
+
+# ROB-434: single source of truth for per-column raw-key priority. Used by
+# _payload_from_raw AND finnhub_fallback's gap detection so they never drift.
+# Mirrors _payload_from_raw's original or-chains exactly.
+_FIELD_SOURCE_KEYS: dict[str, tuple[str, ...]] = {
+    "per": ("per", "PER", "trailingPE"),
+    "pbr": ("pbr", "PBR", "priceToBook"),
+    "roe": ("roe", "ROE"),
+    "dividend_yield": (
+        "dividend_yield",
+        "Dividend Yield",
+        "trailingAnnualDividendYield",
+    ),
+    "market_cap": ("market_cap", "marketCap"),
+    "high_52w": ("high_52w", "yearHigh"),
+    "low_52w": ("low_52w", "yearLow"),
+    "high_52w_date": ("high_52w_date",),
+}
+
+
+def _resolve_raw_value(raw: dict[str, Any], field: str) -> Any:
+    """First truthy value among the field's priority keys (matches the original
+    or-chain: 0/None are treated as absent)."""
+    for key in _FIELD_SOURCE_KEYS[field]:
+        value = raw.get(key)
+        if value:
+            return value
+    return None
 
 
 def _payload_from_raw(
@@ -95,18 +151,14 @@ def _payload_from_raw(
         symbol=symbol,
         snapshot_date=snapshot_date,
         source=_source_for_market(market),
-        per=_to_decimal(raw.get("per") or raw.get("PER") or raw.get("trailingPE")),
-        pbr=_to_decimal(raw.get("pbr") or raw.get("PBR") or raw.get("priceToBook")),
-        roe=_to_decimal(raw.get("roe") or raw.get("ROE")),
-        dividend_yield=_to_decimal(
-            raw.get("dividend_yield")
-            or raw.get("Dividend Yield")
-            or raw.get("trailingAnnualDividendYield")
-        ),
-        market_cap=_to_decimal(raw.get("market_cap") or raw.get("marketCap")),
-        high_52w=_to_decimal(raw.get("high_52w") or raw.get("yearHigh")),
-        low_52w=_to_decimal(raw.get("low_52w") or raw.get("yearLow")),
-        high_52w_date=_to_date(raw.get("high_52w_date")),
+        per=_to_decimal(_resolve_raw_value(raw, "per")),
+        pbr=_to_decimal(_resolve_raw_value(raw, "pbr")),
+        roe=_to_decimal(_resolve_raw_value(raw, "roe")),
+        dividend_yield=_to_decimal(_resolve_raw_value(raw, "dividend_yield")),
+        market_cap=_to_decimal(_resolve_raw_value(raw, "market_cap")),
+        high_52w=_to_decimal(_resolve_raw_value(raw, "high_52w")),
+        low_52w=_to_decimal(_resolve_raw_value(raw, "low_52w")),
+        high_52w_date=_to_date(_resolve_raw_value(raw, "high_52w_date")),
         raw_payload=redact_sensitive_payload(dict(raw)),
     )
 

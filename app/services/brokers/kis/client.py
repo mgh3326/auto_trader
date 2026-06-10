@@ -147,6 +147,11 @@ class KISClient(BaseKISClient):
     async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         return await self._market_data.inquire_price(code, market)
 
+    async def inquire_execution_strength(
+        self, code: str, market: str = "J"
+    ) -> dict[str, Any]:
+        return await self._market_data.inquire_execution_strength(code, market)
+
     async def inquire_orderbook(self, code: str, market: str = "J") -> dict[str, Any]:
         return await self._market_data.inquire_orderbook(code, market)
 
@@ -402,9 +407,10 @@ class KISClient(BaseKISClient):
         side: str = "00",
         order_number: str = "",
         is_mock: bool = False,
+        max_pages: int = 100,
     ) -> list[dict[str, Any]]:
         return await self._domestic_orders.inquire_daily_order_domestic(
-            start_date, end_date, stock_code, side, order_number, is_mock
+            start_date, end_date, stock_code, side, order_number, is_mock, max_pages
         )
 
     async def modify_korea_order(
@@ -492,9 +498,17 @@ class KISClient(BaseKISClient):
         side: str = "00",
         order_number: str = "",
         is_mock: bool = False,
+        max_pages: int = 100,
     ) -> list[dict[str, Any]]:
         return await self._overseas_orders.inquire_daily_order_overseas(
-            start_date, end_date, symbol, exchange_code, side, order_number, is_mock
+            start_date,
+            end_date,
+            symbol,
+            exchange_code,
+            side,
+            order_number,
+            is_mock,
+            max_pages,
         )
 
     async def modify_overseas_order(

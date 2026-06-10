@@ -14,7 +14,11 @@ def test_protocol_constants():
     assert "H0STCNI0" in mod.DOMESTIC_EXECUTION_TR_CODES
     assert "H0GSCNI0" in mod.OVERSEAS_EXECUTION_TR_CODES
 
-    assert mod.RECOVERABLE_APPROVAL_MSG_CODES == {"OPSP0011", "OPSP8996"}
+    # ROB-262: OPSP8996 ("ALREADY IN USE appkey") is intentionally excluded — it
+    # is a fail-fast/long-backoff session-occupancy path (KISAppKeyInUseError),
+    # not an approval-key reissue path.
+    assert mod.RECOVERABLE_APPROVAL_MSG_CODES == {"OPSP0011"}
+    assert "OPSP8996" not in mod.RECOVERABLE_APPROVAL_MSG_CODES
 
 
 def test_kis_subscription_ack_error_properties():

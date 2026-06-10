@@ -22,6 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.symbol import to_db_symbol
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+from app.services.action_report.snapshot_backed.candidate_quality import (
+    compute_priority_score,
+    compute_quality_flags,
+    confidence_cap_for,
+    dollar_volume_usd,
+)
 from app.services.action_report.snapshot_backed.collectors._base import (
     build_result,
     unavailable_result,
@@ -319,9 +325,16 @@ class CandidateUniverseSnapshotCollector:
         usefulness = _classify_usefulness(
             actionable=coverage.fresh_count, stale=coverage.stale_count
         )
-        rows = await self._equity_repo.list_top_candidates(
-            market=request.market, limit=limit
-        )
+        is_us = request.market == "us"
+        if is_us:
+            pool_limit = max(limit * 5, 50)
+            rows = await self._equity_repo.list_candidate_pool(
+                market=request.market, limit=pool_limit
+            )
+        else:
+            rows = await self._equity_repo.list_top_candidates(
+                market=request.market, limit=limit
+            )
         rows = _dedupe_rows(rows, key=lambda r: to_db_symbol(r.symbol))
         latest_partition_date = (
             getattr(rows[0], "snapshot_date", None) if rows else None
@@ -336,6 +349,41 @@ class CandidateUniverseSnapshotCollector:
             preset="top_gainers",
             rows=[_equity_row_to_input(r) for r in rows],
         )
+
+        quality_by_symbol: dict[str, dict[str, Any]] | None = None
+        if is_us:
+            stale = days_stale > 0 or usefulness != "useful"
+            flags_by_symbol = await self._equity_repo.common_stock_flags(
+                [r.symbol for r in rows]
+            )
+            quality_by_symbol = {}
+            for r in rows:
+                qf = compute_quality_flags(
+                    latest_close=r.latest_close,
+                    daily_volume=r.daily_volume,
+                    change_rate=r.change_rate,
+                    week_change_rate=r.week_change_rate,
+                    is_common_stock=flags_by_symbol.get(r.symbol),
+                    screener_stale=stale,
+                )
+                quality_by_symbol[r.symbol] = {
+                    "quality_flags": sorted(qf),
+                    "dollar_volume_usd": dollar_volume_usd(
+                        r.latest_close, r.daily_volume
+                    ),
+                    "priority_score": compute_priority_score(
+                        latest_close=r.latest_close,
+                        daily_volume=r.daily_volume,
+                        change_rate=r.change_rate,
+                        quality_flags=qf,
+                    ),
+                    "confidence_cap": confidence_cap_for(qf),
+                    "is_common_stock": flags_by_symbol.get(r.symbol),
+                    "week_change_rate": float(r.week_change_rate)
+                    if r.week_change_rate is not None
+                    else None,
+                }
+
         return [
             self._build_candidate_result(
                 request=request,
@@ -351,6 +399,7 @@ class CandidateUniverseSnapshotCollector:
                 expected_baseline_date=baseline,
                 latest_partition_date=latest_partition_date,
                 days_stale=days_stale,
+                quality_by_symbol=quality_by_symbol,
             )
         ]
 
@@ -482,12 +531,30 @@ class CandidateUniverseSnapshotCollector:
         expected_baseline_date: dt.date | None = None,
         latest_partition_date: dt.date | None = None,
         days_stale: int = 0,
+        quality_by_symbol: dict[str, dict[str, Any]] | None = None,
     ) -> SnapshotCollectResult:
         freshness_status = _FRESHNESS_BY_USEFULNESS.get(usefulness, "partial")
         # ROB-359 Scope E — stamp universe-level lineage onto each candidate dict
         # so a new-buy report item is self-describing (preset hit / freshness /
         # Toss parity status) without needing the universe payload for context.
         toss_parity_status = _toss_parity_status(preset, market)
+
+        ordered = list(evidence)
+        if quality_by_symbol:
+            ordered = sorted(
+                evidence,
+                key=lambda e: (
+                    -(quality_by_symbol.get(e.symbol, {}).get("priority_score") or 0.0),
+                    -(
+                        quality_by_symbol.get(e.symbol, {}).get("dollar_volume_usd")
+                        or 0.0
+                    ),
+                    e.symbol,
+                ),
+            )
+            # slice to the requested candidate_limit
+            ordered = ordered[:candidate_limit]
+
         candidates = [
             {
                 **e.to_payload_dict(),
@@ -495,8 +562,9 @@ class CandidateUniverseSnapshotCollector:
                 "candidate_rank": rank,
                 "data_state": freshness_status,
                 "toss_parity_status": toss_parity_status,
+                **((quality_by_symbol or {}).get(e.symbol, {})),
             }
-            for rank, e in enumerate(evidence, start=1)
+            for rank, e in enumerate(ordered, start=1)
         ]
         universe_count = fresh_count + stale_count
         capped = universe_count > candidate_limit
@@ -509,6 +577,11 @@ class CandidateUniverseSnapshotCollector:
             "candidate_limit": candidate_limit,
             "universe_count": universe_count,
             "capped": capped,
+            # ROB-346 — pool_size = wide pool evaluated for ranking (US fetches
+            # max(limit*5,50)); displayed_count = candidates after the priority
+            # slice. Makes pool-vs-display transparent to the report UI.
+            "pool_size": len(evidence),
+            "displayed_count": len(candidates),
             "candidates": candidates,
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,
@@ -585,6 +658,11 @@ class CandidateUniverseSnapshotCollector:
             "candidate_limit": candidate_limit,
             "universe_count": universe_count,
             "capped": capped,
+            # ROB-346 — pool_size = wide pool evaluated for ranking (US fetches
+            # max(limit*5,50)); displayed_count = candidates after the priority
+            # slice. Makes pool-vs-display transparent to the report UI.
+            "pool_size": len(evidence),
+            "displayed_count": len(candidates),
             "candidates": candidates,
             "fresh_count": fresh_count,
             "actionable_count": fresh_count,

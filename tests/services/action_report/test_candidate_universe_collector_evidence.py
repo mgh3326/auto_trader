@@ -21,6 +21,7 @@ class _EquityRow:
     source: str = "kis"
     daily_volume: int = 100_000
     consecutive_up_days: int | None = None
+    week_change_rate: Decimal | None = None  # ROB-346 US quality input
 
 
 class _FakeEquityRepository:
@@ -31,6 +32,7 @@ class _FakeEquityRepository:
             _EquityRow(symbol="035720", change_rate=Decimal("7.0")),
         ]
         self.requested_limits: list[int] = []
+        self.requested_pool_limits: list[int | None] = []
 
     async def coverage(
         self, *, market: str, today_trading_date: dt.date
@@ -43,11 +45,25 @@ class _FakeEquityRepository:
             last_computed_at=None,
         )
 
+    async def _candidate_rows(self, *, market: str, limit: int | None):
+        return self.rows if limit is None else self.rows[:limit]
+
     async def list_top_candidates(
         self, *, market: str, limit: int = 10
     ) -> list[_EquityRow]:
         self.requested_limits.append(limit)
-        return self.rows[:limit]
+        return await self._candidate_rows(market=market, limit=limit)
+
+    async def list_candidate_pool(
+        self, *, market: str, limit: int | None = None
+    ) -> list[_EquityRow]:
+        # ROB-346 — US path sources a wide pool here instead of list_top_candidates.
+        self.requested_pool_limits.append(limit)
+        return await self._candidate_rows(market=market, limit=limit)
+
+    async def common_stock_flags(self, symbols: list[str]) -> dict[str, bool | None]:
+        # Treat fixtures as common stock so no non_common/unknown flag is injected.
+        return dict.fromkeys(symbols, True)
 
 
 @pytest.mark.asyncio
@@ -65,7 +81,10 @@ async def test_equity_collector_respects_candidate_limit(db_session):
         )
     )
 
-    assert repo.requested_limits == [2]
+    # ROB-346 — US sources a wide pool (max(limit*5, 50)) then slices to the
+    # candidate_limit after priority ranking; list_top_candidates is not used.
+    assert repo.requested_pool_limits == [50]
+    assert repo.requested_limits == []
     payload = results[0].payload_json
     assert payload["candidate_limit"] == 2
     assert [candidate["symbol"] for candidate in payload["candidates"]] == [
@@ -73,6 +92,48 @@ async def test_equity_collector_respects_candidate_limit(db_session):
         "005930",
     ]
     assert results[0].coverage_json["candidate_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_kr_equity_path_has_no_us_quality_gate(db_session, monkeypatch):
+    """ROB-346 is US-only: KR (top_gainers fallback) must not gain quality_flags.
+
+    Presets are monkeypatched to no-op so KR deterministically falls to the
+    top_gainers path (list_top_candidates), where the US quality gate is skipped.
+    """
+    from app.services.invest_view_model import (
+        double_buy_screener,
+        high_yield_value_screener,
+        screener_service,
+    )
+
+    async def _no_rows(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(
+        screener_service, "load_consecutive_gainers_from_snapshots", _no_rows
+    )
+    monkeypatch.setattr(double_buy_screener, "load_double_buy_from_snapshots", _no_rows)
+    monkeypatch.setattr(
+        high_yield_value_screener, "load_high_yield_value_from_snapshots", _no_rows
+    )
+
+    repo = _FakeEquityRepository()
+    collector = CandidateUniverseSnapshotCollector(db_session, equity_repository=repo)
+    results = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope=None,
+            symbols=[],
+            candidate_limit=5,
+            policy_snapshot={},
+        )
+    )
+    # KR uses list_top_candidates (not the US wide pool) and emits no quality gate.
+    assert repo.requested_limits  # list_top_candidates was used
+    assert repo.requested_pool_limits == []  # US wide pool NOT used for KR
+    for cand in results[0].payload_json["candidates"]:
+        assert "quality_flags" not in cand
 
 
 @pytest.mark.asyncio
@@ -563,8 +624,9 @@ async def test_stale_equity_payload_exposes_days_stale(db_session, monkeypatch):
                 last_computed_at=None,
             )
 
-        async def list_top_candidates(self, *, market, limit=10):
-            self.requested_limits.append(limit)
+        async def _candidate_rows(self, *, market, limit):
+            # Override at the row level so both list_top_candidates and the US
+            # list_candidate_pool path surface the stale partition row.
             return [
                 InvestScreenerSnapshot(
                     market=market,

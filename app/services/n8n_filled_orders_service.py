@@ -23,6 +23,21 @@ logger = logging.getLogger(__name__)
 _EQUITY_QUOTE_CONCURRENCY = 5
 
 
+def _resolve_kst_window(
+    *,
+    days: int,
+    start_at: datetime | None,
+    end_at: datetime | None,
+) -> tuple[datetime, datetime]:
+    resolved_end = end_at.astimezone(KST) if end_at else now_kst()
+    resolved_start = (
+        start_at.astimezone(KST) if start_at else resolved_end - timedelta(days=days)
+    )
+    if resolved_start >= resolved_end:
+        raise ValueError("start_at must be before end_at")
+    return resolved_start, resolved_end
+
+
 def _parse_upbit_fill_datetime(value: object) -> datetime | None:
     """Strictly parse an Upbit fill timestamp for window filtering.
 
@@ -47,46 +62,80 @@ def _parse_upbit_fill_datetime(value: object) -> datetime | None:
     return parsed.astimezone(KST)
 
 
-async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:  # NOSONAR
-    """Paginate through Upbit closed orders and expand each into per-trade fills.
+_UPBIT_CLOSED_ORDERS_WINDOW = timedelta(days=7)
+_UPBIT_CLOSED_ORDERS_LIMIT = 1000
 
-    Pages are fetched in descending created_at order.  Pagination stops when a
-    page returns no orders within the requested time window (all remaining pages
-    are older), or when a page is smaller than the requested limit (last page).
-    For each order with executed volume, order detail is fetched to obtain the
-    individual trade breakdown; if the detail call fails the aggregate fill is
-    used as a fallback.
-    """
-    try:
-        cutoff = now_kst() - timedelta(days=days)
-        all_fills: list[dict[str, Any]] = []
-        page = 1
-        limit = 100
 
-        while True:
-            closed = await upbit_service.fetch_closed_orders(
-                market=None, limit=limit, page=page
+def _iter_upbit_windows(
+    start_at: datetime, end_at: datetime
+) -> list[tuple[datetime, datetime]]:
+    windows: list[tuple[datetime, datetime]] = []
+    cursor_end = end_at
+    while cursor_end > start_at:
+        cursor_start = max(start_at, cursor_end - _UPBIT_CLOSED_ORDERS_WINDOW)
+        windows.append((cursor_start, cursor_end))
+        cursor_end = cursor_start
+    return windows
+
+
+async def _fetch_upbit_closed_window(
+    start_at: datetime,
+    end_at: datetime,
+) -> list[dict[str, Any]]:
+    rows = await upbit_service.fetch_closed_orders(
+        market=None,
+        limit=_UPBIT_CLOSED_ORDERS_LIMIT,
+        states=["done", "cancel"],
+        order_by="desc",
+        start_time=start_at,
+        end_time=end_at,
+    )
+    if len(rows) >= _UPBIT_CLOSED_ORDERS_LIMIT:
+        if end_at - start_at <= timedelta(hours=1):
+            raise RuntimeError(
+                "Upbit closed orders may be truncated in a <=1h window; "
+                f"start={start_at.isoformat()} end={end_at.isoformat()}"
             )
-            if not closed:
-                break
+        midpoint = start_at + (end_at - start_at) / 2
+        left = await _fetch_upbit_closed_window(start_at, midpoint)
+        right = await _fetch_upbit_closed_window(midpoint, end_at)
+        return left + right
+    return rows
 
-            page_had_relevant = False
+
+async def _fetch_upbit_filled(
+    days: int,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    max_pages: int = 100,
+) -> tuple[list[dict], list[dict]]:  # NOSONAR
+    """Paginate through Upbit closed orders and expand each into per-trade fills."""
+    try:
+        start_kst, end_kst = _resolve_kst_window(
+            days=days, start_at=start_at, end_at=end_at
+        )
+        all_fills: list[dict[str, Any]] = []
+        seen_order_uuids: set[str] = set()
+
+        for window_start, window_end in _iter_upbit_windows(start_kst, end_kst):
+            closed = await _fetch_upbit_closed_window(window_start, window_end)
             for raw in closed:
+                uuid = str(raw.get("uuid") or "")
+                if uuid and uuid in seen_order_uuids:
+                    continue
+                if uuid:
+                    seen_order_uuids.add(uuid)
                 executed_vol = float(raw.get("executed_volume") or 0)
                 if executed_vol <= 0:
                     continue
 
-                # Fetch order detail to get individual trade breakdown when not
-                # already embedded in the list response.
                 if not raw.get("trades"):
                     try:
-                        raw = await upbit_service.fetch_order_detail(
-                            str(raw.get("uuid", ""))
-                        )
+                        raw = await upbit_service.fetch_order_detail(uuid)
                     except Exception as exc:
                         logger.warning(
                             "Upbit order detail fetch failed for %s: %s",
-                            raw.get("uuid"),
+                            uuid,
                             exc,
                         )
 
@@ -102,17 +151,8 @@ async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:  # NO
                             fill.get("filled_at"),
                         )
                         continue
-                    if parsed_filled_at >= cutoff:
-                        page_had_relevant = True
+                    if start_kst <= parsed_filled_at <= end_kst:
                         all_fills.append(fill)
-
-            # Orders are returned newest-first; once a whole page is before the
-            # cutoff window there is nothing relevant in subsequent pages.
-            if not page_had_relevant:
-                break
-            if len(closed) < limit:
-                break
-            page += 1
 
         return all_fills, []
     except Exception as exc:
@@ -120,13 +160,23 @@ async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:  # NO
         return [], [{"market": "crypto", "error": str(exc)}]
 
 
-async def _fetch_kis_domestic_filled(days: int) -> tuple[list[dict], list[dict]]:
+async def _fetch_kis_domestic_filled(
+    days: int,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    max_pages: int = 100,
+) -> tuple[list[dict], list[dict]]:
     try:
         kis = KISClient()
-        end_date = now_kst().strftime("%Y%m%d")
-        start_date = (now_kst() - timedelta(days=days)).strftime("%Y%m%d")
+        start_kst, end_kst = _resolve_kst_window(
+            days=days, start_at=start_at, end_at=end_at
+        )
         raw_orders = await kis.inquire_daily_order_domestic(
-            start_date=start_date, end_date=end_date, stock_code="", side="00"
+            start_date=start_kst.strftime("%Y%m%d"),
+            end_date=end_kst.strftime("%Y%m%d"),
+            stock_code="",
+            side="00",
+            max_pages=max_pages,
         )
         orders = [
             n
@@ -139,38 +189,36 @@ async def _fetch_kis_domestic_filled(days: int) -> tuple[list[dict], list[dict]]
         return [], [{"market": "kr", "error": str(exc)}]
 
 
-async def _fetch_kis_overseas_filled(days: int) -> tuple[list[dict], list[dict]]:
+async def _fetch_kis_overseas_filled(
+    days: int,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    max_pages: int = 100,
+) -> tuple[list[dict], list[dict]]:
     try:
         kis = KISClient()
-        end_date = now_kst().strftime("%Y%m%d")
-        start_date = (now_kst() - timedelta(days=days)).strftime("%Y%m%d")
+        start_kst, end_kst = _resolve_kst_window(
+            days=days, start_at=start_at, end_at=end_at
+        )
 
         all_orders: list[dict] = []
-        # Dedup by (order_id, fill_seq) so that multiple partial fills for the
-        # same order are each preserved while true duplicates are dropped.
         seen_fill_keys: set[tuple[str, int]] = set()
 
-        # KIS overseas daily-order inquiry treats NASD as a US-wide history
-        # selector in practice: rows may include NYSE/AMEX via ovrs_excg_cd.
-        # Calling NASD/NYSE/AMEX separately produces duplicates and increases
-        # the chance of SYDB0050 while following continuation pages.
-        try:
-            raw_orders = await kis.inquire_daily_order_overseas(
-                start_date=start_date,
-                end_date=end_date,
-                symbol="%",
-                exchange_code="NASD",
-                side="00",
-            )
-            for raw in raw_orders or []:
-                normalized = _normalize_kis_overseas_filled(raw)
-                if normalized:
-                    fill_key = (normalized["order_id"], normalized["fill_seq"])
-                    if fill_key not in seen_fill_keys:
-                        seen_fill_keys.add(fill_key)
-                        all_orders.append(normalized)
-        except Exception as exc:
-            logger.warning("KIS overseas US-wide fetch failed: %s", exc)
+        raw_orders = await kis.inquire_daily_order_overseas(
+            start_date=start_kst.strftime("%Y%m%d"),
+            end_date=end_kst.strftime("%Y%m%d"),
+            symbol="%",
+            exchange_code="NASD",
+            side="00",
+            max_pages=max_pages,
+        )
+        for raw in raw_orders or []:
+            normalized = _normalize_kis_overseas_filled(raw)
+            if normalized:
+                fill_key = (normalized["order_id"], normalized["fill_seq"])
+                if fill_key not in seen_fill_keys:
+                    seen_fill_keys.add(fill_key)
+                    all_orders.append(normalized)
 
         return all_orders, []
     except Exception as exc:
@@ -245,6 +293,9 @@ async def fetch_filled_orders(
     markets: str = "crypto,kr,us",
     min_amount: float = 0,
     include_indicators: bool = False,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    max_pages: int = 100,
 ) -> dict[str, Any]:
     market_set = {m.strip().lower() for m in markets.split(",") if m.strip()}
     all_orders: list[dict[str, Any]] = []
@@ -252,11 +303,23 @@ async def fetch_filled_orders(
 
     tasks = []
     if "crypto" in market_set:
-        tasks.append(_fetch_upbit_filled(days))
+        tasks.append(
+            _fetch_upbit_filled(
+                days, start_at=start_at, end_at=end_at, max_pages=max_pages
+            )
+        )
     if "kr" in market_set:
-        tasks.append(_fetch_kis_domestic_filled(days))
+        tasks.append(
+            _fetch_kis_domestic_filled(
+                days, start_at=start_at, end_at=end_at, max_pages=max_pages
+            )
+        )
     if "us" in market_set:
-        tasks.append(_fetch_kis_overseas_filled(days))
+        tasks.append(
+            _fetch_kis_overseas_filled(
+                days, start_at=start_at, end_at=end_at, max_pages=max_pages
+            )
+        )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for result in results:

@@ -595,6 +595,8 @@ class SnapshotBackedReportGenerator:
             snapshots=[s for _i, s in item_snapshot_pairs],
             request_market=request.market,
             account_scope=request.account_scope,
+            budget_basis=request.budget_basis,
+            operator_budget_override_usd=request.operator_budget_override_usd,
         )
 
     async def _section_snapshot_descriptors(

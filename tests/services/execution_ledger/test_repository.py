@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from app.models.execution_ledger import ExecutionLedger
+from app.models.trading import InstrumentType
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
-from app.services.execution_ledger.repository import _values_differ
+from app.services.execution_ledger.repository import (
+    ExecutionLedgerRepository,
+    _values_differ,
+)
 
 
 def _fill(**overrides) -> ExecutionLedgerUpsert:  # noqa: ANN003
@@ -35,6 +43,60 @@ def _fill(**overrides) -> ExecutionLedgerUpsert:  # noqa: ANN003
 
 def _row(fill: ExecutionLedgerUpsert) -> ExecutionLedger:
     return ExecutionLedger(**fill.model_dump())
+
+
+class _AggregateResult:
+    def __init__(
+        self, rows: list[tuple[str, str, str, InstrumentType, str, str, Decimal]]
+    ):
+        self._rows = rows
+
+    def all(self) -> list[tuple[str, str, str, InstrumentType, str, str, Decimal]]:
+        return self._rows
+
+
+class _AggregateSession:
+    def __init__(self, ledger_rows: list[SimpleNamespace], cutover: datetime):
+        self.ledger_rows = ledger_rows
+        self.cutover = cutover
+        self.executed = False
+
+    async def execute(self, statement: Any) -> _AggregateResult:
+        self.executed = True
+        compiled = statement.compile(compile_kwargs={"render_postcompile": True})
+        sql = " ".join(str(compiled).split())
+
+        assert "CASE WHEN" in sql
+        assert "review.execution_ledger.side = :side_1" in sql
+        assert "ELSE -review.execution_ledger.filled_qty" in sql
+        assert "review.execution_ledger.filled_at >= :filled_at_1" in sql
+        assert "review.execution_ledger.source != :source_1" in sql
+        assert (
+            "GROUP BY review.execution_ledger.broker, "
+            "review.execution_ledger.account_mode, review.execution_ledger.venue, "
+            "review.execution_ledger.instrument_type, review.execution_ledger.symbol, "
+            "review.execution_ledger.currency"
+        ) in sql
+        assert compiled.params["side_1"] == "buy"
+        assert compiled.params["filled_at_1"] == self.cutover
+        assert compiled.params["source_1"] == "manual_import"
+
+        grouped: dict[tuple[str, str, str, InstrumentType, str, str], Decimal] = {}
+        for row in self.ledger_rows:
+            if row.filled_at < self.cutover or row.source == "manual_import":
+                continue
+            key = (
+                row.broker,
+                row.account_mode,
+                row.venue,
+                row.instrument_type,
+                row.symbol,
+                row.currency,
+            )
+            signed_qty = row.filled_qty if row.side == "buy" else -row.filled_qty
+            grouped[key] = grouped.get(key, Decimal("0")) + signed_qty
+
+        return _AggregateResult([(*key, net_qty) for key, net_qty in grouped.items()])
 
 
 def test_values_differ_treats_decimal_scale_and_timezone_equivalent() -> None:
@@ -86,3 +148,111 @@ def test_two_fills_same_order_different_fill_seq_are_distinct() -> None:
     # _values_differ compares column values, not keys; the rows are distinct by key
     assert fill_a.fill_seq != fill_b.fill_seq
     assert fill_a.broker_order_id == fill_b.broker_order_id
+
+
+@pytest.mark.asyncio
+async def test_net_quantity_by_match_key_since_uses_signed_cutover_ledger_rows() -> (
+    None
+):
+    cutover = datetime(2026, 5, 13, 0, 0, tzinfo=UTC)
+    key_fields = {
+        "broker": "upbit",
+        "account_mode": "live",
+        "venue": "upbit_krw",
+        "instrument_type": InstrumentType.crypto,
+        "symbol": "BTC",
+        "currency": "KRW",
+    }
+    session = _AggregateSession(
+        [
+            SimpleNamespace(
+                **key_fields,
+                side="buy",
+                filled_qty=Decimal("0.10"),
+                filled_at=cutover,
+                source="reconciler",
+            ),
+            SimpleNamespace(
+                **key_fields,
+                side="sell",
+                filled_qty=Decimal("0.04"),
+                filled_at=datetime(2026, 5, 13, 1, 0, tzinfo=UTC),
+                source="websocket",
+            ),
+            SimpleNamespace(
+                **key_fields,
+                side="sell",
+                filled_qty=Decimal("99"),
+                filled_at=datetime(2026, 5, 12, 23, 59, tzinfo=UTC),
+                source="reconciler",
+            ),
+            SimpleNamespace(
+                **key_fields,
+                side="buy",
+                filled_qty=Decimal("10"),
+                filled_at=cutover,
+                source="manual_import",
+            ),
+        ],
+        cutover,
+    )
+
+    result = await ExecutionLedgerRepository(session).net_quantity_by_match_key_since(
+        cutover=cutover
+    )
+
+    expected_key = ("upbit", "live", "upbit_krw", "crypto", "BTC", "KRW")
+    assert result == {expected_key: Decimal("0.06")}
+    assert session.executed is True
+    assert len(next(iter(result))) == 6
+    assert isinstance(next(iter(result))[3], str)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_latest_run_per_broker_ignores_dry_run_audit_rows(db_session) -> None:
+    """Persisted dry-run audit rows must not drive ledger freshness.
+
+    The CLI/TaskIQ layers commit the reconcile-run audit row even in dry-run
+    mode; a dry-run commits zero fills, so freshness must keep reporting the
+    latest commit-mode run.
+    """
+    import uuid as _uuid
+    from datetime import timedelta
+
+    from app.models.execution_ledger import ExecutionLedgerReconcileRun
+
+    far_future = datetime(2099, 1, 1, tzinfo=UTC)
+    commit_run_id = _uuid.uuid4()
+    dry_run_id = _uuid.uuid4()
+    rows = [
+        ExecutionLedgerReconcileRun(
+            run_id=commit_run_id,
+            broker="kis",
+            window_start=far_future - timedelta(days=2),
+            window_end=far_future - timedelta(days=1),
+            started_at=far_future - timedelta(days=1),
+            finished_at=far_future - timedelta(days=1),
+            dry_run=False,
+        ),
+        ExecutionLedgerReconcileRun(
+            run_id=dry_run_id,
+            broker="kis",
+            window_start=far_future - timedelta(days=1),
+            window_end=far_future,
+            started_at=far_future,
+            finished_at=far_future,
+            dry_run=True,
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        latest = await ExecutionLedgerRepository(db_session).latest_run_per_broker()
+        assert "kis" in latest
+        assert latest["kis"].run_id != dry_run_id
+        assert latest["kis"].dry_run is False
+    finally:
+        for row in rows:
+            await db_session.delete(row)
+        await db_session.commit()

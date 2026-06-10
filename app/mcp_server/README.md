@@ -42,9 +42,10 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
 - `get_orderbook(symbol, market="kr")`
-- US equity quote price resolution uses Yahoo directly via `app.services.brokers.yahoo.client`
-  - US quote response keeps `source: "yahoo"` and includes `previous_close/open/high/low/volume` from Yahoo `fast_info`
-  - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
+- US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`
+  - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them
+  - US quote failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
+  - Explicit provider not-found errors remain `Symbol '<ticker>' not found`; successful Yahoo `fast_info` responses with no usable price are reported as temporarily unavailable instead of symbol-not-found
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None)`
   - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None, account_mode=None)`
