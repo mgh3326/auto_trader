@@ -258,7 +258,7 @@ def _build_consensus_model(
 
 def _normalize_opinion(row: Any) -> dict[str, Any]:
     if not isinstance(row, dict):
-        return {"rating": None, "target_price": None}
+        return {"rating": None, "target_price": None, "date": None}
     return {
         "rating": row.get("rating")
         or row.get("opinion")
@@ -270,6 +270,9 @@ def _normalize_opinion(row: Any) -> dict[str, Any]:
             or row.get("target")
             or row.get("tp")
         ),
+        # ROB-486: build_consensus 의 recency 윈도우가 패널에서도 동작하도록
+        # 행별 date 를 보존한다 (드롭하면 모든 행이 undated 로 제외됨).
+        "date": row.get("date"),
     }
 
 

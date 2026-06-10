@@ -63,13 +63,13 @@ async def test_build_stock_detail_research_consensus_combines_opinions_and_citat
                     "firm": "A증권",
                     "rating": "매수",
                     "target_price": 84000,
-                    "date": "2026-05-13",
+                    "date": (now - timedelta(days=20)).date().isoformat(),
                 },
                 {
                     "firm": "B증권",
                     "rating": "중립",
                     "target_price": 72000,
-                    "date": "2026-05-12",
+                    "date": (now - timedelta(days=21)).date().isoformat(),
                 },
             ],
         }
@@ -352,3 +352,120 @@ def test_research_consensus_route_maps_symbol_not_found(
 
     assert response.status_code == 404
     assert response.json()["detail"] == "symbol_not_found"
+
+
+@pytest.mark.asyncio
+async def test_stock_detail_consensus_applies_recency_window_like_tool():
+    """ROB-486: 패널이 행별 date 를 보존해 도구와 동일한 윈도우 집계를 탄다 (005880 모양)."""
+    now = datetime.now(UTC)
+    recent = (now - timedelta(days=23)).date().isoformat()
+    stale = (now - timedelta(days=2050)).date().isoformat()
+
+    async def opinions_provider(symbol, market, limit):
+        return {
+            "source": "naver",
+            "current_price": 1914,
+            "opinions": [
+                {
+                    "firm": "신한투자증권",
+                    "rating": "매수",
+                    "target_price": 3000,
+                    "date": recent,
+                },
+                {
+                    "firm": "하나증권",
+                    "rating": "매수",
+                    "target_price": 23000,
+                    "date": stale,
+                },
+            ],
+        }
+
+    async def citations_provider(db, symbol, limit):
+        return []
+
+    async def readiness_provider(db, source, max_age_hours):
+        return ResearchReportsReadinessResponse(
+            source=source,
+            is_ready=True,
+            is_stale=False,
+            latest_inserted_count=0,
+            latest_skipped_count=0,
+            latest_report_count=0,
+            warnings=[],
+            max_age_hours=max_age_hours,
+        )
+
+    response = await build_stock_detail_research_consensus(
+        market="kr",
+        symbol="005880",
+        db=SimpleNamespace(),
+        providers=StockDetailResearchConsensusProviders(
+            resolver=_resolve_kr,
+            opinions=opinions_provider,
+            citations=citations_provider,
+            readiness=readiness_provider,
+        ),
+    )
+
+    assert response.consensus is not None
+    assert response.consensus.totalCount == 1
+    assert response.consensus.buyCount == 1
+    assert response.consensus.avgTargetPrice == 3000
+    assert response.consensus.upsidePct == pytest.approx(56.74, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_stock_detail_consensus_stale_only_reports_missing():
+    """ROB-486 (031330 모양): 윈도우 생존 row 0 → 패널 consensus 미노출 (폴백 금지)."""
+
+    async def opinions_provider(symbol, market, limit):
+        return {
+            "source": "naver",
+            "current_price": 15360,
+            "opinions": [
+                {
+                    "firm": "한국기업데이터",
+                    "rating": "중립",
+                    "target_price": None,
+                    "date": "2019-12-27",
+                },
+                {
+                    "firm": "대신증권",
+                    "rating": "매수",
+                    "target_price": 2700,
+                    "date": "2015-08-24",
+                },
+            ],
+        }
+
+    async def citations_provider(db, symbol, limit):
+        return []
+
+    async def readiness_provider(db, source, max_age_hours):
+        return ResearchReportsReadinessResponse(
+            source=source,
+            is_ready=False,
+            is_stale=False,
+            latest_inserted_count=0,
+            latest_skipped_count=0,
+            latest_report_count=0,
+            warnings=[],
+            max_age_hours=max_age_hours,
+        )
+
+    response = await build_stock_detail_research_consensus(
+        market="kr",
+        symbol="031330",
+        db=SimpleNamespace(),
+        providers=StockDetailResearchConsensusProviders(
+            resolver=_resolve_kr,
+            opinions=opinions_provider,
+            citations=citations_provider,
+            readiness=readiness_provider,
+        ),
+    )
+
+    assert response.consensus is None
+    assert response.state == "missing"
+    assert response.emptyReason == "no_analyst_consensus_or_research_reports"
