@@ -76,18 +76,12 @@ def test_single_rung_above_market_still_warns():
 
 def test_empty_rungs_or_bad_anchor_returns_no_analysis():
     assert evaluate_ladder_fill_safety(rungs=[], anchor_price=63.95) == ([], None)
-    assert (
-        evaluate_ladder_fill_safety(
-            rungs=[LadderRung(limit_price=64.0)], anchor_price=None
-        )
-        == ([], None)
-    )
-    assert (
-        evaluate_ladder_fill_safety(
-            rungs=[LadderRung(limit_price=64.0)], anchor_price=0.0
-        )
-        == ([], None)
-    )
+    assert evaluate_ladder_fill_safety(
+        rungs=[LadderRung(limit_price=64.0)], anchor_price=None
+    ) == ([], None)
+    assert evaluate_ladder_fill_safety(
+        rungs=[LadderRung(limit_price=64.0)], anchor_price=0.0
+    ) == ([], None)
 
 
 def test_non_positive_rung_is_invalid_and_never_satisfies_anchor():
@@ -107,13 +101,10 @@ def test_non_positive_rung_is_invalid_and_never_satisfies_anchor():
 
 
 def test_all_rungs_invalid_returns_no_analysis():
-    assert (
-        evaluate_ladder_fill_safety(
-            rungs=[LadderRung(limit_price=0.0), LadderRung(limit_price=-1.0)],
-            anchor_price=63.95,
-        )
-        == ([], None)
-    )
+    assert evaluate_ladder_fill_safety(
+        rungs=[LadderRung(limit_price=0.0), LadderRung(limit_price=-1.0)],
+        anchor_price=63.95,
+    ) == ([], None)
 
 
 def test_suggested_anchor_rung_present_only_when_warning():
