@@ -30,12 +30,13 @@ path (same defect remains; tracked as follow-up — ROB-407).
    no DB writes.
 3. Apply: `kis_live_reconcile_orders(dry_run=False)` — books confirmed fills + journals,
    marks unfilled/cancelled rows. Scope to one order with `order_id=...` if needed.
+4. 후보가 0건(모든 ledger 행이 terminal)이면 `"No open candidates (all ledger rows terminal)"` 메시지를 반환한다 — `Reconciled 0`이 누락으로 오인되지 않게 구분됨 (ROB-487 UX). 증거 조회 윈도우는 각 주문의 **주문일~오늘**이라 익일 reconcile도 전일 체결을 book할 수 있다.
 
 ## Verdicts
 - `filled` / `partial` — `review.trades` + journal mutation booked from broker `ccld_qty`/`ccld_unpr`.
-- `pending` — accepted, no fill yet; no-op (re-run later).
-- `cancelled` — no daily-execution row; ledger marked cancelled; no journal side-effect.
-- `expired` — KRX 마감을 지난 미체결 day order. reconcile이 `status="expired"`로 해소(영구 pending 방지). **Fail-closed**: 브로커가 주문을 live(접수/정상)로 보고하면 `expired`로 넘기지 않고 `pending` 유지(SOR 주문이 NXT 세션에서 살아있을 수 있음). 정확한 KIS 상태 문자열은 operator read-only smoke로 확정.
+- `pending` — accepted, no fill yet; no-op (re-run later). NXT 마감(20:00 KST) 전의 미체결 day order는 항상 pending 유지 (ROB-487).
+- `cancelled` — 취소 증거(`cncl_yn` truthy, 또는 `orgn_odno`로 매칭되는 '매수취소'/'매도취소' 확인 행), 또는 주문일을 커버한 윈도우에서 일별체결 행 부재. ledger만 마킹, journal side-effect 없음. 윈도우가 주문일 커버를 증명 못 하면 noop (`noop_window_uncovered`).
+- `expired` — **NXT 마감(20:00 KST) 이후** + 브로커 증거 `rjct_qty == ord_qty > 0` 인 미체결 day order (ROB-487 실측: 미체결 SOR day order는 EOD에 rjct_qty가 전량으로 채워짐). **Fail-closed**: 둘 중 하나라도 없으면 `pending` 유지(`rmn_qty > 0`이면 주문 생존). 실 TTTC8001R 행에는 `prcs_stat_name` / `rvse_cncl_dvsn_*` 키가 존재하지 않으므로(2026-06-10 라이브 프로브) 구 상태-토큰 분류는 폐기됨.
 - `anomaly` — reconcile error; inspect `raw_response` / logs.
 
 ## Routing / lifecycle visibility (ROB-476)
@@ -43,10 +44,16 @@ path (same defect remains; tracked as follow-up — ROB-407).
 `place_order` 응답은 라우팅/만료 컨텍스트를 surface한다:
 - `order_validity`: 항상 `"day"` (현재 day order만 지원; NXT/TIF는 ROB-463).
 - `routing.requested_venue`/`note`: SOR auto-route (KRX; NXT-eligible).
-- `expected_expiry`: 주문일 KRX 마감(15:30 KST) ISO 시각.
+- `expected_expiry`: 주문일 NXT 마감(20:00 KST) ISO 시각 (ROB-487 — SOR day order는 NXT 세션까지 유효).
 - `broker_exchange`: 브로커가 거래소 필드를 반환할 때만 표기(없으면 `null`, 날조 없음).
 
-> **NXT 세션 이월**: SOR-routed day order가 KRX 마감 후 NXT에서 살아있는지는 KIS 동작에 의존하며 **operator 확정 필요**(미상). 그래서 만료 해소는 fail-closed. ROB-463(NXT venue 파라미터 추가)과 보완관계.
+> **NXT 세션 이월 (ROB-487 실측 확정)**: SOR-routed day order는 KRX 마감 후에도
+> NXT 세션(~20:00 KST)에서 체결될 수 있다 — 2026-06-09 KAI(047810) 15:31 주문이
+> NXT 야간 체결로 booking됨. 미체결 SOR day order는 EOD에 `rjct_qty == ord_qty`
+> (`tot_ccld_qty=0`)로 나타나고, 체결은 **주문일 윈도우**에서만 `tot_ccld_qty >
+> 0`으로 나타난다(TTTC8001R은 주문일 기준 윈도우). 만료 해소는 여전히
+> fail-closed(브로커 증거 + 20:00 시간 가드 둘 다 필요). ROB-463(NXT venue
+> 파라미터 추가)과 보완관계.
 
 ## Migration
 Operator applies `alembic upgrade head` in prod (creates `review.kis_live_order_ledger`).
