@@ -29,6 +29,8 @@ from app.mcp_server.tooling.market_data_indicators import (
 )
 from app.mcp_server.tooling.market_session import (
     DATA_STATE_FRESH,
+    DATA_STATE_PREMARKET_UNAVAILABLE,
+    is_kr_session_day,
     kr_market_data_state,
 )
 from app.mcp_server.tooling.shared import (
@@ -297,6 +299,99 @@ def _validate_crypto_orderbook_symbol_input(symbol: str | int) -> str:
     if not value.startswith("KRW-"):
         raise ValueError("crypto orderbook only supports KRW-* symbols")
     return value
+
+
+_NXT_AFTER_OPEN = datetime.time(16, 0)
+_NXT_AFTER_CLOSE = datetime.time(20, 0)
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def _current_kst_datetime(now: datetime.datetime | None = None) -> datetime.datetime:
+    current = now or now_kst()
+    if current.tzinfo is None:
+        return current.replace(tzinfo=_KST)
+    return current.astimezone(_KST)
+
+
+def _nxt_quote_session(
+    data_state: str,
+    *,
+    now: datetime.datetime | None = None,
+) -> str | None:
+    if data_state == DATA_STATE_PREMARKET_UNAVAILABLE:
+        return "nxt_premarket"
+
+    current = _current_kst_datetime(now)
+    if not is_kr_session_day(current.date()):
+        return None
+
+    current_time = current.timetz().replace(tzinfo=None)
+    if _NXT_AFTER_OPEN <= current_time < _NXT_AFTER_CLOSE:
+        return "nxt_after"
+    return None
+
+
+def _positive_price(value: float | int | None) -> float | None:
+    try:
+        if value is None:
+            return None
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
+def _nxt_price_from_orderbook(
+    snapshot: market_data_service.OrderbookSnapshot,
+) -> tuple[float | None, str | None]:
+    if snapshot.is_empty_book:
+        return None, None
+
+    expected_price = _positive_price(snapshot.expected_price)
+    if expected_price is not None:
+        return expected_price, "nxt_expected_price"
+
+    best_ask = _positive_price(snapshot.asks[0].price if snapshot.asks else None)
+    best_bid = _positive_price(snapshot.bids[0].price if snapshot.bids else None)
+    if best_ask is not None and best_bid is not None:
+        return (best_ask + best_bid) / 2.0, "nxt_mid"
+    if best_ask is not None:
+        return best_ask, "nxt_best_ask"
+    if best_bid is not None:
+        return best_bid, "nxt_best_bid"
+    return None, None
+
+
+async def _fetch_nxt_quote_overlay(
+    symbol: str,
+    *,
+    session: str,
+) -> dict[str, Any] | None:
+    try:
+        snapshot = await market_data_service.get_orderbook(symbol, "kr", venue="nxt")
+    except Exception as exc:
+        logger.warning("NXT quote overlay failed for %s: %s", symbol, exc)
+        return None
+
+    price, price_source = _nxt_price_from_orderbook(snapshot)
+    if price is None or price_source is None:
+        return None
+
+    overlay: dict[str, Any] = {
+        "price": price,
+        "session": session,
+        "venue": snapshot.venue or "nxt",
+        "price_source": price_source,
+    }
+    if snapshot.venue_label is not None:
+        overlay["venue_label"] = snapshot.venue_label
+    if snapshot.kis_market_code is not None:
+        overlay["kis_market_code"] = snapshot.kis_market_code
+    if snapshot.source_endpoint is not None:
+        overlay["source_endpoint"] = snapshot.source_endpoint
+    if snapshot.source_tr_id is not None:
+        overlay["source_tr_id"] = snapshot.source_tr_id
+    return overlay
 
 
 def _build_orderbook_walls_for_side(
@@ -1076,11 +1171,21 @@ async def _get_quote_impl(
     try:
         if market_type == "crypto":
             return await _fetch_quote_crypto(symbol)
-        # ROB-464: tag the KRX session so a pre-market / closed-session prior
-        # close is not mistaken for a live price. The shared fetcher (used by
-        # orders/portfolio) is left untouched; only the get_quote tool adds this.
+        # ROB-464: tag stale KRX regular-session data honestly. ROB-511 overlays
+        # an NXT-derived price during NXT sessions while preserving the KRX
+        # previous_close used for gap calculations.
+        data_state = kr_market_data_state()
         quote = await _fetch_quote_equity_kr(symbol)
-        quote["data_state"] = kr_market_data_state()
+        session = _nxt_quote_session(data_state)
+        if session is not None:
+            overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
+            if overlay is not None:
+                quote.update(overlay)
+                quote["regular_session_data_state"] = data_state
+                quote["data_state"] = DATA_STATE_FRESH
+                return quote
+
+        quote["data_state"] = data_state
         return quote
     except Exception as exc:
         return _error_payload_from_exception(
@@ -1302,7 +1407,12 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="get_quote",
-        description="Get latest quote/last price for a symbol (KR equity / US equity / crypto).",
+        description=(
+            "Get latest quote/last price for a symbol (KR equity / US equity / crypto). "
+            "For KR equities during NXT pre-market/after-hours sessions, price falls "
+            "back to the NXT orderbook expected price or best bid/ask mid while "
+            "preserving KRX previous_close for gap calculations."
+        ),
     )
     async def get_quote(symbol: str | int, market: str | None = None) -> dict[str, Any]:
         return await _get_quote_impl(symbol, market)

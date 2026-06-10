@@ -357,6 +357,284 @@ async def test_fetch_quote_equity_kr_passes_market_j(monkeypatch, symbol, label)
     assert result["symbol"] == symbol
 
 
+def _two_row_kr_quote_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "date": "2024-01-01",
+                "open": 98.0,
+                "high": 102.0,
+                "low": 97.0,
+                "close": 100.0,
+                "volume": 900,
+                "value": 90000.0,
+            },
+            {
+                "date": "2024-01-02",
+                "open": 100.0,
+                "high": 110.0,
+                "low": 99.0,
+                "close": 105.0,
+                "volume": 1000,
+                "value": 105000.0,
+            },
+        ]
+    )
+
+
+def _nxt_quote_book(
+    *,
+    expected_price: int | None = None,
+    asks: list[tuple[float, float]] | None = None,
+    bids: list[tuple[float, float]] | None = None,
+    empty: bool = False,
+):
+    import app.services.market_data as market_data_service
+
+    return market_data_service.OrderbookSnapshot(
+        symbol="005930",
+        instrument_type="equity_kr",
+        source="kis",
+        asks=[
+            market_data_service.OrderbookLevel(price=price, quantity=qty)
+            for price, qty in (asks or [])
+        ],
+        bids=[
+            market_data_service.OrderbookLevel(price=price, quantity=qty)
+            for price, qty in (bids or [])
+        ],
+        total_ask_qty=0.0,
+        total_bid_qty=0.0,
+        bid_ask_ratio=None,
+        expected_price=expected_price,
+        expected_qty=None,
+        venue="nxt",
+        venue_label="NXT",
+        kis_market_code="NX",
+        source_endpoint="/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+        source_tr_id="FHKST01010200",
+        is_empty_book=empty,
+        requires_final_recheck=empty,
+        empty_reason="empty_kis_orderbook" if empty else None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_premarket_routes_to_nxt_expected_price(
+    monkeypatch,
+):
+    """ROB-511: pre-market KR quote uses NXT expected price when available."""
+    from app.mcp_server.tooling import market_data_quotes
+    from app.mcp_server.tooling.market_session import (
+        DATA_STATE_PREMARKET_UNAVAILABLE,
+    )
+
+    tools = build_tools()
+    df = _two_row_kr_quote_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            assert code == "005930"
+            assert market == "J"
+            assert n == 2
+            return df
+
+    get_orderbook_mock = AsyncMock(return_value=_nxt_quote_book(expected_price=114300))
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: DATA_STATE_PREMARKET_UNAVAILABLE,
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
+    assert result["instrument_type"] == "equity_kr"
+    assert result["source"] == "kis"
+    assert result["price"] == pytest.approx(114300.0)
+    assert result["previous_close"] == pytest.approx(100.0)
+    assert result["data_state"] == "fresh"
+    assert result["regular_session_data_state"] == "premarket_unavailable"
+    assert result["session"] == "nxt_premarket"
+    assert result["venue"] == "nxt"
+    assert result["venue_label"] == "NXT"
+    assert result["kis_market_code"] == "NX"
+    assert result["price_source"] == "nxt_expected_price"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_premarket_routes_to_nxt_mid(
+    monkeypatch,
+):
+    """ROB-511: use NXT best bid/ask mid when expected_price is absent."""
+    from app.mcp_server.tooling import market_data_quotes
+    from app.mcp_server.tooling.market_session import (
+        DATA_STATE_PREMARKET_UNAVAILABLE,
+    )
+
+    tools = build_tools()
+    df = _two_row_kr_quote_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    get_orderbook_mock = AsyncMock(
+        return_value=_nxt_quote_book(
+            asks=[(114500, 10)],
+            bids=[(114100, 20)],
+        )
+    )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: DATA_STATE_PREMARKET_UNAVAILABLE,
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    assert result["price"] == pytest.approx(114300.0)
+    assert result["price_source"] == "nxt_mid"
+    assert result["session"] == "nxt_premarket"
+    assert result["data_state"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_premarket_empty_nxt_book_keeps_stale_flag(
+    monkeypatch,
+):
+    """ROB-511: empty NXT book keeps ROB-464 honest stale quote behavior."""
+    from app.mcp_server.tooling import market_data_quotes
+    from app.mcp_server.tooling.market_session import (
+        DATA_STATE_PREMARKET_UNAVAILABLE,
+    )
+
+    tools = build_tools()
+    df = _two_row_kr_quote_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: DATA_STATE_PREMARKET_UNAVAILABLE,
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(return_value=_nxt_quote_book(empty=True)),
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    assert result["price"] == pytest.approx(105.0)
+    assert result["previous_close"] == pytest.approx(100.0)
+    assert result["data_state"] == "premarket_unavailable"
+    assert "regular_session_data_state" not in result
+    assert "session" not in result
+    assert "venue" not in result
+    assert "price_source" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
+    """ROB-511: KR trading-day NXT after-hours quote also uses NXT evidence."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    tools = build_tools()
+    df = _two_row_kr_quote_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    get_orderbook_mock = AsyncMock(return_value=_nxt_quote_book(expected_price=113900))
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: "market_closed",
+    )
+    monkeypatch.setattr(market_data_quotes, "is_kr_session_day", lambda date: True)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "now_kst",
+        lambda: pd.Timestamp("2026-06-11 17:00:00", tz="Asia/Seoul").to_pydatetime(),
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
+    assert result["price"] == pytest.approx(113900.0)
+    assert result["data_state"] == "fresh"
+    assert result["regular_session_data_state"] == "market_closed"
+    assert result["session"] == "nxt_after"
+    assert result["venue"] == "nxt"
+    assert result["price_source"] == "nxt_expected_price"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_regular_session_skips_nxt_orderbook(
+    monkeypatch,
+):
+    """ROB-511: regular KRX session keeps the existing daily quote path."""
+    from app.mcp_server.tooling import market_data_quotes
+    from app.mcp_server.tooling.market_session import DATA_STATE_FRESH
+
+    tools = build_tools()
+    df = _two_row_kr_quote_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    get_orderbook_mock = AsyncMock()
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: DATA_STATE_FRESH,
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    get_orderbook_mock.assert_not_awaited()
+    assert result["price"] == pytest.approx(105.0)
+    assert result["previous_close"] == pytest.approx(100.0)
+    assert result["data_state"] == "fresh"
+    assert "regular_session_data_state" not in result
+    assert "session" not in result
+
+
 # ---------------------------------------------------------------------------
 # get_quote Tests - US Equity
 # ---------------------------------------------------------------------------
