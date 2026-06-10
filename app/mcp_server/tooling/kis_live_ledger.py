@@ -517,8 +517,19 @@ async def _reconcile_one_ledger_row(
         return base
 
     if evidence.verdict == FillVerdict.NONE:
-        # No daily-execution row. Distinguish still-open vs cancelled by checking
-        # live pending orders; absence from both fill and pending => cancelled.
+        # ROB-487 fail-closed: terminal 'cancelled' is written only when the
+        # queried TTTC8001R window provably covered the order date
+        # (start_date == order date <= end_date == today). No pending-orders
+        # cross-check exists. If coverage cannot be proven, noop with an
+        # explicit reason — terminal rows are permanently excluded from
+        # candidates, so a wrong mark would bury a later-confirmed fill.
+        if order_date is None:
+            base["action"] = "noop_window_uncovered"
+            base["reason"] = (
+                "order date underivable from ledger row; evidence window not "
+                "proven to cover the order date — refusing terminal mark"
+            )
+            return base
         base["action"] = "marked_cancelled" if not dry_run else "would_mark_cancelled"
         if not dry_run:
             await _update_ledger_outcome(ledger_id=row.id, status="cancelled")

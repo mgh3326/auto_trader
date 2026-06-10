@@ -121,3 +121,46 @@ async def test_reconcile_passes_order_date_window_to_fetch():
         out = await mod._reconcile_one_ledger_row(row, dry_run=True)
     assert f.await_args.kwargs["start_date"] == "20260609"
     assert out["action"] == "would_book_filled"
+
+
+# --- FillVerdict.NONE fail-closed ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_none_verdict_with_covered_window_marks_cancelled():
+    # 윈도우가 주문일을 커버(start_date == 주문일)했고 행 부재 → cancelled 유지.
+    row = _ledger_row(datetime.datetime(2026, 6, 9, 6, 31, 25, tzinfo=UTC))
+    with (
+        patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[])),
+        patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
+    ):
+        out = await mod._reconcile_one_ledger_row(row, dry_run=False)
+    assert out["action"] == "marked_cancelled"
+    upd.assert_awaited_once()
+    assert upd.call_args.kwargs["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_none_verdict_with_covered_window_dry_run_does_not_write():
+    row = _ledger_row(datetime.datetime(2026, 6, 9, 6, 31, 25, tzinfo=UTC))
+    with (
+        patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[])),
+        patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
+    ):
+        out = await mod._reconcile_one_ledger_row(row, dry_run=True)
+    assert out["action"] == "would_mark_cancelled"
+    upd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_none_verdict_without_order_date_refuses_terminal_mark():
+    # (f) 주문일 도출 불가 → 윈도우 커버 증명 불가 → terminal 마킹 금지 (noop).
+    row = _ledger_row(None)
+    with (
+        patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[])),
+        patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
+    ):
+        out = await mod._reconcile_one_ledger_row(row, dry_run=False)
+    assert out["action"] == "noop_window_uncovered"
+    assert "window" in out["reason"]
+    upd.assert_not_awaited()
