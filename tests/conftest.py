@@ -150,7 +150,6 @@ def mock_external_services():
         patch("app.services.brokers.yahoo.client.yf.download") as mock_yahoo_download,
         patch("app.services.brokers.yahoo.client.yf.Ticker") as mock_yahoo_ticker,
         patch("app.services.brokers.kis.client.httpx.AsyncClient") as mock_kis,
-        patch("app.core.model_rate_limiter.redis.asyncio.Redis") as mock_redis,
     ):
         # Configure mock responses
         yield {
@@ -158,7 +157,6 @@ def mock_external_services():
             "yahoo_download": mock_yahoo_download,
             "yahoo_ticker": mock_yahoo_ticker,
             "kis": mock_kis,
-            "redis": mock_redis,
         }
 
 
