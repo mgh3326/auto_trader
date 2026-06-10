@@ -179,5 +179,78 @@ async def test_get_execution_strength_rejects_non_kr():
     assert result.get("error") or result.get("success") is False
 
 
+@pytest.mark.asyncio
+async def test_get_execution_strength_surfaces_tick_time(monkeypatch):
+    class _MockKIS:
+        async def inquire_execution_strength(self, code, market="J"):
+            return {
+                "symbol": code,
+                "tday_rltv": "81.82",
+                "stck_cntg_hour": "094227",
+                "stck_prpr": "1031000",
+                "acml_vol": None,
+            }
+
+    monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
+    monkeypatch.setattr(
+        market_data_quotes, "kr_market_data_state", lambda *a, **k: "fresh"
+    )
+
+    result = await market_data_quotes._get_execution_strength_impl("012450", "kr")
+
+    assert result["tick_time"] == "094227"
+    assert result["execution_strength_pct"] == pytest.approx(81.82)
+    assert result["trend"] == "sell_dominant"
+    assert result["data_state"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_get_execution_strength_field_unavailable_during_fresh(monkeypatch):
+    class _MockKIS:
+        async def inquire_execution_strength(self, code, market="J"):
+            # 빈 tick 리스트 → broker all-None graceful 형태.
+            return {
+                "symbol": code,
+                "tday_rltv": None,
+                "stck_cntg_hour": None,
+                "stck_prpr": None,
+                "acml_vol": None,
+            }
+
+    monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
+    monkeypatch.setattr(
+        market_data_quotes, "kr_market_data_state", lambda *a, **k: "fresh"
+    )
+
+    result = await market_data_quotes._get_execution_strength_impl("005930", "kr")
+
+    assert result["execution_strength_pct"] is None
+    assert result["trend"] is None
+    # 장중인데 전부 null 을 "fresh" 로 위장하지 않는다 (ROB-485 정직 신호).
+    assert result["data_state"] == "field_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_get_execution_strength_null_outside_session_keeps_session_state(
+    monkeypatch,
+):
+    class _MockKIS:
+        async def inquire_execution_strength(self, code, market="J"):
+            return {"tday_rltv": None, "stck_cntg_hour": None}
+
+    monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
+    for state in ("premarket_unavailable", "market_closed"):
+        monkeypatch.setattr(
+            market_data_quotes,
+            "kr_market_data_state",
+            lambda *a, _state=state, **k: _state,
+        )
+        result = await market_data_quotes._get_execution_strength_impl(
+            "005930", "kr"
+        )
+        # field_unavailable 은 fresh 일 때만 — 세션 외 상태는 그대로 보존.
+        assert result["data_state"] == state
+
+
 def test_execution_strength_tool_registered():
     assert "get_execution_strength" in market_data_quotes.MARKET_DATA_TOOL_NAMES
