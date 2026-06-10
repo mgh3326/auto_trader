@@ -257,6 +257,116 @@ class TestAnalyzeStock:
         assert rec is not None
         assert rec["rsi14"] == pytest.approx(0.0)
 
+    async def test_recommendation_blocks_buy_when_consensus_target_exceeded(self):
+        """ROB-486 (475150 실측): 8 buy/0 sell이어도 upside -26.44% → buy 금지."""
+        mock_analysis = {
+            "symbol": "475150",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 44350},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 8,
+                    "hold_count": 0,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 8,
+                    "avg_target_price": 32625,
+                    "upside_pct": -26.44,
+                    "current_price": 44350,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "hold"
+        assert "target_exceeded" in rec["reasoning"]
+        assert "Consensus target below current price" in rec["reasoning"]
+        assert "Analyst consensus bullish" not in rec["reasoning"]
+
+    async def test_recommendation_demotes_rsi_buy_when_consensus_target_exceeded(
+        self,
+    ):
+        """ROB-486: RSI 단독 +2로 buy가 나와도 음수 upside 컨센서스면 hold 강등."""
+        mock_analysis = {
+            "quote": {"price": 44350},
+            "indicators": {"indicators": {"rsi": {"14": 25.0}}},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 1,
+                    "hold_count": 3,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 4,
+                    "avg_target_price": 32625,
+                    "upside_pct": -26.44,
+                    "current_price": 44350,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "hold"
+        assert rec["confidence"] == "low"
+        assert "target_exceeded" in rec["reasoning"]
+
+    async def test_recommendation_allows_buy_with_mildly_negative_upside(self):
+        """ROB-486: 임계(-10%)보다 완만한 -5% upside는 기존 count 가산 유지."""
+        mock_analysis = {
+            "quote": {"price": 1000},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 8,
+                    "hold_count": 0,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 8,
+                    "avg_target_price": 950,
+                    "upside_pct": -5.0,
+                    "current_price": 1000,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "buy"
+        assert "Analyst consensus bullish" in rec["reasoning"]
+        assert "target_exceeded" not in rec["reasoning"]
+
+    async def test_recommendation_demotes_at_exact_threshold(self):
+        """ROB-486: upside == -10.0 (임계 동치)도 강등 대상 (<=)."""
+        mock_analysis = {
+            "quote": {"price": 1000},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 8,
+                    "hold_count": 0,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 8,
+                    "avg_target_price": 900,
+                    "upside_pct": -10.0,
+                    "current_price": 1000,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "hold"
+        assert "target_exceeded" in rec["reasoning"]
+
     async def test_apply_common_results_normalizes_indicator_wrapper(self):
         """Test that _apply_common_results flattens provider-style indicator payload."""
         analysis = {}
