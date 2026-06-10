@@ -156,3 +156,15 @@ def test_validate_report_items_rejects_unknown_keys():
     assert error["error"] == "invalid_items"
     assert error["item_errors"][0]["errors"][0]["field"] == "entry_price"
 
+
+def test_create_description_documents_trade_plan_and_unknown_key_policy():
+    desc = h.CREATE_DESCRIPTION
+    assert "entry_plan" in desc
+    assert "stop_loss" in desc
+    assert "target_price" in desc
+    assert "linked_order_ids" in desc
+    assert "Unknown item keys are rejected" in desc
+    assert "metadata" in desc
+    assert "item_evidence_lite" in desc
+    assert "evidence[]" in desc
+
