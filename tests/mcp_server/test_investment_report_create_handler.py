@@ -167,4 +167,3 @@ def test_create_description_documents_trade_plan_and_unknown_key_policy():
     assert "metadata" in desc
     assert "item_evidence_lite" in desc
     assert "evidence[]" in desc
-

@@ -263,5 +263,3 @@ async def test_trade_plan_fields_round_trip_through_evidence_snapshot(session) -
     assert snap["target_price"]["price"] == "78000"
     assert snap["linked_order_ids"][0]["odno"] == "0026500500"
     assert snap["linked_order_ids"][0]["ledger_id"] == 123
-
-
