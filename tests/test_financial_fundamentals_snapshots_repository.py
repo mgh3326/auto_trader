@@ -228,9 +228,7 @@ async def test_latest_periods_for_symbols_does_not_load_raw_payload(db_session):
     rows = grouped["005930"]
 
     assert [r.fiscal_period for r in rows] == ["2023A", "2024A"]
-    assert rows[0].source_collected_at == dt.datetime(
-        2026, 6, 2, 0, 0, tzinfo=dt.UTC
-    )
+    assert rows[0].source_collected_at == dt.datetime(2026, 6, 2, 0, 0, tzinfo=dt.UTC)
     assert rows[0].revenue == Decimal("3000000")
     assert "raw_payload" in sa.inspect(rows[0]).unloaded
     assert "raw_payload" in sa.inspect(rows[1]).unloaded
