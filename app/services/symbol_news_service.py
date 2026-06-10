@@ -152,6 +152,9 @@ async def _fetch_naver(
 
 def _stored_to_article(
     row: StoredSymbolNews,
+    *,
+    provider: str,
+    market: str,
     symbol: str,
     fetched_at: datetime,
     raw_by_url: dict[str, Any],
@@ -161,16 +164,20 @@ def _stored_to_article(
         "url": row.url,
         "source": row.source or "",
         "datetime": row.published_at.isoformat() if row.published_at else None,
+        **({"summary": row.summary or ""} if provider == "finnhub" else {}),
     }
+    external_id = (
+        _naver_external_id(row.url) if provider == "naver" else _url_hash(row.url)
+    )
     return SymbolNewsArticle(
-        provider="naver",
-        market="kr",
+        provider=provider,
+        market=market,
         symbol=symbol,
-        external_article_id=_naver_external_id(row.url),
+        external_article_id=external_id,
         title=row.title,
         source_name=row.source,
         canonical_url=row.url,
-        summary=None,
+        summary=row.summary if provider == "finnhub" else None,
         published_at=row.published_at,
         fetched_at=fetched_at,
         related_symbols=[],
@@ -178,7 +185,7 @@ def _stored_to_article(
     )
 
 
-async def _maybe_enqueue_judgment(symbol: str, new_pending: int) -> None:
+async def _maybe_enqueue_judgment(market: str, symbol: str, new_pending: int) -> None:
     """ROB-506: fire-and-forget judgment enqueue. Never raises into get_news."""
     if new_pending <= 0:
         return
@@ -191,19 +198,23 @@ async def _maybe_enqueue_judgment(symbol: str, new_pending: int) -> None:
         )
 
         await news_relevance_judge_pending.kiq(
-            market="kr", symbol=symbol, dry_run=False
+            market=market, symbol=symbol, dry_run=False
         )
     except Exception as exc:  # noqa: BLE001 — enqueue must be fail-open
         logger.warning(
             "symbol_news_service: judgment enqueue failed (fail-open): "
-            "symbol=%s err=%s",
+            "market=%s symbol=%s err=%s",
+            market,
             symbol,
             exc,
         )
 
 
-async def _kr_persist_and_load(
+async def _persist_and_load(
     symbol: str,
+    market: str,
+    provider: str,
+    feed_source: str,
     fetched: list[SymbolNewsArticle],
     limit: int,
     fetched_at: datetime,
@@ -213,8 +224,9 @@ async def _kr_persist_and_load(
     try:
         async with AsyncSessionLocal() as db:
             if fetched:
-                inserted = await symbol_news_store.upsert_kr_feed_articles(
+                inserted = await symbol_news_store.upsert_feed_articles(
                     db,
+                    market,
                     symbol,
                     [
                         FeedArticleInput(
@@ -222,28 +234,39 @@ async def _kr_persist_and_load(
                             title=a.title,
                             source=a.source_name,
                             published_at=a.published_at,
+                            summary=a.summary,
                         )
                         for a in fetched
                     ],
+                    feed_source=feed_source,
                 )
             stored, excluded_count = await symbol_news_store.load_symbol_news(
-                db, symbol, "kr", limit
+                db, symbol, market, limit
             )
     except Exception as exc:  # noqa: BLE001 — cache layer must not kill the tool
         logger.warning(
-            "symbol_news_service: store unavailable, degrading: symbol=%s err=%s",
+            "symbol_news_service: store unavailable, degrading: "
+            "market=%s symbol=%s err=%s",
+            market,
             symbol,
             exc,
         )
         return None
-    # isinstance guard: 구형 fake/None 반환이어도 enqueue 판단만 0으로 처리
     new_pending = inserted if isinstance(inserted, int) else 0
-    await _maybe_enqueue_judgment(symbol, new_pending)
+    await _maybe_enqueue_judgment(market, symbol, new_pending)
     raw_by_url = {
         a.canonical_url: a.provider_metadata.get("source_item") for a in fetched
     }
     articles = [
-        _stored_to_article(row, symbol, fetched_at, raw_by_url) for row in stored
+        _stored_to_article(
+            row,
+            provider=provider,
+            market=market,
+            symbol=symbol,
+            fetched_at=fetched_at,
+            raw_by_url=raw_by_url,
+        )
+        for row in stored
     ]
     return articles, excluded_count
 
@@ -312,7 +335,15 @@ async def fetch_symbol_news(
             fetched = None
             fetch_error = type(exc).__name__
 
-        persisted = await _kr_persist_and_load(symbol, fetched or [], limit, fetched_at)
+        persisted = await _persist_and_load(
+            symbol,
+            "kr",
+            "naver",
+            symbol_news_store.KR_FEED_SOURCE,
+            fetched or [],
+            limit,
+            fetched_at,
+        )
         if persisted is not None:
             articles, excluded_count = persisted
             if fetched is None and not articles:

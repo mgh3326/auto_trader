@@ -38,7 +38,7 @@ def _patch_store(monkeypatch, *, stored, excluded_count=0):
     upsert = AsyncMock()
     load = AsyncMock(return_value=(stored, excluded_count))
     monkeypatch.setattr(
-        symbol_news_service.symbol_news_store, "upsert_kr_feed_articles", upsert
+        symbol_news_service.symbol_news_store, "upsert_feed_articles", upsert
     )
     monkeypatch.setattr(symbol_news_service.symbol_news_store, "load_symbol_news", load)
     # AsyncSessionLocal() 컨텍스트를 가짜 세션으로 대체
@@ -303,14 +303,14 @@ _RAW_ITEM = {
 def _patch_store_with_insert_count(monkeypatch, *, stored, new_links: int):
     """upsert가 신규 link 수(int)를 반환하는 ROB-506 계약으로 store를 fake."""
 
-    async def upsert(db, symbol, items, **kwargs):
+    async def upsert(db, market, symbol, items, **kwargs):
         return new_links
 
     async def load(db, symbol, market, limit):
         return stored, 0
 
     monkeypatch.setattr(
-        symbol_news_service.symbol_news_store, "upsert_kr_feed_articles", upsert
+        symbol_news_service.symbol_news_store, "upsert_feed_articles", upsert
     )
     monkeypatch.setattr(symbol_news_service.symbol_news_store, "load_symbol_news", load)
     fake_session = MagicMock()
