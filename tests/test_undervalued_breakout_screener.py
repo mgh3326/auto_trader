@@ -297,7 +297,7 @@ async def test_loader_ranks_by_proximity_desc_then_per_asc(db_session):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_loader_us_date_recency_passes(db_session):
+async def test_loader_us_date_recency_passes(db_session, monkeypatch):
     # ROB-440 PR3: US uses date-recency (a NEW 52-week high within 20 XNYS trading
     # sessions of the partition), NOT the price-proximity proxy. latest_close=80 vs
     # high_52w=100 (proximity 0.80) would FAIL the old >=0.95 rule — so passing here
@@ -336,6 +336,26 @@ async def test_loader_us_date_recency_passes(db_session):
         )
     )
     await db_session.commit()
+
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+    )
+
+    async def _resolve_test_partition(*_args, **_kwargs):
+        return HealthyPartition(
+            partition_date=vd,
+            row_count=1,
+            coverage_ratio=1.0,
+            is_fallback=False,
+            healthy=True,
+        )
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _resolve_test_partition,
+    )
 
     rows = await load_undervalued_breakout_from_snapshots(
         db_session, market="us", limit=20, today_market_date=vd
