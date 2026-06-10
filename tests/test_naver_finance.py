@@ -497,6 +497,18 @@ SAMPLE_DETAIL_HTML_TARGET_23000 = """
 </body></html>
 """
 
+# ROB-486+488: 현재가 1,914 기준 outlier 밴드(-75%/+300% → 478.5~7,656) 안의
+# 비-outlier 목표가 — window_months 스레딩 검증용 (outlier 가드 간섭 없음).
+SAMPLE_DETAIL_HTML_TARGET_5000 = """
+<html><body>
+<div class="view_info_1">
+    목표가 <em class="money"><strong>5,000</strong></em>
+    <span class="division">|</span>
+    투자의견 <em class="coment">매수</em>
+</div>
+</body></html>
+"""
+
 SAMPLE_CURRENT_PRICE_HTML_005880 = """
 <html><body>
 <p class="no_today">
@@ -1008,7 +1020,49 @@ class TestFetchInvestmentOpinions:
     async def test_window_months_param_threads_to_consensus(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """ROB-486: window_months 파라미터가 build_consensus 까지 전달된다."""
+        """ROB-486: window_months 파라미터가 build_consensus 까지 전달된다.
+
+        400일 전 행의 목표가는 비-outlier(5,000 — 현재가 1,914 기준 +161%)로
+        두어 recency 윈도우 효과만 분리 검증한다 (outlier 가드는 sibling 테스트).
+        """
+
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "company_list.naver" in url:
+                return BeautifulSoup(
+                    SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML, "lxml"
+                )
+            elif "company_read.naver" in url:
+                nid = (params or {}).get("nid", "")
+                if nid == "22345":
+                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_3000, "lxml")
+                if nid == "22346":
+                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_5000, "lxml")
+            elif "main.naver" in url:
+                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML_005880, "lxml")
+            return BeautifulSoup("<html></html>", "lxml")
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investment_opinions(
+            "005880", limit=10, window_months=24
+        )
+
+        consensus = result["consensus"]
+        assert consensus["window_months"] == 24
+        # 400일 전 행도 24개월 윈도우에는 생존 → (3000+5000)/2.
+        assert consensus["rows_used"] == 2
+        assert consensus["avg_target_price"] == 4000
+        assert consensus["target_price_outlier_count"] == 0
+        assert consensus["target_price_honest"] is True
+
+    async def test_window_survivor_outlier_target_still_excluded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ROB-486+488 레이어링: recency 윈도우 생존 행이라도 outlier 목표가
+        (23,000 — 현재가 1,914 기준 +1,101% > +300%)는 집계에서 제외된다.
+        카운트(rows_used)는 크레딧, 목표가 통계만 필터."""
 
         async def mock_fetch_html(
             url: str, params: dict[str, Any] | None = None
@@ -1035,9 +1089,12 @@ class TestFetchInvestmentOpinions:
 
         consensus = result["consensus"]
         assert consensus["window_months"] == 24
-        # 400일 전 행도 24개월 윈도우에는 생존 → (3000+23000)/2.
+        # 두 행 모두 24개월 윈도우 생존 — 카운트는 2.
         assert consensus["rows_used"] == 2
-        assert consensus["avg_target_price"] == 13000
+        # 23,000 은 outlier 가드로 목표가 집계에서만 제외 → avg 는 3,000.
+        assert consensus["avg_target_price"] == 3000
+        assert consensus["target_price_outlier_count"] == 1
+        assert consensus["target_price_honest"] is False
 
 
 @pytest.mark.asyncio
