@@ -604,3 +604,96 @@ async def test_scan_calls_auto_execute_for_auto_execute_mock(
     assert summary["triggered"] == 1, summary
     assert len(captured) == 1, captured
     assert captured[0]["symbol"] == "005930"
+
+
+# --- ROB-500 Tests ---
+
+
+def _recommendation_fixture() -> dict:
+    return {
+        "watch_reason": "r",
+        "data_state": "ok",
+        "reference_price": "110",
+        "entry_review_below_price": "100",
+        "suggested_limit_price_range": {"low": "95", "high": "100"},
+        "max_chase_price": "102",
+        "invalidation": {"kind": "price_below", "price": "80"},
+        "review_cadence": "daily",
+        "source_evidence": {"lookback_days": 20},
+        "policy_version": "v1",
+        "computed_at": "2026-06-01T00:00:00+00:00",
+    }
+
+
+@pytest.mark.asyncio
+async def test_trigger_payload_carries_links_guidance_and_price_guidance(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROB-500 — 발화 페이로드에 invest_links + 액션 가이드 + 가격 가이드."""
+    alert = await _seed_active_kr_alert(session)
+    repo = InvestmentReportsRepository(session)
+    item = await repo.get_item_by_uuid(alert.source_item_uuid)
+    assert item is not None
+    await repo.update_item_watch_recommendation(item.id, _recommendation_fixture())
+    await session.commit()
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0  # rsi below 30 → triggered
+
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    stub = _StubHermesClient()
+    scanner = InvestmentWatchScanner(hermes_client=stub)
+    await scanner.scan_market("kr")
+
+    assert len(stub.calls) == 1
+    payload = stub.calls[0]
+
+    assert payload.invest_links is not None
+    assert payload.invest_links.report_path == (
+        f"/invest/reports/{alert.source_report_uuid}"
+    )
+    assert payload.invest_links.stock_path == "/invest/stocks/kr/005930"
+    assert payload.invest_links.event_anchor == (
+        f"/invest/reports/{alert.source_report_uuid}"
+        f"#watch-event-{payload.event_uuid}"
+    )
+    assert payload.invest_links.alert_anchor == (
+        f"/invest/reports/{alert.source_report_uuid}"
+        f"#watch-alert-{alert.alert_uuid}"
+    )
+
+    assert payload.operator_action_guidance is not None
+    assert payload.operator_action_guidance.requires_operator_review is False
+    assert payload.operator_action_guidance.order_behavior == "none"
+
+    assert payload.price_guidance is not None
+    assert payload.price_guidance.entry_review_below_price == Decimal("100")
+    assert payload.price_guidance.suggested_limit_price_range.low == Decimal("95")
+    assert payload.price_guidance.suggested_limit_price_range.high == Decimal("100")
+    assert payload.price_guidance.max_chase_price == Decimal("102")
+    assert payload.price_guidance.invalidation.kind == "price_below"
+
+
+@pytest.mark.asyncio
+async def test_trigger_payload_price_guidance_none_without_recommendation(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROB-500 — watch_recommendation 없는 watch는 가이드 추론 금지(None)."""
+    await _seed_active_kr_alert(session)
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    stub = _StubHermesClient()
+    scanner = InvestmentWatchScanner(hermes_client=stub)
+    await scanner.scan_market("kr")
+
+    assert len(stub.calls) == 1
+    assert stub.calls[0].price_guidance is None
+    assert stub.calls[0].invest_links is not None  # 링크는 항상 채움
+
