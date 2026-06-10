@@ -30,10 +30,10 @@ ARG ENABLE_FRONTEND_BUILD=0
 
 WORKDIR /build
 
-COPY frontend/trading-decision/package.json frontend/trading-decision/package-lock.json ./
+COPY frontend/invest/package.json frontend/invest/package-lock.json ./
 RUN if [ "$ENABLE_FRONTEND_BUILD" = "1" ]; then npm ci; fi
 
-COPY frontend/trading-decision/ ./
+COPY frontend/invest/ ./
 RUN if [ "$ENABLE_FRONTEND_BUILD" = "1" ]; then npm run build; else mkdir -p dist && echo '<!-- frontend build disabled -->' > dist/index.html; fi
 
 # ==============================================================================
@@ -73,7 +73,7 @@ COPY alembic/ ./alembic/
 COPY alembic.ini pyproject.toml README.md ./
 COPY scripts/ ./scripts/
 COPY static/ ./static/
-COPY --from=frontend-builder /build/dist /app/frontend/trading-decision/dist
+COPY --from=frontend-builder /build/dist /app/frontend/invest/dist
 
 # tmp 디렉토리 생성 및 권한 설정
 RUN printf '%s' "$VCS_REF" > /app/.build-vcs-ref && \
