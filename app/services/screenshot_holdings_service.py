@@ -279,9 +279,7 @@ class ScreenshotHoldingsService:
             action = holding_data.get("action", "upsert").lower()
 
             if market_section not in ("kr", "us", "crypto"):
-                identity = self._holding_identity(
-                    symbol=symbol, stock_name=stock_name
-                )
+                identity = self._holding_identity(symbol=symbol, stock_name=stock_name)
                 warnings.append(
                     f"Skipping holding {identity}: invalid or missing market_section "
                     f"'{market_section_raw}' (must be kr|us|crypto)"
@@ -316,9 +314,7 @@ class ScreenshotHoldingsService:
                     removed_count += 1
                     diff.append(
                         {
-                            "action": self._preview_diff_action(
-                                "removed", dry_run
-                            ),
+                            "action": self._preview_diff_action("removed", dry_run),
                             "ticker": ticker,
                             "market_type": market_type.value,
                         }
@@ -351,9 +347,7 @@ class ScreenshotHoldingsService:
                     removed_count += 1
                     diff.append(
                         {
-                            "action": self._preview_diff_action(
-                                "removed", dry_run
-                            ),
+                            "action": self._preview_diff_action("removed", dry_run),
                             "ticker": ticker,
                             "market_type": market_type.value,
                         }
@@ -453,9 +447,7 @@ class ScreenshotHoldingsService:
                         updated_count += 1
                         diff.append(
                             {
-                                "action": self._preview_diff_action(
-                                    "updated", dry_run
-                                ),
+                                "action": self._preview_diff_action("updated", dry_run),
                                 "ticker": ticker,
                                 "market_type": market_type.value,
                                 "old_quantity": old_qty,
