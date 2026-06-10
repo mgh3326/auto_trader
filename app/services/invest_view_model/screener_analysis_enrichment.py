@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.mcp_server.tooling.fundamentals._valuation import (
+    handle_get_investment_opinions,
+)
 from app.schemas.invest_screener import (
     ScreenerAnalysisConsensus,
+    ScreenerAnalysisContext,
 )
+
+OpinionProvider = Callable[..., Any]
 
 
 def _to_float(value: Any) -> float | None:
@@ -122,19 +132,6 @@ def build_analyst_label(
     if consensus.upsidePct is None:
         return base
     return f"{base} · 목표 {consensus.upsidePct:+.1f}%"
-
-import asyncio
-from collections.abc import Callable
-
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-from app.mcp_server.tooling.fundamentals._valuation import (
-    handle_get_investment_opinions,
-)
-from app.schemas.invest_screener import ScreenerAnalysisContext
-
-OpinionProvider = Callable[..., Any]
 
 
 async def _opinion_payload(
