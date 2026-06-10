@@ -52,8 +52,6 @@ def _ensure_test_env() -> None:
         "TELEGRAM_TOKEN": "DUMMY_TELEGRAM_TOKEN",
         "TELEGRAM_CHAT_IDS": "123456789,987654321",
         "TELEGRAM_CHAT_IDS_STR": "123456789,987654321",
-        "GOOGLE_API_KEY": "DUMMY_GOOGLE_API_KEY",
-        "GOOGLE_API_KEYS": "DUMMY_GOOGLE_API_KEY_1,DUMMY_GOOGLE_API_KEY_2",
         "OPENDART_API_KEY": "DUMMY_OPENDART_API_KEY",
         "UPBIT_ACCESS_KEY": "DUMMY_UPBIT_ACCESS_KEY",
         "UPBIT_SECRET_KEY": "DUMMY_UPBIT_SECRET_KEY",
@@ -74,11 +72,6 @@ def _ensure_test_env() -> None:
         "N8N_API_KEY": "",  # Empty = n8n auth disabled in tests by default
         "N8N_FILL_WEBHOOK_URL": "",  # Empty = n8n fill webhook disabled in tests by default
         "N8N_WATCH_ALERT_WEBHOOK_URL": "",  # Empty = n8n watch webhook disabled in tests
-        "OPENAI_API_KEY": "",
-        "GEMINI_ADVISOR_API_KEY": "",
-        "GROK_API_KEY": "",
-        "AI_ADVISOR_TIMEOUT": "60.0",
-        "AI_ADVISOR_DEFAULT_PROVIDER": "gemini",
     }
 
     for key, value in default_env_values.items():
@@ -426,14 +419,7 @@ def sample_yahoo_data():
     }
 
 
-@pytest.fixture
-def sample_gemini_response():
-    """Sample Gemini AI response data."""
-    return {
-        "text": "Based on technical analysis, this stock shows bullish signals with RSI at 30.5 and MACD crossing above signal line.",
-        "confidence": 0.85,
-        "recommendation": "BUY",
-    }
+
 
 
 # Markers for different test types

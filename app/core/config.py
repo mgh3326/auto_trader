@@ -707,12 +707,7 @@ class Settings(BaseSettings):
     # API Documentation
     DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
 
-    # AI Advisor
-    openai_api_key: str | None = None
-    gemini_advisor_api_key: str | None = None
-    grok_api_key: str | None = None
-    ai_advisor_timeout: float = 60.0
-    ai_advisor_default_provider: str = "gemini"
+
 
     # TradingAgents advisory runner (ROB-9)
     tradingagents_repo_path: str | None = None
