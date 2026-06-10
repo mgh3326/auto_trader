@@ -167,6 +167,9 @@ def test_tool_description_documents_contract():
     assert "client_item_key" in desc
     assert "overwrite_existing" in desc
     assert "market_session" in desc
+    assert "budget_basis" in desc
+    assert "available_usd" in desc
+    assert "operator_budget_override_usd" in desc
 
 
 @pytest.mark.asyncio
