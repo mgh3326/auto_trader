@@ -435,7 +435,10 @@ class CandidateUniverseSnapshotCollector:
         any_rows = False
         for preset_id, module, attr in loaders:
             loader = getattr(module, attr)
-            rows = await loader(self._session, market="kr", limit=pool_limit)
+            load_res = await loader(self._session, market="kr", limit=pool_limit)
+            if not load_res:
+                continue
+            rows = getattr(load_res, "rows", load_res)
             if not rows:  # None (missing) or [] (stale-empty)
                 continue
             any_rows = True
