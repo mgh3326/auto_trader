@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 import pandas as pd
 import pytest
 
+from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import (
     analysis_analyze,
     analysis_rankings,
@@ -195,7 +196,9 @@ _PATCH_MODULES = (
 )
 
 
-def build_tools() -> dict[str, Callable[..., Any]]:
+def build_tools(
+    profile: McpProfile = McpProfile.DEFAULT,
+) -> dict[str, Callable[..., Any]]:
     """
     Build and return a dict of all registered MCP tools.
 
@@ -203,7 +206,7 @@ def build_tools() -> dict[str, Callable[..., Any]]:
         Dictionary mapping tool names to their handler functions.
     """
     mcp = DummyMCP()
-    register_all_tools(cast(Any, mcp))
+    register_all_tools(cast(Any, mcp), profile=profile)
     return mcp.tools
 
 

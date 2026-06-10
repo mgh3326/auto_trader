@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests._mcp_tooling_support import build_tools
+from app.mcp_server.profiles import McpProfile
+from tests._mcp_tooling_support import build_tools as _build_tools
+
+
+def build_tools():
+    return _build_tools(profile=McpProfile.DB_PAPER)
 
 
 @pytest.mark.asyncio

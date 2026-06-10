@@ -11,11 +11,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.mcp_server.tooling.investment_snapshots_tools import (
-    investment_snapshot_bundle_ensure,
     investment_snapshot_bundle_get,
     investment_snapshot_bundle_list,
     investment_snapshot_list,
-    investment_snapshot_refresh_request,
 )
 
 if TYPE_CHECKING:
@@ -23,26 +21,13 @@ if TYPE_CHECKING:
 
 
 INVESTMENT_SNAPSHOTS_TOOL_NAMES: set[str] = {
-    "investment_snapshot_bundle_ensure",
     "investment_snapshot_bundle_get",
     "investment_snapshot_bundle_list",
     "investment_snapshot_list",
-    "investment_snapshot_refresh_request",
 }
 
 
 def register_investment_snapshots_tools(mcp: FastMCP) -> None:
-    _ = mcp.tool(
-        name="investment_snapshot_bundle_ensure",
-        description=(
-            "Ensure a snapshot bundle exists for (purpose, market, account_scope, "
-            "policy_version). Reuses the latest bundle within bundle_ttl; otherwise "
-            "creates a new run and bundle. Phase 2 has no production collectors — "
-            "without a fresh bundle this typically returns status='failed'. Use "
-            "investment_snapshot_refresh_request to ask the scheduler to refresh."
-        ),
-    )(investment_snapshot_bundle_ensure)
-
     _ = mcp.tool(
         name="investment_snapshot_bundle_get",
         description=(
@@ -67,15 +52,6 @@ def register_investment_snapshots_tools(mcp: FastMCP) -> None:
             "freshness_status, since (ISO-8601). limit clamped to [1,100]."
         ),
     )(investment_snapshot_list)
-
-    _ = mcp.tool(
-        name="investment_snapshot_refresh_request",
-        description=(
-            "Record a refresh request as an investment_snapshot_runs row. Inserts "
-            "one row with purpose='manual_refresh' or 'reviewer_requested'; no "
-            "collection happens in Phase 2 (the Phase 3 scheduler will pick it up)."
-        ),
-    )(investment_snapshot_refresh_request)
 
 
 __all__ = [

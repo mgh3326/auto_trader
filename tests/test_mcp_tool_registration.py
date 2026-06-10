@@ -11,6 +11,7 @@ This module tests:
 
 import pytest
 
+from app.core.config import settings
 from app.mcp_server.tooling import market_data_indicators
 from tests._mcp_tooling_support import build_tools
 
@@ -73,3 +74,55 @@ async def test_recommend_stocks_removal_leaves_order_surface_untouched() -> None
     for order_tool in ("place_order", "cancel_order", "modify_order"):
         assert order_tool in tools
     assert "recommend_stocks" not in tools
+
+
+@pytest.mark.asyncio
+async def test_rob488_immediate_deprecated_tools_removed_from_default_surface() -> None:
+    """ROB-488: dead/no-op/footgun tools are implementation-retained but unregistered."""
+    tools = build_tools()
+
+    retired = {
+        "get_asset_profile",
+        "set_asset_profile",
+        "get_tier_rule_params",
+        "set_tier_rule_params",
+        "get_market_filters",
+        "set_market_filter",
+        "delete_asset_profile",
+        "simulate_avg_cost",
+        "format_execution_comment",
+        "investment_snapshot_bundle_ensure",
+        "investment_snapshot_refresh_request",
+    }
+
+    assert retired.isdisjoint(tools)
+    assert "get_holdings" in tools
+    assert "investment_snapshot_bundle_get" not in tools  # flag remains default-off
+
+
+@pytest.mark.asyncio
+async def test_snapshot_report_generator_tools_are_flag_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-488: disabled generator tools should be absent, not registered no-ops."""
+    gated = {
+        "investment_report_generate_from_bundle",
+        "investment_report_prepare_bundle",
+        "investment_report_get_hermes_context",
+        "investment_report_create_from_hermes_composition",
+        "investment_stage_artifacts_ingest_from_hermes",
+        "investment_report_prepare_intraday_context",
+    }
+
+    monkeypatch.setattr(
+        settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", False, raising=False
+    )
+    disabled_tools = build_tools()
+    assert gated.isdisjoint(disabled_tools)
+    assert "investment_report_create" in disabled_tools
+
+    monkeypatch.setattr(
+        settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", True, raising=False
+    )
+    enabled_tools = build_tools()
+    assert gated <= set(enabled_tools)

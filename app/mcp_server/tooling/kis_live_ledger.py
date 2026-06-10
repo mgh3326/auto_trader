@@ -295,15 +295,61 @@ def _today_yyyymmdd() -> str:
     return datetime.datetime.now().strftime("%Y%m%d")
 
 
+_LIVE_DAILY_ORDER_LOOKBACK_DAYS = 7
+_KST = datetime.timezone(datetime.timedelta(hours=9))
+
+
+def _coerce_order_date(
+    value: datetime.datetime | datetime.date | str | None,
+) -> datetime.date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(_KST).date()
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) >= 8 and text[:8].isdigit():
+            try:
+                return datetime.datetime.strptime(text[:8], "%Y%m%d").date()
+            except ValueError:
+                return None
+        try:
+            return datetime.date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _live_daily_order_window(
+    order_trade_date: datetime.datetime | datetime.date | str | None,
+) -> tuple[str, str]:
+    today = datetime.datetime.strptime(_today_yyyymmdd(), "%Y%m%d").date()
+    earliest = today - datetime.timedelta(days=_LIVE_DAILY_ORDER_LOOKBACK_DAYS - 1)
+    order_date = _coerce_order_date(order_trade_date)
+    start = max(order_date or earliest, earliest)
+    if start > today:
+        start = today
+    return start.strftime("%Y%m%d"), today.strftime("%Y%m%d")
+
+
 async def _fetch_live_daily_rows(
-    *, symbol: str, order_no: str | None
+    *,
+    symbol: str,
+    order_no: str | None,
+    order_trade_date: datetime.datetime | datetime.date | str | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch today's live daily-execution rows for a KR order (is_mock=False)."""
+    """Fetch recent live daily-execution rows for a KR order (is_mock=False)."""
     kis = _create_live_kis_client()
-    today = _today_yyyymmdd()
+    start_date, end_date = _live_daily_order_window(order_trade_date)
     rows = await kis.inquire_daily_order_domestic(
-        start_date=today,
-        end_date=today,
+        start_date=start_date,
+        end_date=end_date,
         stock_code=symbol,
         order_number=order_no or "",
         is_mock=False,
@@ -323,18 +369,23 @@ async def _update_ledger_outcome(
     """Update a ledger row's reconcile outcome (status + fill + linkage)."""
     try:
         async with _order_session_factory()() as db:
+            values: dict[str, Any] = {
+                "status": status,
+                "lifecycle_state": _status_to_lifecycle(status),
+                "reconciled_at": now_kst(),
+            }
+            if filled_qty is not None:
+                values["filled_qty"] = filled_qty
+            if avg_fill_price is not None:
+                values["avg_fill_price"] = avg_fill_price
+            if trade_id is not None:
+                values["trade_id"] = trade_id
+            if journal_id is not None:
+                values["journal_id"] = journal_id
             await db.execute(
                 update(KISLiveOrderLedger)
                 .where(KISLiveOrderLedger.id == ledger_id)
-                .values(
-                    status=status,
-                    lifecycle_state=_status_to_lifecycle(status),
-                    filled_qty=filled_qty,
-                    avg_fill_price=avg_fill_price,
-                    trade_id=trade_id,
-                    journal_id=journal_id,
-                    reconciled_at=now_kst(),
-                )
+                .values(**values)
             )
             await db.commit()
     except Exception as exc:
@@ -456,7 +507,11 @@ async def _reconcile_one_ledger_row(
     Filled/partial -> book fill + journal from BROKER-confirmed qty/price.
     """
     order_no = row.order_no
-    rows = await _fetch_live_daily_rows(symbol=row.symbol, order_no=order_no)
+    rows = await _fetch_live_daily_rows(
+        symbol=row.symbol,
+        order_no=order_no,
+        order_trade_date=row.trade_date,
+    )
     evidence = classify_fill_evidence(order_no=order_no, rows=rows)
 
     base = {
@@ -488,11 +543,14 @@ async def _reconcile_one_ledger_row(
         return base
 
     if evidence.verdict == FillVerdict.NONE:
-        # No daily-execution row. Distinguish still-open vs cancelled by checking
-        # live pending orders; absence from both fill and pending => cancelled.
-        base["action"] = "marked_cancelled" if not dry_run else "would_mark_cancelled"
-        if not dry_run:
-            await _update_ledger_outcome(ledger_id=row.id, status="cancelled")
+        # Missing evidence is not cancellation evidence. Leave the ledger open
+        # so tomorrow's reconcile or operator review can still recover fills.
+        base["action"] = "noop_no_evidence"
+        base["requires_manual_review"] = True
+        base["reason"] = (
+            "no broker fill evidence in lookback window; ledger left open "
+            "instead of marking cancelled"
+        )
         return base
 
     # FILLED or PARTIAL — broker-confirmed values only.

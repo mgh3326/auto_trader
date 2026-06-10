@@ -1037,7 +1037,11 @@ async def investment_report_generate_from_bundle_impl(
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-def register_investment_report_tools(mcp: FastMCP) -> None:
+def register_investment_report_tools(
+    mcp: FastMCP,
+    *,
+    include_snapshot_generator: bool = True,
+) -> None:
     mcp.tool(
         name="investment_report_create",
         description=CREATE_DESCRIPTION,
@@ -1104,10 +1108,11 @@ def register_investment_report_tools(mcp: FastMCP) -> None:
             "to zero. No broker/order/watch mutation."
         ),
     )(investment_report_delta_get_impl)
-    mcp.tool(
-        name="investment_report_generate_from_bundle",
-        description=GENERATE_FROM_BUNDLE_DESCRIPTION,
-    )(investment_report_generate_from_bundle_impl)
+    if include_snapshot_generator:
+        mcp.tool(
+            name="investment_report_generate_from_bundle",
+            description=GENERATE_FROM_BUNDLE_DESCRIPTION,
+        )(investment_report_generate_from_bundle_impl)
     mcp.tool(
         name="investment_watch_recommend",
         description=(

@@ -493,7 +493,10 @@ class Settings(BaseSettings):
 
     # ROB-475 — paused periodic auto-reconcile for KIS live KR orders.
     # Default off; operator flips + adds cron in robin-prefect-automations.
+    # ROB-487 adds a second default-off gate so a stale deployment cannot
+    # activate false-cancel reconcile behavior by flipping only the old flag.
     KIS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
+    KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
     # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
     # (no real mock orders) until an operator flips this.
     WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False

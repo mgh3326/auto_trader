@@ -1,9 +1,9 @@
-"""ROB-462: KR 주식 체결강도 (execution strength) read model.
+"""ROB-485: KR 주식 체결강도 (execution strength) read model.
 
-체결강도 = 매수체결량 / 매도체결량 × 100. KIS FHKST01010100 (주식현재가 시세)
-returns the official value directly as ``cttr`` — we trust the broker's value
-rather than recomputing. Pure transform; the broker fetch + freshness tagging
-live in the MCP tool.
+체결강도 = 매수체결량 / 매도체결량 × 100. KIS FHKST01010300 (주식현재가 체결)
+returns the official value directly as ``tday_rltv`` — we trust the broker's
+value rather than recomputing. Pure transform; the broker fetch + freshness
+tagging live in the MCP tool.
 """
 
 from __future__ import annotations
@@ -45,17 +45,17 @@ def _classify_trend(cttr: float | None) -> str | None:
 def compute_execution_strength(
     raw: dict[str, Any], *, symbol: str, as_of: str | None
 ) -> ExecutionStrengthData:
-    """Build the read model from KIS FHKST01010100 raw output fields.
+    """Build the read model from KIS FHKST01010300 raw output fields.
 
-    ``cttr`` is the authoritative 체결강도. Buy/sell contracted volumes are
-    surfaced when present, else None (missing != a fabricated 0).
+    ``tday_rltv`` is the authoritative REST 체결강도. Buy/sell contracted
+    volumes are not present in this REST TR, so they remain None.
     """
-    cttr = _to_float(raw.get("cttr"))
+    execution_strength = _to_float(raw.get("tday_rltv"))
     return ExecutionStrengthData(
         symbol=symbol,
         as_of=as_of,
-        execution_strength_pct=cttr,
-        buy_volume=_to_float(raw.get("shnu_cntg_qty")),
-        sell_volume=_to_float(raw.get("seln_cntg_qty")),
-        trend=_classify_trend(cttr),
+        execution_strength_pct=execution_strength,
+        buy_volume=None,
+        sell_volume=None,
+        trend=_classify_trend(execution_strength),
     )

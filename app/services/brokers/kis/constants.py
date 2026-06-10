@@ -15,6 +15,9 @@ DOMESTIC_VOLUME_TR = "FHPST01710000"  # 실전 전용
 DOMESTIC_PRICE_URL = "/uapi/domestic-stock/v1/quotations/inquire-price"
 DOMESTIC_PRICE_TR = "FHKST01010100"
 
+DOMESTIC_EXECUTION_STRENGTH_URL = "/uapi/domestic-stock/v1/quotations/inquire-ccnl"
+DOMESTIC_EXECUTION_STRENGTH_TR = "FHKST01010300"
+
 DOMESTIC_DAILY_CHART_URL = (
     "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 )

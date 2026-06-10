@@ -12,6 +12,10 @@ from enum import StrEnum
 class McpProfile(StrEnum):
     DEFAULT = "default"
     HERMES_PAPER_KIS = "hermes-paper-kis"
+    CRYPTO = "crypto"
+    US_PAPER = "us-paper"
+    DB_PAPER = "db-paper"
+    KIWOOM = "kiwoom"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

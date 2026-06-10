@@ -175,6 +175,35 @@ async def test_fetch_live_daily_rows_for_order():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_fetch_live_daily_rows_uses_order_date_to_today_window():
+    import datetime
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+
+    fake_client = AsyncMock()
+    fake_client.inquire_daily_order_domestic = AsyncMock(return_value=[])
+
+    with (
+        patch.object(kl, "_create_live_kis_client", return_value=fake_client),
+        patch.object(kl, "_today_yyyymmdd", return_value="20260610"),
+    ):
+        rows = await kl._fetch_live_daily_rows(
+            symbol="035420",
+            order_no="0006366300",
+            order_trade_date=datetime.datetime(2026, 6, 9, 9, 30, tzinfo=datetime.UTC),
+        )
+
+    assert rows == []
+    _, kwargs = fake_client.inquire_daily_order_domestic.await_args
+    assert kwargs["start_date"] == "20260609"
+    assert kwargs["end_date"] == "20260610"
+    assert kwargs["order_number"] == "0006366300"
+    assert kwargs["is_mock"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_update_ledger_outcome(db_session):
     from decimal import Decimal
 
@@ -231,6 +260,71 @@ async def test_update_ledger_outcome(db_session):
     assert row.lifecycle_state == "filled"
     assert row.trade_id == 42 and row.journal_id == 7
     assert row.reconciled_at is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_ledger_outcome_preserves_existing_fill_fields_when_omitted(
+    db_session,
+):
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling.kis_live_ledger import (
+        _order_session_factory,
+        _save_kis_live_order_ledger,
+        _update_ledger_outcome,
+    )
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=2.0,
+        price=1000.0,
+        amount=2000.0,
+        currency="KRW",
+        order_no="TEST-UPD-PRESERVE",
+        order_time="0930",
+        krx_fwdg_ord_orgno=None,
+        status="partial",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    await _update_ledger_outcome(
+        ledger_id=lid,
+        status="partial",
+        filled_qty=Decimal("1"),
+        avg_fill_price=Decimal("1000"),
+        trade_id=42,
+        journal_id=7,
+    )
+
+    await _update_ledger_outcome(ledger_id=lid, status="partial")
+
+    async with _order_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(KISLiveOrderLedger).where(KISLiveOrderLedger.id == lid)
+            )
+        ).scalar_one()
+    assert row.status == "partial"
+    assert row.filled_qty == Decimal("1.00000000")
+    assert row.avg_fill_price == Decimal("1000.0000")
+    assert row.trade_id == 42
+    assert row.journal_id == 7
 
 
 @pytest.mark.unit
@@ -362,6 +456,59 @@ async def test_reconcile_pending_is_noop(db_session):
     assert result["verdict"] == "pending"
     m_fill.assert_not_awaited()
     m_sell.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_no_evidence_is_fail_closed_not_cancelled(db_session):
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.mcp_server.tooling.kis_live_ledger import _save_kis_live_order_ledger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=1000.0,
+        amount=1000.0,
+        currency="KRW",
+        order_no="TEST-RC-NONE",
+        order_time="0930",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    row = await kl._load_ledger_row(lid)
+    no_evidence = FillEvidence(FillVerdict.NONE, None, None, None, "none", "")
+    with (
+        patch.object(kl, "_fetch_live_daily_rows", new=AsyncMock(return_value=[])),
+        patch.object(kl, "classify_fill_evidence", return_value=no_evidence),
+        patch.object(kl, "_update_ledger_outcome", new=AsyncMock()) as m_update,
+    ):
+        result = await kl._reconcile_one_ledger_row(row, dry_run=False)
+
+    assert result["verdict"] == "none"
+    assert result["action"] == "noop_no_evidence"
+    assert result["requires_manual_review"] is True
+    m_update.assert_not_awaited()
 
 
 @pytest.mark.unit

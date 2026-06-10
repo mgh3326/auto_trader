@@ -1,4 +1,4 @@
-"""ROB-462: get_execution_strength MCP tool + KIS broker fetch (KR equity)."""
+"""ROB-485: get_execution_strength MCP tool + KIS broker fetch (KR equity)."""
 
 from __future__ import annotations
 
@@ -10,32 +10,48 @@ from app.mcp_server.tooling import market_data_quotes
 
 
 @pytest.mark.asyncio
-async def test_inquire_execution_strength_extracts_cttr():
+async def test_inquire_execution_strength_uses_inquire_ccnl_tday_rltv():
     from app.services.brokers.kis.domestic_market_data import DomesticMarketDataMixin
 
     md = DomesticMarketDataMixin.__new__(DomesticMarketDataMixin)
     md._kis_url = lambda path: path
     md._request_with_token_retry = AsyncMock(
         return_value={
-            "output": {
-                "stck_shrn_iscd": "005930",
-                "cttr": "120.3",
-                "shnu_cntg_qty": "10",
-                "seln_cntg_qty": "5",
-                "stck_prpr": "80000",
-                "acml_vol": "1000",
-                "stck_cntg_hour": "100000",
-            }
+            "output": [
+                {
+                    "stck_cntg_hour": "100001",
+                    "stck_prpr": "80010",
+                    "cntg_vol": "3",
+                    "tday_rltv": "121.4",
+                    "prdy_ctrt": "1.2",
+                },
+                {
+                    "stck_cntg_hour": "100000",
+                    "stck_prpr": "80000",
+                    "cntg_vol": "5",
+                    "tday_rltv": "120.3",
+                    "prdy_ctrt": "1.1",
+                },
+            ]
         }
     )
 
     raw = await md.inquire_execution_strength("005930")
 
     assert raw["symbol"] == "005930"
-    assert raw["cttr"] == "120.3"
-    assert raw["shnu_cntg_qty"] == "10"
-    assert raw["seln_cntg_qty"] == "5"
-    md._request_with_token_retry.assert_awaited_once()
+    assert raw["tday_rltv"] == "121.4"
+    assert raw["last_price"] == "80010"
+    assert raw["cntg_vol"] == "3"
+    assert raw["time"] == "100001"
+    md._request_with_token_retry.assert_awaited_once_with(
+        tr_id="FHKST01010300",
+        url="/uapi/domestic-stock/v1/quotations/inquire-ccnl",
+        params={
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": "005930",
+        },
+        api_name="inquire_execution_strength",
+    )
 
 
 @pytest.mark.asyncio
@@ -44,9 +60,7 @@ async def test_get_execution_strength_kr_returns_strength(monkeypatch):
         async def inquire_execution_strength(self, code, market="J"):
             return {
                 "symbol": code,
-                "cttr": "135.5",
-                "shnu_cntg_qty": "1200",
-                "seln_cntg_qty": "800",
+                "tday_rltv": "135.5",
             }
 
     monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
@@ -59,8 +73,8 @@ async def test_get_execution_strength_kr_returns_strength(monkeypatch):
     assert result["symbol"] == "005930"
     assert result["execution_strength_pct"] == pytest.approx(135.5)
     assert result["trend"] == "buy_dominant"
-    assert result["buy_volume"] == pytest.approx(1200.0)
-    assert result["sell_volume"] == pytest.approx(800.0)
+    assert result["buy_volume"] is None
+    assert result["sell_volume"] is None
     assert result["data_state"] == "fresh"
     assert result["source"] == "kis"
     assert result["instrument_type"] == "equity_kr"
@@ -71,7 +85,7 @@ async def test_get_execution_strength_kr_returns_strength(monkeypatch):
 async def test_get_execution_strength_tags_premarket_data_state(monkeypatch):
     class _MockKIS:
         async def inquire_execution_strength(self, code, market="J"):
-            return {"cttr": "88.0"}
+            return {"tday_rltv": "88.0"}
 
     monkeypatch.setattr(market_data_quotes, "KISClient", _MockKIS)
     monkeypatch.setattr(

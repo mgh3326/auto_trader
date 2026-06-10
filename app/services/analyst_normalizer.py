@@ -1,12 +1,17 @@
-"""
-Shared rating normalization and consensus building utilities for analyst data.
+"""Shared rating normalization and consensus building utilities for analyst data."""
 
-This module provides functions to normalize analyst rating labels to standard
-English labels, classify them into aggregation buckets, and build consensus
-statistics with extended fields.
-"""
-
+from datetime import date, datetime, timedelta
 from typing import Any, Literal
+
+CONSENSUS_RECENCY_DAYS = 180
+TARGET_PRICE_MAX_ABS_UPSIDE_PCT = 300.0
+_OPINION_DATE_KEYS = (
+    "date",
+    "report_date",
+    "published_date",
+    "published_at",
+    "datetime",
+)
 
 # Rating label to standard English label mapping
 RATING_LABEL_MAP: dict[str, str] = {
@@ -105,9 +110,65 @@ def is_strong_buy(label: str) -> bool:
     return "strong" in label_lower and "buy" in label_lower
 
 
+def _coerce_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+    text = text[:10].replace(".", "-").replace("/", "-")
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _resolve_as_of_date(value: date | datetime | str | None) -> date:
+    return _coerce_date(value) or date.today()
+
+
+def _opinion_date(opinion: dict[str, Any]) -> date | None:
+    for key in _OPINION_DATE_KEYS:
+        parsed = _coerce_date(opinion.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _is_stale_opinion(opinion: dict[str, Any], as_of: date) -> bool:
+    observed = _opinion_date(opinion)
+    if observed is None:
+        return False
+    return observed < as_of - timedelta(days=CONSENSUS_RECENCY_DAYS)
+
+
+def _positive_target_price(opinion: dict[str, Any]) -> int | float | None:
+    target = opinion.get("target_price")
+    if isinstance(target, (int, float)) and target > 0:
+        return target
+    return None
+
+
+def _is_target_price_outlier(
+    target_price: int | float,
+    current_price: int | float | None,
+) -> bool:
+    if not isinstance(current_price, (int, float)) or current_price <= 0:
+        return False
+    upside_pct = (target_price - current_price) / current_price * 100
+    return abs(upside_pct) > TARGET_PRICE_MAX_ABS_UPSIDE_PCT
+
+
 def build_consensus(
     opinions: list[dict[str, Any]],
     current_price: int | float | None,
+    *,
+    as_of: date | datetime | str | None = None,
 ) -> dict[str, Any]:
     """Build consensus statistics from analyst opinions.
 
@@ -123,10 +184,23 @@ def build_consensus(
         - upside_pct: Upside percentage from current price
         - current_price: Current stock price
     """
+    as_of_date = _resolve_as_of_date(as_of)
+    fresh_opinions: list[dict[str, Any]] = []
+    stale_opinion_count = 0
+    stale_target_price_count = 0
+
+    for op in opinions:
+        if _is_stale_opinion(op, as_of_date):
+            stale_opinion_count += 1
+            if _positive_target_price(op) is not None:
+                stale_target_price_count += 1
+            continue
+        fresh_opinions.append(op)
+
     rating_counts: dict[str, int] = {"buy": 0, "hold": 0, "sell": 0}
     strong_buy_count = 0
 
-    for op in opinions:
+    for op in fresh_opinions:
         rating_label = op.get("rating", op.get("rating_label", ""))
         normalized_label = normalize_rating_label(rating_label)
         rating_bucket = op.get("rating_bucket") or rating_to_bucket(normalized_label)
@@ -137,24 +211,37 @@ def build_consensus(
         if is_strong_buy(normalized_label):
             strong_buy_count += 1
 
-    target_prices = [
-        op["target_price"]
-        for op in opinions
-        if isinstance(op.get("target_price"), (int, float)) and op["target_price"] > 0
-    ]
+    target_prices: list[int | float] = []
+    target_price_outlier_count = 0
+    for op in fresh_opinions:
+        target_price = _positive_target_price(op)
+        if target_price is None:
+            continue
+        if _is_target_price_outlier(target_price, current_price):
+            target_price_outlier_count += 1
+            continue
+        target_prices.append(target_price)
+
+    target_price_excluded_count = stale_target_price_count + target_price_outlier_count
 
     consensus: dict[str, Any] = {
         "buy_count": rating_counts["buy"],
         "hold_count": rating_counts["hold"],
         "sell_count": rating_counts["sell"],
         "strong_buy_count": strong_buy_count,
-        "total_count": len(opinions),
+        "total_count": len(fresh_opinions),
+        "raw_count": len(opinions),
+        "stale_opinion_count": stale_opinion_count,
         "avg_target_price": None,
         "median_target_price": None,
         "min_target_price": None,
         "max_target_price": None,
         "upside_pct": None,
         "current_price": current_price,
+        "target_price_count": len(target_prices),
+        "target_price_excluded_count": target_price_excluded_count,
+        "target_price_outlier_count": target_price_outlier_count,
+        "target_price_honest": target_price_excluded_count == 0,
     }
 
     if target_prices:

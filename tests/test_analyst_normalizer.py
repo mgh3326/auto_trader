@@ -251,6 +251,39 @@ class TestBuildConsensus:
         assert consensus["min_target_price"] == 100
         assert consensus["max_target_price"] == 100
 
+    def test_excludes_stale_dated_opinions_from_consensus(self) -> None:
+        opinions = [
+            {"rating": "Buy", "target_price": 900_000, "date": "2025-01-01"},
+            {"rating": "Hold", "target_price": 100_000, "date": "2026-06-01"},
+        ]
+
+        consensus = build_consensus(opinions, 90_000, as_of="2026-06-10")
+
+        assert consensus["buy_count"] == 0
+        assert consensus["hold_count"] == 1
+        assert consensus["total_count"] == 1
+        assert consensus["raw_count"] == 2
+        assert consensus["stale_opinion_count"] == 1
+        assert consensus["avg_target_price"] == 100_000
+        assert consensus["target_price_honest"] is False
+
+    def test_masks_target_price_outliers_but_keeps_fresh_rating_counts(self) -> None:
+        opinions = [
+            {"rating": "Buy", "target_price": 500_000, "date": "2026-06-01"},
+            {"rating": "Hold", "target_price": 110_000, "date": "2026-06-01"},
+        ]
+
+        consensus = build_consensus(opinions, 100_000, as_of="2026-06-10")
+
+        assert consensus["buy_count"] == 1
+        assert consensus["hold_count"] == 1
+        assert consensus["total_count"] == 2
+        assert consensus["avg_target_price"] == 110_000
+        assert consensus["upside_pct"] == pytest.approx(10.0)
+        assert consensus["target_price_count"] == 1
+        assert consensus["target_price_outlier_count"] == 1
+        assert consensus["target_price_honest"] is False
+
     def test_rating_label_bucket_fallback(self) -> None:
         """Test that rating_label is used when rating_bucket is not provided."""
         opinions = [
