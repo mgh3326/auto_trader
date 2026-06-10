@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -1824,6 +1824,60 @@ async def test_symbol_collector_enriches_with_kis_quote_when_kis_live():
 
 
 @pytest.mark.asyncio
+async def test_symbol_collector_enriches_us_kis_live_with_kis_quote():
+    """ROB-346 follow-up — US+kis_live must carry quote evidence too.
+
+    Before this regression fix only KR+kis_live had a KIS enrichment plan, so
+    US buy candidates resolved from the universe still emitted no quote and the
+    auto-emitter downgraded them to quote_missing/data_gap. Overseas KIS quote
+    evidence may only have last_price (no orderbook), which is still enough to
+    avoid an invented quote_missing state.
+    """
+    from app.services.investment_snapshots.collectors import CollectorRequest
+
+    async def fetch_quote(symbol: str, venue: str = "us") -> dict[str, Any]:
+        return {
+            "last_price": 27.59,
+            "best_bid": None,
+            "best_ask": None,
+            "bid_depth": None,
+            "ask_depth": None,
+            "venue": venue,
+            "as_of": "2026-06-10T13:20:00+09:00",
+            "session": "delayed",
+            "nxt_eligible": False,
+        }
+
+    session = _two_stage_session(
+        stock_rows=[],
+        universe_rows=[_us_universe_row("DKNG", name_en="DraftKings", exchange="NASD")],
+    )
+    quote_client = MagicMock()
+    quote_client.fetch_quote_orderbook = AsyncMock(side_effect=fetch_quote)
+    collector = SymbolSnapshotCollector(session, kis_quote_client=quote_client)
+    req = CollectorRequest(
+        market="us",
+        account_scope="kis_live",
+        symbols=["DKNG"],
+        candidate_limit=None,
+        policy_snapshot={},
+        user_id=42,
+    )
+
+    results = await collector.collect(req)
+
+    assert len(results) == 1
+    payload = results[0].payload_json
+    assert payload["symbol"] == "DKNG"
+    assert payload["instrument_type"] == "equity_us"
+    assert payload["quote"]["status"] == "ok"
+    assert payload["quote"]["last_price"] == 27.59
+    assert payload["quote"]["spread"] is None
+    assert payload["quote"]["venue"] == "us"
+    quote_client.fetch_quote_orderbook.assert_awaited_once_with("DKNG", venue="us")
+
+
+@pytest.mark.asyncio
 async def test_symbol_collector_skips_quote_when_no_kis_live():
     """ROB-278 Phase 2 — non-kis_live request must not call quote client."""
     from app.services.investment_snapshots.collectors import CollectorRequest
@@ -2660,6 +2714,89 @@ async def test_kis_adapter_maps_nxt_venue_to_market_code_nx():
     raw_krx = await adapter.fetch_quote_orderbook("005930")  # default venue
     assert captured["market"] == "J"
     assert raw_krx["venue"] == "krx"
+
+
+@pytest.mark.asyncio
+async def test_kis_adapter_maps_us_venue_to_overseas_current_price():
+    from unittest.mock import AsyncMock, MagicMock
+
+    import pandas as pd
+
+    from app.services.action_report.snapshot_backed.collectors.registry import (
+        _KISDomesticQuoteOrderbookAdapter,
+    )
+
+    kis_client = MagicMock()
+    kis_client.inquire_overseas_price = AsyncMock(
+        return_value=pd.DataFrame(
+            {"close": [27.59], "previous_close": [26.5], "volume": [123456]}
+        )
+    )
+    kis_client.inquire_price = AsyncMock(
+        side_effect=AssertionError("domestic price path must not run for US venue")
+    )
+    kis_client.inquire_orderbook = AsyncMock(
+        side_effect=AssertionError("domestic orderbook path must not run for US venue")
+    )
+
+    adapter = _KISDomesticQuoteOrderbookAdapter(kis_client)
+    raw = await adapter.fetch_quote_orderbook("DKNG", venue="us")
+
+    assert raw["last_price"] == 27.59
+    assert raw["best_bid"] is None
+    assert raw["best_ask"] is None
+    assert raw["venue"] == "us"
+    assert raw["session"] == "delayed"
+    assert raw["previous_close"] == 26.5
+    assert raw["volume"] == 123456
+    kis_client.inquire_overseas_price.assert_awaited_once_with(
+        "DKNG", exchange_code="NASD"
+    )
+    kis_client.inquire_price.assert_not_called()
+    kis_client.inquire_orderbook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_kis_adapter_us_quote_falls_back_and_preserves_missing_numeric_truth():
+    from unittest.mock import AsyncMock, MagicMock
+
+    import pandas as pd
+
+    from app.services.action_report.snapshot_backed.collectors.registry import (
+        _KISDomesticQuoteOrderbookAdapter,
+    )
+
+    kis_client = MagicMock()
+    kis_client.inquire_overseas_price = AsyncMock(
+        side_effect=[
+            pd.DataFrame(),
+            pd.DataFrame({"close": ["not-a-number"], "volume": ["bad-volume"]}),
+        ]
+    )
+
+    adapter = _KISDomesticQuoteOrderbookAdapter(kis_client)
+    raw = await adapter.fetch_quote_orderbook("DUAL", venue="us")
+
+    assert raw["exchange_code"] == "NYSE"
+    assert raw["last_price"] is None
+    assert raw["previous_close"] is None
+    assert raw["volume"] is None
+    assert raw["session"] == "closed"
+    assert kis_client.inquire_overseas_price.await_args_list == [
+        call("DUAL", exchange_code="NASD"),
+        call("DUAL", exchange_code="NYSE"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_kis_adapter_overseas_quote_requires_client():
+    from app.services.action_report.snapshot_backed.collectors.registry import (
+        _KISDomesticQuoteOrderbookAdapter,
+    )
+
+    adapter = _KISDomesticQuoteOrderbookAdapter(None)
+    with pytest.raises(RuntimeError, match="kis client unavailable"):
+        await adapter._fetch_overseas_quote("AAPL")
 
 
 @pytest.mark.asyncio

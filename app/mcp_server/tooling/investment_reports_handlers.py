@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from app.core.db import AsyncSessionLocal
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
+    AddReportItemsRequest,
     IngestReportItem,
     IngestReportRequest,
     InvestmentReportActivateWatchResponse,
@@ -33,6 +34,7 @@ from app.schemas.investment_reports import (
     PreviousReportContextResponse,
     RecordDecisionRequest,
     SetReportStatusRequest,
+    UpdateDraftReportRequest,
 )
 from app.services import market_data as market_data_service
 from app.services.investment_reports.decisions import (
@@ -40,6 +42,7 @@ from app.services.investment_reports.decisions import (
 )
 from app.services.investment_reports.idempotency import kst_date_from_report_key
 from app.services.investment_reports.ingestion import (
+    DraftReportMutationBlockedError,
     InvestmentReportIngestionService,
 )
 from app.services.investment_reports.lite_grade import (
@@ -72,6 +75,8 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_generate_from_bundle",
     "investment_watch_recommend",
     "investment_report_set_status",
+    "investment_report_add_items",
+    "investment_report_update",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -107,6 +112,10 @@ GENERATE_FROM_BUNDLE_DESCRIPTION = (
     "client_item_key, item_kind (action|watch|risk), intent (buy_review|"
     "sell_review|risk_review|trend_recovery_review|rebalance_review), rationale; "
     "watch items also need watch_condition+valid_until unless operation='review'. "
+    "ROB-347 budget controls: budget_basis defaults to 'available_usd'; "
+    "'krw_orderable_reference' keeps KRW as reference-only and marks fx_required; "
+    "'operator_budget_override' uses operator_budget_override_usd when present "
+    "so USD=0 candidates remain visible without fabricating KRW→USD. "
     "Invalid items return error:'invalid_items' naming the offending index/field. "
     "Deterministic regeneration: by default an existing report for the same key "
     "is RETURNED FROM THE STORED ROW (reused_existing=true); pass "
@@ -138,11 +147,39 @@ CREATE_DESCRIPTION = (
     "completed_or_existing, deferred_no_action, risk_watch. "
     "Optional structured evidence per item: evidence=[{source, metric, value, "
     "as_of, freshness}] (source required) plus item-level freshness "
-    "(fresh|soft_stale|stale|unknown) — source-links consensus/flow/forum "
-    "signals instead of burying them in rationale (ROB-459). "
+    "(fresh|soft_stale|stale|unknown). item_evidence_lite quality grading reads "
+    "these typed evidence[]/freshness fields, not arbitrary evidence_snapshot "
+    "keys. evidence_snapshot remains an advanced raw JSON object for reserved "
+    "read-side hints such as action_verdict/candidate_rank; typed fields are "
+    "preferred for new inputs. "
+    "Optional trade plan fields per item: entry_plan=[{label, price, quantity, "
+    "notional, currency, condition, rationale}], stop_loss={price,...}, "
+    "target_price={price,...}, linked_order_ids=[{broker, account_scope, "
+    "order_no, odno, ledger_id, report_item_uuid, raw}]. These are advisory "
+    "report fields only; they do not submit broker orders. Live audit linkage "
+    "for new orders should still pass report_item_uuid to the order tool "
+    "(ROB-473). Unknown item keys are rejected; put extension data under "
+    "metadata or evidence_snapshot explicitly. "
     "For prior-report chaining set created_by_profile='CLAUDE_ADVISOR' so the "
     "draft is admitted by investment_report_context_get(draft_policy="
     "'advisory_only')."
+)
+
+
+ADD_ITEMS_DESCRIPTION = (
+    "ROB-499 - append items to an existing draft investment_report without "
+    "recreating the report. Draft-only: non-draft reports return "
+    "error:'not_draft'. items[] use the same contract as investment_report_create; "
+    "duplicate client_item_key rows are returned as existing items and are not "
+    "rewritten. No broker / order / watch mutation."
+)
+
+UPDATE_DESCRIPTION = (
+    "ROB-499 - update draft report header fields (title, summary, risk_summary, "
+    "thesis_text, no_action_note, market_snapshot, portfolio_snapshot, metadata, "
+    "valid_until). Draft-only: non-draft reports return error:'not_draft'. "
+    "Does not change report identity, status, previous_report_uuid, account scope, "
+    "generator_version, or items. No broker / order / watch mutation."
 )
 
 
@@ -477,6 +514,132 @@ async def investment_report_create_impl(
             report=InvestmentReportResponse.model_validate(report),
         )
     return response.model_dump(mode="json", by_alias=True)
+
+
+async def investment_report_add_items_impl(
+    report_uuid: str,
+    items: list[dict[str, Any]] | None = None,
+    actor: str | None = None,
+) -> dict:
+    validated_items, item_error = _validate_report_items(items)
+    if item_error is not None:
+        return item_error
+    try:
+        request = AddReportItemsRequest.model_validate(
+            {
+                "report_uuid": report_uuid,
+                "items": validated_items,
+                "actor": actor,
+            }
+        )
+    except ValidationError as exc:
+        return {"success": False, "error": "invalid_request", "detail": str(exc)}
+
+    async with AsyncSessionLocal() as db:
+        service = InvestmentReportIngestionService(db)
+        try:
+            report, inserted, existing = await service.add_items_to_draft(
+                report_uuid=request.report_uuid,
+                items=request.items,
+            )
+        except DraftReportMutationBlockedError as exc:
+            return {
+                "success": False,
+                "error": "not_draft",
+                "report_uuid": str(exc.report_uuid),
+                "status": exc.status,
+            }
+        if report is None:
+            return {
+                "success": False,
+                "error": "not_found",
+                "report_uuid": str(request.report_uuid),
+            }
+        await db.commit()
+
+        return {
+            "success": True,
+            "report_uuid": str(report.report_uuid),
+            "inserted_count": len(inserted),
+            "existing_count": len(existing),
+            "inserted_items": [
+                InvestmentReportItemResponse.model_validate(it).model_dump(
+                    mode="json", by_alias=True
+                )
+                for it in inserted
+            ],
+            "existing_items": [
+                InvestmentReportItemResponse.model_validate(it).model_dump(
+                    mode="json", by_alias=True
+                )
+                for it in existing
+            ],
+        }
+
+
+async def investment_report_update_impl(
+    report_uuid: str,
+    title: str | None = None,
+    summary: str | None = None,
+    risk_summary: str | None = None,
+    thesis_text: str | None = None,
+    no_action_note: str | None = None,
+    market_snapshot: dict[str, Any] | None = None,
+    portfolio_snapshot: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    valid_until: str | None = None,
+    actor: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    try:
+        request = UpdateDraftReportRequest.model_validate(
+            {
+                "report_uuid": report_uuid,
+                "title": title,
+                "summary": summary,
+                "risk_summary": risk_summary,
+                "thesis_text": thesis_text,
+                "no_action_note": no_action_note,
+                "market_snapshot": market_snapshot,
+                "portfolio_snapshot": portfolio_snapshot,
+                "metadata": metadata,
+                "valid_until": valid_until,
+                "actor": actor,
+                "reason": reason,
+            }
+        )
+    except ValidationError as exc:
+        return {"success": False, "error": "invalid_request", "detail": str(exc)}
+
+    updates = request.model_dump(
+        exclude={"report_uuid", "actor", "reason"},
+        exclude_none=True,
+    )
+    async with AsyncSessionLocal() as db:
+        service = InvestmentReportIngestionService(db)
+        try:
+            report = await service.update_draft_report(
+                report_uuid=request.report_uuid,
+                updates=updates,
+                actor=request.actor,
+                reason=request.reason,
+            )
+        except DraftReportMutationBlockedError as exc:
+            return {
+                "success": False,
+                "error": "not_draft",
+                "report_uuid": str(exc.report_uuid),
+                "status": exc.status,
+            }
+        if report is None:
+            return {
+                "success": False,
+                "error": "not_found",
+                "report_uuid": str(request.report_uuid),
+            }
+        await db.commit()
+        response = InvestmentReportResponse.model_validate(report)
+    return {"success": True, "report": response.model_dump(mode="json", by_alias=True)}
 
 
 # ---------------------------------------------------------------------------
@@ -1051,6 +1214,14 @@ def register_investment_report_tools(
         description=CREATE_DESCRIPTION,
     )(investment_report_create_impl)
     mcp.tool(
+        name="investment_report_add_items",
+        description=ADD_ITEMS_DESCRIPTION,
+    )(investment_report_add_items_impl)
+    mcp.tool(
+        name="investment_report_update",
+        description=UPDATE_DESCRIPTION,
+    )(investment_report_update_impl)
+    mcp.tool(
         name="investment_report_list",
         description=(
             "List investment_reports filtered by market / market_session / "
@@ -1148,6 +1319,7 @@ def register_investment_report_tools(
 __all__ = [
     "INVESTMENT_REPORT_TOOL_NAMES",
     "investment_report_activate_watch_impl",
+    "investment_report_add_items_impl",
     "investment_report_context_get_impl",
     "investment_report_create_impl",
     "investment_report_decide_item_impl",
@@ -1156,6 +1328,7 @@ __all__ = [
     "investment_report_get_impl",
     "investment_report_list_impl",
     "investment_report_set_status_impl",
+    "investment_report_update_impl",
     "investment_watch_recommend_impl",
     "register_investment_report_tools",
 ]

@@ -269,6 +269,7 @@ def _candidate_item(
     reject_or_wait_reason: str | None,
     candidate_usefulness: str | None,
     news_match_count: int,
+    candidate_universe_evidence: dict[str, Any] | None = None,
     budget_evidence: dict[str, Any] | None = None,
 ) -> IngestReportItem:
     is_buy = verdict == "buy_review"
@@ -303,6 +304,9 @@ def _candidate_item(
     }
     if reject_or_wait_reason is not None:
         extra["reject_or_wait_reason"] = reject_or_wait_reason
+
+    if candidate_universe_evidence:
+        extra.update(candidate_universe_evidence)
 
     if budget_evidence:
         extra.update(budget_evidence)
@@ -374,6 +378,7 @@ class EvidenceAutoEmitter:
         candidate_usefulness: str | None = None
         candidate_by_symbol: dict[str, dict[str, Any]] = {}
         candidate_order: list[dict[str, Any]] = []
+        candidate_universe_evidence: dict[str, Any] = {}
         portfolio_snapshot: Any | None = None
         candidate_snapshot: Any | None = None
         news_snapshot: Any | None = None
@@ -395,6 +400,23 @@ class EvidenceAutoEmitter:
                 candidate_usefulness = (
                     payload.get("usefulness") if isinstance(payload, dict) else None
                 )
+                candidate_universe_evidence = {
+                    key: payload.get(key)
+                    for key in (
+                        "pool_size",
+                        "displayed_count",
+                        "candidate_limit",
+                        "universe_count",
+                        "capped",
+                        "freshness_status",
+                        "fresh_count",
+                        "stale_count",
+                        "expected_baseline_date",
+                        "latest_partition_date",
+                        "days_stale",
+                    )
+                    if isinstance(payload, dict) and key in payload
+                }
                 raw_candidates = (
                     payload.get("candidates", []) if isinstance(payload, dict) else []
                 )
@@ -566,6 +588,7 @@ class EvidenceAutoEmitter:
                     reject_or_wait_reason=reject_or_wait_reason,
                     candidate_usefulness=candidate_usefulness,
                     news_match_count=news_matches.get(sym, 0),
+                    candidate_universe_evidence=candidate_universe_evidence,
                     budget_evidence=budget_evidence,
                 ),
                 verdict,

@@ -278,6 +278,63 @@ def test_held_candidate_not_double_emitted():
     assert all(not k.startswith("auto-buy-") for k in keys)
 
 
+def test_us_candidate_quote_gap_carries_pool_display_evidence():
+    """ROB-346 follow-up — US candidates without symbol quote are not dropped.
+
+    The item must honestly say quote_missing/data_gap while preserving the
+    wide-pool vs displayed-slice evidence from the candidate snapshot so the
+    operator can see that e.g. a 50+ pool was ranked down to the visible cards.
+    """
+    snaps = [
+        _Snap(
+            "portfolio",
+            {"primary_source": "kis", "holdings": [], "buying_power": {"usd": 1000}},
+        ),
+        _Snap(
+            "candidate_universe",
+            {
+                "usefulness": "useful",
+                "candidate_limit": 10,
+                "pool_size": 55,
+                "displayed_count": 2,
+                "universe_count": 55,
+                "capped": True,
+                "candidates": [
+                    {
+                        "symbol": "DKNG",
+                        "score": 8.5,
+                        "rank": 1,
+                        "candidate_rank": 1,
+                        "source": "invest_screener_snapshot",
+                        "source_preset": "top_gainers",
+                        "data_state": "fresh",
+                        "quality_flags": [],
+                        "priority_score": 91.2,
+                        "confidence_cap": 100,
+                    }
+                ],
+            },
+        ),
+    ]
+
+    items = EvidenceAutoEmitter().propose(
+        snapshots=snaps, request_market="us", account_scope="kis_live"
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.symbol == "DKNG"
+    assert _verdict_of(item) == "data_gap"
+    assert item.evidence_snapshot["reject_or_wait_reason"] == "quote_missing"
+    assert item.evidence_snapshot["quote_status"] == "no_snapshot"
+    assert item.evidence_snapshot["pool_size"] == 55
+    assert item.evidence_snapshot["displayed_count"] == 2
+    assert item.evidence_snapshot["candidate_limit"] == 10
+    assert item.evidence_snapshot["universe_count"] == 55
+    assert item.evidence_snapshot["capped"] is True
+    assert item.evidence_snapshot["candidate_priority_score"] == 91.2
+
+
 def test_stale_candidate_demoted_even_when_universe_useful():
     """Per-candidate stale data_state must NOT be emitted as buy_review.
 

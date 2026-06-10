@@ -26,6 +26,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 ### News Tools (Pre-Market Briefing Pipeline)
 
+- `get_news(symbol, market=None, limit=10)`
+  - Fetch symbol-level recent news for decision diagnostics (`kr`: Naver Finance, `us`/`crypto`: Finnhub)
+  - KR: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
+  - `degraded: true` + `fetch_error` appear when the Naver fetch failed and the response was served from DB cache only.
+  - `pending` means "not yet judged" — treat as unverified recall, not confirmed evidence.
+  - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
+
 - `get_market_news(market=None, hours=24, feed_source=None, source=None, keyword=None, limit=20, briefing_filter=False)` [LEGACY — briefing only, not decision evidence]
   - Fetch recent market news for OpenClaw pre-market briefing
   - `market`: Optional market scope (`kr`, `us`, `crypto`) for market-separated briefing inputs
@@ -84,6 +91,14 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - 6자리 KR 종목코드만 지원 (예: `005930`)
   - US ticker (`AAPL`, `SMCI`) 와 crypto symbol (`KRW-BTC`) 은 지원하지 않음
   - `days` 는 1~60 범위로 cap 됨
+- `get_intraday_investor_flow(symbol)`
+  - KR-only read-only tool for same-day provisional foreign/institution flow by symbol.
+  - Source: KIS `investor-trend-estimate` (`/uapi/domestic-stock/v1/quotations/investor-trend-estimate`, TR `HHPTJ04160200`).
+  - Returns quantity estimates only: `foreign_net_qty`, `institution_net_qty`, `combined_net_qty`.
+  - The response always marks successful data as `provisional: true` and `data_state: "intraday_provisional"`.
+  - `as_of` is inferred from the latest returned KIS slot (`bsop_hour_gb`: 09:30, 10:00, 11:20, 13:20, 14:30) on the KST request date because the KIS payload does not include a date field.
+  - When the date attribution would be dishonest — the slot time is in the future (after-midnight/pre-market calls) or the request date is not an XKRX session day (weekend/holiday) — `as_of` is `null` and the `note` flags that rows likely belong to the previous trading session.
+  - This is not a confirmed daily close figure and should not be mixed with `get_investor_trends` day/week/month history.
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50, account_mode=None)`
   - `status="pending"` 만 symbol 없이 호출 가능
@@ -140,6 +155,11 @@ disabled no-op payloads:
 - `investment_report_create_from_hermes_composition`
 - `investment_stage_artifacts_ingest_from_hermes`
 - `investment_report_prepare_intraday_context`
+
+### Investment Report Tools
+
+- `investment_report_add_items(report_uuid, items, actor=None)` - Append new proposal items to an existing draft investment report. The item payload contract matches `investment_report_create`. Duplicate `client_item_key` rows are returned as existing items and are not rewritten. Non-draft reports return `error="not_draft"`. No broker, order, or watch mutation is performed.
+- `investment_report_update(report_uuid, title=None, summary=None, risk_summary=None, thesis_text=None, no_action_note=None, market_snapshot=None, portfolio_snapshot=None, metadata=None, valid_until=None, actor=None, reason=None)` - Update draft report header fields without changing report identity, lifecycle status, predecessor chain, account scope, generator version, or items. Each successful update appends an audit entry to `report.metadata.draft_updates`. Non-draft reports return `error="not_draft"`.
 
 ### Alpaca paper read-only smoke tools
 
@@ -579,6 +599,30 @@ Behavior:
 - US target normalization accepts Yahoo raw dicts such as `{raw, fmt}`, plain numbers, and pandas/numpy scalars; `0`, negative, empty, and non-numeric placeholders are treated as unavailable.
 - When Yahoo analyst counts or target statistics are unavailable, the corresponding US `consensus` fields are returned as `null` instead of fabricated zeroes.
 - When Yahoo provides neither usable aggregate counts nor usable analyst target data, the US response includes a top-level `warning`.
+
+### `investment_report_create` item contract
+
+`investment_report_create` persists one advisory report bundle and does not submit broker orders. The report idempotency key is `(report_type, market, market_session, account_scope, execution_mode, kst_date, generator_version)`. To create a new row for an updated draft, bump `generator_version` or another keyed field.
+
+Each `items[]` object requires:
+- `client_item_key`: caller-stable item key within the report.
+- `item_kind`: `action`, `watch`, or `risk`.
+- `intent`: `buy_review`, `sell_review`, `risk_review`, `trend_recovery_review`, or `rebalance_review`.
+- `rationale`: human-readable thesis.
+
+Optional typed item fields:
+- `evidence`: `[{source, metric, value, as_of, freshness}]`; `source` is required.
+- `freshness`: `fresh`, `soft_stale`, `stale`, or `unknown`.
+- `entry_plan`: `[{label, price, quantity, notional, currency, condition, rationale}]`.
+- `stop_loss`: `{price, quantity, notional, currency, condition, rationale}`.
+- `target_price`: `{price, quantity, notional, currency, condition, rationale}`.
+- `linked_order_ids`: `[{broker, account_scope, order_no, odno, ledger_id, report_item_uuid, raw}]`.
+
+The lite quality basis `item_evidence_lite` reads `evidence[]` and item-level `freshness`; arbitrary `evidence_snapshot` keys are not counted as typed evidence. Typed trade-plan fields round-trip under reserved keys in `items[].evidence_snapshot`.
+
+Unknown top-level item keys are rejected with `error: "invalid_items"`. Put caller-specific extension data under `metadata` or raw `evidence_snapshot` explicitly.
+
+Order linkage note: `linked_order_ids` is report-side reference metadata. For new live orders, pass the report item's `item_uuid` as `report_item_uuid` to the order tool so ROB-473 ledger audit linkage is populated.
 
 ### `manage_watch_alerts` — removed (ROB-265)
 

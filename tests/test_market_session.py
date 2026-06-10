@@ -63,3 +63,13 @@ def test_returns_market_closed_on_non_session_day(monkeypatch):
         market_session.kr_market_data_state(now)
         == market_session.DATA_STATE_MARKET_CLOSED
     )
+
+
+def test_is_kr_session_day_true_on_trading_day(monkeypatch):
+    _patch_calendar(monkeypatch, trading_minute=False, session=True)
+    assert market_session.is_kr_session_day(pd.Timestamp("2026-06-08").date()) is True
+
+
+def test_is_kr_session_day_false_on_non_session_day(monkeypatch):
+    _patch_calendar(monkeypatch, trading_minute=False, session=False)
+    assert market_session.is_kr_session_day(pd.Timestamp("2026-06-07").date()) is False

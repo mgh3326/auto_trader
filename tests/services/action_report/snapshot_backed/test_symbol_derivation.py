@@ -22,6 +22,7 @@ import pytest
 from app.services.action_report.snapshot_backed.symbol_derivation import (
     SymbolDerivation,
     SymbolDerivationService,
+    _DefaultJournalRepo,
     _DefaultLiveHoldingsRepo,
 )
 
@@ -42,8 +43,12 @@ class _FakeManualHoldingsRepo:
 class _FakeJournalRepo:
     def __init__(self, symbols: list[str]) -> None:
         self.symbols = symbols
+        self.calls: list[tuple[str, str | None]] = []
 
-    async def list_active_journal_symbols(self, *, market: str) -> list[str]:
+    async def list_active_journal_symbols(
+        self, *, market: str, account_scope: str | None = None
+    ) -> list[str]:
+        self.calls.append((market, account_scope))
         return list(self.symbols)
 
 
@@ -339,6 +344,69 @@ async def test_candidate_non_empty_has_count_and_no_empty_reason():
     coverage = result.provenance["source_coverage"]
     assert coverage["candidate"]["count"] == 2
     assert "empty_reason" not in coverage["candidate"]
+
+
+# ---------------------------------------------------------------------------
+# ROB-345 — symbol derivation must use the same live journal market/scope
+# filters as the journal snapshot collector. Otherwise US reports inherit KR or
+# crypto journal symbols and spend quote/candidate capacity on the wrong market.
+# ---------------------------------------------------------------------------
+class _FakeExecuteResult:
+    def __init__(self, rows: list[tuple[str]] | None = None) -> None:
+        self._rows = rows or []
+
+    def all(self) -> list[tuple[str]]:
+        return self._rows
+
+
+class _CapturingSession:
+    def __init__(self, rows: list[tuple[str]] | None = None) -> None:
+        self.rows = rows or []
+        self.statements: list[object] = []
+
+    async def execute(self, stmt):  # noqa: ANN001 — SQLAlchemy statement test double
+        self.statements.append(stmt)
+        return _FakeExecuteResult(self.rows)
+
+
+@pytest.mark.asyncio
+async def test_default_journal_repo_filters_us_kis_live_scope():
+    session = _CapturingSession(rows=[("AAPL",), ("DKNG",)])
+    repo = _DefaultJournalRepo(session)  # type: ignore[arg-type]
+
+    symbols = await repo.list_active_journal_symbols(
+        market="us", account_scope="kis_live"
+    )
+
+    assert symbols == ["AAPL", "DKNG"]
+    assert len(session.statements) == 1
+    compiled = str(
+        session.statements[0].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "review.trade_journals.status = 'active'" in compiled
+    assert "review.trade_journals.account_type = 'live'" in compiled
+    assert "review.trade_journals.instrument_type = 'equity_us'" in compiled
+    assert "review.trade_journals.account = 'kis'" in compiled
+    assert "review.trade_journals.account IS NULL" in compiled
+
+
+@pytest.mark.asyncio
+async def test_derive_passes_account_scope_to_journal_repo():
+    journal_repo = _FakeJournalRepo(["AAPL"])
+    service = SymbolDerivationService(
+        session=MagicMock(),
+        manual_holdings_repo=_FakeManualHoldingsRepo([]),
+        journal_repo=journal_repo,
+        watch_repo=_FakeWatchRepo([]),
+        candidate_repo=_FakeCandidateRepo([]),
+        live_holdings_repo=_FakeLiveHoldingsRepo([]),
+    )
+
+    await service.derive(
+        market="us", account_scope="kis_live", user_id=42, seed_symbols=None
+    )
+
+    assert journal_repo.calls == [("us", "kis_live")]
 
 
 # ---------------------------------------------------------------------------
