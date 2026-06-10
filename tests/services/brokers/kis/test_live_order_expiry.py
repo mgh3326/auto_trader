@@ -1,5 +1,11 @@
-# tests/services/brokers/kis/test_live_order_expiry.py
-from app.services.brokers.kis.live_order_expiry import classify_day_order_expiry
+import datetime
+
+from app.services.brokers.kis.live_order_expiry import (
+    classify_day_order_expiry,
+    nxt_session_closed,
+)
+
+KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
 def _row(order_no="0011001100", prcs="", rvse=""):
@@ -45,4 +51,59 @@ def test_no_matching_row_stays_pending():
     assert (
         classify_day_order_expiry(rows=rows, order_no="0011001100", market_closed=True)
         == "pending"
+    )
+
+
+# --- nxt_session_closed (ROB-487) ----------------------------------------------
+
+
+def test_nxt_open_before_2000_kst_same_day():
+    assert (
+        nxt_session_closed(
+            order_date=datetime.date(2026, 6, 9),
+            now=datetime.datetime(2026, 6, 9, 19, 59, tzinfo=KST),
+        )
+        is False
+    )
+
+
+def test_nxt_closed_at_exactly_2000_kst():
+    assert (
+        nxt_session_closed(
+            order_date=datetime.date(2026, 6, 9),
+            now=datetime.datetime(2026, 6, 9, 20, 0, tzinfo=KST),
+        )
+        is True
+    )
+
+
+def test_nxt_closed_next_day_morning():
+    assert (
+        nxt_session_closed(
+            order_date=datetime.date(2026, 6, 9),
+            now=datetime.datetime(2026, 6, 10, 9, 3, tzinfo=KST),
+        )
+        is True
+    )
+
+
+def test_nxt_naive_now_assumed_kst():
+    # naive now 는 KST 관례 (app/core/timezone.to_kst_naive 와 동일 가정)
+    assert (
+        nxt_session_closed(
+            order_date=datetime.date(2026, 6, 9),
+            now=datetime.datetime(2026, 6, 9, 19, 2),
+        )
+        is False
+    )
+
+
+def test_nxt_utc_aware_now_converted():
+    # 6/9 11:30 UTC == 6/9 20:30 KST → closed
+    assert (
+        nxt_session_closed(
+            order_date=datetime.date(2026, 6, 9),
+            now=datetime.datetime(2026, 6, 9, 11, 30, tzinfo=datetime.UTC),
+        )
+        is True
     )

@@ -18,7 +18,26 @@ intentionally conservative.
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
+
+_KST = datetime.timezone(datetime.timedelta(hours=9))
+
+# NXT(대체거래소) 세션 마감 — SOR day order는 이 시각까지 살아있을 수 있다.
+NXT_CLOSE_KST = datetime.time(hour=20, minute=0)
+
+
+def nxt_session_closed(*, order_date: datetime.date, now: datetime.datetime) -> bool:
+    """True iff ``now`` is at/after the NXT close (20:00 KST) of ``order_date``.
+
+    Naive ``now`` is assumed KST (app/core/timezone convention). Pure function:
+    the caller injects ``now`` — no clock import here.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_KST)
+    close = datetime.datetime.combine(order_date, NXT_CLOSE_KST, tzinfo=_KST)
+    return now.astimezone(_KST) >= close
+
 
 _ORDER_NO_KEYS = ("odno", "ord_no")
 _STATUS_KEYS = ("prcs_stat_name", "rvse_cncl_dvsn_name")
