@@ -327,6 +327,10 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 - **주의**: 공유 `KR_INVEST_KEYWORDS`(ROB-169 브리핑 스코어러 공용)에 hint용
   키워드를 추가하지 말 것 — ROB-491 로컬 텀은 `symbol_news_relevance.py`의
   `_KR_EXTRA_INVEST_HINT_TERMS`에만
+- **ROB-510**: US/crypto(Finnhub)도 동일 DB 파이프라인 합류 (feed_source
+  `finnhub_company_news`/`finnhub_general_news`). Finnhub fetch는
+  `FINNHUB_NEWS_TIMEOUT_S`×`FINNHUB_NEWS_MAX_ATTEMPTS` 재시도, 전 실패 시
+  degraded + DB stale 폴백.
 
 ### 데이터베이스 정규화 구조
 
