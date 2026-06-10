@@ -311,6 +311,42 @@ class TestAnalyzeStock:
             for t in recommendation["sell_targets"]
         )
 
+    async def test_below_market_target_excluded_from_sell_targets_without_demotion(
+        self,
+    ):
+        """ROB-488 per-value 가드 (486 gate 와 compose): upside (-10%, 0) 밴드는
+        강등 게이트 미발화지만, 현재가 아래 avg_target 은 sell *target* 이 아니므로
+        제외 — 현재가 위 max_target 만 들어간다."""
+        mock_analysis = {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 100_000},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 9,
+                    "hold_count": 1,
+                    "sell_count": 0,
+                    "strong_buy_count": 5,
+                    "total_count": 10,
+                    "avg_target_price": 95_000,
+                    "max_target_price": 105_000,
+                    "upside_pct": -5.0,
+                }
+            },
+        }
+
+        recommendation = shared.build_recommendation_for_equity(
+            mock_analysis, "equity_kr"
+        )
+
+        assert recommendation is not None
+        target_types = [t["type"] for t in recommendation["sell_targets"]]
+        # 현재가(100,000) 아래의 avg 95,000 은 제외, 위의 max 105,000 은 포함.
+        assert "consensus_avg" not in target_types
+        assert "consensus_max" in target_types
+
     async def test_build_recommendation_for_equity_exposes_rsi14(self):
         """Test that rsi14 value is exposed in recommendation payload."""
         analysis = {
@@ -332,6 +368,116 @@ class TestAnalyzeStock:
         rec = shared.build_recommendation_for_equity(analysis, "equity_us")
         assert rec is not None
         assert rec["rsi14"] == pytest.approx(0.0)
+
+    async def test_recommendation_blocks_buy_when_consensus_target_exceeded(self):
+        """ROB-486 (475150 실측): 8 buy/0 sell이어도 upside -26.44% → buy 금지."""
+        mock_analysis = {
+            "symbol": "475150",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 44350},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 8,
+                    "hold_count": 0,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 8,
+                    "avg_target_price": 32625,
+                    "upside_pct": -26.44,
+                    "current_price": 44350,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "hold"
+        assert "target_exceeded" in rec["reasoning"]
+        assert "Analyst target below current price" in rec["reasoning"]
+        assert "Analyst consensus bullish" not in rec["reasoning"]
+
+    async def test_recommendation_demotes_rsi_buy_when_consensus_target_exceeded(
+        self,
+    ):
+        """ROB-486: RSI 단독 +2로 buy가 나와도 음수 upside 컨센서스면 hold 강등."""
+        mock_analysis = {
+            "quote": {"price": 44350},
+            "indicators": {"indicators": {"rsi": {"14": 25.0}}},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 1,
+                    "hold_count": 3,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 4,
+                    "avg_target_price": 32625,
+                    "upside_pct": -26.44,
+                    "current_price": 44350,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "hold"
+        assert rec["confidence"] == "low"
+        assert "target_exceeded" in rec["reasoning"]
+
+    async def test_recommendation_allows_buy_with_mildly_negative_upside(self):
+        """ROB-486: 임계(-10%)보다 완만한 -5% upside는 기존 count 가산 유지."""
+        mock_analysis = {
+            "quote": {"price": 1000},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 8,
+                    "hold_count": 0,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 8,
+                    "avg_target_price": 950,
+                    "upside_pct": -5.0,
+                    "current_price": 1000,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "buy"
+        assert "Analyst consensus bullish" in rec["reasoning"]
+        assert "target_exceeded" not in rec["reasoning"]
+
+    async def test_recommendation_demotes_at_exact_threshold(self):
+        """ROB-486: upside == -10.0 (임계 동치)도 강등 대상 (<=)."""
+        mock_analysis = {
+            "quote": {"price": 1000},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": 8,
+                    "hold_count": 0,
+                    "sell_count": 0,
+                    "strong_buy_count": 0,
+                    "total_count": 8,
+                    "avg_target_price": 900,
+                    "upside_pct": -10.0,
+                    "current_price": 1000,
+                }
+            },
+        }
+
+        rec = shared.build_recommendation_for_equity(mock_analysis, "equity_kr")
+
+        assert rec is not None
+        assert rec["action"] == "hold"
+        assert "target_exceeded" in rec["reasoning"]
 
     async def test_apply_common_results_normalizes_indicator_wrapper(self):
         """Test that _apply_common_results flattens provider-style indicator payload."""
@@ -2895,7 +3041,7 @@ class TestGetInvestmentOpinions:
             },
         }
 
-        async def mock_fetch(code, limit):
+        async def mock_fetch(code, limit, window_months=12):
             return {
                 "instrument_type": "equity_kr",
                 "source": "naver",
@@ -2943,7 +3089,7 @@ class TestGetInvestmentOpinions:
             },
         }
 
-        async def mock_fetch(code, limit):
+        async def mock_fetch(code, limit, window_months=12):
             return {
                 "instrument_type": "equity_kr",
                 "source": "naver",
@@ -3223,6 +3369,34 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["total_count"] is None
         assert result["consensus"]["avg_target_price"] == pytest.approx(200.0)
         assert result["consensus"]["current_price"] == pytest.approx(185.0)
+
+    async def test_kr_opinion_window_months_clamped_and_forwarded(self, monkeypatch):
+        """ROB-486: opinion_window_months 가 1~60으로 클램프되어 KR fetcher로 전달."""
+        tools = build_tools()
+        captured: list[int] = []
+
+        async def mock_fetch(code, limit, window_months=12):
+            captured.append(window_months)
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "symbol": code,
+                "count": 0,
+                "opinions": [],
+                "consensus": None,
+            }
+
+        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_naver", mock_fetch)
+
+        await tools["get_investment_opinions"]("005930", market="kr")
+        await tools["get_investment_opinions"](
+            "005930", market="kr", opinion_window_months=120
+        )
+        await tools["get_investment_opinions"](
+            "005930", market="kr", opinion_window_months=0
+        )
+
+        assert captured == [12, 60, 1]
 
 
 @pytest.mark.asyncio
