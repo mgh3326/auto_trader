@@ -255,3 +255,53 @@ async def test_list_alerts_for_source_reports(session: AsyncSession) -> None:
     only_report1 = await repo.list_alerts_for_source_reports([report1.report_uuid])
     assert len(only_report1) == 1
     assert only_report1[0].symbol == "005930"
+
+
+@pytest.mark.asyncio
+async def test_item_get_by_idempotency_key(session: AsyncSession) -> None:
+    repo = InvestmentReportsRepository(session)
+    report = await _insert_report(repo)
+    item = await _insert_item(repo, report.id, idempotency_key="item:dedupe")
+
+    fetched = await repo.get_item_by_idempotency_key("item:dedupe")
+
+    assert fetched is not None
+    assert fetched.id == item.id
+
+
+@pytest.mark.asyncio
+async def test_find_item_by_report_client_key_from_metadata(
+    session: AsyncSession,
+) -> None:
+    repo = InvestmentReportsRepository(session)
+    report = await _insert_report(repo)
+    other = await _insert_report(repo)
+    item = await _insert_item(
+        repo,
+        report.id,
+        item_metadata={"client_item_key": "increment-1"},
+    )
+    await _insert_item(
+        repo,
+        other.id,
+        item_metadata={"client_item_key": "increment-1"},
+    )
+
+    fetched = await repo.find_item_by_report_client_key(report.id, "increment-1")
+
+    assert fetched is not None
+    assert fetched.id == item.id
+
+
+@pytest.mark.asyncio
+async def test_find_item_by_report_client_key_ignores_missing_metadata(
+    session: AsyncSession,
+) -> None:
+    repo = InvestmentReportsRepository(session)
+    report = await _insert_report(repo)
+    await _insert_item(repo, report.id, item_metadata={})
+
+    fetched = await repo.find_item_by_report_client_key(report.id, "increment-1")
+
+    assert fetched is None
+

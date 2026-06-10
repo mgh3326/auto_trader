@@ -171,6 +171,25 @@ class InvestmentReportsRepository:
             )
         )
 
+    async def get_item_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> InvestmentReportItem | None:
+        return await self._session.scalar(
+            sa.select(InvestmentReportItem).where(
+                InvestmentReportItem.idempotency_key == idempotency_key
+            )
+        )
+
+    async def find_item_by_report_client_key(
+        self, report_id: int, client_item_key: str
+    ) -> InvestmentReportItem | None:
+        items = await self.list_items_for_report(report_id)
+        for item in items:
+            metadata = item.item_metadata if isinstance(item.item_metadata, dict) else {}
+            if metadata.get("client_item_key") == client_item_key:
+                return item
+        return None
+
     async def list_items_for_report(self, report_id: int) -> list[InvestmentReportItem]:
         result = await self._session.scalars(
             sa.select(InvestmentReportItem)
