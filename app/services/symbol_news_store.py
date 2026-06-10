@@ -167,9 +167,7 @@ async def upsert_kr_feed_articles(
     feed_source: str = KR_FEED_SOURCE,
 ) -> int:
     """KR 호환 래퍼 — 기존 호출부 보존용 (ROB-491)."""
-    return await upsert_feed_articles(
-        db, "kr", symbol, items, feed_source=feed_source
-    )
+    return await upsert_feed_articles(db, "kr", symbol, items, feed_source=feed_source)
 
 
 async def list_pending(

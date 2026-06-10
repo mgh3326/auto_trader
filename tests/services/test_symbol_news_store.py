@@ -349,20 +349,26 @@ async def test_upsert_feed_articles_crypto_shared_article_two_symbols(
     ]
 
     a = await symbol_news_store.upsert_feed_articles(
-        db_session, "crypto", sym_a, items,
+        db_session,
+        "crypto",
+        sym_a,
+        items,
         feed_source=symbol_news_store.FINNHUB_GENERAL_FEED_SOURCE,
     )
     b = await symbol_news_store.upsert_feed_articles(
-        db_session, "crypto", sym_b, items,
+        db_session,
+        "crypto",
+        sym_b,
+        items,
         feed_source=symbol_news_store.FINNHUB_GENERAL_FEED_SOURCE,
     )
     assert (a, b) == (1, 1)
 
     count = (
-        await db_session.execute(
-            select(NewsArticle).where(NewsArticle.url == url)
-        )
-    ).scalars().all()
+        (await db_session.execute(select(NewsArticle).where(NewsArticle.url == url)))
+        .scalars()
+        .all()
+    )
     assert len(count) == 1  # 기사 1건, 링크 2건
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,7 +26,16 @@ def _fast_retry(monkeypatch):
     monkeypatch.setattr(finnhub_news, "FINNHUB_NEWS_RETRY_WAIT", wait_none())
 
 
-_OK_ITEM = [{"headline": "t", "source": "s", "datetime": 1765400000, "url": "https://u", "summary": "", "related": "AAPL"}]
+_OK_ITEM = [
+    {
+        "headline": "t",
+        "source": "s",
+        "datetime": 1765400000,
+        "url": "https://u",
+        "summary": "",
+        "related": "AAPL",
+    }
+]
 
 
 @pytest.mark.unit
