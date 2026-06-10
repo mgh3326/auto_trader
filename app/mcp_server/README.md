@@ -1089,7 +1089,7 @@ Validation rules:
 - **Quantity zero/negative**: `qty <= 0` payloads are treated as delete/cleanup intent:
   - If a matching holding exists, it is removed (same as `action="remove"`)
   - If no matching holding exists, a warning is generated
-- **dry_run behavior**: When `dry_run=True`, no DB mutations occur; only preview data and warnings are returned.
+- **dry_run behavior**: When `dry_run=True`, no DB mutations occur. The response still includes `added_count`, `updated_count`, `removed_count`, `unchanged_count`, and `diff` so callers can validate the planned changes before execution. Dry-run diff actions are `would_add`, `would_update`, `would_remove`, and `unchanged`; live execution actions remain `added`, `updated`, and `removed`.
 
 Response format:
 ```json
@@ -1107,6 +1107,28 @@ Response format:
   "removed_count": 1,
   "unchanged_count": 0,
   "diff": [...]
+}
+```
+
+Dry-run remove preview example:
+```json
+{
+  "success": true,
+  "dry_run": true,
+  "message": "Preview only (set dry_run=False to update DB)",
+  "broker": "toss",
+  "account_name": "기본 계좌",
+  "parsed_count": 0,
+  "holdings": [],
+  "warnings": [],
+  "added_count": 0,
+  "updated_count": 0,
+  "removed_count": 2,
+  "unchanged_count": 0,
+  "diff": [
+    {"action": "would_remove", "ticker": "IONQ", "market_type": "US"},
+    {"action": "would_remove", "ticker": "TSM", "market_type": "US"}
+  ]
 }
 ```
 
