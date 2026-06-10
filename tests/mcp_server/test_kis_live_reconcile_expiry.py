@@ -71,6 +71,40 @@ def test_kernel_no_longer_uses_xkrx_session_classifier():
 
 
 @pytest.mark.asyncio
+async def test_known_order_date_uses_exact_date_daily_order_window():
+    # 실 KIS TTTC8001R은 prior-day 주문에 대해 order_date..today multi-day
+    # 조회가 KIER2570 으로 거부될 수 있다. ledger 주문일을 아는 reconcile은
+    # start_date == end_date == 주문일로 조회해야 한다.
+    calls = []
+
+    class FakeKIS:
+        async def inquire_daily_order_domestic(self, **kwargs):
+            calls.append(kwargs)
+            return []
+
+    with (
+        patch.object(mod, "_create_live_kis_client", return_value=FakeKIS()),
+        patch.object(mod, "_today_yyyymmdd", return_value="20260610"),
+    ):
+        rows = await mod._fetch_live_daily_rows(
+            symbol="035420",
+            order_no="0038569700",
+            order_trade_date=datetime.date(2026, 6, 8),
+        )
+
+    assert rows == []
+    assert calls == [
+        {
+            "start_date": "20260608",
+            "end_date": "20260608",
+            "stock_code": "035420",
+            "order_number": "0038569700",
+            "is_mock": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_unfilled_sor_during_nxt_session_stays_pending():
     # 6/9 19:02 KST 조기 expiry 재발 방지: NXT 마감(20:00) 전에는 expire 금지.
     rows = [_broker_row()]  # tot_ccld_qty=0, rjct_qty=0, rmn_qty=2 → 생존
@@ -149,9 +183,10 @@ async def test_no_rjct_evidence_after_close_stays_pending():
 
 
 @pytest.mark.asyncio
-async def test_next_day_reconcile_books_prior_day_fill_via_widened_window():
-    # (a) 6/9 주문을 6/10 아침에 reconcile: 주문일 anchor 윈도우(order_trade_date)
-    # 로 전일 체결(tot_ccld_qty=2)을 보고 book 한다 — KAI 047810 실측 형태.
+async def test_next_day_reconcile_books_prior_day_fill_via_exact_order_date():
+    # (a) 6/9 주문을 6/10 아침에 reconcile: 주문일 exact-date 조회
+    # (order_trade_date) 로 전일 체결(tot_ccld_qty=2)을 보고 book 한다 —
+    # KAI 047810 실측 형태.
     fill_row = _broker_row(tot_ccld_qty="2", rmn_qty="0", avg_prvs="126000")
     now = datetime.datetime(2026, 6, 10, 9, 3, tzinfo=KST)
     with (
