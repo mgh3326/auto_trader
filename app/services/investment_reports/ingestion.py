@@ -20,13 +20,17 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.investment_reports import InvestmentReport
+from app.models.investment_reports import InvestmentReport, InvestmentReportItem
 from app.schemas.investment_reports import IngestReportItem, IngestReportRequest
 from app.services.action_report.common.bundle_aware_publishing import (
     enforce_stale_gate_for_ingest,
 )
 from app.services.investment_reports.idempotency import item_key, report_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
+
+_RESERVED_REPORT_METADATA_KEYS = frozenset(
+    {"draft_updates", "status_transitions", "superseded_by"}
+)
 
 
 class ReportOverwriteBlockedError(RuntimeError):
@@ -54,6 +58,17 @@ class ReportOverwriteBlockedError(RuntimeError):
         self.report_uuid = report_uuid
         self.decision_count = decision_count
         self.active_alert_count = active_alert_count
+
+
+class DraftReportMutationBlockedError(RuntimeError):
+    """Raised when a draft-only mutation targets a non-draft report."""
+
+    def __init__(self, *, report_uuid: object, status: str) -> None:
+        super().__init__(
+            f"draft mutation blocked: report {report_uuid} has status {status!r}"
+        )
+        self.report_uuid = report_uuid
+        self.status = status
 
 
 class InvestmentReportIngestionService:
@@ -305,7 +320,7 @@ class InvestmentReportIngestionService:
         the chosen 'superseded' target also records ``superseded_by``. The DB
         CHECK is the authoritative gate on which status values are legal.
         """
-        report = await self._repo.get_report_by_uuid(report_uuid)
+        report = await self._repo.get_report_by_uuid_for_update(report_uuid)
         if report is None:
             return None
         if report.status == status:
@@ -325,6 +340,97 @@ class InvestmentReportIngestionService:
         await self._repo.update_report(
             report.id, status=status, report_metadata=metadata
         )
+        await self._session.refresh(report)
+        return report
+
+    async def add_items_to_draft(
+        self, *, report_uuid: UUID, items: list[IngestReportItem]
+    ) -> tuple[
+        InvestmentReport | None,
+        list[InvestmentReportItem],
+        list[InvestmentReportItem],
+    ]:
+        report = await self._repo.get_report_by_uuid_for_update(report_uuid)
+        if report is None:
+            return None, [], []
+        if report.status != "draft":
+            raise DraftReportMutationBlockedError(
+                report_uuid=report.report_uuid, status=report.status
+            )
+
+        inserted: list[InvestmentReportItem] = []
+        existing: list[InvestmentReportItem] = []
+        for item_req in items:
+            by_client_key = await self._repo.find_item_by_report_client_key(
+                report.id, item_req.client_item_key
+            )
+            if by_client_key is not None:
+                existing.append(by_client_key)
+                continue
+
+            item_idempotency_key = self._item_idempotency_key(report, item_req)
+            by_exact_key = await self._repo.get_item_by_idempotency_key(
+                item_idempotency_key
+            )
+            if by_exact_key is not None:
+                existing.append(by_exact_key)
+                continue
+
+            inserted.append(await self._insert_item(report, item_req))
+
+        await self._session.flush()
+        await self._session.refresh(report)
+        return report, inserted, existing
+
+    async def update_draft_report(
+        self,
+        *,
+        report_uuid: UUID,
+        updates: dict[str, Any],
+        actor: str | None = None,
+        reason: str | None = None,
+    ) -> InvestmentReport | None:
+        report = await self._repo.get_report_by_uuid_for_update(report_uuid)
+        if report is None:
+            return None
+        if report.status != "draft":
+            raise DraftReportMutationBlockedError(
+                report_uuid=report.report_uuid, status=report.status
+            )
+
+        allowed = {
+            "title",
+            "summary",
+            "risk_summary",
+            "thesis_text",
+            "no_action_note",
+            "market_snapshot",
+            "portfolio_snapshot",
+            "valid_until",
+        }
+        fields = {k: v for k, v in updates.items() if k in allowed}
+        metadata = dict(report.report_metadata or {})
+        metadata_patch = updates.get("metadata")
+        if isinstance(metadata_patch, dict):
+            metadata.update(
+                {
+                    key: value
+                    for key, value in metadata_patch.items()
+                    if key not in _RESERVED_REPORT_METADATA_KEYS
+                }
+            )
+
+        audit_entry: dict[str, Any] = {"fields": sorted(updates.keys())}
+        if actor is not None:
+            audit_entry["actor"] = actor
+        if reason is not None:
+            audit_entry["reason"] = reason
+        draft_updates = list(metadata.get("draft_updates") or [])
+        draft_updates.append(audit_entry)
+        metadata["draft_updates"] = draft_updates
+        fields["report_metadata"] = metadata
+
+        await self._repo.update_report(report.id, **fields)
         await self._session.refresh(report)
         return report
 
@@ -350,9 +456,28 @@ class InvestmentReportIngestionService:
             superseded_by=new_report.report_uuid,
         )
 
+    @staticmethod
+    def _item_idempotency_key(
+        report: InvestmentReport, item_req: IngestReportItem
+    ) -> str:
+        watch_condition_payload = (
+            item_req.watch_condition.model_dump(mode="json")
+            if item_req.watch_condition is not None
+            else None
+        )
+        return item_key(
+            report_uuid=str(report.report_uuid),
+            client_item_key=item_req.client_item_key,
+            item_kind=item_req.item_kind,
+            symbol=item_req.symbol,
+            side=item_req.side,
+            intent=item_req.intent,
+            watch_condition=watch_condition_payload,
+        )
+
     async def _insert_item(
         self, report: InvestmentReport, item_req: IngestReportItem
-    ) -> None:
+    ) -> InvestmentReportItem:
         watch_condition_payload = (
             item_req.watch_condition.model_dump(mode="json")
             if item_req.watch_condition is not None
@@ -369,15 +494,7 @@ class InvestmentReportIngestionService:
             if item_req.target_ref is not None
             else None
         )
-        idempotency_key = item_key(
-            report_uuid=str(report.report_uuid),
-            client_item_key=item_req.client_item_key,
-            item_kind=item_req.item_kind,
-            symbol=item_req.symbol,
-            side=item_req.side,
-            intent=item_req.intent,
-            watch_condition=watch_condition_payload,
-        )
+        idempotency_key = self._item_idempotency_key(report, item_req)
         # ROB-459 P1 — merge typed evidence into the existing evidence_snapshot
         # JSONB under reserved keys (no migration). Round-trips via
         # InvestmentReportItemResponse.evidence_snapshot. When evidence/freshness
@@ -407,7 +524,9 @@ class InvestmentReportIngestionService:
                 ref.model_dump(mode="json", exclude_none=True)
                 for ref in item_req.linked_order_ids
             ]
-        await self._repo.insert_item(
+        item_metadata = dict(item_req.metadata or {})
+        item_metadata["client_item_key"] = item_req.client_item_key
+        return await self._repo.insert_item(
             report_id=report.id,
             idempotency_key=idempotency_key,
             item_kind=item_req.item_kind,
@@ -423,7 +542,7 @@ class InvestmentReportIngestionService:
             trigger_checklist=item_req.trigger_checklist,
             max_action=item_req.max_action,
             valid_until=item_req.valid_until,
-            item_metadata=item_req.metadata,
+            item_metadata=item_metadata,
             # ROB-274 proposal-state fields. All optional — legacy callers
             # (operation=None) persist NULL into every new column and the
             # operation-aware CHECKs on the items table let them through.
