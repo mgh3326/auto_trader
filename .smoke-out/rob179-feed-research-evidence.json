@@ -1,7 +1,7 @@
 {
   "smoke": "rob-179-invest-research-api",
-  "captured_at": "2026-05-10T20:50:04.519940+00:00",
-  "source_used": "rob179-smoke-63105fcd",
+  "captured_at": "2026-06-10T04:26:09.576200+00:00",
+  "source_used": "rob179-smoke-33714fc4",
   "invariants_ok": true,
   "samples": {
     "top": {

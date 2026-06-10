@@ -591,7 +591,7 @@ def build_recommendation_for_equity(
         ):
             consensus_target_exceeded = True
             consensus_demotion_reason = (
-                "Consensus target below current price "
+                "Analyst target below current price "
                 f"(upside {upside_pct:.1f}%) — target_exceeded"
             )
 
@@ -745,7 +745,7 @@ def build_recommendation_for_equity(
                     }
                 )
 
-    if consensus:
+    if consensus and not consensus_target_exceeded:
         avg_target = consensus.get("avg_target_price")
         max_target = consensus.get("max_target_price")
         if avg_target:

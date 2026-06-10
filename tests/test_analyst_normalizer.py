@@ -425,22 +425,29 @@ class TestBuildConsensusRecencyWindow:
         assert consensus["newest_opinion_date"] == "2026-05-18"
 
     def test_undated_rows_excluded_and_counted(self) -> None:
-        """date 부재/None/파싱불가 행은 windowed 집계에서 제외 + 메타데이터 카운트."""
+        """ROB-486+ROB-488 통합: undated 행은 fail-open으로 유지(ROB-488)하되
+        rows_excluded_undated 메타데이터로 카운트(ROB-486). 목표가 통계는 outlier
+        가드(ROB-488 ±300%/-75%)가 쓰레기 undated 목표가를 차단한다."""
         opinions = [
             {"rating": "Buy", "target_price": 100, "date": _days_ago(10)},
-            {"rating": "Buy", "target_price": 999},  # date 키 자체 없음
-            {"rating": "Buy", "target_price": 888, "date": None},
-            {"rating": "Buy", "target_price": 777, "date": "not-a-date"},
+            {"rating": "Buy", "target_price": 999},  # date 키 자체 없음 — outlier (+1010%)
+            {"rating": "Buy", "target_price": 888, "date": None},  # outlier (+887%)
+            {"rating": "Buy", "target_price": 777, "date": "not-a-date"},  # outlier (+763%)
         ]
         consensus = build_consensus(opinions, 90, now=_NOW)
 
-        assert consensus["avg_target_price"] == 100
-        assert consensus["buy_count"] == 1
-        assert consensus["total_count"] == 1
+        # fail-open: 4개 모두 fresh_opinions에 포함 → total_count=4, buy_count=4
+        assert consensus["total_count"] == 4
+        assert consensus["buy_count"] == 4
         assert consensus["rows_total"] == 4
-        assert consensus["rows_used"] == 1
+        assert consensus["rows_used"] == 4
+        # undated 3개는 rows_excluded_undated 메타데이터로 카운트
         assert consensus["rows_excluded_undated"] == 3
         assert consensus["rows_excluded_stale"] == 0
+        # outlier 가드가 999/888/777 (모두 +700%+ > 300%)를 제거 → 100만 남음
+        assert consensus["avg_target_price"] == 100
+        assert consensus["target_price_outlier_count"] == 3
+        assert consensus["target_price_count"] == 1
 
     def test_window_boundary_inclusive(self) -> None:
         """cutoff 당일(now 기준 정확히 window_months 개월 전)은 생존, 하루 전은 stale."""

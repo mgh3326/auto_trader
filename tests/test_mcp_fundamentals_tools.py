@@ -360,7 +360,7 @@ class TestAnalyzeStock:
         assert rec is not None
         assert rec["action"] == "hold"
         assert "target_exceeded" in rec["reasoning"]
-        assert "Consensus target below current price" in rec["reasoning"]
+        assert "Analyst target below current price" in rec["reasoning"]
         assert "Analyst consensus bullish" not in rec["reasoning"]
 
     async def test_recommendation_demotes_rsi_buy_when_consensus_target_exceeded(
