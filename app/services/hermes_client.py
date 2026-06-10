@@ -17,10 +17,11 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.core.config import settings
 from app.schemas.investment_reports import (
@@ -29,7 +30,9 @@ from app.schemas.investment_reports import (
     TargetKindLiteral,
     WatchActionModeLiteral,
     WatchClauseOpLiteral,
+    WatchInvalidation,
     WatchMetricLiteral,
+    WatchPriceRange,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,156 @@ WatchEventOutcomeLiteral = Literal[
     "ignored",
     "failed",
 ]
+
+
+class InvestLinks(BaseModel):
+    """ROB-500 — operator-facing Invest deep links (path only, no host).
+
+    Hermes prepends its configured Invest base URL when rendering.
+    """
+
+    report_path: str
+    stock_path: str
+    event_anchor: str | None = None
+    alert_anchor: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class OperatorActionGuidance(BaseModel):
+    """ROB-500 — what this notification means for the operator.
+
+    Deterministically derived from action_mode/outcome; rendered at the
+    top of the Discord card so the operator doesn't have to decode UUIDs.
+    """
+
+    headline: str
+    requires_operator_review: bool
+    order_behavior: Literal["none", "preview_only", "mock_only"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PriceGuidance(BaseModel):
+    """ROB-500 — advisory price thresholds copied **verbatim** from the
+    source item's ``watch_recommendation``. Never derived or invented in
+    this path; absence means '가격 가이드 없음'. No take-profit / sell
+    targets — the stored schema doesn't have them (locked scope).
+    """
+
+    entry_review_below_price: Decimal | None = None
+    suggested_limit_price_range: WatchPriceRange | None = None
+    max_chase_price: Decimal | None = None
+    invalidation: WatchInvalidation | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def build_invest_links(
+    *,
+    market: str,
+    symbol: str,
+    source_report_uuid: Any,
+    event_uuid: Any | None = None,
+    alert_uuid: Any | None = None,
+) -> InvestLinks:
+    report_path = f"/invest/reports/{source_report_uuid}"
+    stock_path = (
+        f"/invest/stocks/{quote(str(market).lower(), safe='')}"
+        f"/{quote(str(symbol), safe='')}"
+    )
+    return InvestLinks(
+        report_path=report_path,
+        stock_path=stock_path,
+        event_anchor=(
+            f"{report_path}#watch-event-{event_uuid}"
+            if event_uuid is not None
+            else None
+        ),
+        alert_anchor=(
+            f"{report_path}#watch-alert-{alert_uuid}"
+            if alert_uuid is not None
+            else None
+        ),
+    )
+
+
+_GUIDANCE_BY_ACTION_MODE: dict[str, OperatorActionGuidance] = {
+    "notify_only": OperatorActionGuidance(
+        headline="알림 전용 — 자동 주문 없음, 필요 시 수동 검토",
+        requires_operator_review=False,
+        order_behavior="none",
+    ),
+    "approval_required": OperatorActionGuidance(
+        headline="운영자 검토 필요 — 승인 전 주문 없음",
+        requires_operator_review=True,
+        order_behavior="none",
+    ),
+    "preview_only": OperatorActionGuidance(
+        headline="주문 프리뷰 첨부 — 실제 주문 없음",
+        requires_operator_review=False,
+        order_behavior="preview_only",
+    ),
+    "auto_execute_mock": OperatorActionGuidance(
+        headline="모의계좌 자동 실행 — 실계좌 주문 없음",
+        requires_operator_review=False,
+        order_behavior="mock_only",
+    ),
+}
+
+_FALLBACK_GUIDANCE = OperatorActionGuidance(
+    headline="알림 — 자동 주문 없음",
+    requires_operator_review=False,
+    order_behavior="none",
+)
+
+_REVIEW_REQUIRED_GUIDANCE = OperatorActionGuidance(
+    headline="운영자 검토 필요 — 승인 전 주문 없음",
+    requires_operator_review=True,
+    order_behavior="none",
+)
+
+
+def build_operator_action_guidance(
+    *, action_mode: str, outcome: str
+) -> OperatorActionGuidance:
+    base = _GUIDANCE_BY_ACTION_MODE.get(action_mode, _FALLBACK_GUIDANCE)
+    if outcome == "review_required" and not base.requires_operator_review:
+        # validity-review path reuses the trigger contract with
+        # outcome='review_required' regardless of the watch's action_mode.
+        return _REVIEW_REQUIRED_GUIDANCE
+    return base
+
+
+_PRICE_GUIDANCE_KEYS = (
+    "entry_review_below_price",
+    "suggested_limit_price_range",
+    "max_chase_price",
+    "invalidation",
+)
+
+
+def price_guidance_from_watch_recommendation(
+    recommendation: dict[str, Any] | None,
+) -> PriceGuidance | None:
+    """Extract the advisory price subset, or ``None`` for '가격 가이드 없음'.
+
+    Fail-open: malformed stored JSON logs a warning and returns ``None``
+    rather than blocking the trigger notification.
+    """
+    if not isinstance(recommendation, dict):
+        return None
+    subset = {key: recommendation.get(key) for key in _PRICE_GUIDANCE_KEYS}
+    if all(value is None for value in subset.values()):
+        return None
+    try:
+        return PriceGuidance.model_validate(subset)
+    except ValidationError:
+        logger.warning(
+            "watch_recommendation price-guidance subset failed validation — "
+            "omitting guidance"
+        )
+        return None
 
 
 class ReviewTriggerPayload(BaseModel):
@@ -73,6 +226,12 @@ class ReviewTriggerPayload(BaseModel):
     current_value: Decimal | None
     scanner_snapshot: dict[str, Any]
     outcome: WatchEventOutcomeLiteral
+
+    # ROB-500 — operator-facing additions. Optional + additive so older
+    # constructors keep working; populated by both send paths.
+    invest_links: InvestLinks | None = None
+    operator_action_guidance: OperatorActionGuidance | None = None
+    price_guidance: PriceGuidance | None = None
 
     model_config = ConfigDict(extra="forbid")
 
