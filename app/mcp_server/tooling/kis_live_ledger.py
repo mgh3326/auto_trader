@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.market_session import (
     DATA_STATE_MARKET_CLOSED,
     kr_market_data_state,
@@ -295,14 +295,38 @@ def _today_yyyymmdd() -> str:
     return datetime.datetime.now().strftime("%Y%m%d")
 
 
+def _order_date_kst(row: Any) -> datetime.date | None:
+    """Ledger row's order date in KST (created_at first, trade_date fallback).
+
+    Naive timestamps are assumed KST (app/core/timezone convention). Returns
+    None when underivable — callers must then refuse terminal markings
+    (fail-closed) because the evidence window cannot be proven to cover the
+    order date.
+    """
+    for attr in ("created_at", "trade_date"):
+        dt = getattr(row, attr, None)
+        if isinstance(dt, datetime.datetime):
+            if dt.tzinfo is None:
+                return dt.date()
+            return dt.astimezone(KST).date()
+    return None
+
+
 async def _fetch_live_daily_rows(
-    *, symbol: str, order_no: str | None
+    *, symbol: str, order_no: str | None, start_date: str | None = None
 ) -> list[dict[str, Any]]:
-    """Fetch today's live daily-execution rows for a KR order (is_mock=False)."""
+    """Fetch live daily-execution rows for a KR order (is_mock=False).
+
+    ROB-487: TTTC8001R is ORDER-DATE-windowed — a today-only window returns
+    zero rows for prior-day orders (live-verified 2026-06-10: the 20260610
+    window contained none of the 6/9 orders). Callers must pass the ledger
+    row's order date as ``start_date`` so next-day reconciles can still see
+    prior-day fills; ``end_date`` stays today.
+    """
     kis = _create_live_kis_client()
     today = _today_yyyymmdd()
     rows = await kis.inquire_daily_order_domestic(
-        start_date=today,
+        start_date=start_date or today,
         end_date=today,
         stock_code=symbol,
         order_number=order_no or "",
@@ -456,7 +480,12 @@ async def _reconcile_one_ledger_row(
     Filled/partial -> book fill + journal from BROKER-confirmed qty/price.
     """
     order_no = row.order_no
-    rows = await _fetch_live_daily_rows(symbol=row.symbol, order_no=order_no)
+    order_date = _order_date_kst(row)
+    rows = await _fetch_live_daily_rows(
+        symbol=row.symbol,
+        order_no=order_no,
+        start_date=order_date.strftime("%Y%m%d") if order_date else None,
+    )
     evidence = classify_fill_evidence(order_no=order_no, rows=rows)
 
     base = {
