@@ -18,11 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
-from app.core.timezone import now_kst
-from app.mcp_server.tooling.market_session import (
-    DATA_STATE_MARKET_CLOSED,
-    kr_market_data_state,
-)
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
@@ -32,7 +28,10 @@ from app.mcp_server.tooling.order_journal import (
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISLiveOrderLedger
-from app.services.brokers.kis.live_order_expiry import classify_day_order_expiry
+from app.services.brokers.kis.live_order_expiry import (
+    classify_day_order_expiry,
+    nxt_session_closed,
+)
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
@@ -164,12 +163,16 @@ async def _save_kis_live_order_ledger(
 _BROKER_EXCHANGE_KEYS = ("EXCG_ID_DVSN_CD", "excg_id_dvsn_cd", "exg_id_dvsn_cd")
 
 
-def _expected_krx_expiry(now: datetime.datetime) -> str | None:
-    """KRX day-order expiry = 15:30 KST of the send date (ISO 8601), or None."""
+def _expected_day_order_expiry(now: datetime.datetime) -> str | None:
+    """Day-order expiry = NXT close 20:00 KST of the send date (ISO 8601), or None.
+
+    ROB-487: SOR day orders stay alive in the NXT session until 20:00 KST. The
+    old KRX 15:30 stamp gave a 15:31 NXT-session order an expected_expiry that
+    was already in the past at send time.
+    """
     try:
-        kst = datetime.timezone(datetime.timedelta(hours=9))
-        local = now.astimezone(kst)
-        close = local.replace(hour=15, minute=30, second=0, microsecond=0)
+        local = now.astimezone(KST)
+        close = local.replace(hour=20, minute=0, second=0, microsecond=0)
         return close.isoformat()
     except (ValueError, OverflowError):
         return None
@@ -274,7 +277,7 @@ async def _record_kis_live_order(
             "requested_venue": "auto",
             "note": "SOR auto-route (KRX; NXT-eligible)",
         },
-        "expected_expiry": _expected_krx_expiry(now_kst()),
+        "expected_expiry": _expected_day_order_expiry(now_kst()),
         "broker_exchange": _extract_broker_exchange(execution_result),
         "message": (
             "KIS live order accepted (pending fill); run kis_live_reconcile_orders "
@@ -341,13 +344,38 @@ def _live_daily_order_window(
     return start.strftime("%Y%m%d"), today.strftime("%Y%m%d")
 
 
+def _order_date_kst(row: Any) -> datetime.date | None:
+    """Ledger row's order date in KST (created_at first, trade_date fallback).
+
+    Naive timestamps are assumed KST (app/core/timezone convention). Returns
+    None when underivable — callers must then refuse terminal markings
+    (fail-closed) because the evidence window cannot be proven to cover the
+    order date.
+    """
+    for attr in ("created_at", "trade_date"):
+        dt = getattr(row, attr, None)
+        if isinstance(dt, datetime.datetime):
+            if dt.tzinfo is None:
+                return dt.date()
+            return dt.astimezone(KST).date()
+    return None
+
+
 async def _fetch_live_daily_rows(
     *,
     symbol: str,
     order_no: str | None,
     order_trade_date: datetime.datetime | datetime.date | str | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch recent live daily-execution rows for a KR order (is_mock=False)."""
+    """Fetch live daily-execution rows for a KR order (is_mock=False).
+
+    ROB-487: TTTC8001R is ORDER-DATE-windowed — a today-only window returns
+    zero rows for prior-day orders (live-verified 2026-06-10: the 20260610
+    window contained none of the 6/9 orders). Callers must pass the ledger
+    row's order date as ``order_trade_date`` so next-day reconciles can still
+    see prior-day fills; the window is anchored on that date with a 90-day cap
+    (``_live_daily_order_window``) and ``end_date`` stays today.
+    """
     kis = _create_live_kis_client()
     start_date, end_date = _live_daily_order_window(order_trade_date)
     rows = await kis.inquire_daily_order_domestic(
@@ -506,14 +534,17 @@ async def _reconcile_one_ledger_row(
 ) -> dict[str, Any]:
     """Classify one accepted/pending order and apply journal mutation if filled.
 
-    Pending -> noop. Cancelled/rejected (no matching row) -> ledger update only.
-    Filled/partial -> book fill + journal from BROKER-confirmed qty/price.
+    Pending -> noop, or expired/cancelled on broker evidence after NXT close
+    (20:00 KST). NONE verdict -> fail-closed noop_no_evidence with
+    requires_manual_review (missing evidence is never cancellation evidence).
+    Filled/partial -> delta-idempotent booking from BROKER-confirmed qty/price.
     """
     order_no = row.order_no
+    order_date = _order_date_kst(row)
     rows = await _fetch_live_daily_rows(
         symbol=row.symbol,
         order_no=order_no,
-        order_trade_date=getattr(row, "trade_date", None),
+        order_trade_date=order_date or getattr(row, "trade_date", None),
     )
     evidence = classify_fill_evidence(order_no=order_no, rows=rows)
 
@@ -532,21 +563,30 @@ async def _reconcile_one_ledger_row(
     }
 
     if evidence.verdict == FillVerdict.PENDING:
-        market_closed = kr_market_data_state() == DATA_STATE_MARKET_CLOSED
-        expiry = classify_day_order_expiry(
-            rows=rows, order_no=order_no, market_closed=market_closed
+        # ROB-487: SOR day order는 NXT 마감(20:00 KST)까지 살아있다. KRX 전용
+        # 주문도 20:00까지 보수적으로 대기 — evidence-first booking이라 늦은
+        # terminal 마킹은 무해하고, 조기 마킹(6/9 19:02 사례)은 유해하다.
+        nxt_closed = order_date is not None and nxt_session_closed(
+            order_date=order_date, now=now_kst()
         )
-        if expiry == "expired":
-            base["verdict"] = "expired"
-            base["action"] = "marked_expired" if not dry_run else "would_mark_expired"
+        expiry = classify_day_order_expiry(
+            rows=rows, order_no=order_no, nxt_closed=nxt_closed
+        )
+        if expiry in ("expired", "cancelled"):
+            base["verdict"] = expiry
+            base["action"] = (
+                f"marked_{expiry}" if not dry_run else f"would_mark_{expiry}"
+            )
             if not dry_run:
-                await _update_ledger_outcome(ledger_id=row.id, status="expired")
+                await _update_ledger_outcome(ledger_id=row.id, status=expiry)
             return base
         base["action"] = "noop_pending"
         return base
 
     if evidence.verdict == FillVerdict.NONE:
-        # Missing evidence is not cancellation evidence. Leave the ledger open
+        # Missing evidence is not cancellation evidence (absence-as-evidence
+        # 금지). True cancels leave positive broker rows and resolve in the
+        # PENDING branch via classify_day_order_expiry. Leave the ledger open
         # so tomorrow's reconcile or operator review can still recover fills.
         base["action"] = "noop_no_evidence"
         base["requires_manual_review"] = True
@@ -687,15 +727,23 @@ async def kis_live_reconcile_orders_impl(
         verdict = str(outcome.get("verdict", "anomaly"))
         counts[verdict] = counts.get(verdict, 0) + 1
 
+    if rows:
+        message = (
+            f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}"
+        )
+    else:
+        # ROB-487 UX: 후보 0건(모든 ledger 행이 terminal)을 누락과 구분해 표기.
+        message = (
+            "No open candidates (all ledger rows terminal) — nothing to reconcile "
+            f"(dry_run={dry_run})"
+        )
     return {
         "success": True,
         "account_mode": "kis_live",
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
-        "message": (
-            f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}"
-        ),
+        "message": message,
     }
 
 
