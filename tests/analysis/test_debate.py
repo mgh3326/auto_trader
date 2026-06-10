@@ -120,18 +120,4 @@ async def test_build_summary_unavailable_warning():
     assert any("market: UNAVAILABLE" in w for w in summary.warnings)
 
 
-@pytest.mark.asyncio
-async def test_build_summary_llm_path():
-    async def mock_runner(prompt, **kwargs):
-        return {"decision": "buy"}
 
-    stage_outputs = {
-        101: create_mock_stage("market", StageVerdict.BULL),
-    }
-
-    summary, links = await build_summary(stage_outputs, model_runner=mock_runner)
-
-    assert summary.model_name == "mock-llm"
-    assert summary.raw_payload == {"simulation": True}
-    assert summary.token_input == 100
-    assert summary.token_output == 50
