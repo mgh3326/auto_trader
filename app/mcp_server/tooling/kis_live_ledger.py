@@ -165,12 +165,16 @@ async def _save_kis_live_order_ledger(
 _BROKER_EXCHANGE_KEYS = ("EXCG_ID_DVSN_CD", "excg_id_dvsn_cd", "exg_id_dvsn_cd")
 
 
-def _expected_krx_expiry(now: datetime.datetime) -> str | None:
-    """KRX day-order expiry = 15:30 KST of the send date (ISO 8601), or None."""
+def _expected_day_order_expiry(now: datetime.datetime) -> str | None:
+    """Day-order expiry = NXT close 20:00 KST of the send date (ISO 8601), or None.
+
+    ROB-487: SOR day orders stay alive in the NXT session until 20:00 KST. The
+    old KRX 15:30 stamp gave a 15:31 NXT-session order an expected_expiry that
+    was already in the past at send time.
+    """
     try:
-        kst = datetime.timezone(datetime.timedelta(hours=9))
-        local = now.astimezone(kst)
-        close = local.replace(hour=15, minute=30, second=0, microsecond=0)
+        local = now.astimezone(KST)
+        close = local.replace(hour=20, minute=0, second=0, microsecond=0)
         return close.isoformat()
     except (ValueError, OverflowError):
         return None
@@ -275,7 +279,7 @@ async def _record_kis_live_order(
             "requested_venue": "auto",
             "note": "SOR auto-route (KRX; NXT-eligible)",
         },
-        "expected_expiry": _expected_krx_expiry(now_kst()),
+        "expected_expiry": _expected_day_order_expiry(now_kst()),
         "broker_exchange": _extract_broker_exchange(execution_result),
         "message": (
             "KIS live order accepted (pending fill); run kis_live_reconcile_orders "
