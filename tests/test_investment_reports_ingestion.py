@@ -502,6 +502,41 @@ async def test_update_draft_report_updates_header_and_audit_metadata(
 
 
 @pytest.mark.asyncio
+async def test_update_draft_report_metadata_cannot_clobber_audit_keys(
+    session: AsyncSession,
+) -> None:
+    service = InvestmentReportIngestionService(session)
+    report = await service.ingest(_base_request(summary="old summary"))
+
+    updated = await service.update_draft_report(
+        report_uuid=report.report_uuid,
+        updates={
+            "summary": "new intraday summary",
+            "metadata": {
+                "source": "intraday_update",
+                "draft_updates": "caller-supplied",
+                "status_transitions": [{"to": "decided"}],
+                "superseded_by": str(uuid.uuid4()),
+            },
+        },
+        actor="operator",
+        reason="market moved",
+    )
+
+    assert updated is not None
+    assert updated.report_metadata["source"] == "intraday_update"
+    assert updated.report_metadata["draft_updates"] == [
+        {
+            "fields": ["metadata", "summary"],
+            "actor": "operator",
+            "reason": "market moved",
+        }
+    ]
+    assert "status_transitions" not in updated.report_metadata
+    assert "superseded_by" not in updated.report_metadata
+
+
+@pytest.mark.asyncio
 async def test_update_draft_report_returns_none_for_unknown_report(
     session: AsyncSession,
 ) -> None:

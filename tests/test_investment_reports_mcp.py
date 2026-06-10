@@ -8,6 +8,7 @@ fixture manages; the fixture's per-test TRUNCATE keeps state clean.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -29,6 +30,7 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_update_impl,
     investment_watch_recommend_impl,
 )
+from app.services.investment_reports.ingestion import InvestmentReportIngestionService
 from tests._investment_reports_helpers import future_datetime
 
 
@@ -937,6 +939,65 @@ async def test_add_items_impl_replays_duplicate_as_existing(
 
     fetched = await investment_report_get_impl(report_uuid)
     assert len(fetched["items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_items_impl_serializes_concurrent_same_client_key(
+    session: AsyncSession, monkeypatch
+) -> None:
+    created = await investment_report_create_impl(
+        items=[], **_create_kwargs(kst_date="2026-05-21")
+    )
+    report_uuid = created["report"]["report_uuid"]
+
+    original_insert = InvestmentReportIngestionService._insert_item
+    first_insert_started = asyncio.Event()
+    release_first_insert = asyncio.Event()
+    delayed = False
+
+    async def delayed_insert(self, report, item_req):
+        nonlocal delayed
+        if item_req.client_item_key == "increment-1" and not delayed:
+            delayed = True
+            first_insert_started.set()
+            await release_first_insert.wait()
+        return await original_insert(self, report, item_req)
+
+    monkeypatch.setattr(
+        InvestmentReportIngestionService, "_insert_item", delayed_insert
+    )
+
+    first = asyncio.create_task(
+        investment_report_add_items_impl(
+            report_uuid=report_uuid,
+            items=[_action_item_dict("increment-1") | {"symbol": "000660"}],
+        )
+    )
+    await asyncio.wait_for(first_insert_started.wait(), timeout=2)
+
+    second = asyncio.create_task(
+        investment_report_add_items_impl(
+            report_uuid=report_uuid,
+            items=[_action_item_dict("increment-1") | {"symbol": "005930"}],
+        )
+    )
+
+    await asyncio.sleep(0.2)
+    release_first_insert.set()
+    first_out, second_out = await asyncio.gather(first, second)
+
+    assert first_out["success"] is True
+    assert second_out["success"] is True
+    assert first_out["inserted_count"] + second_out["inserted_count"] == 1
+    assert first_out["existing_count"] + second_out["existing_count"] == 1
+
+    fetched = await investment_report_get_impl(report_uuid)
+    matching = [
+        item
+        for item in fetched["items"]
+        if item["metadata"].get("client_item_key") == "increment-1"
+    ]
+    assert len(matching) == 1
 
 
 @pytest.mark.asyncio

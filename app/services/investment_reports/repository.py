@@ -58,6 +58,15 @@ class InvestmentReportsRepository:
             )
         )
 
+    async def get_report_by_uuid_for_update(
+        self, report_uuid: UUID
+    ) -> InvestmentReport | None:
+        return await self._session.scalar(
+            sa.select(InvestmentReport)
+            .where(InvestmentReport.report_uuid == report_uuid)
+            .with_for_update()
+        )
+
     async def get_report_by_idempotency_key(
         self, idempotency_key: str
     ) -> InvestmentReport | None:

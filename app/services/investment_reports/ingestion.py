@@ -28,6 +28,10 @@ from app.services.action_report.common.bundle_aware_publishing import (
 from app.services.investment_reports.idempotency import item_key, report_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
 
+_RESERVED_REPORT_METADATA_KEYS = frozenset(
+    {"draft_updates", "status_transitions", "superseded_by"}
+)
+
 
 class ReportOverwriteBlockedError(RuntimeError):
     """ROB-352 — raised when an overwrite would destroy operator audit.
@@ -316,7 +320,7 @@ class InvestmentReportIngestionService:
         the chosen 'superseded' target also records ``superseded_by``. The DB
         CHECK is the authoritative gate on which status values are legal.
         """
-        report = await self._repo.get_report_by_uuid(report_uuid)
+        report = await self._repo.get_report_by_uuid_for_update(report_uuid)
         if report is None:
             return None
         if report.status == status:
@@ -346,7 +350,7 @@ class InvestmentReportIngestionService:
         list[InvestmentReportItem],
         list[InvestmentReportItem],
     ]:
-        report = await self._repo.get_report_by_uuid(report_uuid)
+        report = await self._repo.get_report_by_uuid_for_update(report_uuid)
         if report is None:
             return None, [], []
         if report.status != "draft":
@@ -386,7 +390,7 @@ class InvestmentReportIngestionService:
         actor: str | None = None,
         reason: str | None = None,
     ) -> InvestmentReport | None:
-        report = await self._repo.get_report_by_uuid(report_uuid)
+        report = await self._repo.get_report_by_uuid_for_update(report_uuid)
         if report is None:
             return None
         if report.status != "draft":
@@ -408,7 +412,13 @@ class InvestmentReportIngestionService:
         metadata = dict(report.report_metadata or {})
         metadata_patch = updates.get("metadata")
         if isinstance(metadata_patch, dict):
-            metadata.update(metadata_patch)
+            metadata.update(
+                {
+                    key: value
+                    for key, value in metadata_patch.items()
+                    if key not in _RESERVED_REPORT_METADATA_KEYS
+                }
+            )
 
         audit_entry: dict[str, Any] = {"fields": sorted(updates.keys())}
         if actor is not None:
