@@ -580,6 +580,30 @@ Behavior:
 - When Yahoo analyst counts or target statistics are unavailable, the corresponding US `consensus` fields are returned as `null` instead of fabricated zeroes.
 - When Yahoo provides neither usable aggregate counts nor usable analyst target data, the US response includes a top-level `warning`.
 
+### `investment_report_create` item contract
+
+`investment_report_create` persists one advisory report bundle and does not submit broker orders. The report idempotency key is `(report_type, market, market_session, account_scope, execution_mode, kst_date, generator_version)`. To create a new row for an updated draft, bump `generator_version` or another keyed field.
+
+Each `items[]` object requires:
+- `client_item_key`: caller-stable item key within the report.
+- `item_kind`: `action`, `watch`, or `risk`.
+- `intent`: `buy_review`, `sell_review`, `risk_review`, `trend_recovery_review`, or `rebalance_review`.
+- `rationale`: human-readable thesis.
+
+Optional typed item fields:
+- `evidence`: `[{source, metric, value, as_of, freshness}]`; `source` is required.
+- `freshness`: `fresh`, `soft_stale`, `stale`, or `unknown`.
+- `entry_plan`: `[{label, price, quantity, notional, currency, condition, rationale}]`.
+- `stop_loss`: `{price, quantity, notional, currency, condition, rationale}`.
+- `target_price`: `{price, quantity, notional, currency, condition, rationale}`.
+- `linked_order_ids`: `[{broker, account_scope, order_no, odno, ledger_id, report_item_uuid, raw}]`.
+
+The lite quality basis `item_evidence_lite` reads `evidence[]` and item-level `freshness`; arbitrary `evidence_snapshot` keys are not counted as typed evidence. Typed trade-plan fields round-trip under reserved keys in `items[].evidence_snapshot`.
+
+Unknown top-level item keys are rejected with `error: "invalid_items"`. Put caller-specific extension data under `metadata` or raw `evidence_snapshot` explicitly.
+
+Order linkage note: `linked_order_ids` is report-side reference metadata. For new live orders, pass the report item's `item_uuid` as `report_item_uuid` to the order tool so ROB-473 ledger audit linkage is populated.
+
 ### `manage_watch_alerts` — removed (ROB-265)
 
 The legacy Redis-backed `manage_watch_alerts` MCP tool was removed by
