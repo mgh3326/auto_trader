@@ -19,10 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST, now_kst
-from app.mcp_server.tooling.market_session import (
-    DATA_STATE_MARKET_CLOSED,
-    kr_market_data_state,
-)
 from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
@@ -32,7 +28,12 @@ from app.mcp_server.tooling.order_journal import (
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISLiveOrderLedger
-from app.services.brokers.kis.live_order_expiry import classify_day_order_expiry
+from app.services.brokers.kis.live_order_expiry import (
+    classify_day_order_expiry,
+    nxt_session_closed,
+)
+
+# Imported above in imports section
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
@@ -476,8 +477,10 @@ async def _reconcile_one_ledger_row(
 ) -> dict[str, Any]:
     """Classify one accepted/pending order and apply journal mutation if filled.
 
-    Pending -> noop. Cancelled/rejected (no matching row) -> ledger update only.
-    Filled/partial -> book fill + journal from BROKER-confirmed qty/price.
+    Pending -> noop, or expired/cancelled on broker evidence after NXT close
+    (20:00 KST). NONE verdict -> cancelled only when the evidence window
+    provably covered the order date (ROB-487 fail-closed). Filled/partial ->
+    book fill + journal from BROKER-confirmed qty/price.
     """
     order_no = row.order_no
     order_date = _order_date_kst(row)
@@ -503,15 +506,22 @@ async def _reconcile_one_ledger_row(
     }
 
     if evidence.verdict == FillVerdict.PENDING:
-        market_closed = kr_market_data_state() == DATA_STATE_MARKET_CLOSED
-        expiry = classify_day_order_expiry(
-            rows=rows, order_no=order_no, market_closed=market_closed
+        # ROB-487: SOR day order는 NXT 마감(20:00 KST)까지 살아있다. KRX 전용
+        # 주문도 20:00까지 보수적으로 대기 — evidence-first booking이라 늦은
+        # terminal 마킹은 무해하고, 조기 마킹(6/9 19:02 사례)은 유해하다.
+        nxt_closed = order_date is not None and nxt_session_closed(
+            order_date=order_date, now=now_kst()
         )
-        if expiry == "expired":
-            base["verdict"] = "expired"
-            base["action"] = "marked_expired" if not dry_run else "would_mark_expired"
+        expiry = classify_day_order_expiry(
+            rows=rows, order_no=order_no, nxt_closed=nxt_closed
+        )
+        if expiry in ("expired", "cancelled"):
+            base["verdict"] = expiry
+            base["action"] = (
+                f"marked_{expiry}" if not dry_run else f"would_mark_{expiry}"
+            )
             if not dry_run:
-                await _update_ledger_outcome(ledger_id=row.id, status="expired")
+                await _update_ledger_outcome(ledger_id=row.id, status=expiry)
             return base
         base["action"] = "noop_pending"
         return base
