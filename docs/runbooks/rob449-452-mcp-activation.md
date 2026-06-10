@@ -1,5 +1,11 @@
 # ROB-449 / ROB-450 / ROB-452 MCP 도구 활성화 · 검증 런북
 
+> **MCP_PROFILE (ROB-488)**: 크립토 전용 도구(`get_crypto_*`, `get_funding_rate`,
+> `get_open_interest`, `get_long_short_ratio`, `get_kimchi_premium`, `get_upbit_*`,
+> `get_crypto_fear_greed`(구 `get_fear_greed_index`))는 default surface에서 분리되어
+> `MCP_PROFILE=crypto` 서버에서만 등록된다. 크립토 검증/운영 세션은 crypto 프로파일을
+> 사용할 것 (generic 주문 도구 + `live_reconcile_orders`는 crypto 프로파일에 포함).
+
 ## 개요
 
 이 런북은 세 개의 auto_trader MCP feature에 대한 **operator 활성화 + 검증** 절차만 다룹니다.
