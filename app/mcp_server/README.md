@@ -110,10 +110,23 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
+- `screen_stocks_snapshot(preset, market="kr", filters=None, limit=40, offset=0)`
+  - Snapshot-backed candidate discovery over persisted screener data.
+  - Returned rows include `analysisContext` when enrichment is available:
+    `consensus` (buy/hold/sell counts, target prices, upside), `rsi14`,
+    `dataState`, and row-level `warnings`.
+  - `analystLabel` is filled from consensus when the data passes sanity checks;
+    otherwise it remains `"-"` or `"컨센 확인필요"`.
+  - Enrichment is applied only to the returned page after `limit`/`offset`.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
-  - Analyze multiple symbols in parallel and return compact per-symbol summaries
-  - Default `quick=True` returns compact summary with: symbol, current_price, rsi_14, consensus, recommendation, supports (top 3), resistances (top 3)
+  - Legacy/deep-dive batch analysis for up to 10 symbols.
+  - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
+    rows now expose consensus and RSI context directly.
+  - Keep using it when support/resistance or full `quick=False` analysis is needed
+    for symbols outside the snapshot result path.
+  - Default `quick=True` returns compact summary with: symbol, current_price,
+    rsi_14, consensus, recommendation, supports (top 3), resistances (top 3).
 
 ### Alpaca paper read-only smoke tools
 
