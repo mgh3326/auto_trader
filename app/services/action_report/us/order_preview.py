@@ -12,12 +12,14 @@ from app.schemas.us_action_report import (
     KISUSOrderSubmitDisabledError,
     USHolding,
 )
+from app.services.orders.ladder_fill_safety import (
+    LadderRung,
+    evaluate_ladder_fill_safety,
+)
 
 _DEFAULT_MAX_QUANTITY = 5.0
 _DEFAULT_MAX_NOTIONAL_USD = 1000.0
 _DEFAULT_MAX_LIMIT_DEVIATION_PCT = 10.0
-_DEFAULT_NEAR_MARKET_ANCHOR_PCT = 0.3
-_DEFAULT_NEAR_MARKET_ANCHOR_ATR_MULTIPLE = 0.3
 
 _FORBIDDEN_LIVE_ORDER_METHODS = (
     "submit_order",
@@ -129,106 +131,25 @@ def _reference_price_with_source(
     request: KISUSOrderPreviewRequest,
     holding: USHolding | None,
 ) -> tuple[float | None, str | None]:
-    if request.reference_price_usd is not None:
+    if request.reference_price_usd is not None and request.reference_price_usd > 0:
         return request.reference_price_usd, "referencePriceUsd"
-    return _holding_reference_price(holding), "holdingReferencePrice"
+    holding_price = _holding_reference_price(holding)
+    if holding_price is None:
+        return None, None
+    return holding_price, "holdingReferencePrice"
 
 
 def _fill_anchor_price_with_source(
     *,
     request: KISUSOrderPreviewRequest,
     reference_price: float | None,
+    reference_price_source: str | None,
 ) -> tuple[float | None, str | None]:
-    if request.best_bid_usd is not None:
+    if request.best_bid_usd is not None and request.best_bid_usd > 0:
         return request.best_bid_usd, "bestBidUsd"
-    if request.reference_price_usd is not None:
-        return request.reference_price_usd, "referencePriceUsd"
-    return reference_price, "holdingReferencePrice"
-
-
-def _round_price(value: float) -> float:
-    return round(value, 4)
-
-
-def _ladder_fill_safety(
-    *,
-    rungs: list[KISUSOrderPreviewLadderRung],
-    anchor_price: float | None,
-    anchor_source: str | None,
-    atr_usd: float | None,
-) -> tuple[list[str], dict[str, object] | None]:
-    if len(rungs) < 2 or anchor_price is None or anchor_price <= 0:
-        return [], None
-
-    near_pct = _DEFAULT_NEAR_MARKET_ANCHOR_PCT
-    near_threshold_usd = anchor_price * near_pct / 100.0
-    if atr_usd is not None and atr_usd > 0:
-        near_threshold_usd = max(
-            near_threshold_usd,
-            atr_usd * _DEFAULT_NEAR_MARKET_ANCHOR_ATR_MULTIPLE,
-        )
-
-    rung_details: list[dict[str, object]] = []
-    all_above_market = True
-    has_marketable_anchor = False
-    has_near_market_anchor = False
-
-    for index, rung in enumerate(rungs, start=1):
-        distance_usd = rung.limit_price_usd - anchor_price
-        distance_pct = distance_usd / anchor_price * 100.0
-        above_market = rung.limit_price_usd > anchor_price
-        marketable_anchor = rung.limit_price_usd <= anchor_price
-        near_above_market = above_market and distance_usd <= near_threshold_usd
-        near_market_anchor = marketable_anchor
-        atr_multiple = (
-            distance_usd / atr_usd if atr_usd is not None and atr_usd > 0 else None
-        )
-
-        all_above_market = all_above_market and above_market
-        has_marketable_anchor = has_marketable_anchor or marketable_anchor
-        has_near_market_anchor = has_near_market_anchor or near_market_anchor
-        rung_details.append(
-            {
-                "index": index,
-                "quantity": rung.quantity,
-                "limitPriceUsd": _round_price(rung.limit_price_usd),
-                "distanceUsd": _round_price(distance_usd),
-                "distancePct": round(distance_pct, 4),
-                "atrMultiple": (
-                    round(atr_multiple, 4) if atr_multiple is not None else None
-                ),
-                "aboveMarket": above_market,
-                "marketableAnchor": marketable_anchor,
-                "nearAboveMarket": near_above_market,
-                "nearMarketAnchor": near_market_anchor,
-            }
-        )
-
-    warnings: list[str] = []
-    if all_above_market:
-        warnings.append("ladder_all_above_market")
-    if not has_near_market_anchor:
-        warnings.append("ladder_missing_near_market_anchor")
-
-    details: dict[str, object] = {
-        "anchorPriceUsd": _round_price(anchor_price),
-        "anchorSource": anchor_source,
-        "nearMarketThresholdPct": near_pct,
-        "nearMarketThresholdUsd": _round_price(near_threshold_usd),
-        "nearMarketAtrMultiple": _DEFAULT_NEAR_MARKET_ANCHOR_ATR_MULTIPLE,
-        "atrUsd": _round_price(atr_usd) if atr_usd is not None else None,
-        "allRungsAboveMarket": all_above_market,
-        "hasMarketableAnchor": has_marketable_anchor,
-        "hasNearMarketAnchor": has_near_market_anchor,
-        "rungs": rung_details,
-    }
-    if warnings:
-        details["suggestedAnchorRung"] = {
-            "limitPriceUsd": _round_price(anchor_price),
-            "rationale": "place at least one sell rung at or below the anchor price",
-        }
-
-    return warnings, details
+    if reference_price is not None and reference_price > 0:
+        return reference_price, reference_price_source
+    return None, None
 
 
 def _first_non_blank(*values: Any) -> str | None:
@@ -386,15 +307,27 @@ def preview_kis_us_live_order(
         fill_anchor_price, fill_anchor_source = _fill_anchor_price_with_source(
             request=request,
             reference_price=reference_price,
+            reference_price_source=reference_price_source,
         )
-        fill_warnings, fill_safety = _ladder_fill_safety(
-            rungs=request.ladder_rungs,
+        implied_single_rung = not request.ladder_rungs
+        ladder = request.ladder_rungs or [
+            KISUSOrderPreviewLadderRung(
+                quantity=request.quantity,
+                limit_price_usd=request.limit_price_usd,
+            )
+        ]
+        fill_warnings, fill_safety = evaluate_ladder_fill_safety(
+            rungs=[
+                LadderRung(limit_price=rung.limit_price_usd, quantity=rung.quantity)
+                for rung in ladder
+            ],
             anchor_price=fill_anchor_price,
             anchor_source=fill_anchor_source,
-            atr_usd=request.atr_usd,
+            atr=request.atr_usd,
         )
         warnings.extend(fill_warnings)
         if fill_safety is not None:
+            fill_safety["impliedFromSingleOrder"] = implied_single_rung
             details["fillSafety"] = fill_safety
 
     return KISUSOrderPreviewResult(
