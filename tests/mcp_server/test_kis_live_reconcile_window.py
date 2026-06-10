@@ -164,3 +164,30 @@ async def test_none_verdict_without_order_date_refuses_terminal_mark():
     assert out["action"] == "noop_window_uncovered"
     assert "window" in out["reason"]
     upd.assert_not_awaited()
+
+
+# --- 빈 후보 UX 메시지 -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_impl_empty_candidates_message_is_distinguishable():
+    # ROB-487 UX: "Reconciled 0" 이 누락으로 오인되지 않도록 후보 0건을 구분.
+    with patch.object(mod, "_list_open_ledger_rows", AsyncMock(return_value=[])):
+        out = await mod.kis_live_reconcile_orders_impl(dry_run=True)
+    assert out["success"] is True
+    assert out["counts"] == {}
+    assert "No open candidates (all ledger rows terminal)" in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_impl_nonempty_keeps_reconciled_message():
+    with (
+        patch.object(mod, "_list_open_ledger_rows", AsyncMock(return_value=[object()])),
+        patch.object(
+            mod,
+            "_reconcile_one_ledger_row",
+            AsyncMock(return_value={"verdict": "pending", "order_id": "A"}),
+        ),
+    ):
+        out = await mod.kis_live_reconcile_orders_impl(dry_run=True)
+    assert out["message"].startswith("Reconciled 1 live order(s)")

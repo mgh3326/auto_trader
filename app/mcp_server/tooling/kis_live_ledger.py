@@ -659,15 +659,23 @@ async def kis_live_reconcile_orders_impl(
         verdict = str(outcome.get("verdict", "anomaly"))
         counts[verdict] = counts.get(verdict, 0) + 1
 
+    if rows:
+        message = (
+            f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}"
+        )
+    else:
+        # ROB-487 UX: 후보 0건(모든 ledger 행이 terminal)을 누락과 구분해 표기.
+        message = (
+            "No open candidates (all ledger rows terminal) — nothing to reconcile "
+            f"(dry_run={dry_run})"
+        )
     return {
         "success": True,
         "account_mode": "kis_live",
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
-        "message": (
-            f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}"
-        ),
+        "message": message,
     }
 
 
