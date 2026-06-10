@@ -191,15 +191,28 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         name="get_investment_opinions",
         description=(
             "Get securities firm investment opinions and target prices for a US or "
-            "Korean stock. Returns analyst ratings, price targets, and upside potential."
+            "Korean stock. Returns analyst ratings, price targets, and upside "
+            "potential. KR consensus (buy/hold/sell counts and avg/median/min/max "
+            "target, upside_pct) is aggregated ONLY over opinions dated within "
+            "opinion_window_months (default 12, clamped 1-60); older or undated "
+            "rows are excluded from the aggregate and reported via "
+            "rows_excluded_stale / rows_excluded_undated. If no opinion survives "
+            "the window, target stats and upside_pct are null and counts are 0 — "
+            "there is NO fallback to stale averages (check rows_total, rows_used, "
+            "newest_opinion_date, window_months metadata). The opinions list still "
+            "includes older rows for reference. US consensus comes from the vendor "
+            "(yfinance) and ignores opinion_window_months."
         ),
     )
     async def get_investment_opinions(
         symbol: str | int,
         limit: int = 10,
         market: str | None = None,
+        opinion_window_months: int = 12,
     ) -> dict[str, Any]:
-        return await handle_get_investment_opinions(symbol, limit, market)
+        return await handle_get_investment_opinions(
+            symbol, limit, market, opinion_window_months
+        )
 
     @mcp.tool(
         name="get_valuation",

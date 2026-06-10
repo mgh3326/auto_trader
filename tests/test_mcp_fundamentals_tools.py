@@ -2819,7 +2819,7 @@ class TestGetInvestmentOpinions:
             },
         }
 
-        async def mock_fetch(code, limit):
+        async def mock_fetch(code, limit, window_months=12):
             return {
                 "instrument_type": "equity_kr",
                 "source": "naver",
@@ -2867,7 +2867,7 @@ class TestGetInvestmentOpinions:
             },
         }
 
-        async def mock_fetch(code, limit):
+        async def mock_fetch(code, limit, window_months=12):
             return {
                 "instrument_type": "equity_kr",
                 "source": "naver",
@@ -3147,6 +3147,34 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["total_count"] is None
         assert result["consensus"]["avg_target_price"] == pytest.approx(200.0)
         assert result["consensus"]["current_price"] == pytest.approx(185.0)
+
+    async def test_kr_opinion_window_months_clamped_and_forwarded(self, monkeypatch):
+        """ROB-486: opinion_window_months 가 1~60으로 클램프되어 KR fetcher로 전달."""
+        tools = build_tools()
+        captured: list[int] = []
+
+        async def mock_fetch(code, limit, window_months=12):
+            captured.append(window_months)
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "symbol": code,
+                "count": 0,
+                "opinions": [],
+                "consensus": None,
+            }
+
+        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_naver", mock_fetch)
+
+        await tools["get_investment_opinions"]("005930", market="kr")
+        await tools["get_investment_opinions"](
+            "005930", market="kr", opinion_window_months=120
+        )
+        await tools["get_investment_opinions"](
+            "005930", market="kr", opinion_window_months=0
+        )
+
+        assert captured == [12, 60, 1]
 
 
 @pytest.mark.asyncio
