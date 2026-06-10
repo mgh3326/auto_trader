@@ -16,9 +16,19 @@ from app.models.review import TradeJournalReview
 from app.models.trade_journal import TradeJournal
 from app.services.trade_journal import journal_verdict_service as svc
 
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 
 @pytest_asyncio.fixture(autouse=True)
-async def cleanup_journal_tables(db_session: AsyncSession):
+async def cleanup_journal_tables(
+    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+):
+    await db_session.rollback()
+    await db_session.execute(delete(TradeJournalReview))
+    await db_session.execute(delete(TradeJournal))
+    await db_session.commit()
+    yield
+    await db_session.rollback()
     await db_session.execute(delete(TradeJournalReview))
     await db_session.execute(delete(TradeJournal))
     await db_session.commit()
