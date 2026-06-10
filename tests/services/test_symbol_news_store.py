@@ -253,3 +253,23 @@ async def test_list_pending_omits_judged_links(db_session) -> None:
         await symbol_news_store.list_pending(db_session, "kr", limit=50, symbol=symbol)
         == []
     )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_upsert_returns_new_pending_link_count(db_session) -> None:
+    """ROB-506: 반환값 = 신규 생성된 pending link 수 (enqueue 트리거 근거)."""
+    symbol = f"S-{uuid.uuid4()}"[:20]
+    url1 = _unique_url("c1")
+    url2 = _unique_url("c2")
+    items = [_item(url1, f"{symbol} 신규 투자"), _item(url2, f"{symbol} 실적 발표")]
+
+    first = await symbol_news_store.upsert_kr_feed_articles(db_session, symbol, items)
+    assert first == 2
+
+    # 동일 윈도우 재호출 — 신규 link 없음
+    second = await symbol_news_store.upsert_kr_feed_articles(db_session, symbol, items)
+    assert second == 0
+
+    # 빈 입력 — 0
+    assert await symbol_news_store.upsert_kr_feed_articles(db_session, symbol, []) == 0

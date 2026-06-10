@@ -493,6 +493,18 @@ class Settings(BaseSettings):
     # ingest). Unset → all endpoints respond ``403 "token not configured"``.
     NEWS_RELEVANCE_INGEST_TOKEN: str = ""
     NEWS_RELEVANCE_INGEST_TOKEN_HEADER: str = "X-News-Relevance-Ingest-Token"
+    # ROB-506 — TaskIQ async judgment worker for symbol_news_relevance
+    # pending rows. Default-off: get_news never enqueues and commit-mode
+    # task runs return "disabled" until the operator flips the flag. The
+    # webhook is the external Hermes-compatible judgment boundary — no
+    # in-process LLM provider, no OpenRouter credential in this repo.
+    # Distinct namespace from HERMES_* (notification) and
+    # NEWS_RELEVANCE_INGEST_* (inbound token) on purpose.
+    NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED: bool = False
+    NEWS_RELEVANCE_JUDGMENT_WEBHOOK_URL: str = ""
+    NEWS_RELEVANCE_JUDGMENT_TOKEN: str = ""
+    NEWS_RELEVANCE_JUDGMENT_TIMEOUT_S: float = 120.0
+    NEWS_RELEVANCE_JUDGMENT_BATCH_LIMIT: int = 50
     # ROB-287 Phase B — operational activation gate for the
     # ``hermes_bundle_preparation_flow`` Prefect entry. Default ``False``
     # makes the flow a structured dry-run (no ``SnapshotBundleEnsureService``
