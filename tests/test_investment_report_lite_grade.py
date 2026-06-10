@@ -155,3 +155,16 @@ async def test_lite_diagnostics_persists_and_round_trips(session) -> None:
     assert diag is not None
     assert diag["report_quality_summary"]["grade"] == "informational_only"
     assert diag["report_quality_summary"]["basis"] == "item_evidence_lite"
+
+
+def test_raw_evidence_snapshot_alone_does_not_count_as_lite_structured_evidence():
+    items = [
+        _item(
+            evidence_snapshot={
+                "structured_evidence": [{"source": "consensus", "freshness": "fresh"}]
+            }
+        )
+    ]
+    out = build_lite_report_quality_summary(items)
+    assert out["grade"] == "no_action"
+    assert out["evidence_item_count"] == 0
