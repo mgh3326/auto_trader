@@ -3,7 +3,10 @@
 
 TTTC8001R 은 '주문일' 기준 윈도우다 — 2026-06-10 라이브 read-only 프로브에서
 20260610 윈도우에 6/9 주문이 0건이었다. 익일 reconcile 이 전일 체결을 보려면
-INQR_STRT_DT 를 ledger 행의 주문일(created_at KST date)로 넓혀야 한다.
+윈도우를 ledger 행의 주문일(created_at KST date)로 넓혀야 한다. 윈도우 계산은
+``_live_daily_order_window`` 단일 경로(주문일 anchor + 90일 캡, ROB-488 머지
+semantics)이며, NONE verdict 는 noop_no_evidence + requires_manual_review 로
+fail-closed (증거 부재는 취소 증거가 아니다).
 """
 
 import datetime
@@ -78,24 +81,9 @@ def test_order_date_kst_none_when_underivable():
 
 
 @pytest.mark.asyncio
-async def test_fetch_live_daily_rows_widens_window_to_start_date():
-    fake_client = AsyncMock()
-    fake_client.inquire_daily_order_domestic = AsyncMock(return_value=[])
-    with (
-        patch.object(mod, "_create_live_kis_client", return_value=fake_client),
-        patch.object(mod, "_today_yyyymmdd", return_value="20260610"),
-    ):
-        await mod._fetch_live_daily_rows(
-            symbol="047810", order_no="0029287200", start_date="20260609"
-        )
-    kwargs = fake_client.inquire_daily_order_domestic.await_args.kwargs
-    assert kwargs["start_date"] == "20260609"  # 주문일
-    assert kwargs["end_date"] == "20260610"  # 오늘
-    assert kwargs["is_mock"] is False
-
-
-@pytest.mark.asyncio
-async def test_fetch_live_daily_rows_defaults_to_today_window():
+async def test_fetch_live_daily_rows_no_order_date_falls_back_to_90d_window():
+    # 주문일 미상 → today-only 가 아니라 90일 lookback 으로 폴백
+    # (_live_daily_order_window: earliest = today - 89d).
     fake_client = AsyncMock()
     fake_client.inquire_daily_order_domestic = AsyncMock(return_value=[])
     with (
@@ -104,8 +92,9 @@ async def test_fetch_live_daily_rows_defaults_to_today_window():
     ):
         await mod._fetch_live_daily_rows(symbol="047810", order_no="0029287200")
     kwargs = fake_client.inquire_daily_order_domestic.await_args.kwargs
-    assert kwargs["start_date"] == "20260610"
+    assert kwargs["start_date"] == "20260313"  # 2026-06-10 - 89d
     assert kwargs["end_date"] == "20260610"
+    assert kwargs["is_mock"] is False
 
 
 @pytest.mark.asyncio
@@ -119,7 +108,7 @@ async def test_reconcile_passes_order_date_window_to_fetch():
         patch.object(mod, "classify_fill_evidence", return_value=filled),
     ):
         out = await mod._reconcile_one_ledger_row(row, dry_run=True)
-    assert f.await_args.kwargs["start_date"] == "20260609"
+    assert f.await_args.kwargs["order_trade_date"] == datetime.date(2026, 6, 9)
     assert out["action"] == "would_book_filled"
 
 
@@ -127,42 +116,45 @@ async def test_reconcile_passes_order_date_window_to_fetch():
 
 
 @pytest.mark.asyncio
-async def test_none_verdict_with_covered_window_marks_cancelled():
-    # 윈도우가 주문일을 커버(start_date == 주문일)했고 행 부재 → cancelled 유지.
+async def test_none_verdict_is_fail_closed_noop_no_evidence():
+    # ROB-488 머지 semantics: 행 부재(증거 없음)는 취소 증거가 아니다 —
+    # 윈도우 커버 여부와 무관하게 terminal 마킹 금지, ledger 는 open 유지.
     row = _ledger_row(datetime.datetime(2026, 6, 9, 6, 31, 25, tzinfo=UTC))
     with (
         patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[])),
         patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
     ):
         out = await mod._reconcile_one_ledger_row(row, dry_run=False)
-    assert out["action"] == "marked_cancelled"
-    upd.assert_awaited_once()
-    assert upd.call_args.kwargs["status"] == "cancelled"
+    assert out["action"] == "noop_no_evidence"
+    assert out["requires_manual_review"] is True
+    assert "no broker fill evidence" in out["reason"]
+    upd.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_none_verdict_with_covered_window_dry_run_does_not_write():
+async def test_none_verdict_dry_run_is_same_noop_no_evidence():
     row = _ledger_row(datetime.datetime(2026, 6, 9, 6, 31, 25, tzinfo=UTC))
     with (
         patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[])),
         patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
     ):
         out = await mod._reconcile_one_ledger_row(row, dry_run=True)
-    assert out["action"] == "would_mark_cancelled"
+    assert out["action"] == "noop_no_evidence"
+    assert out["requires_manual_review"] is True
     upd.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_none_verdict_without_order_date_refuses_terminal_mark():
-    # (f) 주문일 도출 불가 → 윈도우 커버 증명 불가 → terminal 마킹 금지 (noop).
+async def test_none_verdict_without_order_date_same_noop_path():
+    # 주문일 도출 불가여도 동일한 fail-closed noop 경로 (terminal 마킹 금지).
     row = _ledger_row(None)
     with (
         patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=[])),
         patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
     ):
         out = await mod._reconcile_one_ledger_row(row, dry_run=False)
-    assert out["action"] == "noop_window_uncovered"
-    assert "window" in out["reason"]
+    assert out["action"] == "noop_no_evidence"
+    assert out["requires_manual_review"] is True
     upd.assert_not_awaited()
 
 

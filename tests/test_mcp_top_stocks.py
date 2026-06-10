@@ -271,6 +271,32 @@ class TestMCPTopStocks:
         assert len(result["rankings"]) == 1
         assert result["rankings"][0]["change_rate"] == pytest.approx(5.0)
 
+    async def test_kr_gainers_missing_ranking_fields_are_honest_null(self, monkeypatch):
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                if direction == "up":
+                    return [
+                        {
+                            "stck_shrn_iscd": "005930",
+                            "hts_kor_isnm": "삼성전자",
+                            "stck_prpr": "80000",
+                            "prdy_ctrt": "5.0",
+                        }
+                    ]
+                return []
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="gainers")
+        row = result["rankings"][0]
+
+        assert row["price"] == pytest.approx(80000.0)
+        assert row["volume"] is None
+        assert row["market_cap"] is None
+        assert row["trade_amount"] is None
+
     async def test_kr_losers_routing(self, monkeypatch):
         tools = build_tools()
 
@@ -345,6 +371,27 @@ class TestMCPTopStocks:
 
         assert result["ranking_type"] == "market_cap"
         assert len(result["rankings"]) == 1
+
+    async def test_kr_market_cap_uses_stck_avls_fallback(self, monkeypatch):
+        tools = build_tools()
+
+        class MockKISClient:
+            async def market_cap_rank(self, market, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "stck_avls": "470000000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="market_cap")
+
+        assert result["rankings"][0]["market_cap"] == pytest.approx(470000000000000.0)
 
     async def test_unsupported_market_ranking_combination(self):
         tools = build_tools()

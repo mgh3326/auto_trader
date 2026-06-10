@@ -30,14 +30,33 @@ path (same defect remains; tracked as follow-up — ROB-407).
    no DB writes.
 3. Apply: `kis_live_reconcile_orders(dry_run=False)` — books confirmed fills + journals,
    marks unfilled/cancelled rows. Scope to one order with `order_id=...` if needed.
-4. 후보가 0건(모든 ledger 행이 terminal)이면 `"No open candidates (all ledger rows terminal)"` 메시지를 반환한다 — `Reconciled 0`이 누락으로 오인되지 않게 구분됨 (ROB-487 UX). 증거 조회 윈도우는 각 주문의 **주문일~오늘**이라 익일 reconcile도 전일 체결을 book할 수 있다.
+4. 후보가 0건(모든 ledger 행이 terminal)이면 `"No open candidates (all ledger rows terminal)"` 메시지를 반환한다 — `Reconciled 0`이 누락으로 오인되지 않게 구분됨 (ROB-487 UX). 증거 조회 윈도우는 각 주문의 **주문일~오늘**(최대 90일 캡)이라 익일 reconcile도 전일 체결을 book할 수 있다.
 
 ## Verdicts
-- `filled` / `partial` — `review.trades` + journal mutation booked from broker `ccld_qty`/`ccld_unpr`.
+- `filled` / `partial` — `review.trades` + journal mutation booked from broker `ccld_qty`/`ccld_unpr`. **Delta-idempotent (ROB-487)**: booking은 브로커 누적 체결량과 ledger의 기booking 수량의 델타만 기장하며, 델타가 0 이하이면 `noop_already_booked` (저널 재생성/이중 close 없음).
 - `pending` — accepted, no fill yet; no-op (re-run later). NXT 마감(20:00 KST) 전의 미체결 day order는 항상 pending 유지 (ROB-487).
-- `cancelled` — 취소 증거(`cncl_yn` truthy, 또는 `orgn_odno`로 매칭되는 '매수취소'/'매도취소' 확인 행), 또는 주문일을 커버한 윈도우에서 일별체결 행 부재. ledger만 마킹, journal side-effect 없음. 윈도우가 주문일 커버를 증명 못 하면 noop (`noop_window_uncovered`).
+- `cancelled` — 취소 증거(`cncl_yn` truthy, 또는 `orgn_odno`로 매칭되는 '매수취소'/'매도취소' 확인 행)가 있을 때만. ledger만 마킹, journal side-effect 없음. 행 부재(증거 없음)는 취소 증거가 아니다 — 아래 `none` 참고.
+- `none` → `noop_no_evidence` — **(ROB-487 변경)** lookback 윈도우(주문일~오늘, 최대 90일)에서 체결 증거가 없으면 더 이상 `cancelled`로 마킹하지 않는다. 행은 open으로 남고 `requires_manual_review:true`가 표기된다. 증거 부재는 취소 증거가 아니다(fail-closed) — 전일 NXT 체결이 익일에 정상 booking되도록 보장.
 - `expired` — **NXT 마감(20:00 KST) 이후** + 브로커 증거 `rjct_qty == ord_qty > 0` 인 미체결 day order (ROB-487 실측: 미체결 SOR day order는 EOD에 rjct_qty가 전량으로 채워짐). **Fail-closed**: 둘 중 하나라도 없으면 `pending` 유지(`rmn_qty > 0`이면 주문 생존). 실 TTTC8001R 행에는 `prcs_stat_name` / `rvse_cncl_dvsn_*` 키가 존재하지 않으므로(2026-06-10 라이브 프로브) 구 상태-토큰 분류는 폐기됨.
 - `anomaly` — reconcile error; inspect `raw_response` / logs.
+
+### requires_manual_review 행의 operator 종결 절차
+90일 lookback에도 증거가 없는 행은 영구 open으로 남는다(정직한 미해소 표면).
+operator가 브로커 HTS/체결내역에서 해당 odno의 최종 상태를 확인한 뒤에만 수동 종결:
+체결 확인 시 `kis_live_reconcile_orders(order_id=...)` 재실행, 취소 확인 시 DB에서
+`status='cancelled'` 수동 마킹(증거 스크린샷/사유를 Linear에 기록).
+
+### ROB-487 false-cancel 행 복구 (1회성 backfill)
+2026-06-10 이전의 today-only 윈도우 + NONE→cancelled 결함으로 잘못 취소 처리된 행 식별:
+```sql
+SELECT id, order_no, symbol, side, trade_date, reconciled_at
+FROM review.kis_live_order_ledger
+WHERE status = 'cancelled' AND reconciled_at IS NOT NULL AND filled_qty IS NULL
+  AND trade_date < reconciled_at::date;  -- 익일 reconcile로 취소된 것
+```
+실제 체결 여부를 확인할 행들을 `status='accepted'`로 재개방 → `kis_live_reconcile_orders(dry_run=True)`
+preview → `dry_run=False` 재실행 (90일 윈도우가 전일 체결 증거를 찾아 booking; trades insert는
+`uq_review_trades_account_order`로 멱등).
 
 ## Routing / lifecycle visibility (ROB-476)
 
@@ -65,10 +84,15 @@ Migration for ROB-476 is 0 (non-breaking, backward compatible).
 활성화한다. 둘 다 동일한 증거-게이트 커널을 호출하며 새 mutation 경로는 없다.
 
 - **CLI (온디맨드/cron)**: `uv run python -m scripts.kis_live_auto_reconcile`
-  (dry-run 기본), 실제 booking은 `--apply`.
+  (dry-run 기본), 실제 booking은 `--apply` — 단 `--apply`는 아래 2개 플래그가
+  모두 켜져 있어야 동작(exit 2로 거부, 게이트 우회 불가).
 - **Paused TaskIQ 태스크**: `kis_live.reconcile_periodic` — 기본 비활성.
-  활성화: `KIS_LIVE_AUTO_RECONCILE_ENABLED=true` + cron 등록(robin-prefect-
-  automations). 플래그 미설정 시 `{"status":"paused"}`로 inert.
+  활성화에는 **(ROB-487) 2개 플래그가 모두** 필요:
+  `KIS_LIVE_AUTO_RECONCILE_ENABLED=true` **그리고**
+  `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true` + cron 등록(robin-prefect-
+  automations). 하나라도 미설정 시 `{"status":"paused"}`로 inert.
+  SAFETY_REVIEW 플래그는 ROB-487 fail-closed semantics + delta-idempotent
+  booking이 배포에 포함됐음을 operator가 확인한 뒤에만 켠다.
 
 > **reconcile은 로컬 부기 레이어**(trade/journal/realized_pnl)다. 실계좌 진실은
 > `get_holdings` / `get_available_capital`. reconcile 미실행은 실계좌에 영향을

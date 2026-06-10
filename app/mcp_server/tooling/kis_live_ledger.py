@@ -32,8 +32,6 @@ from app.services.brokers.kis.live_order_expiry import (
     classify_day_order_expiry,
     nxt_session_closed,
 )
-
-# Imported above in imports section
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
@@ -296,8 +294,54 @@ def _create_live_kis_client() -> Any:
     return KISClient()
 
 
+_KST = datetime.timezone(datetime.timedelta(hours=9))
+
+# KIS inquire-daily-ccld supports up to ~3 months; anchor the window on the
+# order's trade_date so older stuck rows can still recover their evidence.
+_LIVE_DAILY_ORDER_LOOKBACK_DAYS = 90
+
+
 def _today_yyyymmdd() -> str:
-    return datetime.datetime.now().strftime("%Y%m%d")
+    return datetime.datetime.now(_KST).strftime("%Y%m%d")
+
+
+def _coerce_order_date(
+    value: datetime.datetime | datetime.date | str | None,
+) -> datetime.date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(_KST).date()
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) >= 8 and text[:8].isdigit():
+            try:
+                return datetime.datetime.strptime(text[:8], "%Y%m%d").date()
+            except ValueError:
+                return None
+        try:
+            return datetime.date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _live_daily_order_window(
+    order_trade_date: datetime.datetime | datetime.date | str | None,
+) -> tuple[str, str]:
+    today = datetime.datetime.strptime(_today_yyyymmdd(), "%Y%m%d").date()
+    earliest = today - datetime.timedelta(days=_LIVE_DAILY_ORDER_LOOKBACK_DAYS - 1)
+    order_date = _coerce_order_date(order_trade_date)
+    start = max(order_date or earliest, earliest)
+    if start > today:
+        start = today
+    return start.strftime("%Y%m%d"), today.strftime("%Y%m%d")
 
 
 def _order_date_kst(row: Any) -> datetime.date | None:
@@ -318,21 +362,25 @@ def _order_date_kst(row: Any) -> datetime.date | None:
 
 
 async def _fetch_live_daily_rows(
-    *, symbol: str, order_no: str | None, start_date: str | None = None
+    *,
+    symbol: str,
+    order_no: str | None,
+    order_trade_date: datetime.datetime | datetime.date | str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch live daily-execution rows for a KR order (is_mock=False).
 
     ROB-487: TTTC8001R is ORDER-DATE-windowed — a today-only window returns
     zero rows for prior-day orders (live-verified 2026-06-10: the 20260610
     window contained none of the 6/9 orders). Callers must pass the ledger
-    row's order date as ``start_date`` so next-day reconciles can still see
-    prior-day fills; ``end_date`` stays today.
+    row's order date as ``order_trade_date`` so next-day reconciles can still
+    see prior-day fills; the window is anchored on that date with a 90-day cap
+    (``_live_daily_order_window``) and ``end_date`` stays today.
     """
     kis = _create_live_kis_client()
-    today = _today_yyyymmdd()
+    start_date, end_date = _live_daily_order_window(order_trade_date)
     rows = await kis.inquire_daily_order_domestic(
-        start_date=start_date or today,
-        end_date=today,
+        start_date=start_date,
+        end_date=end_date,
         stock_code=symbol,
         order_number=order_no or "",
         is_mock=False,
@@ -352,18 +400,23 @@ async def _update_ledger_outcome(
     """Update a ledger row's reconcile outcome (status + fill + linkage)."""
     try:
         async with _order_session_factory()() as db:
+            values: dict[str, Any] = {
+                "status": status,
+                "lifecycle_state": _status_to_lifecycle(status),
+                "reconciled_at": now_kst(),
+            }
+            if filled_qty is not None:
+                values["filled_qty"] = filled_qty
+            if avg_fill_price is not None:
+                values["avg_fill_price"] = avg_fill_price
+            if trade_id is not None:
+                values["trade_id"] = trade_id
+            if journal_id is not None:
+                values["journal_id"] = journal_id
             await db.execute(
                 update(KISLiveOrderLedger)
                 .where(KISLiveOrderLedger.id == ledger_id)
-                .values(
-                    status=status,
-                    lifecycle_state=_status_to_lifecycle(status),
-                    filled_qty=filled_qty,
-                    avg_fill_price=avg_fill_price,
-                    trade_id=trade_id,
-                    journal_id=journal_id,
-                    reconciled_at=now_kst(),
-                )
+                .values(**values)
             )
             await db.commit()
     except Exception as exc:
@@ -482,16 +535,16 @@ async def _reconcile_one_ledger_row(
     """Classify one accepted/pending order and apply journal mutation if filled.
 
     Pending -> noop, or expired/cancelled on broker evidence after NXT close
-    (20:00 KST). NONE verdict -> cancelled only when the evidence window
-    provably covered the order date (ROB-487 fail-closed). Filled/partial ->
-    book fill + journal from BROKER-confirmed qty/price.
+    (20:00 KST). NONE verdict -> fail-closed noop_no_evidence with
+    requires_manual_review (missing evidence is never cancellation evidence).
+    Filled/partial -> delta-idempotent booking from BROKER-confirmed qty/price.
     """
     order_no = row.order_no
     order_date = _order_date_kst(row)
     rows = await _fetch_live_daily_rows(
         symbol=row.symbol,
         order_no=order_no,
-        start_date=order_date.strftime("%Y%m%d") if order_date else None,
+        order_trade_date=order_date or getattr(row, "trade_date", None),
     )
     evidence = classify_fill_evidence(order_no=order_no, rows=rows)
 
@@ -531,28 +584,39 @@ async def _reconcile_one_ledger_row(
         return base
 
     if evidence.verdict == FillVerdict.NONE:
-        # ROB-487 fail-closed: terminal 'cancelled' is written only when the
-        # queried TTTC8001R window provably covered the order date
-        # (start_date == order date <= end_date == today). No pending-orders
-        # cross-check exists. If coverage cannot be proven, noop with an
-        # explicit reason — terminal rows are permanently excluded from
-        # candidates, so a wrong mark would bury a later-confirmed fill.
-        if order_date is None:
-            base["action"] = "noop_window_uncovered"
-            base["reason"] = (
-                "order date underivable from ledger row; evidence window not "
-                "proven to cover the order date — refusing terminal mark"
-            )
-            return base
-        base["action"] = "marked_cancelled" if not dry_run else "would_mark_cancelled"
-        if not dry_run:
-            await _update_ledger_outcome(ledger_id=row.id, status="cancelled")
+        # Missing evidence is not cancellation evidence (absence-as-evidence
+        # 금지). True cancels leave positive broker rows and resolve in the
+        # PENDING branch via classify_day_order_expiry. Leave the ledger open
+        # so tomorrow's reconcile or operator review can still recover fills.
+        base["action"] = "noop_no_evidence"
+        base["requires_manual_review"] = True
+        base["reason"] = (
+            "no broker fill evidence in lookback window; ledger left open "
+            "instead of marking cancelled"
+        )
         return base
 
-    # FILLED or PARTIAL — broker-confirmed values only.
-    filled_qty = evidence.filled_qty or Decimal("0")
+    # FILLED or PARTIAL — broker-confirmed values only. Booking is
+    # delta-idempotent (ROB-407 커널 패턴): the broker reports *cumulative*
+    # filled qty, so repeated reconciles of the same partial row must not
+    # re-create journals or double-close sells.
+    broker_cum = evidence.filled_qty or Decimal("0")
+    already_booked = getattr(row, "filled_qty", None) or Decimal("0")
+    delta_qty = broker_cum - already_booked
     avg_price = evidence.avg_price or Decimal("0")
     new_status = "filled" if evidence.verdict == FillVerdict.FILLED else "partial"
+    base["delta_qty"] = float(delta_qty)
+
+    if delta_qty <= 0:
+        base["action"] = "noop_already_booked"
+        if not dry_run:
+            await _update_ledger_outcome(
+                ledger_id=row.id,
+                status=new_status,
+                filled_qty=broker_cum,
+                avg_fill_price=avg_price,
+            )
+        return base
 
     if dry_run:
         base["action"] = f"would_book_{new_status}"
@@ -563,20 +627,20 @@ async def _reconcile_one_ledger_row(
         instrument_type=row.instrument_type,
         side=row.side,
         price=float(avg_price),
-        quantity=float(filled_qty),
-        total_amount=float(avg_price) * float(filled_qty),
+        quantity=float(delta_qty),
+        total_amount=float(avg_price) * float(delta_qty),
         fee=float(row.fee or 0.0),
         currency=row.currency or "KRW",
         account="kis",
         order_id=order_no,
     )
 
-    journal_id: int | None = None
-    if row.side == "buy":
+    journal_id: int | None = getattr(row, "journal_id", None)
+    if row.side == "buy" and journal_id is None:
         buy_preview = {
             "price": float(avg_price),
-            "quantity": float(filled_qty),
-            "estimated_value": float(avg_price) * float(filled_qty),
+            "quantity": float(broker_cum),
+            "estimated_value": float(avg_price) * float(broker_cum),
         }
         journal_result = await _create_trade_journal_for_buy(
             symbol=row.symbol,
@@ -599,10 +663,10 @@ async def _reconcile_one_ledger_row(
             await _link_journal_to_fill(
                 row.symbol, trade_id, account_type="live", account="kis"
             )
-    else:  # sell
+    elif row.side == "sell":
         close_result = await _close_journals_on_sell(
             symbol=row.symbol,
-            sell_quantity=float(filled_qty),
+            sell_quantity=float(delta_qty),
             sell_price=float(avg_price),
             exit_reason=row.exit_reason or row.reason,
             account_type="live",
@@ -615,7 +679,7 @@ async def _reconcile_one_ledger_row(
     await _update_ledger_outcome(
         ledger_id=row.id,
         status=new_status,
-        filled_qty=filled_qty,
+        filled_qty=broker_cum,
         avg_fill_price=avg_price,
         trade_id=trade_id,
         journal_id=journal_id,

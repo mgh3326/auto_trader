@@ -22,7 +22,6 @@ from app.mcp_server.tooling.investment_snapshots_tools import (
     investment_snapshot_bundle_get,
     investment_snapshot_bundle_list,
     investment_snapshot_list,
-    investment_snapshot_refresh_request,
 )
 
 
@@ -59,11 +58,9 @@ def test_register_investment_snapshots_tools_adds_expected_names():
 def test_investment_snapshots_tool_names_lock():
     # Lock the public surface so adding/renaming a tool is a conscious change.
     assert INVESTMENT_SNAPSHOTS_TOOL_NAMES == {
-        "investment_snapshot_bundle_ensure",
         "investment_snapshot_bundle_get",
         "investment_snapshot_bundle_list",
         "investment_snapshot_list",
-        "investment_snapshot_refresh_request",
     }
 
 
@@ -113,19 +110,6 @@ async def test_investment_snapshot_list_invalid_since_returns_error(db_session):
         "error": "invalid_since",
         "since": "not-iso8601",
     }
-
-
-@pytest.mark.asyncio
-async def test_investment_snapshot_refresh_request_inserts_run(db_session):
-    _ = db_session
-    result = await investment_snapshot_refresh_request(
-        reason="manual smoke from tool test",
-        market="kr",
-        account_scope="kis_live",
-    )
-    assert result["success"] is True
-    assert result["status"] == "running"
-    assert uuid.UUID(result["run_uuid"])  # parseable
 
 
 @pytest.mark.asyncio

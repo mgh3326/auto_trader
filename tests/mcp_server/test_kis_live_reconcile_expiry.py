@@ -150,8 +150,8 @@ async def test_no_rjct_evidence_after_close_stays_pending():
 
 @pytest.mark.asyncio
 async def test_next_day_reconcile_books_prior_day_fill_via_widened_window():
-    # (a) 6/9 주문을 6/10 아침에 reconcile: start_date=주문일 윈도우로 전일
-    # 체결(tot_ccld_qty=2)을 보고 book 한다 — KAI 047810 실측 형태.
+    # (a) 6/9 주문을 6/10 아침에 reconcile: 주문일 anchor 윈도우(order_trade_date)
+    # 로 전일 체결(tot_ccld_qty=2)을 보고 book 한다 — KAI 047810 실측 형태.
     fill_row = _broker_row(tot_ccld_qty="2", rmn_qty="0", avg_prvs="126000")
     now = datetime.datetime(2026, 6, 10, 9, 3, tzinfo=KST)
     with (
@@ -169,7 +169,7 @@ async def test_next_day_reconcile_books_prior_day_fill_via_widened_window():
         patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
     ):
         out = await mod._reconcile_one_ledger_row(_ledger_row(), dry_run=False)
-    assert fetch.await_args.kwargs["start_date"] == "20260609"
+    assert fetch.await_args.kwargs["order_trade_date"] == datetime.date(2026, 6, 9)
     assert out["verdict"] == "filled"
     assert out["action"] == "booked_filled"
     assert float(m_fill.await_args.kwargs["price"]) == 126000.0
