@@ -532,6 +532,7 @@ def build_recommendation_for_equity(
     reasoning_parts: list[str] = []
     score = 0
     max_score = 0
+    negative_upside = False
 
     # Use helper for RSI extraction
     rsi = _extract_rsi14(indicators)
@@ -596,6 +597,22 @@ def build_recommendation_for_equity(
                     f"Analyst consensus cautious ({sell_count} sell vs {buy_count} buy)"
                 )
 
+        upside_pct = _to_optional_float(consensus.get("upside_pct"))
+        if upside_pct is not None:
+            max_score += 2
+            if upside_pct >= 20:
+                score += 2
+                reasoning_parts.append(f"Analyst target upside {upside_pct:.1f}%")
+            elif upside_pct >= 5:
+                score += 1
+                reasoning_parts.append(f"Analyst target upside {upside_pct:.1f}%")
+            elif upside_pct < 0:
+                negative_upside = True
+                score -= 3 if upside_pct <= -20 else 2
+                reasoning_parts.append(
+                    f"Analyst target below current price ({upside_pct:.1f}% upside)"
+                )
+
     if score >= 2:
         recommendation["action"] = "buy"
         recommendation["confidence"] = "high" if score >= 3 else "medium"
@@ -603,6 +620,10 @@ def build_recommendation_for_equity(
         recommendation["action"] = "sell"
         recommendation["confidence"] = "high" if score <= -3 else "medium"
     else:
+        recommendation["action"] = "hold"
+        recommendation["confidence"] = "low"
+
+    if negative_upside and recommendation["action"] == "buy":
         recommendation["action"] = "hold"
         recommendation["confidence"] = "low"
 
@@ -693,9 +714,12 @@ def build_recommendation_for_equity(
                 )
 
     if consensus:
+        # ROB-486: a consensus target below the current price is not a sell
+        # *target* — same above-market rule as the resistance entries, else a
+        # stale low target sorts first and evicts real resistance levels.
         avg_target = consensus.get("avg_target_price")
         max_target = consensus.get("max_target_price")
-        if avg_target:
+        if avg_target and float(avg_target) > current_price:
             sell_targets.append(
                 {
                     "price": float(avg_target),
@@ -703,7 +727,7 @@ def build_recommendation_for_equity(
                     "reasoning": "Analyst consensus average target",
                 }
             )
-        if max_target:
+        if max_target and float(max_target) > current_price:
             sell_targets.append(
                 {
                     "price": float(max_target),

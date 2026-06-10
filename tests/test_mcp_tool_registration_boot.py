@@ -19,7 +19,7 @@ from app.mcp_server.tooling.registry import McpProfile
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("profile", [McpProfile.DEFAULT, McpProfile.HERMES_PAPER_KIS])
+@pytest.mark.parametrize("profile", list(McpProfile))
 def test_register_all_tools_no_duplicate_names(profile: McpProfile) -> None:
     # on_duplicate="error" → register_all_tools raises ValueError on ANY duplicate
     # tool name. A clean run proves the registered surface has no name collisions.

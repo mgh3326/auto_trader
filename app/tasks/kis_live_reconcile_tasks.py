@@ -24,4 +24,9 @@ async def kis_live_reconcile_periodic() -> dict:
             "status": "paused",
             "message": "KIS_LIVE_AUTO_RECONCILE_ENABLED is False",
         }
+    if not settings.KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED:
+        return {
+            "status": "paused",
+            "message": "KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED is False",
+        }
     return await kis_live_reconcile_orders_impl(dry_run=False)

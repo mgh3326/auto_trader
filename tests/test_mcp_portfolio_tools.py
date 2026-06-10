@@ -1,5 +1,5 @@
 """
-Tests for MCP portfolio tools: get_cash_balance, get_holdings, get_position, simulate_avg_cost.
+Tests for MCP portfolio tools: get_cash_balance, get_holdings, get_position.
 
 These tests cover portfolio-related MCP tools including cash balance queries,
 holdings management, position tracking, and average cost simulation.
@@ -13,6 +13,7 @@ import pytest
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import paper_portfolio_handler, portfolio_holdings
+from app.mcp_server.tooling.portfolio_avg_cost import simulate_avg_cost_impl
 from app.services.upbit_symbol_universe_service import (
     UpbitSymbolInactiveError,
     UpbitSymbolNotRegisteredError,
@@ -753,11 +754,10 @@ async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_or
 
 @pytest.mark.asyncio
 class TestSimulateAvgCost:
-    """Tests for simulate_avg_cost tool."""
+    """Tests for retained average-cost simulation implementation."""
 
     async def test_basic_simulation_with_market_price(self):
-        tools = build_tools()
-        result = await tools["simulate_avg_cost"](
+        result = await simulate_avg_cost_impl(
             holdings={"price": 2400000, "quantity": 1},
             plans=[
                 {"price": 2050000, "quantity": 1},
@@ -806,8 +806,7 @@ class TestSimulateAvgCost:
 
     async def test_without_market_price(self):
         """Without current_market_price, P&L and breakeven fields are absent."""
-        tools = build_tools()
-        result = await tools["simulate_avg_cost"](
+        result = await simulate_avg_cost_impl(
             holdings={"price": 50000, "quantity": 10},
             plans=[{"price": 40000, "quantity": 10}],
         )
@@ -824,8 +823,7 @@ class TestSimulateAvgCost:
 
     async def test_with_target_only(self):
         """target_price without current_market_price still computes return."""
-        tools = build_tools()
-        result = await tools["simulate_avg_cost"](
+        result = await simulate_avg_cost_impl(
             holdings={"price": 100, "quantity": 5},
             plans=[{"price": 80, "quantity": 5}],
             target_price=120,
@@ -838,40 +836,35 @@ class TestSimulateAvgCost:
         assert ta["total_return_pct"] == pytest.approx(33.33)
 
     async def test_validation_missing_holdings_fields(self):
-        tools = build_tools()
         with pytest.raises(ValueError, match="holdings must contain"):
-            await tools["simulate_avg_cost"](
+            await simulate_avg_cost_impl(
                 holdings={"price": 100},
                 plans=[{"price": 90, "quantity": 1}],
             )
 
     async def test_validation_empty_plans(self):
-        tools = build_tools()
         with pytest.raises(ValueError, match="plans must contain"):
-            await tools["simulate_avg_cost"](
+            await simulate_avg_cost_impl(
                 holdings={"price": 100, "quantity": 1},
                 plans=[],
             )
 
     async def test_validation_negative_price(self):
-        tools = build_tools()
         with pytest.raises(ValueError, match="must be >= 0"):
-            await tools["simulate_avg_cost"](
+            await simulate_avg_cost_impl(
                 holdings={"price": -100, "quantity": 1},
                 plans=[{"price": 90, "quantity": 1}],
             )
 
     async def test_validation_plan_missing_fields(self):
-        tools = build_tools()
         with pytest.raises(ValueError, match=r"plans\[0\] must contain"):
-            await tools["simulate_avg_cost"](
+            await simulate_avg_cost_impl(
                 holdings={"price": 100, "quantity": 1},
                 plans=[{"price": 90}],
             )
 
     async def test_single_plan(self):
-        tools = build_tools()
-        result = await tools["simulate_avg_cost"](
+        result = await simulate_avg_cost_impl(
             holdings={"price": 1000, "quantity": 2},
             plans=[{"price": 800, "quantity": 2}],
             current_market_price=900,
@@ -886,8 +879,7 @@ class TestSimulateAvgCost:
         assert s["unrealized_pnl"] == pytest.approx(0.0)
 
     async def test_accepts_zero_initial_quantity_and_adds_target_metrics(self):
-        tools = build_tools()
-        result = await tools["simulate_avg_cost"](
+        result = await simulate_avg_cost_impl(
             holdings={"price": 0, "quantity": 0},
             plans=[
                 {"price": 100, "quantity": 1},
@@ -904,8 +896,7 @@ class TestSimulateAvgCost:
         assert result["steps"][1]["target_return_pct"] == pytest.approx(26.32)
 
     async def test_requested_scenario_contains_step_target_return(self):
-        tools = build_tools()
-        result = await tools["simulate_avg_cost"](
+        result = await simulate_avg_cost_impl(
             holdings={"price": 122493036, "quantity": 0.00931179},
             plans=[
                 {"quantity": 0.01, "price": 100000000},

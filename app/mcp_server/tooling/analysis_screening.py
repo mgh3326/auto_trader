@@ -57,6 +57,9 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
+from app.mcp_server.tooling.shared import (
+    to_optional_int as _to_optional_int,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,14 +106,24 @@ def _normalize_change_rate_crypto(value: Any) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _first_present(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
 def _map_kr_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
-    symbol = row.get("stck_shrn_iscd") or row.get("mksc_shrn_iscd", "")
+    symbol = _first_present(row, "stck_shrn_iscd", "mksc_shrn_iscd") or ""
     name = row.get("hts_kor_isnm", "")
-    price = _to_float(row.get("stck_prpr"))
+    price = _to_optional_float(row.get("stck_prpr"))
     change_rate = _normalize_change_rate_equity(row.get("prdy_ctrt"))
-    volume = _to_int(row.get("acml_vol") or row.get("frgn_ntby_qty"))
-    market_cap = _to_float(row.get("hts_avls"))
-    trade_amount = _to_float(row.get("acml_tr_pbmn") or row.get("frgn_ntby_tr_pbmn"))
+    volume = _to_optional_int(_first_present(row, "acml_vol", "frgn_ntby_qty"))
+    market_cap = _to_optional_float(_first_present(row, "hts_avls", "stck_avls"))
+    trade_amount = _to_optional_float(
+        _first_present(row, "acml_tr_pbmn", "frgn_ntby_tr_pbmn")
+    )
 
     return {
         "rank": rank,
