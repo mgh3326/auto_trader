@@ -1795,6 +1795,13 @@ async def build_screener_results(
             market=requested_market,
             now=now,
         )
+        # ROB-508: 오타/구버전 클라이언트가 스스로 복구할 수 있도록 해당 market의
+        # active preset id 목록을 동봉한다 (data_pending/unsupported는 제외).
+        _valid_ids = [
+            p.id
+            for p in preset_definitions(requested_market)
+            if p.availability == "active"
+        ]
         return ScreenerResultsResponse(
             presetId=preset_id,
             title=preset_id,
@@ -1802,7 +1809,10 @@ async def build_screener_results(
             filterChips=[],
             metricLabel="-",
             results=[],
-            warnings=[f"알 수 없는 프리셋: {preset_id}"],
+            warnings=[
+                f"알 수 없는 프리셋: {preset_id}",
+                f"사용 가능한 프리셋({requested_market}): {', '.join(_valid_ids)}",
+            ],
             freshness=freshness,
         )
 

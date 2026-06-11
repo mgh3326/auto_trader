@@ -3474,3 +3474,44 @@ def test_investor_flow_dependency_presets_are_supply_only() -> None:
     )
     for non_supply in ("undervalued_growth", "high_yield_value", "consecutive_gainers"):
         assert non_supply not in _INVESTOR_FLOW_DEPENDENCY_PRESETS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unknown_preset_error_lists_valid_presets() -> None:
+    """ROB-508: 알 수 없는 프리셋 에러는 해당 market의 유효(active) preset id
+    목록을 동봉해야 한다 (예: preset="oversold" 오타 시 발견 가능하게)."""
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock()
+    resp = await build_screener_results(
+        preset_id="oversold",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="us",
+        session=None,
+    )
+    assert resp.results == []
+    assert len(resp.warnings) == 2
+    assert resp.warnings[0] == "알 수 없는 프리셋: oversold"
+    # 두 번째 warning에 US active preset id들이 포함돼야 함
+    assert "사용 가능한 프리셋(us)" in resp.warnings[1]
+    assert "consecutive_gainers" in resp.warnings[1]
+    assert "undervalued_growth" in resp.warnings[1]
+    # US에서 unsupported인 KR 전용 preset은 목록에 없어야 함
+    assert "double_buy" not in resp.warnings[1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unknown_preset_error_lists_valid_presets_crypto() -> None:
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock()
+    resp = await build_screener_results(
+        preset_id="volume_surge",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+        session=None,
+    )
+    assert "사용 가능한 프리셋(crypto)" in resp.warnings[1]
+    assert "crypto_high_volume" in resp.warnings[1]
