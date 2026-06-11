@@ -11,6 +11,9 @@ from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.mcp_server.tooling.order_execution import (
     _normalize_market_type_to_external,
 )
+from app.mcp_server.tooling.order_validation import (
+    _get_holdings_for_order,
+)
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import (
     parse_holdings_market_filter as _parse_holdings_market_filter,
@@ -18,6 +21,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
+from app.mcp_server.tooling.shared import to_float as _to_float
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
@@ -878,6 +882,42 @@ def _validate_modify_inputs(
     return order_id, symbol, market_type, normalized_symbol
 
 
+async def _live_sell_reprice_floor_error(
+    *,
+    normalized_symbol: str,
+    market_type: str,
+    side: str,
+    new_price: float | None,
+) -> str | None:
+    """ROB-518: live sell orders must not be repriced below avg_buy * 1.01.
+
+    Placement-time guards do not re-run on modify, so without this check a
+    guarded live sell could be repriced into a loss. Callers are live-only
+    (mock modifies delegate/return before reaching this). Quantity-only
+    modifies (new_price=None) and buy orders introduce no new price risk.
+    Unknown cost basis (no holdings row / avg<=0) stays fail-open, matching
+    the placement-guard semantics.
+    """
+    if new_price is None or side != "sell":
+        return None
+    holdings = await _get_holdings_for_order(
+        normalized_symbol, market_type, is_mock=False
+    )
+    if not holdings:
+        return None
+    avg_price = _to_float(holdings.get("avg_price"), default=0.0)
+    if avg_price <= 0:
+        return None
+    min_sell_price = avg_price * 1.01
+    if float(new_price) < min_sell_price:
+        return (
+            f"Live sell modify blocked: new price {new_price} below minimum "
+            f"(avg_buy_price * 1.01 = {round(min_sell_price, 4)}). "
+            "Loss-selling is disabled on live accounts (ROB-518)."
+        )
+    return None
+
+
 def _build_modify_dry_run_response(
     order_id: str,
     normalized_symbol: str,
@@ -941,6 +981,26 @@ async def _modify_upbit(
         original_quantity = float(original_order.get("remaining_volume", 0) or 0)
         final_price = new_price if new_price is not None else original_price
         final_quantity = new_quantity if new_quantity is not None else original_quantity
+
+        # ROB-518 — Upbit modifies are always live (real funds).
+        side = "buy" if original_order.get("side") == "bid" else "sell"
+        floor_error = await _live_sell_reprice_floor_error(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+            side=side,
+            new_price=new_price,
+        )
+        if floor_error is not None:
+            return {
+                "success": False,
+                "status": "failed",
+                "order_id": order_id,
+                "symbol": normalized_symbol,
+                "market": _normalize_market_type_to_external(market_type),
+                "error": floor_error,
+                "method": "cancel_reorder",
+                "dry_run": dry_run,
+            }
 
         result = await upbit_service.cancel_and_reorder(
             order_id, final_price, final_quantity
@@ -1186,6 +1246,25 @@ async def _modify_kis_domestic(
         side_code = _get_kis_field(target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
         side = "buy" if side_code == "02" else "sell"
 
+        # ROB-518 — is_mock delegated above, so this is the live KR path.
+        floor_error = await _live_sell_reprice_floor_error(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+            side=side,
+            new_price=new_price,
+        )
+        if floor_error is not None:
+            return {
+                "success": False,
+                "status": "failed",
+                "order_id": order_id,
+                "symbol": normalized_symbol,
+                "market": _normalize_market_type_to_external(market_type),
+                "error": floor_error,
+                "method": "api_modify",
+                "dry_run": dry_run,
+            }
+
         final_price_raw = int(new_price) if new_price is not None else original_price
         final_price = int(adjust_tick_size_kr(float(final_price_raw), side))
         final_quantity = (
@@ -1315,6 +1394,28 @@ async def _modify_kis_overseas(
                 _get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0
             )
         )
+
+        # ROB-518 — mock returns unsupported above, so this is the live US path.
+        # Same sll_buy_dvsn_cd convention as _normalize_kis_overseas_order.
+        side_code = _get_kis_field(target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
+        side = "buy" if side_code == "02" else "sell"
+        floor_error = await _live_sell_reprice_floor_error(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+            side=side,
+            new_price=new_price,
+        )
+        if floor_error is not None:
+            return {
+                "success": False,
+                "status": "failed",
+                "order_id": order_id,
+                "symbol": normalized_symbol,
+                "market": _normalize_market_type_to_external(market_type),
+                "error": floor_error,
+                "method": "api_modify",
+                "dry_run": dry_run,
+            }
 
         exchange_code = target_exchange or exchange_candidates[0]
         logger.info(

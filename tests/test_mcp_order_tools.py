@@ -703,6 +703,7 @@ async def test_modify_order_crypto_success(monkeypatch):
                 "uuid": "od-1",
                 "state": "wait",
                 "ord_type": "limit",
+                "side": "bid",  # buy — ROB-518 sell-reprice floor not in play
                 "price": "50000000",
                 "remaining_volume": "0.001",
             }
@@ -751,6 +752,8 @@ async def test_modify_order_us_uses_resolved_exchange(monkeypatch):
                         "odno": "US-OD-1",
                         "ft_ord_unpr3": "207.0",
                         "ft_ord_qty": "2",
+                        # buy — ROB-518 sell-reprice floor not in play
+                        "sll_buy_dvsn_cd": "02",
                     }
                 ]
             return []
@@ -807,6 +810,8 @@ async def test_modify_order_us_uses_resolved_exchange_amex(monkeypatch):
                         "odno": "US-OD-1",
                         "ft_ord_unpr3": "208.0",
                         "ft_ord_qty": "3",
+                        # buy — ROB-518 sell-reprice floor not in play
+                        "sll_buy_dvsn_cd": "02",
                     }
                 ]
             return []

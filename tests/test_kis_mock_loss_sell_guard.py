@@ -268,10 +268,11 @@ async def test_mock_equity_loss_sell_emits_audit_log(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_preview_sell_market_order_skips_price_guards(monkeypatch) -> None:
-    # Market sells never hit evaluate_sell_price_guards (limit-only) — a deep-loss
-    # market sell was always allowed and is unaffected by allow_loss_sell. Documents
-    # the intentional exemption + guards against a future maintainer adding a floor.
+async def test_preview_sell_mock_market_loss_allowed_and_audited(monkeypatch) -> None:
+    # ROB-518 superseded the old "market sells skip price guards" exemption:
+    # live market sells below the floor are now blocked (see
+    # test_live_loss_sell_hard_guard.py). Mock equity keeps the ROB-461
+    # practice bypass, and the market-path bypass is audited like the limit one.
     log_mock = Mock()
     monkeypatch.setattr(order_validation, "_log_mock_loss_sell_bypass", log_mock)
     monkeypatch.setattr(
@@ -291,7 +292,7 @@ async def test_preview_sell_market_order_skips_price_guards(monkeypatch) -> None
     assert "error" not in result
     assert result["price"] == 68500.0  # execution_price == current_price
     assert result["realized_pnl"] < 0
-    log_mock.assert_not_called()  # market path never logs a guard bypass
+    assert log_mock.call_args.kwargs["phase"] == "preview"
 
 
 @pytest.mark.unit
