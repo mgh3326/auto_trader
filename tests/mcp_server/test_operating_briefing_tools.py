@@ -13,6 +13,7 @@ from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
 from app.models.investment_reports import InvestmentWatchAlert
+from app.services.investment_reports.repository import InvestmentReportsRepository
 
 
 class FakeMCP:
@@ -27,6 +28,29 @@ class FakeMCP:
             return fn
 
         return decorator
+
+
+async def _insert_briefing_report(
+    session: AsyncSession,
+    *,
+    title: str,
+    created_by_profile: str,
+    status: str = "draft",
+):
+    repo = InvestmentReportsRepository(session)
+    return await repo.insert_report(
+        idempotency_key=f"rob520:briefing-report:{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile=created_by_profile,
+        title=title,
+        summary="s",
+        status=status,
+        report_metadata={},
+    )
 
 
 def test_operating_briefing_tool_names_register() -> None:
@@ -180,18 +204,104 @@ async def test_get_operating_briefing_composes_all_sections(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("section_name", "patch_name"),
+    [
+        ("latest_report", "_latest_report_summary"),
+        ("session_context", "_recent_session_context"),
+        ("active_watches", "list_active_watches_impl"),
+    ],
+)
+async def test_get_operating_briefing_fail_opens_optional_sections(
+    monkeypatch: pytest.MonkeyPatch,
+    section_name: str,
+    patch_name: str,
+) -> None:
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    async def fake_holdings(**kwargs):
+        return {
+            "filters": {"market": kwargs["market"]},
+            "total_accounts": 1,
+            "total_positions": 0,
+            "summary": {},
+            "accounts": [],
+            "errors": [],
+        }
+
+    class EmptyPendingSnapshot:
+        orders: list[dict] = []
+        as_of = "2026-06-11T01:00:00+00:00"
+        freshness_status = "fresh"
+        unavailable_reason = None
+        account_scope = "kis_live"
+
+    async def fake_pending(db, *, market, account_scope):
+        return EmptyPendingSnapshot()
+
+    async def ok_latest_report(db, *, market, account_scope):
+        return {
+            "report_uuid": "11111111-1111-1111-1111-111111111111",
+            "title": "latest plan",
+            "status": "draft",
+            "created_at": "2026-06-11T00:00:00+00:00",
+            "items": {"total": 0, "by_status": {}, "top": []},
+        }
+
+    async def ok_session_context(db, *, market, account_scope, limit):
+        return {"count": 1, "entries": [{"title": "handoff"}]}
+
+    async def ok_active_watches(**kwargs):
+        return {
+            "success": True,
+            "count": 1,
+            "as_of": "2026-06-11T01:00:00+00:00",
+            "filters": kwargs,
+            "active_watches": [{"symbol": "005930"}],
+        }
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("section boom")
+
+    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
+    monkeypatch.setattr(ob, "_latest_report_summary", ok_latest_report)
+    monkeypatch.setattr(ob, "_recent_session_context", ok_session_context)
+    monkeypatch.setattr(ob, "list_active_watches_impl", ok_active_watches)
+    monkeypatch.setattr(ob, patch_name, boom)
+
+    result = await ob.get_operating_briefing_impl(
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    assert result["success"] is True
+    assert result["staleness"][section_name]["freshness_status"] == "unavailable"
+    assert result["staleness"][section_name]["unavailable_reason"].startswith(
+        f"{section_name}_failed:RuntimeError:section boom"
+    )
+    if section_name == "latest_report":
+        assert result["latest_report"] is None
+    elif section_name == "session_context":
+        assert result["session_context"] == {
+            "count": 0,
+            "entries": [],
+            "unavailable_reason": "session_context_failed:RuntimeError:section boom",
+        }
+    else:
+        assert result["active_watches"] == {
+            "count": 0,
+            "watches": [],
+            "unavailable_reason": "active_watches_failed:RuntimeError:section boom",
+        }
+
+
+@pytest.mark.asyncio
 async def test_latest_report_summary_skips_non_advisory_newer_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.mcp_server.tooling import operating_briefing as ob
 
-    smoke_report = SimpleNamespace(
-        report_uuid=uuid.UUID("22222222-2222-2222-2222-222222222222"),
-        title="newer smoke",
-        status="draft",
-        created_at=datetime(2026, 6, 11, 2, 0, tzinfo=UTC),
-        created_by_profile="test",
-    )
     advisory_report = SimpleNamespace(
         report_uuid=uuid.UUID("11111111-1111-1111-1111-111111111111"),
         title="latest advisory",
@@ -212,11 +322,12 @@ async def test_latest_report_summary_skips_non_advisory_newer_report(
         def __init__(self, db):
             self.db = db
 
-        async def list_reports(self, **kwargs):
+        async def latest_report(self, **kwargs):
             assert kwargs["market"] == "kr"
             assert kwargs["account_scope"] == "kis_live"
-            assert kwargs["limit"] == 20
-            return [smoke_report, advisory_report]
+            assert kwargs["created_by_profiles"] == {"HERMES_ADVISOR", "CLAUDE_ADVISOR"}
+            assert kwargs["exclude_statuses"] == {"superseded"}
+            return advisory_report
 
         async def get_bundle(self, report_uuid):
             assert report_uuid == advisory_report.report_uuid
@@ -234,6 +345,66 @@ async def test_latest_report_summary_skips_non_advisory_newer_report(
     assert summary["report_uuid"] == str(advisory_report.report_uuid)
     assert summary["title"] == "latest advisory"
     assert summary["items"]["by_status"] == {"approved": 1}
+
+
+@pytest.mark.asyncio
+async def test_latest_report_summary_finds_advisory_beyond_twenty_smoke_reports(
+    session: AsyncSession,
+) -> None:
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    advisory = await _insert_briefing_report(
+        session,
+        title="older advisory",
+        created_by_profile="CLAUDE_ADVISOR",
+    )
+    for idx in range(25):
+        await _insert_briefing_report(
+            session,
+            title=f"newer smoke {idx}",
+            created_by_profile="test",
+        )
+    await session.commit()
+
+    summary = await ob._latest_report_summary(
+        session,
+        market="kr",
+        account_scope="kis_mock",
+    )
+
+    assert summary is not None
+    assert summary["report_uuid"] == str(advisory.report_uuid)
+    assert summary["title"] == "older advisory"
+
+
+@pytest.mark.asyncio
+async def test_latest_report_summary_excludes_superseded_advisory(
+    session: AsyncSession,
+) -> None:
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    current = await _insert_briefing_report(
+        session,
+        title="current advisory",
+        created_by_profile="CLAUDE_ADVISOR",
+    )
+    await _insert_briefing_report(
+        session,
+        title="superseded advisory",
+        created_by_profile="CLAUDE_ADVISOR",
+        status="superseded",
+    )
+    await session.commit()
+
+    summary = await ob._latest_report_summary(
+        session,
+        market="kr",
+        account_scope="kis_mock",
+    )
+
+    assert summary is not None
+    assert summary["report_uuid"] == str(current.report_uuid)
+    assert summary["title"] == "current advisory"
 
 
 @pytest.mark.asyncio

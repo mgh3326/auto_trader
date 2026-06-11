@@ -710,7 +710,7 @@ Response sections:
 - `active_watches`: same active watch rows as `list_active_watches`.
 - `latest_report`: latest report summary and item status counts, or `null`.
 - `session_context`: recent ROB-516 handoff entries.
-- `staleness`: per-section `as_of`, freshness, and unavailable reason where available.
+- `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
 
 The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
 

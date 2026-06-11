@@ -12,6 +12,7 @@ the transaction boundary.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -84,6 +85,8 @@ class InvestmentReportsRepository:
         account_scope: str | None = None,
         status: str | None = None,
         report_type: str | None = None,
+        created_by_profiles: Collection[str] | None = None,
+        exclude_statuses: Collection[str] | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> list[InvestmentReport]:
@@ -97,6 +100,8 @@ class InvestmentReportsRepository:
             account_scope=account_scope,
             status=status,
             report_type=report_type,
+            created_by_profiles=created_by_profiles,
+            exclude_statuses=exclude_statuses,
         )
         if offset:
             stmt = stmt.offset(offset)
@@ -112,6 +117,8 @@ class InvestmentReportsRepository:
         account_scope: str | None = None,
         status: str | None = None,
         report_type: str | None = None,
+        created_by_profiles: Collection[str] | None = None,
+        exclude_statuses: Collection[str] | None = None,
     ) -> InvestmentReport | None:
         stmt = sa.select(InvestmentReport).order_by(
             InvestmentReport.created_at.desc(), InvestmentReport.id.desc()
@@ -123,6 +130,8 @@ class InvestmentReportsRepository:
             account_scope=account_scope,
             status=status,
             report_type=report_type,
+            created_by_profiles=created_by_profiles,
+            exclude_statuses=exclude_statuses,
         )
         return await self._session.scalar(stmt.limit(1))
 
@@ -150,6 +159,8 @@ class InvestmentReportsRepository:
         account_scope: str | None,
         status: str | None,
         report_type: str | None,
+        created_by_profiles: Collection[str] | None,
+        exclude_statuses: Collection[str] | None,
     ) -> sa.Select:
         if market is not None:
             stmt = stmt.where(InvestmentReport.market == market)
@@ -161,6 +172,12 @@ class InvestmentReportsRepository:
             stmt = stmt.where(InvestmentReport.status == status)
         if report_type is not None:
             stmt = stmt.where(InvestmentReport.report_type == report_type)
+        if created_by_profiles:
+            stmt = stmt.where(
+                InvestmentReport.created_by_profile.in_(created_by_profiles)
+            )
+        if exclude_statuses:
+            stmt = stmt.where(InvestmentReport.status.not_in(exclude_statuses))
         return stmt
 
     # ------------------------------------------------------------------
