@@ -33,25 +33,32 @@ async def _clean(db_session):
 @pytest.mark.asyncio
 async def test_get_or_create_is_idempotent_and_tracks_rename(db_session):
     sid1 = await get_or_create_sector(
-        db_session, market="kr", source="naver_upjong",
-        source_key="999278", name_kr="반도체와반도체장비",
+        db_session,
+        market="kr",
+        source="naver_upjong",
+        source_key="999278",
+        name_kr="반도체와반도체장비",
     )
     sid2 = await get_or_create_sector(
-        db_session, market="kr", source="naver_upjong",
-        source_key="999278", name_kr="반도체와반도체장비",
+        db_session,
+        market="kr",
+        source="naver_upjong",
+        source_key="999278",
+        name_kr="반도체와반도체장비",
     )
     assert sid1 == sid2  # 동일 키 → 같은 id
 
     # 개명 추적: 같은 키, 새 이름 → 같은 id, name_kr 갱신
     sid3 = await get_or_create_sector(
-        db_session, market="kr", source="naver_upjong",
-        source_key="999278", name_kr="반도체",
+        db_session,
+        market="kr",
+        source="naver_upjong",
+        source_key="999278",
+        name_kr="반도체",
     )
     assert sid3 == sid1
     row = (
-        await db_session.execute(
-            sa.select(SymbolSector).where(SymbolSector.id == sid1)
-        )
+        await db_session.execute(sa.select(SymbolSector).where(SymbolSector.id == sid1))
     ).scalar_one()
     assert row.name_kr == "반도체"
 
@@ -60,8 +67,11 @@ async def test_get_or_create_is_idempotent_and_tracks_rename(db_session):
 async def test_get_or_create_rejects_unknown_market(db_session):
     with pytest.raises(ValueError):
         await get_or_create_sector(
-            db_session, market="crypto", source="naver_upjong",
-            source_key="9991", name_kr="x",
+            db_session,
+            market="crypto",
+            source="naver_upjong",
+            source_key="9991",
+            name_kr="x",
         )
 
 
@@ -74,13 +84,19 @@ async def test_assign_updates_existing_symbol_and_ignores_missing(db_session):
     )
     await db_session.flush()
     sid = await get_or_create_sector(
-        db_session, market="kr", source="naver_upjong",
-        source_key="999285", name_kr="방송과엔터테인먼트",
+        db_session,
+        market="kr",
+        source="naver_upjong",
+        source_key="999285",
+        name_kr="방송과엔터테인먼트",
     )
 
-    assert await assign_symbol_sector(
-        db_session, market="kr", symbol=_TEST_SYMBOL, sector_id=sid
-    ) is True
+    assert (
+        await assign_symbol_sector(
+            db_session, market="kr", symbol=_TEST_SYMBOL, sector_id=sid
+        )
+        is True
+    )
     row = (
         await db_session.execute(
             sa.select(KRSymbolUniverse).where(KRSymbolUniverse.symbol == _TEST_SYMBOL)
@@ -90,6 +106,9 @@ async def test_assign_updates_existing_symbol_and_ignores_missing(db_session):
     assert row.sector_updated_at is not None
 
     # 미존재 심볼 → False, INSERT 없음 (universe 생성은 sync 책임)
-    assert await assign_symbol_sector(
-        db_session, market="kr", symbol="917999", sector_id=sid
-    ) is False
+    assert (
+        await assign_symbol_sector(
+            db_session, market="kr", symbol="917999", sector_id=sid
+        )
+        is False
+    )

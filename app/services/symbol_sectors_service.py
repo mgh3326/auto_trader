@@ -46,12 +46,13 @@ async def get_or_create_sector(
     await db.execute(
         pg_insert(SymbolSector)
         .values(
-            market=market, source=source, source_key=source_key,
-            name_kr=name_kr, name_en=name_en,
+            market=market,
+            source=source,
+            source_key=source_key,
+            name_kr=name_kr,
+            name_en=name_en,
         )
-        .on_conflict_do_nothing(
-            constraint="uq_symbol_sectors_market_source_key"
-        )
+        .on_conflict_do_nothing(constraint="uq_symbol_sectors_market_source_key")
     )
     row = (
         await db.execute(

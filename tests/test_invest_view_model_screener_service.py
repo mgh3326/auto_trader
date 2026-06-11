@@ -264,7 +264,9 @@ async def test_consecutive_gainers_rows_carry_master_sector() -> None:
         [
             _FakeExecuteResult(scalar_rows=[snapshot_date]),  # resolve (fixture pop)
             _FakeExecuteResult(
-                scalar_rows=[_FakeSnapshot(symbol="005930", snapshot_date=snapshot_date)]
+                scalar_rows=[
+                    _FakeSnapshot(symbol="005930", snapshot_date=snapshot_date)
+                ]
             ),
             _FakeExecuteResult(
                 rows=[_name_sector_row("005930", "삼성전자", "반도체와반도체장비")]

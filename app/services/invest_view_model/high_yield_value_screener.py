@@ -171,7 +171,9 @@ async def load_high_yield_value_from_snapshots(
                 )
             }
         except Exception as exc:  # noqa: BLE001
-            logger.warning("high_yield_value: name lookup failed: %s", exc, exc_info=True)
+            logger.warning(
+                "high_yield_value: name lookup failed: %s", exc, exc_info=True
+            )
 
     # Imported inside the function to avoid a circular import at module load.
     from app.services.invest_view_model.screener_service import (

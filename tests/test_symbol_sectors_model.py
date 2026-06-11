@@ -31,16 +31,22 @@ async def _clean(db_session):
 @pytest.mark.asyncio
 async def test_symbol_sector_roundtrip_and_universe_fk(db_session):
     sector = SymbolSector(
-        market="kr", source="naver_upjong", source_key="999278",
-        name_kr="반도체와반도체장비", name_en=None,
+        market="kr",
+        source="naver_upjong",
+        source_key="999278",
+        name_kr="반도체와반도체장비",
+        name_en=None,
     )
     db_session.add(sector)
     await db_session.flush()
 
     db_session.add(
         KRSymbolUniverse(
-            symbol=_TEST_SYMBOL, name="테스트반도체", exchange="KOSPI",
-            is_active=True, sector_id=sector.id,
+            symbol=_TEST_SYMBOL,
+            name="테스트반도체",
+            exchange="KOSPI",
+            is_active=True,
+            sector_id=sector.id,
             sector_updated_at=dt.datetime(2026, 6, 11, tzinfo=dt.UTC),
         )
     )
@@ -59,13 +65,18 @@ async def test_symbol_sector_roundtrip_and_universe_fk(db_session):
 @pytest.mark.asyncio
 async def test_symbol_sector_unique_market_source_key(db_session):
     db_session.add(
-        SymbolSector(market="kr", source="naver_upjong", source_key="999278",
-                     name_kr="반도체와반도체장비")
+        SymbolSector(
+            market="kr",
+            source="naver_upjong",
+            source_key="999278",
+            name_kr="반도체와반도체장비",
+        )
     )
     await db_session.flush()
     db_session.add(
-        SymbolSector(market="kr", source="naver_upjong", source_key="999278",
-                     name_kr="중복")
+        SymbolSector(
+            market="kr", source="naver_upjong", source_key="999278", name_kr="중복"
+        )
     )
     with pytest.raises(sa.exc.IntegrityError):
         await db_session.flush()

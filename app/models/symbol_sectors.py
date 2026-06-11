@@ -19,7 +19,9 @@ class SymbolSector(Base):
     __tablename__ = "symbol_sectors"
     __table_args__ = (
         UniqueConstraint(
-            "market", "source", "source_key",
+            "market",
+            "source",
+            "source_key",
             name="uq_symbol_sectors_market_source_key",
         ),
     )
@@ -34,6 +36,8 @@ class SymbolSector(Base):
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=func.now(),
-        onupdate=func.now(), nullable=False,
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )

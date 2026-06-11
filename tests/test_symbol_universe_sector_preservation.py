@@ -6,8 +6,6 @@ kr/us _apply_snapshot 둘 다 name/exchange(/nxt_eligible/name_kr/name_en)/is_ac
 
 from __future__ import annotations
 
-import datetime as dt
-
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
@@ -49,8 +47,11 @@ async def _clean(db_session):
 
 async def _make_sector(db_session, market: str) -> int:
     sector = SymbolSector(
-        market=market, source="naver_upjong" if market == "kr" else "yfinance_industry",
-        source_key="999300", name_kr="테스트업종", name_en="TestIndustry",
+        market=market,
+        source="naver_upjong" if market == "kr" else "yfinance_industry",
+        source_key="999300",
+        name_kr="테스트업종",
+        name_en="TestIndustry",
     )
     db_session.add(sector)
     await db_session.flush()
@@ -62,8 +63,11 @@ async def test_kr_sync_preserves_sector_id(db_session):
     sid = await _make_sector(db_session, "kr")
     db_session.add(
         KRSymbolUniverse(
-            symbol=_KR_SYMBOL, name="옛이름", exchange="KOSPI",
-            is_active=True, sector_id=sid,
+            symbol=_KR_SYMBOL,
+            name="옛이름",
+            exchange="KOSPI",
+            is_active=True,
+            sector_id=sid,
         )
     )
     await db_session.flush()
@@ -73,8 +77,11 @@ async def test_kr_sync_preserves_sector_id(db_session):
     # 세션 내 flush 후 rollback 가능하도록 commit하지 않는다)
     await kr_apply_snapshot(
         db_session,
-        {_KR_SYMBOL: KRRow(symbol=_KR_SYMBOL, name="새이름", exchange="KOSPI",
-                           nxt_eligible=False)},
+        {
+            _KR_SYMBOL: KRRow(
+                symbol=_KR_SYMBOL, name="새이름", exchange="KOSPI", nxt_eligible=False
+            )
+        },
     )
     row = (
         await db_session.execute(
@@ -91,16 +98,23 @@ async def test_us_sync_preserves_sector_id(db_session):
     sid = await _make_sector(db_session, "us")
     db_session.add(
         USSymbolUniverse(
-            symbol=_US_SYMBOL, exchange="NASDAQ", name_kr="옛", name_en="Old",
-            is_active=True, sector_id=sid,
+            symbol=_US_SYMBOL,
+            exchange="NASDAQ",
+            name_kr="옛",
+            name_en="Old",
+            is_active=True,
+            sector_id=sid,
         )
     )
     await db_session.flush()
 
     await us_apply_snapshot(
         db_session,
-        {_US_SYMBOL: USRow(symbol=_US_SYMBOL, exchange="NASDAQ",
-                           name_kr="새", name_en="New")},
+        {
+            _US_SYMBOL: USRow(
+                symbol=_US_SYMBOL, exchange="NASDAQ", name_kr="새", name_en="New"
+            )
+        },
     )
     row = (
         await db_session.execute(
