@@ -620,6 +620,11 @@ async def test_get_quote_korean_equity_regular_session_skips_nxt_orderbook(
         lambda *a, **k: DATA_STATE_FRESH,
     )
     monkeypatch.setattr(
+        market_data_quotes,
+        "now_kst",
+        lambda: pd.Timestamp("2026-06-11 10:00:00", tz="Asia/Seoul").to_pydatetime(),
+    )
+    monkeypatch.setattr(
         market_data_quotes.market_data_service,
         "get_orderbook",
         get_orderbook_mock,

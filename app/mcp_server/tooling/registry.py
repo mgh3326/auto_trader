@@ -69,6 +69,9 @@ from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
 from app.mcp_server.tooling.news_registration import register_news_tools
+from app.mcp_server.tooling.operating_briefing_registration import (
+    register_operating_briefing_tools,
+)
 from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
     register_kis_mock_order_tools,
@@ -87,9 +90,6 @@ from app.mcp_server.tooling.paper_journal_registration import (
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
-)
-from app.mcp_server.tooling.operating_briefing_registration import (
-    register_operating_briefing_tools,
 )
 from app.mcp_server.tooling.trade_journal_registration import (
     register_trade_journal_tools,
