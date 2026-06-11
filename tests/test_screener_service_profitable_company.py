@@ -262,6 +262,7 @@ async def test_undervalued_breakout_routes_to_fundamentals_loader(monkeypatch):
                     "pbr": 0.8,
                     "week_high_52": 100.0,
                     "high_52w_proximity": 0.96,
+                    "new_high_age_trading_days": 8,
                     "snapshot_date": dt.date(2026, 6, 4),
                     "_screener_snapshot_state": "fresh",
                 }
@@ -282,6 +283,7 @@ async def test_undervalued_breakout_routes_to_fundamentals_loader(monkeypatch):
     )
     assert captured["preset_id"] == "undervalued_breakout"  # registry routed the spec
     assert [r.symbol for r in result.results] == ["907001"]
+    assert result.results[0].metricValueLabel == "8거래일"
     assert result.freshness.primary.source == _FUNDAMENTALS_SOURCE
     # now consistent with the 7 fundamentals presets: a fundamentals dependency IS
     # attached.

@@ -1149,7 +1149,7 @@ _METRIC_FIELD: dict[str, str] = {
     "kr_high_volume_surge": "volume",
     "growth_expectation": "change_rate",
     "high_yield_value": "roe",
-    "undervalued_breakout": "high_52w_proximity",
+    "undervalued_breakout": "new_high_age_trading_days",
     "investor_flow_momentum": "foreign_net",
     "double_buy": "change_rate",  # NEW — placeholder; Task 3 wires snapshot-first branch
     "crypto_high_volume": "trade_amount_24h",
@@ -1424,6 +1424,8 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return "-", [f"{field.upper()} 데이터 준비중"]
     if field == "consecutive_up_days":
         return f"{int(value)}일", []
+    if field == "new_high_age_trading_days":
+        return f"{int(value)}거래일", []
     if field in ("week_change_rate", "change_rate"):
         sign = "+" if value > 0 else ""
         return f"{sign}{value:.2f}%", []
