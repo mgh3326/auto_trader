@@ -1282,6 +1282,16 @@ def _format_market_cap(row: dict[str, Any], market: str) -> tuple[str, list[str]
     return _format_market_cap_kr(market_cap), warnings
 
 
+def _market_cap_value(row: dict[str, Any], market: str) -> float | None:
+    if market in {"us", "crypto"}:
+        market_cap = _coerce_float(row.get("market_cap_usd"))
+        if market_cap is None:
+            market_cap = _coerce_float(row.get("market_cap"))
+        return market_cap if market_cap is not None and market_cap > 0 else None
+    market_cap, _warnings = _normalize_market_cap_krw(row, market)
+    return market_cap
+
+
 def _format_volume(volume: float | None) -> str:
     if volume is None:
         return "-"
@@ -2376,6 +2386,8 @@ async def build_screener_results(
         metric_label, metric_warnings = _metric_value_label(preset_id, row)
         relation = resolver.relation(market, symbol)
         is_watched = relation in ("watchlist", "both")
+        is_held = relation in ("held", "both")
+        market_cap_value = _market_cap_value(row, market)
         row_warnings = symbol_warnings + market_cap_warnings + metric_warnings
         source_context = (
             _crypto_row_source_context(
@@ -2393,6 +2405,8 @@ async def build_screener_results(
                 name=_kr_names.get(symbol) or _clean_text(row.get("name")) or symbol,
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
+                isHeld=is_held,
+                matchedPresets=[preset_id],
                 priceLabel=_format_crypto_price(
                     _coerce_float(
                         row.get("close") or row.get("price") or row.get("current_price")
@@ -2417,6 +2431,7 @@ async def build_screener_results(
                 changeDirection=direction,
                 category=str(row.get("sector") or row.get("category") or "-"),
                 marketCapLabel=market_cap_label,
+                marketCapValue=market_cap_value,
                 volumeLabel=_format_volume_label(row, market),
                 analystLabel=str(row.get("analyst_label") or "-"),
                 metricValueLabel=metric_label,
