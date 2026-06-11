@@ -16,7 +16,10 @@ from app.schemas.investment_reports import (
     InvestmentWatchAlertResponse,
 )
 from app.schemas.session_context import SessionContextResponse
-from app.services.investment_reports.query_service import InvestmentReportQueryService
+from app.services.investment_reports.query_service import (
+    InvestmentReportQueryService,
+    _advisory_draft_profiles,
+)
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.session_context import SessionContextService
 
@@ -134,9 +137,19 @@ async def _latest_report_summary(
     account_scope: str,
 ) -> dict[str, Any] | None:
     service = InvestmentReportQueryService(db)
-    report = await service.latest_report(
+    reports = await service.list_reports(
         market=market,
         account_scope=account_scope,
+        limit=20,
+    )
+    advisory_profiles = _advisory_draft_profiles()
+    report = next(
+        (
+            row
+            for row in reports
+            if getattr(row, "created_by_profile", None) in advisory_profiles
+        ),
+        None,
     )
     if report is None:
         return None
@@ -162,6 +175,7 @@ async def _latest_report_summary(
         "report_uuid": str(report.report_uuid),
         "title": report.title,
         "status": report.status,
+        "created_by_profile": report.created_by_profile,
         "created_at": report.created_at.isoformat() if report.created_at else None,
         "items": {
             "total": len(items),

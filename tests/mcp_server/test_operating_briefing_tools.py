@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -176,6 +177,63 @@ async def test_get_operating_briefing_composes_all_sections(
     assert result["latest_report"]["title"] == "latest plan"
     assert result["session_context"]["entries"][0]["title"] == "handoff"
     assert result["staleness"]["pending_orders"]["freshness_status"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_latest_report_summary_skips_non_advisory_newer_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    smoke_report = SimpleNamespace(
+        report_uuid=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        title="newer smoke",
+        status="draft",
+        created_at=datetime(2026, 6, 11, 2, 0, tzinfo=UTC),
+        created_by_profile="test",
+    )
+    advisory_report = SimpleNamespace(
+        report_uuid=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        title="latest advisory",
+        status="draft",
+        created_at=datetime(2026, 6, 11, 1, 0, tzinfo=UTC),
+        created_by_profile="CLAUDE_ADVISOR",
+    )
+    advisory_item = SimpleNamespace(
+        item_uuid=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+        symbol="005930",
+        item_kind="action",
+        intent="buy_review",
+        status="approved",
+        rationale="advisory item",
+    )
+
+    class FakeQueryService:
+        def __init__(self, db):
+            self.db = db
+
+        async def list_reports(self, **kwargs):
+            assert kwargs["market"] == "kr"
+            assert kwargs["account_scope"] == "kis_live"
+            assert kwargs["limit"] == 20
+            return [smoke_report, advisory_report]
+
+        async def get_bundle(self, report_uuid):
+            assert report_uuid == advisory_report.report_uuid
+            return {"items": [advisory_item]}
+
+    monkeypatch.setattr(ob, "InvestmentReportQueryService", FakeQueryService)
+
+    summary = await ob._latest_report_summary(
+        object(),
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    assert summary is not None
+    assert summary["report_uuid"] == str(advisory_report.report_uuid)
+    assert summary["title"] == "latest advisory"
+    assert summary["items"]["by_status"] == {"approved": 1}
 
 
 @pytest.mark.asyncio
