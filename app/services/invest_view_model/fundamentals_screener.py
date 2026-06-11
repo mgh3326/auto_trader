@@ -441,16 +441,37 @@ async def load_fundamentals_preset_from_snapshots(
     symbols = [m["symbol"] for m in cand_mappings]
 
     name_map: dict[str, str] = {}
+    sector_map: dict[str, str] = {}
     if (
         market == "kr" and symbols
     ):  # ROB-441 PR3: KR name/common-stock filter is KR-only
+        from app.models.symbol_sectors import SymbolSector
+
         names = await session.execute(
-            sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+            sa.select(
+                KRSymbolUniverse.symbol,
+                KRSymbolUniverse.name,
+                SymbolSector.name_kr.label("sector_name_kr"),
+                SymbolSector.name_en.label("sector_name_en"),
+            )
+            .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+            .where(
                 KRSymbolUniverse.symbol.in_(symbols),
                 KRSymbolUniverse.is_active.is_(True),
             )
         )
-        name_map = {r.symbol: r.name for r in names.all()}
+        _name_rows = names.all()
+        name_map = {r.symbol: r.name for r in _name_rows}
+        sector_map = {
+            row.symbol: label
+            for row in _name_rows
+            if (
+                label := (
+                    getattr(row, "sector_name_kr", None)
+                    or getattr(row, "sector_name_en", None)
+                )
+            )
+        }
 
     # common-stock filter (drop ETF/preferred) + symbol dedup (defensive: KR is single-source
     # today, but a future second valuation source must not produce duplicate candidates).
@@ -463,7 +484,13 @@ async def load_fundamentals_preset_from_snapshots(
         if market == "kr" and not _is_kr_toss_common_stock(sym, name_map.get(sym)):
             continue
         seen.add(sym)
-        valuation_rows.append({**dict(m), "_screener_snapshot_state": val_state})
+        valuation_rows.append(
+            {
+                **dict(m),
+                "sector": sector_map.get(sym),
+                "_screener_snapshot_state": val_state,
+            }
+        )
 
     repo = FinancialFundamentalsSnapshotsRepository(session)
     period_rows = await repo.latest_periods_for_symbols(
