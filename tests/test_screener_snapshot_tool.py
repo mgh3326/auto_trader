@@ -7,6 +7,7 @@ filter parsing → conditions, catalog exposure, threading, fail-soft on bad inp
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -256,3 +257,100 @@ async def test_enriches_only_returned_page(monkeypatch) -> None:
     assert len(out["results"]) == 2
     assert out["results"][0]["analysisContext"]["rsi14"] == pytest.approx(58.0)
     assert out["analysisEnrichment"]["attempted"] == 2
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_marks_kis_live_held_rows(monkeypatch) -> None:
+    class _HeldResp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {
+                        "rank": 1,
+                        "symbol": "005930",
+                        "market": "kr",
+                        "name": "삼성전자",
+                        "isWatched": False,
+                        "isHeld": True,
+                        "matchedPresets": ["consecutive_gainers"],
+                        "marketCapValue": 478_000_000_000_000.0,
+                    }
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**kwargs: Any) -> _HeldResp:
+        resolver = kwargs["resolver"]
+        assert resolver.relation("kr", "005930") == "held"
+        return _HeldResp()
+
+    async def _fake_collect_kis_positions(market_filter: str | None, *, is_mock: bool = False):
+        assert market_filter == "equity_kr"
+        assert is_mock is False
+        return ([{"market": "kr", "symbol": "005930"}], [])
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _fake_collect_kis_positions,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        limit=10,
+    )
+
+    assert out["results"][0]["isHeld"] is True
+    assert "holdings" in out
+    assert out["holdings"]["source"] == "kis_live"
+    assert out["holdings"]["held_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(monkeypatch) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [{"rank": 1, "symbol": "005930", "market": "kr"}],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    async def _fail_collect_kis_positions(market_filter: str | None, *, is_mock: bool = False):
+        raise RuntimeError("kis unavailable")
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _fail_collect_kis_positions,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+    )
+
+    assert out["results"][0]["symbol"] == "005930"
+    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
+    assert out["holdings"]["source"] == "kis_live"
+    assert out["holdings"]["status"] == "error"

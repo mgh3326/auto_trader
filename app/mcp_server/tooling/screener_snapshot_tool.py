@@ -12,21 +12,24 @@ return their default snapshot results (and say so), expanding as more presets ge
 
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 
+logger = logging.getLogger(__name__)
 
-class _NoopResolver:
-    """MCP candidate-discovery has no user context, so nothing is 'watched'.
 
-    build_screener_results only needs ``relation(market, symbol) -> str``; returning
-    "none" makes every row isWatched=False (no user personalization in MCP)."""
+class _HeldResolver:
+    """Held-aware resolver for MCP.マーク rows as held via KIS live positions."""
+
+    def __init__(self, held_symbols: set[str]) -> None:
+        self._h = held_symbols
 
     def relation(self, market: str, symbol: str) -> str:  # noqa: ARG002
-        return "none"
+        return "held" if symbol.upper() in self._h else "none"
 
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
@@ -109,6 +112,23 @@ async def screen_stocks_snapshot_impl(
     )
     from app.services.invest_view_model.screener_service import build_screener_results
     from app.services.screener_service import ScreenerService
+    from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
+
+    # ROB-515: mark 'held' rows in screener results via KIS live positions.
+    # (Watchlist personalization is still omitted for discovery MCP).
+    held_symbols: set[str] = set()
+    holdings_meta = {"source": "kis_live", "status": "ok", "held_count": 0}
+    if market == "kr":
+        try:
+            # MCP always runs live (is_mock=False)
+            pos, _w = await _collect_kis_positions("equity_kr", is_mock=False)
+            held_symbols = {str(p.get("symbol")).upper() for p in pos if p.get("symbol")}
+            holdings_meta["held_count"] = len(held_symbols)
+        except Exception as exc:  # noqa: BLE001
+            holdings_meta["status"] = "error"
+            # surface as a non-fatal warning so results still return
+            # (build_screener_results takes resolver as non-optional, so fall back to noop)
+            logger.warning("screener_snapshot: kis holdings failed: %s", exc)
 
     available = _available_filters(preset)
     snapshot_kind = snapshot_kind_for_preset(preset)
@@ -136,7 +156,7 @@ async def screen_stocks_snapshot_impl(
             resp = await build_screener_results(
                 preset_id=preset,
                 screening_service=ScreenerService(),
-                resolver=_NoopResolver(),
+                resolver=_HeldResolver(held_symbols),
                 market=market,
                 session=db,
                 filter_overrides=conditions or None,
@@ -155,6 +175,12 @@ async def screen_stocks_snapshot_impl(
         {"field": c.field, "operator": c.operator, "value": c.value} for c in conditions
     ]
     payload["snapshotKind"] = snapshot_kind
+    payload["holdings"] = holdings_meta
+    if holdings_meta["status"] == "error":
+        _ws = list(payload.get("warnings") or [])
+        _ws.append("KIS live 보유종목 확인 실패 — 보유 여부가 표시되지 않을 수 있습니다.")
+        payload["warnings"] = _ws
+
     # ROB-445: warn whenever filters were passed but NOT actually threaded for the
     # resolved (preset, market) — REGARDLESS of snapshotKind. The old `snapshot_kind
     # is None` predicate let high_yield_value (kind=market_valuation_snapshots, but
