@@ -124,6 +124,12 @@ async def screen_stocks_snapshot_impl(
     preset: str,
     market: str = "kr",
     filters: list[dict[str, Any]] | None = None,
+    exclude_watched: bool = False,
+    exclude_held: bool = False,
+    min_analyst_buy_count: int | None = None,
+    min_market_cap_eok: float | None = None,
+    max_market_cap_eok: float | None = None,
+    sort: Literal["matched_presets_desc"] | None = None,
     limit: int = _DEFAULT_RESULT_LIMIT,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -132,6 +138,12 @@ async def screen_stocks_snapshot_impl(
     filters: list of {"field", "operator" (gte|lte|eq), "value"} conditions applied
     on top of the preset's starting set (adjust same field, add new). Returns the
     screener payload plus availableFilters (the adjustable catalog) and appliedFilters.
+
+    exclude_watched/held: ROB-515 discovery workflow — hide already-processed symbols.
+    min_analyst_buy_count: ROB-515 quality filter — consensus-buy count threshold.
+    min/max_market_cap_eok: ROB-515 size filter — unit is 1억원 (KRW).
+
+    sort: "matched_presets_desc" ranks multi-preset intersections first.
 
     limit/offset: ROB-465 — results are capped (default 40, max 200) and paginated
     at the tool boundary to keep responses inside the MCP token budget. The full
@@ -222,6 +234,34 @@ async def screen_stocks_snapshot_impl(
             "results": [],
         }
 
+    # Discovery filters (exclude)
+    if exclude_watched:
+        merged_results = [r for r in merged_results if not r.get("isWatched")]
+    if exclude_held:
+        merged_results = [r for r in merged_results if not r.get("isHeld")]
+
+    # Discovery filters (market cap) — unit is 1억원
+    if min_market_cap_eok is not None:
+        min_val = float(min_market_cap_eok) * 100_000_000
+        merged_results = [
+            r
+            for r in merged_results
+            if (r.get("marketCapValue") or 0) >= min_val
+        ]
+    if max_market_cap_eok is not None:
+        max_val = float(max_market_cap_eok) * 100_000_000
+        merged_results = [
+            r
+            for r in merged_results
+            if (r.get("marketCapValue") or 0) <= max_val
+        ]
+
+    # Intersection sort
+    if sort == "matched_presets_desc":
+        merged_results.sort(
+            key=lambda r: len(r.get("matchedPresets") or []), reverse=True
+        )
+
     # ROB-445: warn whenever filters were passed but NOT actually threaded for the
     # resolved (preset, market) — REGARDLESS of snapshotKind.
     if threaded_warned_presets:
@@ -254,7 +294,38 @@ async def screen_stocks_snapshot_impl(
     total_available = len(all_results)
     eff_limit = max(1, min(int(limit), _MAX_RESULT_LIMIT))
     eff_offset = max(0, int(offset))
-    page = all_results[eff_offset : eff_offset + eff_limit]
+
+    # ROB-515: if analyst filtering is requested, we must enrich BEFORE pagination
+    # so we can filter on the enriched buyCount across the whole set.
+    if min_analyst_buy_count is not None:
+        from app.services.invest_view_model.screener_analysis_enrichment import (
+            enrich_snapshot_page,
+        )
+
+        enrichment = await enrich_snapshot_page(
+            rows=all_results,
+            market=market,
+            session_factory=_session_factory(),
+        )
+        all_results = enrichment["results"]
+        # Update match total after analyst filter
+        min_buy = int(min_analyst_buy_count)
+        all_results = [
+            r
+            for r in all_results
+            if (
+                r.get("analysisContext", {})
+                .get("consensus", {})
+                .get("buyCount")
+                 or 0
+            ) >= min_buy
+        ]
+        total_available = len(all_results)
+        page = all_results[eff_offset : eff_offset + eff_limit]
+        payload["analysisEnrichment"] = enrichment["summary"]
+    else:
+        page = all_results[eff_offset : eff_offset + eff_limit]
+
     next_offset = eff_offset + len(page)
     payload["results"] = page
     payload["pagination"] = {
@@ -266,16 +337,17 @@ async def screen_stocks_snapshot_impl(
         "next_offset": next_offset if next_offset < total_available else None,
     }
 
-    from app.services.invest_view_model.screener_analysis_enrichment import (
-        enrich_snapshot_page,
-    )
+    if min_analyst_buy_count is None:
+        from app.services.invest_view_model.screener_analysis_enrichment import (
+            enrich_snapshot_page,
+        )
 
-    enrichment = await enrich_snapshot_page(
-        rows=page,
-        market=market,
-        session_factory=_session_factory(),
-    )
-    payload["results"] = enrichment["results"]
-    payload["analysisEnrichment"] = enrichment["summary"]
+        enrichment = await enrich_snapshot_page(
+            rows=page,
+            market=market,
+            session_factory=_session_factory(),
+        )
+        payload["results"] = enrichment["results"]
+        payload["analysisEnrichment"] = enrichment["summary"]
 
     return payload

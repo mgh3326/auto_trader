@@ -403,3 +403,140 @@ async def test_snapshot_tool_merges_multiple_presets(monkeypatch) -> None:
     # warnings should be combined
     assert "warn_preset_a" in out["warnings"]
     assert "warn_preset_b" in out["warnings"]
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "S1", "isWatched": True, "isHeld": False},
+                    {"symbol": "S2", "isWatched": False, "isHeld": True},
+                    {"symbol": "S3", "isWatched": False, "isHeld": False},
+                ],
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    async def _fake_build_async(**kwargs: Any) -> _Resp:
+        return _Resp()
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build_async,
+    )
+
+    # Exclude watched -> S1 gone
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", exclude_watched=True
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S2", "S3"]
+
+    # Exclude held -> S2 gone
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", exclude_held=True
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S1", "S3"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "S1", "marketCapValue": 500_000_000_000.0}, # 5000억
+                    {"symbol": "S2", "marketCapValue": 200_000_000_000.0}, # 2000억
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    async def _fake_enrich_page(*, rows: list[dict[str, Any]], **kwargs: Any):
+        # S1 has 2 buy ratings, S2 has 0
+        enriched = []
+        for r in rows:
+            buy_count = 2 if r["symbol"] == "S1" else 0
+            enriched.append({
+                **r,
+                "analysisContext": {"consensus": {"buyCount": buy_count, "totalCount": buy_count}}
+            })
+        return {"results": enriched, "summary": {"warnings": []}}
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
+        _fake_enrich_page,
+    )
+
+    # Min market cap 3000억 -> S2 gone
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", min_market_cap_eok=3000
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S1"]
+
+    # Min analyst buy 1 -> S2 gone
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", min_analyst_buy_count=1
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S1"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_sorts_by_matched_presets_desc(monkeypatch) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "S1", "matchedPresets": ["A"]},
+                    {"symbol": "S2", "matchedPresets": ["A", "B"]}, # Intersection
+                    {"symbol": "S3", "matchedPresets": ["A"]},
+                ],
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    async def _fake_build_sort(**kwargs: Any) -> _Resp:
+        pid = kwargs["preset_id"]
+        # S2 is in both A and B, S1 only in A, S3 only in B
+        if pid == "A":
+            rows = [{"symbol": "S1"}, {"symbol": "S2"}]
+        else:
+            rows = [{"symbol": "S2"}, {"symbol": "S3"}]
+        
+        class _DynamicResp:
+            def model_dump(self, mode: str | None = None) -> dict[str, Any]:
+                return {"presetId": pid, "results": rows, "warnings": []}
+        return _DynamicResp()
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build_sort,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="A,B", market="kr", sort="matched_presets_desc"
+    )
+    # S2 should be first (matched 2 presets)
+    assert out["results"][0]["symbol"] == "S2"
+    assert len(out["results"][0]["matchedPresets"]) == 2
