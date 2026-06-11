@@ -760,7 +760,13 @@ async def investment_report_activate_watch_impl(
         recommendation_attach_error: str | None = None
 
         if request.attach_recommendation and item_row is not None:
-            if item_row.watch_recommendation:
+            gate_error = _watch_recommendation_verdict_error(
+                item_row, action="attach_recommendation"
+            )
+            if gate_error is not None:
+                recommendation_attached = False
+                recommendation_attach_error = gate_error
+            elif item_row.watch_recommendation:
                 recommendation_attached = True
             elif item_row.symbol is None:
                 recommendation_attached = False
@@ -798,6 +804,20 @@ async def investment_report_activate_watch_impl(
 # ---------------------------------------------------------------------------
 _RECOMMEND_VERDICTS = {"watch_only", "limit_wait"}
 _MARKET_MAP = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
+
+
+def _watch_recommendation_verdict_error(item: Any, *, action: str) -> str | None:
+    verdict = None
+    evidence_snapshot = getattr(item, "evidence_snapshot", None)
+    if isinstance(evidence_snapshot, dict):
+        verdict = evidence_snapshot.get("action_verdict")
+    if verdict not in _RECOMMEND_VERDICTS:
+        return (
+            f"{action} requires item action_verdict in "
+            f"{{watch_only, limit_wait}}; got {verdict!r}"
+        )
+    return None
+
 
 
 def _normalize_recommend_symbol(symbol: str, market: str) -> str:
@@ -884,14 +904,9 @@ async def investment_watch_recommend_impl(
 
         if item_uuid is None or item is None:
             raise ValueError("commit=True requires an existing item_uuid")
-        verdict = None
-        if isinstance(item.evidence_snapshot, dict):
-            verdict = item.evidence_snapshot.get("action_verdict")
-        if verdict not in _RECOMMEND_VERDICTS:
-            raise ValueError(
-                "commit requires item action_verdict in {watch_only, limit_wait}; "
-                f"got {verdict!r}"
-            )
+        gate_error = _watch_recommendation_verdict_error(item, action="commit")
+        if gate_error is not None:
+            raise ValueError(gate_error)
         if rec_json.get("data_state") == "data_gap":
             raise ValueError("refusing to commit a data_gap recommendation")
 
