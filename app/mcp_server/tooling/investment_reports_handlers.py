@@ -272,62 +272,22 @@ def _serialise_context(
 # one. The pending_orders collector requires a concrete scope (kis_live /
 # upbit_live) to know which broker to query. Keep this mirroring the
 # collector's own supported pairs in pending_orders.py.
-_DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE: dict[str, str] = {
-    "kr": "kis_live",
-    "us": "kis_live",
-    "crypto": "upbit_live",
-}
-
-
 async def _collect_pending_orders_snapshot(
     db: Any,
     *,
     market: str,
     account_scope: str | None,
 ) -> list[dict[str, Any]] | None:
-    """ROB-274 — fetch the pending_orders snapshot for the context response.
-
-    Returns ``None`` when the collector is missing, reports unavailable/
-    stale, or the (market, account_scope) pair isn't supported. Returns
-    a (possibly empty) list when the broker reported successfully.
-    """
-    from app.services.action_report.snapshot_backed.collectors.registry import (
-        production_collector_registry,
+    from app.mcp_server.tooling.pending_orders_snapshot import (
+        collect_pending_orders_snapshot,
     )
-    from app.services.investment_snapshots.collectors import CollectorRequest
 
-    effective_scope = account_scope or _DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE.get(market)
-    if effective_scope is None:
-        return None
-
-    try:
-        registry = production_collector_registry(db)
-    except Exception:  # noqa: BLE001 — registry must never raise to caller
-        return None
-    collector = registry.get("pending_orders")
-    if collector is None:
-        return None
-
-    try:
-        results = await collector.collect(
-            CollectorRequest(
-                market=market,  # type: ignore[arg-type]
-                account_scope=effective_scope,  # type: ignore[arg-type]
-                policy_snapshot={},
-            )
-        )
-    except Exception:  # noqa: BLE001 — collector contract is fail-open
-        return None
-    if not results:
-        return None
-    result = results[0]
-    if result.freshness_status in ("unavailable", "hard_stale"):
-        return None
-    payload = result.payload_json or {}
-    orders = payload.get("pending_orders")
-    if orders is None:
-        return []
-    return list(orders)
+    snapshot = await collect_pending_orders_snapshot(
+        db,
+        market=market,
+        account_scope=account_scope,
+    )
+    return snapshot.orders
 
 
 def _validate_report_items(

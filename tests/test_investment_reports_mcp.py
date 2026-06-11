@@ -382,6 +382,104 @@ async def test_activate_watch_rejects_condition_override(
 
 
 @pytest.mark.asyncio
+async def test_list_active_watches_filters_market_symbol_and_expiry(
+    session: AsyncSession,
+) -> None:
+    import uuid
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.investment_reports import InvestmentWatchAlert
+    from app.services.investment_reports.repository import InvestmentReportsRepository
+
+    now = datetime(2026, 6, 11, 3, 0, tzinfo=UTC)
+    active_future = InvestmentWatchAlert(
+        idempotency_key="rob517:active:005930",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="above",
+        threshold=100000,
+        threshold_key="price:above:100000",
+        intent="trend_recovery_review",
+        action_mode="notify_only",
+        rationale="keep active",
+        trigger_checklist=[],
+        max_action={},
+        valid_until=now + timedelta(days=1),
+        status="active",
+    )
+    active_expired = InvestmentWatchAlert(
+        idempotency_key="rob517:expired:005930",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="below",
+        threshold=90000,
+        threshold_key="price:below:90000",
+        intent="risk_review",
+        action_mode="notify_only",
+        rationale="scanner lag row",
+        trigger_checklist=[],
+        max_action={},
+        valid_until=now - timedelta(minutes=1),
+        status="active",
+    )
+    inactive = InvestmentWatchAlert(
+        idempotency_key="rob517:triggered:005930",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="above",
+        threshold=110000,
+        threshold_key="price:above:110000",
+        intent="trend_recovery_review",
+        action_mode="notify_only",
+        rationale="already triggered",
+        trigger_checklist=[],
+        max_action={},
+        valid_until=now + timedelta(days=1),
+        status="triggered",
+    )
+
+    async with AsyncSessionLocal() as db:
+        db.add_all([active_future, active_expired, inactive])
+        await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        repo = InvestmentReportsRepository(db)
+        actionable = await repo.list_active_alerts(
+            market="kr",
+            symbol="005930",
+            valid_at=now,
+            include_expired_status_rows=False,
+            limit=100,
+        )
+        diagnostic = await repo.list_active_alerts(
+            market="kr",
+            symbol="005930",
+            valid_at=now,
+            include_expired_status_rows=True,
+            limit=100,
+        )
+
+    assert [a.idempotency_key for a in actionable] == ["rob517:active:005930"]
+    assert {a.idempotency_key for a in diagnostic} == {
+        "rob517:active:005930",
+        "rob517:expired:005930",
+    }
+
+
+@pytest.mark.asyncio
 async def test_context_get_aggregates_across_prior_reports(
     session: AsyncSession,
 ) -> None:
@@ -552,6 +650,58 @@ async def test_context_get_surfaces_pending_orders_unavailable_as_null(
     )
     assert ctx["success"] is True
     assert ctx["pending_orders"] is None
+
+
+@pytest.mark.asyncio
+async def test_context_get_pending_orders_shape_unchanged_after_shared_helper(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+) -> None:
+    import datetime as dt
+    from unittest.mock import AsyncMock
+
+    from app.services.investment_snapshots.collectors import (
+        SnapshotCollectorRegistry,
+        SnapshotCollectResult,
+    )
+
+    fake_orders = [{"symbol": "005930", "market": "kr", "expected_expiry": None}]
+    fake_result = SnapshotCollectResult(
+        snapshot_kind="pending_orders",
+        market="kr",
+        account_scope="kis_live",
+        source_kind="auto_trader_mcp",
+        payload_json={"pending_orders": fake_orders, "count": 1},
+        as_of=dt.datetime.now(tz=dt.UTC),
+        freshness_status="fresh",
+    )
+    fake_collector = AsyncMock()
+    fake_collector.snapshot_kind = "pending_orders"
+    fake_collector.collect = AsyncMock(return_value=[fake_result])
+
+    def _fake_registry(_db: object) -> SnapshotCollectorRegistry:
+        reg = SnapshotCollectorRegistry()
+        reg.register(fake_collector)
+        return reg
+
+    monkeypatch.setattr(
+        "app.services.action_report.snapshot_backed.collectors.registry."
+        "production_collector_registry",
+        _fake_registry,
+    )
+
+    await investment_report_create_impl(
+        items=[_action_item_dict()],
+        **_create_kwargs(market="kr", kst_date="2026-06-11"),
+    )
+
+    ctx = await investment_report_context_get_impl(
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    assert ctx["success"] is True
+    assert ctx["pending_orders"] == fake_orders
 
 
 # ---------------------------------------------------------------------------

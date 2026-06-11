@@ -1049,6 +1049,31 @@ class PreviousReportContextResponse(BaseModel):
     pending_orders: list[dict[str, Any]] | None = None
 
 
+class ActiveWatchesListResponse(BaseModel):
+    """``list_active_watches`` MCP return shape."""
+
+    success: Literal[True] = True
+    count: int
+    as_of: datetime
+    filters: dict[str, Any]
+    active_watches: list[InvestmentWatchAlertResponse]
+
+
+class OperatingBriefingResponse(BaseModel):
+    """``get_operating_briefing`` MCP return shape."""
+
+    success: Literal[True] = True
+    market: MarketLiteral
+    account_scope: AccountScopeLiteral
+    as_of: datetime
+    staleness: dict[str, Any]
+    holdings: dict[str, Any]
+    pending_orders: dict[str, Any]
+    active_watches: dict[str, Any]
+    latest_report: dict[str, Any] | None
+    session_context: dict[str, Any]
+
+
 class InvestmentReportCreateResponse(BaseModel):
     """``investment_report_create`` MCP return shape."""
 
