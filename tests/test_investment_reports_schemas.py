@@ -355,6 +355,32 @@ def test_ingest_item_validates_max_action_when_present():
         )
 
 
+def test_ingest_item_validates_max_action_for_legacy_watch_when_present() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IngestReportItem(
+            client_item_key="legacy-watch",
+            item_kind="watch",
+            intent="buy_review",
+            rationale="r",
+            symbol="005930",
+            watch_condition={"metric": "price", "operator": "below", "threshold": "5"},
+            valid_until="2026-12-31T00:00:00Z",
+            max_action={"side": "buy", "account_mode": "kis_mock"},
+        )
+
+    message = str(exc_info.value)
+    assert "max_action" in message
+    assert "quantity or notional" in message
+
+
+def test_max_action_requires_account_mode() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        MaxActionPayload(side="buy", quantity="10")
+
+    assert "account_mode" in str(exc_info.value)
+
+
+
 def test_auto_execute_mock_action_mode_flag_and_literal():
     from app.core.config import settings
     from app.schemas.investment_reports import WatchConditionPayload

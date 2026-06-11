@@ -157,6 +157,34 @@ def test_validate_report_items_rejects_unknown_keys():
     assert error["item_errors"][0]["errors"][0]["field"] == "entry_price"
 
 
+def test_validate_report_items_rejects_legacy_watch_bad_max_action():
+    _validated, error = h._validate_report_items(
+        [
+            {
+                "client_item_key": "legacy-watch",
+                "item_kind": "watch",
+                "intent": "buy_review",
+                "rationale": "r",
+                "symbol": "005930",
+                "watch_condition": {
+                    "metric": "price",
+                    "operator": "below",
+                    "threshold": "5",
+                },
+                "valid_until": "2026-12-31T00:00:00Z",
+                "max_action": {"side": "buy", "account_mode": "kis_mock"},
+            }
+        ]
+    )
+
+    assert error is not None
+    assert error["error"] == "invalid_items"
+    assert error["item_errors"][0]["index"] == 0
+    assert "max_action" in str(error["item_errors"][0]["errors"])
+    assert "quantity or notional" in str(error["item_errors"][0]["errors"])
+
+
+
 def test_create_description_documents_trade_plan_and_unknown_key_policy():
     desc = h.CREATE_DESCRIPTION
     assert "entry_plan" in desc
