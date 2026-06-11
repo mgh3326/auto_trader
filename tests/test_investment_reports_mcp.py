@@ -1250,6 +1250,36 @@ async def test_activate_watch_attach_recommendation_persists(
 
 
 @pytest.mark.asyncio
+async def test_activate_watch_attach_recommendation_rejects_non_watch_verdict(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "buy_review"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    response = await investment_report_activate_watch_impl(
+        item_uuid=watch_uuid,
+        actor="operator",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 70000},
+        valid_until=future_datetime().isoformat(),
+        attach_recommendation=True,
+    )
+
+    assert response["success"] is True
+    assert response["recommendation_attached"] is False
+    assert "watch_only" in response["recommendation_attach_error"]
+    assert "limit_wait" in response["recommendation_attach_error"]
+
+    bundle_post = await investment_report_get_impl(created["report"]["report_uuid"])
+    assert bundle_post["items"][0]["watch_recommendation"] is None
+
+
+@pytest.mark.asyncio
 async def test_activate_watch_attach_recommendation_fails_open(
     session: AsyncSession, monkeypatch
 ) -> None:
