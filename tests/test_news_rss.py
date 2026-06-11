@@ -515,7 +515,9 @@ class TestMCPNewsTools:
         assert "get_market_issues" in NEWS_TOOL_NAMES
 
     @pytest.mark.asyncio
-    async def test_get_market_news_carries_legacy_surface_notice(self, monkeypatch):
+    async def test_get_market_news_carries_quality_gated_surface_notice(
+        self, monkeypatch
+    ):
         from app.mcp_server.tooling import news_handlers
 
         async def _empty(**kwargs):
@@ -525,8 +527,11 @@ class TestMCPNewsTools:
             news_handlers, "get_news_articles", AsyncMock(side_effect=_empty)
         )
         result = await news_handlers._get_market_news_impl(hours=24, limit=20)
-        assert result["surface"] == "legacy_market_briefing"
+        # ROB-502: surface renamed legacy → quality-gated; empty windows are
+        # explicit degraded states rather than silent empty lists.
+        assert result["surface"] == "quality_gated_market_briefing"
         assert "investment-decision evidence" in result["advisory"]
+        assert result["status"] == "no_recent_articles"
 
     @pytest.mark.asyncio
     async def test_get_market_news_returns_sources_and_feed_sources(self):

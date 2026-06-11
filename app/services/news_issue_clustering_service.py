@@ -25,16 +25,26 @@ from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst_naive
 from app.models.news import NewsArticle
 from app.schemas.news_issues import (
+    IssueQualityGate,
     IssueSignals,
     MarketIssue,
     MarketIssueArticle,
     MarketIssueRelatedSymbol,
     MarketIssuesResponse,
 )
+from app.services.market_news_noise import classify_title_noise
 from app.services.news_entity_matcher import (
     SymbolMatch,
     match_symbols_for_article,
 )
+
+# ROB-502 meaningfulness gate: official/primary feeds whose items are market
+# signals even as single-article clusters.
+_IMPORTANT_FEED_SOURCES = {"rss_fed_press"}
+
+# Token-set Jaccard threshold for merging near-duplicate shingle clusters
+# (same story syndicated under slightly different titles).
+_NEAR_DUP_TOKEN_JACCARD = 0.5
 
 _DIR_POS_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:rise|raise|beat|surge|rally|up)(?![A-Za-z0-9])",
@@ -351,6 +361,65 @@ def _score(issue: MarketIssue) -> float:
     )
 
 
+def _merge_near_duplicate_shingle_clusters(
+    clusters: list[_Cluster], articles: list[NewsArticle]
+) -> tuple[list[_Cluster], int]:
+    """Merge shingle clusters whose title token sets overlap heavily.
+
+    The 3-gram shingle pass misses syndicated copies of the same story with
+    reworded titles (Jaccard on 3-grams collapses fast under word swaps); a
+    token-set pass catches them. Entity-keyed clusters are never merged —
+    distinct symbols are distinct issues by definition.
+    """
+    shingle = [c for c in clusters if not c.cluster_key.startswith("sym:")]
+    others = [c for c in clusters if c.cluster_key.startswith("sym:")]
+    token_sets = [
+        set(
+            _normalize_words(
+                " ".join(articles[i].title or "" for i in c.article_indexes)
+            )
+        )
+        for c in shingle
+    ]
+    merged_count = 0
+    used = [False] * len(shingle)
+    result: list[_Cluster] = []
+    for i, cluster in enumerate(shingle):
+        if used[i]:
+            continue
+        used[i] = True
+        base = cluster
+        for j in range(i + 1, len(shingle)):
+            if used[j] or not token_sets[i] or not token_sets[j]:
+                continue
+            inter = len(token_sets[i] & token_sets[j])
+            union = len(token_sets[i] | token_sets[j])
+            if union and inter / union >= _NEAR_DUP_TOKEN_JACCARD:
+                used[j] = True
+                merged_count += 1
+                other = shingle[j]
+                base = _Cluster(
+                    article_ids=base.article_ids + other.article_ids,
+                    article_indexes=base.article_indexes + other.article_indexes,
+                    matches=base.matches
+                    + [m for m in other.matches if m not in base.matches],
+                    cluster_key=base.cluster_key,
+                )
+        result.append(base)
+    return others + result, merged_count
+
+
+def _is_meaningful(issue: MarketIssue) -> bool:
+    """ROB-502 gate: multi-article OR multi-source OR official-feed item.
+
+    Single-article, single-source clusters are exactly the noise the
+    2026-06-10 live audit surfaced in the US top-5 (one-off MarketWatch
+    lifestyle pieces ranked as market issues purely on recency)."""
+    if issue.article_count >= 2 or issue.source_count >= 2:
+        return True
+    return any((a.feed_source or "") in _IMPORTANT_FEED_SOURCES for a in issue.articles)
+
+
 async def build_market_issues(
     *,
     market: str = "all",
@@ -358,19 +427,36 @@ async def build_market_issues(
     limit: int = 20,
     max_rows: int = 500,
 ) -> MarketIssuesResponse:
-    """Build a ranked list of `MarketIssue` for a given market window."""
-    articles = await _load_recent_articles(
+    """Build a ranked list of `MarketIssue` for a given market window.
+
+    ROB-502: the output is meaningfulness-gated — noise-classified articles
+    never enter clustering, near-duplicate syndicated stories merge, and thin
+    (single-article, single-source, non-official) clusters are withheld.
+    Degraded states are explicit instead of silently empty.
+    """
+    response_market = market if market in ("kr", "us", "crypto", "all") else "all"
+    loaded = await _load_recent_articles(
         market=market, window_hours=window_hours, max_rows=max_rows
     )
-    if not articles:
+    if not loaded:
         return MarketIssuesResponse(
-            market=market if market in ("kr", "us", "crypto", "all") else "all",  # type: ignore[arg-type]
+            market=response_market,  # type: ignore[arg-type]
             as_of=now_kst_naive(),
             window_hours=window_hours,
             items=[],
+            status="no_recent_articles",
+            degraded_reason=(
+                f"no articles in the last {window_hours}h window — "
+                "ingestion may be stale or paused"
+            ),
+            quality_gate=IssueQualityGate(),
         )
 
+    articles = [a for a in loaded if not classify_title_noise(a.title or "")]
+    noise_excluded = len(loaded) - len(articles)
+
     clusters = _cluster_articles(articles, market=market)
+    clusters, merged_count = _merge_near_duplicate_shingle_clusters(clusters, articles)
     issues = [
         _to_market_issue(
             cluster=c,
@@ -382,14 +468,37 @@ async def build_market_issues(
         for c in clusters
         if c.article_indexes
     ]
-    issues.sort(key=_score, reverse=True)
-    issues = issues[:limit]
-    for i, issue in enumerate(issues, start=1):
-        issues[i - 1] = issue.model_copy(update={"rank": i})
+    meaningful = [issue for issue in issues if _is_meaningful(issue)]
+    excluded_thin = len(issues) - len(meaningful)
+
+    meaningful.sort(key=_score, reverse=True)
+    meaningful = meaningful[:limit]
+    for i, issue in enumerate(meaningful, start=1):
+        meaningful[i - 1] = issue.model_copy(update={"rank": i})
+
+    gate = IssueQualityGate(
+        articles_total=len(loaded),
+        noise_articles_excluded=noise_excluded,
+        clusters_total=len(issues),
+        clusters_merged=merged_count,
+        clusters_excluded_thin=excluded_thin,
+    )
+    status = "ok"
+    degraded_reason = None
+    if not meaningful:
+        status = "no_meaningful_items"
+        degraded_reason = (
+            f"{len(loaded)} article(s) in window, but none formed a meaningful "
+            f"cluster (noise_excluded={noise_excluded}, "
+            f"thin_clusters={excluded_thin}) — no filler is generated"
+        )
 
     return MarketIssuesResponse(
-        market=market if market in ("kr", "us", "crypto", "all") else "all",  # type: ignore[arg-type]
+        market=response_market,  # type: ignore[arg-type]
         as_of=now_kst_naive(),
         window_hours=window_hours,
-        items=issues,
+        items=meaningful,
+        status=status,  # type: ignore[arg-type]
+        degraded_reason=degraded_reason,
+        quality_gate=gate,
     )
