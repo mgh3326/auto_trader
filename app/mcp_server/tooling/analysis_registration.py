@@ -272,12 +272,17 @@ def register_analysis_tools(
             "matchedPresets tagging. "
             "filters=[{field, operator(gte|lte|eq), value}] tune the preset's "
             "thresholds (threaded for consecutive_gainers and crypto). "
-            "exclude_watched/held (bool) and exclude_symbols hide already-processed "
-            "symbols. min_analyst_count (coverage), min_analyst_buy_count (buy-count), "
+            "exclude_held hides KIS-live portfolio symbols; exclude_watched is "
+            "accepted for compatibility but currently emits an explicit unsupported "
+            "warning in MCP because no user watchlist context is wired. "
+            "exclude_symbols hides already-processed symbols. "
+            "min_analyst_count (coverage), min_analyst_buy_count (buy-count), "
             "min_market_cap (raw marketCapValue), and min/max_market_cap_eok "
             "(float, unit 1억원) apply discovery-quality filters across the result set. "
             "sort='matched_presets_desc' ranks multi-preset intersections first. "
-            "Read-only. Results are capped (default 40) and paginated via limit/offset."
+            "Read-only. Preset sweeps are capped at 5 presets; analyst filters require at most "
+            "200 merged rows before enrichment. "
+            "Results are capped (default 40) and paginated via limit/offset."
         ),
     )
     async def screen_stocks_snapshot(

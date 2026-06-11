@@ -118,6 +118,14 @@ out-of-process flows. The static guard in
 `tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`
 scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 
+### Investment Report Item Contract
+
+`investment_report_create` / `investment_report_add_items` reject unknown top-level item keys. Use typed fields for current contracts:
+
+- `trigger_checklist`: `string[]`; copied to watch trigger notifications.
+- `max_action`: structured execution-plan JSON for watch items. `account_mode` is required when `max_action` is present; it also requires `side` and exactly one of `quantity` or `notional`; optional keys include `amount_krw`, `limit_price`, `limit_price_hint`, and `ladder_level`.
+- Do not send `planned_action` as an item key. Hermes payloads derive `planned_action` from `max_action`.
+
 ### Alpaca Paper 실행 레저 (ROB-84)
 
 `review.alpaca_paper_order_ledger` — Alpaca Paper 주문 라이프사이클 레코드 (previewed → canceled/filled/unexpected).

@@ -168,8 +168,28 @@ def _consensus_count(row: dict[str, Any], key: str) -> int:
         return 0
 
 
+def _filter_min_market_cap_with_warning(
+    rows: list[dict[str, Any]], min_val: float
+) -> tuple[list[dict[str, Any]], int]:
+    kept: list[dict[str, Any]] = []
+    missing_count = 0
+    for row in rows:
+        raw = row.get("marketCapValue")
+        if raw is None:
+            missing_count += 1
+            continue
+        try:
+            if float(raw) >= min_val:
+                kept.append(row)
+        except (TypeError, ValueError):
+            missing_count += 1
+    return kept, missing_count
+
+
 _DEFAULT_RESULT_LIMIT = 40
 _MAX_RESULT_LIMIT = 200
+_MAX_PRESET_SWEEP_COUNT = 5
+_MAX_ANALYST_ENRICHMENT_ROWS = 200
 
 
 async def screen_stocks_snapshot_impl(
@@ -222,6 +242,17 @@ async def screen_stocks_snapshot_impl(
     if not preset_ids:
         return {"error": "preset or presets must not be empty", "results": []}
 
+    if len(preset_ids) > _MAX_PRESET_SWEEP_COUNT:
+        return {
+            "error": (
+                "too many presets for screen_stocks_snapshot sweep; "
+                f"maximum is {_MAX_PRESET_SWEEP_COUNT}"
+            ),
+            "preset": preset,
+            "presets": preset_ids,
+            "results": [],
+        }
+
     # ROB-515: mark 'held' rows in screener results via KIS live positions.
     # (Watchlist personalization is still omitted for discovery MCP).
     held_symbols: set[tuple[str, str]] = set()
@@ -230,9 +261,19 @@ async def screen_stocks_snapshot_impl(
     if holdings_market_filter is not None:
         try:
             # MCP always runs live (is_mock=False)
-            pos, _w = await _collect_kis_positions(
+            pos, holdings_warnings = await _collect_kis_positions(
                 holdings_market_filter, is_mock=False
             )
+            if holdings_warnings:
+                holdings_meta["status"] = "error" if not pos else "partial"
+                holdings_meta["warning_count"] = len(holdings_warnings)
+                logger.warning(
+                    "screener_snapshot: kis holdings returned warnings: %s",
+                    holdings_warnings,
+                )
+            else:
+                holdings_meta["warning_count"] = 0
+
             held_symbols = {
                 (
                     str(p.get("market") or market).strip().lower(),
@@ -244,6 +285,7 @@ async def screen_stocks_snapshot_impl(
             holdings_meta["held_count"] = len(held_symbols)
         except Exception as exc:  # noqa: BLE001
             holdings_meta["status"] = "error"
+            holdings_meta["warning_count"] = 1
             # surface as a non-fatal warning so results still return
             # (build_screener_results takes resolver as non-optional, so fall back to noop)
             logger.warning("screener_snapshot: kis holdings failed: %s", exc)
@@ -306,6 +348,10 @@ async def screen_stocks_snapshot_impl(
 
     # Discovery filters (exclude)
     if exclude_watched:
+        combined_warnings.append(
+            "exclude_watched는 MCP snapshot 도구에서 아직 사용자 watchlist를 "
+            "배선하지 않아 지원하지 않습니다 (필터 미적용)."
+        )
         merged_results = [r for r in merged_results if not r.get("isWatched")]
     if exclude_held:
         merged_results = [r for r in merged_results if not r.get("isHeld")]
@@ -320,14 +366,22 @@ async def screen_stocks_snapshot_impl(
     # Discovery filters (market cap)
     if min_market_cap is not None:
         min_val = float(min_market_cap)
-        merged_results = [
-            r for r in merged_results if (r.get("marketCapValue") or 0) >= min_val
-        ]
+        merged_results, missing_count = _filter_min_market_cap_with_warning(
+            merged_results, min_val
+        )
+        if missing_count:
+            combined_warnings.append(
+                f"min_market_cap 적용 중 marketCapValue 결측 {missing_count}개 행을 제외했습니다."
+            )
     if min_market_cap_eok is not None:
         min_val = float(min_market_cap_eok) * 100_000_000
-        merged_results = [
-            r for r in merged_results if (r.get("marketCapValue") or 0) >= min_val
-        ]
+        merged_results, missing_count = _filter_min_market_cap_with_warning(
+            merged_results, min_val
+        )
+        if missing_count:
+            combined_warnings.append(
+                f"min_market_cap_eok 적용 중 marketCapValue 결측 {missing_count}개 행을 제외했습니다."
+            )
     if max_market_cap_eok is not None:
         max_val = float(max_market_cap_eok) * 100_000_000
         merged_results = [
@@ -375,7 +429,7 @@ async def screen_stocks_snapshot_impl(
             "sort": sort,
         },
     }
-    if holdings_meta["status"] == "error":
+    if holdings_meta["status"] != "ok":
         combined_warnings.append(
             "KIS live 보유종목 확인 실패 — 보유 여부가 표시되지 않을 수 있습니다."
         )
@@ -390,6 +444,25 @@ async def screen_stocks_snapshot_impl(
     # ROB-515: if analyst filtering is requested, we must enrich BEFORE pagination
     # so we can filter on the enriched buyCount across the whole set.
     if min_analyst_count is not None or min_analyst_buy_count is not None:
+        if len(all_results) > _MAX_ANALYST_ENRICHMENT_ROWS:
+            return {
+                "error": (
+                    "analyst enrichment row cap exceeded; narrow presets, "
+                    "market-cap filters, or exclude_symbols before applying analyst filters"
+                ),
+                "preset": preset,
+                "presets": preset_ids,
+                "results": [],
+                "pagination": {
+                    "total_available": len(all_results),
+                    "returned_count": 0,
+                    "offset": eff_offset,
+                    "limit": eff_limit,
+                    "has_more": False,
+                    "next_offset": None,
+                },
+            }
+
         from app.services.invest_view_model.screener_analysis_enrichment import (
             enrich_snapshot_page,
         )

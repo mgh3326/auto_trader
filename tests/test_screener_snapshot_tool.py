@@ -420,6 +420,110 @@ async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_snapshot_tool_holdings_error_tuple_warns_and_keeps_results(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [{"rank": 1, "symbol": "005930", "market": "kr"}],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    async def _collect_with_errors(market_filter: str | None, *, is_mock: bool = False):
+        assert market_filter == "equity_kr"
+        assert is_mock is False
+        return (
+            [],
+            [{"source": "kis", "market": "kr", "error": "token expired"}],
+        )
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _collect_with_errors,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        exclude_held=True,
+    )
+
+    assert out["results"][0]["symbol"] == "005930"
+    assert out["holdings"]["status"] == "error"
+    assert out["holdings"]["held_count"] == 0
+    assert out["holdings"]["warning_count"] == 1
+    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_holdings_partial_tuple_warns_and_marks_rows(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"rank": 1, "symbol": "005930", "market": "kr"},
+                    {"rank": 2, "symbol": "000660", "market": "kr"},
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**kwargs: Any) -> _Resp:
+        resolver = kwargs["resolver"]
+        assert resolver.relation("kr", "005930") == "held"
+        assert resolver.relation("kr", "000660") == "none"
+        return _Resp()
+
+    async def _collect_partial(market_filter: str | None, *, is_mock: bool = False):
+        assert market_filter == "equity_kr"
+        assert is_mock is False
+        return (
+            [{"symbol": "005930", "market": "kr"}],
+            [{"source": "kis", "market": "us", "error": "temporary failure"}],
+        )
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _collect_partial,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+    )
+
+    assert out["holdings"]["status"] == "partial"
+    assert out["holdings"]["held_count"] == 1
+    assert out["holdings"]["warning_count"] == 1
+    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_snapshot_tool_merges_multiple_presets(monkeypatch) -> None:
     async def _fake_build(**kwargs: Any) -> Any:
         pid = kwargs["preset_id"]
@@ -503,6 +607,48 @@ async def test_snapshot_tool_accepts_presets_list_for_multi_sweep(monkeypatch) -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_snapshot_tool_multi_preset_pagination_counts_merged_symbols(
+    monkeypatch,
+) -> None:
+    async def _fake_build(**kwargs: Any) -> Any:
+        pid = kwargs["preset_id"]
+        rows = (
+            [{"symbol": "S1"}, {"symbol": "S2"}, {"symbol": "S3"}]
+            if pid == "A"
+            else [{"symbol": "S2"}, {"symbol": "S4"}]
+        )
+        return MagicMock(
+            model_dump=lambda mode=None: {
+                "presetId": pid,
+                "results": rows,
+                "warnings": [],
+            }
+        )
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="A,B",
+        market="kr",
+        limit=2,
+        offset=1,
+    )
+
+    assert [r["symbol"] for r in out["results"]] == ["S2", "S3"]
+    assert out["pagination"]["total_available"] == 4
+    assert out["pagination"]["returned_count"] == 2
+    assert out["pagination"]["next_offset"] == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
     class _Resp:
         def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
@@ -540,6 +686,44 @@ async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
         preset="consecutive_gainers", market="kr", exclude_held=True
     )
     assert [r["symbol"] for r in out["results"]] == ["S1", "S3"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_exclude_watched_warns_unsupported_in_mcp(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [{"symbol": "S1", "isWatched": False, "isHeld": False}],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        exclude_watched=True,
+    )
+
+    assert out["results"][0]["symbol"] == "S1"
+    assert out["results"][0]["isWatched"] is False
+    assert any(
+        "exclude_watched" in w and "지원하지 않습니다" in w for w in out["warnings"]
+    )
 
 
 @pytest.mark.unit
@@ -653,6 +837,45 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_snapshot_tool_min_market_cap_warns_for_missing_market_cap(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "S1", "marketCapValue": 500_000_000_000.0},
+                    {"symbol": "S2", "marketCapValue": None},
+                    {"symbol": "S3"},
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        min_market_cap_eok=3000,
+    )
+
+    assert [r["symbol"] for r in out["results"]] == ["S1"]
+    assert any("marketCapValue 결측 2개 행" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_snapshot_tool_sorts_by_matched_presets_desc(monkeypatch) -> None:
     class _Resp:
         def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
@@ -696,3 +919,54 @@ async def test_snapshot_tool_sorts_by_matched_presets_desc(monkeypatch) -> None:
     # S2 should be first (matched 2 presets)
     assert out["results"][0]["symbol"] == "S2"
     assert len(out["results"][0]["matchedPresets"]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_rejects_too_many_presets() -> None:
+    out = await tool.screen_stocks_snapshot_impl(
+        presets=["p1", "p2", "p3", "p4", "p5", "p6"],
+        market="kr",
+    )
+
+    assert "error" in out
+    assert "maximum is 5" in out["error"]
+    assert out["results"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_analyst_filter_rejects_large_unpaged_enrichment(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": f"S{i}", "marketCapValue": 1.0} for i in range(201)
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        min_analyst_count=1,
+    )
+
+    assert "error" in out
+    assert "analyst enrichment row cap" in out["error"]
+    assert out["results"] == []

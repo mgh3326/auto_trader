@@ -399,7 +399,7 @@ class IngestReportItem(BaseModel):
     def _validate_max_action(self) -> IngestReportItem:
         if (
             self.item_kind == "watch"
-            and self.operation in ("create", "modify")
+            and self.operation in (None, "create", "modify")
             and self.max_action
         ):
             MaxActionPayload.model_validate(self.max_action)

@@ -89,6 +89,76 @@ async def test_list_reports_filters_by_market_and_status(
 
 
 @pytest.mark.asyncio
+async def test_list_reports_filters_by_created_by_profiles_and_excluded_statuses(
+    session: AsyncSession,
+) -> None:
+    repo = InvestmentReportsRepository(session)
+    await _insert_report(
+        repo,
+        title="smoke",
+        created_by_profile="test",
+        status="draft",
+    )
+    await _insert_report(
+        repo,
+        title="old-superseded-advisory",
+        created_by_profile="CLAUDE_ADVISOR",
+        status="superseded",
+    )
+    expected = await _insert_report(
+        repo,
+        title="current-advisory",
+        created_by_profile="CLAUDE_ADVISOR",
+        status="draft",
+    )
+
+    rows = await repo.list_reports(
+        market="kr",
+        account_scope="kis_mock",
+        created_by_profiles={"HERMES_ADVISOR", "CLAUDE_ADVISOR"},
+        exclude_statuses={"superseded"},
+        limit=10,
+    )
+
+    assert [row.id for row in rows] == [expected.id]
+
+
+@pytest.mark.asyncio
+async def test_latest_report_honors_created_by_profiles_and_excluded_statuses(
+    session: AsyncSession,
+) -> None:
+    repo = InvestmentReportsRepository(session)
+    await _insert_report(
+        repo,
+        title="published-smoke",
+        created_by_profile="test",
+        status="published",
+    )
+    await _insert_report(
+        repo,
+        title="superseded-advisory",
+        created_by_profile="CLAUDE_ADVISOR",
+        status="superseded",
+    )
+    expected = await _insert_report(
+        repo,
+        title="draft-advisory",
+        created_by_profile="CLAUDE_ADVISOR",
+        status="draft",
+    )
+
+    latest = await repo.latest_report(
+        market="kr",
+        account_scope="kis_mock",
+        created_by_profiles={"CLAUDE_ADVISOR"},
+        exclude_statuses={"superseded"},
+    )
+
+    assert latest is not None
+    assert latest.id == expected.id
+
+
+@pytest.mark.asyncio
 async def test_latest_report_returns_most_recent(session: AsyncSession) -> None:
     repo = InvestmentReportsRepository(session)
     await _insert_report(repo, market="kr")

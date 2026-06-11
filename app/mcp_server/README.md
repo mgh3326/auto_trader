@@ -133,7 +133,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
   - Returns symbols that matched the preset(s) from the persisted daily snapshots.
   - Supports multi-preset sweeps with symbol deduplication and `matchedPresets` tagging.
-  - `exclude_watched/held` (bool): hide symbols already in watchlist/portfolio (KIS live).
+  - `exclude_held` (bool): hide symbols already in the KIS-live portfolio; if KIS holdings degrade, the response keeps results and emits a warning.
+  - `exclude_watched` (bool): accepted for compatibility, but currently unsupported in MCP because no user watchlist context is wired; requests emit an explicit warning.
   - `exclude_symbols`: explicit symbols to remove after dedupe.
   - `min_analyst_count` (int): quality filter — filters enriched results by consensus total coverage.
   - `min_analyst_buy_count` (int): compatibility filter — filters enriched results by consensus buy count.
@@ -143,6 +144,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
   - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.
   - Results are capped (default 40) and paginated. Check `pagination` in payload.
+  - Preset sweeps are capped at 5 presets. Analyst filters are capped at 200 merged rows before enrichment; narrow with preset, market cap, or explicit symbols first.
+  - Minimum market-cap filters exclude rows with missing `marketCapValue` and report the excluded count in `warnings`.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
@@ -665,7 +668,7 @@ Order linkage note: `linked_order_ids` is report-side reference metadata. For ne
 
 Watch execution context fields:
 - `trigger_checklist`: `string[]`; copied into watch alert notifications so the operator can re-check the trigger.
-- `max_action`: structured watch execution-plan JSON. Supported keys include `side`, `quantity` or `notional`, optional `amount_krw`, optional `limit_price`, optional `limit_price_hint`, optional `ladder_level`, and optional `account_mode`.
+- `max_action`: structured watch execution-plan JSON. `account_mode` is required when `max_action` is present; it also requires `side` and exactly one of `quantity` or `notional`. Optional keys include `amount_krw`, `limit_price`, `limit_price_hint`, and `ladder_level`.
 - Do not send `planned_action` in item input. `planned_action` is derived from `max_action` when Hermes watch payloads are built.
 
 ### `manage_watch_alerts` — removed (ROB-265)
@@ -710,7 +713,7 @@ Response sections:
 - `active_watches`: same active watch rows as `list_active_watches`.
 - `latest_report`: latest report summary and item status counts, or `null`.
 - `session_context`: recent ROB-516 handoff entries.
-- `staleness`: per-section `as_of`, freshness, and unavailable reason where available.
+- `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
 
 The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
 
