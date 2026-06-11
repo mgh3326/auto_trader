@@ -327,16 +327,22 @@ class InvestmentReportsRepository:
         self,
         *,
         market: str | None = None,
+        symbol: str | None = None,
         valid_at: datetime | None = None,
+        include_expired_status_rows: bool = False,
+        limit: int = 100,
     ) -> list[InvestmentWatchAlert]:
+        capped_limit = max(1, min(int(limit), 250))
         stmt = sa.select(InvestmentWatchAlert).where(
             InvestmentWatchAlert.status == "active"
         )
         if market is not None:
             stmt = stmt.where(InvestmentWatchAlert.market == market)
-        if valid_at is not None:
+        if symbol is not None:
+            stmt = stmt.where(InvestmentWatchAlert.symbol == symbol)
+        if valid_at is not None and not include_expired_status_rows:
             stmt = stmt.where(InvestmentWatchAlert.valid_until > valid_at)
-        stmt = stmt.order_by(InvestmentWatchAlert.activated_at.desc())
+        stmt = stmt.order_by(InvestmentWatchAlert.activated_at.desc()).limit(capped_limit)
         result = await self._session.scalars(stmt)
         return list(result.all())
 
