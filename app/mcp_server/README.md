@@ -129,13 +129,16 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
-- `screen_stocks_snapshot(preset, market="kr", filters=None, exclude_watched=false, exclude_held=false, min_analyst_buy_count=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
-  - Snapshot-backed discovery workflow. `preset` can be a single ID or comma-separated list.
+- `screen_stocks_snapshot(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
+  - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
   - Returns symbols that matched the preset(s) from the persisted daily snapshots.
   - Supports multi-preset sweeps with symbol deduplication and `matchedPresets` tagging.
   - `exclude_watched/held` (bool): hide symbols already in watchlist/portfolio (KIS live).
-  - `min_analyst_buy_count` (int): quality filter — filters enriched results by consensus buy count.
-  - `min/max_market_cap_eok` (float): size filter — unit is 1억원 (KRW).
+  - `exclude_symbols`: explicit symbols to remove after dedupe.
+  - `min_analyst_count` (int): quality filter — filters enriched results by consensus total coverage.
+  - `min_analyst_buy_count` (int): compatibility filter — filters enriched results by consensus buy count.
+  - `min_market_cap` (float): size filter using raw numeric `marketCapValue` (`KRW` for KR, `USD` for US/crypto).
+  - `min/max_market_cap_eok` (float): KR compatibility size filter — unit is 1억원.
   - `sort="matched_presets_desc"`: ranks intersections (stocks in multiple presets) first.
   - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
   - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.

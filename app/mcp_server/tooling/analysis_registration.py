@@ -267,24 +267,30 @@ def register_analysis_tools(
             "their base snapshots (Discovery Workflow, ROB-515). "
             "Unlike screen_stocks (generic tvscreener/KIS path), this serves persisted "
             "screener snapshot data. preset can be a single ID or a comma-separated "
-            "list (e.g. 'consecutive_gainers,double_buy') for multi-preset sweeps with "
-            "symbol deduplication and matchedPresets tagging. "
+            "list (e.g. 'consecutive_gainers,double_buy'); presets can also be a "
+            "list for multi-preset sweeps with symbol deduplication and "
+            "matchedPresets tagging. "
             "filters=[{field, operator(gte|lte|eq), value}] tune the preset's "
             "thresholds (threaded for consecutive_gainers and crypto). "
-            "exclude_watched/held (bool) hide symbols already in watchlist or portfolio. "
-            "min_analyst_buy_count (int) and min/max_market_cap_eok (float, unit 1억원) "
-            "apply discovery-quality filters across the result set. "
+            "exclude_watched/held (bool) and exclude_symbols hide already-processed "
+            "symbols. min_analyst_count (coverage), min_analyst_buy_count (buy-count), "
+            "min_market_cap (raw marketCapValue), and min/max_market_cap_eok "
+            "(float, unit 1억원) apply discovery-quality filters across the result set. "
             "sort='matched_presets_desc' ranks multi-preset intersections first. "
             "Read-only. Results are capped (default 40) and paginated via limit/offset."
         ),
     )
     async def screen_stocks_snapshot(
-        preset: str,
+        preset: str | None = None,
+        presets: list[str] | None = None,
         market: Literal["kr", "us", "crypto"] = "kr",
         filters: list[dict[str, Any]] | None = None,
         exclude_watched: bool = False,
         exclude_held: bool = False,
+        exclude_symbols: list[str] | None = None,
+        min_analyst_count: int | None = None,
         min_analyst_buy_count: int | None = None,
+        min_market_cap: float | None = None,
         min_market_cap_eok: float | None = None,
         max_market_cap_eok: float | None = None,
         sort: Literal["matched_presets_desc"] | None = None,
@@ -293,11 +299,15 @@ def register_analysis_tools(
     ) -> dict[str, Any]:
         return await screen_stocks_snapshot_impl(
             preset=preset,
+            presets=presets,
             market=market,
             filters=filters,
             exclude_watched=exclude_watched,
             exclude_held=exclude_held,
+            exclude_symbols=exclude_symbols,
+            min_analyst_count=min_analyst_count,
             min_analyst_buy_count=min_analyst_buy_count,
+            min_market_cap=min_market_cap,
             min_market_cap_eok=min_market_cap_eok,
             max_market_cap_eok=max_market_cap_eok,
             sort=sort,

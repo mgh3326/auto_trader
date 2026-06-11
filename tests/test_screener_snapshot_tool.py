@@ -7,7 +7,7 @@ filter parsing → conditions, catalog exposure, threading, fail-soft on bad inp
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -258,6 +258,7 @@ async def test_enriches_only_returned_page(monkeypatch) -> None:
     assert out["results"][0]["analysisContext"]["rsi14"] == pytest.approx(58.0)
     assert out["analysisEnrichment"]["attempted"] == 2
 
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_snapshot_tool_marks_kis_live_held_rows(monkeypatch) -> None:
@@ -285,7 +286,9 @@ async def test_snapshot_tool_marks_kis_live_held_rows(monkeypatch) -> None:
         assert resolver.relation("kr", "005930") == "held"
         return _HeldResp()
 
-    async def _fake_collect_kis_positions(market_filter: str | None, *, is_mock: bool = False):
+    async def _fake_collect_kis_positions(
+        market_filter: str | None, *, is_mock: bool = False
+    ):
         assert market_filter == "equity_kr"
         assert is_mock is False
         return ([{"market": "kr", "symbol": "005930"}], [])
@@ -317,7 +320,64 @@ async def test_snapshot_tool_marks_kis_live_held_rows(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(monkeypatch) -> None:
+async def test_snapshot_tool_marks_us_kis_live_held_rows(monkeypatch) -> None:
+    class _HeldResp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "high_yield_value",
+                "results": [
+                    {
+                        "rank": 1,
+                        "symbol": "BRK.B",
+                        "market": "us",
+                        "name": "Berkshire Hathaway",
+                        "isWatched": False,
+                        "isHeld": True,
+                    }
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**kwargs: Any) -> _HeldResp:
+        resolver = kwargs["resolver"]
+        assert resolver.relation("us", "BRK/B") == "held"
+        return _HeldResp()
+
+    async def _fake_collect_kis_positions(
+        market_filter: str | None, *, is_mock: bool = False
+    ):
+        assert market_filter == "equity_us"
+        assert is_mock is False
+        return ([{"market": "us", "symbol": "BRK.B"}], [])
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _fake_collect_kis_positions,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="high_yield_value",
+        market="us",
+        limit=10,
+    )
+
+    assert out["results"][0]["isHeld"] is True
+    assert out["holdings"]["held_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(
+    monkeypatch,
+) -> None:
     class _Resp:
         def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
             return {
@@ -329,7 +389,9 @@ async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(monkeypatc
     async def _fake_build(**_kwargs: Any) -> _Resp:
         return _Resp()
 
-    async def _fail_collect_kis_positions(market_filter: str | None, *, is_mock: bool = False):
+    async def _fail_collect_kis_positions(
+        market_filter: str | None, *, is_mock: bool = False
+    ):
         raise RuntimeError("kis unavailable")
 
     monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
@@ -354,6 +416,7 @@ async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(monkeypatc
     assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
     assert out["holdings"]["source"] == "kis_live"
     assert out["holdings"]["status"] == "error"
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -404,6 +467,40 @@ async def test_snapshot_tool_merges_multiple_presets(monkeypatch) -> None:
     assert "warn_preset_a" in out["warnings"]
     assert "warn_preset_b" in out["warnings"]
 
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_accepts_presets_list_for_multi_sweep(monkeypatch) -> None:
+    async def _fake_build(**kwargs: Any) -> Any:
+        pid = kwargs["preset_id"]
+        rows = [{"symbol": "S1"}] if pid == "preset_a" else [{"symbol": "S2"}]
+        return MagicMock(
+            model_dump=lambda mode=None: {
+                "presetId": pid,
+                "results": rows,
+                "warnings": [],
+            }
+        )
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        presets=["preset_a", "preset_b"],
+        market="kr",
+    )
+
+    assert [r["symbol"] for r in out["results"]] == ["S1", "S2"]
+    assert out["presetId"] == "multi"
+    assert out["presets"] == ["preset_a", "preset_b"]
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
@@ -423,8 +520,10 @@ async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.screener_service.ScreenerService", lambda: object()
     )
+
     async def _fake_build_async(**kwargs: Any) -> _Resp:
         return _Resp()
+
     monkeypatch.setattr(
         "app.services.invest_view_model.screener_service.build_screener_results",
         _fake_build_async,
@@ -445,14 +544,49 @@ async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_snapshot_tool_excludes_explicit_symbols(monkeypatch) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "005930", "market": "kr"},
+                    {"symbol": "000660", "market": "kr"},
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build_async(**kwargs: Any) -> _Resp:
+        return _Resp()
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build_async,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        exclude_symbols=[" 005930 "],
+    )
+
+    assert [r["symbol"] for r in out["results"]] == ["000660"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None:
     class _Resp:
         def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
             return {
                 "presetId": "consecutive_gainers",
                 "results": [
-                    {"symbol": "S1", "marketCapValue": 500_000_000_000.0}, # 5000억
-                    {"symbol": "S2", "marketCapValue": 200_000_000_000.0}, # 2000억
+                    {"symbol": "S1", "marketCapValue": 500_000_000_000.0},  # 5000억
+                    {"symbol": "S2", "marketCapValue": 200_000_000_000.0},  # 2000억
                 ],
                 "warnings": [],
             }
@@ -465,10 +599,18 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
         enriched = []
         for r in rows:
             buy_count = 2 if r["symbol"] == "S1" else 0
-            enriched.append({
-                **r,
-                "analysisContext": {"consensus": {"buyCount": buy_count, "totalCount": buy_count}}
-            })
+            total_count = 2 if r["symbol"] == "S1" else 1
+            enriched.append(
+                {
+                    **r,
+                    "analysisContext": {
+                        "consensus": {
+                            "buyCount": buy_count,
+                            "totalCount": total_count,
+                        }
+                    },
+                }
+            )
         return {"results": enriched, "summary": {"warnings": []}}
 
     monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
@@ -496,6 +638,18 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
     )
     assert [r["symbol"] for r in out["results"]] == ["S1"]
 
+    # Raw numeric min market cap uses marketCapValue units directly.
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", min_market_cap=300_000_000_000.0
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S1"]
+
+    # Total analyst coverage can pass even when buyCount is 0.
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", min_analyst_count=1
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S1", "S2"]
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -506,7 +660,7 @@ async def test_snapshot_tool_sorts_by_matched_presets_desc(monkeypatch) -> None:
                 "presetId": "consecutive_gainers",
                 "results": [
                     {"symbol": "S1", "matchedPresets": ["A"]},
-                    {"symbol": "S2", "matchedPresets": ["A", "B"]}, # Intersection
+                    {"symbol": "S2", "matchedPresets": ["A", "B"]},  # Intersection
                     {"symbol": "S3", "matchedPresets": ["A"]},
                 ],
                 "warnings": [],
@@ -516,6 +670,7 @@ async def test_snapshot_tool_sorts_by_matched_presets_desc(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.screener_service.ScreenerService", lambda: object()
     )
+
     async def _fake_build_sort(**kwargs: Any) -> _Resp:
         pid = kwargs["preset_id"]
         # S2 is in both A and B, S1 only in A, S3 only in B
@@ -523,10 +678,11 @@ async def test_snapshot_tool_sorts_by_matched_presets_desc(monkeypatch) -> None:
             rows = [{"symbol": "S1"}, {"symbol": "S2"}]
         else:
             rows = [{"symbol": "S2"}, {"symbol": "S3"}]
-        
+
         class _DynamicResp:
             def model_dump(self, mode: str | None = None) -> dict[str, Any]:
                 return {"presetId": pid, "results": rows, "warnings": []}
+
         return _DynamicResp()
 
     monkeypatch.setattr(
