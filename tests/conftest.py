@@ -52,8 +52,6 @@ def _ensure_test_env() -> None:
         "TELEGRAM_TOKEN": "DUMMY_TELEGRAM_TOKEN",
         "TELEGRAM_CHAT_IDS": "123456789,987654321",
         "TELEGRAM_CHAT_IDS_STR": "123456789,987654321",
-        "GOOGLE_API_KEY": "DUMMY_GOOGLE_API_KEY",
-        "GOOGLE_API_KEYS": "DUMMY_GOOGLE_API_KEY_1,DUMMY_GOOGLE_API_KEY_2",
         "OPENDART_API_KEY": "DUMMY_OPENDART_API_KEY",
         "UPBIT_ACCESS_KEY": "DUMMY_UPBIT_ACCESS_KEY",
         "UPBIT_SECRET_KEY": "DUMMY_UPBIT_SECRET_KEY",
@@ -74,11 +72,6 @@ def _ensure_test_env() -> None:
         "N8N_API_KEY": "",  # Empty = n8n auth disabled in tests by default
         "N8N_FILL_WEBHOOK_URL": "",  # Empty = n8n fill webhook disabled in tests by default
         "N8N_WATCH_ALERT_WEBHOOK_URL": "",  # Empty = n8n watch webhook disabled in tests
-        "OPENAI_API_KEY": "",
-        "GEMINI_ADVISOR_API_KEY": "",
-        "GROK_API_KEY": "",
-        "AI_ADVISOR_TIMEOUT": "60.0",
-        "AI_ADVISOR_DEFAULT_PROVIDER": "gemini",
     }
 
     for key, value in default_env_values.items():
@@ -157,7 +150,6 @@ def mock_external_services():
         patch("app.services.brokers.yahoo.client.yf.download") as mock_yahoo_download,
         patch("app.services.brokers.yahoo.client.yf.Ticker") as mock_yahoo_ticker,
         patch("app.services.brokers.kis.client.httpx.AsyncClient") as mock_kis,
-        patch("app.core.model_rate_limiter.redis.asyncio.Redis") as mock_redis,
     ):
         # Configure mock responses
         yield {
@@ -165,7 +157,6 @@ def mock_external_services():
             "yahoo_download": mock_yahoo_download,
             "yahoo_ticker": mock_yahoo_ticker,
             "kis": mock_kis,
-            "redis": mock_redis,
         }
 
 
@@ -423,16 +414,6 @@ def sample_yahoo_data():
         "change_percent": 1.69,
         "volume": 1000000,
         "market_cap": 2500000000000,
-    }
-
-
-@pytest.fixture
-def sample_gemini_response():
-    """Sample Gemini AI response data."""
-    return {
-        "text": "Based on technical analysis, this stock shows bullish signals with RSI at 30.5 and MACD crossing above signal line.",
-        "confidence": 0.85,
-        "recommendation": "BUY",
     }
 
 
