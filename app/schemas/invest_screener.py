@@ -152,12 +152,15 @@ class ScreenerResultRow(BaseModel):
     name: str
     logoUrl: str | None = None
     isWatched: bool = False
+    isHeld: bool = False
+    matchedPresets: list[str] = Field(default_factory=list)
     priceLabel: str
     changePctLabel: str
     changeAmountLabel: str
     changeDirection: ChangeDirection
     category: str
     marketCapLabel: str
+    marketCapValue: float | None = None
     volumeLabel: str
     analystLabel: str
     metricValueLabel: str
