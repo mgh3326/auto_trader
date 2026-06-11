@@ -48,7 +48,6 @@ cp env.example .env
 - `UPBIT_SECRET_KEY`: 업비트 API 시크릿 키
 - `KIS_APP_KEY`: 한국투자증권 API 앱 키
 - `KIS_APP_SECRET`: 한국투자증권 API 시크릿
-- `GOOGLE_API_KEY`: Google Gemini API 키
 - `TELEGRAM_TOKEN`: Telegram 봇 토큰
 - `DATABASE_URL`: PostgreSQL 데이터베이스 연결 URL
 - `REDIS_URL`: Redis 연결 URL

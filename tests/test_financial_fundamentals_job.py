@@ -242,3 +242,73 @@ async def test_skip_existing_budget_split(bind_job_session, db_session, monkeypa
         )
     )
     await db_session.commit()
+
+
+def test_kr_dart_common_symbol_filter_excludes_non_dart_universe_rows() -> None:
+    assert job._is_kr_dart_common_symbol("005930", "삼성전자") is True
+    assert job._is_kr_dart_common_symbol("035420", "NAVER") is True
+
+    # The failed 2026-06-09 backfill chunk hit rows like these before the
+    # OpenDART fetch loop. They should be removed from the default universe.
+    assert job._is_kr_dart_common_symbol("0000H0", "비표준코드") is False
+    assert job._is_kr_dart_common_symbol("000087", "하이트진로2우B") is False
+    assert job._is_kr_dart_common_symbol("000145", "하이트진로홀딩스우") is False
+    assert job._is_kr_dart_common_symbol("999970", "KODEX 테스트") is False
+    assert job._is_kr_dart_common_symbol("999980", "테스트스팩") is False
+    assert job._is_kr_dart_common_symbol("999960", "테스트리츠") is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_active_universe_filters_to_dart_common_stocks(
+    bind_job_session, db_session
+):
+    import sqlalchemy as sa
+
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
+    symbols = ["999990", "999995", "99A990", "999970", "999980", "999960", "999950"]
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_(symbols))
+    )
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol="999990", name="테스트보통", exchange="STK", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="999995", name="테스트우", exchange="STK", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="99A990", name="비표준코드", exchange="STK", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="999970", name="KODEX 테스트", exchange="STK", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="999980", name="테스트스팩", exchange="KSQ", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="999960", name="테스트리츠", exchange="STK", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="999950", name="비활성보통", exchange="STK", is_active=False
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    try:
+        resolved = await job.resolve_active_universe("kr")
+        assert "999990" in resolved
+        assert "999995" not in resolved
+        assert "99A990" not in resolved
+        assert "999970" not in resolved
+        assert "999980" not in resolved
+        assert "999960" not in resolved
+        assert "999950" not in resolved
+    finally:
+        await db_session.execute(
+            sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_(symbols))
+        )
+        await db_session.commit()

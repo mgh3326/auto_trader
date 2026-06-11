@@ -46,6 +46,10 @@ sequence is:
 3. Wait for explicit "approved to commit" from a reviewer.
 4. `--all --commit` → re-check coverage; expect `dataState="fresh"`.
 
+> **ROB-512:** `_LOOKBACK`이 10→30으로 늘어 `closes_window` 기반 RSI14 enrichment가
+> 가능해졌다. 효력은 **새 빌드 파티션부터** — 배포 후 `--market kr --all --commit`
+> 재빌드 전까지 기존 파티션의 RSI는 계속 null(정상·정직한 동작)이다.
+
 ---
 
 ## 3. Coverage Check

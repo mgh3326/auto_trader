@@ -1,6 +1,4 @@
-"""ROB-112 — Debate / summary builder with citation links."""
-
-from typing import Any, Protocol
+"""ROB-112 — deterministic research summary builder with citation links."""
 
 from app.schemas.research_pipeline import (
     BullBearArgument,
@@ -10,10 +8,6 @@ from app.schemas.research_pipeline import (
     SummaryDecision,
     SummaryOutput,
 )
-
-
-class ModelRunner(Protocol):
-    async def __call__(self, prompt: str, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class StageLinkSpec:
@@ -32,20 +26,12 @@ class StageLinkSpec:
 
 async def build_summary(
     stage_outputs: dict[int, StageOutput],
-    *,
-    model_runner: ModelRunner | None = None,
 ) -> tuple[SummaryOutput, list[StageLinkSpec]]:
-    """
-    Builds a research summary from stage outputs.
-
-    If model_runner is provided, it uses an LLM to generate the debate.
-    Otherwise, it uses a deterministic v1 reducer.
-    """
+    """Build a deterministic summary from research stage outputs."""
 
     warnings = []
     stale_count = 0
 
-    # 1. Collect warnings and check staleness
     for output in stage_outputs.values():
         if output.verdict == StageVerdict.UNAVAILABLE:
             reason = "not_implemented"
@@ -56,41 +42,14 @@ async def build_summary(
         if output.source_freshness and output.source_freshness.stale_flags:
             stale_count += 1
 
-    # 2. Force HOLD if >= 2 stages are stale
     force_hold = False
     if stale_count >= 2:
         force_hold = True
         warnings.append(f"Forcing HOLD: {stale_count} stages have stale data.")
 
-    if model_runner:
-        return await _build_llm_debate(
-            stage_outputs, model_runner, force_hold=force_hold, warnings=warnings
-        )
-
     return _build_deterministic_v1(
         stage_outputs, force_hold=force_hold, warnings=warnings
     )
-
-
-async def _build_llm_debate(
-    stage_outputs: dict[int, StageOutput],
-    model_runner: ModelRunner,
-    force_hold: bool,
-    warnings: list[str],
-) -> tuple[SummaryOutput, list[StageLinkSpec]]:
-    # Placeholder for LLM debate logic.
-    # In a real implementation, this would format a prompt with stage details,
-    # call model_runner, and parse the JSON response.
-
-    # For now, we fall back to deterministic and just simulate LLM fields.
-    summary, links = _build_deterministic_v1(stage_outputs, force_hold, warnings)
-
-    summary.model_name = "mock-llm"
-    summary.raw_payload = {"simulation": True}
-    summary.token_input = 100
-    summary.token_output = 50
-
-    return summary, links
 
 
 def _build_deterministic_v1(

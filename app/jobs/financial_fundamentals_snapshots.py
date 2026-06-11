@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -10,6 +11,7 @@ from decimal import Decimal
 import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.tooling.screening.instrument_type import classify_kr_instrument
 from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from app.services.financial_fundamentals_snapshots.builder import (
     FundamentalsFetcher,
@@ -35,10 +37,11 @@ class FinancialFundamentalsSnapshotBuildRequest:
     collected_at: dt.datetime | None = None
     estimate_only: bool = False
     allow_partial: bool = False
-    # ROB-441: DART budget-split. Skip symbols that already have a snapshot so daily
-    # re-runs advance through uncollected symbols (the full KR universe ~3,910 × 11 req
-    # exceeds the 18k daily budget → must be split across days). With --limit N this
-    # selects the NEXT N uncollected symbols (resolve full → drop collected → slice).
+    # ROB-441/433: DART budget-split. Skip symbols that already have a snapshot so
+    # daily re-runs advance through uncollected DART-eligible common stocks (the
+    # full KR active common-stock universe × 11 req exceeds the 18k daily budget →
+    # must be split across days). With --limit N this selects the NEXT N uncollected
+    # symbols after excluding preferred/ETF/REIT/SPAC/non-6-digit universe rows.
     skip_existing: bool = False
 
 
@@ -68,11 +71,38 @@ class FinancialFundamentalsSnapshotBuildResult:
     projected_requests: int | None = None
 
 
+_KR_DART_SYMBOL_RE = re.compile(r"^\d{6}$")
+
+
 def _validate_market(market: str) -> str:
     market_norm = market.strip().lower()
     if market_norm != "kr":
         raise ValueError(f"PR1 supports market='kr' only, got: {market}")
     return market_norm
+
+
+def _is_kr_dart_common_symbol(symbol: object, name: object) -> bool:
+    """Return whether a KR universe row is suitable for OpenDART common-stock fetches.
+
+    The DART backfill uses stock-code lookups. The active KR universe can contain
+    non-6-digit synthetic/exchange codes (for example NXT-like letter suffixes) and
+    non-common instruments such as preferred shares, ETFs, REITs, and SPACs. Those
+    rows should not consume OpenDART budget in the default backfill candidate path.
+    Explicit ``--symbol`` overrides remain operator-controlled and are not filtered
+    here.
+    """
+    symbol_text = str(symbol or "").strip().upper()
+    if not _KR_DART_SYMBOL_RE.fullmatch(symbol_text):
+        return False
+    return classify_kr_instrument(symbol_text, name, None) == "common"
+
+
+def _filter_kr_dart_common_symbols(rows: list[tuple[str, str]]) -> list[str]:
+    return [
+        str(symbol).strip().upper()
+        for symbol, name in rows
+        if _is_kr_dart_common_symbol(symbol, name)
+    ]
 
 
 async def resolve_symbols(market: str, override: list[str], limit: int) -> list[str]:
@@ -83,13 +113,13 @@ async def resolve_symbols(market: str, override: list[str], limit: int) -> list[
         from app.models.kr_symbol_universe import KRSymbolUniverse
 
         stmt = (
-            sa.select(KRSymbolUniverse.symbol)
+            sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name)
             .where(KRSymbolUniverse.is_active.is_(True))
             .order_by(KRSymbolUniverse.symbol)
-            .limit(limit)
         )
         result = await session.execute(stmt)
-        return [r[0] for r in result.all()]
+        rows = [(r[0], r[1]) for r in result.all()]
+        return _filter_kr_dart_common_symbols(rows)[:limit]
 
 
 async def resolve_active_universe(market: str) -> list[str]:
@@ -98,12 +128,13 @@ async def resolve_active_universe(market: str) -> list[str]:
         from app.models.kr_symbol_universe import KRSymbolUniverse
 
         stmt = (
-            sa.select(KRSymbolUniverse.symbol)
+            sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name)
             .where(KRSymbolUniverse.is_active.is_(True))
             .order_by(KRSymbolUniverse.symbol)
         )
         result = await session.execute(stmt)
-        return [r[0] for r in result.all()]
+        rows = [(r[0], r[1]) for r in result.all()]
+        return _filter_kr_dart_common_symbols(rows)
 
 
 async def _already_collected_symbols(market: str) -> set[str]:
@@ -201,8 +232,9 @@ async def run_financial_fundamentals_snapshot_build(
     use_fetcher = fetcher or default_dart_fetcher
     skipped_existing = 0
     if request.skip_existing:
-        # Budget-split: resolve the candidate pool, drop already-collected, then (for
-        # --limit) slice the NEXT N uncollected so each daily run stays under budget.
+        # Budget-split: resolve the DART-eligible common-stock candidate pool,
+        # drop already-collected symbols, then (for --limit) slice the NEXT N
+        # uncollected symbols so each daily run stays under budget.
         if request.symbols:
             pool = [s.strip().upper() for s in request.symbols if s.strip()]
         else:

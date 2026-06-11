@@ -14,7 +14,11 @@ from app.services.invest_screener_snapshots.repository import SnapshotUpsert
 
 logger = logging.getLogger(__name__)
 
-_LOOKBACK = 10
+# ROB-512: read-time RSI14 enrichment(build_rsi14_from_closes)는 최소 15종가가
+# 필요하다. 10이던 시절 closes_window 기반 RSI는 전 심볼 None(rsiSucceeded=0)
+# 이었다. 30 = 15 최소치 + EWM 안정화 여유(~6주 세션). 새 값은 다음 스냅샷
+# 빌드부터 효력이며 기존 파티션은 재빌드 전까지 10종가 그대로다.
+_LOOKBACK = 30
 
 #: ROB-430 PR-①: consecutive_gainers filters ``consecutive_up_days >= 5``, which
 #: requires at least 6 daily closes to even be possible (6 closes → 5 up-moves).
