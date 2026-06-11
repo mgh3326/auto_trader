@@ -331,3 +331,32 @@ def test_result_row_accepts_analysis_context():
     assert row.analysisContext.consensus is not None
     assert row.analysisContext.consensus.buyCount == 2
     assert row.analysisContext.rsi14 == pytest.approx(58.42)
+
+
+@pytest.mark.unit
+def test_result_row_accepts_discovery_workflow_fields() -> None:
+    row = ScreenerResultRow(
+        rank=1,
+        symbol="005930",
+        market="kr",
+        name="삼성전자",
+        logoUrl=None,
+        isWatched=False,
+        isHeld=True,
+        matchedPresets=["consecutive_gainers", "double_buy"],
+        marketCapValue=478_000_000_000_000.0,
+        priceLabel="80,000원",
+        changePctLabel="+1.23%",
+        changeAmountLabel="+970",
+        changeDirection="up",
+        category="반도체",
+        marketCapLabel="478.0조원",
+        volumeLabel="12,345,678",
+        analystLabel="-",
+        metricValueLabel="+1.23%",
+        warnings=[],
+    )
+
+    assert row.isHeld is True
+    assert row.matchedPresets == ["consecutive_gainers", "double_buy"]
+    assert row.marketCapValue == pytest.approx(478_000_000_000_000.0)
