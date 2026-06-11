@@ -127,6 +127,7 @@ async def test_returns_rows_filtered_by_double_buy_and_positive_change_rate(
                 symbol="911000",
                 snapshot_date=today,
                 latest_close=decimal.Decimal("12000"),
+                change_amount=decimal.Decimal("2000"),
                 prev_close=decimal.Decimal("10000"),
                 change_rate=decimal.Decimal("20.0"),
                 daily_volume=100_000,
@@ -162,6 +163,11 @@ async def test_returns_rows_filtered_by_double_buy_and_positive_change_rate(
     assert target["change_rate"] == pytest.approx(20.0)
     assert target["double_buy"] is True
     assert target["_screener_snapshot_state"] in {"fresh", "stale"}
+    # ROB-512: 포맷터(priceLabel)는 row["close"]를 읽는다 — latest_close만 있으면
+    # 쌍끌이 결과의 현재가가 '-'로 렌더된다.
+    assert target["close"] == pytest.approx(12000.0)
+    assert target["change_amount"] == pytest.approx(2000.0)
+    assert target["latest_close"] == pytest.approx(12000.0)  # 기존 소비자 호환 유지
 
 
 @pytest.mark.asyncio

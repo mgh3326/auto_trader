@@ -55,6 +55,22 @@ class ScreenshotHoldingsService:
                 f"USD 단위로 입력해주세요 (현재 값: {avg_buy_price}, KRW로 의심됩니다)"
             )
 
+    @staticmethod
+    def _preview_diff_action(action: str, dry_run: bool) -> str:
+        if not dry_run:
+            return action
+        return {
+            "added": "would_add",
+            "updated": "would_update",
+            "removed": "would_remove",
+        }.get(action, action)
+
+    @staticmethod
+    def _holding_identity(
+        *, symbol: str, stock_name: str, fallback: str = "<unknown>"
+    ) -> str:
+        return symbol or stock_name or fallback
+
     async def _resolve_symbol(
         self,
         stock_name: str,
@@ -195,12 +211,14 @@ class ScreenshotHoldingsService:
                     ...
                 ],
                 "warnings": [...],
-                # The following fields are ONLY included when dry_run=False:
-                # "added_count": int,
-                # "updated_count": int,
-                # "removed_count": int,
-                # "unchanged_count": int,
-                # "diff": [...],
+                # Count fields and diff are included for both dry_run and live runs.
+                # dry_run diff actions use would_add/would_update/would_remove
+                # plus unchanged. Live diff actions use added/updated/removed.
+                "added_count": int,
+                "updated_count": int,
+                "removed_count": int,
+                "unchanged_count": int,
+                "diff": [...],
             }
         """
         warnings: list[str] = []
@@ -261,9 +279,10 @@ class ScreenshotHoldingsService:
             action = holding_data.get("action", "upsert").lower()
 
             if market_section not in ("kr", "us", "crypto"):
+                identity = self._holding_identity(symbol=symbol, stock_name=stock_name)
                 warnings.append(
-                    f"Skipping holding: invalid or missing market_section '{market_section_raw}' "
-                    f"(must be kr|us|crypto)"
+                    f"Skipping holding {identity}: invalid or missing market_section "
+                    f"'{market_section_raw}' (must be kr|us|crypto)"
                 )
                 continue
 
@@ -292,10 +311,10 @@ class ScreenshotHoldingsService:
                 if existing:
                     if not dry_run:
                         await manual_holdings_service.delete_holding(existing.id)
-                        removed_count += 1
+                    removed_count += 1
                     diff.append(
                         {
-                            "action": "removed",
+                            "action": self._preview_diff_action("removed", dry_run),
                             "ticker": ticker,
                             "market_type": market_type.value,
                         }
@@ -325,10 +344,10 @@ class ScreenshotHoldingsService:
                 if existing:
                     if not dry_run:
                         await manual_holdings_service.delete_holding(existing.id)
-                        removed_count += 1
+                    removed_count += 1
                     diff.append(
                         {
-                            "action": "removed",
+                            "action": self._preview_diff_action("removed", dry_run),
                             "ticker": ticker,
                             "market_type": market_type.value,
                         }
@@ -385,7 +404,7 @@ class ScreenshotHoldingsService:
                         updated_count += 1
                         diff.append(
                             {
-                                "action": "updated",
+                                "action": self._preview_diff_action("updated", dry_run),
                                 "ticker": ticker,
                                 "market_type": market_type.value,
                                 "old_quantity": old_qty,
@@ -408,7 +427,7 @@ class ScreenshotHoldingsService:
                     added_count += 1
                     diff.append(
                         {
-                            "action": "added",
+                            "action": self._preview_diff_action("added", dry_run),
                             "ticker": ticker,
                             "market_type": market_type.value,
                             "quantity": quantity,
@@ -425,9 +444,10 @@ class ScreenshotHoldingsService:
                         abs(old_qty - quantity) > 0.0001
                         or abs(old_avg - avg_buy_price) > 0.01
                     ):
+                        updated_count += 1
                         diff.append(
                             {
-                                "action": "updated",
+                                "action": self._preview_diff_action("updated", dry_run),
                                 "ticker": ticker,
                                 "market_type": market_type.value,
                                 "old_quantity": old_qty,
@@ -438,10 +458,18 @@ class ScreenshotHoldingsService:
                         )
                     else:
                         unchanged_count += 1
+                        diff.append(
+                            {
+                                "action": "unchanged",
+                                "ticker": ticker,
+                                "market_type": market_type.value,
+                            }
+                        )
                 else:
+                    added_count += 1
                     diff.append(
                         {
-                            "action": "added",
+                            "action": self._preview_diff_action("added", dry_run),
                             "ticker": ticker,
                             "market_type": market_type.value,
                             "quantity": quantity,
@@ -463,15 +491,14 @@ class ScreenshotHoldingsService:
             "warnings": warnings,
         }
 
-        if not dry_run:
-            result.update(
-                {
-                    "added_count": added_count,
-                    "updated_count": updated_count,
-                    "removed_count": removed_count,
-                    "unchanged_count": unchanged_count,
-                    "diff": diff,
-                }
-            )
+        result.update(
+            {
+                "added_count": added_count,
+                "updated_count": updated_count,
+                "removed_count": removed_count,
+                "unchanged_count": unchanged_count,
+                "diff": diff,
+            }
+        )
 
         return result

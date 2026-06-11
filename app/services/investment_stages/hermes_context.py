@@ -6,10 +6,9 @@ consumes for in-Hermes LLM reasoning. No external service calls, no DB
 writes; deterministic stages are executed in-process against bundle
 snapshots already in memory.
 
-This module is intentionally provider-free. Importing
-``GeminiProvider`` / ``RateLimitedGeminiProvider`` / any
-``AiProvider`` here would re-introduce the in-process LLM path the
-ROB-287 guard test forbids.
+This module is intentionally provider-free. Importing any in-process LLM
+provider here would re-introduce the runtime LLM path the ROB-501 guard
+test forbids.
 """
 
 from __future__ import annotations

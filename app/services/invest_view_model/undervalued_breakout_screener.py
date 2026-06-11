@@ -1,11 +1,11 @@
 # app/services/invest_view_model/undervalued_breakout_screener.py
 """Read-only loader for the 저평가 탈출 (Toss undervalued-breakout parity) preset.
 
-Toss rule: market = kr, 0 < per <= 10, 0 < pbr <= 1, and the price is near the
-52-week high (close >= high_52w * 0.95). per/pbr/high_52w come from
-market_valuation_snapshots (naver_finance); latest_close from invest_screener_snapshots.
-Valuation-only — NO fundamentals dependency. NULL per/pbr/close/high_52w are excluded
-(fail-closed; never fabricate a qualifier).
+KR display uses ``kr_fundamentals_tv_screener`` and checks recent 52-week-high
+date recency. This market_valuation-backed loader remains for US and KR
+reports/PIT: US uses high_52w_date recency when available; KR reports/PIT keep
+the older proximity proxy (close >= high_52w * 0.95). NULL prerequisites are
+excluded fail-closed; qualifiers are never fabricated.
 """
 
 from __future__ import annotations
@@ -75,10 +75,10 @@ async def load_undervalued_breakout_from_snapshots(
 ) -> list[dict[str, Any]] | None:
     """Toss-parity 저평가 탈출 rows, or None when no valuation partition exists.
 
-    ROB-440 Part 2: market-parameterized for US (proximity definition: close >=
-    high_52w * 0.95). KR display uses the tvscreener date-recency loader; this
-    market_valuation-backed loader serves US (+ KR reports/PIT). high_52w(price) +
-    latest_close required; NULL → fail-closed excluded."""
+    ROB-440 Part 2/3: market-parameterized for US (52w-high date recency).
+    KR display uses the tvscreener date-recency loader; this market_valuation-backed
+    loader serves US (+ KR reports/PIT). high_52w/close are still emitted for proximity
+    context; NULL prerequisites → fail-closed excluded."""
     if session is None or market not in {"kr", "us"}:
         return None
 
@@ -166,17 +166,38 @@ async def load_undervalued_breakout_from_snapshots(
 
     symbols = [r["symbol"] for r in cand_rows]
     name_map: dict[str, str] = {}
+    sector_map: dict[str, str] = {}
     if (
         market == "kr" and symbols
     ):  # ROB-440 Part 2: KR name/common-stock filter is KR-only
+        from app.models.symbol_sectors import SymbolSector
+
         try:
             names = await session.execute(
-                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                sa.select(
+                    KRSymbolUniverse.symbol,
+                    KRSymbolUniverse.name,
+                    SymbolSector.name_kr.label("sector_name_kr"),
+                    SymbolSector.name_en.label("sector_name_en"),
+                )
+                .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+                .where(
                     KRSymbolUniverse.symbol.in_(symbols),
                     KRSymbolUniverse.is_active.is_(True),
                 )
             )
-            name_map = {row.symbol: row.name for row in names.all()}
+            _name_rows = names.all()
+            name_map = {row.symbol: row.name for row in _name_rows}
+            sector_map = {
+                row.symbol: label
+                for row in _name_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "undervalued_breakout: name lookup failed: %s", exc, exc_info=True
@@ -227,6 +248,10 @@ async def load_undervalued_breakout_from_snapshots(
                 "latest_close": float(r["latest_close"])
                 if r["latest_close"] is not None
                 else None,
+                "close": float(r["latest_close"])
+                if r["latest_close"] is not None
+                else None,
+                "sector": sector_map.get(sym),
                 "change_rate": float(r["change_rate"])
                 if r["change_rate"] is not None
                 else None,

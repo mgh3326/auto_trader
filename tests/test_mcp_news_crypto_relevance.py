@@ -55,20 +55,19 @@ async def test_market_news_can_return_crypto_briefing_ranked_candidates():
     assert result["count"] == 1
     assert result["total"] == 2
     assert result["briefing_filter"] is True
+    # ROB-502: the OpenAI item is pre-gated by the generic noise classifier,
+    # so the crypto ranking only ever sees the Bitcoin ETF article.
     assert result["briefing_summary"] == {
         "included": 1,
-        "excluded": 1,
+        "excluded": 0,
         "high": 1,
         "medium": 0,
-        "low": 1,
+        "low": 0,
     }
     assert result["news"][0]["title"].startswith("Bitcoin ETF")
     assert result["news"][0]["crypto_relevance"]["bucket"] == "high"
     assert result["excluded_news"][0]["title"].startswith("OpenAI")
-    assert (
-        result["excluded_news"][0]["crypto_relevance"]["noise_reason"]
-        == "broad_tech_without_crypto_signal"
-    )
+    assert result["excluded_news"][0]["excluded_reason"] == "noise:broad_tech"
 
 
 @pytest.mark.asyncio
@@ -96,7 +95,9 @@ async def test_market_news_default_keeps_raw_crypto_news_with_relevance_metadata
     ):
         result = await _get_market_news_impl(market="crypto", limit=1)
 
+    # ROB-502: the default path is quality-gated now — the broad-tech AI item
+    # moves to excluded_news with a reason instead of being returned raw.
     assert result["briefing_filter"] is False
-    assert result["count"] == 1
-    assert result["excluded_news"] == []
-    assert result["news"][0]["crypto_relevance"]["bucket"] == "low"
+    assert result["count"] == 0
+    assert result["status"] == "no_meaningful_items"
+    assert result["excluded_news"][0]["excluded_reason"] == "noise:broad_tech"

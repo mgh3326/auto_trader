@@ -10,7 +10,6 @@
 | Database session wiring | `app/core/db.py` | Async engine/session factory helpers |
 | TaskIQ broker setup | `app/core/taskiq_broker.py` | Redis broker, result backend, worker middleware |
 | TaskIQ scheduler setup | `app/core/scheduler.py` | Scheduler object and schedule source wiring |
-| Model rate limiter | `app/core/model_rate_limiter.py` | Shared LLM model availability/rate-limiting state |
 | Symbol conversion helpers | `app/core/symbol.py` | DB/API symbol normalization boundaries |
 | Session/token blacklist | `app/core/session_blacklist.py` | Auth/session invalidation support |
 | Async API rate limiting | `app/core/async_rate_limiter.py` | Shared async throttling utility |

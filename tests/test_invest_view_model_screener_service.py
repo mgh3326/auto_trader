@@ -204,6 +204,83 @@ def _name_row(symbol: str, name: str) -> Any:
     return type("NameRow", (), {"symbol": symbol, "name": name})()
 
 
+def _name_sector_row(
+    symbol: str, name: str, sector_kr: str | None = None, sector_en: str | None = None
+) -> Any:
+    return type(
+        "NameSectorRow",
+        (),
+        {
+            "symbol": symbol,
+            "name": name,
+            "sector_name_kr": sector_kr,
+            "sector_name_en": sector_en,
+        },
+    )()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_investor_flow_rows_carry_master_sector() -> None:
+    """ROB-512 갭3: name lookup join으로 sector가 row에 실려 category가
+    한글 업종으로 렌더된다."""
+    from app.services.invest_view_model.screener_service import (
+        _load_investor_flow_discovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 15)
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeInvestorFlowSnapshot(
+                        symbol="005930", snapshot_date=snapshot_date
+                    )
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[_name_sector_row("005930", "삼성전자", "반도체와반도체장비")]
+            ),
+        ]
+    )
+
+    load_result = await _load_investor_flow_discovery_from_snapshots(
+        session, market="kr", limit=20
+    )
+    assert load_result is not None
+    assert load_result.rows[0]["sector"] == "반도체와반도체장비"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_consecutive_gainers_rows_carry_master_sector() -> None:
+    from app.services.invest_view_model.screener_service import (
+        _load_consecutive_gainers_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 11)
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),  # resolve (fixture pop)
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(symbol="005930", snapshot_date=snapshot_date)
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[_name_sector_row("005930", "삼성전자", "반도체와반도체장비")]
+            ),
+        ]
+    )
+
+    load_result = await _load_consecutive_gainers_from_snapshots(
+        session, market="kr", limit=20
+    )
+    assert load_result is not None
+    assert load_result.rows[0]["sector"] == "반도체와반도체장비"
+
+
 class _FakeResolver:
     def __init__(self, watched: set[tuple[str, str]]) -> None:
         self._w = watched
@@ -1754,6 +1831,121 @@ async def test_investor_flow_rows_carry_snapshot_date_collected_at_and_classifie
     assert state == "stale", (
         f"expected 'stale' for snapshot_date={stale_snapshot_date} vs today 2026-05-20; got {state!r}"
     )
+
+
+def _price_row(
+    symbol: str,
+    close: Any,
+    change_rate: Any,
+    change_amount: Any,
+    volume: Any,
+) -> Any:
+    return type(
+        "PriceRow",
+        (),
+        {
+            "symbol": symbol,
+            "latest_close": close,
+            "change_rate": change_rate,
+            "change_amount": change_amount,
+            "daily_volume": volume,
+        },
+    )()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_investor_flow_rows_carry_price_fields_from_price_snapshot() -> None:
+    """ROB-512 갭1: flow row에 close/change_rate/change_amount/volume이 healthy
+    가격 파티션 lookup으로 채워져 priceLabel/changePctLabel/volumeLabel이 '-'가
+    아니게 된다."""
+    from app.services.invest_view_model.screener_service import (
+        _load_investor_flow_discovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 15)
+    session = _FakeSession(
+        [
+            # ① flow resolve_healthy_partition (autouse fixture가 pop)
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            # qualifying flow rows
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeInvestorFlowSnapshot(
+                        symbol="005930", snapshot_date=snapshot_date
+                    )
+                ]
+            ),
+            # kr_symbol_universe names
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),
+            # ② market_cap resolve (pop) + select
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(rows=[]),
+            # ③ price resolve (pop) + select  ← ROB-512 신규
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(
+                rows=[
+                    _price_row(
+                        "005930",
+                        Decimal("80000"),
+                        Decimal("1.27"),
+                        Decimal("1000"),
+                        1_234_567,
+                    )
+                ]
+            ),
+        ]
+    )
+
+    load_result = await _load_investor_flow_discovery_from_snapshots(
+        session, market="kr", limit=20
+    )
+
+    assert load_result is not None
+    assert len(load_result.rows) == 1
+    row = load_result.rows[0]
+    assert row["close"] == pytest.approx(80000.0)
+    assert row["change_rate"] == pytest.approx(1.27)
+    assert row["change_amount"] == pytest.approx(1000.0)
+    assert row["volume"] == 1_234_567
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_investor_flow_price_lookup_fails_open_to_none_fields() -> None:
+    """ROB-512: 가격 파티션이 없어도 행은 절대 탈락하지 않고 가격 키만 None
+    (priceLabel '-' 유지 — 자격 변경 금지)."""
+    from app.services.invest_view_model.screener_service import (
+        _load_investor_flow_discovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 15)
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeInvestorFlowSnapshot(
+                        symbol="005930", snapshot_date=snapshot_date
+                    )
+                ]
+            ),
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),
+            # 이후 시퀀스 소진 → market_cap/price lookup 전부 빈 결과 (fail-open)
+        ]
+    )
+
+    load_result = await _load_investor_flow_discovery_from_snapshots(
+        session, market="kr", limit=20
+    )
+
+    assert load_result is not None
+    assert len(load_result.rows) == 1
+    row = load_result.rows[0]
+    assert row["close"] is None
+    assert row["change_rate"] is None
+    assert row["change_amount"] is None
+    assert row["volume"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -3359,3 +3551,44 @@ def test_investor_flow_dependency_presets_are_supply_only() -> None:
     )
     for non_supply in ("undervalued_growth", "high_yield_value", "consecutive_gainers"):
         assert non_supply not in _INVESTOR_FLOW_DEPENDENCY_PRESETS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unknown_preset_error_lists_valid_presets() -> None:
+    """ROB-508: 알 수 없는 프리셋 에러는 해당 market의 유효(active) preset id
+    목록을 동봉해야 한다 (예: preset="oversold" 오타 시 발견 가능하게)."""
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock()
+    resp = await build_screener_results(
+        preset_id="oversold",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="us",
+        session=None,
+    )
+    assert resp.results == []
+    assert len(resp.warnings) == 2
+    assert resp.warnings[0] == "알 수 없는 프리셋: oversold"
+    # 두 번째 warning에 US active preset id들이 포함돼야 함
+    assert "사용 가능한 프리셋(us)" in resp.warnings[1]
+    assert "consecutive_gainers" in resp.warnings[1]
+    assert "undervalued_growth" in resp.warnings[1]
+    # US에서 unsupported인 KR 전용 preset은 목록에 없어야 함
+    assert "double_buy" not in resp.warnings[1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unknown_preset_error_lists_valid_presets_crypto() -> None:
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock()
+    resp = await build_screener_results(
+        preset_id="volume_surge",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+        session=None,
+    )
+    assert "사용 가능한 프리셋(crypto)" in resp.warnings[1]
+    assert "crypto_high_volume" in resp.warnings[1]

@@ -175,8 +175,14 @@ def _parse_financial_metrics(main_soup: BeautifulSoup) -> dict[str, Any]:
 
 
 def _parse_industry_info(soup: BeautifulSoup) -> dict[str, Any]:
-    """Extract exchange type and sector from the main page soup."""
-    info: dict[str, Any] = {"exchange": None, "sector": None}
+    """Extract exchange type and sector from the main page soup.
+
+    ROB-512: 한글 업종은 동종업종비교 헤더의 upjong 링크에서 추출한다 —
+    링크 href의 ``no=`` 쿼리값이 Naver 업종번호(안정 식별자)다. 과거 셀렉터
+    ``div.tab_con1 em a``는 현행 페이지에서 매칭되지 않아(2026-06-11 라이브
+    확인, 전 종목 None) legacy fallback으로만 유지한다.
+    """
+    info: dict[str, Any] = {"exchange": None, "sector": None, "sector_no": None}
 
     code_info = soup.select_one("div.code")
     if code_info:
@@ -186,10 +192,18 @@ def _parse_industry_info(soup: BeautifulSoup) -> dict[str, Any]:
         elif "코스닥" in code_text:
             info["exchange"] = "KOSDAQ"
 
-    sector_elem = soup.select_one("div.tab_con1 em a")
-    if sector_elem:
-        info["sector"] = sector_elem.get_text(strip=True)
+    sector_elem = soup.select_one('a[href*="type=upjong"]')
+    if sector_elem is not None:
+        info["sector"] = sector_elem.get_text(strip=True) or None
+        match = re.search(r"[?&]no=(\d+)", sector_elem.get("href") or "")
+        if match:
+            info["sector_no"] = match.group(1)
+        return info
 
+    # legacy fallback (구 페이지 구조 / 기존 fixture 호환)
+    legacy_elem = soup.select_one("div.tab_con1 em a")
+    if legacy_elem is not None:
+        info["sector"] = legacy_elem.get_text(strip=True) or None
     return info
 
 

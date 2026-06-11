@@ -46,6 +46,10 @@ sequence is:
 3. Wait for explicit "approved to commit" from a reviewer.
 4. `--all --commit` → re-check coverage; expect `dataState="fresh"`.
 
+> **ROB-512:** `_LOOKBACK`이 10→30으로 늘어 `closes_window` 기반 RSI14 enrichment가
+> 가능해졌다. 효력은 **새 빌드 파티션부터** — 배포 후 `--market kr --all --commit`
+> 재빌드 전까지 기존 파티션의 RSI는 계속 null(정상·정직한 동작)이다.
+
 ---
 
 ## 3. Coverage Check
@@ -309,3 +313,26 @@ uv run python -m scripts.build_invest_crypto_screener_snapshots --all --commit
 - **No DB migration** (Phase 0; 파생 컬럼은 Phase 1 ROB-443).
 - read-only 발굴. broker/order/watch/order-intent mutation 0. DB write 는 `InvestCryptoScreenerSnapshotsRepository` 의 upsert 만.
 - snapshot commit/스케줄 활성화는 operator 승인 게이트. 매수 신호 아님(스크리닝 컨텍스트).
+
+
+## 11. US market_valuation / us_fundamentals 일일 갱신 (ROB-508)
+
+### Overview
+US 펀더멘털 프리셋 4종(`high_yield_value`/`undervalued_growth`/`profitable_company`/`undervalued_breakout`)이 직전 거래일 기준 `dataState: fresh`로 서빙되도록 Prefect 일일/주간 갱신을 수행한다.
+
+- **Market Valuation Snapshots (US)**: 일일 갱신 (`flows/auto_trader/market_valuation_snapshots_us.py`)
+  - **스케줄**: 화–토 08:30 KST (US 정규장 마감 후, 06:10 KST US invest screener 빌드와 분리)
+  - **환경 게이트**: `MARKET_VALUATION_SNAPSHOTS_COMMIT_ENABLED` (기본값 `False` → dry-run, `True` 시 DB persist)
+  - **수동 빌드 fallback 커맨드**:
+    ```bash
+    uv run python -m scripts.build_market_valuation_snapshots --market us --all --common-stocks-only --commit
+    ```
+- **US Financial Fundamentals Snapshots**: 주간 갱신 (`flows/auto_trader/us_fundamentals_snapshots.py`)
+  - **스케줄**: 매주 일요일 09:00 KST
+  - **수동 빌드 fallback 커맨드**:
+    ```bash
+    uv run python -m scripts.build_us_fundamentals_snapshots --all --commit
+    ```
+
+### Freshness 확인 방법
+스크리너 응답의 `freshness.primary.snapshotDate` 가 직전 거래일인지, `dataState`가 `"fresh"` 인지, 펀더멘털 preset rows의 `priceLabel` 이 `"-"`가 아닌 실제 가격(close)으로 표시되는지 확인한다.

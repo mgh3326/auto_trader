@@ -48,6 +48,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
+  - KR equity `get_quote` uses KRX daily quote data for the regular-session baseline and includes `previous_close` when at least two daily rows are available.
+  - During KR NXT pre-market (`session: "nxt_premarket"`) and trading-day NXT after-hours (`session: "nxt_after"`), KR `get_quote` overlays `price` from `get_orderbook(symbol, market="kr", venue="nxt")`.
+  - NXT price selection order is `expected_price` (`price_source: "nxt_expected_price"`), then best bid/ask mid (`"nxt_mid"`), then a single available best ask or bid (`"nxt_best_ask"` / `"nxt_best_bid"`).
+  - A successful NXT overlay returns `data_state: "fresh"`, `regular_session_data_state` with the KRX classifier value, and venue diagnostics (`venue`, `venue_label`, `kis_market_code`, `source_endpoint`, `source_tr_id`) when KIS supplies them.
+  - If the NXT orderbook is empty or unavailable, `get_quote` keeps the ROB-464 stale-session behavior: KRX daily `price`, `data_state` from `kr_market_data_state()`, and no NXT diagnostic fields.
 - `get_orderbook(symbol, market="kr")`
 - US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`
   - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them
@@ -1089,7 +1094,7 @@ Validation rules:
 - **Quantity zero/negative**: `qty <= 0` payloads are treated as delete/cleanup intent:
   - If a matching holding exists, it is removed (same as `action="remove"`)
   - If no matching holding exists, a warning is generated
-- **dry_run behavior**: When `dry_run=True`, no DB mutations occur; only preview data and warnings are returned.
+- **dry_run behavior**: When `dry_run=True`, no DB mutations occur. The response still includes `added_count`, `updated_count`, `removed_count`, `unchanged_count`, and `diff` so callers can validate the planned changes before execution. Dry-run diff actions are `would_add`, `would_update`, `would_remove`, and `unchanged`; live execution actions remain `added`, `updated`, and `removed`.
 
 Response format:
 ```json
@@ -1107,6 +1112,28 @@ Response format:
   "removed_count": 1,
   "unchanged_count": 0,
   "diff": [...]
+}
+```
+
+Dry-run remove preview example:
+```json
+{
+  "success": true,
+  "dry_run": true,
+  "message": "Preview only (set dry_run=False to update DB)",
+  "broker": "toss",
+  "account_name": "기본 계좌",
+  "parsed_count": 0,
+  "holdings": [],
+  "warnings": [],
+  "added_count": 0,
+  "updated_count": 0,
+  "removed_count": 2,
+  "unchanged_count": 0,
+  "diff": [
+    {"action": "would_remove", "ticker": "IONQ", "market_type": "US"},
+    {"action": "would_remove", "ticker": "TSM", "market_type": "US"}
+  ]
 }
 ```
 

@@ -135,6 +135,27 @@ class TestParseIndustryInfo:
         assert result["exchange"] is None
         assert result["sector"] is None
 
+    def test_parses_sector_from_upjong_link_with_number(self):
+        """ROB-512: 현행 페이지의 동종업종비교 upjong 링크에서 한글 업종명과
+        안정 식별자(업종번호 no=)를 추출한다. 구 셀렉터(div.tab_con1 em a)는
+        현행 페이지에서 죽어 있다(2026-06-11 라이브 확인)."""
+        html = (
+            '<div class="section trade_compare"><h4 class="h_sub sub_tit7">'
+            "<span>동종업종비교</span><em>(업종명 : "
+            '<a href="/sise/sise_group_detail.naver?type=upjong&amp;no=278">'
+            '반도체와반도체장비</a><span class="bar">｜</span>)</em></h4></div>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["sector"] == "반도체와반도체장비"
+        assert result["sector_no"] == "278"
+
+    def test_sector_no_none_when_no_upjong_link(self):
+        soup = BeautifulSoup("<div>업종 정보 없음</div>", "html.parser")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["sector"] is None
+        assert result["sector_no"] is None
+
 
 class TestParsePeerComparison:
     """Tests for _parse_peer_comparison sub-parser."""

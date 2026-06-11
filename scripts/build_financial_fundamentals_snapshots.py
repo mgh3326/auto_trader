@@ -27,12 +27,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--limit",
         type=int,
         default=None,
-        help="Max active universe symbols. Defaults to 20 unless --all.",
+        help="Max active DART-eligible KR common-stock symbols. Defaults to 20 unless --all.",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Iterate the full active KR universe. Exclusive with --symbol/--limit.",
+        help="Iterate the full active DART-eligible KR common-stock universe. Exclusive with --symbol/--limit.",
     )
     parser.add_argument(
         "--with-quarterly",
@@ -75,8 +75,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "DART budget-split: skip symbols that already have a snapshot so daily "
-            "re-runs advance through uncollected symbols. With --limit N selects the "
-            "NEXT N uncollected (keep N*11 under the daily budget, e.g. --limit 1500)."
+            "re-runs advance through uncollected DART-eligible common stocks. With "
+            "--limit N selects the NEXT N uncollected (keep N*11 under the daily "
+            "budget, e.g. --limit 1500)."
         ),
     )
     args = parser.parse_args(argv)
