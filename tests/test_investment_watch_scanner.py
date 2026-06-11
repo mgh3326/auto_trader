@@ -631,6 +631,14 @@ async def test_trigger_payload_carries_links_guidance_and_price_guidance(
 ) -> None:
     """ROB-500 — 발화 페이로드에 invest_links + 액션 가이드 + 가격 가이드."""
     alert = await _seed_active_kr_alert(session)
+    alert.max_action = {
+        "side": "buy",
+        "quantity": "1",
+        "amount_krw": "980000",
+        "limit_price": "975000",
+        "ladder_level": "1",
+    }
+    alert.trigger_checklist = ["quote spread ok", "thesis still valid"]
     repo = InvestmentReportsRepository(session)
     item = await repo.get_item_by_uuid(alert.source_item_uuid)
     assert item is not None
@@ -673,6 +681,14 @@ async def test_trigger_payload_carries_links_guidance_and_price_guidance(
     assert payload.price_guidance.suggested_limit_price_range.high == Decimal("100")
     assert payload.price_guidance.max_chase_price == Decimal("102")
     assert payload.price_guidance.invalidation.kind == "price_below"
+
+    assert payload.planned_action is not None
+    assert payload.planned_action.side == "buy"
+    assert payload.planned_action.qty == Decimal("1")
+    assert payload.planned_action.amount_krw == Decimal("980000")
+    assert payload.planned_action.limit_price_hint == Decimal("975000")
+    assert payload.planned_action.ladder_level == "1"
+    assert payload.trigger_checklist == ["quote spread ok", "thesis still valid"]
 
 
 @pytest.mark.asyncio

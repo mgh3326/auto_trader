@@ -4,7 +4,7 @@ auto_trader가 watch 발화/유효성 재검토 시 `HERMES_WEBHOOK_URL`로 POST
 `ReviewTriggerPayload`(`app/services/hermes_client.py`) 계약 문서.
 Hermes Discord 렌더러가 이 문서를 기준으로 카드를 구성한다.
 
-## ROB-500 추가 필드 (additive, 모두 optional)
+## ROB-500 + ROB-514 추가 필드 (additive, 모두 optional)
 
 ```json
 {
@@ -24,7 +24,18 @@ Hermes Discord 렌더러가 이 문서를 기준으로 카드를 구성한다.
     "suggested_limit_price_range": {"low": "95", "high": "100"},
     "max_chase_price": "102",
     "invalidation": {"kind": "price_below", "price": "80", "text": null}
-  }
+  },
+  "planned_action": {
+    "side": "buy",
+    "qty": "1",
+    "amount_krw": "980000",
+    "limit_price_hint": "975000",
+    "ladder_level": "1"
+  },
+  "trigger_checklist": [
+    "Check latest quote spread",
+    "Confirm thesis still valid"
+  ]
 }
 ```
 
@@ -34,7 +45,7 @@ Hermes Discord 렌더러가 이 문서를 기준으로 카드를 구성한다.
   가격을 추론/생성하는 것은 금지.
 - 익절/매도 목표 필드는 계약에 없다. 렌더러가 임의 생성하지 않는다 (locked scope).
 
-## Hermes Discord 렌더러 요구사항 (ROB-500 §4)
+## Hermes Discord 렌더러 요구사항 (ROB-500 §4 + ROB-514)
 
 1. 카드 상단: `operator_action_guidance.headline` + 발화 조건
    (`symbol metric operator threshold`, `current_value`).
@@ -42,6 +53,8 @@ Hermes Discord 렌더러가 이 문서를 기준으로 카드를 구성한다.
    stock_path는 보조 context link).
 3. 그 다음: `price_guidance` 4개 값 (또는 "가격 가이드 없음").
 4. 하단 `Trace` 섹션: event/alert/report/item UUID + correlation_id.
+5. Render `planned_action` near `price_guidance` when present. If null, do not invent quantity or amount.
+6. Render each `trigger_checklist` string as an operator checklist. If empty, omit the checklist section.
 
 ## 배포 순서
 

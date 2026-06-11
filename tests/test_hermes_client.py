@@ -14,7 +14,9 @@ from app.services.hermes_client import (
     ReviewTriggerPayload,
     build_invest_links,
     build_operator_action_guidance,
+    planned_action_from_max_action,
     price_guidance_from_watch_recommendation,
+    trigger_checklist_from_raw,
 )
 
 
@@ -297,3 +299,69 @@ def test_payload_accepts_new_optional_fields_and_still_forbids_extras() -> None:
     assert payload.price_guidance is None
     with pytest.raises(ValidationError):
         _base_payload(unknown_field=1)
+
+
+def test_planned_action_from_max_action_maps_canonical_keys() -> None:
+    action = planned_action_from_max_action(
+        {
+            "side": "buy",
+            "quantity": "1",
+            "amount_krw": "980000",
+            "limit_price": "975000",
+            "ladder_level": "1",
+        }
+    )
+
+    assert action is not None
+    assert action.side == "buy"
+    assert action.qty == Decimal("1")
+    assert action.amount_krw == Decimal("980000")
+    assert action.limit_price_hint == Decimal("975000")
+    assert action.ladder_level == "1"
+
+
+def test_planned_action_from_max_action_prefers_explicit_aliases() -> None:
+    action = planned_action_from_max_action(
+        {
+            "side": "buy",
+            "qty": "2",
+            "quantity": "1",
+            "amount_krw": "1900000",
+            "limit_price_hint": "955000",
+            "limit_price": "975000",
+        }
+    )
+
+    assert action is not None
+    assert action.qty == Decimal("2")
+    assert action.limit_price_hint == Decimal("955000")
+
+
+def test_planned_action_from_max_action_none_for_empty_or_malformed() -> None:
+    assert planned_action_from_max_action({}) is None
+    assert planned_action_from_max_action(None) is None
+    assert planned_action_from_max_action({"side": "hold", "quantity": "1"}) is None
+    assert planned_action_from_max_action({"side": "buy", "quantity": "oops"}) is None
+
+
+def test_trigger_checklist_from_raw_returns_strings_only() -> None:
+    assert trigger_checklist_from_raw(["quote", "thesis"]) == ["quote", "thesis"]
+    assert trigger_checklist_from_raw(None) == []
+    assert trigger_checklist_from_raw(["ok", {"bad": True}, 1]) == ["ok"]
+
+
+def test_payload_accepts_planned_action_and_trigger_checklist() -> None:
+    payload = _base_payload(
+        planned_action={
+            "side": "buy",
+            "qty": "1",
+            "amount_krw": "980000",
+            "limit_price_hint": "975000",
+            "ladder_level": "1",
+        },
+        trigger_checklist=["quote ok", "thesis ok"],
+    )
+
+    assert payload.planned_action is not None
+    assert payload.planned_action.qty == Decimal("1")
+    assert payload.trigger_checklist == ["quote ok", "thesis ok"]

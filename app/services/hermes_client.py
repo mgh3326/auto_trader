@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from app.core.config import settings
 from app.schemas.investment_reports import (
     ItemIntentLiteral,
+    ItemSideLiteral,
     MarketLiteral,
     TargetKindLiteral,
     WatchActionModeLiteral,
@@ -89,6 +90,59 @@ class PriceGuidance(BaseModel):
     invalidation: WatchInvalidation | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+
+class PlannedAction(BaseModel):
+    """ROB-514 - operator-facing execution plan derived from max_action."""
+
+    side: ItemSideLiteral
+    qty: Decimal | None = None
+    amount_krw: Decimal | None = None
+    limit_price_hint: Decimal | None = None
+    ladder_level: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    return Decimal(str(value))
+
+
+def planned_action_from_max_action(
+    max_action: dict[str, Any] | None,
+) -> PlannedAction | None:
+    """Project stored max_action into the Hermes planned_action contract.
+
+    Fail-open: malformed optional context is omitted instead of blocking alert
+    delivery.
+    """
+    if not isinstance(max_action, dict) or not max_action:
+        return None
+    try:
+        return PlannedAction(
+            side=max_action.get("side"),
+            qty=_decimal_or_none(max_action.get("qty", max_action.get("quantity"))),
+            amount_krw=_decimal_or_none(max_action.get("amount_krw")),
+            limit_price_hint=_decimal_or_none(
+                max_action.get("limit_price_hint", max_action.get("limit_price"))
+            ),
+            ladder_level=(
+                str(max_action["ladder_level"])
+                if max_action.get("ladder_level") not in (None, "")
+                else None
+            ),
+        )
+    except Exception:  # noqa: BLE001 - notification context is advisory
+        logger.warning("max_action planned_action projection failed; omitting context")
+        return None
+
+
+def trigger_checklist_from_raw(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, str)]
 
 
 def build_invest_links(
@@ -232,6 +286,10 @@ class ReviewTriggerPayload(BaseModel):
     invest_links: InvestLinks | None = None
     operator_action_guidance: OperatorActionGuidance | None = None
     price_guidance: PriceGuidance | None = None
+
+    # ROB-514 — watch alert execution plan & trigger checklist
+    planned_action: PlannedAction | None = None
+    trigger_checklist: list[str] | None = None
 
     model_config = ConfigDict(extra="forbid")
 
