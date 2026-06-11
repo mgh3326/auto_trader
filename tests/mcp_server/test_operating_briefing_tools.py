@@ -173,3 +173,83 @@ async def test_get_operating_briefing_composes_all_sections(
     assert result["latest_report"]["title"] == "latest plan"
     assert result["session_context"]["entries"][0]["title"] == "handoff"
     assert result["staleness"]["pending_orders"]["freshness_status"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_get_operating_briefing_reads_active_watch_and_session_context(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.mcp_server.tooling import operating_briefing as ob
+    from app.mcp_server.tooling.session_context_tools import session_context_append
+
+    async def fake_holdings(**kwargs):
+        return {
+            "filters": {"market": kwargs["market"]},
+            "total_accounts": 1,
+            "total_positions": 0,
+            "summary": {},
+            "accounts": [],
+            "errors": [],
+        }
+
+    class EmptyPendingSnapshot:
+        orders: list[dict] = []
+        as_of = "2026-06-11T01:00:00+00:00"
+        freshness_status = "fresh"
+        unavailable_reason = None
+        account_scope = "kis_live"
+
+    async def fake_pending(db, *, market, account_scope):
+        return EmptyPendingSnapshot()
+
+    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
+
+    db_session.add(
+        InvestmentWatchAlert(
+            idempotency_key="rob517:briefing-active",
+            source_report_uuid=uuid.uuid4(),
+            source_item_uuid=uuid.uuid4(),
+            market="kr",
+            target_kind="asset",
+            symbol="005930",
+            metric="price",
+            operator="above",
+            threshold=100000,
+            threshold_key="price:above:100000",
+            intent="trend_recovery_review",
+            action_mode="notify_only",
+            rationale="briefing watch",
+            trigger_checklist=[],
+            max_action={},
+            valid_until=datetime.now(tz=UTC) + timedelta(days=1),
+            status="active",
+        )
+    )
+    await db_session.commit()
+    await session_context_append(
+        entries=[
+            {
+                "kst_date": "2026-06-11",
+                "market": "kr",
+                "account_scope": "kis_live",
+                "entry_type": "next_action",
+                "title": "재평가",
+                "body": "내일 20:00 만료 주문 재평가",
+            }
+        ]
+    )
+
+    result = await ob.get_operating_briefing_impl(
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    assert result["success"] is True
+    assert result["active_watches"]["count"] == 1
+    assert result["active_watches"]["watches"][0]["rationale"] == "briefing watch"
+    assert result["session_context"]["count"] == 1
+    assert result["session_context"]["entries"][0]["title"] == "재평가"
