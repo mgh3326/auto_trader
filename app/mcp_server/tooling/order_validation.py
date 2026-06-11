@@ -119,6 +119,36 @@ def evaluate_sell_price_guards(
     return None
 
 
+def evaluate_market_sell_loss_guard(
+    *,
+    current_price: float,
+    avg_price: float,
+    allow_loss_sell: bool = False,
+) -> str | None:
+    """ROB-518: live market sells must not realize a loss by mistake.
+
+    A market sell executes at ~current_price, so the avg*1.01 floor that guards
+    limit sells is applied against the current price here. Mock equity keeps the
+    ROB-461 allow_loss_sell bypass (손절 practice). defensive_trim/scalping_exit
+    are limit-only by precondition and can never reach the market path. Unknown
+    cost basis (avg_price <= 0) stays fail-open, matching the limit-guard
+    semantics.
+    """
+    if allow_loss_sell:
+        return None
+    if avg_price <= 0:
+        return None
+    min_sell_price = avg_price * 1.01
+    if current_price < min_sell_price:
+        return (
+            f"Live market sell blocked: current price {current_price} below "
+            f"minimum (avg_buy_price * 1.01 = {round(min_sell_price, 4)}). "
+            "Loss-selling is disabled on live accounts (ROB-518); use a "
+            "defensive_trim limit order for a sanctioned trim."
+        )
+    return None
+
+
 def _is_cached_approved(approval_issue_id: str) -> bool:
     expires_at = _defensive_trim_success_cache.get(approval_issue_id)
     if expires_at is None:
@@ -666,6 +696,27 @@ async def _preview_sell(
 
     avg_price = holdings["avg_price"]
     if order_type == "market":
+        # ROB-518 — market sells used to skip the price guards entirely, letting
+        # a live sell realize a loss in one call. Same allow_loss_sell scope as
+        # the limit path (mock equity only; crypto/live stay guarded).
+        allow_loss_sell = is_mock and market_type in ("equity_kr", "equity_us")
+        guard_error = evaluate_market_sell_loss_guard(
+            current_price=current_price,
+            avg_price=avg_price,
+            allow_loss_sell=allow_loss_sell,
+        )
+        if guard_error is not None:
+            result["error"] = guard_error
+            return result
+        if allow_loss_sell and current_price < avg_price * 1.01:
+            _log_mock_loss_sell_bypass(
+                symbol=symbol,
+                market_type=market_type,
+                price=current_price,
+                current_price=current_price,
+                avg_price=avg_price,
+                phase="preview",
+            )
         order_quantity = holdings["quantity"]
         execution_price = current_price
         result["price"] = execution_price
@@ -904,6 +955,27 @@ async def _validate_sell_side(
 
     order_quantity = available_quantity if quantity is None else quantity
     avg_price = _to_float(holdings.get("avg_price"), default=0.0)
+
+    if order_type == "market":
+        # ROB-518 — mirror the preview-side market loss guard on the execution
+        # path (single behavior regardless of entry point).
+        allow_loss_sell = is_mock and market_type in ("equity_kr", "equity_us")
+        guard_error = evaluate_market_sell_loss_guard(
+            current_price=current_price,
+            avg_price=avg_price,
+            allow_loss_sell=allow_loss_sell,
+        )
+        if guard_error is not None:
+            return 0.0, 0.0, order_error_fn(guard_error)
+        if allow_loss_sell and current_price < avg_price * 1.01:
+            _log_mock_loss_sell_bypass(
+                symbol=normalized_symbol,
+                market_type=market_type,
+                price=current_price,
+                current_price=current_price,
+                avg_price=avg_price,
+                phase="execution",
+            )
 
     if order_type == "limit" and price is not None:
         # defensive_trim is live-only (Trader-agent + approval); allow_loss_sell is

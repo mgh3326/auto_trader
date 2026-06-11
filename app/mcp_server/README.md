@@ -161,6 +161,34 @@ disabled no-op payloads:
 - `investment_stage_artifacts_ingest_from_hermes`
 - `investment_report_prepare_intraday_context`
 
+### Session Context Tools
+
+`session_context_append(entries)` persists append-only operator context for
+cross-session handoff. It is for "where did we leave off?" state: plans,
+decisions, deferred items, rejected candidates, constraints, open questions,
+next actions, and handoff notes. It is not an investment report, research
+session, trade journal, watch alert, or order ledger.
+
+Each entry accepts:
+
+- `kst_date` optional `YYYY-MM-DD`; defaults to current KST date.
+- `market` required: `kr`, `us`, or `crypto`.
+- `account_scope` optional: `kis_live`, `kis_mock`, `alpaca_paper`, `upbit_live`.
+- `entry_type` required: `plan`, `decision`, `deferred`,
+  `rejected_candidate`, `constraint`, `open_question`, `next_action`,
+  `handoff_note`.
+- `title` required short title.
+- `body` required markdown body.
+- `refs` optional object: `report_uuid`, `item_uuid`, `alert_uuid`, `order_id`,
+  `journal_id`, `symbols`.
+- `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
+- `session_label` optional grouping label.
+
+`session_context_get_recent(market?, account_scope?, kst_date_from?, entry_type?, limit)`
+returns recent entries newest first. `limit` is clamped to 1..100 and defaults
+to 20. New trading sessions should call this before comparing yesterday's plan
+with today's candidate tournament.
+
 ### Investment Report Tools
 
 - `investment_report_add_items(report_uuid, items, actor=None)` - Append new proposal items to an existing draft investment report. The item payload contract matches `investment_report_create`. Duplicate `client_item_key` rows are returned as existing items and are not rewritten. Non-draft reports return `error="not_draft"`. No broker, order, or watch mutation is performed.

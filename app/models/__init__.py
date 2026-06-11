@@ -73,6 +73,7 @@ from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .scalp_trade_analytics import ScalpTradeAnalytics
 from .scalping_reviews import ScalpingDailyReview, ScalpingReviewAction
 from .sell_condition import SellCondition
+from .session_context import OperatorSessionContext
 from .symbol_news_relevance import SymbolNewsRelevance
 from .symbol_sectors import SymbolSector
 from .symbol_trade_settings import SymbolTradeSettings
@@ -166,6 +167,7 @@ __all__ = [
     "UpbitSymbolUniverse",
     "USSymbolUniverse",
     "UserSetting",
+    "OperatorSessionContext",
     "SymbolSector",
     "SymbolTradeSettings",
     "SymbolNewsRelevance",
