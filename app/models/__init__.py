@@ -74,6 +74,7 @@ from .scalp_trade_analytics import ScalpTradeAnalytics
 from .scalping_reviews import ScalpingDailyReview, ScalpingReviewAction
 from .sell_condition import SellCondition
 from .symbol_news_relevance import SymbolNewsRelevance
+from .symbol_sectors import SymbolSector
 from .symbol_trade_settings import SymbolTradeSettings
 from .trade_journal import JournalStatus, TradeJournal
 from .trade_profile import (
@@ -165,6 +166,7 @@ __all__ = [
     "UpbitSymbolUniverse",
     "USSymbolUniverse",
     "UserSetting",
+    "SymbolSector",
     "SymbolTradeSettings",
     "SymbolNewsRelevance",
     "NewsArticle",

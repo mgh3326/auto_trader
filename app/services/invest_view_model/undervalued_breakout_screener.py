@@ -166,17 +166,38 @@ async def load_undervalued_breakout_from_snapshots(
 
     symbols = [r["symbol"] for r in cand_rows]
     name_map: dict[str, str] = {}
+    sector_map: dict[str, str] = {}
     if (
         market == "kr" and symbols
     ):  # ROB-440 Part 2: KR name/common-stock filter is KR-only
+        from app.models.symbol_sectors import SymbolSector
+
         try:
             names = await session.execute(
-                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                sa.select(
+                    KRSymbolUniverse.symbol,
+                    KRSymbolUniverse.name,
+                    SymbolSector.name_kr.label("sector_name_kr"),
+                    SymbolSector.name_en.label("sector_name_en"),
+                )
+                .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+                .where(
                     KRSymbolUniverse.symbol.in_(symbols),
                     KRSymbolUniverse.is_active.is_(True),
                 )
             )
-            name_map = {row.symbol: row.name for row in names.all()}
+            _name_rows = names.all()
+            name_map = {row.symbol: row.name for row in _name_rows}
+            sector_map = {
+                row.symbol: label
+                for row in _name_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "undervalued_breakout: name lookup failed: %s", exc, exc_info=True
@@ -230,6 +251,7 @@ async def load_undervalued_breakout_from_snapshots(
                 "close": float(r["latest_close"])
                 if r["latest_close"] is not None
                 else None,
+                "sector": sector_map.get(sym),
                 "change_rate": float(r["change_rate"])
                 if r["change_rate"] is not None
                 else None,

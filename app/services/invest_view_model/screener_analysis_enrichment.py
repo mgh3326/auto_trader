@@ -10,6 +10,7 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.symbol import to_yahoo_symbol
 from app.mcp_server.tooling.fundamentals._valuation import (
     handle_get_investment_opinions,
 )
@@ -17,6 +18,7 @@ from app.schemas.invest_screener import (
     ScreenerAnalysisConsensus,
     ScreenerAnalysisContext,
 )
+from app.services.us_sector_korean_map import korean_sector_label
 
 OpinionProvider = Callable[..., Any]
 
@@ -146,6 +148,135 @@ async def _opinion_payload(
         return {"error": "analyst_consensus_unavailable"}
 
 
+_SECTOR_FETCH_TIMEOUT = 4.5
+_SECTOR_FETCH_CONCURRENCY = 4
+
+
+async def _fetch_kr_sector(code: str) -> tuple[str | None, str | None]:
+    """Naver 종목 메인 페이지에서 (업종번호, 한글 업종명)을 추출."""
+    from app.services.naver_finance.valuation import (
+        _fetch_html,
+        _parse_industry_info,
+    )
+
+    soup = await _fetch_html(
+        "https://finance.naver.com/item/main.naver", params={"code": code}
+    )
+    info = _parse_industry_info(soup)
+    return info.get("sector_no"), info.get("sector")
+
+
+async def _fetch_us_sector(symbol: str) -> tuple[str | None, str | None]:
+    """yfinance info에서 (industry, sector) 영문 원문을 추출 (DB 심볼 입력)."""
+    import yfinance as yf
+
+    def _sync() -> tuple[str | None, str | None]:
+        info = yf.Ticker(to_yahoo_symbol(symbol)).info or {}
+        return info.get("industry") or None, info.get("sector") or None
+
+    return await asyncio.to_thread(_sync)
+
+
+async def _sector_labels_for_page(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    market: str,
+    symbols: list[str],
+    fetch_kr_sector: Callable[..., Any],
+    fetch_us_sector: Callable[..., Any],
+) -> dict[str, str]:
+    """워밍된 섹터는 DB에서, NULL은 lazy fetch→persist 후 표시 라벨을 반환.
+
+    실패는 전부 삼키고 해당 심볼만 빠진 dict를 반환한다(fail-open) —
+    스크리너 응답 자체는 영향받지 않는다.
+    """
+    if not symbols or market not in {"kr", "us"}:
+        return {}
+
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.symbol_sectors import SymbolSector
+    from app.models.us_symbol_universe import USSymbolUniverse
+    from app.services.symbol_sectors_service import (
+        assign_symbol_sector,
+        get_or_create_sector,
+    )
+
+    universe = KRSymbolUniverse if market == "kr" else USSymbolUniverse
+    labels: dict[str, str] = {}
+    missing: list[str] = []
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                sa.select(universe.symbol, SymbolSector.name_kr, SymbolSector.name_en)
+                .outerjoin(SymbolSector, universe.sector_id == SymbolSector.id)
+                .where(universe.symbol.in_(symbols))
+            )
+        ).all()
+        known = {row.symbol for row in rows}
+        for row in rows:
+            label = row.name_kr or row.name_en
+            if label:
+                labels[row.symbol] = label
+            else:
+                missing.append(row.symbol)
+        # universe에 없는 심볼은 fetch 대상에서 제외(assign이 어차피 불가)
+        missing = [s for s in missing if s in known]
+
+    if not missing:
+        return labels
+
+    sem = asyncio.Semaphore(_SECTOR_FETCH_CONCURRENCY)
+    fetched: dict[str, tuple[str, str | None, str | None]] = {}
+    # 값: (source_key, name_kr, name_en)
+
+    async def _one(symbol: str) -> None:
+        async with sem:
+            try:
+                if market == "kr":
+                    no, name = await asyncio.wait_for(
+                        fetch_kr_sector(symbol), timeout=_SECTOR_FETCH_TIMEOUT
+                    )
+                    if no and name:
+                        fetched[symbol] = (str(no), name, None)
+                else:
+                    industry, sector = await asyncio.wait_for(
+                        fetch_us_sector(symbol), timeout=_SECTOR_FETCH_TIMEOUT
+                    )
+                    raw = industry or sector
+                    if raw:
+                        fetched[symbol] = (raw, korean_sector_label(raw), raw)
+            except Exception:  # noqa: BLE001 — per-symbol fail-open
+                return
+
+    await asyncio.gather(*[_one(symbol) for symbol in missing])
+    if not fetched:
+        return labels
+
+    source = "naver_upjong" if market == "kr" else "yfinance_industry"
+    try:
+        async with session_factory() as db:
+            for symbol, (source_key, name_kr, name_en) in fetched.items():
+                sector_id = await get_or_create_sector(
+                    db,
+                    market=market,
+                    source=source,
+                    source_key=source_key,
+                    name_kr=name_kr,
+                    name_en=name_en,
+                )
+                await assign_symbol_sector(
+                    db, market=market, symbol=symbol, sector_id=sector_id
+                )
+                label = name_kr or name_en
+                if label:
+                    labels[symbol] = label
+            await db.commit()
+    except Exception:  # noqa: BLE001 — persist 실패도 fail-open (라벨만 미반영)
+        return labels
+    return labels
+
+
 async def _rsi_by_symbol(
     db: AsyncSession, *, market: str, symbols: list[str]
 ) -> dict[str, float]:
@@ -218,6 +349,8 @@ async def enrich_snapshot_page(
     market: str,
     session_factory: async_sessionmaker[AsyncSession],
     opinion_provider: OpinionProvider = handle_get_investment_opinions,
+    fetch_kr_sector: Callable[..., Any] = _fetch_kr_sector,
+    fetch_us_sector: Callable[..., Any] = _fetch_us_sector,
 ) -> dict[str, Any]:
     symbols = [
         str(row.get("symbol") or "").strip() for row in rows if row.get("symbol")
@@ -227,6 +360,7 @@ async def enrich_snapshot_page(
         "attempted": len(rows),
         "consensusSucceeded": 0,
         "rsiSucceeded": 0,
+        "sectorResolved": 0,
         "warnings": [],
     }
     if not rows:
@@ -238,6 +372,18 @@ async def enrich_snapshot_page(
         except Exception:
             rsi_map = {}
             summary["warnings"].append("rsi_enrichment_unavailable")
+
+    sector_labels: dict[str, str] = {}
+    try:
+        sector_labels = await _sector_labels_for_page(
+            session_factory=session_factory,
+            market=market,
+            symbols=symbols,
+            fetch_kr_sector=fetch_kr_sector,
+            fetch_us_sector=fetch_us_sector,
+        )
+    except Exception:  # noqa: BLE001
+        summary["warnings"].append("sector_enrichment_unavailable")
 
     consensus_map: dict[str, tuple[ScreenerAnalysisConsensus | None, list[str]]] = {}
     if market in {"kr", "us"}:
@@ -261,6 +407,11 @@ async def enrich_snapshot_page(
             summary["consensusSucceeded"] += 1
         if rsi14 is not None:
             summary["rsiSucceeded"] += 1
+
+        sector_label = sector_labels.get(symbol)
+        if sector_label is not None:
+            summary["sectorResolved"] += 1
+
         context = ScreenerAnalysisContext(
             consensus=consensus,
             rsi14=rsi14,
@@ -276,6 +427,11 @@ async def enrich_snapshot_page(
         enriched.append(
             {
                 **row,
+                **(
+                    {"category": sector_label}
+                    if sector_label and (row.get("category") or "-") == "-"
+                    else {}
+                ),
                 "analystLabel": build_analyst_label(consensus, warnings=warnings),
                 "analysisContext": context.model_dump(mode="json"),
             }

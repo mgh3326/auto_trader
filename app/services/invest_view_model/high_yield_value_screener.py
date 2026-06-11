@@ -137,18 +137,39 @@ async def load_high_yield_value_from_snapshots(
 
     symbols = [r["symbol"] for r in candidate_rows]
     name_map: dict[str, str] = {}
+    sector_map: dict[str, str] = {}
     # KR name hydration + the KR common-stock guard are KR-specific (KRX universe +
     # Korean-name ETF/preferred heuristic). US mirrors the consecutive_gainers loader:
     # no KR-universe lookup; the shared row builder fills the US name downstream.
     if market == "kr" and symbols:
+        from app.models.symbol_sectors import SymbolSector
+
         try:
             names = await session.execute(
-                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                sa.select(
+                    KRSymbolUniverse.symbol,
+                    KRSymbolUniverse.name,
+                    SymbolSector.name_kr.label("sector_name_kr"),
+                    SymbolSector.name_en.label("sector_name_en"),
+                )
+                .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+                .where(
                     KRSymbolUniverse.symbol.in_(symbols),
                     KRSymbolUniverse.is_active.is_(True),
                 )
             )
-            name_map = {row.symbol: row.name for row in names.all()}
+            _name_rows = names.all()
+            name_map = {row.symbol: row.name for row in _name_rows}
+            sector_map = {
+                row.symbol: label
+                for row in _name_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "high_yield_value: name lookup failed: %s", exc, exc_info=True
@@ -193,6 +214,7 @@ async def load_high_yield_value_from_snapshots(
                 "symbol": sym,
                 "market": market,
                 "name": name,
+                "sector": sector_map.get(sym),
                 "latest_close": (
                     float(r["latest_close"]) if r["latest_close"] is not None else None
                 ),

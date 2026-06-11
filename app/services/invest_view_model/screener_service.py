@@ -539,23 +539,80 @@ async def _load_consecutive_gainers_from_snapshots(
     candidate_snaps = result.scalars().all()
 
     symbol_names: dict[str, str] = {}
+    sector_map: dict[str, str] = {}
     if market == "kr" and candidate_snaps:
         from app.models.kr_symbol_universe import KRSymbolUniverse
+        from app.models.symbol_sectors import SymbolSector
 
         candidate_symbols = [snap.symbol for snap in candidate_snaps]
         try:
             name_result = await session.execute(
-                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                sa.select(
+                    KRSymbolUniverse.symbol,
+                    KRSymbolUniverse.name,
+                    SymbolSector.name_kr.label("sector_name_kr"),
+                    SymbolSector.name_en.label("sector_name_en"),
+                )
+                .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+                .where(
                     KRSymbolUniverse.symbol.in_(candidate_symbols),
                     KRSymbolUniverse.is_active.is_(True),
                 )
             )
-            symbol_names = {row.symbol: row.name for row in name_result.all()}
+            _name_rows = name_result.all()
+            symbol_names = {row.symbol: row.name for row in _name_rows}
+            sector_map = {
+                row.symbol: label
+                for row in _name_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "failed to read kr_symbol_universe for screener filtering: %s",
                 exc,
                 exc_info=True,
+            )
+
+    if market == "us" and candidate_snaps:
+        from app.models.symbol_sectors import SymbolSector
+        from app.models.us_symbol_universe import USSymbolUniverse
+
+        try:
+            us_rows = (
+                await session.execute(
+                    sa.select(
+                        USSymbolUniverse.symbol,
+                        SymbolSector.name_kr.label("sector_name_kr"),
+                        SymbolSector.name_en.label("sector_name_en"),
+                    )
+                    .outerjoin(
+                        SymbolSector, USSymbolUniverse.sector_id == SymbolSector.id
+                    )
+                    .where(
+                        USSymbolUniverse.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        )
+                    )
+                )
+            ).all()
+            sector_map = {
+                row.symbol: label
+                for row in us_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "consecutive_gainers: us sector lookup failed: %s", exc, exc_info=True
             )
 
     # ROB-426 PR3: market_cap for this non-valuation preset — look up the healthy
@@ -624,6 +681,7 @@ async def _load_consecutive_gainers_from_snapshots(
                 "symbol": snap.symbol,
                 "market": market,
                 "name": symbol_names.get(snap.symbol),
+                "sector": sector_map.get(snap.symbol),
                 "close": float(snap.latest_close)
                 if snap.latest_close is not None
                 else None,
@@ -759,18 +817,38 @@ async def _load_investor_flow_discovery_from_snapshots(
     candidate_snaps = result.scalars().all()
 
     symbol_names: dict[str, str] = {}
+    sector_map: dict[str, str] = {}
     if candidate_snaps:
         from app.models.kr_symbol_universe import KRSymbolUniverse
+        from app.models.symbol_sectors import SymbolSector
 
         candidate_symbols = [snap.symbol for snap in candidate_snaps]
         try:
             name_result = await session.execute(
-                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                sa.select(
+                    KRSymbolUniverse.symbol,
+                    KRSymbolUniverse.name,
+                    SymbolSector.name_kr.label("sector_name_kr"),
+                    SymbolSector.name_en.label("sector_name_en"),
+                )
+                .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+                .where(
                     KRSymbolUniverse.symbol.in_(candidate_symbols),
                     KRSymbolUniverse.is_active.is_(True),
                 )
             )
-            symbol_names = {row.symbol: row.name for row in name_result.all()}
+            _name_rows = name_result.all()
+            symbol_names = {row.symbol: row.name for row in _name_rows}
+            sector_map = {
+                row.symbol: label
+                for row in _name_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "failed to read kr_symbol_universe for investor-flow screener: %s",
@@ -901,6 +979,7 @@ async def _load_investor_flow_discovery_from_snapshots(
                 "symbol": snap.symbol,
                 "market": "kr",
                 "name": symbol_names.get(snap.symbol),
+                "sector": sector_map.get(snap.symbol),
                 "close": price.get("close"),
                 "change_rate": price.get("change_rate"),
                 "change_amount": price.get("change_amount"),
@@ -2261,10 +2340,12 @@ async def build_screener_results(
 
     # Bulk-lookup Korean names for KR rows from kr_symbol_universe
     _kr_names: dict[str, str] = {}
+    _kr_sectors: dict[str, str] = {}
     if session is not None and requested_market == "kr" and rows:
         import sqlalchemy as sa
 
         from app.models.kr_symbol_universe import KRSymbolUniverse
+        from app.models.symbol_sectors import SymbolSector
 
         kr_symbols = [
             _normalize_symbol(r, "kr")[0]
@@ -2273,11 +2354,27 @@ async def build_screener_results(
         ]
         if kr_symbols:
             _kr_result = await session.execute(
-                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
-                    KRSymbolUniverse.symbol.in_(kr_symbols)
+                sa.select(
+                    KRSymbolUniverse.symbol,
+                    KRSymbolUniverse.name,
+                    SymbolSector.name_kr.label("sector_name_kr"),
+                    SymbolSector.name_en.label("sector_name_en"),
                 )
+                .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+                .where(KRSymbolUniverse.symbol.in_(kr_symbols))
             )
-            _kr_names = {row_t.symbol: row_t.name for row_t in _kr_result.all()}
+            _rows = _kr_result.all()
+            _kr_names = {row_t.symbol: row_t.name for row_t in _rows}
+            _kr_sectors = {
+                row_t.symbol: label
+                for row_t in _rows
+                if (
+                    label := (
+                        getattr(row_t, "sector_name_kr", None)
+                        or getattr(row_t, "sector_name_en", None)
+                    )
+                )
+            }
 
     investor_flow_chips = await _hydrate_investor_flow_chips(
         db=session, market=requested_market, rows=rows
@@ -2401,6 +2498,12 @@ async def build_screener_results(
                 symbol=symbol,
                 market=market,  # type: ignore[arg-type]
                 name=_kr_names.get(symbol) or _clean_text(row.get("name")) or symbol,
+                category=(
+                    _kr_sectors.get(symbol)
+                    or row.get("sector")
+                    or row.get("category")
+                    or "-"
+                ),
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
                 priceLabel=_format_crypto_price(
@@ -2425,7 +2528,6 @@ async def build_screener_results(
                     _coerce_float(row.get("change_amount")), market
                 ),
                 changeDirection=direction,
-                category=str(row.get("sector") or row.get("category") or "-"),
                 marketCapLabel=market_cap_label,
                 volumeLabel=_format_volume_label(row, market),
                 analystLabel=str(row.get("analyst_label") or "-"),

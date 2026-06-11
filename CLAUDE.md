@@ -186,8 +186,7 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
 - **스코프**: KR live only; US/crypto live unchanged (follow-up)
 
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
-
-US/해외 (`equity_us`) 및 crypto (`crypto`) live 주문 전송 시 **accepted-only**로 `review.live_order_ledger` 테이블에 기록하며, 선반영하지 않습니다. 체결 장부(fills/journals/realized_pnl)는 오직 `live_reconcile_orders` 도구에 의해 수집된 broker별 체결 증거(해외 일별주문/Upbit order-state)를 바탕으로 델타 멱등(delta-idempotent) 방식으로만 최종 확정(book)됩니다.
+...
 시장가 crypto 주문의 경우 전송 즉시 inline으로 Reconcile을 자동 수행하여 체결 장부를 확정합니다.
 
 - **모델**: `app/models/review.LiveOrderLedger`
@@ -195,6 +194,16 @@ US/해외 (`equity_us`) 및 crypto (`crypto`) live 주문 전송 시 **accepted-
 - **MCP 도구**: `live_reconcile_orders` (dry_run-default)
 - **런북**: `docs/runbooks/live-order-reconcile.md`
 - **스코프**: US/해외 및 crypto live 주문 전체.
+
+### KR/US Category Normalization & Lazy Fill (ROB-512)
+
+KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이블로 통합 관리합니다.
+
+- **마스터 모델**: `app/models/symbol_sectors.SymbolSector` (`source_key`가 식별자)
+- **Lazy Fill**: 스크리너 조회 시(enrichment) 섹터가 없는 종목은 실시간 fetch 후 DB에 저장합니다.
+- **서비스**: `app/services/symbol_sectors_service.py` (쓰기 전용), `app/services/us_sector_korean_map.py` (US 한글 매핑)
+- **적용 로더**: `investor_flow`, `consecutive_gainers`, `double_buy`, `fundamentals` 등 주요 스크리너 로더에 JOIN 배선 완료.
+- **표시 규칙**: `SymbolSector.name_kr` ?? `SymbolSector.name_en` ?? "-" (US는 한글 매핑 우선).
 
 ### Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 
