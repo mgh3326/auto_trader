@@ -61,6 +61,9 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 from app.mcp_server.tooling.investment_snapshots_registration import (
     register_investment_snapshots_tools,
 )
+from app.mcp_server.tooling.session_context_registration import (
+    register_session_context_tools,
+)
 from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
@@ -123,6 +126,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         mcp,
         include_snapshot_generator=snapshot_report_generator_enabled,
     )
+    register_session_context_tools(mcp)
     if snapshot_report_generator_enabled:
         register_investment_hermes_tools(mcp)
     # ROB-447: register_market_report_tools removed — its get_market_reports /

@@ -32,6 +32,7 @@ __all__ = [
     "register_investment_snapshots_tools",
     "register_trade_journal_tools",
     "register_news_tools",
+    "register_session_context_tools",
 ]
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
@@ -70,6 +71,10 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "register_trade_journal_tools": (
         "app.mcp_server.tooling.trade_journal_registration",
         "register_trade_journal_tools",
+    ),
+    "register_session_context_tools": (
+        "app.mcp_server.tooling.session_context_registration",
+        "register_session_context_tools",
     ),
 }
 
