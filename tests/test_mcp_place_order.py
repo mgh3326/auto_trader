@@ -2672,3 +2672,86 @@ async def test_sell_ladder_fill_preview_rejects_non_positive_anchor():
         rungs=[{"limit_price": 64.0}],
     )
     assert result["success"] is False
+
+
+# ----------------------------------------------------------------------
+# ROB-507: buy_ladder_fill_preview read-only tool (buy-side mirror)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buy_ladder_fill_preview_all_below_market():
+    tools = build_tools()
+    result = await tools["buy_ladder_fill_preview"](
+        symbol="GLW",
+        anchor_price=168.9,
+        rungs=[
+            {"limit_price": 165.5, "quantity": 10.0},
+            {"limit_price": 157.25, "quantity": 10.0},
+        ],
+    )
+    assert result["success"] is True
+    assert result["read_only"] is True
+    assert "ladder_all_below_market" in result["warnings"]
+    assert "ladder_missing_near_market_anchor" in result["warnings"]
+    assert result["fill_safety"]["allRungsBelowMarket"] is True
+
+
+@pytest.mark.asyncio
+async def test_buy_ladder_fill_preview_near_anchor_only_all_below():
+    tools = build_tools()
+    result = await tools["buy_ladder_fill_preview"](
+        symbol="GLW",
+        anchor_price=168.9,
+        rungs=[
+            {"limit_price": 168.5, "quantity": 10.0},
+            {"limit_price": 157.25, "quantity": 10.0},
+        ],
+    )
+    assert result["success"] is True
+    assert "ladder_all_below_market" in result["warnings"]
+    assert "ladder_missing_near_market_anchor" not in result["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_buy_ladder_fill_preview_rejects_bad_payload():
+    tools = build_tools()
+    result = await tools["buy_ladder_fill_preview"](
+        symbol="GLW",
+        anchor_price=168.9,
+        rungs=[{"price_typo": 165.5}],
+    )
+    assert result["success"] is False
+    assert "limit_price" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_buy_ladder_fill_preview_rejects_non_positive_anchor():
+    tools = build_tools()
+    result = await tools["buy_ladder_fill_preview"](
+        symbol="GLW",
+        anchor_price=0.0,
+        rungs=[{"limit_price": 165.5, "quantity": 10.0}],
+    )
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_ladder_fill_preview_echoes_anchor_as_of():
+    # ROB-507 B: stale-anchor 가드 보조 — 호출자가 anchor 시각을 명시하면
+    # 응답에 그대로 echo되어 검증 에이전트가 드리프트를 판단할 수 있다.
+    tools = build_tools()
+    buy = await tools["buy_ladder_fill_preview"](
+        symbol="GLW",
+        anchor_price=168.9,
+        rungs=[{"limit_price": 168.9, "quantity": 10.0}],
+        anchor_as_of="2026-06-11T09:31:00-04:00",
+    )
+    assert buy["anchor_as_of"] == "2026-06-11T09:31:00-04:00"
+    sell = await tools["sell_ladder_fill_preview"](
+        symbol="IONQ",
+        anchor_price=63.95,
+        rungs=[{"limit_price": 63.95, "quantity": 2.0}],
+        anchor_as_of="2026-06-11T09:31:00-04:00",
+    )
+    assert sell["anchor_as_of"] == "2026-06-11T09:31:00-04:00"
