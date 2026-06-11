@@ -10,6 +10,7 @@ prior reports, not a single-link traversal via ``previous_report_uuid``.
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -98,6 +99,8 @@ class InvestmentReportQueryService:
         account_scope: str | None = None,
         status: str | None = None,
         report_type: str | None = None,
+        created_by_profiles: Collection[str] | None = None,
+        exclude_statuses: Collection[str] | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> list[InvestmentReport]:
@@ -107,6 +110,8 @@ class InvestmentReportQueryService:
             account_scope=account_scope,
             status=status,
             report_type=report_type,
+            created_by_profiles=created_by_profiles,
+            exclude_statuses=exclude_statuses,
             limit=limit,
             offset=offset,
         )
@@ -119,6 +124,8 @@ class InvestmentReportQueryService:
         account_scope: str | None = None,
         status: str | None = None,
         report_type: str | None = None,
+        created_by_profiles: Collection[str] | None = None,
+        exclude_statuses: Collection[str] | None = None,
     ) -> InvestmentReport | None:
         return await self._repo.latest_report(
             market=market,
@@ -126,6 +133,8 @@ class InvestmentReportQueryService:
             account_scope=account_scope,
             status=status,
             report_type=report_type,
+            created_by_profiles=created_by_profiles,
+            exclude_statuses=exclude_statuses,
         )
 
     async def get_bundle(self, report_uuid: UUID) -> dict[str, Any] | None:

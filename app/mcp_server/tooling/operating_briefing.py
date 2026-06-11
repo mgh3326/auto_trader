@@ -14,6 +14,7 @@ from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
 from app.schemas.investment_reports import (
     ActiveWatchesListResponse,
     InvestmentWatchAlertResponse,
+    OperatingBriefingResponse,
 )
 from app.schemas.session_context import SessionContextResponse
 from app.services.investment_reports.query_service import (
@@ -137,19 +138,11 @@ async def _latest_report_summary(
     account_scope: str,
 ) -> dict[str, Any] | None:
     service = InvestmentReportQueryService(db)
-    reports = await service.list_reports(
+    report = await service.latest_report(
         market=market,
         account_scope=account_scope,
-        limit=20,
-    )
-    advisory_profiles = _advisory_draft_profiles()
-    report = next(
-        (
-            row
-            for row in reports
-            if getattr(row, "created_by_profile", None) in advisory_profiles
-        ),
-        None,
+        created_by_profiles=_advisory_draft_profiles(),
+        exclude_statuses={"superseded"},
     )
     if report is None:
         return None
@@ -207,6 +200,10 @@ async def _recent_session_context(
     }
 
 
+def _section_unavailable_reason(section: str, exc: Exception) -> str:
+    return f"{section}_failed:{type(exc).__name__}:{exc}"
+
+
 async def get_operating_briefing_impl(
     market: str,
     account_scope: str | None = None,
@@ -224,18 +221,65 @@ async def get_operating_briefing_impl(
             market=market,
             account_scope=effective_scope,
         )
-        latest_report = await _latest_report_summary(
-            db,
-            market=market,
-            account_scope=effective_scope,
-        )
-        session_context = await _recent_session_context(
-            db,
-            market=market,
-            account_scope=effective_scope,
-            limit=session_context_limit,
-        )
-    active_watches = await list_active_watches_impl(market=market)
+        try:
+            latest_report = await _latest_report_summary(
+                db,
+                market=market,
+                account_scope=effective_scope,
+            )
+            latest_report_staleness = {
+                "freshness_status": "db_read" if latest_report else "not_found",
+            }
+        except Exception as exc:  # noqa: BLE001
+            reason = _section_unavailable_reason("latest_report", exc)
+            latest_report = None
+            latest_report_staleness = {
+                "freshness_status": "unavailable",
+                "unavailable_reason": reason,
+            }
+
+        try:
+            session_context = await _recent_session_context(
+                db,
+                market=market,
+                account_scope=effective_scope,
+                limit=session_context_limit,
+            )
+            session_context_staleness = {
+                "freshness_status": "db_read",
+            }
+        except Exception as exc:  # noqa: BLE001
+            reason = _section_unavailable_reason("session_context", exc)
+            session_context = {
+                "count": 0,
+                "entries": [],
+                "unavailable_reason": reason,
+            }
+            session_context_staleness = {
+                "freshness_status": "unavailable",
+                "unavailable_reason": reason,
+            }
+
+    try:
+        active_watches = await list_active_watches_impl(market=market)
+        active_watches_staleness = {
+            "as_of": active_watches.get("as_of"),
+            "freshness_status": "db_read",
+        }
+    except Exception as exc:  # noqa: BLE001
+        reason = _section_unavailable_reason("active_watches", exc)
+        active_watches = {
+            "count": 0,
+            "active_watches": [],
+            "unavailable_reason": reason,
+        }
+        active_watches_staleness = {
+            "as_of": None,
+            "freshness_status": "unavailable",
+            "unavailable_reason": reason,
+        }
+
+    active_watches_unavailable_reason = active_watches.get("unavailable_reason")
     response = {
         "success": True,
         "market": market,
@@ -252,16 +296,9 @@ async def get_operating_briefing_impl(
                 "freshness_status": pending.freshness_status,
                 "unavailable_reason": pending.unavailable_reason,
             },
-            "active_watches": {
-                "as_of": active_watches.get("as_of"),
-                "freshness_status": "db_read",
-            },
-            "latest_report": {
-                "freshness_status": "db_read" if latest_report else "not_found",
-            },
-            "session_context": {
-                "freshness_status": "db_read",
-            },
+            "active_watches": active_watches_staleness,
+            "latest_report": latest_report_staleness,
+            "session_context": session_context_staleness,
         },
         "holdings": {
             "filters": holdings.get("filters"),
@@ -279,11 +316,16 @@ async def get_operating_briefing_impl(
         "active_watches": {
             "count": active_watches.get("count", 0),
             "watches": active_watches.get("active_watches", []),
+            **(
+                {"unavailable_reason": active_watches_unavailable_reason}
+                if active_watches_unavailable_reason
+                else {}
+            ),
         },
         "latest_report": latest_report,
         "session_context": session_context,
     }
-    return response
+    return OperatingBriefingResponse.model_validate(response).model_dump(mode="json")
 
 
 __all__ = [

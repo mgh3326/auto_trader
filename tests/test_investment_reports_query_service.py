@@ -286,3 +286,64 @@ async def test_previous_context_respects_n_prior_limit(
     query = InvestmentReportQueryService(session)
     ctx = await query.previous_report_context(market="kr", n_prior=2)
     assert len(ctx["prior_reports"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_query_service_list_and_latest_reports_pass_profile_filters(
+    session: AsyncSession,
+) -> None:
+    repo = InvestmentReportsRepository(session)
+    await repo.insert_report(
+        idempotency_key=f"query-filter-smoke:{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="test",
+        title="smoke",
+        summary="s",
+        status="draft",
+    )
+    expected = await repo.insert_report(
+        idempotency_key=f"query-filter-advisory:{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="CLAUDE_ADVISOR",
+        title="advisory",
+        summary="s",
+        status="draft",
+    )
+    await repo.insert_report(
+        idempotency_key=f"query-filter-superseded:{uuid.uuid4()}",
+        report_type="kr_morning",
+        market="kr",
+        market_session="regular",
+        account_scope="kis_mock",
+        execution_mode="mock_preview",
+        created_by_profile="CLAUDE_ADVISOR",
+        title="superseded",
+        summary="s",
+        status="superseded",
+    )
+
+    query = InvestmentReportQueryService(session)
+    reports = await query.list_reports(
+        market="kr",
+        account_scope="kis_mock",
+        created_by_profiles={"CLAUDE_ADVISOR"},
+        exclude_statuses={"superseded"},
+    )
+    latest = await query.latest_report(
+        market="kr",
+        account_scope="kis_mock",
+        created_by_profiles={"CLAUDE_ADVISOR"},
+        exclude_statuses={"superseded"},
+    )
+
+    assert [row.id for row in reports] == [expected.id]
+    assert latest is not None
+    assert latest.id == expected.id
