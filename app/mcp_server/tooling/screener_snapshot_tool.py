@@ -12,21 +12,25 @@ return their default snapshot results (and say so), expanding as more presets ge
 
 from __future__ import annotations
 
-from typing import Any, cast
+import logging
+from typing import Any, Literal, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 
+logger = logging.getLogger(__name__)
 
-class _NoopResolver:
-    """MCP candidate-discovery has no user context, so nothing is 'watched'.
 
-    build_screener_results only needs ``relation(market, symbol) -> str``; returning
-    "none" makes every row isWatched=False (no user personalization in MCP)."""
+class _HeldResolver:
+    """Held-aware resolver for MCP rows backed by KIS live positions."""
 
-    def relation(self, market: str, symbol: str) -> str:  # noqa: ARG002
-        return "none"
+    def __init__(self, held_symbols: set[tuple[str, str]]) -> None:
+        self._h = held_symbols
+
+    def relation(self, market: str, symbol: str) -> str:
+        key = ((market or "").strip().lower(), _normalize_symbol_key(symbol))
+        return "held" if key in self._h else "none"
 
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
@@ -80,15 +84,109 @@ def _filters_are_threaded(preset: str, market: str) -> bool:
     return (market or "").strip().lower() == "crypto" and preset in _CRYPTO_PRESET_IDS
 
 
+def _normalize_symbol_key(symbol: object) -> str:
+    from app.core.symbol import to_db_symbol
+
+    raw = str(symbol or "").strip().upper()
+    try:
+        return to_db_symbol(raw).upper()
+    except Exception:
+        return raw
+
+
+def _normalize_preset_ids(
+    raw_preset: str | None, presets: list[str] | None = None
+) -> list[str]:
+    """Split preset inputs, preserving order while deduping."""
+    raw: list[str] = []
+    if raw_preset:
+        raw.extend(str(raw_preset).split(","))
+    for item in presets or []:
+        raw.extend(str(item).split(","))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        preset_id = value.strip()
+        if not preset_id or preset_id in seen:
+            continue
+        seen.add(preset_id)
+        out.append(preset_id)
+    return out
+
+
+def _merge_rows(
+    existing: list[dict[str, Any]], new_rows: list[dict[str, Any]], preset_id: str
+) -> list[dict[str, Any]]:
+    """Dedupe by symbol and merge matchedPresets.
+
+    The first preset to see a symbol 'wins' on display fields (rank, name, labels).
+    Subsequent matches only append to matchedPresets.
+    """
+    merged = list(existing)
+    seen_symbols = {
+        (
+            str(r.get("market") or "").strip().lower(),
+            _normalize_symbol_key(r.get("symbol")),
+        ): r
+        for r in merged
+    }
+
+    for row in new_rows:
+        key = (
+            str(row.get("market") or "").strip().lower(),
+            _normalize_symbol_key(row.get("symbol")),
+        )
+        if key in seen_symbols:
+            existing_row = seen_symbols[key]
+            matched = list(existing_row.get("matchedPresets") or [])
+            if preset_id not in matched:
+                matched.append(preset_id)
+            existing_row["matchedPresets"] = matched
+        else:
+            row["matchedPresets"] = [preset_id]
+            merged.append(row)
+            seen_symbols[key] = row
+
+    return merged
+
+
+def _holding_market_filter(market: str) -> str | None:
+    normalized = (market or "").strip().lower()
+    if normalized == "kr":
+        return "equity_kr"
+    if normalized == "us":
+        return "equity_us"
+    return None
+
+
+def _consensus_count(row: dict[str, Any], key: str) -> int:
+    try:
+        value = (row.get("analysisContext") or {}).get("consensus", {}).get(key)
+        return int(value or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
 _DEFAULT_RESULT_LIMIT = 40
 _MAX_RESULT_LIMIT = 200
 
 
 async def screen_stocks_snapshot_impl(
     *,
-    preset: str,
+    preset: str | None = None,
+    presets: list[str] | None = None,
     market: str = "kr",
     filters: list[dict[str, Any]] | None = None,
+    exclude_watched: bool = False,
+    exclude_held: bool = False,
+    exclude_symbols: list[str] | None = None,
+    min_analyst_count: int | None = None,
+    min_analyst_buy_count: int | None = None,
+    min_market_cap: float | None = None,
+    min_market_cap_eok: float | None = None,
+    max_market_cap_eok: float | None = None,
+    sort: Literal["matched_presets_desc"] | None = None,
     limit: int = _DEFAULT_RESULT_LIMIT,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -98,10 +196,20 @@ async def screen_stocks_snapshot_impl(
     on top of the preset's starting set (adjust same field, add new). Returns the
     screener payload plus availableFilters (the adjustable catalog) and appliedFilters.
 
+    exclude_watched/held: ROB-515 discovery workflow — hide already-processed symbols.
+    exclude_symbols: explicit symbols to remove after dedupe.
+    min_analyst_count: ROB-515 quality filter — consensus total coverage threshold.
+    min_analyst_buy_count: backward-compatible buy-count threshold.
+    min_market_cap: raw numeric marketCapValue threshold (KRW for KR, USD for US).
+    min/max_market_cap_eok: ROB-515 size filter — unit is 1억원 (KRW).
+
+    sort: "matched_presets_desc" ranks multi-preset intersections first.
+
     limit/offset: ROB-465 — results are capped (default 40, max 200) and paginated
     at the tool boundary to keep responses inside the MCP token budget. The full
     match count and a next_offset cursor are reported under ``pagination``.
     """
+    from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
     from app.services.invest_view_model.screener_filters import (
         ScreenerFilterCondition,
         ScreenerFilterError,
@@ -110,8 +218,40 @@ async def screen_stocks_snapshot_impl(
     from app.services.invest_view_model.screener_service import build_screener_results
     from app.services.screener_service import ScreenerService
 
-    available = _available_filters(preset)
-    snapshot_kind = snapshot_kind_for_preset(preset)
+    preset_ids = _normalize_preset_ids(preset, presets)
+    if not preset_ids:
+        return {"error": "preset or presets must not be empty", "results": []}
+
+    # ROB-515: mark 'held' rows in screener results via KIS live positions.
+    # (Watchlist personalization is still omitted for discovery MCP).
+    held_symbols: set[tuple[str, str]] = set()
+    holdings_meta = {"source": "kis_live", "status": "ok", "held_count": 0}
+    holdings_market_filter = _holding_market_filter(market)
+    if holdings_market_filter is not None:
+        try:
+            # MCP always runs live (is_mock=False)
+            pos, _w = await _collect_kis_positions(
+                holdings_market_filter, is_mock=False
+            )
+            held_symbols = {
+                (
+                    str(p.get("market") or market).strip().lower(),
+                    _normalize_symbol_key(p.get("symbol")),
+                )
+                for p in pos
+                if p.get("symbol")
+            }
+            holdings_meta["held_count"] = len(held_symbols)
+        except Exception as exc:  # noqa: BLE001
+            holdings_meta["status"] = "error"
+            # surface as a non-fatal warning so results still return
+            # (build_screener_results takes resolver as non-optional, so fall back to noop)
+            logger.warning("screener_snapshot: kis holdings failed: %s", exc)
+
+    # Use the first preset for adjustable filter catalog metadata
+    main_preset_id = preset_ids[0]
+    available = _available_filters(main_preset_id)
+    snapshot_kind = snapshot_kind_for_preset(main_preset_id)
 
     conditions: list[ScreenerFilterCondition] = []
     for entry in filters or []:
@@ -131,16 +271,31 @@ async def screen_stocks_snapshot_impl(
                 "results": [],
             }
 
+    merged_results: list[dict[str, Any]] = []
+    combined_warnings: list[str] = []
+    threaded_warned_presets: set[str] = set()
+
     try:
         async with _session_factory()() as db:
-            resp = await build_screener_results(
-                preset_id=preset,
-                screening_service=ScreenerService(),
-                resolver=_NoopResolver(),
-                market=market,
-                session=db,
-                filter_overrides=conditions or None,
-            )
+            for pid in preset_ids:
+                resp = await build_screener_results(
+                    preset_id=pid,
+                    screening_service=ScreenerService(),
+                    resolver=_HeldResolver(held_symbols),
+                    market=market,
+                    session=db,
+                    filter_overrides=conditions or None,
+                )
+                raw_payload = resp.model_dump(mode="json")
+                merged_results = _merge_rows(
+                    merged_results, raw_payload.get("results") or [], pid
+                )
+                for w in raw_payload.get("warnings") or []:
+                    if w not in combined_warnings:
+                        combined_warnings.append(w)
+
+                if conditions and not _filters_are_threaded(pid, market):
+                    threaded_warned_presets.add(pid)
     except ScreenerFilterError as exc:
         return {
             "error": str(exc),
@@ -149,33 +304,118 @@ async def screen_stocks_snapshot_impl(
             "results": [],
         }
 
-    payload: dict[str, Any] = resp.model_dump(mode="json")
-    payload["availableFilters"] = available
-    payload["appliedFilters"] = [
-        {"field": c.field, "operator": c.operator, "value": c.value} for c in conditions
-    ]
-    payload["snapshotKind"] = snapshot_kind
+    # Discovery filters (exclude)
+    if exclude_watched:
+        merged_results = [r for r in merged_results if not r.get("isWatched")]
+    if exclude_held:
+        merged_results = [r for r in merged_results if not r.get("isHeld")]
+    if exclude_symbols:
+        excluded_symbols = {_normalize_symbol_key(s) for s in exclude_symbols}
+        merged_results = [
+            r
+            for r in merged_results
+            if _normalize_symbol_key(r.get("symbol")) not in excluded_symbols
+        ]
+
+    # Discovery filters (market cap)
+    if min_market_cap is not None:
+        min_val = float(min_market_cap)
+        merged_results = [
+            r for r in merged_results if (r.get("marketCapValue") or 0) >= min_val
+        ]
+    if min_market_cap_eok is not None:
+        min_val = float(min_market_cap_eok) * 100_000_000
+        merged_results = [
+            r for r in merged_results if (r.get("marketCapValue") or 0) >= min_val
+        ]
+    if max_market_cap_eok is not None:
+        max_val = float(max_market_cap_eok) * 100_000_000
+        merged_results = [
+            r for r in merged_results if (r.get("marketCapValue") or 0) <= max_val
+        ]
+
+    # Intersection sort
+    if sort == "matched_presets_desc":
+        merged_results.sort(
+            key=lambda r: len(r.get("matchedPresets") or []), reverse=True
+        )
+
     # ROB-445: warn whenever filters were passed but NOT actually threaded for the
-    # resolved (preset, market) — REGARDLESS of snapshotKind. The old `snapshot_kind
-    # is None` predicate let high_yield_value (kind=market_valuation_snapshots, but
-    # no dispatch branch) echo appliedFilters while silently returning the unfiltered
-    # snapshot (silent no-op). Now the unfiltered fact is reported honestly.
-    if conditions and not _filters_are_threaded(preset, market):
-        warnings = list(payload.get("warnings") or [])
-        warnings.append(
-            f"'{preset}' 프리셋은 아직 스냅샷 위 필터 조정이 배선되지 않아 "
+    # resolved (preset, market) — REGARDLESS of snapshotKind.
+    if threaded_warned_presets:
+        p_list = ", ".join(sorted(threaded_warned_presets))
+        combined_warnings.append(
+            f"'{p_list}' 프리셋은 아직 스냅샷 위 필터 조정이 배선되지 않아 "
             "기본 결과를 반환했습니다 (필터 미적용)."
         )
-        payload["warnings"] = warnings
+
+    payload: dict[str, Any] = {
+        "presetId": preset_ids[0] if len(preset_ids) == 1 else "multi",
+        "presets": preset_ids,
+        "results": merged_results,
+        "warnings": combined_warnings,
+        "availableFilters": available,
+        "appliedFilters": [
+            {"field": c.field, "operator": c.operator, "value": c.value}
+            for c in conditions
+        ],
+        "snapshotKind": snapshot_kind,
+        "holdings": holdings_meta,
+        "discoveryFilters": {
+            "exclude_watched": exclude_watched,
+            "exclude_held": exclude_held,
+            "exclude_symbols": [
+                _normalize_symbol_key(s) for s in (exclude_symbols or [])
+            ],
+            "min_analyst_count": min_analyst_count,
+            "min_analyst_buy_count": min_analyst_buy_count,
+            "min_market_cap": min_market_cap,
+            "min_market_cap_eok": min_market_cap_eok,
+            "max_market_cap_eok": max_market_cap_eok,
+            "sort": sort,
+        },
+    }
+    if holdings_meta["status"] == "error":
+        combined_warnings.append(
+            "KIS live 보유종목 확인 실패 — 보유 여부가 표시되지 않을 수 있습니다."
+        )
 
     # ROB-465: cap + paginate at the tool boundary so large snapshots (e.g.
     # high_yield_value ~161 rows / ~84k chars) don't blow the MCP token budget.
-    # The web screener path (build_screener_results) is left untouched.
     all_results = payload.get("results") or []
     total_available = len(all_results)
     eff_limit = max(1, min(int(limit), _MAX_RESULT_LIMIT))
     eff_offset = max(0, int(offset))
-    page = all_results[eff_offset : eff_offset + eff_limit]
+
+    # ROB-515: if analyst filtering is requested, we must enrich BEFORE pagination
+    # so we can filter on the enriched buyCount across the whole set.
+    if min_analyst_count is not None or min_analyst_buy_count is not None:
+        from app.services.invest_view_model.screener_analysis_enrichment import (
+            enrich_snapshot_page,
+        )
+
+        enrichment = await enrich_snapshot_page(
+            rows=all_results,
+            market=market,
+            session_factory=_session_factory(),
+        )
+        all_results = enrichment["results"]
+        if min_analyst_count is not None:
+            min_total = int(min_analyst_count)
+            all_results = [
+                r for r in all_results if _consensus_count(r, "totalCount") >= min_total
+            ]
+        if min_analyst_buy_count is not None:
+            min_buy = int(min_analyst_buy_count)
+            all_results = [
+                r for r in all_results if _consensus_count(r, "buyCount") >= min_buy
+            ]
+        total_available = len(all_results)
+        page = all_results[eff_offset : eff_offset + eff_limit]
+        payload["analysisEnrichment"] = enrichment["summary"]
+    else:
+        page = all_results[eff_offset : eff_offset + eff_limit]
+
     next_offset = eff_offset + len(page)
     payload["results"] = page
     payload["pagination"] = {
@@ -187,16 +427,17 @@ async def screen_stocks_snapshot_impl(
         "next_offset": next_offset if next_offset < total_available else None,
     }
 
-    from app.services.invest_view_model.screener_analysis_enrichment import (
-        enrich_snapshot_page,
-    )
+    if min_analyst_count is None and min_analyst_buy_count is None:
+        from app.services.invest_view_model.screener_analysis_enrichment import (
+            enrich_snapshot_page,
+        )
 
-    enrichment = await enrich_snapshot_page(
-        rows=page,
-        market=market,
-        session_factory=_session_factory(),
-    )
-    payload["results"] = enrichment["results"]
-    payload["analysisEnrichment"] = enrichment["summary"]
+        enrichment = await enrich_snapshot_page(
+            rows=page,
+            market=market,
+            session_factory=_session_factory(),
+        )
+        payload["results"] = enrichment["results"]
+        payload["analysisEnrichment"] = enrichment["summary"]
 
     return payload
