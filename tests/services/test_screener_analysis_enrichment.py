@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 from app.models.invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
@@ -270,23 +271,36 @@ class _NoopSession:
         return False
 
 
-def _session_factory():
+def _session_factory_noop():
     return _NoopSession()
+
+
+@pytest.fixture
+def session_factory_noop():
+    return _session_factory_noop
+
+
+@pytest.fixture
+def session_factory():
+    from app.core.db import AsyncSessionLocal
+
+    return AsyncSessionLocal
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_enrich_snapshot_page_returns_empty_page_summary():
+async def test_enrich_snapshot_page_returns_empty_page_summary(session_factory_noop):
     assert await enrich_snapshot_page(
         rows=[],
         market="kr",
-        session_factory=_session_factory,
+        session_factory=session_factory_noop,
     ) == {
         "results": [],
         "summary": {
             "attempted": 0,
             "consensusSucceeded": 0,
             "rsiSucceeded": 0,
+            "sectorResolved": 0,
             "warnings": [],
         },
     }
@@ -294,7 +308,9 @@ async def test_enrich_snapshot_page_returns_empty_page_summary():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_enrich_snapshot_page_adds_consensus_rsi_and_summary(monkeypatch):
+async def test_enrich_snapshot_page_adds_consensus_rsi_and_summary(
+    monkeypatch, session_factory_noop
+):
     async def _fake_rsi(db, *, market: str, symbols: list[str]) -> dict[str, float]:
         assert market == "kr"
         assert symbols == ["005930", "000660"]
@@ -321,13 +337,22 @@ async def test_enrich_snapshot_page_adds_consensus_rsi_and_summary(monkeypatch):
         _fake_rsi,
     )
 
+    # ROB-512: mock sector labels to avoid DB lookup failure in no-op session
+    async def _fake_sector(**kwargs):
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment._sector_labels_for_page",
+        _fake_sector,
+    )
+
     out = await enrich_snapshot_page(
         rows=[
             {"symbol": "005930", "analystLabel": "-"},
             {"symbol": "000660", "analystLabel": "-"},
         ],
         market="kr",
-        session_factory=_session_factory,
+        session_factory=session_factory_noop,
         opinion_provider=_fake_opinions,
     )
 
@@ -335,6 +360,7 @@ async def test_enrich_snapshot_page_adds_consensus_rsi_and_summary(monkeypatch):
         "attempted": 2,
         "consensusSucceeded": 1,
         "rsiSucceeded": 1,
+        "sectorResolved": 0,
         "warnings": [],
     }
     first, second = out["results"]
@@ -348,7 +374,9 @@ async def test_enrich_snapshot_page_adds_consensus_rsi_and_summary(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_enrich_snapshot_page_fails_open_when_rsi_lookup_errors(monkeypatch):
+async def test_enrich_snapshot_page_fails_open_when_rsi_lookup_errors(
+    monkeypatch, session_factory_noop
+):
     async def _broken_rsi(db, *, market: str, symbols: list[str]) -> dict[str, float]:
         raise RuntimeError("db unavailable")
 
@@ -357,16 +385,26 @@ async def test_enrich_snapshot_page_fails_open_when_rsi_lookup_errors(monkeypatc
         _broken_rsi,
     )
 
+    # ROB-512: mock sector labels to avoid DB lookup failure in no-op session
+    async def _fake_sector(**kwargs):
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment._sector_labels_for_page",
+        _fake_sector,
+    )
+
     out = await enrich_snapshot_page(
         rows=[{"symbol": "BTC", "analystLabel": "-"}],
         market="crypto",
-        session_factory=_session_factory,
+        session_factory=session_factory_noop,
     )
 
     assert out["summary"] == {
         "attempted": 1,
         "consensusSucceeded": 0,
         "rsiSucceeded": 0,
+        "sectorResolved": 0,
         "warnings": ["rsi_enrichment_unavailable"],
     }
     assert out["results"][0]["analysisContext"] == {
@@ -375,3 +413,135 @@ async def test_enrich_snapshot_page_fails_open_when_rsi_lookup_errors(monkeypatc
         "dataState": "missing",
         "warnings": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# ROB-512 갭3: sector lazy fill
+# ---------------------------------------------------------------------------
+
+_SECTOR_TEST_KR_SYMBOL = "919100"
+
+
+@pytest_asyncio.fixture
+async def _sector_clean(db_session):
+    import sqlalchemy as sa
+
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.symbol_sectors import SymbolSector
+
+    async def _purge():
+        await db_session.execute(
+            sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol == _SECTOR_TEST_KR_SYMBOL
+            )
+        )
+        await db_session.execute(
+            sa.delete(SymbolSector).where(SymbolSector.source_key.like("999%"))
+        )
+        await db_session.commit()
+
+    await _purge()
+    yield
+    await _purge()
+
+
+@pytest.mark.asyncio
+async def test_sector_lazy_fill_kr_persists_and_replaces_category(
+    db_session, session_factory, _sector_clean
+):
+    """NULL sector 심볼 → fake fetch로 (업종번호, 한글명) 획득 → persist →
+    응답 category '-'가 한글로 교체. 두 번째 호출은 fetch 0 (DB hit)."""
+    import sqlalchemy as sa
+
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.services.invest_view_model.screener_analysis_enrichment import (
+        enrich_snapshot_page,
+    )
+
+    db_session.add(
+        KRSymbolUniverse(
+            symbol=_SECTOR_TEST_KR_SYMBOL,
+            name="테스트",
+            exchange="KOSPI",
+            is_active=True,
+        )
+    )
+    await db_session.commit()
+
+    calls: list[str] = []
+
+    async def fake_fetch_kr(code: str):
+        calls.append(code)
+        return "999278", "반도체와반도체장비"
+
+    rows = [{"symbol": _SECTOR_TEST_KR_SYMBOL, "market": "kr", "category": "-"}]
+
+    async def no_opinions(**kwargs):
+        return {"error": "analyst_consensus_unavailable"}
+
+    out1 = await enrich_snapshot_page(
+        rows=rows,
+        market="kr",
+        session_factory=session_factory,
+        opinion_provider=no_opinions,
+        fetch_kr_sector=fake_fetch_kr,
+    )
+    assert calls == [_SECTOR_TEST_KR_SYMBOL]
+    assert out1["results"][0]["category"] == "반도체와반도체장비"
+    assert out1["summary"]["sectorResolved"] == 1
+
+    # persist 확인 + 2회차 fetch 0
+    row = (
+        await db_session.execute(
+            sa.select(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol == _SECTOR_TEST_KR_SYMBOL
+            )
+        )
+    ).scalar_one()
+    await db_session.refresh(row)
+    assert row.sector_id is not None
+
+    out2 = await enrich_snapshot_page(
+        rows=rows,
+        market="kr",
+        session_factory=session_factory,
+        opinion_provider=no_opinions,
+        fetch_kr_sector=fake_fetch_kr,
+    )
+    assert calls == [_SECTOR_TEST_KR_SYMBOL]  # 추가 fetch 없음
+    assert out2["results"][0]["category"] == "반도체와반도체장비"
+
+
+@pytest.mark.asyncio
+async def test_sector_lazy_fill_fails_open(db_session, session_factory, _sector_clean):
+    """fetch 실패 → category 유지('-'), 워닝 없이도 결과 자체는 정상."""
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.services.invest_view_model.screener_analysis_enrichment import (
+        enrich_snapshot_page,
+    )
+
+    db_session.add(
+        KRSymbolUniverse(
+            symbol=_SECTOR_TEST_KR_SYMBOL,
+            name="테스트",
+            exchange="KOSPI",
+            is_active=True,
+        )
+    )
+    await db_session.commit()
+
+    async def boom(code: str):
+        raise RuntimeError("naver down")
+
+    async def no_opinions(**kwargs):
+        return {"error": "analyst_consensus_unavailable"}
+
+    out = await enrich_snapshot_page(
+        rows=[{"symbol": _SECTOR_TEST_KR_SYMBOL, "market": "kr", "category": "-"}],
+        market="kr",
+        session_factory=session_factory,
+        opinion_provider=no_opinions,
+        fetch_kr_sector=boom,
+    )
+    assert out["results"][0]["category"] == "-"
+    assert out["summary"]["sectorResolved"] == 0
