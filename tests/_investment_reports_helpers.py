@@ -70,6 +70,7 @@ async def session() -> AsyncSession:
             )
             try:
                 async with engine.begin() as conn:
+                    await conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS review"))
                     await conn.run_sync(
                         Base.metadata.create_all,
                         tables=INVESTMENT_REPORTS_TABLES,
