@@ -123,6 +123,25 @@ PY
 `client_mode`, `dry_run`, `http_status`, `reason`. 토큰 값은 어디에도
 포함되지 않는다.
 
+## US / crypto (Finnhub) — ROB-510
+
+ROB-510부터 `get_news(market="us"|"crypto")`도 KR과 동일하게
+`news_articles` + `symbol_news_relevance`에 set-difference upsert 후 DB
+상태로 응답한다 (pending 표시, excluded 제외). 판정 파이프라인(worker /
+GET pending / POST ingest/bulk)은 market 파라미터로 이미 지원되며 별도
+배선 변경 없음 — pending 적체 점검 시 `market=us`, `market=crypto`도 함께
+조회할 것.
+
+- feed_source: `finnhub_company_news`(us) / `finnhub_general_news`(crypto)
+- crypto는 Finnhub general 피드(심볼 키 아님)라 unrelated 비율이 높을 수
+  있다 — `relationship=unrelated`/`relevance=low` → excluded 파생은 KR과
+  동일.
+- Finnhub fetch는 시도당 `FINNHUB_NEWS_TIMEOUT_S`(기본 8s) ×
+  `FINNHUB_NEWS_MAX_ATTEMPTS`(기본 3) 재시도. 전 실패 시 응답은
+  `degraded: true` + `fetch_error` + DB 기사(stale) 폴백.
+- degraded 폴백으로 DB에서 복원된 항목은 sentiment가 없을 수 있다
+  (sentiment는 미영속 — 신선 fetch 응답에만 포함).
+
 ## 트러블슈팅
 
 - 403 "not configured" → 서버에 토큰 env 미설정.
