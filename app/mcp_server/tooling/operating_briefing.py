@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.pending_orders_snapshot import (
+    DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE,
+    collect_pending_orders_snapshot,
+)
+from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
 from app.schemas.investment_reports import (
     ActiveWatchesListResponse,
     InvestmentWatchAlertResponse,
 )
+from app.schemas.session_context import SessionContextResponse
+from app.services.investment_reports.query_service import InvestmentReportQueryService
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.session_context import SessionContextService
 
 
 def _normalize_watch_symbol(symbol: str | None, market: str | None) -> str | None:
@@ -59,16 +66,6 @@ async def list_active_watches_impl(
     return response.model_dump(mode="json", by_alias=True)
 
 
-from app.mcp_server.tooling.pending_orders_snapshot import (
-    DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE,
-    collect_pending_orders_snapshot,
-)
-from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
-from app.services.investment_reports.query_service import InvestmentReportQueryService
-from app.services.session_context import SessionContextService
-from app.schemas.session_context import SessionContextResponse
-
-
 def _default_account_scope(market: str, account_scope: str | None) -> str:
     if account_scope:
         return account_scope
@@ -78,7 +75,9 @@ def _default_account_scope(market: str, account_scope: str | None) -> str:
     return default
 
 
-def _holdings_kwargs(market: str, account_scope: str, include_current_price: bool) -> dict[str, Any]:
+def _holdings_kwargs(
+    market: str, account_scope: str, include_current_price: bool
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "market": market,
         "include_current_price": include_current_price,
