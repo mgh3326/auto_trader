@@ -671,6 +671,39 @@ Watches are review triggers, not automatic order instructions —
 delivery state is auditable per event row (`delivery_status` /
 `delivery_reason` / `delivered_at` / `delivery_attempts`).
 
+### `list_active_watches`
+
+Read-only active watch discovery for `review.investment_watch_alerts`.
+
+Parameters:
+- `market`: optional `kr`, `us`, or `crypto`.
+- `symbol`: optional exact symbol filter.
+- `include_expired_status_rows`: default `false`. When `false`, only returns `status='active'` rows whose `valid_until` is still in the future. When `true`, includes rows that remain `status='active'` even if `valid_until` has passed, for scanner-lag diagnostics.
+- `limit`: default `100`, clamped to `1..250`.
+
+Response includes `active_watches[]` with `symbol`, `operator`, `threshold`, `valid_until`, `rationale`, `source_report_uuid`, and `source_item_uuid`.
+
+### `get_operating_briefing`
+
+Read-only one-call bootstrap for a new operating session.
+
+Parameters:
+- `market`: required `kr`, `us`, or `crypto`.
+- `account_scope`: optional. Defaults are `kr/us -> kis_live`, `crypto -> upbit_live`.
+- `session_context_limit`: default `10`, clamped by the session context service.
+- `include_current_price`: default `true`.
+
+Response sections:
+- `holdings`: summary and top movers derived from `get_holdings`.
+- `pending_orders`: pending-order snapshot with `expected_expiry` when factually derivable.
+- `active_watches`: same active watch rows as `list_active_watches`.
+- `latest_report`: latest report summary and item status counts, or `null`.
+- `session_context`: recent ROB-516 handoff entries.
+- `staleness`: per-section `as_of`, freshness, and unavailable reason where available.
+
+The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
+
+
 ### `screen_stocks` spec
 Parameters:
 - `market`: Market to screen - "kr", "kospi", "kosdaq", "konex", "all", "us", "crypto" (default: "kr")
