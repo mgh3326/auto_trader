@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 
@@ -32,7 +32,7 @@ async def test_classifies_when_order_no_given(mocker) -> None:
     mocker.patch.object(smoke.settings, "kis_mock_app_secret", "fake")
     mocker.patch.object(smoke.settings, "kis_mock_account_no", "fake")
     fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         return_value=[
             {"odno": "123456", "ord_qty": "1", "tot_ccld_qty": "1", "avg_prvs": "70000"}
         ]
@@ -40,6 +40,13 @@ async def test_classifies_when_order_no_given(mocker) -> None:
     mocker.patch.object(smoke, "_create_kis_client", return_value=fake_client)
     rc = await smoke.run_smoke(smoke._parse_args(["--order-no", "123456"]))
     assert rc == 0
+    fake_client.inquire_daily_order_domestic.assert_awaited_once_with(
+        start_date=ANY,
+        end_date=ANY,
+        stock_code="",
+        order_number="123456",
+        is_mock=True,
+    )
 
 
 @pytest.mark.unit
@@ -50,7 +57,7 @@ async def test_inquiry_error_returns_2(mocker) -> None:
     mocker.patch.object(smoke.settings, "kis_mock_app_secret", "fake")
     mocker.patch.object(smoke.settings, "kis_mock_account_no", "fake")
     fake_client = mocker.MagicMock()
-    fake_client.domestic_orders.inquire_daily_order_domestic = AsyncMock(
+    fake_client.inquire_daily_order_domestic = AsyncMock(
         side_effect=RuntimeError("boom")
     )
     mocker.patch.object(smoke, "_create_kis_client", return_value=fake_client)

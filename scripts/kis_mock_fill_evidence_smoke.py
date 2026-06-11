@@ -74,7 +74,7 @@ async def run_smoke(args: argparse.Namespace) -> int:
 
     client = _create_kis_client(is_mock=True)
     try:
-        rows = await client.domestic_orders.inquire_daily_order_domestic(
+        rows = await client.inquire_daily_order_domestic(
             start_date=args.from_date,
             end_date=args.to_date,
             stock_code=args.symbol or "",
