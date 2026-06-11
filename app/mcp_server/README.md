@@ -133,7 +133,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
   - Returns symbols that matched the preset(s) from the persisted daily snapshots.
   - Supports multi-preset sweeps with symbol deduplication and `matchedPresets` tagging.
-  - `exclude_watched/held` (bool): hide symbols already in watchlist/portfolio (KIS live).
+  - `exclude_held` (bool): hide symbols already in the KIS-live portfolio; if KIS holdings degrade, the response keeps results and emits a warning.
+  - `exclude_watched` (bool): accepted for compatibility, but currently unsupported in MCP because no user watchlist context is wired; requests emit an explicit warning.
   - `exclude_symbols`: explicit symbols to remove after dedupe.
   - `min_analyst_count` (int): quality filter — filters enriched results by consensus total coverage.
   - `min_analyst_buy_count` (int): compatibility filter — filters enriched results by consensus buy count.
@@ -143,6 +144,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
   - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.
   - Results are capped (default 40) and paginated. Check `pagination` in payload.
+  - Preset sweeps are capped at 5 presets. Analyst filters are capped at 200 merged rows before enrichment; narrow with preset, market cap, or explicit symbols first.
+  - Minimum market-cap filters exclude rows with missing `marketCapValue` and report the excluded count in `warnings`.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
