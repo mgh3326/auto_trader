@@ -1556,14 +1556,17 @@ async def test_kr_unaffected_by_us_quality_guards(db_session):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_us_fundamentals_rows_hydrate_price_from_invest_screener(db_session) -> None:
+async def test_us_fundamentals_rows_hydrate_price_from_invest_screener(
+    db_session,
+) -> None:
     """ROB-508: US 펀더멘털 행은 최신 invest_screener_snapshots 파티션에서
     close/change_rate/volume을 hydrate해야 한다 (priceLabel "-" 공백 해소)."""
     await _cleanup_db(db_session)
     import sqlalchemy as sa
-    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
     from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
     from app.models.us_symbol_universe import USSymbolUniverse
     from app.services.invest_view_model.fundamentals_screener import (
         FUNDAMENTALS_PRESET_SPECS,
@@ -1572,17 +1575,38 @@ async def test_us_fundamentals_rows_hydrate_price_from_invest_screener(db_sessio
 
     vd = dt.date(2026, 6, 2)
     syms = ["AAPL"]
-    
+
     # 1. Clean up
-    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms))
+    )
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
     await db_session.commit()
 
     # 2. Add US Symbol
-    db_session.add(USSymbolUniverse(symbol="AAPL", name_en="Apple Inc.", name_kr="애플", exchange="NASDAQ", is_active=True, is_common_stock=True))
-    
+    db_session.add(
+        USSymbolUniverse(
+            symbol="AAPL",
+            name_en="Apple Inc.",
+            name_kr="애플",
+            exchange="NASDAQ",
+            is_active=True,
+            is_common_stock=True,
+        )
+    )
+
     # 3. Add MarketValuationSnapshot
     db_session.add(
         MarketValuationSnapshot(
@@ -1645,10 +1669,22 @@ async def test_us_fundamentals_rows_hydrate_price_from_invest_screener(db_sessio
     assert row["volume"] == 1000
 
     # Clean up again
-    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms))
+    )
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
     await db_session.commit()
 
 
@@ -1658,8 +1694,9 @@ async def test_us_fundamentals_rows_tolerate_missing_quote(db_session) -> None:
     """invest_screener 파티션에 해당 심볼이 없어도 행은 유지되고 키만 None."""
     await _cleanup_db(db_session)
     import sqlalchemy as sa
-    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
     from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
     from app.models.us_symbol_universe import USSymbolUniverse
     from app.services.invest_view_model.fundamentals_screener import (
         FUNDAMENTALS_PRESET_SPECS,
@@ -1668,16 +1705,35 @@ async def test_us_fundamentals_rows_tolerate_missing_quote(db_session) -> None:
 
     vd = dt.date(2026, 6, 2)
     syms = ["AAPL"]
-    
+
     # 1. Clean up
-    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
     await db_session.commit()
 
     # 2. Add US Symbol
-    db_session.add(USSymbolUniverse(symbol="AAPL", name_en="Apple Inc.", name_kr="애플", exchange="NASDAQ", is_active=True, is_common_stock=True))
-    
+    db_session.add(
+        USSymbolUniverse(
+            symbol="AAPL",
+            name_en="Apple Inc.",
+            name_kr="애플",
+            exchange="NASDAQ",
+            is_active=True,
+            is_common_stock=True,
+        )
+    )
+
     # 3. Add MarketValuationSnapshot
     db_session.add(
         MarketValuationSnapshot(
@@ -1723,7 +1779,17 @@ async def test_us_fundamentals_rows_tolerate_missing_quote(db_session) -> None:
     assert result.rows[0].get("close") is None  # 행 자체는 살아있음
 
     # Clean up again
-    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
-    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(FinancialFundamentalsSnapshot).where(
+            FinancialFundamentalsSnapshot.symbol.in_(syms)
+        )
+    )
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms))
+    )
     await db_session.commit()
