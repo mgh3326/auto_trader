@@ -414,6 +414,7 @@ def _build_row(
     state: str,
     partition_date: dt.date,
     provenance: dict[str, str | None] | None = None,
+    master_sector: str | None = None,
 ) -> dict[str, Any]:
     """Row dict using the metric keys the screener renderer + _METRIC_FIELD expect."""
     prov = provenance or {}
@@ -429,6 +430,9 @@ def _build_row(
         "change_rate": _to_float(snap.change_rate),
         "volume": _to_float(snap.volume),
         "market_cap": _to_float(snap.market_cap),
+        # ROB-512 갭3: 마스터 한글 업종(symbol_sectors). 포맷터가 sector를
+        # category보다 먼저 읽으므로 워밍된 종목은 한글, 아니면 영문 fallback.
+        "sector": master_sector,
         # ScreenerResultRow reads `row.get("sector") or row.get("category")`; the
         # granular industry best matches Toss labels, sector is the fallback.
         "category": snap.industry or snap.sector,
@@ -527,14 +531,37 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
 
     symbols = [s.symbol for s in snaps]
     name_map: dict[str, str] = {}
+    sector_map: dict[str, str] = {}
     if symbols:
+        from app.models.symbol_sectors import SymbolSector
+
         names = await session.execute(
-            sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+            sa.select(
+                KRSymbolUniverse.symbol,
+                KRSymbolUniverse.name,
+                SymbolSector.name_kr.label("sector_name_kr"),
+                SymbolSector.name_en.label("sector_name_en"),
+            )
+            .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+            .where(
                 KRSymbolUniverse.symbol.in_(symbols),
                 KRSymbolUniverse.is_active.is_(True),
             )
         )
-        name_map = {r.symbol: r.name for r in names.all()}
+        _name_rows = names.all()
+        name_map = {r.symbol: r.name for r in _name_rows}
+        # ROB-512 갭3: 마스터 한글 업종 우선 — 워밍된 심볼만 라벨이 잡히고,
+        # 나머지는 _build_row의 영문 category(tvscreener) fallback이 그대로 표시.
+        sector_map = {
+            row.symbol: label
+            for row in _name_rows
+            if (
+                label := (
+                    getattr(row, "sector_name_kr", None)
+                    or getattr(row, "sector_name_en", None)
+                )
+            )
+        }
 
     # ROB-436 C-1: the tvscreener snapshot market_cap is unreliable for KR display
     # (renders absurd-high like 3,468조원 AND bogus-low like 1억원 for real mid-caps).
@@ -644,6 +671,7 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
                 state=state,
                 partition_date=partition_date,
                 provenance=prov,
+                master_sector=sector_map.get(sym),
             )
         )
 
