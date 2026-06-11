@@ -1552,3 +1552,178 @@ async def test_kr_unaffected_by_us_quality_guards(db_session):
     )
     await db_session.commit()
     await _cleanup_db(db_session)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_fundamentals_rows_hydrate_price_from_invest_screener(db_session) -> None:
+    """ROB-508: US 펀더멘털 행은 최신 invest_screener_snapshots 파티션에서
+    close/change_rate/volume을 hydrate해야 한다 (priceLabel "-" 공백 해소)."""
+    await _cleanup_db(db_session)
+    import sqlalchemy as sa
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.us_symbol_universe import USSymbolUniverse
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUNDAMENTALS_PRESET_SPECS,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2026, 6, 2)
+    syms = ["AAPL"]
+    
+    # 1. Clean up
+    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.commit()
+
+    # 2. Add US Symbol
+    db_session.add(USSymbolUniverse(symbol="AAPL", name_en="Apple Inc.", name_kr="애플", exchange="NASDAQ", is_active=True, is_common_stock=True))
+    
+    # 3. Add MarketValuationSnapshot
+    db_session.add(
+        MarketValuationSnapshot(
+            market="us",
+            symbol="AAPL",
+            snapshot_date=vd,
+            source="yahoo",
+            per=Decimal("15"),
+            roe=Decimal("20"),
+            market_cap=Decimal("3000000000000"),
+        )
+    )
+
+    # 4. Add FinancialFundamentalsSnapshot
+    db_session.add(
+        FinancialFundamentalsSnapshot(
+            market="us",
+            symbol="AAPL",
+            fiscal_period="2024A",
+            period_type="annual",
+            period_end_date=dt.date(2024, 12, 31),
+            filing_date=dt.date(2025, 3, 20),
+            effective_at=dt.date(2025, 3, 20),
+            source="yfinance",
+            source_collected_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+            revenue=Decimal("1000"),
+            net_income=Decimal("200"),
+            cost_of_sales=Decimal("500"),
+            data_state="fresh",
+        )
+    )
+
+    # 5. Add InvestScreenerSnapshot
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="us",
+            symbol="AAPL",
+            snapshot_date=vd,
+            latest_close=Decimal("290.55"),
+            change_rate=Decimal("1.2"),
+            daily_volume=1000,
+            closes_window=[290.55],
+            source="yahoo",
+            computed_at=dt.datetime(2026, 6, 2, 0, 30, tzinfo=dt.UTC),
+        )
+    )
+    await db_session.commit()
+
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="us",
+        spec=FUNDAMENTALS_PRESET_SPECS["profitable_company"],
+        limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None and result.rows
+    row = result.rows[0]
+    assert row["close"] == pytest.approx(290.55)
+    assert row["change_rate"] == pytest.approx(1.2)
+    assert row["volume"] == 1000
+
+    # Clean up again
+    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(InvestScreenerSnapshot).where(InvestScreenerSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.commit()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_fundamentals_rows_tolerate_missing_quote(db_session) -> None:
+    """invest_screener 파티션에 해당 심볼이 없어도 행은 유지되고 키만 None."""
+    await _cleanup_db(db_session)
+    import sqlalchemy as sa
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+    from app.models.us_symbol_universe import USSymbolUniverse
+    from app.services.invest_view_model.fundamentals_screener import (
+        FUNDAMENTALS_PRESET_SPECS,
+        load_fundamentals_preset_from_snapshots,
+    )
+
+    vd = dt.date(2026, 6, 2)
+    syms = ["AAPL"]
+    
+    # 1. Clean up
+    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.commit()
+
+    # 2. Add US Symbol
+    db_session.add(USSymbolUniverse(symbol="AAPL", name_en="Apple Inc.", name_kr="애플", exchange="NASDAQ", is_active=True, is_common_stock=True))
+    
+    # 3. Add MarketValuationSnapshot
+    db_session.add(
+        MarketValuationSnapshot(
+            market="us",
+            symbol="AAPL",
+            snapshot_date=vd,
+            source="yahoo",
+            per=Decimal("15"),
+            roe=Decimal("20"),
+            market_cap=Decimal("3000000000000"),
+        )
+    )
+
+    # 4. Add FinancialFundamentalsSnapshot
+    db_session.add(
+        FinancialFundamentalsSnapshot(
+            market="us",
+            symbol="AAPL",
+            fiscal_period="2024A",
+            period_type="annual",
+            period_end_date=dt.date(2024, 12, 31),
+            filing_date=dt.date(2025, 3, 20),
+            effective_at=dt.date(2025, 3, 20),
+            source="yfinance",
+            source_collected_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+            revenue=Decimal("1000"),
+            net_income=Decimal("200"),
+            cost_of_sales=Decimal("500"),
+            data_state="fresh",
+        )
+    )
+    await db_session.commit()
+
+    # Given: Valuation+Fundamentals만 있고 InvestScreenerSnapshot에는 행 없음
+    result = await load_fundamentals_preset_from_snapshots(
+        db_session,
+        market="us",
+        spec=FUNDAMENTALS_PRESET_SPECS["profitable_company"],
+        limit=20,
+        now=lambda: dt.datetime(2026, 6, 2, tzinfo=dt.UTC),
+    )
+    assert result is not None and result.rows
+    assert result.rows[0].get("close") is None  # 행 자체는 살아있음
+
+    # Clean up again
+    await db_session.execute(sa.delete(MarketValuationSnapshot).where(MarketValuationSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(FinancialFundamentalsSnapshot).where(FinancialFundamentalsSnapshot.symbol.in_(syms)))
+    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol.in_(syms)))
+    await db_session.commit()

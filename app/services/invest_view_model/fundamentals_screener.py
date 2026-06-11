@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
 from app.services.financial_fundamentals_snapshots.derive import (
@@ -506,6 +507,60 @@ async def load_fundamentals_preset_from_snapshots(
         # not the screener display path) keeps the raw ratio.
         if market == "us" and r.get("dividend_yield") is not None:
             r["dividend_yield"] = r["dividend_yield"] * 100
+
+    # ROB-508: US display rows hydrate close/change_rate/volume from the latest
+    # invest_screener partition (mirrors the high_yield_value US loader join,
+    # high_yield_value_screener.py:74-105) so priceLabel/changePctLabel/volumeLabel
+    # render instead of "-". Fail-open: a lookup failure must not drop the preset.
+    if market == "us" and included:
+        try:
+            price_date = (
+                await session.execute(
+                    sa.select(sa.func.max(InvestScreenerSnapshot.snapshot_date)).where(
+                        InvestScreenerSnapshot.market == market
+                    )
+                )
+            ).scalar_one_or_none()
+            if price_date is not None:
+                quote_rows = (
+                    await session.execute(
+                        sa.select(
+                            InvestScreenerSnapshot.symbol,
+                            InvestScreenerSnapshot.latest_close,
+                            InvestScreenerSnapshot.change_rate,
+                            InvestScreenerSnapshot.daily_volume,
+                        ).where(
+                            InvestScreenerSnapshot.market == market,
+                            InvestScreenerSnapshot.snapshot_date == price_date,
+                            InvestScreenerSnapshot.symbol.in_(
+                                [r["symbol"] for r in included]
+                            ),
+                        )
+                    )
+                ).mappings()
+                quote_map = {q["symbol"]: q for q in quote_rows}
+                for r in included:
+                    q = quote_map.get(r["symbol"])
+                    if q is None:
+                        continue
+                    r["close"] = (
+                        float(q["latest_close"])
+                        if q["latest_close"] is not None
+                        else None
+                    )
+                    r["change_rate"] = (
+                        float(q["change_rate"])
+                        if q["change_rate"] is not None
+                        else None
+                    )
+                    r["volume"] = q["daily_volume"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "fundamentals_screener: price hydration failed (rows kept): %s",
+                exc,
+                exc_info=True,
+            )
+
     return FundamentalsScreenResult(
         rows=included,
         valuation_partition_date=val_date,
