@@ -110,10 +110,15 @@ _PENDING_RELEVANCE: dict[str, Any] = {
 }
 
 
-def symbol_news_store_hints(symbol: str, title: str) -> dict[str, Any] | None:
+def _store_hints(symbol: str, market: str, title: str) -> dict[str, Any] | None:
     from app.services.symbol_news_relevance import build_relevance_hints
 
-    return build_relevance_hints(symbol=symbol, market="kr", title=title)
+    return build_relevance_hints(symbol=symbol, market=market, title=title)
+
+
+def symbol_news_store_hints(symbol: str, title: str) -> dict[str, Any] | None:
+    """KR 호환 래퍼 (기존 외부 사용처 보존)."""
+    return _store_hints(symbol, "kr", title)
 
 
 async def _fetch_naver(
@@ -152,6 +157,9 @@ async def _fetch_naver(
 
 def _stored_to_article(
     row: StoredSymbolNews,
+    *,
+    provider: str,
+    market: str,
     symbol: str,
     fetched_at: datetime,
     raw_by_url: dict[str, Any],
@@ -161,24 +169,38 @@ def _stored_to_article(
         "url": row.url,
         "source": row.source or "",
         "datetime": row.published_at.isoformat() if row.published_at else None,
+        **({"summary": row.summary or ""} if provider == "finnhub" else {}),
     }
+    external_id = (
+        _naver_external_id(row.url) if provider == "naver" else _url_hash(row.url)
+    )
+    related = []
+    if source_item and "related" in source_item:
+        related_raw = source_item.get("related") or ""
+        related = [s for s in str(related_raw).split(",") if s]
+    sentiment = source_item.get("sentiment") if source_item else None
+
     return SymbolNewsArticle(
-        provider="naver",
-        market="kr",
+        provider=provider,
+        market=market,
         symbol=symbol,
-        external_article_id=_naver_external_id(row.url),
+        external_article_id=external_id,
         title=row.title,
         source_name=row.source,
         canonical_url=row.url,
-        summary=None,
+        summary=row.summary if provider == "finnhub" else None,
         published_at=row.published_at,
         fetched_at=fetched_at,
-        related_symbols=[],
-        provider_metadata={"source_item": source_item, "relevance": row.relevance},
+        related_symbols=related,
+        provider_metadata={
+            "source_item": source_item,
+            "relevance": row.relevance,
+            **({"sentiment": sentiment} if provider == "finnhub" else {}),
+        },
     )
 
 
-async def _maybe_enqueue_judgment(symbol: str, new_pending: int) -> None:
+async def _maybe_enqueue_judgment(market: str, symbol: str, new_pending: int) -> None:
     """ROB-506: fire-and-forget judgment enqueue. Never raises into get_news."""
     if new_pending <= 0:
         return
@@ -191,19 +213,23 @@ async def _maybe_enqueue_judgment(symbol: str, new_pending: int) -> None:
         )
 
         await news_relevance_judge_pending.kiq(
-            market="kr", symbol=symbol, dry_run=False
+            market=market, symbol=symbol, dry_run=False
         )
     except Exception as exc:  # noqa: BLE001 — enqueue must be fail-open
         logger.warning(
             "symbol_news_service: judgment enqueue failed (fail-open): "
-            "symbol=%s err=%s",
+            "market=%s symbol=%s err=%s",
+            market,
             symbol,
             exc,
         )
 
 
-async def _kr_persist_and_load(
+async def _persist_and_load(
     symbol: str,
+    market: str,
+    provider: str,
+    feed_source: str,
     fetched: list[SymbolNewsArticle],
     limit: int,
     fetched_at: datetime,
@@ -213,8 +239,9 @@ async def _kr_persist_and_load(
     try:
         async with AsyncSessionLocal() as db:
             if fetched:
-                inserted = await symbol_news_store.upsert_kr_feed_articles(
+                inserted = await symbol_news_store.upsert_feed_articles(
                     db,
+                    market,
                     symbol,
                     [
                         FeedArticleInput(
@@ -222,28 +249,39 @@ async def _kr_persist_and_load(
                             title=a.title,
                             source=a.source_name,
                             published_at=a.published_at,
+                            summary=a.summary,
                         )
                         for a in fetched
                     ],
+                    feed_source=feed_source,
                 )
             stored, excluded_count = await symbol_news_store.load_symbol_news(
-                db, symbol, "kr", limit
+                db, symbol, market, limit
             )
     except Exception as exc:  # noqa: BLE001 — cache layer must not kill the tool
         logger.warning(
-            "symbol_news_service: store unavailable, degrading: symbol=%s err=%s",
+            "symbol_news_service: store unavailable, degrading: "
+            "market=%s symbol=%s err=%s",
+            market,
             symbol,
             exc,
         )
         return None
-    # isinstance guard: 구형 fake/None 반환이어도 enqueue 판단만 0으로 처리
     new_pending = inserted if isinstance(inserted, int) else 0
-    await _maybe_enqueue_judgment(symbol, new_pending)
+    await _maybe_enqueue_judgment(market, symbol, new_pending)
     raw_by_url = {
         a.canonical_url: a.provider_metadata.get("source_item") for a in fetched
     }
     articles = [
-        _stored_to_article(row, symbol, fetched_at, raw_by_url) for row in stored
+        _stored_to_article(
+            row,
+            provider=provider,
+            market=market,
+            symbol=symbol,
+            fetched_at=fetched_at,
+            raw_by_url=raw_by_url,
+        )
+        for row in stored
     ]
     return articles, excluded_count
 
@@ -312,7 +350,15 @@ async def fetch_symbol_news(
             fetched = None
             fetch_error = type(exc).__name__
 
-        persisted = await _kr_persist_and_load(symbol, fetched or [], limit, fetched_at)
+        persisted = await _persist_and_load(
+            symbol,
+            "kr",
+            "naver",
+            symbol_news_store.KR_FEED_SOURCE,
+            fetched or [],
+            limit,
+            fetched_at,
+        )
         if persisted is not None:
             articles, excluded_count = persisted
             if fetched is None and not articles:
@@ -370,32 +416,100 @@ async def fetch_symbol_news(
             symbol, market, provider, status, limit, len(articles), articles, None
         )
 
+    if market not in ("us", "crypto"):
+        return SymbolNewsFetchResult(
+            symbol,
+            market,
+            provider,
+            "unavailable",
+            limit,
+            0,
+            [],
+            "unsupported_market",
+        )
+
+    finnhub_fetched: list[SymbolNewsArticle] | None
+    finnhub_error: str | None = None
     try:
-        if market in ("us", "crypto"):
-            articles = await asyncio.wait_for(
-                _fetch_finnhub(symbol, market, limit, fetched_at), timeout=timeout_s
-            )
-        else:
-            return SymbolNewsFetchResult(
-                symbol,
-                market,
-                provider,
-                "unavailable",
-                limit,
-                0,
-                [],
-                "unsupported_market",
-            )
-    except Exception as exc:  # noqa: BLE001 — overlay evidence, fail soft
+        # ROB-510: 재시도/시도당 타임아웃은 fetch_news_finnhub가 소유 —
+        # 외곽 wait_for를 두면 재시도가 무력화된다.
+        finnhub_fetched = await _fetch_finnhub(symbol, market, limit, fetched_at)
+    except Exception as exc:  # noqa: BLE001 — fall back to DB cache
         logger.warning(
-            "symbol_news_service.fetch_symbol_news failed: symbol=%s market=%s err=%s",
+            "symbol_news_service: finnhub fetch failed: symbol=%s market=%s err=%s",
             symbol,
             market,
             exc,
         )
+        finnhub_fetched = None
+        finnhub_error = type(exc).__name__
+
+    feed_source = (
+        symbol_news_store.FINNHUB_GENERAL_FEED_SOURCE
+        if market == "crypto"
+        else symbol_news_store.FINNHUB_COMPANY_FEED_SOURCE
+    )
+    persisted = await _persist_and_load(
+        symbol,
+        market,
+        "finnhub",
+        feed_source,
+        finnhub_fetched or [],
+        limit,
+        fetched_at,
+    )
+    if persisted is not None:
+        articles, excluded_count = persisted
+        if finnhub_fetched is None and not articles:
+            return SymbolNewsFetchResult(
+                symbol,
+                market,
+                provider,
+                "error",
+                limit,
+                0,
+                [],
+                finnhub_error or "finnhub_fetch_failed",
+            )
+        status = "ok" if articles else "empty"
         return SymbolNewsFetchResult(
-            symbol, market, provider, "error", limit, 0, [], type(exc).__name__
+            symbol,
+            market,
+            provider,
+            status,
+            limit,
+            len(articles),
+            articles,
+            None,
+            excluded_count=excluded_count,
+            degraded=finnhub_fetched is None,
+            fetch_error=finnhub_error,
         )
+    # DB 불가 — 기존 on-demand 동작으로 degrade (전부 pending 표시)
+    if finnhub_fetched is None:
+        return SymbolNewsFetchResult(
+            symbol,
+            market,
+            provider,
+            "error",
+            limit,
+            0,
+            [],
+            finnhub_error or "finnhub_fetch_failed",
+        )
+    articles = [
+        replace(
+            a,
+            provider_metadata={
+                **a.provider_metadata,
+                "relevance": {
+                    **_PENDING_RELEVANCE,
+                    "hints": _store_hints(symbol, market, a.title),
+                },
+            },
+        )
+        for a in finnhub_fetched
+    ]
     status = "ok" if articles else "empty"
     return SymbolNewsFetchResult(
         symbol, market, provider, status, limit, len(articles), articles, None

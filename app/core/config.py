@@ -505,6 +505,10 @@ class Settings(BaseSettings):
     NEWS_RELEVANCE_JUDGMENT_TOKEN: str = ""
     NEWS_RELEVANCE_JUDGMENT_TIMEOUT_S: float = 120.0
     NEWS_RELEVANCE_JUDGMENT_BATCH_LIMIT: int = 50
+
+    # ROB-510 — Finnhub news fetch reliability (per-attempt timeout + bounded retry)
+    FINNHUB_NEWS_TIMEOUT_S: float = 8.0
+    FINNHUB_NEWS_MAX_ATTEMPTS: int = 3
     # ROB-287 Phase B — operational activation gate for the
     # ``hermes_bundle_preparation_flow`` Prefect entry. Default ``False``
     # makes the flow a structured dry-run (no ``SnapshotBundleEnsureService``
