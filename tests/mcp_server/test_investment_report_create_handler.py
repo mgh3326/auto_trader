@@ -203,4 +203,3 @@ def test_create_description_documents_required_max_action_account_mode():
     assert "quantity or notional" in combined
     assert "trigger_checklist" in combined
     assert "planned_action" in combined
-
