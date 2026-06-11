@@ -83,6 +83,38 @@ def _filters_are_threaded(preset: str, market: str) -> bool:
     return (market or "").strip().lower() == "crypto" and preset in _CRYPTO_PRESET_IDS
 
 
+def _normalize_preset_ids(raw_preset: str) -> list[str]:
+    """Split comma-separated preset IDs and strip whitespace."""
+    return [p.strip() for p in raw_preset.split(",") if p.strip()]
+
+
+def _merge_rows(
+    existing: list[dict[str, Any]], new_rows: list[dict[str, Any]], preset_id: str
+) -> list[dict[str, Any]]:
+    """Dedupe by symbol and merge matchedPresets.
+
+    The first preset to see a symbol 'wins' on display fields (rank, name, labels).
+    Subsequent matches only append to matchedPresets.
+    """
+    merged = list(existing)
+    seen_symbols = {str(r.get("symbol")).upper(): r for r in merged}
+
+    for row in new_rows:
+        symbol = str(row.get("symbol")).upper()
+        if symbol in seen_symbols:
+            existing_row = seen_symbols[symbol]
+            matched = list(existing_row.get("matchedPresets") or [])
+            if preset_id not in matched:
+                matched.append(preset_id)
+            existing_row["matchedPresets"] = matched
+        else:
+            row["matchedPresets"] = [preset_id]
+            merged.append(row)
+            seen_symbols[symbol] = row
+
+    return merged
+
+
 _DEFAULT_RESULT_LIMIT = 40
 _MAX_RESULT_LIMIT = 200
 
@@ -114,6 +146,10 @@ async def screen_stocks_snapshot_impl(
     from app.services.screener_service import ScreenerService
     from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
 
+    preset_ids = _normalize_preset_ids(preset)
+    if not preset_ids:
+        return {"error": "preset must not be empty", "results": []}
+
     # ROB-515: mark 'held' rows in screener results via KIS live positions.
     # (Watchlist personalization is still omitted for discovery MCP).
     held_symbols: set[str] = set()
@@ -130,8 +166,10 @@ async def screen_stocks_snapshot_impl(
             # (build_screener_results takes resolver as non-optional, so fall back to noop)
             logger.warning("screener_snapshot: kis holdings failed: %s", exc)
 
-    available = _available_filters(preset)
-    snapshot_kind = snapshot_kind_for_preset(preset)
+    # Use the first preset for adjustable filter catalog metadata
+    main_preset_id = preset_ids[0]
+    available = _available_filters(main_preset_id)
+    snapshot_kind = snapshot_kind_for_preset(main_preset_id)
 
     conditions: list[ScreenerFilterCondition] = []
     for entry in filters or []:
@@ -151,16 +189,31 @@ async def screen_stocks_snapshot_impl(
                 "results": [],
             }
 
+    merged_results: list[dict[str, Any]] = []
+    combined_warnings: list[str] = []
+    threaded_warned_presets: set[str] = set()
+
     try:
         async with _session_factory()() as db:
-            resp = await build_screener_results(
-                preset_id=preset,
-                screening_service=ScreenerService(),
-                resolver=_HeldResolver(held_symbols),
-                market=market,
-                session=db,
-                filter_overrides=conditions or None,
-            )
+            for pid in preset_ids:
+                resp = await build_screener_results(
+                    preset_id=pid,
+                    screening_service=ScreenerService(),
+                    resolver=_HeldResolver(held_symbols),
+                    market=market,
+                    session=db,
+                    filter_overrides=conditions or None,
+                )
+                raw_payload = resp.model_dump(mode="json")
+                merged_results = _merge_rows(
+                    merged_results, raw_payload.get("results") or [], pid
+                )
+                for w in raw_payload.get("warnings") or []:
+                    if w not in combined_warnings:
+                        combined_warnings.append(w)
+
+                if conditions and not _filters_are_threaded(pid, market):
+                    threaded_warned_presets.add(pid)
     except ScreenerFilterError as exc:
         return {
             "error": str(exc),
@@ -169,34 +222,34 @@ async def screen_stocks_snapshot_impl(
             "results": [],
         }
 
-    payload: dict[str, Any] = resp.model_dump(mode="json")
-    payload["availableFilters"] = available
-    payload["appliedFilters"] = [
-        {"field": c.field, "operator": c.operator, "value": c.value} for c in conditions
-    ]
-    payload["snapshotKind"] = snapshot_kind
-    payload["holdings"] = holdings_meta
-    if holdings_meta["status"] == "error":
-        _ws = list(payload.get("warnings") or [])
-        _ws.append("KIS live 보유종목 확인 실패 — 보유 여부가 표시되지 않을 수 있습니다.")
-        payload["warnings"] = _ws
-
     # ROB-445: warn whenever filters were passed but NOT actually threaded for the
-    # resolved (preset, market) — REGARDLESS of snapshotKind. The old `snapshot_kind
-    # is None` predicate let high_yield_value (kind=market_valuation_snapshots, but
-    # no dispatch branch) echo appliedFilters while silently returning the unfiltered
-    # snapshot (silent no-op). Now the unfiltered fact is reported honestly.
-    if conditions and not _filters_are_threaded(preset, market):
-        warnings = list(payload.get("warnings") or [])
-        warnings.append(
-            f"'{preset}' 프리셋은 아직 스냅샷 위 필터 조정이 배선되지 않아 "
+    # resolved (preset, market) — REGARDLESS of snapshotKind.
+    if threaded_warned_presets:
+        p_list = ", ".join(sorted(threaded_warned_presets))
+        combined_warnings.append(
+            f"'{p_list}' 프리셋은 아직 스냅샷 위 필터 조정이 배선되지 않아 "
             "기본 결과를 반환했습니다 (필터 미적용)."
         )
-        payload["warnings"] = warnings
+
+    payload: dict[str, Any] = {
+        "presetId": preset,
+        "results": merged_results,
+        "warnings": combined_warnings,
+        "availableFilters": available,
+        "appliedFilters": [
+            {"field": c.field, "operator": c.operator, "value": c.value}
+            for c in conditions
+        ],
+        "snapshotKind": snapshot_kind,
+        "holdings": holdings_meta,
+    }
+    if holdings_meta["status"] == "error":
+        combined_warnings.append(
+            "KIS live 보유종목 확인 실패 — 보유 여부가 표시되지 않을 수 있습니다."
+        )
 
     # ROB-465: cap + paginate at the tool boundary so large snapshots (e.g.
     # high_yield_value ~161 rows / ~84k chars) don't blow the MCP token budget.
-    # The web screener path (build_screener_results) is left untouched.
     all_results = payload.get("results") or []
     total_available = len(all_results)
     eff_limit = max(1, min(int(limit), _MAX_RESULT_LIMIT))

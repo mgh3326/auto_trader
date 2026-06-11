@@ -354,3 +354,52 @@ async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(monkeypatc
     assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
     assert out["holdings"]["source"] == "kis_live"
     assert out["holdings"]["status"] == "error"
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_merges_multiple_presets(monkeypatch) -> None:
+    async def _fake_build(**kwargs: Any) -> Any:
+        pid = kwargs["preset_id"]
+        # Mock results where S1 is in both, S2 only in A, S3 only in B
+        if pid == "preset_a":
+            rows = [{"symbol": "S1", "rank": 1}, {"symbol": "S2", "rank": 2}]
+        else:
+            rows = [{"symbol": "S1", "rank": 1}, {"symbol": "S3", "rank": 2}]
+
+        return MagicMock(
+            model_dump=lambda mode=None: {
+                "presetId": pid,
+                "results": rows,
+                "warnings": [f"warn_{pid}"],
+            }
+        )
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="preset_a, preset_b",  # comma-separated string
+        market="kr",
+    )
+
+    # results should contain S1, S2, S3 (deduped)
+    symbols = [r["symbol"] for r in out["results"]]
+    assert len(symbols) == 3
+    assert "S1" in symbols
+    assert "S2" in symbols
+    assert "S3" in symbols
+
+    # S1 should have both presets in its matchedPresets
+    s1 = next(r for r in out["results"] if r["symbol"] == "S1")
+    assert "preset_a" in s1["matchedPresets"]
+    assert "preset_b" in s1["matchedPresets"]
+
+    # warnings should be combined
+    assert "warn_preset_a" in out["warnings"]
+    assert "warn_preset_b" in out["warnings"]
