@@ -141,6 +141,11 @@ CREATE_DESCRIPTION = (
     "rebalance_review), rationale. "
     "watch items also require watch_condition + valid_until unless "
     "operation='review'. "
+    "Watch execution context: trigger_checklist is string[] and is copied into "
+    "watch alert notifications. max_action is the structured execution-plan JSON; "
+    "supported keys include side, quantity or notional, amount_krw, limit_price, "
+    "limit_price_hint, ladder_level, and account_mode. planned_action in Hermes "
+    "payloads is derived from max_action; do not send planned_action as an item key. "
     "target_kind (asset|index|fx, default 'asset') is a SEPARATE optional field "
     "— it is NOT item_kind. "
     "decision_bucket (optional) must be one of: new_buy_candidate, open_action, "
@@ -171,7 +176,9 @@ ADD_ITEMS_DESCRIPTION = (
     "recreating the report. Draft-only: non-draft reports return "
     "error:'not_draft'. items[] use the same contract as investment_report_create; "
     "duplicate client_item_key rows are returned as existing items and are not "
-    "rewritten. No broker / order / watch mutation."
+    "rewritten. No broker / order / watch mutation. For watch items, trigger_checklist "
+    "string[] and max_action execution-plan keys follow the same contract as "
+    "investment_report_create."
 )
 
 UPDATE_DESCRIPTION = (
@@ -397,6 +404,9 @@ def _validate_report_items(
                 "operation is 'review'; decision_bucket must be one of the "
                 "DECISION_BUCKETS vocabulary. target_kind is a SEPARATE optional "
                 "field (asset|index|fx, default 'asset') — it is NOT item_kind."
+                " trigger_checklist must be string[]; watch execution plans belong in "
+                "max_action (side, quantity/notional, amount_krw, limit_price, "
+                "limit_price_hint, ladder_level, account_mode), not in planned_action."
             ),
         }
     return validated_items, None
@@ -768,6 +778,7 @@ async def investment_report_activate_watch_impl(
     idempotency_key: str | None = None,
     watch_condition: dict | None = None,
     valid_until: str | None = None,
+    attach_recommendation: bool = False,
 ) -> dict:
     request = ActivateWatchRequest.model_validate(
         {
@@ -776,6 +787,7 @@ async def investment_report_activate_watch_impl(
             "idempotency_key": idempotency_key,
             "watch_condition": watch_condition,
             "valid_until": valid_until,
+            "attach_recommendation": attach_recommendation,
         }
     )
     async with AsyncSessionLocal() as db:
@@ -783,11 +795,40 @@ async def investment_report_activate_watch_impl(
         repo = InvestmentReportsRepository(db)
         alert_row = await activation_svc.activate(request)
         item_row = await repo.get_item_by_uuid(request.item_uuid)
+
+        recommendation_attached: bool | None = None
+        recommendation_attach_error: str | None = None
+
+        if request.attach_recommendation and item_row is not None:
+            if item_row.watch_recommendation:
+                recommendation_attached = True
+            elif item_row.symbol is None:
+                recommendation_attached = False
+                recommendation_attach_error = "item symbol missing"
+            else:
+                try:
+                    rec_json = await _compute_watch_recommendation_json(
+                        symbol=item_row.symbol,
+                        market=alert_row.market,
+                        valid_until=item_row.valid_until,
+                    )
+                    if rec_json.get("data_state") == "data_gap":
+                        raise ValueError("refusing to attach a data_gap recommendation")
+                    await repo.update_item_watch_recommendation(item_row.id, rec_json)
+                    await db.flush()
+                    item_row = await repo.get_item_by_uuid(request.item_uuid)
+                    recommendation_attached = True
+                except Exception as exc:  # noqa: BLE001 - attach is opt-in and fail-open
+                    recommendation_attached = False
+                    recommendation_attach_error = str(exc)
+
         await db.commit()
 
         response = InvestmentReportActivateWatchResponse(
             alert=InvestmentWatchAlertResponse.model_validate(alert_row),
             item=InvestmentReportItemResponse.model_validate(item_row),
+            recommendation_attached=recommendation_attached,
+            recommendation_attach_error=recommendation_attach_error,
         )
     return response.model_dump(mode="json", by_alias=True)
 
@@ -809,6 +850,43 @@ def _normalize_recommend_symbol(symbol: str, market: str) -> str:
     return s
 
 
+async def _compute_watch_recommendation_json(
+    *,
+    symbol: str,
+    market: str,
+    valid_until: datetime | None,
+) -> dict[str, Any]:
+    if market not in _MARKET_MAP:
+        raise ValueError(f"unsupported_market: {market}")
+
+    md_symbol = _normalize_recommend_symbol(symbol, market)
+    md_market = _MARKET_MAP[market]
+    quote = await market_data_service.get_quote(symbol=md_symbol, market=md_market)
+    reference_price = (
+        Decimal(str(quote.price)) if getattr(quote, "price", None) is not None else None
+    )
+    candles = await market_data_service.get_ohlcv(
+        symbol=md_symbol,
+        market=md_market,
+        period="day",
+        count=LOOKBACK_DAYS + ATR_PERIOD + 6,
+    )
+    ordered = sorted(candles, key=lambda c: c.timestamp)
+    payload = compute_watch_recommendation(
+        WatchPolicyInput(
+            reference_price=reference_price,
+            best_bid=None,
+            best_ask=None,
+            daily_highs=[Decimal(str(c.high)) for c in ordered],
+            daily_lows=[Decimal(str(c.low)) for c in ordered],
+            daily_closes=[Decimal(str(c.close)) for c in ordered],
+        ),
+        computed_at=datetime.now(UTC),
+        valid_until=valid_until,
+    )
+    return payload.model_dump(mode="json")
+
+
 async def investment_watch_recommend_impl(
     symbol: str,
     market: str,
@@ -826,24 +904,6 @@ async def investment_watch_recommend_impl(
     if market not in _MARKET_MAP:
         return {"success": False, "error": "unsupported_market", "market": market}
 
-    md_symbol = _normalize_recommend_symbol(symbol, market)
-    md_market = _MARKET_MAP[market]
-
-    quote = await market_data_service.get_quote(symbol=md_symbol, market=md_market)
-    reference_price = (
-        Decimal(str(quote.price)) if getattr(quote, "price", None) is not None else None
-    )
-    candles = await market_data_service.get_ohlcv(
-        symbol=md_symbol,
-        market=md_market,
-        period="day",
-        count=LOOKBACK_DAYS + ATR_PERIOD + 6,
-    )
-    ordered = sorted(candles, key=lambda c: c.timestamp)
-    highs = [Decimal(str(c.high)) for c in ordered]
-    lows = [Decimal(str(c.low)) for c in ordered]
-    closes = [Decimal(str(c.close)) for c in ordered]
-
     valid_until = None
     async with AsyncSessionLocal() as db:
         repo = InvestmentReportsRepository(db)
@@ -853,19 +913,11 @@ async def investment_watch_recommend_impl(
             if item is not None:
                 valid_until = item.valid_until
 
-        payload = compute_watch_recommendation(
-            WatchPolicyInput(
-                reference_price=reference_price,
-                best_bid=None,
-                best_ask=None,
-                daily_highs=highs,
-                daily_lows=lows,
-                daily_closes=closes,
-            ),
-            computed_at=datetime.now(UTC),
+        rec_json = await _compute_watch_recommendation_json(
+            symbol=symbol,
+            market=market,
             valid_until=valid_until,
         )
-        rec_json = payload.model_dump(mode="json")
 
         if not commit:
             return {"success": True, "committed": False, "recommendation": rec_json}
@@ -880,7 +932,7 @@ async def investment_watch_recommend_impl(
                 "commit requires item action_verdict in {watch_only, limit_wait}; "
                 f"got {verdict!r}"
             )
-        if payload.data_state == "data_gap":
+        if rec_json.get("data_state") == "data_gap":
             raise ValueError("refusing to commit a data_gap recommendation")
 
         await repo.update_item_watch_recommendation(item.id, rec_json)

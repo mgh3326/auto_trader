@@ -629,6 +629,11 @@ Unknown top-level item keys are rejected with `error: "invalid_items"`. Put call
 
 Order linkage note: `linked_order_ids` is report-side reference metadata. For new live orders, pass the report item's `item_uuid` as `report_item_uuid` to the order tool so ROB-473 ledger audit linkage is populated.
 
+Watch execution context fields:
+- `trigger_checklist`: `string[]`; copied into watch alert notifications so the operator can re-check the trigger.
+- `max_action`: structured watch execution-plan JSON. Supported keys include `side`, `quantity` or `notional`, optional `amount_krw`, optional `limit_price`, optional `limit_price_hint`, optional `ladder_level`, and optional `account_mode`.
+- Do not send `planned_action` in item input. `planned_action` is derived from `max_action` when Hermes watch payloads are built.
+
 ### `manage_watch_alerts` — removed (ROB-265)
 
 The legacy Redis-backed `manage_watch_alerts` MCP tool was removed by

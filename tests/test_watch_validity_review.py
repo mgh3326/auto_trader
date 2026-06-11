@@ -209,6 +209,15 @@ async def test_notify_payload_carries_links_and_price_guidance(
 ) -> None:
     """ROB-500 — validity review 통지에도 링크/가이드 포함."""
     alert = await _seed_active_alert(session, recommendation=_rec())
+    alert.max_action = {
+        "side": "buy",
+        "quantity": "1",
+        "amount_krw": "980000",
+        "limit_price": "975000",
+    }
+    alert.trigger_checklist = ["quote spread ok", "thesis still valid"]
+    await session.commit()
+
     hermes = _StubHermes()
 
     @asynccontextmanager
@@ -237,3 +246,9 @@ async def test_notify_payload_carries_links_and_price_guidance(
 
     assert payload.price_guidance is not None
     assert payload.price_guidance.entry_review_below_price == Decimal("100")
+
+    assert payload.planned_action is not None
+    assert payload.planned_action.side == "buy"
+    assert payload.planned_action.qty == Decimal("1")
+    assert payload.planned_action.amount_krw == Decimal("980000")
+    assert payload.trigger_checklist == ["quote spread ok", "thesis still valid"]

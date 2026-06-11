@@ -740,6 +740,14 @@ async def test_watch_recommend_dry_run_does_not_persist(
 
 
 @pytest.mark.asyncio
+async def test_watch_recommend_unsupported_market_returns_structured_error(
+    session: AsyncSession,
+) -> None:
+    resp = await investment_watch_recommend_impl(symbol="005930", market="jp")
+    assert resp == {"success": False, "error": "unsupported_market", "market": "jp"}
+
+
+@pytest.mark.asyncio
 async def test_watch_recommend_commit_persists_on_watch_only(
     session: AsyncSession, _stub_market_data
 ) -> None:
@@ -1058,3 +1066,83 @@ async def test_update_impl_rejects_empty_update(session: AsyncSession) -> None:
 
     assert out["success"] is False
     assert out["error"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_activate_watch_attach_recommendation_persists(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    response = await investment_report_activate_watch_impl(
+        item_uuid=watch_uuid,
+        actor="operator",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 70000},
+        valid_until=future_datetime().isoformat(),
+        attach_recommendation=True,
+    )
+
+    assert response["success"] is True
+    assert response["recommendation_attached"] is True
+    assert response["recommendation_attach_error"] is None
+
+    bundle_post = await investment_report_get_impl(created["report"]["report_uuid"])
+    rec = bundle_post["items"][0]["watch_recommendation"]
+    assert rec is not None
+    assert rec["data_state"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_activate_watch_attach_recommendation_fails_open(
+    session: AsyncSession, monkeypatch
+) -> None:
+    from app.mcp_server.tooling import investment_reports_handlers as h
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("market data unavailable")
+
+    monkeypatch.setattr(h.market_data_service, "get_quote", _boom)
+
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    response = await investment_report_activate_watch_impl(
+        item_uuid=watch_uuid,
+        actor="operator",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 70000},
+        valid_until=future_datetime().isoformat(),
+        attach_recommendation=True,
+    )
+
+    assert response["success"] is True
+    assert response["alert"]["source_item_uuid"] == watch_uuid
+    assert response["recommendation_attached"] is False
+    assert "market data unavailable" in response["recommendation_attach_error"]
+
+
+def test_create_description_mentions_watch_execution_plan_contract() -> None:
+    from app.mcp_server.tooling.investment_reports_handlers import (
+        ADD_ITEMS_DESCRIPTION,
+        CREATE_DESCRIPTION,
+    )
+
+    combined = CREATE_DESCRIPTION + " " + ADD_ITEMS_DESCRIPTION
+    assert "trigger_checklist" in combined
+    assert "string[]" in combined
+    assert "max_action" in combined
+    assert "amount_krw" in combined
+    assert "limit_price_hint" in combined
+    assert "ladder_level" in combined
