@@ -184,7 +184,6 @@ def test_validate_report_items_rejects_legacy_watch_bad_max_action():
     assert "quantity or notional" in str(error["item_errors"][0]["errors"])
 
 
-
 def test_create_description_documents_trade_plan_and_unknown_key_policy():
     desc = h.CREATE_DESCRIPTION
     assert "entry_plan" in desc

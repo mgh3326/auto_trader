@@ -1279,7 +1279,6 @@ async def test_activate_watch_attach_recommendation_rejects_non_watch_verdict(
     assert bundle_post["items"][0]["watch_recommendation"] is None
 
 
-
 @pytest.mark.asyncio
 async def test_activate_watch_attach_recommendation_fails_open(
     session: AsyncSession, monkeypatch

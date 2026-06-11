@@ -823,7 +823,6 @@ def _watch_recommendation_verdict_error(item: Any, *, action: str) -> str | None
     return None
 
 
-
 def _normalize_recommend_symbol(symbol: str, market: str) -> str:
     s = str(symbol or "").strip()
     if market == "crypto":

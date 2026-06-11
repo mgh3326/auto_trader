@@ -380,7 +380,6 @@ def test_max_action_requires_account_mode() -> None:
     assert "account_mode" in str(exc_info.value)
 
 
-
 def test_auto_execute_mock_action_mode_flag_and_literal():
     from app.core.config import settings
     from app.schemas.investment_reports import WatchConditionPayload
