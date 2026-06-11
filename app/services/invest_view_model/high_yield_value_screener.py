@@ -215,7 +215,7 @@ async def load_high_yield_value_from_snapshots(
                 "market": market,
                 "name": name,
                 "sector": sector_map.get(sym),
-                "close": (
+                "latest_close": (
                     float(r["latest_close"]) if r["latest_close"] is not None else None
                 ),
                 "close": (

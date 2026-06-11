@@ -1080,15 +1080,15 @@ async def test_rows_prefer_master_korean_sector_over_english_category(db_session
 
     warm_universe = _universe(sym_warm, "워밍종목")
     warm_universe.sector_id = sector.id
-    passing_kw = dict(
-        price=Decimal("10000"),
-        change_rate=Decimal("1.5"),
-        volume=Decimal("1234567"),
-        market_cap=Decimal("9000000000000"),
-        roe_ttm=Decimal("20"),
-        gross_margin_ttm=Decimal("0.31"),
-        sector="Technology",
-    )
+    passing_kw = {
+        "price": Decimal("10000"),
+        "change_rate": Decimal("1.5"),
+        "volume": Decimal("1234567"),
+        "market_cap": Decimal("9000000000000"),
+        "roe_ttm": Decimal("20"),
+        "gross_margin_ttm": Decimal("0.31"),
+        "sector": "Technology",
+    }
     await _seed(
         db_session,
         [
