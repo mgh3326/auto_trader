@@ -101,3 +101,11 @@ def test_recurring_schedule_is_default_off():
         assert tasks._kr_flow_schedule("40 16 * * 1-5") == [
             {"cron": "40 16 * * 1-5", "cron_offset": "Asia/Seoul"}
         ]
+
+
+def test_scheduled_cron_is_next_morning_kst():
+    """ROB-512 갭4: Naver frgn 일별 수급 확정 행은 당일 저녁엔 부분 발행
+    (2026-06-10 18:10 KST 실측 144/3,909 종목 = thin 파티션 → older_fallback)이고
+    익일 아침에 완성된다(2026-06-11 오전 라이브 검증). 구 ROB-438의 16:40 KST는
+    구조적으로 당일 데이터를 못 잡으므로 등록 cron은 익일 아침(개장 전)이어야 한다."""
+    assert tasks._KR_FLOW_CRON == "30 8 * * 1-5"
