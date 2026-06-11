@@ -25,7 +25,9 @@ def _validation_error(exc: ValidationError) -> dict[str, Any]:
     }
 
 
-async def session_context_append(entries: list[dict[str, Any]] | None) -> dict[str, Any]:
+async def session_context_append(
+    entries: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
     """Append one or more operator session context entries."""
     if not entries:
         return {

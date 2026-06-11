@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 import pytest
@@ -87,7 +87,7 @@ def test_response_serializes_refs_from_attributes() -> None:
         refs = {"symbols": ["005930"]}
         created_by = "operator"
         session_label = None
-        created_at = datetime(2026, 6, 11, 1, 2, 3, tzinfo=timezone.utc)
+        created_at = datetime(2026, 6, 11, 1, 2, 3, tzinfo=UTC)
 
     response = SessionContextResponse.model_validate(Row())
 

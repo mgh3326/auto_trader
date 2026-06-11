@@ -61,9 +61,6 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 from app.mcp_server.tooling.investment_snapshots_registration import (
     register_investment_snapshots_tools,
 )
-from app.mcp_server.tooling.session_context_registration import (
-    register_session_context_tools,
-)
 from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
@@ -88,6 +85,9 @@ from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.session_context_registration import (
+    register_session_context_tools,
+)
 from app.mcp_server.tooling.trade_journal_registration import (
     register_trade_journal_tools,
 )

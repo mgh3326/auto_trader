@@ -15,16 +15,14 @@ from app.services.session_context import SessionContextService
 async def _clean_session_context(db_session: AsyncSession):
     await db_session.execute(
         sa.text(
-            'TRUNCATE TABLE review."operator_session_context" '
-            "RESTART IDENTITY CASCADE"
+            'TRUNCATE TABLE review."operator_session_context" RESTART IDENTITY CASCADE'
         )
     )
     await db_session.commit()
     yield
     await db_session.execute(
         sa.text(
-            'TRUNCATE TABLE review."operator_session_context" '
-            "RESTART IDENTITY CASCADE"
+            'TRUNCATE TABLE review."operator_session_context" RESTART IDENTITY CASCADE'
         )
     )
     await db_session.commit()

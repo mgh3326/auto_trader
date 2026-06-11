@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
 from app.models.session_context import OperatorSessionContext
+from app.schemas.investment_reports import AccountScopeLiteral, MarketLiteral
 from app.schemas.session_context import (
     SessionContextAppendEntry,
     SessionContextEntryTypeLiteral,
 )
-from app.schemas.investment_reports import AccountScopeLiteral, MarketLiteral
 
 
 class SessionContextService:
