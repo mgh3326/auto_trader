@@ -342,7 +342,9 @@ class InvestmentReportsRepository:
             stmt = stmt.where(InvestmentWatchAlert.symbol == symbol)
         if valid_at is not None and not include_expired_status_rows:
             stmt = stmt.where(InvestmentWatchAlert.valid_until > valid_at)
-        stmt = stmt.order_by(InvestmentWatchAlert.activated_at.desc()).limit(capped_limit)
+        stmt = stmt.order_by(InvestmentWatchAlert.activated_at.desc()).limit(
+            capped_limit
+        )
         result = await self._session.scalars(stmt)
         return list(result.all())
 
