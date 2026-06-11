@@ -46,8 +46,8 @@ _KR_ONLY_PRESET_IDS = {
 # ROB-427 PR3: KR-only presets that ARE active for US (backed by US data now).
 # high_yield_value (ROE+PER) runs on Yahoo valuation snapshots — see
 # high_yield_value_screener.load_high_yield_value_from_snapshots(market="us").
-# ROB-440: undervalued_breakout (proximity) runs on the same Yahoo valuation
-# snapshots (high_52w price) — load_undervalued_breakout_from_snapshots(market="us").
+# ROB-440: undervalued_breakout runs on the same Yahoo valuation snapshots
+# (high_52w_date recency) — load_undervalued_breakout_from_snapshots(market="us").
 # ROB-441 PR3: profitable_company/undervalued_growth/cheap_value/stable_growth run on
 # the market-parameterized derive loader (market_valuation US per/pbr/roe +
 # financial_fundamentals US annual periods → derive) — load_fundamentals_preset_from_snapshots(market="us").
@@ -266,16 +266,16 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
     ScreenerPreset(
         id="undervalued_breakout",
         name="저평가 탈출",
-        description="PER·PBR이 낮으면서 주가가 52주 고가에 근접한 저평가 탈출 종목 (지연 스냅샷 기반)",
+        description="PER·PBR이 낮고 최근 20거래일 내 52주 신고가를 기록한 저평가 탈출 종목 (지연 스냅샷 기반)",
         badges=["인기"],
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
             ScreenerFilterChip(label="PER", detail="0~10"),
             ScreenerFilterChip(label="PBR", detail="0~1"),
-            ScreenerFilterChip(label="신고가", detail="52주 고가 5% 이내"),
+            ScreenerFilterChip(label="신고가", detail="최근 20거래일 이내"),
             ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
         ],
-        metricLabel="신고가 대비",
+        metricLabel="신고가 경과",
         market="kr",
         presetOrigin=_TOSS,
         parityStatus=_FULL,
@@ -526,13 +526,13 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "max_per": 10.0,
         "limit": 20,
     },
-    # undervalued_breakout is snapshot-only (market_valuation_snapshots); the generic
-    # screening provider has no 52-week-high proximity filter.
+    # undervalued_breakout is snapshot-only; the generic screening provider has no
+    # recent-52w-high-date filter.
     "undervalued_breakout": {
         "market": "kr",
         "asset_type": "stock",
-        "sort_by": "high_52w_proximity",
-        "sort_order": "desc",
+        "sort_by": "per",
+        "sort_order": "asc",
         "min_per": 0.01,
         "max_per": 10.0,
         "min_pbr": 0.01,

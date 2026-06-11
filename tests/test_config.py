@@ -107,7 +107,6 @@ class TestConfigLoading:
         {
             "KIS_APP_KEY": "test_kis_key",
             "TELEGRAM_TOKEN": "test_telegram_token",
-            "GOOGLE_API_KEY": "test_google_key",
             "OPENDART_API_KEY": "test_dart_key",
             "DATABASE_URL": "postgresql://test:test@localhost/testdb",
         },

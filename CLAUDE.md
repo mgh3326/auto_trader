@@ -110,25 +110,13 @@ app/analysis/
 - 보유 자산 정보가 있으면 `position_info`로 전달
 - 분봉 데이터가 있으면 `minute_candles`로 전달
 
-### Redis 기반 스마트 모델 제한 시스템
+### Runtime LLM ownership boundary
 
-**목적:** Google Gemini API 429 에러(할당량 초과) 발생 시 API 키별로 해당 모델 사용 자동 제한
-
-**구조:**
-```
-app/core/model_rate_limiter.py   # ModelRateLimiter 클래스
-app/analysis/analyzer.py          # _call_gemini_with_retry 메서드에서 활용
-```
-
-**동작 방식:**
-1. API 호출 전: Redis에서 해당 API 키의 모델 제한 상태 확인
-2. 429 에러 발생 시: `retry_delay` 정보를 Redis에 저장하여 API 키별로 모델 제한
-3. 제한된 경우: 다음 사용 가능한 모델로 자동 전환
-4. 제한 해제: TTL 만료 시 자동 해제 (필요 시 Redis 키/TTL 점검으로 상태 확인)
-
-**Redis 키 구조:**
-- `model_rate_limit:{model}:{masked_api_key}` - 제한 정보
-- `model_retry_info:{model}:{masked_api_key}` - 재시도 정보
+auto_trader runtime code must not import or instantiate in-process LLM providers
+(Gemini/OpenAI/Grok/etc.). LLM judgment belongs to MCP consumers or Hermes
+out-of-process flows. The static guard in
+`tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`
+scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 
 ### Alpaca Paper 실행 레저 (ROB-84)
 
@@ -198,8 +186,7 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
 - **스코프**: KR live only; US/crypto live unchanged (follow-up)
 
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
-
-US/해외 (`equity_us`) 및 crypto (`crypto`) live 주문 전송 시 **accepted-only**로 `review.live_order_ledger` 테이블에 기록하며, 선반영하지 않습니다. 체결 장부(fills/journals/realized_pnl)는 오직 `live_reconcile_orders` 도구에 의해 수집된 broker별 체결 증거(해외 일별주문/Upbit order-state)를 바탕으로 델타 멱등(delta-idempotent) 방식으로만 최종 확정(book)됩니다.
+...
 시장가 crypto 주문의 경우 전송 즉시 inline으로 Reconcile을 자동 수행하여 체결 장부를 확정합니다.
 
 - **모델**: `app/models/review.LiveOrderLedger`
@@ -207,6 +194,16 @@ US/해외 (`equity_us`) 및 crypto (`crypto`) live 주문 전송 시 **accepted-
 - **MCP 도구**: `live_reconcile_orders` (dry_run-default)
 - **런북**: `docs/runbooks/live-order-reconcile.md`
 - **스코프**: US/해외 및 crypto live 주문 전체.
+
+### KR/US Category Normalization & Lazy Fill (ROB-512)
+
+KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이블로 통합 관리합니다.
+
+- **마스터 모델**: `app/models/symbol_sectors.SymbolSector` (`source_key`가 식별자)
+- **Lazy Fill**: 스크리너 조회 시(enrichment) 섹터가 없는 종목은 실시간 fetch 후 DB에 저장합니다.
+- **서비스**: `app/services/symbol_sectors_service.py` (쓰기 전용), `app/services/us_sector_korean_map.py` (US 한글 매핑)
+- **적용 로더**: `investor_flow`, `consecutive_gainers`, `double_buy`, `fundamentals` 등 주요 스크리너 로더에 JOIN 배선 완료.
+- **표시 규칙**: `SymbolSector.name_kr` ?? `SymbolSector.name_en` ?? "-" (US는 한글 매핑 우선).
 
 ### Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 
@@ -327,6 +324,10 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
 - **주의**: 공유 `KR_INVEST_KEYWORDS`(ROB-169 브리핑 스코어러 공용)에 hint용
   키워드를 추가하지 말 것 — ROB-491 로컬 텀은 `symbol_news_relevance.py`의
   `_KR_EXTRA_INVEST_HINT_TERMS`에만
+- **ROB-510**: US/crypto(Finnhub)도 동일 DB 파이프라인 합류 (feed_source
+  `finnhub_company_news`/`finnhub_general_news`). Finnhub fetch는
+  `FINNHUB_NEWS_TIMEOUT_S`×`FINNHUB_NEWS_MAX_ATTEMPTS` 재시도, 전 실패 시
+  degraded + DB stale 폴백.
 
 ### 데이터베이스 정규화 구조
 
@@ -598,9 +599,6 @@ docker compose exec redis redis-cli ttl "model_rate_limit:<model>:<masked_api_ke
 **필수 환경 변수 (.env 파일):**
 
 ```bash
-# Google AI
-GOOGLE_API_KEY=xxx                    # 또는
-GOOGLE_API_KEYS=key1,key2,key3        # 콤마로 구분된 여러 키
 
 # 한국투자증권 (KIS)
 KIS_APP_KEY=xxx
@@ -706,10 +704,6 @@ uv run alembic downgrade <revision>
 uv run alembic history
 ```
 
-### Google API 429 에러
-- Redis 기반 자동 제한 시스템이 작동 중
-- 제한은 TTL 만료로 자동 해제되며, 필요 시 `model_rate_limit:*` 키와 TTL을 Redis에서 점검
-- 여러 API 키 사용: `GOOGLE_API_KEYS=key1,key2,key3`
 
 ## 참고 문서
 

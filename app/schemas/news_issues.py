@@ -60,6 +60,21 @@ class MarketIssue(BaseModel):
     signals: IssueSignals
 
 
+class IssueQualityGate(BaseModel):
+    """ROB-502: what the meaningfulness gate did to this response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    articles_total: int = 0
+    noise_articles_excluded: int = 0
+    clusters_total: int = 0
+    clusters_merged: int = 0
+    clusters_excluded_thin: int = 0
+
+
+IssuesStatus = Literal["ok", "no_meaningful_items", "no_recent_articles"]
+
+
 class MarketIssuesResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -67,3 +82,6 @@ class MarketIssuesResponse(BaseModel):
     as_of: datetime
     window_hours: int
     items: list[MarketIssue] = Field(default_factory=list)
+    status: IssuesStatus = "ok"
+    degraded_reason: str | None = None
+    quality_gate: IssueQualityGate | None = None

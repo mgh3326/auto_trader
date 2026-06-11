@@ -20,6 +20,13 @@ from app.jobs.investor_flow_snapshots import (
 
 _KST_LABEL = "Asia/Seoul"
 
+#: ROB-512 갭4: Naver frgn(일별 수급 확정 행)은 당일 저녁엔 부분 발행이라
+#: (2026-06-10 18:10 KST 실측 144/3,909 종목 → thin 파티션 → older_fallback)
+#: 당일 cron(구 ROB-438 "40 16")은 구조적으로 당일 데이터를 못 잡는다. 행은
+#: 익일 아침에 완성되므로 개장 전 08:30 KST에 전 거래일(D-1)을 적재한다.
+#: 휴장일 결행분은 빌더의 days=20 히스토리 upsert가 다음 run에서 백필한다.
+_KR_FLOW_CRON = "30 8 * * 1-5"
+
 
 def _kr_flow_schedule(cron: str) -> list[dict[str, str]]:
     """Cron labels gated by the schedule flag (default off → [] → not registered)."""
@@ -81,11 +88,13 @@ async def build_investor_flow_snapshots(
 
 @broker.task(
     task_name="investor_flow_snapshots.kr_scheduled",
-    schedule=_kr_flow_schedule("40 16 * * 1-5"),
+    schedule=_kr_flow_schedule(_KR_FLOW_CRON),
 )
 async def scheduled_kr_investor_flow() -> dict[str, Any]:
-    """ROB-438: KR investor-flow refresh at 16:40 KST (Naver 수급, post-close).
+    """ROB-438/ROB-512: KR investor-flow refresh at 08:30 KST (Naver 수급, 익일 아침).
 
+    전 거래일(D-1) 확정 수급을 적재한다 — 당일 행은 저녁까지 부분 발행이라 당일
+    cron은 thin 파티션만 만든다(ROB-512 갭4 실측, ``_KR_FLOW_CRON`` 주석 참조).
     Holiday-gated via XKRX (skips non-trading days). Default-off; commit gated by
     ``investor_flow_snapshots_commit_enabled`` (dry-run-on-cron until operator sets it).
     """

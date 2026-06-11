@@ -73,7 +73,9 @@ from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .scalp_trade_analytics import ScalpTradeAnalytics
 from .scalping_reviews import ScalpingDailyReview, ScalpingReviewAction
 from .sell_condition import SellCondition
+from .session_context import OperatorSessionContext
 from .symbol_news_relevance import SymbolNewsRelevance
+from .symbol_sectors import SymbolSector
 from .symbol_trade_settings import SymbolTradeSettings
 from .trade_journal import JournalStatus, TradeJournal
 from .trade_profile import (
@@ -103,7 +105,6 @@ from .trading_decision import (
 from .upbit_symbol_universe import UpbitSymbolUniverse
 from .us_symbol_universe import USSymbolUniverse
 from .user_settings import UserSetting
-from .session_context import OperatorSessionContext
 
 # 필요한 다른 모델도 여기서 import
 # from .alert import AlertRule, AlertEvent
@@ -167,6 +168,7 @@ __all__ = [
     "USSymbolUniverse",
     "UserSetting",
     "OperatorSessionContext",
+    "SymbolSector",
     "SymbolTradeSettings",
     "SymbolNewsRelevance",
     "NewsArticle",

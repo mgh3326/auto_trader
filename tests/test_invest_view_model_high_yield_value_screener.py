@@ -359,3 +359,51 @@ async def test_us_quality_guards_drop_microcap_and_roe_artifacts(db_session):
             )
         )
     await db_session.commit()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rows_carry_close_alias_for_price_label(db_session) -> None:
+    """ROB-508: priceLabel은 row['close']를 읽으므로 latest_close와 동일 값의
+    close 키가 있어야 한다."""
+    val_date = dt.date(2026, 6, 2)
+    db_session.add_all(
+        [
+            MarketValuationSnapshot(
+                market="us",
+                symbol="ZZUSHI",
+                snapshot_date=val_date,
+                source="yahoo",
+                per=decimal.Decimal("7.0"),
+                roe=decimal.Decimal("22.0"),
+                market_cap=decimal.Decimal("5000000000"),
+            ),
+            InvestScreenerSnapshot(
+                market="us",
+                symbol="ZZUSHI",
+                snapshot_date=val_date,
+                latest_close=decimal.Decimal("99"),
+                closes_window=[99],
+                source="yahoo",
+            ),
+        ]
+    )
+    await db_session.commit()
+    rows = await load_high_yield_value_from_snapshots(
+        db_session, market="us", limit=20, today_market_date=val_date
+    )
+    # clean up
+    await db_session.execute(
+        MarketValuationSnapshot.__table__.delete().where(
+            MarketValuationSnapshot.symbol == "ZZUSHI"
+        )
+    )
+    await db_session.execute(
+        InvestScreenerSnapshot.__table__.delete().where(
+            InvestScreenerSnapshot.symbol == "ZZUSHI"
+        )
+    )
+    await db_session.commit()
+
+    assert rows
+    assert rows[0]["close"] == rows[0]["latest_close"]

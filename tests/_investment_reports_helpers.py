@@ -70,6 +70,13 @@ async def session() -> AsyncSession:
             )
             try:
                 async with engine.begin() as conn:
+                    # All INVESTMENT_REPORTS_TABLES live in the ``review``
+                    # schema; create_all does not create schemas, so on a
+                    # fresh CI database this fixture must not depend on a
+                    # conftest ``db_session`` test having run first in the
+                    # same xdist shard (shard composition shifts whenever
+                    # test files are added — observed as ROB-510 CI red).
+                    await conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS review"))
                     await conn.run_sync(
                         Base.metadata.create_all,
                         tables=INVESTMENT_REPORTS_TABLES,

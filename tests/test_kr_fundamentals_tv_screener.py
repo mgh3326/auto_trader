@@ -1053,3 +1053,68 @@ def test_dividend_dart_first_recovers_when_tvscreener_payout_sparse():
         snap, STEADY_DIVIDEND_SPEC, partition_date=_SD, dart=None
     )
     assert ok2 is False and "payout_ratio" in (reason2 or "")
+
+
+async def test_rows_prefer_master_korean_sector_over_english_category(db_session):
+    """ROB-512 갭3: kr_symbol_universe.sector_id가 워밍된 종목은 row['sector']에
+    한글 업종이 실려 포맷터의 sector-우선 규칙(category보다 먼저 읽음)으로 한글이
+    표시된다. 미워밍 종목은 sector=None → 기존 영문 category fallback 유지."""
+    from app.models.symbol_sectors import SymbolSector
+
+    await _cleanup(db_session)
+    await db_session.execute(
+        sa.delete(SymbolSector).where(SymbolSector.source_key == "999913")
+    )
+    await db_session.commit()
+
+    sym_warm = f"{_PREFIX}21"
+    sym_cold = f"{_PREFIX}22"
+    sector = SymbolSector(
+        market="kr",
+        source="naver_upjong",
+        source_key="999913",
+        name_kr="반도체와반도체장비",
+    )
+    db_session.add(sector)
+    await db_session.flush()
+
+    warm_universe = _universe(sym_warm, "워밍종목")
+    warm_universe.sector_id = sector.id
+    passing_kw = {
+        "price": Decimal("10000"),
+        "change_rate": Decimal("1.5"),
+        "volume": Decimal("1234567"),
+        "market_cap": Decimal("9000000000000"),
+        "roe_ttm": Decimal("20"),
+        "gross_margin_ttm": Decimal("0.31"),
+        "sector": "Technology",
+    }
+    await _seed(
+        db_session,
+        [
+            _snap(sym_warm, industry="Semiconductors", **passing_kw),
+            _snap(sym_cold, industry="Industrial Machinery", **passing_kw),
+        ],
+        [warm_universe, _universe(sym_cold, "콜드종목")],
+    )
+
+    result = await load_kr_fundamentals_preset_from_tv_snapshot(
+        db_session,
+        market="kr",
+        spec=PROFITABLE_COMPANY_SPEC,
+        limit=20,
+        now=_now,
+        universe_count=2,
+    )
+    assert result is not None
+    rows = {r["symbol"]: r for r in result.rows}
+    assert rows[sym_warm]["sector"] == "반도체와반도체장비"
+    assert rows[sym_warm]["category"] == "Semiconductors"  # 영문 원본 보존
+    assert rows[sym_cold]["sector"] is None  # 미워밍 → 영문 category fallback
+
+    # 정리 (FK: universe 행이 _cleanup으로 먼저 지워진 뒤 sector 삭제 가능)
+    await _cleanup(db_session)
+    await db_session.execute(
+        sa.delete(SymbolSector).where(SymbolSector.source_key == "999913")
+    )
+    await db_session.commit()
