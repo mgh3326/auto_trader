@@ -12,15 +12,28 @@ from sqlalchemy import delete, select
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_market_events(db_session):
+    # Scoped to source="wisefn" (mirrors test_tradingview_ingestion.py): xdist
+    # --dist=loadfile runs other market_events test FILES concurrently against
+    # the same shared Postgres, so a blanket delete(MarketEvent) here races
+    # their commit-then-select windows (observed: tradingview's len(events)==1
+    # flipping to 0 after a PR re-shard). Every assertion in this file already
+    # filters source=="wisefn".
     from app.models.market_events import (
         MarketEvent,
         MarketEventIngestionPartition,
         MarketEventValue,
     )
 
-    await db_session.execute(delete(MarketEventValue))
-    await db_session.execute(delete(MarketEvent))
-    await db_session.execute(delete(MarketEventIngestionPartition))
+    wisefn_events = select(MarketEvent.id).where(MarketEvent.source == "wisefn")
+    await db_session.execute(
+        delete(MarketEventValue).where(MarketEventValue.event_id.in_(wisefn_events))
+    )
+    await db_session.execute(delete(MarketEvent).where(MarketEvent.source == "wisefn"))
+    await db_session.execute(
+        delete(MarketEventIngestionPartition).where(
+            MarketEventIngestionPartition.source == "wisefn"
+        )
+    )
     await db_session.commit()
     yield
 

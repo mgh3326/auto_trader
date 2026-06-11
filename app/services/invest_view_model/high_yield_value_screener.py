@@ -196,6 +196,9 @@ async def load_high_yield_value_from_snapshots(
                 "latest_close": (
                     float(r["latest_close"]) if r["latest_close"] is not None else None
                 ),
+                "close": (
+                    float(r["latest_close"]) if r["latest_close"] is not None else None
+                ),
                 "prev_close": (
                     float(r["prev_close"]) if r["prev_close"] is not None else None
                 ),

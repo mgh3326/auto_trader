@@ -227,6 +227,9 @@ async def load_undervalued_breakout_from_snapshots(
                 "latest_close": float(r["latest_close"])
                 if r["latest_close"] is not None
                 else None,
+                "close": float(r["latest_close"])
+                if r["latest_close"] is not None
+                else None,
                 "change_rate": float(r["change_rate"])
                 if r["change_rate"] is not None
                 else None,
