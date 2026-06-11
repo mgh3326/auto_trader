@@ -332,6 +332,7 @@ def test_result_row_accepts_analysis_context():
     assert row.analysisContext.consensus.buyCount == 2
     assert row.analysisContext.rsi14 == pytest.approx(58.42)
 
+
 @pytest.mark.unit
 def test_result_row_accepts_discovery_workflow_fields() -> None:
     row = ScreenerResultRow(
