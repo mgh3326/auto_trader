@@ -1,11 +1,11 @@
 # app/services/invest_view_model/undervalued_breakout_screener.py
 """Read-only loader for the 저평가 탈출 (Toss undervalued-breakout parity) preset.
 
-Toss rule: market = kr, 0 < per <= 10, 0 < pbr <= 1, and the price is near the
-52-week high (close >= high_52w * 0.95). per/pbr/high_52w come from
-market_valuation_snapshots (naver_finance); latest_close from invest_screener_snapshots.
-Valuation-only — NO fundamentals dependency. NULL per/pbr/close/high_52w are excluded
-(fail-closed; never fabricate a qualifier).
+KR display uses ``kr_fundamentals_tv_screener`` and checks recent 52-week-high
+date recency. This market_valuation-backed loader remains for US and KR
+reports/PIT: US uses high_52w_date recency when available; KR reports/PIT keep
+the older proximity proxy (close >= high_52w * 0.95). NULL prerequisites are
+excluded fail-closed; qualifiers are never fabricated.
 """
 
 from __future__ import annotations
@@ -75,10 +75,10 @@ async def load_undervalued_breakout_from_snapshots(
 ) -> list[dict[str, Any]] | None:
     """Toss-parity 저평가 탈출 rows, or None when no valuation partition exists.
 
-    ROB-440 Part 2: market-parameterized for US (proximity definition: close >=
-    high_52w * 0.95). KR display uses the tvscreener date-recency loader; this
-    market_valuation-backed loader serves US (+ KR reports/PIT). high_52w(price) +
-    latest_close required; NULL → fail-closed excluded."""
+    ROB-440 Part 2/3: market-parameterized for US (52w-high date recency).
+    KR display uses the tvscreener date-recency loader; this market_valuation-backed
+    loader serves US (+ KR reports/PIT). high_52w/close are still emitted for proximity
+    context; NULL prerequisites → fail-closed excluded."""
     if session is None or market not in {"kr", "us"}:
         return None
 
