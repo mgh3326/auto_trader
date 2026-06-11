@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from app.services.crypto_news_relevance_service import score_crypto_news_article
+from app.services.market_news_noise import classify_title_noise, noise_reason
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,7 @@ _US_RULES: tuple[_SectionRule, ...] = (
         "Macro/Fed",
         (
             "fed",
+            "federal reserve",
             "fomc",
             "rate",
             "rates",
@@ -294,6 +298,27 @@ def _field(article: Any, name: str) -> Any:
     return getattr(article, name, None)
 
 
+@lru_cache(maxsize=2048)
+def _term_pattern(term: str) -> re.Pattern[str] | None:
+    """Word-boundary pattern for ASCII terms; None means plain substring.
+
+    ROB-502: bare substring matching put a Moneyist plumber story in Big Tech
+    because "ai" matched "again". ASCII terms get \\b boundaries; CJK terms
+    keep substring semantics (\\b is unreliable across Hangul runs and Korean
+    compounds legitimately embed terms, e.g. "반도체주").
+    """
+    if not term.isascii():
+        return None
+    return re.compile(r"\b" + re.escape(term) + r"\b", re.IGNORECASE)
+
+
+def _term_in(term: str, text: str) -> bool:
+    pattern = _term_pattern(term)
+    if pattern is None:
+        return term in text
+    return bool(pattern.search(text))
+
+
 def _article_text(article: Any) -> tuple[str, str]:
     title = str(_field(article, "title") or "")
     summary = str(_field(article, "summary") or "")
@@ -306,9 +331,9 @@ def _low_signal_us_noise_hit(article: Any) -> bool:
     if _field(article, "stock_symbol"):
         return False
     title, full_text = _article_text(article)
-    if not any(term in full_text for term in _US_LOW_SIGNAL_TERMS):
+    if not any(_term_in(term, full_text) for term in _US_LOW_SIGNAL_TERMS):
         return False
-    return not any(term in title for term in _US_HIGH_SIGNAL_TERMS)
+    return not any(_term_in(term, title) for term in _US_HIGH_SIGNAL_TERMS)
 
 
 def _low_market_relevance() -> BriefingRelevance:
@@ -327,17 +352,17 @@ def _score_rule(article: Any, rules: tuple[_SectionRule, ...]) -> BriefingReleva
     scored: list[tuple[int, _SectionRule, list[str]]] = []
 
     for rule in rules:
-        matched = [term for term in rule.terms if term in full_text]
+        matched = [term for term in rule.terms if _term_in(term, full_text)]
         if not matched:
             continue
         score = min(90, 20 + len(matched) * 12)
-        score += min(25, sum(10 for term in matched if term in title))
+        score += min(25, sum(10 for term in matched if _term_in(term, title)))
         if _field(article, "stock_symbol"):
             score += 8
         scored.append((min(100, score), rule, matched))
 
     if not scored:
-        noise_hit = any(term in full_text for term in _NOISE_TERMS)
+        noise_hit = any(_term_in(term, full_text) for term in _NOISE_TERMS)
         reason = "low_market_relevance" if noise_hit else "uncategorized_market_news"
         return BriefingRelevance(
             score=0,
@@ -429,6 +454,19 @@ def _section_order_for_market(market: str) -> list[str]:
 
 
 def _score_article(article: Any, market: str) -> BriefingRelevance:
+    # ROB-502 quality gate: noise-classified titles never reach section
+    # scoring, regardless of market. The reason carries the categories so
+    # callers see *why* an item was excluded instead of a silent drop.
+    noise = classify_title_noise(str(_field(article, "title") or ""))
+    if noise:
+        return BriefingRelevance(
+            score=0,
+            section_id=None,
+            section_title=None,
+            include_in_briefing=False,
+            matched_terms=[],
+            reason=noise_reason(noise),
+        )
     if market == "crypto":
         return _score_crypto(article)
     if market == "us" and _low_signal_us_noise_hit(article):

@@ -67,7 +67,8 @@ def test_format_us_news_groups_macro_big_tech_earnings_and_noise():
     section_ids = [section.section_id for section in briefing.sections]
     assert section_ids[:3] == ["macro_fed", "big_tech", "earnings"]
     assert [item.article.title for item in briefing.sections[0].items] == [macro.title]
-    assert briefing.excluded[0].relevance.reason == "low_market_relevance"
+    # ROB-502: the celebrity item is now caught by the explicit noise gate.
+    assert briefing.excluded[0].relevance.reason == "noise:lifestyle"
 
 
 @pytest.mark.unit
@@ -100,8 +101,12 @@ def test_format_us_news_excludes_personal_finance_and_lifestyle_rate_noise():
         savings_rate.title,
         mortgage_rate.title,
     }
+    # ROB-502: the noise gate now catches "mortgage rates ..." with an explicit
+    # noise reason; other low-signal items keep low_market_relevance.
     assert all(
-        item.relevance.reason == "low_market_relevance" for item in briefing.excluded
+        item.relevance.reason == "low_market_relevance"
+        or item.relevance.reason.startswith("noise:")
+        for item in briefing.excluded
     )
 
 
@@ -238,7 +243,9 @@ def test_format_crypto_news_reuses_crypto_relevance_and_sections():
         "security_defi",
     ]
     assert briefing.sections[0].items[0].article.title == etf.title
-    assert briefing.excluded[0].relevance.reason == "broad_tech_without_crypto_signal"
+    # ROB-502: the generic noise gate now classifies this before the crypto
+    # scorer's own broad_tech_without_crypto_signal reason.
+    assert briefing.excluded[0].relevance.reason == "noise:broad_tech"
 
 
 @pytest.mark.unit
@@ -299,7 +306,6 @@ async def test_market_news_briefing_filter_formats_us_sections_for_mcp():
     assert result["briefing_filter"] is True
     assert result["briefing_summary"]["included"] == 1
     assert result["briefing_sections"][0]["section_id"] == "macro_fed"
-    assert (
-        result["excluded_news"][0]["briefing_relevance"]["reason"]
-        == "low_market_relevance"
-    )
+    # ROB-502: the celebrity/lifestyle item is now caught by the noise gate
+    # (excluded_reason) before briefing relevance scoring.
+    assert result["excluded_news"][0]["excluded_reason"] == "noise:lifestyle"
