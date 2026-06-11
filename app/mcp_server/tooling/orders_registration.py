@@ -33,7 +33,65 @@ ORDER_TOOL_NAMES: set[str] = {
     "get_order_history",
     "kis_mock_reconciliation_run",
     "sell_ladder_fill_preview",
+    "buy_ladder_fill_preview",
 }
+
+
+def _ladder_fill_preview_response(
+    *,
+    side: str,
+    symbol: str,
+    anchor_price: float,
+    rungs: list[dict[str, Any]],
+    atr: float | None,
+    anchor_source: str | None,
+    anchor_as_of: str | None,
+) -> dict[str, Any]:
+    """Shared body for sell_ladder_fill_preview / buy_ladder_fill_preview."""
+    try:
+        parsed_rungs = [
+            LadderRung(
+                limit_price=float(rung["limit_price"]),
+                quantity=(
+                    float(rung["quantity"])
+                    if rung.get("quantity") is not None
+                    else None
+                ),
+            )
+            for rung in rungs
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "success": False,
+            "error": f"invalid rungs payload (need 'limit_price'): {exc!r}",
+            "expected": "[{'limit_price': float, 'quantity': float|null}, ...]",
+        }
+    warnings, fill_safety = evaluate_ladder_fill_safety(
+        side=side,
+        rungs=parsed_rungs,
+        anchor_price=anchor_price,
+        anchor_source=anchor_source,
+        atr=atr,
+    )
+    if fill_safety is None:
+        return {
+            "success": False,
+            "error": (
+                "nothing to analyze: anchor_price must be > 0 and at least "
+                "one rung needs limit_price > 0"
+            ),
+            "symbol": symbol,
+        }
+    result: dict[str, Any] = {
+        "success": True,
+        "symbol": symbol,
+        "read_only": True,
+        "warnings": warnings,
+        "fill_safety": fill_safety,
+    }
+    if anchor_as_of is not None:
+        result["anchor_as_of"] = anchor_as_of
+    return result
 
 
 def _kis_mock_config_error() -> dict[str, Any] | None:
@@ -266,7 +324,9 @@ def register_order_tools(mcp: FastMCP) -> None:
             "2026-06-09 incident: 8/8 all-above-market sell ladders filled "
             "nothing) and ladder_missing_near_market_anchor (no rung at or "
             "near the anchor), plus per-rung distance pct / ATR multiples and "
-            "a suggested anchor rung. Run this BEFORE submitting multi-rung "
+            "a suggested anchor rung. anchor_as_of (optional ISO timestamp "
+            "of the anchor quote) is echoed back so a later reviewer can "
+            "judge anchor staleness. Run this BEFORE submitting multi-rung "
             "sell ladders via place_order / kis_live_place_order."
         ),
     )
@@ -276,47 +336,59 @@ def register_order_tools(mcp: FastMCP) -> None:
         rungs: list[dict[str, Any]],
         atr: float | None = None,
         anchor_source: str | None = None,
+        anchor_as_of: str | None = None,
     ):
-        try:
-            parsed_rungs = [
-                LadderRung(
-                    limit_price=float(rung["limit_price"]),
-                    quantity=(
-                        float(rung["quantity"])
-                        if rung.get("quantity") is not None
-                        else None
-                    ),
-                )
-                for rung in rungs
-            ]
-        except (KeyError, TypeError, ValueError) as exc:
-            return {
-                "success": False,
-                "error": f"invalid rungs payload (need 'limit_price'): {exc!r}",
-                "expected": "[{'limit_price': float, 'quantity': float|null}, ...]",
-            }
-        warnings, fill_safety = evaluate_ladder_fill_safety(
-            rungs=parsed_rungs,
+        return _ladder_fill_preview_response(
+            side="sell",
+            symbol=symbol,
             anchor_price=anchor_price,
-            anchor_source=anchor_source,
+            rungs=rungs,
             atr=atr,
+            anchor_source=anchor_source,
+            anchor_as_of=anchor_as_of,
         )
-        if fill_safety is None:
-            return {
-                "success": False,
-                "error": (
-                    "nothing to analyze: anchor_price must be > 0 and at least "
-                    "one rung needs limit_price > 0"
-                ),
-                "symbol": symbol,
-            }
-        return {
-            "success": True,
-            "symbol": symbol,
-            "read_only": True,
-            "warnings": warnings,
-            "fill_safety": fill_safety,
-        }
+
+    @mcp.tool(
+        name="buy_ladder_fill_preview",
+        description=(
+            "[ROB-507] Read-only fill-safety analysis for a multi-rung BUY "
+            "limit ladder (mirror of sell_ladder_fill_preview). No broker "
+            "calls, no order mutation. Pass anchor_price (current price or "
+            "best ask from get_quote) and the FULL ladder as "
+            "rungs=[{'limit_price': 165.5, 'quantity': 10.0}, ...]; atr "
+            "optional (widens the near-market threshold to max(0.3% of "
+            "anchor, 0.3*ATR)). Returns warnings: ladder_all_below_market "
+            "(zero-fill tail risk in a rally — the mirror of the 2026-06-09 "
+            "all-above-market sell incident) and "
+            "ladder_missing_near_market_anchor (no rung at or near the "
+            "anchor), plus per-rung distance pct / ATR multiples and a "
+            "suggested anchor rung. anchor_as_of (optional ISO timestamp of "
+            "the anchor quote) is echoed back so a later reviewer can judge "
+            "anchor staleness (2026-06-10: 5+ stale anchors drifted 1-3% "
+            "between analysis and submission). Run this BEFORE submitting "
+            "multi-rung buy ladders via place_order / kis_live_place_order. "
+            "Note: a buy rung ABOVE the anchor is marketable and place_order "
+            "rejects it outright (buy limit > current is a hard error), so "
+            "the actionable risk here is the all-below zero-fill tail."
+        ),
+    )
+    async def buy_ladder_fill_preview(
+        symbol: str,
+        anchor_price: float,
+        rungs: list[dict[str, Any]],
+        atr: float | None = None,
+        anchor_source: str | None = None,
+        anchor_as_of: str | None = None,
+    ):
+        return _ladder_fill_preview_response(
+            side="buy",
+            symbol=symbol,
+            anchor_price=anchor_price,
+            rungs=rungs,
+            atr=atr,
+            anchor_source=anchor_source,
+            anchor_as_of=anchor_as_of,
+        )
 
     @mcp.tool(
         name="cancel_order",
