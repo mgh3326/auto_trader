@@ -282,13 +282,66 @@ async def test_consecutive_gainers_rows_carry_master_sector() -> None:
 
 
 class _FakeResolver:
-    def __init__(self, watched: set[tuple[str, str]]) -> None:
-        self._w = watched
+    def __init__(
+        self,
+        watched: set[tuple[str, str]] | None = None,
+        held: set[tuple[str, str]] | None = None,
+    ) -> None:
+        self._w = watched or set()
+        self._h = held or set()
         self.calls: list[tuple[str, str]] = []
 
     def relation(self, market: str, symbol: str) -> str:
         self.calls.append((market, symbol))
-        return "watchlist" if (market, symbol) in self._w else "none"
+        watched = (market, symbol) in self._w
+        held = (market, symbol) in self._h
+        if watched and held:
+            return "both"
+        if held:
+            return "held"
+        if watched:
+            return "watchlist"
+        return "none"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_marks_is_held_from_relation() -> None:
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        return_value={"results": _stub_screening_rows(), "warnings": []}
+    )
+    resolver = _FakeResolver(held={("kr", "005930")})
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+    )
+
+    assert resp.results[0].symbol == "005930"
+    assert resp.results[0].isHeld is True
+    assert resp.results[0].isWatched is False
+    assert resp.results[1].isHeld is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_exposes_numeric_market_cap_value() -> None:
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        return_value={"results": _stub_screening_rows(), "warnings": []}
+    )
+    resolver = _FakeResolver()
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+    )
+
+    assert resp.results[0].marketCapLabel == "478.0조원"
+    assert resp.results[0].marketCapValue == pytest.approx(478_000_000_000_000.0)
 
 
 @pytest.mark.unit

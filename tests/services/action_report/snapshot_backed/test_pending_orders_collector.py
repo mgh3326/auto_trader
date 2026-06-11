@@ -269,3 +269,46 @@ async def test_pending_orders_collector_does_not_call_broker_mutation_methods():
         attr = getattr(fake_kis, forbidden, None)
         if attr is not None:
             assert not attr.called, f"collector must not call {forbidden}"
+
+
+def test_normalize_kis_kr_order_adds_expected_day_expiry_from_placed_at() -> None:
+    from app.services.action_report.snapshot_backed.collectors.pending_orders import (
+        _normalize_kis_order,
+    )
+
+    row = {
+        "ord_no": "0011001100",
+        "pdno": "005930",
+        "sll_buy_dvsn_cd": "02",
+        "ord_unpr": "70000",
+        "ord_qty": "3",
+        "nccs_qty": "3",
+        "ord_dt": "20260611",
+        "ord_tmd": "093000",
+    }
+
+    out = _normalize_kis_order(row, market="kr")
+
+    assert out["placed_at"] == "2026-06-11T09:30:00+09:00"
+    assert out["expected_expiry"] == "2026-06-11T20:00:00+09:00"
+
+
+def test_normalize_kis_us_order_keeps_expected_expiry_unknown() -> None:
+    from app.services.action_report.snapshot_backed.collectors.pending_orders import (
+        _normalize_kis_order,
+    )
+
+    row = {
+        "odno": "US-1",
+        "pdno": "AAPL",
+        "sll_buy_dvsn_cd": "02",
+        "ord_unpr": "200",
+        "ord_qty": "1",
+        "nccs_qty": "1",
+        "ord_dt": "20260611",
+        "ord_tmd": "230000",
+    }
+
+    out = _normalize_kis_order(row, market="us")
+
+    assert out["expected_expiry"] is None

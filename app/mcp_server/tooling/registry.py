@@ -69,6 +69,9 @@ from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
 from app.mcp_server.tooling.news_registration import register_news_tools
+from app.mcp_server.tooling.operating_briefing_registration import (
+    register_operating_briefing_tools,
+)
 from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
     register_kis_mock_order_tools,
@@ -127,6 +130,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         include_snapshot_generator=snapshot_report_generator_enabled,
     )
     register_session_context_tools(mcp)
+    register_operating_briefing_tools(mcp)
     if snapshot_report_generator_enabled:
         register_investment_hermes_tools(mcp)
     # ROB-447: register_market_report_tools removed — its get_market_reports /

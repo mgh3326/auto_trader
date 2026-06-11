@@ -213,6 +213,9 @@ class MaxActionPayload(BaseModel):
     notional: Decimal | None = None
     limit_price: Decimal | None = None
     account_mode: AccountMode
+    amount_krw: Decimal | None = None
+    limit_price_hint: Decimal | None = None
+    ladder_level: str | None = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -325,7 +328,7 @@ class IngestReportItem(BaseModel):
     target_price: ReportItemPriceLevelPayload | None = None
     linked_order_ids: list[LinkedOrderRefPayload] = Field(default_factory=list)
     watch_condition: WatchConditionPayload | None = None
-    trigger_checklist: list[Any] = Field(default_factory=list)
+    trigger_checklist: list[str] = Field(default_factory=list)
     max_action: dict[str, Any] = Field(default_factory=dict)
     valid_until: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -670,12 +673,9 @@ class ActivateWatchRequest(BaseModel):
     item_uuid: UUID
     actor: str
     idempotency_key: str | None = None
-    # ROB-393 — operation='review' watches are created without a condition
-    # (schema + DB CHECK both exempt them). Allow supplying the condition /
-    # expiry at activation time so such a watch can still be armed. Auto
-    # derivation of the condition is out of scope (ROB-337 seam).
     watch_condition: WatchConditionPayload | None = None
     valid_until: datetime | None = None
+    attach_recommendation: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1049,6 +1049,31 @@ class PreviousReportContextResponse(BaseModel):
     pending_orders: list[dict[str, Any]] | None = None
 
 
+class ActiveWatchesListResponse(BaseModel):
+    """``list_active_watches`` MCP return shape."""
+
+    success: Literal[True] = True
+    count: int
+    as_of: datetime
+    filters: dict[str, Any]
+    active_watches: list[InvestmentWatchAlertResponse]
+
+
+class OperatingBriefingResponse(BaseModel):
+    """``get_operating_briefing`` MCP return shape."""
+
+    success: Literal[True] = True
+    market: MarketLiteral
+    account_scope: AccountScopeLiteral
+    as_of: datetime
+    staleness: dict[str, Any]
+    holdings: dict[str, Any]
+    pending_orders: dict[str, Any]
+    active_watches: dict[str, Any]
+    latest_report: dict[str, Any] | None
+    session_context: dict[str, Any]
+
+
 class InvestmentReportCreateResponse(BaseModel):
     """``investment_report_create`` MCP return shape."""
 
@@ -1071,6 +1096,8 @@ class InvestmentReportActivateWatchResponse(BaseModel):
     success: bool = True
     alert: InvestmentWatchAlertResponse
     item: InvestmentReportItemResponse
+    recommendation_attached: bool | None = None
+    recommendation_attach_error: str | None = None
 
 
 # ---------------------------------------------------------------------------

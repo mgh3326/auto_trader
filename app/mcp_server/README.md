@@ -129,14 +129,20 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
-- `screen_stocks_snapshot(preset, market="kr", filters=None, limit=40, offset=0)`
-  - Snapshot-backed candidate discovery over persisted screener data.
-  - Returned rows include `analysisContext` when enrichment is available:
-    `consensus` (buy/hold/sell counts, target prices, upside), `rsi14`,
-    `dataState`, and row-level `warnings`.
-  - `analystLabel` is filled from consensus when the data passes sanity checks;
-    otherwise it remains `"-"` or `"컨센 확인필요"`.
-  - Enrichment is applied only to the returned page after `limit`/`offset`.
+- `screen_stocks_snapshot(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
+  - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
+  - Returns symbols that matched the preset(s) from the persisted daily snapshots.
+  - Supports multi-preset sweeps with symbol deduplication and `matchedPresets` tagging.
+  - `exclude_watched/held` (bool): hide symbols already in watchlist/portfolio (KIS live).
+  - `exclude_symbols`: explicit symbols to remove after dedupe.
+  - `min_analyst_count` (int): quality filter — filters enriched results by consensus total coverage.
+  - `min_analyst_buy_count` (int): compatibility filter — filters enriched results by consensus buy count.
+  - `min_market_cap` (float): size filter using raw numeric `marketCapValue` (`KRW` for KR, `USD` for US/crypto).
+  - `min/max_market_cap_eok` (float): KR compatibility size filter — unit is 1억원.
+  - `sort="matched_presets_desc"`: ranks intersections (stocks in multiple presets) first.
+  - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
+  - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.
+  - Results are capped (default 40) and paginated. Check `pagination` in payload.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
@@ -657,6 +663,11 @@ Unknown top-level item keys are rejected with `error: "invalid_items"`. Put call
 
 Order linkage note: `linked_order_ids` is report-side reference metadata. For new live orders, pass the report item's `item_uuid` as `report_item_uuid` to the order tool so ROB-473 ledger audit linkage is populated.
 
+Watch execution context fields:
+- `trigger_checklist`: `string[]`; copied into watch alert notifications so the operator can re-check the trigger.
+- `max_action`: structured watch execution-plan JSON. Supported keys include `side`, `quantity` or `notional`, optional `amount_krw`, optional `limit_price`, optional `limit_price_hint`, optional `ladder_level`, and optional `account_mode`.
+- Do not send `planned_action` in item input. `planned_action` is derived from `max_action` when Hermes watch payloads are built.
+
 ### `manage_watch_alerts` — removed (ROB-265)
 
 The legacy Redis-backed `manage_watch_alerts` MCP tool was removed by
@@ -670,6 +681,39 @@ identity snapshot, and emits Hermes review-trigger notifications).
 Watches are review triggers, not automatic order instructions —
 delivery state is auditable per event row (`delivery_status` /
 `delivery_reason` / `delivered_at` / `delivery_attempts`).
+
+### `list_active_watches`
+
+Read-only active watch discovery for `review.investment_watch_alerts`.
+
+Parameters:
+- `market`: optional `kr`, `us`, or `crypto`.
+- `symbol`: optional exact symbol filter.
+- `include_expired_status_rows`: default `false`. When `false`, only returns `status='active'` rows whose `valid_until` is still in the future. When `true`, includes rows that remain `status='active'` even if `valid_until` has passed, for scanner-lag diagnostics.
+- `limit`: default `100`, clamped to `1..250`.
+
+Response includes `active_watches[]` with `symbol`, `operator`, `threshold`, `valid_until`, `rationale`, `source_report_uuid`, and `source_item_uuid`.
+
+### `get_operating_briefing`
+
+Read-only one-call bootstrap for a new operating session.
+
+Parameters:
+- `market`: required `kr`, `us`, or `crypto`.
+- `account_scope`: optional. Defaults are `kr/us -> kis_live`, `crypto -> upbit_live`.
+- `session_context_limit`: default `10`, clamped by the session context service.
+- `include_current_price`: default `true`.
+
+Response sections:
+- `holdings`: summary and top movers derived from `get_holdings`.
+- `pending_orders`: pending-order snapshot with `expected_expiry` when factually derivable.
+- `active_watches`: same active watch rows as `list_active_watches`.
+- `latest_report`: latest report summary and item status counts, or `null`.
+- `session_context`: recent ROB-516 handoff entries.
+- `staleness`: per-section `as_of`, freshness, and unavailable reason where available.
+
+The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
+
 
 ### `screen_stocks` spec
 Parameters:

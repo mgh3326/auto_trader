@@ -401,3 +401,40 @@ def test_update_draft_report_request_accepts_summary_and_snapshots() -> None:
     assert req.summary == "fresh intraday summary"
     assert req.market_snapshot == {"kospi": {"last": 2860.12}}
     assert req.reason == "market moved"
+
+
+def test_trigger_checklist_requires_strings() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IngestReportItem(
+            **_base_item_kwargs(
+                client_item_key="watch-checklist",
+                item_kind="watch",
+                intent="buy_review",
+                watch_condition={
+                    "metric": "price",
+                    "operator": "below",
+                    "threshold": "5",
+                },
+                valid_until="2026-12-31T00:00:00Z",
+                trigger_checklist=["quote ok", {"not": "a string"}],
+            )
+        )
+    assert "trigger_checklist" in str(exc_info.value)
+
+
+def test_max_action_accepts_planned_action_fields() -> None:
+    payload = MaxActionPayload(
+        side="buy",
+        quantity="1",
+        amount_krw="980000",
+        limit_price="975000",
+        limit_price_hint="975000",
+        ladder_level="1",
+        account_mode="kis_mock",
+    )
+
+    dumped = payload.model_dump()
+    assert dumped["quantity"] == Decimal("1")
+    assert dumped["amount_krw"] == Decimal("980000")
+    assert dumped["limit_price_hint"] == Decimal("975000")
+    assert dumped["ladder_level"] == "1"

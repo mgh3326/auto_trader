@@ -37,7 +37,9 @@ from app.services.hermes_client import (
     ReviewTriggerPayload,
     build_invest_links,
     build_operator_action_guidance,
+    planned_action_from_max_action,
     price_guidance_from_watch_recommendation,
+    trigger_checklist_from_raw,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_recommendation_policy import (
@@ -268,6 +270,10 @@ class WatchValidityReviewService:
             ),
             price_guidance=price_guidance_from_watch_recommendation(
                 stored_recommendation
+            ),
+            planned_action=planned_action_from_max_action(dict(alert.max_action or {})),
+            trigger_checklist=trigger_checklist_from_raw(
+                list(alert.trigger_checklist or [])
             ),
         )
         try:

@@ -382,6 +382,104 @@ async def test_activate_watch_rejects_condition_override(
 
 
 @pytest.mark.asyncio
+async def test_list_active_watches_filters_market_symbol_and_expiry(
+    session: AsyncSession,
+) -> None:
+    import uuid
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.investment_reports import InvestmentWatchAlert
+    from app.services.investment_reports.repository import InvestmentReportsRepository
+
+    now = datetime(2026, 6, 11, 3, 0, tzinfo=UTC)
+    active_future = InvestmentWatchAlert(
+        idempotency_key="rob517:active:005930",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="above",
+        threshold=100000,
+        threshold_key="price:above:100000",
+        intent="trend_recovery_review",
+        action_mode="notify_only",
+        rationale="keep active",
+        trigger_checklist=[],
+        max_action={},
+        valid_until=now + timedelta(days=1),
+        status="active",
+    )
+    active_expired = InvestmentWatchAlert(
+        idempotency_key="rob517:expired:005930",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="below",
+        threshold=90000,
+        threshold_key="price:below:90000",
+        intent="risk_review",
+        action_mode="notify_only",
+        rationale="scanner lag row",
+        trigger_checklist=[],
+        max_action={},
+        valid_until=now - timedelta(minutes=1),
+        status="active",
+    )
+    inactive = InvestmentWatchAlert(
+        idempotency_key="rob517:triggered:005930",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="above",
+        threshold=110000,
+        threshold_key="price:above:110000",
+        intent="trend_recovery_review",
+        action_mode="notify_only",
+        rationale="already triggered",
+        trigger_checklist=[],
+        max_action={},
+        valid_until=now + timedelta(days=1),
+        status="triggered",
+    )
+
+    async with AsyncSessionLocal() as db:
+        db.add_all([active_future, active_expired, inactive])
+        await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        repo = InvestmentReportsRepository(db)
+        actionable = await repo.list_active_alerts(
+            market="kr",
+            symbol="005930",
+            valid_at=now,
+            include_expired_status_rows=False,
+            limit=100,
+        )
+        diagnostic = await repo.list_active_alerts(
+            market="kr",
+            symbol="005930",
+            valid_at=now,
+            include_expired_status_rows=True,
+            limit=100,
+        )
+
+    assert [a.idempotency_key for a in actionable] == ["rob517:active:005930"]
+    assert {a.idempotency_key for a in diagnostic} == {
+        "rob517:active:005930",
+        "rob517:expired:005930",
+    }
+
+
+@pytest.mark.asyncio
 async def test_context_get_aggregates_across_prior_reports(
     session: AsyncSession,
 ) -> None:
@@ -552,6 +650,58 @@ async def test_context_get_surfaces_pending_orders_unavailable_as_null(
     )
     assert ctx["success"] is True
     assert ctx["pending_orders"] is None
+
+
+@pytest.mark.asyncio
+async def test_context_get_pending_orders_shape_unchanged_after_shared_helper(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+) -> None:
+    import datetime as dt
+    from unittest.mock import AsyncMock
+
+    from app.services.investment_snapshots.collectors import (
+        SnapshotCollectorRegistry,
+        SnapshotCollectResult,
+    )
+
+    fake_orders = [{"symbol": "005930", "market": "kr", "expected_expiry": None}]
+    fake_result = SnapshotCollectResult(
+        snapshot_kind="pending_orders",
+        market="kr",
+        account_scope="kis_live",
+        source_kind="auto_trader_mcp",
+        payload_json={"pending_orders": fake_orders, "count": 1},
+        as_of=dt.datetime.now(tz=dt.UTC),
+        freshness_status="fresh",
+    )
+    fake_collector = AsyncMock()
+    fake_collector.snapshot_kind = "pending_orders"
+    fake_collector.collect = AsyncMock(return_value=[fake_result])
+
+    def _fake_registry(_db: object) -> SnapshotCollectorRegistry:
+        reg = SnapshotCollectorRegistry()
+        reg.register(fake_collector)
+        return reg
+
+    monkeypatch.setattr(
+        "app.services.action_report.snapshot_backed.collectors.registry."
+        "production_collector_registry",
+        _fake_registry,
+    )
+
+    await investment_report_create_impl(
+        items=[_action_item_dict()],
+        **_create_kwargs(market="kr", kst_date="2026-06-11"),
+    )
+
+    ctx = await investment_report_context_get_impl(
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    assert ctx["success"] is True
+    assert ctx["pending_orders"] == fake_orders
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +887,14 @@ async def test_watch_recommend_dry_run_does_not_persist(
     assert resp["committed"] is False
     assert resp["recommendation"]["data_state"] == "ok"
     assert resp["recommendation"]["policy_version"] == "v1"
+
+
+@pytest.mark.asyncio
+async def test_watch_recommend_unsupported_market_returns_structured_error(
+    session: AsyncSession,
+) -> None:
+    resp = await investment_watch_recommend_impl(symbol="005930", market="jp")
+    assert resp == {"success": False, "error": "unsupported_market", "market": "jp"}
 
 
 @pytest.mark.asyncio
@@ -1058,3 +1216,83 @@ async def test_update_impl_rejects_empty_update(session: AsyncSession) -> None:
 
     assert out["success"] is False
     assert out["error"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_activate_watch_attach_recommendation_persists(
+    session: AsyncSession, _stub_market_data
+) -> None:
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    response = await investment_report_activate_watch_impl(
+        item_uuid=watch_uuid,
+        actor="operator",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 70000},
+        valid_until=future_datetime().isoformat(),
+        attach_recommendation=True,
+    )
+
+    assert response["success"] is True
+    assert response["recommendation_attached"] is True
+    assert response["recommendation_attach_error"] is None
+
+    bundle_post = await investment_report_get_impl(created["report"]["report_uuid"])
+    rec = bundle_post["items"][0]["watch_recommendation"]
+    assert rec is not None
+    assert rec["data_state"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_activate_watch_attach_recommendation_fails_open(
+    session: AsyncSession, monkeypatch
+) -> None:
+    from app.mcp_server.tooling import investment_reports_handlers as h
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("market data unavailable")
+
+    monkeypatch.setattr(h.market_data_service, "get_quote", _boom)
+
+    item = dict(_review_watch_item_dict())
+    item["evidence_snapshot"] = {"action_verdict": "watch_only"}
+    created = await investment_report_create_impl(items=[item], **_create_kwargs())
+    bundle = await investment_report_get_impl(created["report"]["report_uuid"])
+    watch_uuid = bundle["items"][0]["item_uuid"]
+    await investment_report_decide_item_impl(
+        item_uuid=watch_uuid, decision="approve", actor="operator"
+    )
+
+    response = await investment_report_activate_watch_impl(
+        item_uuid=watch_uuid,
+        actor="operator",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 70000},
+        valid_until=future_datetime().isoformat(),
+        attach_recommendation=True,
+    )
+
+    assert response["success"] is True
+    assert response["alert"]["source_item_uuid"] == watch_uuid
+    assert response["recommendation_attached"] is False
+    assert "market data unavailable" in response["recommendation_attach_error"]
+
+
+def test_create_description_mentions_watch_execution_plan_contract() -> None:
+    from app.mcp_server.tooling.investment_reports_handlers import (
+        ADD_ITEMS_DESCRIPTION,
+        CREATE_DESCRIPTION,
+    )
+
+    combined = CREATE_DESCRIPTION + " " + ADD_ITEMS_DESCRIPTION
+    assert "trigger_checklist" in combined
+    assert "string[]" in combined
+    assert "max_action" in combined
+    assert "amount_krw" in combined
+    assert "limit_price_hint" in combined
+    assert "ladder_level" in combined

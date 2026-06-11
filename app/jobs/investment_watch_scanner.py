@@ -49,7 +49,9 @@ from app.services.hermes_client import (
     ReviewTriggerPayload,
     build_invest_links,
     build_operator_action_guidance,
+    planned_action_from_max_action,
     price_guidance_from_watch_recommendation,
+    trigger_checklist_from_raw,
 )
 from app.services.investment_reports.idempotency import watch_event_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
@@ -259,6 +261,8 @@ class InvestmentWatchScanner:
         alert_threshold_high = alert.threshold_high
         alert_intent = alert.intent
         alert_action_mode = alert.action_mode
+        alert_max_action = dict(alert.max_action or {})
+        alert_trigger_checklist = list(alert.trigger_checklist or [])
 
         outcome = _OUTCOME_BY_ACTION_MODE.get(alert_action_mode, "notified")
         correlation_id = uuid4().hex
@@ -370,6 +374,8 @@ class InvestmentWatchScanner:
                 action_mode=event.action_mode, outcome=event.outcome
             ),
             price_guidance=price_guidance,
+            planned_action=planned_action_from_max_action(alert_max_action),
+            trigger_checklist=trigger_checklist_from_raw(alert_trigger_checklist),
         )
         return {
             "event": event,
