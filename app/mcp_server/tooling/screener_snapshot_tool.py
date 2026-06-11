@@ -13,7 +13,7 @@ return their default snapshot results (and say so), expanding as more presets ge
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -149,6 +149,7 @@ async def screen_stocks_snapshot_impl(
     at the tool boundary to keep responses inside the MCP token budget. The full
     match count and a next_offset cursor are reported under ``pagination``.
     """
+    from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
     from app.services.invest_view_model.screener_filters import (
         ScreenerFilterCondition,
         ScreenerFilterError,
@@ -156,7 +157,6 @@ async def screen_stocks_snapshot_impl(
     )
     from app.services.invest_view_model.screener_service import build_screener_results
     from app.services.screener_service import ScreenerService
-    from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
 
     preset_ids = _normalize_preset_ids(preset)
     if not preset_ids:
@@ -170,7 +170,9 @@ async def screen_stocks_snapshot_impl(
         try:
             # MCP always runs live (is_mock=False)
             pos, _w = await _collect_kis_positions("equity_kr", is_mock=False)
-            held_symbols = {str(p.get("symbol")).upper() for p in pos if p.get("symbol")}
+            held_symbols = {
+                str(p.get("symbol")).upper() for p in pos if p.get("symbol")
+            }
             holdings_meta["held_count"] = len(held_symbols)
         except Exception as exc:  # noqa: BLE001
             holdings_meta["status"] = "error"
@@ -244,16 +246,12 @@ async def screen_stocks_snapshot_impl(
     if min_market_cap_eok is not None:
         min_val = float(min_market_cap_eok) * 100_000_000
         merged_results = [
-            r
-            for r in merged_results
-            if (r.get("marketCapValue") or 0) >= min_val
+            r for r in merged_results if (r.get("marketCapValue") or 0) >= min_val
         ]
     if max_market_cap_eok is not None:
         max_val = float(max_market_cap_eok) * 100_000_000
         merged_results = [
-            r
-            for r in merged_results
-            if (r.get("marketCapValue") or 0) <= max_val
+            r for r in merged_results if (r.get("marketCapValue") or 0) <= max_val
         ]
 
     # Intersection sort
@@ -313,12 +311,8 @@ async def screen_stocks_snapshot_impl(
         all_results = [
             r
             for r in all_results
-            if (
-                r.get("analysisContext", {})
-                .get("consensus", {})
-                .get("buyCount")
-                 or 0
-            ) >= min_buy
+            if (r.get("analysisContext", {}).get("consensus", {}).get("buyCount") or 0)
+            >= min_buy
         ]
         total_available = len(all_results)
         page = all_results[eff_offset : eff_offset + eff_limit]

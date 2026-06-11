@@ -263,23 +263,31 @@ def register_analysis_tools(
     @mcp.tool(
         name="screen_stocks_snapshot",
         description=(
-            "Snapshot-backed screener: run an /invest/screener preset over its base "
-            "snapshot and adjust/add AND-filters on top (filters-over-snapshot, ROB-439). "
-            "Unlike screen_stocks (generic tvscreener/KIS path), this serves the persisted "
-            "screener snapshot data. filters=[{field, operator(gte|lte|eq), value}] tune the "
-            "preset's thresholds; the response includes availableFilters (the adjustable "
-            "catalog for that preset's snapshot) and appliedFilters. Currently threaded for "
-            "consecutive_gainers (e.g. loosen consecutive_up_days to 3 or tighten to 10); "
-            "other presets return default snapshot results and say so. Read-only. "
-            "Results are capped (limit default 40, max 200) and paginated via "
-            "limit/offset; pagination.total_available + pagination.next_offset let you "
-            "page through without exceeding the response token budget."
+            "Snapshot-backed screener: run one or more /invest/screener presets over "
+            "their base snapshots (Discovery Workflow, ROB-515). "
+            "Unlike screen_stocks (generic tvscreener/KIS path), this serves persisted "
+            "screener snapshot data. preset can be a single ID or a comma-separated "
+            "list (e.g. 'consecutive_gainers,double_buy') for multi-preset sweeps with "
+            "symbol deduplication and matchedPresets tagging. "
+            "filters=[{field, operator(gte|lte|eq), value}] tune the preset's "
+            "thresholds (threaded for consecutive_gainers and crypto). "
+            "exclude_watched/held (bool) hide symbols already in watchlist or portfolio. "
+            "min_analyst_buy_count (int) and min/max_market_cap_eok (float, unit 1억원) "
+            "apply discovery-quality filters across the result set. "
+            "sort='matched_presets_desc' ranks multi-preset intersections first. "
+            "Read-only. Results are capped (default 40) and paginated via limit/offset."
         ),
     )
     async def screen_stocks_snapshot(
         preset: str,
         market: Literal["kr", "us", "crypto"] = "kr",
         filters: list[dict[str, Any]] | None = None,
+        exclude_watched: bool = False,
+        exclude_held: bool = False,
+        min_analyst_buy_count: int | None = None,
+        min_market_cap_eok: float | None = None,
+        max_market_cap_eok: float | None = None,
+        sort: Literal["matched_presets_desc"] | None = None,
         limit: int = 40,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -287,6 +295,12 @@ def register_analysis_tools(
             preset=preset,
             market=market,
             filters=filters,
+            exclude_watched=exclude_watched,
+            exclude_held=exclude_held,
+            min_analyst_buy_count=min_analyst_buy_count,
+            min_market_cap_eok=min_market_cap_eok,
+            max_market_cap_eok=max_market_cap_eok,
+            sort=sort,
             limit=limit,
             offset=offset,
         )

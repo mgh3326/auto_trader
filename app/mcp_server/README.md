@@ -129,14 +129,17 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
-- `screen_stocks_snapshot(preset, market="kr", filters=None, limit=40, offset=0)`
-  - Snapshot-backed candidate discovery over persisted screener data.
-  - Returned rows include `analysisContext` when enrichment is available:
-    `consensus` (buy/hold/sell counts, target prices, upside), `rsi14`,
-    `dataState`, and row-level `warnings`.
-  - `analystLabel` is filled from consensus when the data passes sanity checks;
-    otherwise it remains `"-"` or `"컨센 확인필요"`.
-  - Enrichment is applied only to the returned page after `limit`/`offset`.
+- `screen_stocks_snapshot(preset, market="kr", filters=None, exclude_watched=false, exclude_held=false, min_analyst_buy_count=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
+  - Snapshot-backed discovery workflow. `preset` can be a single ID or comma-separated list.
+  - Returns symbols that matched the preset(s) from the persisted daily snapshots.
+  - Supports multi-preset sweeps with symbol deduplication and `matchedPresets` tagging.
+  - `exclude_watched/held` (bool): hide symbols already in watchlist/portfolio (KIS live).
+  - `min_analyst_buy_count` (int): quality filter — filters enriched results by consensus buy count.
+  - `min/max_market_cap_eok` (float): size filter — unit is 1억원 (KRW).
+  - `sort="matched_presets_desc"`: ranks intersections (stocks in multiple presets) first.
+  - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
+  - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.
+  - Results are capped (default 40) and paginated. Check `pagination` in payload.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
