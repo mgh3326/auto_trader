@@ -143,9 +143,11 @@ CREATE_DESCRIPTION = (
     "operation='review'. "
     "Watch execution context: trigger_checklist is string[] and is copied into "
     "watch alert notifications. max_action is the structured execution-plan JSON; "
-    "supported keys include side, quantity or notional, amount_krw, limit_price, "
-    "limit_price_hint, ladder_level, and account_mode. planned_action in Hermes "
-    "payloads is derived from max_action; do not send planned_action as an item key. "
+    "account_mode is required when max_action is present; required keys are side "
+    "and exactly one of quantity or notional. "
+    "Optional keys include amount_krw, limit_price, limit_price_hint, and "
+    "ladder_level. planned_action in Hermes payloads is derived from max_action; "
+    "do not send planned_action as an item key. "
     "target_kind (asset|index|fx, default 'asset') is a SEPARATE optional field "
     "— it is NOT item_kind. "
     "decision_bucket (optional) must be one of: new_buy_candidate, open_action, "
@@ -178,7 +180,8 @@ ADD_ITEMS_DESCRIPTION = (
     "duplicate client_item_key rows are returned as existing items and are not "
     "rewritten. No broker / order / watch mutation. For watch items, trigger_checklist "
     "string[] and max_action execution-plan keys follow the same contract as "
-    "investment_report_create."
+    "investment_report_create: account_mode is required when max_action is present; "
+    "max_action also requires side and exactly one of quantity or notional."
 )
 
 UPDATE_DESCRIPTION = (
@@ -365,8 +368,9 @@ def _validate_report_items(
                 "DECISION_BUCKETS vocabulary. target_kind is a SEPARATE optional "
                 "field (asset|index|fx, default 'asset') — it is NOT item_kind."
                 " trigger_checklist must be string[]; watch execution plans belong in "
-                "max_action (side, quantity/notional, amount_krw, limit_price, "
-                "limit_price_hint, ladder_level, account_mode), not in planned_action."
+                "max_action (required: side, account_mode, exactly one of "
+                "quantity/notional; optional: amount_krw, limit_price, "
+                "limit_price_hint, ladder_level), not in planned_action."
             ),
         }
     return validated_items, None

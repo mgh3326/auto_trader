@@ -195,3 +195,12 @@ def test_create_description_documents_trade_plan_and_unknown_key_policy():
     assert "metadata" in desc
     assert "item_evidence_lite" in desc
     assert "evidence[]" in desc
+
+
+def test_create_description_documents_required_max_action_account_mode():
+    combined = h.CREATE_DESCRIPTION + " " + h.ADD_ITEMS_DESCRIPTION
+    assert "account_mode is required" in combined
+    assert "quantity or notional" in combined
+    assert "trigger_checklist" in combined
+    assert "planned_action" in combined
+

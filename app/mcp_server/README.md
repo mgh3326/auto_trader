@@ -665,7 +665,7 @@ Order linkage note: `linked_order_ids` is report-side reference metadata. For ne
 
 Watch execution context fields:
 - `trigger_checklist`: `string[]`; copied into watch alert notifications so the operator can re-check the trigger.
-- `max_action`: structured watch execution-plan JSON. Supported keys include `side`, `quantity` or `notional`, optional `amount_krw`, optional `limit_price`, optional `limit_price_hint`, optional `ladder_level`, and optional `account_mode`.
+- `max_action`: structured watch execution-plan JSON. `account_mode` is required when `max_action` is present; it also requires `side` and exactly one of `quantity` or `notional`. Optional keys include `amount_krw`, `limit_price`, `limit_price_hint`, and `ladder_level`.
 - Do not send `planned_action` in item input. `planned_action` is derived from `max_action` when Hermes watch payloads are built.
 
 ### `manage_watch_alerts` — removed (ROB-265)
