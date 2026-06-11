@@ -652,6 +652,58 @@ async def test_context_get_surfaces_pending_orders_unavailable_as_null(
     assert ctx["pending_orders"] is None
 
 
+@pytest.mark.asyncio
+async def test_context_get_pending_orders_shape_unchanged_after_shared_helper(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+) -> None:
+    import datetime as dt
+    from unittest.mock import AsyncMock
+
+    from app.services.investment_snapshots.collectors import (
+        SnapshotCollectorRegistry,
+        SnapshotCollectResult,
+    )
+
+    fake_orders = [{"symbol": "005930", "market": "kr", "expected_expiry": None}]
+    fake_result = SnapshotCollectResult(
+        snapshot_kind="pending_orders",
+        market="kr",
+        account_scope="kis_live",
+        source_kind="auto_trader_mcp",
+        payload_json={"pending_orders": fake_orders, "count": 1},
+        as_of=dt.datetime.now(tz=dt.UTC),
+        freshness_status="fresh",
+    )
+    fake_collector = AsyncMock()
+    fake_collector.snapshot_kind = "pending_orders"
+    fake_collector.collect = AsyncMock(return_value=[fake_result])
+
+    def _fake_registry(_db: object) -> SnapshotCollectorRegistry:
+        reg = SnapshotCollectorRegistry()
+        reg.register(fake_collector)
+        return reg
+
+    monkeypatch.setattr(
+        "app.services.action_report.snapshot_backed.collectors.registry."
+        "production_collector_registry",
+        _fake_registry,
+    )
+
+    await investment_report_create_impl(
+        items=[_action_item_dict()],
+        **_create_kwargs(market="kr", kst_date="2026-06-11"),
+    )
+
+    ctx = await investment_report_context_get_impl(
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    assert ctx["success"] is True
+    assert ctx["pending_orders"] == fake_orders
+
+
 # ---------------------------------------------------------------------------
 # ROB-318 — generate_from_bundle must forward user_id so the kis_live
 # portfolio collector is invoked instead of staying fail-closed
