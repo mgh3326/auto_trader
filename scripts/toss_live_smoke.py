@@ -133,7 +133,11 @@ async def run_confirm(
         )
         _print_event(step, result)
         order_id = result.get("order_id")
-        if result.get("success") and isinstance(order_id, str) and order_id not in opened_order_ids:
+        if (
+            result.get("success")
+            and isinstance(order_id, str)
+            and order_id not in opened_order_ids
+        ):
             opened_order_ids.append(order_id)
         return result
 
@@ -237,9 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not (args.preflight or args.order_test or args.confirm):
-        print(
-            "Toss live smoke disabled: pass --preflight, --order-test, or --confirm"
-        )
+        print("Toss live smoke disabled: pass --preflight, --order-test, or --confirm")
         return 0
 
     if args.preflight:

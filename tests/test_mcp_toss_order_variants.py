@@ -1825,7 +1825,10 @@ async def test_private_place_impl_accepts_client_order_id_override(monkeypatch):
     )
 
     assert result["success"] is True
-    assert mock_client.placed_payloads[0]["clientOrderId"] == "abc123def456abc123def456abc123de"
+    assert (
+        mock_client.placed_payloads[0]["clientOrderId"]
+        == "abc123def456abc123def456abc123de"
+    )
     assert recorded["client_order_id"] == "abc123def456abc123def456abc123de"
 
 
@@ -1870,4 +1873,3 @@ async def test_private_place_impl_rejects_unsafe_client_order_id_override(monkey
     assert result["success"] is False
     assert "Unsafe client order id rejected" in result["error"]
     assert not mock_client.placed_payloads
-

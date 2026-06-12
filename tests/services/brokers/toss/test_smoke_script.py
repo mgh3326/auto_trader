@@ -118,7 +118,9 @@ def test_confirm_disabled_without_mutation_gate(monkeypatch, capsys) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_confirm_places_retries_cancels_and_reconciles(monkeypatch, capsys) -> None:
+async def test_run_confirm_places_retries_cancels_and_reconciles(
+    monkeypatch, capsys
+) -> None:
     place_calls: list[dict[str, object]] = []
     cancel_calls: list[str] = []
     reconcile_calls: list[dict[str, object]] = []
@@ -165,11 +167,26 @@ async def test_run_confirm_places_retries_cancels_and_reconciles(monkeypatch, ca
 
     assert code == 0
     assert len(place_calls) == 2
-    assert place_calls[0]["client_order_id_override"] == place_calls[1]["client_order_id_override"]
+    assert (
+        place_calls[0]["client_order_id_override"]
+        == place_calls[1]["client_order_id_override"]
+    )
     assert cancel_calls == ["ord-1"]
     assert reconcile_calls == [
-        {"order_id": "ord-1", "symbol": "005930", "market": "kr", "dry_run": True, "limit": 10},
-        {"order_id": "ord-1", "symbol": "005930", "market": "kr", "dry_run": False, "limit": 10},
+        {
+            "order_id": "ord-1",
+            "symbol": "005930",
+            "market": "kr",
+            "dry_run": True,
+            "limit": 10,
+        },
+        {
+            "order_id": "ord-1",
+            "symbol": "005930",
+            "market": "kr",
+            "dry_run": False,
+            "limit": 10,
+        },
     ]
     output = capsys.readouterr().out
     assert "client_secret" not in output.lower()
@@ -179,7 +196,9 @@ async def test_run_confirm_places_retries_cancels_and_reconciles(monkeypatch, ca
 
 
 @pytest.mark.asyncio
-async def test_run_confirm_cancels_duplicate_order_if_idempotency_fails(monkeypatch) -> None:
+async def test_run_confirm_cancels_duplicate_order_if_idempotency_fails(
+    monkeypatch,
+) -> None:
     order_ids = iter(["ord-1", "ord-2"])
     cancel_calls: list[str] = []
 
@@ -216,7 +235,9 @@ async def test_run_confirm_cancels_duplicate_order_if_idempotency_fails(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_run_confirm_cancels_original_when_idempotency_retry_raises(monkeypatch) -> None:
+async def test_run_confirm_cancels_original_when_idempotency_retry_raises(
+    monkeypatch,
+) -> None:
     calls = 0
     cancel_calls: list[str] = []
 
@@ -254,5 +275,3 @@ async def test_run_confirm_cancels_original_when_idempotency_retry_raises(monkey
 
     assert code == 2
     assert cancel_calls == ["ord-1"]
-
-

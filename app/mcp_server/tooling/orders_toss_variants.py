@@ -398,7 +398,6 @@ def _client_order_id_error(
     return None
 
 
-
 async def toss_preview_order(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -712,7 +711,6 @@ async def toss_place_order(
         account_type=account_type,
         client_order_id_override=None,
     )
-
 
 
 async def toss_modify_order(
