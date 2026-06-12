@@ -196,3 +196,25 @@ async def test_cache_uses_fixed_ttl_for_open_er_api(monkeypatch) -> None:
 
     assert third is not first
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_scalar_helpers_return_mid_rate_default(monkeypatch) -> None:
+    async def fake_details() -> mod.UsdKrwExchangeRateQuote:
+        return mod.UsdKrwExchangeRateQuote(
+            rate=1522.2,
+            mid_rate=1522.05,
+            source="toss",
+            valid_until=datetime(2026, 6, 12, 0, 31, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(mod, "_fetch_usd_krw_rate_details", fake_details)
+
+    rate = await mod.get_usd_krw_rate()
+    quote = await mod.get_usd_krw_quote()
+    details = await mod.get_usd_krw_rate_details()
+
+    assert rate == pytest.approx(1522.05)
+    assert quote == pytest.approx(1522.05)
+    assert details.rate == pytest.approx(1522.2)
+    assert details.mid_rate == pytest.approx(1522.05)
