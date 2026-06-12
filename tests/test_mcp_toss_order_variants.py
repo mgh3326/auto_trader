@@ -26,7 +26,7 @@ def _enable_toss_live_order_mutations_for_existing_tests(monkeypatch):
     monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
 
 
-def test_all_seven_toss_tools_register():
+def test_all_eight_toss_tools_register():
     mcp = DummyMCP()
     register_toss_live_order_tools(mcp)
     assert set(mcp.tools.keys()) == TOSS_LIVE_ORDER_TOOL_NAMES
@@ -62,6 +62,11 @@ def test_toss_tool_descriptions_document_live_gates():
     assert "new_price and new_quantity" in modify_desc
     assert "US" in modify_desc
     assert "rejects new_quantity" in modify_desc
+
+    reconcile_desc = mcp.descriptions["toss_reconcile_orders"]
+    assert "Reconcile Toss Securities live KR/US orders" in reconcile_desc
+    assert "dry_run=True" in reconcile_desc
+    assert "delta-idempotent" in reconcile_desc
 
 
 @pytest.mark.asyncio

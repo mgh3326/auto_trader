@@ -41,6 +41,7 @@ TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "toss_get_order_history",
     "toss_get_positions",
     "toss_get_orderable_cash",
+    "toss_reconcile_orders",
 }
 
 
@@ -934,6 +935,28 @@ async def toss_get_orderable_cash(
         return _toss_error_response(exc, base_response)
 
 
+async def toss_reconcile_orders(
+    symbol: str | None = None,
+    order_id: str | None = None,
+    market: Literal["kr", "us"] | None = None,
+    dry_run: bool = True,
+    limit: int = 100,
+    account_mode: str | None = None,
+    account_type: str | None = None,
+) -> dict[str, Any]:
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
+    from app.mcp_server.tooling.toss_live_ledger import toss_reconcile_orders_impl
+
+    return await toss_reconcile_orders_impl(
+        symbol=symbol,
+        order_id=order_id,
+        market=market,
+        dry_run=dry_run,
+        limit=limit,
+    )
+
+
 def register_toss_live_order_tools(mcp: FastMCP) -> None:
     mcp.tool(
         name="toss_preview_order",
@@ -1008,3 +1031,13 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "default-disabled by Toss API config."
         ),
     )(toss_get_orderable_cash)
+    mcp.tool(
+        name="toss_reconcile_orders",
+        description=(
+            "Reconcile Toss Securities live KR/US orders from the local "
+            "review.toss_live_order_ledger against single-order broker evidence "
+            "from GET /orders/{orderId}. Books fill/journal/realized_pnl only "
+            "from confirmed execution evidence and is delta-idempotent. "
+            "dry_run=True by default."
+        ),
+    )(toss_reconcile_orders)
