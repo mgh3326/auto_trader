@@ -71,6 +71,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Crypto `1m` / `5m` / `15m` / `30m` rows expose `timestamp`, `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`, `trade_amount` and do not expose raw `datetime`
 - US OHLCV behavior:
   - US `day`/`week`/`month` uses Yahoo Finance (`app.services.brokers.yahoo.client.fetch_ohlcv`)
+  - US daily uses Yahoo first and Toss as a `period="day"` fallback; US `week` and `month` remain Yahoo-only
   - US intraday (`1m`/`5m`/`15m`/`30m`/`1h`) uses KIS via DB-first reader (`read_us_intraday_candles`) with ET-naive timestamps
   - US intraday rows include `session` field (`PRE_MARKET`, `REGULAR`, `POST_MARKET`)
   - US intraday `end_date="YYYY-MM-DD"` is interpreted as ET `20:00:00` for that market date; timestamp inputs use the exact provided instant
@@ -78,7 +79,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR `day` keeps the existing Redis-backed `kis_ohlcv_cache` path when `end_date` is omitted
   - KR `1m` reads DB-first from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
   - KR `5m/15m/30m/1h` read DB-first from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
-  - KR intraday (`1m/5m/15m/30m/1h`) overlays the most recent 30 minutes from `public.kr_candles_1m` + KIS minute API to cover the unchanged 10-minute sync cadence
+  - KR intraday (`1m/5m/15m/30m/1h`) uses Toss candles first when `TOSS_API_ENABLED` is configured, then falls back to the existing DB/KIS reader
+  - Toss only provides `1m`; `5m/15m/30m/1h` are aggregated from Toss `1m` using the same bucket rules as the KIS path
+  - On Toss fallback, KR intraday overlays the most recent 30 minutes from `public.kr_candles_1m` + KIS minute API to cover the unchanged 10-minute sync cadence
   - KR intraday includes the current partial bucket when minute data is available
   - KIS minute venues are merged with strict dedup to prevent double-counting (API overwrites DB per minute+venue)
   - KIS minute API call plan (KST):
