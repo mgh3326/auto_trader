@@ -266,6 +266,20 @@ def _toss_error_response(exc: Exception, base: dict[str, Any]) -> dict[str, Any]
     }
 
 
+_SAFE_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _order_id_error(order_id: str, base: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = (order_id or "").strip()
+    if not candidate or not _SAFE_ORDER_ID_RE.fullmatch(candidate):
+        return {
+            "success": False,
+            **base,
+            "error": f"Unsafe order id rejected: {order_id!r}",
+        }
+    return None
+
+
 async def toss_preview_order(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -411,7 +425,98 @@ async def toss_modify_order(
 ) -> dict[str, Any]:
     _config_error()
     _check_mode_arg(account_mode, account_type)
-    return {"success": True}
+
+    base_response = {
+        "source": "toss",
+        "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+        "dry_run": dry_run,
+        "mutation_sent": not dry_run,
+    }
+
+    if (id_guard := _order_id_error(order_id, base_response)) is not None:
+        return id_guard
+
+    async def execute_modify(client: TossReadClient):
+        try:
+            orig_order = await client.get_order(order_id)
+        except Exception as exc:
+            return _toss_error_response(exc, base_response)
+
+        symbol = orig_order.symbol
+        side = orig_order.side.lower()
+        orig_order_type = orig_order.order_type.lower()
+
+        mkt = _infer_market(symbol, market)
+        new_price_dec = _decimal_string(new_price, "new_price") if new_price is not None else None
+        new_quantity_dec = _decimal_string(new_quantity, "new_quantity") if new_quantity is not None else None
+
+        if mkt == "kr":
+            if new_price_dec is None or new_quantity_dec is None:
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": "Toss KR order modify requires both new_price and new_quantity.",
+                }
+        else:  # us
+            if new_quantity_dec is not None:
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": "Toss US order modify rejects new_quantity; only price modification is supported.",
+                }
+            if new_price_dec is None:
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": "Toss US order modify requires new_price.",
+                }
+
+        payload: dict[str, Any] = {
+            "orderType": orig_order_type.upper(),
+        }
+        if new_price_dec is not None:
+            payload["price"] = _stringify_decimal(new_price_dec)
+        if new_quantity_dec is not None:
+            payload["quantity"] = _stringify_decimal(new_quantity_dec)
+        if confirm_high_value_order:
+            payload["confirmHighValueOrder"] = True
+
+        if side == "sell" and orig_order_type == "limit":
+            if (sell_guard := await _sell_loss_guard(client, symbol, "limit", new_price_dec, base_response)) is not None:
+                return sell_guard
+
+        if (high_value_guard := _high_value_error(mkt, new_quantity_dec, new_price_dec, None, confirm_high_value_order, base_response)) is not None:
+            return high_value_guard
+
+        if dry_run:
+            return {
+                "success": True,
+                **base_response,
+                "original_order_id": order_id,
+                "payload_preview": payload,
+            }
+
+        if not confirm:
+            return {
+                "success": False,
+                **base_response,
+                "error": "toss_modify_order requires confirm=True when dry_run=False.",
+            }
+
+        try:
+            res = await client.modify_order(order_id, payload)
+            return {
+                "success": True,
+                **base_response,
+                "original_order_id": order_id,
+                "replacement_order_id": res.order_id,
+                "operation_semantics": "Toss modify returns a newly issued orderId; it is not the original order id.",
+            }
+        except Exception as exc:
+            return _toss_error_response(exc, base_response)
+
+    async with _client_context() as client:
+        return await execute_modify(client)
 
 
 async def toss_cancel_order(
@@ -423,7 +528,43 @@ async def toss_cancel_order(
 ) -> dict[str, Any]:
     _config_error()
     _check_mode_arg(account_mode, account_type)
-    return {"success": True}
+
+    base_response = {
+        "source": "toss",
+        "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+        "dry_run": dry_run,
+        "mutation_sent": not dry_run,
+    }
+
+    if (id_guard := _order_id_error(order_id, base_response)) is not None:
+        return id_guard
+
+    if dry_run:
+        return {
+            "success": True,
+            **base_response,
+            "original_order_id": order_id,
+        }
+
+    if not confirm:
+        return {
+            "success": False,
+            **base_response,
+            "error": "toss_cancel_order requires confirm=True when dry_run=False.",
+        }
+
+    try:
+        async with _client_context() as client:
+            res = await client.cancel_order(order_id)
+            return {
+                "success": True,
+                **base_response,
+                "original_order_id": order_id,
+                "replacement_order_id": res.order_id,
+                "operation_semantics": "Toss cancel returns a newly issued orderId; it is not the original order id.",
+            }
+    except Exception as exc:
+        return _toss_error_response(exc, base_response)
 
 
 async def toss_get_order_history(
