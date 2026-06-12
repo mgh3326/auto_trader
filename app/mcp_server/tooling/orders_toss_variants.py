@@ -14,16 +14,12 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from app.core.config import settings, validate_toss_api_config
+from app.core.config import validate_toss_api_config
 from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
 )
-from app.services.brokers.toss import (
-    TossApiDisabled,
-    TossMissingCredentials,
-    TossReadClient,
-)
+from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError
 
 if TYPE_CHECKING:
@@ -40,23 +36,52 @@ TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
 }
 
 
-def _config_error() -> None:
-    if not settings.toss_api_enabled:
-        raise TossApiDisabled("Toss API is disabled.")
+def _config_error() -> dict[str, Any] | None:
     missing = validate_toss_api_config()
     if missing:
-        raise TossMissingCredentials(
-            f"Toss API is missing required configuration: {', '.join(missing)}"
-        )
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "error": (
+                "Toss live account is disabled or missing required configuration: "
+                + ", ".join(missing)
+            ),
+        }
+    return None
 
 
-def _check_mode_arg(account_mode: str | None, account_type: str | None) -> None:
-    routing = normalize_account_mode(account_mode, account_type)
+def _check_mode_arg(
+    account_mode: str | None, account_type: str | None
+) -> dict[str, Any] | None:
+    if account_mode is None and account_type is None:
+        return None
+    try:
+        routing = normalize_account_mode(account_mode, account_type)
+    except ValueError as exc:
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "error": str(exc),
+        }
     if routing.account_mode != ACCOUNT_MODE_TOSS_LIVE:
-        raise ValueError(
-            f"Invalid account_mode resolving to {routing.account_mode!r}. "
-            f"Toss live tools only support account_mode='{ACCOUNT_MODE_TOSS_LIVE}'."
-        )
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "error": (
+                f"Invalid account_mode resolving to {routing.account_mode!r}. "
+                f"Toss live tools only support account_mode='{ACCOUNT_MODE_TOSS_LIVE}'."
+            ),
+        }
+    return None
+
+
+def _entry_guard(
+    account_mode: str | None, account_type: str | None
+) -> dict[str, Any] | None:
+    return _config_error() or _check_mode_arg(account_mode, account_type)
 
 
 @asynccontextmanager
@@ -98,6 +123,18 @@ def _stringify_decimal(value: Decimal | None) -> str | None:
         return None
     normalized = value.normalize()
     return f"{normalized:f}"
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return _stringify_decimal(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(inner) for inner in value]
+    if isinstance(value, tuple):
+        return [_json_safe(inner) for inner in value]
+    return value
 
 
 def _new_client_order_id() -> str:
@@ -294,8 +331,8 @@ async def toss_preview_order(
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
-    _config_error()
-    _check_mode_arg(account_mode, account_type)
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
 
     mkt = _infer_market(symbol, market)
     quantity_dec = (
@@ -346,8 +383,8 @@ async def toss_place_order(
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
-    _config_error()
-    _check_mode_arg(account_mode, account_type)
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
 
     mkt = _infer_market(symbol, market)
     quantity_dec = (
@@ -380,7 +417,7 @@ async def toss_place_order(
         "source": "toss",
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "dry_run": dry_run,
-        "mutation_sent": not dry_run,
+        "mutation_sent": False,
     }
 
     if dry_run:
@@ -433,11 +470,12 @@ async def toss_place_order(
             return {
                 "success": True,
                 **base_response,
+                "mutation_sent": True,
                 "order_id": res.order_id,
                 "client_order_id": res.client_order_id,
             }
         except Exception as exc:
-            return _toss_error_response(exc, base_response)
+            return _toss_error_response(exc, {**base_response, "mutation_sent": True})
 
     async with _client_context() as client:
         return await execute_order(client)
@@ -454,18 +492,25 @@ async def toss_modify_order(
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
-    _config_error()
-    _check_mode_arg(account_mode, account_type)
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
 
     base_response = {
         "source": "toss",
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "dry_run": dry_run,
-        "mutation_sent": not dry_run,
+        "mutation_sent": False,
     }
 
     if (id_guard := _order_id_error(order_id, base_response)) is not None:
         return id_guard
+
+    if not dry_run and not confirm:
+        return {
+            "success": False,
+            **base_response,
+            "error": "toss_modify_order requires confirm=True when dry_run=False.",
+        }
 
     async def execute_modify(client: TossReadClient):
         try:
@@ -546,24 +591,18 @@ async def toss_modify_order(
                 "payload_preview": payload,
             }
 
-        if not confirm:
-            return {
-                "success": False,
-                **base_response,
-                "error": "toss_modify_order requires confirm=True when dry_run=False.",
-            }
-
         try:
             res = await client.modify_order(order_id, payload)
             return {
                 "success": True,
                 **base_response,
+                "mutation_sent": True,
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
                 "operation_semantics": "Toss modify returns a newly issued orderId; it is not the original order id.",
             }
         except Exception as exc:
-            return _toss_error_response(exc, base_response)
+            return _toss_error_response(exc, {**base_response, "mutation_sent": True})
 
     async with _client_context() as client:
         return await execute_modify(client)
@@ -576,14 +615,14 @@ async def toss_cancel_order(
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
-    _config_error()
-    _check_mode_arg(account_mode, account_type)
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
 
     base_response = {
         "source": "toss",
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "dry_run": dry_run,
-        "mutation_sent": not dry_run,
+        "mutation_sent": False,
     }
 
     if (id_guard := _order_id_error(order_id, base_response)) is not None:
@@ -609,12 +648,13 @@ async def toss_cancel_order(
             return {
                 "success": True,
                 **base_response,
+                "mutation_sent": True,
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
                 "operation_semantics": "Toss cancel returns a newly issued orderId; it is not the original order id.",
             }
     except Exception as exc:
-        return _toss_error_response(exc, base_response)
+        return _toss_error_response(exc, {**base_response, "mutation_sent": True})
 
 
 async def toss_get_order_history(
@@ -627,8 +667,8 @@ async def toss_get_order_history(
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
-    _config_error()
-    _check_mode_arg(account_mode, account_type)
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
 
     base_response = {
         "source": "toss",
@@ -669,7 +709,7 @@ async def toss_get_order_history(
                         "currency": o.currency,
                         "ordered_at": o.ordered_at,
                         "canceled_at": o.canceled_at,
-                        "execution": o.execution,
+                        "execution": _json_safe(o.execution),
                     }
                 )
             return {
@@ -688,8 +728,8 @@ async def toss_get_positions(
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
-    _config_error()
-    _check_mode_arg(account_mode, account_type)
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
 
     base_response = {
         "source": "toss",
@@ -718,17 +758,17 @@ async def toss_get_positions(
                         )
                         if item.average_purchase_price is not None
                         else None,
-                        "market_value": item.market_value,
-                        "profit_loss": item.profit_loss,
-                        "daily_profit_loss": item.daily_profit_loss,
-                        "cost": item.cost,
+                        "market_value": _json_safe(item.market_value),
+                        "profit_loss": _json_safe(item.profit_loss),
+                        "daily_profit_loss": _json_safe(item.daily_profit_loss),
+                        "cost": _json_safe(item.cost),
                     }
                 )
             return {
                 "success": True,
                 **base_response,
                 "items": items_list,
-                "overview": res.raw_overview,
+                "overview": _json_safe(res.raw_overview),
             }
     except Exception as exc:
         return _toss_error_response(exc, base_response)
@@ -739,8 +779,8 @@ async def toss_get_orderable_cash(
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
-    _config_error()
-    _check_mode_arg(account_mode, account_type)
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
 
     base_response = {
         "source": "toss",
@@ -763,28 +803,69 @@ async def toss_get_orderable_cash(
 def register_toss_live_order_tools(mcp: FastMCP) -> None:
     mcp.tool(
         name="toss_preview_order",
-        description="Preview a live order on Toss Securities.",
+        description=(
+            "Preview a Toss Securities live KR/US order without sending. "
+            "Hard-pinned to account_mode='toss_live'; matching account_mode is "
+            "optional and any other value is rejected. market='kr'|'us' is "
+            "accepted or inferred from symbol. This is read-only but still "
+            "requires TOSS_API_ENABLED and Toss credentials."
+        ),
     )(toss_preview_order)
     mcp.tool(
-        name="toss_place_order", description="Place a live order on Toss Securities."
+        name="toss_place_order",
+        description=(
+            "Place a Toss Securities live KR/US order. Hard-pinned to "
+            "account_mode='toss_live'; market='kr'|'us' is accepted or inferred. "
+            "dry_run=True by default and sends no mutation. Real submission "
+            "requires dry_run=False and confirm=True. 100M KRW+ computable KR "
+            "orders require operator-supplied confirm_high_value_order=True; it "
+            "is never inferred. Before POST the tool blocks opposite pending "
+            "orders for the symbol and applies the live sell loss guard "
+            "(sell price/current market proxy must be >= avg_purchase_price*1.01)."
+        ),
     )(toss_place_order)
     mcp.tool(
         name="toss_modify_order",
-        description="Modify a pending live order on Toss Securities.",
+        description=(
+            "Modify a pending Toss Securities live order. Hard-pinned to "
+            "account_mode='toss_live'. dry_run=True by default; real submission "
+            "requires dry_run=False and confirm=True. KR modify requires both "
+            "new_price and new_quantity. US modify requires new_price and "
+            "rejects new_quantity. Sell reprices are blocked below "
+            "avg_purchase_price*1.01. Toss returns a newly issued replacement "
+            "orderId for successful modify."
+        ),
     )(toss_modify_order)
     mcp.tool(
         name="toss_cancel_order",
-        description="Cancel a pending live order on Toss Securities.",
+        description=(
+            "Cancel a pending Toss Securities live order. Hard-pinned to "
+            "account_mode='toss_live'. dry_run=True by default; real submission "
+            "requires dry_run=False and confirm=True. Toss returns a newly issued "
+            "replacement orderId for successful cancel."
+        ),
     )(toss_cancel_order)
     mcp.tool(
         name="toss_get_order_history",
-        description="Retrieve live order history from Toss Securities.",
+        description=(
+            "Retrieve Toss Securities live order history for account_mode='toss_live'. "
+            "Supports status='open'|'closed'; closed history supports cursor/limit "
+            "pagination."
+        ),
     )(toss_get_order_history)
     mcp.tool(
         name="toss_get_positions",
-        description="Retrieve current holding positions from Toss Securities.",
+        description=(
+            "Retrieve Toss Securities live KR/US positions for "
+            "account_mode='toss_live'. Read-only and default-disabled by Toss "
+            "API config."
+        ),
     )(toss_get_positions)
     mcp.tool(
         name="toss_get_orderable_cash",
-        description="Retrieve available cash/buying power from Toss Securities.",
+        description=(
+            "Retrieve Toss Securities live orderable cash/buying power for "
+            "account_mode='toss_live' in currency='KRW'|'USD'. Read-only and "
+            "default-disabled by Toss API config."
+        ),
     )(toss_get_orderable_cash)

@@ -14,7 +14,6 @@ from app.mcp_server.tooling.orders_toss_variants import (
     toss_modify_order,
     toss_place_order,
 )
-from app.services.brokers.toss import TossApiDisabled
 from tests._mcp_tooling_support import DummyMCP
 
 
@@ -24,26 +23,55 @@ def test_all_seven_toss_tools_register():
     assert set(mcp.tools.keys()) == TOSS_LIVE_ORDER_TOOL_NAMES
 
 
+def test_toss_tool_descriptions_document_live_gates():
+    class RecordingMCP:
+        def __init__(self) -> None:
+            self.descriptions: dict[str, str] = {}
+
+        def tool(self, *, name: str, description: str = ""):
+            self.descriptions[name] = description
+
+            def decorator(func):
+                return func
+
+            return decorator
+
+    mcp = RecordingMCP()
+    register_toss_live_order_tools(mcp)  # type: ignore[arg-type]
+
+    place_desc = mcp.descriptions["toss_place_order"]
+    assert "account_mode='toss_live'" in place_desc
+    assert "market='kr'|'us'" in place_desc
+    assert "dry_run=True" in place_desc
+    assert "confirm=True" in place_desc
+    assert "confirm_high_value_order=True" in place_desc
+    assert "opposite pending" in place_desc
+
+    modify_desc = mcp.descriptions["toss_modify_order"]
+    assert "KR" in modify_desc
+    assert "new_price and new_quantity" in modify_desc
+    assert "US" in modify_desc
+    assert "rejects new_quantity" in modify_desc
+
+
 @pytest.mark.asyncio
 async def test_place_order_fails_closed_when_toss_disabled(monkeypatch):
-    # Mock validate_toss_api_config to return missing credentials (or simulator of disabled)
-    # Actually, we want to mock it to fail when toss is disabled.
-    # We will test validate_toss_api_config returning a missing flag or custom config mocking.
-
-    # We can check how toss_api_enabled is set in settings.
-    # Let's say settings.toss_api_enabled is False.
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "toss_api_enabled", False)
 
-    with pytest.raises(TossApiDisabled):
-        await toss_place_order(
-            symbol="AAPL",
-            side="buy",
-            quantity="10",
-            price="150.0",
-            account_mode="toss_live",
-        )
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="10",
+        price="150.0",
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert result["account_mode"] == "toss_live"
+    assert result["source"] == "toss"
+    assert "TOSS_API_ENABLED" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -54,14 +82,17 @@ async def test_toss_tools_reject_wrong_account_mode(monkeypatch):
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
-    with pytest.raises(ValueError, match="Toss live tools only support account_mode"):
-        await toss_place_order(
-            symbol="AAPL",
-            side="buy",
-            quantity="10",
-            price="150.0",
-            account_mode="kis_live",
-        )
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="10",
+        price="150.0",
+        account_mode="kis_live",
+    )
+
+    assert result["success"] is False
+    assert result["account_mode"] == "toss_live"
+    assert "only support account_mode='toss_live'" in result["error"]
 
 
 class MockTossClient:
@@ -70,6 +101,7 @@ class MockTossClient:
         self.holdings_list = []
         self.orders_list = []
         self.prices_list = []
+        self.get_order_calls = 0
 
         if monkeypatch:
             monkeypatch.setattr(
@@ -121,6 +153,7 @@ class MockTossClient:
     async def get_order(self, order_id):
         from types import SimpleNamespace
 
+        self.get_order_calls += 1
         for o in self.orders_list:
             if o.get("order_id") == order_id:
                 return SimpleNamespace(**o)
@@ -168,6 +201,28 @@ async def test_place_order_defaults_to_dry_run_and_does_not_call_broker(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_toss_pinned_tools_accept_omitted_account_mode(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+
+    res = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="10",
+        price="150.0",
+    )
+
+    assert res["success"] is True
+    assert res["account_mode"] == "toss_live"
+    assert not mock_client.placed_payloads
+
+
+@pytest.mark.asyncio
 async def test_place_order_requires_confirm_when_dry_run_false(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
@@ -189,6 +244,7 @@ async def test_place_order_requires_confirm_when_dry_run_false(monkeypatch):
 
     assert res["success"] is False
     assert "confirm=True" in res["error"]
+    assert res["mutation_sent"] is False
     assert not mock_client.placed_payloads
 
 
@@ -500,6 +556,9 @@ async def test_modify_requires_confirm_when_dry_run_false(monkeypatch):
     )
     assert res["success"] is False
     assert "confirm=True" in res["error"]
+    assert res["mutation_sent"] is False
+    assert mock_client.get_order_calls == 0
+    assert not mock_client.placed_payloads
 
 
 @pytest.mark.asyncio
@@ -520,6 +579,7 @@ async def test_cancel_requires_confirm_when_dry_run_false(monkeypatch):
     )
     assert res["success"] is False
     assert "confirm=True" in res["error"]
+    assert res["mutation_sent"] is False
 
 
 @pytest.mark.asyncio
@@ -612,6 +672,46 @@ async def test_get_order_history_uses_closed_cursor_pagination_args(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_get_order_history_stringifies_decimal_execution_fields(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "ord-1",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "status": "CLOSED",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {
+                "filledQuantity": Decimal("2.5"),
+                "averageFilledPrice": Decimal("151.25"),
+                "filledAmount": Decimal("378.125"),
+            },
+        }
+    ]
+
+    res = await toss_get_order_history(account_mode="toss_live")
+
+    assert res["success"] is True
+    execution = res["orders"][0]["execution"]
+    assert execution["filledQuantity"] == "2.5"
+    assert execution["averageFilledPrice"] == "151.25"
+    assert execution["filledAmount"] == "378.125"
+
+
+@pytest.mark.asyncio
 async def test_get_positions_shapes_holdings(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
@@ -629,8 +729,8 @@ async def test_get_positions_shapes_holdings(monkeypatch):
             "name": "Apple",
             "market_country": "US",
             "currency": "USD",
-            "market_value": {},
-            "profit_loss": {},
+            "market_value": {"amount": Decimal("1627.5")},
+            "profit_loss": {"amount": Decimal("52.5")},
             "daily_profit_loss": {},
             "cost": {},
         }
@@ -646,6 +746,8 @@ async def test_get_positions_shapes_holdings(monkeypatch):
     assert item["average_purchase_price"] == "150"
     assert item["last_price"] == "155"
     assert item["currency"] == "USD"
+    assert item["market_value"]["amount"] == "1627.5"
+    assert item["profit_loss"]["amount"] == "52.5"
 
 
 @pytest.mark.asyncio
