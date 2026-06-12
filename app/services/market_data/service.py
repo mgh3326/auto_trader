@@ -24,6 +24,10 @@ from app.services.domain_errors import (
     ValidationError,
 )
 from app.services.kr_hourly_candles_read_service import read_kr_intraday_candles
+from app.services.market_data.toss_ohlcv import (
+    fetch_daily_toss_frame,
+    fetch_kr_intraday_toss_frame,
+)
 from app.services.market_data.constants import (
     KR_INTRADAY_OHLCV_PERIODS,
     US_INTRADAY_OHLCV_PERIODS,
@@ -621,18 +625,30 @@ async def get_ohlcv(
                     source="kis",
                     period=resolved_period,
                 )
-            # day/week/month use Yahoo Finance
-            frame = await fetch_yahoo_ohlcv(
-                ticker=resolved_symbol,
-                days=min(count, 200),
-                period=resolved_period,
-                end_date=end,
-            )
+            # day/week/month use Yahoo Finance with Toss day-only fallback
+            capped_count = min(count, 200)
+            try:
+                frame = await fetch_yahoo_ohlcv(
+                    ticker=resolved_symbol,
+                    days=capped_count,
+                    period=resolved_period,
+                    end_date=end,
+                )
+                source = "yahoo"
+            except Exception:
+                if resolved_period != "day":
+                    raise
+                frame = await fetch_daily_toss_frame(
+                    symbol=resolved_symbol,
+                    count=capped_count,
+                    end_date=end,
+                )
+                source = "toss"
             return _to_candle_rows(
                 frame,
                 symbol=resolved_symbol,
                 market=resolved_market,
-                source="yahoo",
+                source=source,
                 period=resolved_period,
             )
 
@@ -655,12 +671,34 @@ async def get_ohlcv(
             )
 
         if resolved_period in KR_INTRADAY_OHLCV_PERIODS:
-            frame = await read_kr_intraday_candles(
-                symbol=resolved_symbol,
-                period=resolved_period,
-                count=min(count, 200),
-                end_date=end,
-            )
+            capped_count = min(count, 200)
+            try:
+                frame = await fetch_kr_intraday_toss_frame(
+                    symbol=resolved_symbol,
+                    period=resolved_period,
+                    count=capped_count,
+                    end_date=end,
+                )
+                return _to_candle_rows(
+                    frame,
+                    symbol=resolved_symbol,
+                    market=resolved_market,
+                    source="toss",
+                    period=resolved_period,
+                )
+            except Exception as toss_exc:
+                logger.info(
+                    "Toss KR intraday OHLCV fallback to KIS symbol=%s period=%s error=%s",
+                    safe_log_value(resolved_symbol),
+                    resolved_period,
+                    toss_exc,
+                )
+                frame = await read_kr_intraday_candles(
+                    symbol=resolved_symbol,
+                    period=resolved_period,
+                    count=capped_count,
+                    end_date=end,
+                )
         else:
             frame = await kis.inquire_minute_chart(
                 code=resolved_symbol,
