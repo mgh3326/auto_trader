@@ -554,6 +554,13 @@ async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
     monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
+    # Toss is also tried as fallback for day period; mock it to also fail so the
+    # original Yahoo error propagates (week period skips Toss fallback entirely)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "fetch_daily_toss_frame",
+        AsyncMock(side_effect=RuntimeError("yahoo timeout")),
+    )
 
     result = await tools["get_ohlcv"]("AAPL", count=5)
 
@@ -563,6 +570,7 @@ async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
         "symbol": "AAPL",
         "instrument_type": "equity_us",
     }
+
 
 
 # ============================================================================
@@ -1154,3 +1162,56 @@ async def test_get_ohlcv_market_us_rejects_crypto_prefix():
         ValueError, match="us equity symbols must not include KRW-/USDT- prefix"
     ):
         await tools["get_ohlcv"]("KRW-BTC", market="us")
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_intraday_uses_toss_first_in_mcp(monkeypatch):
+    tools = build_tools()
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            }
+        ]
+    )
+    toss_mock = AsyncMock(return_value=df)
+    monkeypatch.setattr(market_data_quotes, "fetch_kr_intraday_toss_frame", toss_mock)
+
+    result = await tools["get_ohlcv"]("005930", market="kr", period="1m", count=5)
+
+    assert result["source"] == "toss"
+    assert result["rows"][0]["close"] == 105.0
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_day_uses_toss_fallback_in_mcp(monkeypatch):
+    tools = build_tools()
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_ohlcv",
+        AsyncMock(side_effect=RuntimeError("yahoo down")),
+    )
+    toss_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 13:00:00"),
+                "open": 293.72,
+                "high": 297.0,
+                "low": 289.59,
+                "close": 295.63,
+                "volume": 32125204.0,
+                "value": 9497000000.0,
+            }
+        ]
+    )
+    monkeypatch.setattr(market_data_quotes, "fetch_daily_toss_frame", AsyncMock(return_value=toss_df))
+
+    result = await tools["get_ohlcv"]("AAPL", market="us", period="day", count=5)
+
+    assert result["source"] == "toss"
+    assert result["rows"][0]["close"] == 295.63
