@@ -8,11 +8,20 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 
-from tests.market_events_test_helpers import clean_non_tradingview_market_events
+from tests.market_events_test_helpers import (
+    clean_non_tradingview_market_events,
+    market_events_test_lock,
+)
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_market_events(db_session):
+async def _market_events_lock():
+    async with market_events_test_lock():
+        yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_market_events(db_session, _market_events_lock):
     await clean_non_tradingview_market_events(db_session)
     yield
 

@@ -10,9 +10,17 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
+from tests.market_events_test_helpers import market_events_test_lock
+
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_market_events(db_session):
+async def _market_events_lock():
+    async with market_events_test_lock():
+        yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_market_events(db_session, _market_events_lock):
     from app.models.market_events import (
         MarketEvent,
         MarketEventIngestionPartition,

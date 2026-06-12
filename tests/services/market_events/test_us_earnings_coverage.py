@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 
 from app.services.market_events.earnings_decision_time import (
     label_earnings_decision_time,
@@ -19,6 +20,17 @@ from app.services.market_events.us_earnings_coverage import (
     MIN_WINDOW_COVERAGE,
     aggregate_coverage,
 )
+from tests.market_events_test_helpers import market_events_test_lock
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _market_events_lock(request):
+    if request.node.get_closest_marker("integration") is None:
+        yield
+        return
+    async with market_events_test_lock():
+        yield
+
 
 # A clean mid-month trading day; the -5..+20 calendar window has no edge holidays.
 _EVENT_DATE = date(2025, 7, 15)
