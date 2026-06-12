@@ -8,6 +8,7 @@ from typing import Any
 ACCOUNT_MODE_DB_SIMULATED = "db_simulated"
 ACCOUNT_MODE_KIS_MOCK = "kis_mock"
 ACCOUNT_MODE_KIS_LIVE = "kis_live"
+ACCOUNT_MODE_TOSS_LIVE = "toss_live"
 
 _ACCOUNT_MODE_ALIASES = {
     "db_simulated": (ACCOUNT_MODE_DB_SIMULATED, False),
@@ -18,6 +19,7 @@ _ACCOUNT_MODE_ALIASES = {
     "kis_live": (ACCOUNT_MODE_KIS_LIVE, False),
     "real": (ACCOUNT_MODE_KIS_LIVE, False),
     "live": (ACCOUNT_MODE_KIS_LIVE, True),
+    "toss_live": (ACCOUNT_MODE_TOSS_LIVE, False),
 }
 
 _ACCOUNT_TYPE_ALIASES = {
@@ -26,6 +28,7 @@ _ACCOUNT_TYPE_ALIASES = {
     "live": (ACCOUNT_MODE_KIS_LIVE, True),
     "kis_live": (ACCOUNT_MODE_KIS_LIVE, False),
     "kis_mock": (ACCOUNT_MODE_KIS_MOCK, False),
+    "toss_live": (ACCOUNT_MODE_TOSS_LIVE, False),
 }
 
 
@@ -46,6 +49,10 @@ class AccountRouting:
     @property
     def is_kis_live(self) -> bool:
         return self.account_mode == ACCOUNT_MODE_KIS_LIVE
+
+    @property
+    def is_toss_live(self) -> bool:
+        return self.account_mode == ACCOUNT_MODE_TOSS_LIVE
 
     def response_metadata(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {"account_mode": self.account_mode}
@@ -151,6 +158,7 @@ __all__ = [
     "ACCOUNT_MODE_DB_SIMULATED",
     "ACCOUNT_MODE_KIS_LIVE",
     "ACCOUNT_MODE_KIS_MOCK",
+    "ACCOUNT_MODE_TOSS_LIVE",
     "AccountRouting",
     "apply_account_routing_metadata",
     "normalize_account_mode",
