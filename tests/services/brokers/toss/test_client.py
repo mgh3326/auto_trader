@@ -224,3 +224,53 @@ async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
     assert calls == 2
     assert sleeps == [2.0]
     assert prices[0].last_price == Decimal("190.12")
+
+
+@pytest.mark.asyncio
+async def test_candles_returns_typed_page_and_sends_query_params() -> None:
+    seen: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["symbol"] = request.url.params["symbol"]
+        seen["interval"] = request.url.params["interval"]
+        seen["count"] = request.url.params["count"]
+        seen["adjusted"] = request.url.params["adjusted"]
+        return httpx.Response(
+            200,
+            json=_json(
+                {
+                    "candles": [
+                        {
+                            "timestamp": "2026-06-12T00:00:00.000+09:00",
+                            "openPrice": "313000",
+                            "highPrice": "330000",
+                            "lowPrice": "313000",
+                            "closePrice": "326000",
+                            "volume": "11414585",
+                            "currency": "KRW",
+                        }
+                    ],
+                    "nextBefore": "2026-06-11T00:00:00.000+09:00",
+                }
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        page = await client.candles("005930", interval="1d", count=1, adjusted=True)
+    finally:
+        await client.aclose()
+
+    assert seen == {
+        "symbol": "005930",
+        "interval": "1d",
+        "count": "1",
+        "adjusted": "true",
+    }
+    assert page.next_before == "2026-06-11T00:00:00.000+09:00"
+    assert page.candles[0].close_price == Decimal("326000")
+
