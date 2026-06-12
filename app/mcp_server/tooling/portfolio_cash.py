@@ -22,7 +22,7 @@ from app.services.brokers.kis import (
     extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
-from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
+from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
@@ -166,7 +166,7 @@ async def get_cash_balance_impl(
     if account_filter is None or account_filter == "toss":
         if bool(getattr(settings, "toss_api_enabled", False)):
             try:
-                toss_snapshot = await fetch_toss_portfolio_snapshot()
+                toss_snapshot = await fetch_toss_cash_snapshot()
                 toss_krw = _decimal_to_float(toss_snapshot.cash_krw)
                 toss_usd = _decimal_to_float(toss_snapshot.cash_usd)
                 if toss_krw is not None:

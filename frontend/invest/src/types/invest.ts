@@ -3,6 +3,7 @@ export type AccountSource =
   | "kis"
   | "upbit"
   | "toss_manual"
+  | "toss_api"
   | "pension_manual"
   | "isa_manual"
   | "kis_mock"

@@ -42,6 +42,13 @@ class TossPortfolioSnapshot:
     errors: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TossCashSnapshot:
+    cash_krw: Decimal | None = None
+    cash_usd: Decimal | None = None
+    errors: list[dict[str, Any]] = field(default_factory=list)
+
+
 def _instrument_type_for_market_country(market_country: str) -> str:
     normalized = market_country.strip().upper()
     if normalized == "KR":
@@ -62,6 +69,48 @@ def _market_for_instrument_type(instrument_type: str) -> str:
 def _decimal_dict_value(raw: dict[str, Any], key: str) -> Decimal | None:
     value = raw.get(key)
     return value if isinstance(value, Decimal) else None
+
+
+async def fetch_toss_cash_snapshot(
+    *,
+    client: TossPortfolioClient | None = None,
+) -> TossCashSnapshot:
+    created_client = client is None
+    active_client: TossPortfolioClient = client or TossReadClient.from_settings()
+
+    try:
+        buying_power_results = await asyncio.gather(
+            active_client.buying_power(currency="KRW"),
+            active_client.buying_power(currency="USD"),
+            return_exceptions=True,
+        )
+        cash_krw: Decimal | None = None
+        cash_usd: Decimal | None = None
+        errors: list[dict[str, Any]] = []
+        for currency, result in zip(("KRW", "USD"), buying_power_results, strict=True):
+            if isinstance(result, BaseException):
+                errors.append(
+                    {
+                        "source": "toss_api",
+                        "stage": "buying_power",
+                        "currency": currency,
+                        "error": str(result),
+                    }
+                )
+                continue
+            if result.currency == "KRW":
+                cash_krw = result.cash_buying_power
+            elif result.currency == "USD":
+                cash_usd = result.cash_buying_power
+
+        return TossCashSnapshot(
+            cash_krw=cash_krw,
+            cash_usd=cash_usd,
+            errors=errors,
+        )
+    finally:
+        if created_client:
+            await active_client.aclose()
 
 
 async def fetch_toss_portfolio_snapshot(
@@ -119,33 +168,13 @@ async def fetch_toss_portfolio_snapshot(
                 )
             )
 
-        buying_power_results = await asyncio.gather(
-            active_client.buying_power(currency="KRW"),
-            active_client.buying_power(currency="USD"),
-            return_exceptions=True,
-        )
-        cash_krw: Decimal | None = None
-        cash_usd: Decimal | None = None
-        for currency, result in zip(("KRW", "USD"), buying_power_results, strict=True):
-            if isinstance(result, BaseException):
-                errors.append(
-                    {
-                        "source": "toss_api",
-                        "stage": "buying_power",
-                        "currency": currency,
-                        "error": str(result),
-                    }
-                )
-                continue
-            if result.currency == "KRW":
-                cash_krw = result.cash_buying_power
-            elif result.currency == "USD":
-                cash_usd = result.cash_buying_power
+        cash_snapshot = await fetch_toss_cash_snapshot(client=active_client)
+        errors.extend(cash_snapshot.errors)
 
         return TossPortfolioSnapshot(
             positions=positions,
-            cash_krw=cash_krw,
-            cash_usd=cash_usd,
+            cash_krw=cash_snapshot.cash_krw,
+            cash_usd=cash_snapshot.cash_usd,
             errors=errors,
         )
     finally:

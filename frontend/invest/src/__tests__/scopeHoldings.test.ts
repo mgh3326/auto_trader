@@ -257,6 +257,76 @@ describe("buildScopedPortfolioPanel", () => {
     expect(options.find((option) => option.key === "toss_manual")?.cashBalances).toEqual({ krw: null, usd: null });
   });
 
+  it("builds live Toss API filter options with tradeable quantities and cash", () => {
+    const tossApiGroup: GroupedHolding = {
+      ...baseGroup,
+      groupId: "US:equity:USD:BRK.B:toss_api",
+      symbol: "BRK.B",
+      displayName: "Berkshire Hathaway B",
+      totalQuantity: 1.5,
+      tradeableQuantity: 1.5,
+      sellableQuantity: 1.25,
+      pendingSellQuantity: 0,
+      referenceQuantity: 0,
+      costBasis: 600,
+      valueNative: 645.18,
+      valueKrw: 838_734,
+      pnlKrw: 58_734,
+      pnlRate: 58_734 / 780_000,
+      includedSources: ["toss_api"],
+      sourceBreakdown: [
+        {
+          holdingId: "toss_api:BRK.B",
+          accountId: "toss_api_account",
+          source: "toss_api",
+          quantity: 1.5,
+          accountKind: "live",
+          sourceOfTruth: true,
+          isTradeable: true,
+          manualOnly: false,
+          sellableQuantity: 1.25,
+          pendingSellQuantity: 0,
+          referenceQuantity: 0,
+          averageCost: 400,
+          costBasis: 600,
+          valueNative: 645.18,
+          valueKrw: 838_734,
+          pnlKrw: 58_734,
+          pnlRate: 58_734 / 780_000,
+        },
+      ],
+    };
+    const response: AccountPanelResponse = {
+      ...panelResponse,
+      accounts: [
+        ...panelResponse.accounts,
+        {
+          accountId: "toss_api_account",
+          displayName: "Toss",
+          source: "toss_api",
+          accountKind: "live",
+          includedInHome: true,
+          valueKrw: 838_734,
+          costBasisKrw: 780_000,
+          pnlKrw: 58_734,
+          pnlRate: 58_734 / 780_000,
+          cashBalances: { krw: 123_456, usd: 789.01 },
+          buyingPower: { krw: 123_456, usd: 789.01 },
+        },
+      ],
+      groupedHoldings: [tossApiGroup],
+    };
+
+    const scoped = buildScopedPortfolioPanel(response, "toss_api");
+
+    expect(scoped.selected.label).toBe("Toss");
+    expect(scoped.cashBalances).toEqual({ krw: 123_456, usd: 789.01 });
+    expect(scoped.groupedHoldings[0]!.includedSources).toEqual(["toss_api"]);
+    expect(scoped.groupedHoldings[0]!.tradeableQuantity).toBe(1.5);
+    expect(scoped.groupedHoldings[0]!.sellableQuantity).toBe(1.25);
+    expect(scoped.groupedHoldings[0]!.referenceQuantity).toBe(0);
+  });
+
   it("recomputes KIS totals and cash from sourceBreakdown only", () => {
     const scoped = buildScopedPortfolioPanel(panelResponse, "kis");
     expect(scoped.groupedHoldings).toHaveLength(1);

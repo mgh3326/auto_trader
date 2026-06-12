@@ -1442,3 +1442,56 @@ async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch
     assert holding.manualOnly is False
     assert holding.sellableQuantity == 1.25
     assert holding.referenceQuantity == 0.0
+
+
+@pytest.mark.asyncio
+async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
+    from decimal import Decimal
+
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    async def fake_fx() -> float:
+        return 1300.0
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(readers, "get_usd_krw_rate", fake_fx)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+
+    assert result.warning is None
+    assert result.holdings[0].valueKrw == pytest.approx(645.18 * 1300.0)
+    assert result.holdings[0].pnlKrw == pytest.approx(45.18 * 1300.0)
+    assert result.accounts[0].valueKrw == pytest.approx(645.18 * 1300.0)
+    assert result.accounts[0].costBasisKrw == pytest.approx(600.0 * 1300.0)
+    assert result.accounts[0].pnlKrw == pytest.approx(45.18 * 1300.0)

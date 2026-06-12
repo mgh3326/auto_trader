@@ -95,7 +95,7 @@ async def test_account_panel_combines_home_and_watch(monkeypatch) -> None:
     assert manual.referenceQuantity == 5
     # All known sources represented in sourceVisuals
     sources = {v.source for v in resp.sourceVisuals}
-    assert {"kis", "upbit", "alpaca_paper", "kis_mock"}.issubset(sources)
+    assert {"kis", "upbit", "alpaca_paper", "kis_mock", "toss_api"}.issubset(sources)
 
 
 @pytest.mark.asyncio

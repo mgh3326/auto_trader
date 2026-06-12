@@ -10,7 +10,10 @@ from app.services.brokers.toss.dto import (
     TossHoldings,
     TossSellableQuantity,
 )
-from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
+from app.services.toss_portfolio_service import (
+    fetch_toss_cash_snapshot,
+    fetch_toss_portfolio_snapshot,
+)
 
 
 def _holding(
@@ -124,3 +127,22 @@ async def test_fetch_toss_portfolio_snapshot_maps_kr_market() -> None:
     assert snapshot.positions[0].symbol == "005930"
     assert snapshot.positions[0].instrument_type == "equity_kr"
     assert snapshot.positions[0].market == "kr"
+
+
+@pytest.mark.asyncio
+async def test_fetch_toss_cash_snapshot_does_not_fetch_holdings_or_sellable() -> None:
+    class Client(_FakeTossClient):
+        async def holdings(self) -> TossHoldings:
+            raise AssertionError("cash-only path must not fetch holdings")
+
+        async def sellable_quantity(self, *, symbol: str) -> TossSellableQuantity:
+            raise AssertionError("cash-only path must not fetch sellable quantity")
+
+    client = Client()
+
+    snapshot = await fetch_toss_cash_snapshot(client=client)
+
+    assert client.buying_power_calls == ["KRW", "USD"]
+    assert snapshot.cash_krw == Decimal("123456")
+    assert snapshot.cash_usd == Decimal("789.01")
+    assert snapshot.errors == []

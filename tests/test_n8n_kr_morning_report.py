@@ -635,9 +635,7 @@ async def test_kr_morning_report_includes_toss_api_cash(monkeypatch):
             cash_usd=Decimal("789.01"),
         )
 
-    monkeypatch.setattr(
-        service, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
-    )
+    monkeypatch.setattr(service, "fetch_toss_cash_snapshot", fake_fetch_toss_snapshot)
     monkeypatch.setattr(
         service,
         "_get_portfolio_overview",

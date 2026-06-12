@@ -497,6 +497,24 @@ class TossApiHomeReader:
             value_krw_total = 0.0
             cost_basis_krw_total: float | None = 0.0
             pnl_krw_total: float | None = 0.0
+            warning_messages: list[str] = []
+
+            usd_krw_rate: float | None = None
+            if any(
+                position.instrument_type == "equity_us"
+                for position in snapshot.positions
+            ):
+                try:
+                    usd_krw_rate = await get_usd_krw_rate()
+                except Exception as exc:
+                    logger.warning(
+                        "USD/KRW FX fetch failed for Toss API reader: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    warning_messages.append(
+                        "USD 보유 평가금액 환산을 위한 환율 조회에 실패했습니다."
+                    )
 
             for position in snapshot.positions:
                 currency = "KRW" if position.instrument_type == "equity_kr" else "USD"
@@ -506,25 +524,41 @@ class TossApiHomeReader:
                     if position.evaluation_amount is not None
                     else None
                 )
-                value_krw = value_native if currency == "KRW" else None
-                pnl_krw = (
-                    float(position.profit_loss)
-                    if currency == "KRW" and position.profit_loss is not None
-                    else None
-                )
+                value_krw: float | None = None
+                pnl_krw: float | None = None
+                if currency == "KRW":
+                    value_krw = value_native
+                    pnl_krw = (
+                        float(position.profit_loss)
+                        if position.profit_loss is not None
+                        else None
+                    )
+                elif usd_krw_rate is not None:
+                    value_krw = (
+                        value_native * usd_krw_rate
+                        if value_native is not None
+                        else None
+                    )
+                    pnl_krw = (
+                        float(position.profit_loss) * usd_krw_rate
+                        if position.profit_loss is not None
+                        else None
+                    )
                 cost_basis = float(position.quantity * position.avg_buy_price)
+                cost_basis_krw: float | None = None
+                if currency == "KRW":
+                    cost_basis_krw = cost_basis
+                elif usd_krw_rate is not None:
+                    cost_basis_krw = cost_basis * usd_krw_rate
                 if value_krw is not None:
                     value_krw_total += value_krw
-                else:
-                    cost_basis_krw_total = None
-                    pnl_krw_total = None
-                if cost_basis_krw_total is not None and currency == "KRW":
-                    cost_basis_krw_total += cost_basis
-                elif currency != "KRW":
+                if cost_basis_krw_total is not None and cost_basis_krw is not None:
+                    cost_basis_krw_total += cost_basis_krw
+                elif cost_basis_krw is None:
                     cost_basis_krw_total = None
                 if pnl_krw_total is not None and pnl_krw is not None:
                     pnl_krw_total += pnl_krw
-                elif currency != "KRW":
+                elif pnl_krw is None:
                     pnl_krw_total = None
 
                 holdings.append(
@@ -597,11 +631,13 @@ class TossApiHomeReader:
             )
             warning = None
             if snapshot.errors:
+                warning_messages.extend(
+                    str(item.get("error")) for item in snapshot.errors
+                )
+            if warning_messages:
                 warning = InvestHomeWarning(
                     source="toss_api",
-                    message="; ".join(
-                        str(item.get("error")) for item in snapshot.errors
-                    ),
+                    message="; ".join(warning_messages),
                 )
             return _SourceFetchResult(
                 accounts=[account],

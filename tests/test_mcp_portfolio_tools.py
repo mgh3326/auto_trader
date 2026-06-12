@@ -3669,7 +3669,7 @@ async def test_get_cash_balance_toss_api_enabled_adds_krw_and_usd(monkeypatch):
         AsyncMock(side_effect=RuntimeError("skip upbit")),
     )
     monkeypatch.setattr(
-        portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+        portfolio_cash, "fetch_toss_cash_snapshot", fake_fetch_toss_snapshot
     )
 
     result = await portfolio_cash.get_cash_balance_impl(account="toss")
@@ -3707,7 +3707,7 @@ async def test_get_cash_balance_toss_api_failure_is_strict_for_toss_filter(monke
 
     monkeypatch.setattr(portfolio_cash.settings, "toss_api_enabled", True)
     monkeypatch.setattr(
-        portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+        portfolio_cash, "fetch_toss_cash_snapshot", fake_fetch_toss_snapshot
     )
 
     with pytest.raises(RuntimeError, match="Toss cash balance query failed"):

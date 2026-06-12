@@ -16,7 +16,7 @@ from app.services.n8n_formatting import (
     fmt_pnl,
 )
 from app.services.n8n_pending_orders_service import fetch_pending_orders
-from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
+from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ async def _fetch_toss_cash_balance() -> tuple[
     if not bool(getattr(settings, "toss_api_enabled", False)):
         return None, None, []
     try:
-        snapshot = await fetch_toss_portfolio_snapshot()
+        snapshot = await fetch_toss_cash_snapshot()
         return (
             float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
             float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
