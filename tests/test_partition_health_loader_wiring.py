@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import pytest
 import sqlalchemy as sa
@@ -8,6 +9,22 @@ import sqlalchemy as sa
 from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.services.invest_view_model import screener_service
+
+
+async def _reset_pk_sequence(session, table_name: str) -> None:
+    if table_name not in {"invest_screener_snapshots", "investor_flow_snapshots"}:
+        raise ValueError(f"unsupported test table: {table_name}")
+    await session.execute(
+        sa.text(
+            f"""
+            SELECT setval(
+                pg_get_serial_sequence('{table_name}', 'id'),
+                COALESCE((SELECT MAX(id) FROM {table_name}), 0) + 1,
+                false
+            )
+            """
+        )
+    )
 
 
 def _gainer(symbol: str, d: dt.date) -> InvestScreenerSnapshot:
@@ -28,24 +45,52 @@ def _gainer(symbol: str, d: dt.date) -> InvestScreenerSnapshot:
     )
 
 
-async def _seed_two_partitions(session, *, healthy_n: int, thin_n: int):
-    older, newer = dt.date(2040, 5, 19), dt.date(2040, 5, 22)
-
+async def _active_kr_universe_count(session) -> int:
     from app.models.kr_symbol_universe import KRSymbolUniverse
 
-    # Clean up first
+    return int(
+        (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(KRSymbolUniverse)
+                .where(KRSymbolUniverse.is_active.is_(True))
+            )
+        ).scalar()
+        or 0
+    )
+
+
+async def _cleanup_gainer_rows(session, dates: set[dt.date]) -> None:
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
     await session.execute(
         sa.delete(InvestScreenerSnapshot).where(
-            InvestScreenerSnapshot.snapshot_date.in_({older, newer})
+            InvestScreenerSnapshot.snapshot_date.in_(dates)
         )
     )
     await session.execute(
         sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.like("99%"))
     )
     await session.flush()
+    await _reset_pk_sequence(session, "invest_screener_snapshots")
 
-    # Seed active universe (200 symbols)
-    for i in range(200):
+
+async def _seed_two_partitions(session, *, healthy_n: int, thin_n: int):
+    older, newer = dt.date(2040, 5, 19), dt.date(2040, 5, 22)
+
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
+    # Clean up first
+    await _cleanup_gainer_rows(session, {older, newer})
+
+    existing_active = await _active_kr_universe_count(session)
+    seed_n = max(200, healthy_n, existing_active + 200)
+    floor = math.ceil((existing_active + seed_n) * 0.5)
+    healthy_n = max(healthy_n, floor)
+
+    # Seed enough active universe rows to keep this test independent from the
+    # persistent test DB's pre-existing KR universe size.
+    for i in range(seed_n):
         sym = f"99{i:04d}"
         session.add(
             KRSymbolUniverse(
@@ -66,30 +111,20 @@ async def _seed_two_partitions(session, *, healthy_n: int, thin_n: int):
 
 @pytest.mark.asyncio
 async def test_thin_newer_partition_does_not_shadow_healthy_older(db_session):
-    # active universe = 200 + initial_active (say 18) = 218.
-    # 50% bar is 109. healthy_n = 150 passes; thin_n = 20 fails.
+    # Seed helper sizes the healthy older partition against the current
+    # persistent test DB universe; the thin newer partition remains below floor.
     older, newer = await _seed_two_partitions(db_session, healthy_n=150, thin_n=20)
-    rows = await screener_service.load_consecutive_gainers_from_snapshots(
-        db_session, market="kr", limit=20
-    )
-    assert rows, "expected the healthy older partition to be served"
-    # Every served row comes from the older healthy partition...
-    assert all(r["snapshot_date"] == older for r in rows)
-    # ...and is labeled stale (older than today), not fresh.
-    assert all(r["_screener_snapshot_state"] == "stale" for r in rows)
-
-    # Clean up after test
-    from app.models.kr_symbol_universe import KRSymbolUniverse
-
-    await db_session.execute(
-        sa.delete(InvestScreenerSnapshot).where(
-            InvestScreenerSnapshot.snapshot_date.in_({older, newer})
+    try:
+        rows = await screener_service.load_consecutive_gainers_from_snapshots(
+            db_session, market="kr", limit=20
         )
-    )
-    await db_session.execute(
-        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.like("99%"))
-    )
-    await db_session.flush()
+        assert rows, "expected the healthy older partition to be served"
+        # Every served row comes from the older healthy partition...
+        assert all(r["snapshot_date"] == older for r in rows)
+        # ...and is labeled stale (older than today), not fresh.
+        assert all(r["_screener_snapshot_state"] == "stale" for r in rows)
+    finally:
+        await _cleanup_gainer_rows(db_session, {older, newer})
 
 
 def _flow(symbol: str, d: dt.date) -> InvestorFlowSnapshot:
@@ -107,24 +142,37 @@ def _flow(symbol: str, d: dt.date) -> InvestorFlowSnapshot:
     )
 
 
-async def _seed_two_flow_partitions(session, *, healthy_n: int, thin_n: int):
-    older, newer = dt.date(2040, 5, 19), dt.date(2040, 5, 22)
-
+async def _cleanup_flow_rows(session, dates: set[dt.date]) -> None:
     from app.models.kr_symbol_universe import KRSymbolUniverse
 
-    # Clean up first
     await session.execute(
         sa.delete(InvestorFlowSnapshot).where(
-            InvestorFlowSnapshot.snapshot_date.in_({older, newer})
+            InvestorFlowSnapshot.snapshot_date.in_(dates)
         )
     )
     await session.execute(
         sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.like("99%"))
     )
     await session.flush()
+    await _reset_pk_sequence(session, "investor_flow_snapshots")
 
-    # Seed active universe (200 symbols)
-    for i in range(200):
+
+async def _seed_two_flow_partitions(session, *, healthy_n: int, thin_n: int):
+    older, newer = dt.date(2040, 5, 19), dt.date(2040, 5, 22)
+
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+
+    # Clean up first
+    await _cleanup_flow_rows(session, {older, newer})
+
+    existing_active = await _active_kr_universe_count(session)
+    seed_n = max(200, healthy_n, existing_active + 200)
+    floor = math.ceil((existing_active + seed_n) * 0.5)
+    healthy_n = max(healthy_n, floor)
+
+    # Seed enough active universe rows to keep this test independent from the
+    # persistent test DB's pre-existing KR universe size.
+    for i in range(seed_n):
         sym = f"99{i:04d}"
         session.add(
             KRSymbolUniverse(
@@ -146,26 +194,16 @@ async def _seed_two_flow_partitions(session, *, healthy_n: int, thin_n: int):
 @pytest.mark.asyncio
 async def test_investor_flow_thin_newer_falls_back_to_healthy_older(db_session):
     older, newer = await _seed_two_flow_partitions(db_session, healthy_n=150, thin_n=20)
-    res = await screener_service._load_investor_flow_discovery_from_snapshots(
-        db_session, market="kr", limit=20
-    )
-    assert res is not None
-    rows = res.rows
-    assert rows, "expected the healthy older investor_flow partition to be served"
-    # Every served row comes from the older healthy partition...
-    assert all(r["snapshot_date"] == older for r in rows)
-    # ...and is labeled stale (older than today), not fresh.
-    assert all(r["_screener_snapshot_state"] == "stale" for r in rows)
-
-    # Clean up after test
-    from app.models.kr_symbol_universe import KRSymbolUniverse
-
-    await db_session.execute(
-        sa.delete(InvestorFlowSnapshot).where(
-            InvestorFlowSnapshot.snapshot_date.in_({older, newer})
+    try:
+        res = await screener_service._load_investor_flow_discovery_from_snapshots(
+            db_session, market="kr", limit=20
         )
-    )
-    await db_session.execute(
-        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.like("99%"))
-    )
-    await db_session.flush()
+        assert res is not None
+        rows = res.rows
+        assert rows, "expected the healthy older investor_flow partition to be served"
+        # Every served row comes from the older healthy partition...
+        assert all(r["snapshot_date"] == older for r in rows)
+        # ...and is labeled stale (older than today), not fresh.
+        assert all(r["_screener_snapshot_state"] == "stale" for r in rows)
+    finally:
+        await _cleanup_flow_rows(db_session, {older, newer})

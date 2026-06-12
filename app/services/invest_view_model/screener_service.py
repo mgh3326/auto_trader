@@ -587,10 +587,14 @@ async def _load_consecutive_gainers_from_snapshots(
             symbol_names = {row.symbol: row.name for row in _name_rows}
             symbol_meta = {
                 row.symbol: {
-                    "security_type": row.security_type,
-                    "is_common_share": row.is_common_share,
-                    "krx_trading_suspended": row.krx_trading_suspended,
-                    "nxt_trading_suspended": row.nxt_trading_suspended,
+                    "security_type": getattr(row, "security_type", None),
+                    "is_common_share": getattr(row, "is_common_share", None),
+                    "krx_trading_suspended": getattr(
+                        row, "krx_trading_suspended", None
+                    ),
+                    "nxt_trading_suspended": getattr(
+                        row, "nxt_trading_suspended", None
+                    ),
                 }
                 for row in _name_rows
             }
@@ -885,10 +889,14 @@ async def _load_investor_flow_discovery_from_snapshots(
             symbol_names = {row.symbol: row.name for row in _name_rows}
             symbol_meta = {
                 row.symbol: {
-                    "security_type": row.security_type,
-                    "is_common_share": row.is_common_share,
-                    "krx_trading_suspended": row.krx_trading_suspended,
-                    "nxt_trading_suspended": row.nxt_trading_suspended,
+                    "security_type": getattr(row, "security_type", None),
+                    "is_common_share": getattr(row, "is_common_share", None),
+                    "krx_trading_suspended": getattr(
+                        row, "krx_trading_suspended", None
+                    ),
+                    "nxt_trading_suspended": getattr(
+                        row, "nxt_trading_suspended", None
+                    ),
                 }
                 for row in _name_rows
             }
