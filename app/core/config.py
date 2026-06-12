@@ -203,6 +203,14 @@ class Settings(BaseSettings):
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
 
+    # Toss Securities Open API. Live-only, disabled by default. ROB-530 adds
+    # read-only client support; order mutations are handled by follow-up issues.
+    toss_api_enabled: bool = False
+    toss_api_client_id: str | None = None
+    toss_api_client_secret: SecretStr | None = None
+    toss_api_account_seq: int | None = None
+    toss_api_base_url: str | None = None
+
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)
     kis_ws_hts_id: str = ""  # HTS ID (WebSocket 인증용)
@@ -798,6 +806,19 @@ def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
         missing.append("KIWOOM_MOCK_ACCOUNT_NO")
+    return missing
+
+
+def validate_toss_api_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing Toss Open API env names without exposing configured values."""
+
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "toss_api_enabled", False)):
+        missing.append("TOSS_API_ENABLED")
+    if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_id", None)):
+        missing.append("TOSS_API_CLIENT_ID")
+    if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_secret", None)):
+        missing.append("TOSS_API_CLIENT_SECRET")
     return missing
 
 
