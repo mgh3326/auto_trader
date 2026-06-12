@@ -3433,3 +3433,181 @@ async def test_fetch_price_map_us_fail_closed_when_all_sources_fail(monkeypatch)
     us_error = next(e for e in price_errors if e.get("symbol") == "AAPL")
     assert us_error["source"] == "kis+yahoo"
     assert us_error["market"] == "us"
+
+
+# ---------------------------------------------------------------------------
+# ROB-532 Toss holdings tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_toss_api_enabled_adds_routable_toss_account(monkeypatch):
+    from decimal import Decimal
+    from app.services.toss_portfolio_service import TossPortfolioPosition, TossPortfolioSnapshot
+    from app.mcp_server.tooling import portfolio_holdings
+
+    async def fake_collect_kis_positions(*args, **kwargs):
+        return [], []
+
+    async def fake_collect_upbit_positions(*args, **kwargs):
+        return [], []
+
+    async def fake_collect_manual_positions(*args, **kwargs):
+        return [], []
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ],
+            cash_krw=Decimal("0"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions)
+    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions)
+    monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions)
+    monkeypatch.setattr(portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+
+    result = await portfolio_holdings._get_holdings_impl(minimum_value=0)
+
+    assert result["accounts"][0]["account"] == "toss"
+    assert result["accounts"][0]["broker"] == "toss"
+    assert result["accounts"][0]["order_routable"] is True
+    assert result["accounts"][0]["positions"][0]["symbol"] == "BRK.B"
+    assert result["accounts"][0]["positions"][0]["sellable_quantity"] == 1.25
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_toss_api_success_hides_duplicate_toss_manual(monkeypatch):
+    from decimal import Decimal
+    from app.services.toss_portfolio_service import TossPortfolioPosition, TossPortfolioSnapshot
+    from app.mcp_server.tooling import portfolio_holdings
+
+    async def fake_collect_kis_positions(*args, **kwargs):
+        return [], []
+
+    async def fake_collect_upbit_positions(*args, **kwargs):
+        return [], []
+
+    async def fake_collect_manual_positions(*args, **kwargs):
+        return [
+            {
+                "account": "toss",
+                "account_name": "Toss 수동",
+                "broker": "toss",
+                "source": "manual",
+                "instrument_type": "equity_us",
+                "market": "us",
+                "symbol": "BRK.B",
+                "name": "Berkshire Hathaway B",
+                "quantity": 1.5,
+                "avg_buy_price": 400.0,
+                "current_price": 430.12,
+                "evaluation_amount": 645.18,
+                "profit_loss": 45.18,
+                "profit_rate": 0.0753,
+            }
+        ], []
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ]
+        )
+
+    monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions)
+    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions)
+    monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions)
+    monkeypatch.setattr(portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+
+    result = await portfolio_holdings._get_holdings_impl(minimum_value=0)
+
+    accounts = result["accounts"]
+    assert len(accounts) == 1
+    assert accounts[0]["account"] == "toss"
+    assert accounts[0]["positions"][0]["source"] == "toss_api"
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
+    from decimal import Decimal
+    from app.services.toss_portfolio_service import TossPortfolioPosition, TossPortfolioSnapshot
+    from app.mcp_server.tooling import portfolio_holdings
+
+    async def fake_collect_kis_positions(*args, **kwargs):
+        return [], []
+
+    async def fake_collect_upbit_positions(*args, **kwargs):
+        return [], []
+
+    async def fake_collect_manual_positions(*args, **kwargs):
+        return [
+            {
+                "account": "toss",
+                "account_name": "Toss 수동",
+                "broker": "toss",
+                "source": "manual",
+                "instrument_type": "equity_kr",
+                "market": "kr",
+                "symbol": "005930",
+                "name": "삼성전자",
+                "quantity": 10.0,
+                "avg_buy_price": 65000.0,
+                "current_price": 70000.0,
+                "evaluation_amount": 700000.0,
+                "profit_loss": 50000.0,
+                "profit_rate": 0.0769,
+            }
+        ], []
+
+    async def fake_fetch_toss_snapshot():
+        raise RuntimeError("toss unavailable")
+
+    monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions)
+    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions)
+    monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions)
+    monkeypatch.setattr(portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+
+    result = await portfolio_holdings._get_holdings_impl(minimum_value=0)
+
+    assert result["accounts"][0]["order_routable"] is False
+    assert result["accounts"][0]["positions"][0]["source"] == "manual"
+    assert {"source": "toss_api", "error": "toss unavailable"} in result["errors"]
+

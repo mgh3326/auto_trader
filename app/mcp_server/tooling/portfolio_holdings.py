@@ -8,10 +8,14 @@ from typing import TYPE_CHECKING, Any, cast
 import pandas as pd
 
 import app.services.brokers.upbit.client as upbit_service
-from app.core.config import validate_kis_mock_config
+from app.core.config import settings, validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_kis_symbol
 from app.mcp_server.env_utils import _env_int
+from app.services.toss_portfolio_service import (
+    TossPortfolioPosition,
+    fetch_toss_portfolio_snapshot,
+)
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
     normalize_account_mode,
@@ -482,6 +486,71 @@ async def _collect_manual_positions(
     return positions, errors
 
 
+def _same_toss_symbol(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return (
+        str(left.get("broker") or "").lower() == "toss"
+        and str(right.get("broker") or "").lower() == "toss"
+        and str(left.get("instrument_type") or "") == str(right.get("instrument_type") or "")
+        and _normalize_position_symbol(
+            str(left.get("symbol") or ""),
+            str(left.get("instrument_type") or ""),
+        )
+        == _normalize_position_symbol(
+            str(right.get("symbol") or ""),
+            str(right.get("instrument_type") or ""),
+        )
+    )
+
+
+def _toss_api_position_to_mcp(position: TossPortfolioPosition) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "account": position.account,
+        "account_name": position.account_name,
+        "broker": position.broker,
+        "source": position.source,
+        "instrument_type": position.instrument_type,
+        "market": position.market,
+        "symbol": position.symbol,
+        "name": position.name,
+        "quantity": float(position.quantity),
+        "avg_buy_price": float(position.avg_buy_price),
+        "current_price": float(position.current_price),
+        "evaluation_amount": float(position.evaluation_amount)
+        if position.evaluation_amount is not None
+        else None,
+        "profit_loss": float(position.profit_loss)
+        if position.profit_loss is not None
+        else None,
+        "profit_rate": float(position.profit_rate)
+        if position.profit_rate is not None
+        else None,
+    }
+    if position.sellable_quantity is not None:
+        payload["sellable_quantity"] = float(position.sellable_quantity)
+    return payload
+
+
+async def _collect_toss_api_positions(
+    market_filter: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    if not bool(getattr(settings, "toss_api_enabled", False)):
+        return [], [], False
+    if market_filter == "crypto":
+        return [], [], False
+
+    try:
+        snapshot = await fetch_toss_portfolio_snapshot()
+    except Exception as exc:
+        return [], [{"source": "toss_api", "error": str(exc)}], False
+
+    positions = [
+        _toss_api_position_to_mcp(position)
+        for position in snapshot.positions
+        if market_filter is None or position.instrument_type == market_filter
+    ]
+    return positions, snapshot.errors, True
+
+
 def _has_valid_kis_equity_us_snapshot(position: dict[str, Any]) -> bool:
     if position.get("source") != "kis_api":
         return False
@@ -776,6 +845,30 @@ async def _collect_portfolio_positions(
         )
         positions.extend(source_positions)
         errors.extend(source_errors)
+
+    toss_api_positions: list[dict[str, Any]] = []
+    toss_api_errors: list[dict[str, Any]] = []
+    toss_api_succeeded = False
+    if bool(getattr(settings, "toss_api_enabled", False)):
+        toss_api_positions, toss_api_errors, toss_api_succeeded = (
+            await _collect_toss_api_positions(market_filter)
+        )
+        positions.extend(toss_api_positions)
+        errors.extend(toss_api_errors)
+
+    if toss_api_succeeded and toss_api_positions:
+        positions = [
+            position
+            for position in positions
+            if not (
+                position.get("source") == "manual"
+                and str(position.get("broker") or "").lower() == "toss"
+                and any(
+                    _same_toss_symbol(position, toss_position)
+                    for toss_position in toss_api_positions
+                )
+            )
+        ]
 
     if market_filter:
         positions = [
