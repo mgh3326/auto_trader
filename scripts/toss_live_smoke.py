@@ -4,10 +4,16 @@ import argparse
 import asyncio
 import json
 import os
+import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from app.mcp_server.tooling.orders_toss_variants import toss_place_order
+from app.mcp_server.tooling.orders_toss_variants import (
+    _toss_place_order_impl,
+    toss_cancel_order,
+    toss_place_order,
+)
+from app.mcp_server.tooling.toss_live_ledger import toss_reconcile_orders_impl
 from app.services.brokers.toss.client import TossReadClient
 
 
@@ -33,6 +39,17 @@ def _validate_order_args(args: argparse.Namespace, mode_name: str) -> list[str]:
     if not args.price:
         errors.append(f"--price is required for {mode_name}")
     return errors
+
+
+def _has_reconcile_anomaly(result: dict[str, Any]) -> bool:
+    counts = result.get("counts")
+    if not isinstance(counts, dict):
+        return True
+    return bool(counts.get("anomaly"))
+
+
+async def _place_order_for_smoke(**kwargs: Any) -> dict[str, Any]:
+    return await _toss_place_order_impl(**kwargs)
 
 
 async def run_preflight(symbols: Sequence[str]) -> int:
@@ -83,8 +100,127 @@ async def run_confirm(
     price: str,
     time_in_force: str,
 ) -> int:
-    # Stub to be fully implemented in Task 7
-    return 0
+    client_order_id = uuid.uuid4().hex
+    opened_order_ids: list[str] = []
+    exit_code = 0
+
+    async def place_once(step: str) -> dict[str, Any]:
+        result = await _place_order_for_smoke(
+            symbol=symbol,
+            side="buy",
+            order_type="limit",
+            quantity=quantity,
+            price=price,
+            order_amount=None,
+            market=market,
+            time_in_force=time_in_force,
+            dry_run=False,
+            confirm=True,
+            confirm_high_value_order=False,
+            reason="ROB-539 Toss live smoke confirm",
+            exit_reason=None,
+            thesis=None,
+            strategy=None,
+            target_price=None,
+            stop_loss=None,
+            min_hold_days=None,
+            notes="ROB-539 live smoke: 1-share limit buy, immediate cancel",
+            indicators_snapshot=None,
+            report_item_uuid=None,
+            account_mode="toss_live",
+            account_type=None,
+            client_order_id_override=client_order_id,
+        )
+        _print_event(step, result)
+        order_id = result.get("order_id")
+        if result.get("success") and isinstance(order_id, str) and order_id not in opened_order_ids:
+            opened_order_ids.append(order_id)
+        return result
+
+    try:
+        first = await place_once("toss_confirm_place")
+        if not bool(first.get("success")):
+            return 1
+
+        retry = await place_once("toss_confirm_idempotency_retry")
+        if not bool(retry.get("success")):
+            exit_code = 2
+        elif retry.get("order_id") != first.get("order_id"):
+            _print_event(
+                "toss_confirm_idempotency_anomaly",
+                {
+                    "success": False,
+                    "first_order_id": first.get("order_id"),
+                    "retry_order_id": retry.get("order_id"),
+                    "message": "Same clientOrderId returned a different order id.",
+                },
+            )
+            exit_code = 2
+    except Exception as exc:
+        _print_event(
+            "toss_confirm_exception",
+            {"success": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+        exit_code = 2
+    finally:
+        for order_id in list(opened_order_ids):
+            try:
+                cancel = await toss_cancel_order(
+                    order_id=order_id,
+                    dry_run=False,
+                    confirm=True,
+                    account_mode="toss_live",
+                )
+                _print_event("toss_confirm_cancel", cancel)
+                if not bool(cancel.get("success")):
+                    exit_code = 2
+            except Exception as exc:
+                _print_event(
+                    "toss_confirm_cancel_exception",
+                    {
+                        "success": False,
+                        "order_id": order_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+                exit_code = 2
+
+        for order_id in list(opened_order_ids):
+            try:
+                preview = await toss_reconcile_orders_impl(
+                    order_id=order_id,
+                    symbol=symbol,
+                    market=market,
+                    dry_run=True,
+                    limit=10,
+                )
+                _print_event("toss_confirm_reconcile_preview", preview)
+                if _has_reconcile_anomaly(preview):
+                    exit_code = 2
+                    continue
+
+                applied = await toss_reconcile_orders_impl(
+                    order_id=order_id,
+                    symbol=symbol,
+                    market=market,
+                    dry_run=False,
+                    limit=10,
+                )
+                _print_event("toss_confirm_reconcile_apply", applied)
+                if _has_reconcile_anomaly(applied):
+                    exit_code = 2
+            except Exception as exc:
+                _print_event(
+                    "toss_confirm_reconcile_exception",
+                    {
+                        "success": False,
+                        "order_id": order_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+                exit_code = 2
+
+    return exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:
