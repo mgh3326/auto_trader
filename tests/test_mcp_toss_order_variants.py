@@ -1505,3 +1505,52 @@ async def test_order_history_json_safes_datetime_timestamps(monkeypatch):
     order = res["orders"][0]
     assert order["ordered_at"] == ordered_at.isoformat()
     assert order["canceled_at"] == canceled_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_place_order_records_accepted_only_toss_ledger(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+
+    # Mock ledger.record_toss_place_order
+    recorded_calls = []
+
+    async def fake_record(**kwargs):
+        recorded_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_toss_variants.record_toss_place_order",
+        fake_record
+    )
+
+    res = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="10",
+        price="150.0",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+        note="test note",
+        reason="test reason",
+        strategy="test strategy",
+        signal="test signal",
+    )
+
+    assert res["success"] is True
+    assert len(recorded_calls) == 1
+    call = recorded_calls[0]
+    assert call["order_id"] == "new-ord-123"
+    assert call["symbol"] == "AAPL"
+    assert call["side"] == "BUY"
+    assert call["quantity"] == Decimal("10")
+    assert call["price"] == Decimal("150.0")
+    assert call["note"] == "test note"
+    assert call["reason"] == "test reason"
+    assert call["strategy"] == "test strategy"
+    assert call["signal"] == "test signal"

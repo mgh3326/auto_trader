@@ -8,6 +8,7 @@ Every tool is hard-pinned to ``account_mode="toss_live"``. They:
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -20,11 +21,14 @@ from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
 )
+from app.mcp_server.tooling.toss_live_ledger import record_toss_place_order
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "toss_preview_order",
@@ -418,6 +422,10 @@ async def toss_place_order(
     confirm_high_value_order: bool = False,
     account_mode: str | None = None,
     account_type: str | None = None,
+    note: str | None = None,
+    reason: str | None = None,
+    strategy: str | None = None,
+    signal: str | None = None,
 ) -> dict[str, Any]:
     if (guard := _entry_guard(account_mode, account_type)) is not None:
         return guard
@@ -510,6 +518,26 @@ async def toss_place_order(
 
         try:
             res = await client.place_order(payload)
+
+            # Record accepted-only to ledger
+            try:
+                currency = "KRW" if mkt == "kr" else "USD"
+                await record_toss_place_order(
+                    order_id=res.order_id,
+                    symbol=symbol,
+                    side=side.upper(),
+                    quantity=quantity_dec if quantity_dec is not None else Decimal("0"),
+                    price=price_dec if price_dec is not None else Decimal("0"),
+                    market=mkt,
+                    currency=currency,
+                    note=note,
+                    reason=reason,
+                    strategy=strategy,
+                    signal=signal,
+                )
+            except Exception as ledger_exc:
+                logger.warning("Failed to record Toss order to ledger: %s", ledger_exc)
+
             return {
                 "success": True,
                 **base_response,
@@ -880,7 +908,8 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "is never inferred. Before POST the tool blocks opposite pending "
             "orders across all paginated OPEN pages and applies the live sell "
             "loss guard (sell price/current market proxy must be >= "
-            "avg_purchase_price*1.01)."
+            "avg_purchase_price*1.01). Supports optional metadata (note, "
+            "reason, strategy, signal) for ledger recording."
         ),
     )(toss_place_order)
     mcp.tool(

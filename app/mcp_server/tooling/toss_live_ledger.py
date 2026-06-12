@@ -18,6 +18,39 @@ from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerServi
 logger = logging.getLogger(__name__)
 
 
+async def record_toss_place_order(
+    *,
+    order_id: str,
+    symbol: str,
+    side: str,
+    quantity: Decimal,
+    price: Decimal,
+    market: str,
+    currency: str,
+    note: str | None = None,
+    reason: str | None = None,
+    strategy: str | None = None,
+    signal: str | None = None,
+) -> None:
+    """Records a newly placed Toss order as accepted in the ledger."""
+    async with _order_session_factory()() as db:
+        await TossLiveOrderLedgerService(db).record_order(
+            broker_order_id=order_id,
+            symbol=symbol,
+            side=side.lower(),
+            operation_kind="place",
+            status="accepted",
+            quantity=quantity,
+            price=price,
+            market=market,
+            currency=currency,
+            notes=note,
+            reason=reason,
+            strategy=strategy,
+            signal=signal,
+        )
+
+
 async def _reconcile_one_toss_row(
     row: TossLiveOrderLedger, *, dry_run: bool
 ) -> dict[str, Any]:
