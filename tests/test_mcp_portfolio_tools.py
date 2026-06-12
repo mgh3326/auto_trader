@@ -3611,3 +3611,68 @@ async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
     assert result["accounts"][0]["positions"][0]["source"] == "manual"
     assert {"source": "toss_api", "error": "toss unavailable"} in result["errors"]
 
+
+# ---------------------------------------------------------------------------
+# ROB-532 Toss cash balance tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_toss_api_enabled_adds_krw_and_usd(monkeypatch):
+    from unittest.mock import AsyncMock
+    from decimal import Decimal
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    monkeypatch.setattr(portfolio_cash.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(portfolio_cash.upbit_service, "fetch_krw_cash_summary", AsyncMock(side_effect=RuntimeError("skip upbit")))
+    monkeypatch.setattr(portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+
+    result = await portfolio_cash.get_cash_balance_impl(account="toss")
+
+    assert result["accounts"] == [
+        {
+            "account": "toss",
+            "account_name": "Toss",
+            "broker": "toss",
+            "currency": "KRW",
+            "balance": 123456.0,
+            "orderable": 123456.0,
+            "formatted": "123,456 KRW",
+        },
+        {
+            "account": "toss",
+            "account_name": "Toss",
+            "broker": "toss",
+            "currency": "USD",
+            "balance": 789.01,
+            "orderable": 789.01,
+            "formatted": "789.01 USD",
+        },
+    ]
+    assert result["summary"] == {"total_krw": 123456.0, "total_usd": 789.01}
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_toss_api_failure_is_strict_for_toss_filter(monkeypatch):
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def fake_fetch_toss_snapshot():
+        raise RuntimeError("toss cash unavailable")
+
+    monkeypatch.setattr(portfolio_cash.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+
+    with pytest.raises(RuntimeError, match="Toss cash balance query failed"):
+        await portfolio_cash.get_cash_balance_impl(account="toss")
+
+
