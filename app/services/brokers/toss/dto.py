@@ -208,3 +208,51 @@ def parse_orders(raw: dict[str, Any]) -> TossOrdersPage:
         next_cursor=raw.get("nextCursor"),
         has_next=bool(raw.get("hasNext", False)),
     )
+
+
+@dataclass(frozen=True)
+class TossBuyingPower:
+    currency: str
+    cash_buying_power: Decimal
+
+
+@dataclass(frozen=True)
+class TossSellableQuantity:
+    sellable_quantity: Decimal
+
+
+@dataclass(frozen=True)
+class TossCommission:
+    market_country: str
+    commission_rate: Decimal
+    start_date: str | None
+    end_date: str | None
+
+
+def parse_buying_power(raw: dict[str, Any]) -> TossBuyingPower:
+    return TossBuyingPower(
+        currency=str(raw["currency"]),
+        cash_buying_power=parse_decimal_string(raw["cashBuyingPower"]),
+    )
+
+
+def parse_sellable_quantity(raw: dict[str, Any]) -> TossSellableQuantity:
+    return TossSellableQuantity(
+        sellable_quantity=parse_decimal_string(raw["sellableQuantity"])
+    )
+
+
+def parse_commissions(raw: list[dict[str, Any]]) -> list[TossCommission]:
+    return [
+        TossCommission(
+            market_country=str(row["marketCountry"]),
+            commission_rate=parse_decimal_string(row["commissionRate"]),
+            start_date=row.get("startDate"),
+            end_date=row.get("endDate"),
+        )
+        for row in raw
+    ]
+
+
+def parse_order(raw: dict[str, Any]) -> TossOrder:
+    return parse_orders({"orders": [raw], "nextCursor": None, "hasNext": False}).orders[0]
