@@ -11,7 +11,6 @@ from typing import Any, Literal, TypedDict, cast
 import httpx
 
 from app.core.config import settings
-from app.services.brokers.toss.client import TossReadClient
 
 logger = logging.getLogger(__name__)
 
@@ -115,20 +114,31 @@ def _quote_cache_ttl_seconds(quote: UsdKrwExchangeRateQuote) -> float:
 def _get_cached_quote(now: float) -> UsdKrwExchangeRateQuote | None:
     cached = _cache.get(_CACHE_KEY)
     if cached and float(cached["expires_at"]) > now:
-        quote = cached["quote"]
+        quote = cached.get("quote")
         if isinstance(quote, UsdKrwExchangeRateQuote):
             return quote
+        rate = cached.get("rate")
+        if rate is not None:
+            scalar_rate = float(rate)
+            return UsdKrwExchangeRateQuote(
+                rate=scalar_rate,
+                mid_rate=scalar_rate,
+                source="open_er_api",
+            )
     return None
 
 
 def _set_cached_quote(quote: UsdKrwExchangeRateQuote, now: float) -> None:
     _cache[_CACHE_KEY] = {
         "quote": quote,
+        "rate": quote.default_rate,
         "expires_at": now + _quote_cache_ttl_seconds(quote),
     }
 
 
 async def _fetch_toss_usd_krw_quote() -> UsdKrwExchangeRateQuote:
+    from app.services.brokers.toss.client import TossReadClient
+
     client = TossReadClient.from_settings()
     try:
         raw = await client.exchange_rate(base_currency="USD", quote_currency="KRW")
