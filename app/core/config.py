@@ -210,6 +210,7 @@ class Settings(BaseSettings):
     toss_api_client_secret: SecretStr | None = None
     toss_api_account_seq: int | None = None
     toss_api_base_url: str | None = None
+    toss_live_order_mutations_enabled: bool = False
 
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)

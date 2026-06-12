@@ -11,10 +11,11 @@ from __future__ import annotations
 import re
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from app.core.config import validate_toss_api_config
+from app.core.config import settings, validate_toss_api_config
 from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
@@ -128,6 +129,8 @@ def _stringify_decimal(value: Decimal | None) -> str | None:
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Decimal):
         return _stringify_decimal(value)
+    if isinstance(value, datetime | date):
+        return value.isoformat()
     if isinstance(value, dict):
         return {key: _json_safe(inner) for key, inner in value.items()}
     if isinstance(value, list):
@@ -176,6 +179,23 @@ def _high_value_error(
                 ),
             }
     return None
+
+
+def _live_mutation_disabled_error(
+    operation: str,
+    base: dict[str, Any],
+) -> dict[str, Any] | None:
+    if bool(getattr(settings, "toss_live_order_mutations_enabled", False)):
+        return None
+    return {
+        "success": False,
+        **base,
+        "error": (
+            f"{operation} requires TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true. "
+            "Keep live Toss mutations disabled until the accepted-order ledger "
+            "and operator live-smoke hold are cleared."
+        ),
+    }
 
 
 async def _find_holding(client: TossReadClient, symbol: str) -> Any | None:
@@ -267,23 +287,39 @@ async def _opposite_pending_error(
     side: Literal["buy", "sell"],
     base: dict[str, Any],
 ) -> dict[str, Any] | None:
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
     try:
-        page = await client.list_orders(status="OPEN", symbol=symbol)
+        while True:
+            page = await client.list_orders(status="OPEN", symbol=symbol, cursor=cursor)
+            opp_side = "SELL" if side == "buy" else "BUY"
+            for order in page.orders:
+                if order.symbol == symbol and order.side.upper() == opp_side:
+                    return {
+                        "success": False,
+                        **base,
+                        "error": f"An opposite pending order exists for symbol {symbol} ({opp_side}).",
+                    }
+            if not page.has_next:
+                return None
+            next_cursor = page.next_cursor
+            if not next_cursor or next_cursor in seen_cursors:
+                return {
+                    "success": False,
+                    **base,
+                    "error": (
+                        "Failed to check all pending orders: Toss pagination cursor "
+                        "was missing or repeated (fail closed)."
+                    ),
+                }
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
     except Exception as exc:
         return {
             "success": False,
             **base,
             "error": f"Failed to check pending orders: {exc}",
         }
-    opp_side = "SELL" if side == "buy" else "BUY"
-    for order in page.orders:
-        if order.symbol == symbol and order.side.upper() == opp_side:
-            return {
-                "success": False,
-                **base,
-                "error": f"An opposite pending order exists for symbol {symbol} ({opp_side}).",
-            }
-    return None
 
 
 def _toss_error_response(exc: Exception, base: dict[str, Any]) -> dict[str, Any]:
@@ -447,6 +483,13 @@ async def toss_place_order(
     ) is not None:
         return guard
 
+    if (
+        mutation_gate := _live_mutation_disabled_error(
+            "toss_place_order", base_response
+        )
+    ) is not None:
+        return mutation_gate
+
     async def execute_order(client: TossReadClient):
         # Guard: opposite pending order check
         if (
@@ -583,6 +626,13 @@ async def toss_modify_order(
         ) is not None:
             return high_value_guard
 
+        if not dry_run:
+            mutation_gate = _live_mutation_disabled_error(
+                "toss_modify_order", base_response
+            )
+            if mutation_gate is not None:
+                return mutation_gate
+
         if dry_run:
             return {
                 "success": True,
@@ -641,6 +691,13 @@ async def toss_cancel_order(
             **base_response,
             "error": "toss_cancel_order requires confirm=True when dry_run=False.",
         }
+
+    if (
+        mutation_gate := _live_mutation_disabled_error(
+            "toss_cancel_order", base_response
+        )
+    ) is not None:
+        return mutation_gate
 
     try:
         async with _client_context() as client:
@@ -707,8 +764,8 @@ async def toss_get_order_history(
                         if o.order_amount is not None
                         else None,
                         "currency": o.currency,
-                        "ordered_at": o.ordered_at,
-                        "canceled_at": o.canceled_at,
+                        "ordered_at": _json_safe(o.ordered_at),
+                        "canceled_at": _json_safe(o.canceled_at),
                         "execution": _json_safe(o.execution),
                     }
                 )
@@ -817,11 +874,13 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "Place a Toss Securities live KR/US order. Hard-pinned to "
             "account_mode='toss_live'; market='kr'|'us' is accepted or inferred. "
             "dry_run=True by default and sends no mutation. Real submission "
-            "requires dry_run=False and confirm=True. 100M KRW+ computable KR "
+            "requires dry_run=False, confirm=True, and "
+            "TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true. 100M KRW+ computable KR "
             "orders require operator-supplied confirm_high_value_order=True; it "
             "is never inferred. Before POST the tool blocks opposite pending "
-            "orders for the symbol and applies the live sell loss guard "
-            "(sell price/current market proxy must be >= avg_purchase_price*1.01)."
+            "orders across all paginated OPEN pages and applies the live sell "
+            "loss guard (sell price/current market proxy must be >= "
+            "avg_purchase_price*1.01)."
         ),
     )(toss_place_order)
     mcp.tool(
@@ -829,7 +888,8 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
         description=(
             "Modify a pending Toss Securities live order. Hard-pinned to "
             "account_mode='toss_live'. dry_run=True by default; real submission "
-            "requires dry_run=False and confirm=True. KR modify requires both "
+            "requires dry_run=False, confirm=True, and "
+            "TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true. KR modify requires both "
             "new_price and new_quantity. US modify requires new_price and "
             "rejects new_quantity. Sell reprices are blocked below "
             "avg_purchase_price*1.01. Toss returns a newly issued replacement "
@@ -841,7 +901,8 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
         description=(
             "Cancel a pending Toss Securities live order. Hard-pinned to "
             "account_mode='toss_live'. dry_run=True by default; real submission "
-            "requires dry_run=False and confirm=True. Toss returns a newly issued "
+            "requires dry_run=False, confirm=True, and "
+            "TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true. Toss returns a newly issued "
             "replacement orderId for successful cancel."
         ),
     )(toss_cancel_order)

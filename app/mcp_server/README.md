@@ -357,7 +357,7 @@ official KIS mock, and KIS live account paths:
   `https://openapivts.koreainvestment.com:29443`.
 - `account_mode="kis_live"` or omitted: existing live KIS behavior. For
   `place_order`, `dry_run=True` remains the default.
-- `account_mode="toss_live"`: official Toss Securities live KR/US account. Uses Toss credentials, maps to `toss_live` routing, and fails closed when `TOSS_API_ENABLED=false` or credentials are missing.
+- `account_mode="toss_live"`: official Toss Securities live KR/US account. Uses Toss credentials, maps to `toss_live` routing, and fails closed when `TOSS_API_ENABLED=false` or credentials are missing. Actual Toss order mutation POSTs also require `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true`; keep this false until the accepted-order ledger and operator live-smoke hold are cleared.
 
 Do not use `account_type="paper"` for official KIS mock. It is always DB
 simulation. Responses from updated surfaces include `account_mode`; deprecated
@@ -425,10 +425,10 @@ The `default` profile registers seven typed `toss_live_*` MCP tools:
 
 - **API Enablement**: Toss live tools are default-disabled. They fail closed unless `TOSS_API_ENABLED=true` and `validate_toss_api_config()` returns no missing keys.
 - **Account Mode Routing**: All Toss tools require `account_mode="toss_live"` (or `account_type="toss_live"`) and reject any mismatched account parameters.
-- **Mutation Safety (Dry-Run & Confirm)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False` AND `confirm=True` are explicitly passed.
+- **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
 - **High-Value Orders**: KR orders with a computable notional value >= 100,000,000 KRW fail locally unless `confirm_high_value_order=True` is supplied.
-- **Sell Loss-Sell Guard**: For sell orders and sell reprices, holdings cost basis is validated. Buys/sells will block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. If the holding/cost basis cannot be resolved, the sell fails closed.
-- **Opposite Pending Orders**: Before placing a non-dry-run order, the tool queries `OPEN` orders for the symbol and blocks the order if an opposite-side pending order already exists.
+- **Sell Loss-Sell Guard**: For sell orders and sell reprices, holdings cost basis is validated. Sells block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. If the holding/cost basis cannot be resolved, the sell fails closed.
+- **Opposite Pending Orders**: Before placing a non-dry-run order, the tool queries all paginated `OPEN` order pages for the symbol and blocks the order if an opposite-side pending order already exists. Pagination anomalies fail closed.
 - **Modify Semantics**:
   - KR modify requires both `new_price` and `new_quantity`.
   - US modify requires `new_price` and rejects `new_quantity`.

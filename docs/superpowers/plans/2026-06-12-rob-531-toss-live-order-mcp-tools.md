@@ -4,7 +4,7 @@
 
 **Goal:** Add seven default-profile `toss_live_*` MCP tools for Toss Securities live KR/US order preview, placement, modification, cancellation, history, positions, and orderable cash.
 
-**Architecture:** Extend the ROB-530 Toss client with explicit order mutation methods, then keep all live-order safety policy in a new MCP wrapper module `orders_toss_variants.py`. The tools are registered only in `McpProfile.DEFAULT`, fail closed when Toss is disabled or credentials are missing, default all mutations to `dry_run=True`, and require `confirm=True` before any POST. No DB migration, ledger write, reconcile, auto-trading adapter, or ladder support is included.
+**Architecture:** Extend the ROB-530 Toss client with explicit order mutation methods, then keep all live-order safety policy in a new MCP wrapper module `orders_toss_variants.py`. The tools are registered only in `McpProfile.DEFAULT`, fail closed when Toss is disabled or credentials are missing, default all mutations to `dry_run=True`, and require `confirm=True` plus `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` before any POST. No DB migration, ledger write, reconcile, auto-trading adapter, or ladder support is included.
 
 **Tech Stack:** Python 3.13, FastMCP, httpx, dataclasses, Decimal, pytest, pytest-asyncio, Ruff, ty.
 
@@ -29,7 +29,7 @@ Hard safety requirements:
 - Use `account_mode="toss_live"` metadata and reject any mismatched `account_mode` / `account_type` argument.
 - Check `validate_toss_api_config()` at every tool entry before broker reads or writes.
 - Mutation tools keep `dry_run=True` by default.
-- Mutation tools call Toss only when `dry_run=False and confirm=True`.
+- Mutation tools call Toss only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true`.
 - `confirmHighValueOrder` is never inferred automatically. Pass it only when the operator supplies `confirm_high_value_order=True`.
 - KR high-value orders with computable notional >= 100,000,000 KRW fail locally unless `confirm_high_value_order=True`.
 - For sell orders and sell reprices, validate holdings cost basis and block if execution price or current market sell proxy is below `average_purchase_price * 1.01`.
@@ -42,7 +42,7 @@ Hard safety requirements:
 
 Out of scope:
 
-- Ledger rows and reconcile. ROB-538 owns accepted-only ledger and fill evidence.
+- Ledger rows and reconcile. ROB-538 owns accepted-only ledger and fill evidence. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until ROB-538 and the ROB-539 live-smoke hold are cleared.
 - Portfolio/manual_holdings source switch. ROB-532 owns it.
 - Operational activation and live smoke. ROB-539 owns it.
 - Buy/sell ladder support. Opposite-pending constraints require separate design.
@@ -599,7 +599,7 @@ Document:
 
 - `default` profile now includes `toss_live_*`.
 - Toss is live-only and default-disabled by `TOSS_API_ENABLED`.
-- Mutations require `dry_run=False` and `confirm=True`.
+- Mutations require `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true`.
 - 100M KRW+ orders require explicit `confirm_high_value_order=True`.
 - KR modify needs price and quantity; US modify rejects quantity.
 - Cancel/modify return new replacement order ids.
@@ -663,7 +663,7 @@ Expected: no migration files.
 Add a Linear comment:
 
 ```text
-Implementation is ready for ROB-531, but hold_for_final_review remains active because this changes live order execution boundaries. Do not merge, deploy, or use for live Toss orders until stronger-model/CTO review clears the dry_run/confirm gates, high-value confirmation handling, opposite-pending precheck, loss-sell guard mirror, and KR/US modify semantics.
+Implementation is ready for ROB-531, but hold_for_final_review remains active because this changes live order execution boundaries. Do not merge, deploy, enable `TOSS_LIVE_ORDER_MUTATIONS_ENABLED`, or use for live Toss orders until stronger-model/CTO review clears the dry_run/confirm gates, high-value confirmation handling, opposite-pending precheck, loss-sell guard mirror, and KR/US modify semantics.
 ```
 
 - [ ] **Step 6: Final commit if needed**
