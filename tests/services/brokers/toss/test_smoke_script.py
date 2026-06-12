@@ -46,3 +46,73 @@ async def test_run_preflight_redacts_secret(monkeypatch, capsys) -> None:
     assert code == 0
     output = capsys.readouterr().out
     assert "client_secret" not in output.lower()
+
+
+def test_order_test_requires_explicit_order_arguments(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("TOSS_API_ENABLED", "true")
+
+    code = toss_live_smoke.main(["--order-test", "--symbol", "005930"])
+
+    assert code == 2
+    output = capsys.readouterr().out
+    assert "--market is required for --order-test" in output
+    assert "--quantity is required for --order-test" in output
+    assert "--price is required for --order-test" in output
+
+
+def test_confirm_requires_explicit_order_arguments(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("TOSS_API_ENABLED", "true")
+    monkeypatch.setenv("TOSS_LIVE_ORDER_MUTATIONS_ENABLED", "true")
+
+    code = toss_live_smoke.main(["--confirm", "--symbol", "005930"])
+
+    assert code == 2
+    output = capsys.readouterr().out
+    assert "--market is required for --confirm" in output
+    assert "--quantity is required for --confirm" in output
+    assert "--price is required for --confirm" in output
+
+
+def test_order_test_disabled_when_toss_api_disabled(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("TOSS_API_ENABLED", raising=False)
+
+    code = toss_live_smoke.main(
+        [
+            "--order-test",
+            "--market",
+            "kr",
+            "--symbol",
+            "005930",
+            "--quantity",
+            "1",
+            "--price",
+            "50000",
+        ]
+    )
+
+    assert code == 0
+    assert "TOSS_API_ENABLED is not truthy" in capsys.readouterr().out
+
+
+def test_confirm_disabled_without_mutation_gate(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("TOSS_API_ENABLED", "true")
+    monkeypatch.delenv("TOSS_LIVE_ORDER_MUTATIONS_ENABLED", raising=False)
+
+    code = toss_live_smoke.main(
+        [
+            "--confirm",
+            "--market",
+            "kr",
+            "--symbol",
+            "005930",
+            "--quantity",
+            "1",
+            "--price",
+            "50000",
+        ]
+    )
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "TOSS_LIVE_ORDER_MUTATIONS_ENABLED is not truthy" in output
+
