@@ -389,7 +389,11 @@ def _client_order_id_error(
     if client_order_id is None:
         return None
     candidate = client_order_id.strip()
-    if not candidate or not _SAFE_CLIENT_ORDER_ID_RE.fullmatch(candidate):
+    if (
+        not candidate
+        or candidate != client_order_id
+        or not _SAFE_CLIENT_ORDER_ID_RE.fullmatch(candidate)
+    ):
         return {
             "success": False,
             **base,

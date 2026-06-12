@@ -1873,3 +1873,48 @@ async def test_private_place_impl_rejects_unsafe_client_order_id_override(monkey
     assert result["success"] is False
     assert "Unsafe client order id rejected" in result["error"]
     assert not mock_client.placed_payloads
+
+
+@pytest.mark.asyncio
+async def test_private_place_impl_rejects_whitespace_padded_client_order_id_override(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+
+    result = await otv._toss_place_order_impl(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="1",
+        price="50000",
+        order_amount=None,
+        market="kr",
+        time_in_force="DAY",
+        dry_run=False,
+        confirm=True,
+        confirm_high_value_order=False,
+        reason=None,
+        exit_reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        indicators_snapshot=None,
+        report_item_uuid=None,
+        account_mode="toss_live",
+        account_type=None,
+        client_order_id_override=" abc123def456abc123def456abc123de ",
+    )
+
+    assert result["success"] is False
+    assert "Unsafe client order id rejected" in result["error"]
+    assert not mock_client.placed_payloads
