@@ -33,6 +33,7 @@ async def test_place_order_fails_closed_when_toss_disabled(monkeypatch):
     # We can check how toss_api_enabled is set in settings.
     # Let's say settings.toss_api_enabled is False.
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", False)
 
     with pytest.raises(TossApiDisabled):
@@ -73,7 +74,7 @@ class MockTossClient:
         if monkeypatch:
             monkeypatch.setattr(
                 "app.mcp_server.tooling.orders_toss_variants.TossReadClient.from_settings",
-                lambda *args, **kwargs: self
+                lambda *args, **kwargs: self,
             )
 
     async def aclose(self):
@@ -82,6 +83,7 @@ class MockTossClient:
     async def holdings(self, *, symbol=None):
         # returns simple dataclass mock
         from types import SimpleNamespace
+
         items = []
         for item in self.holdings_list:
             items.append(SimpleNamespace(**item))
@@ -89,6 +91,7 @@ class MockTossClient:
 
     async def list_orders(self, *, status, symbol=None, **kwargs):
         from types import SimpleNamespace
+
         orders = []
         for o in self.orders_list:
             if symbol and o.get("symbol") != symbol:
@@ -100,15 +103,24 @@ class MockTossClient:
 
     async def prices(self, symbols):
         from types import SimpleNamespace
-        return [SimpleNamespace(**item) for item in self.prices_list if item.get("symbol") in symbols]
+
+        return [
+            SimpleNamespace(**item)
+            for item in self.prices_list
+            if item.get("symbol") in symbols
+        ]
 
     async def place_order(self, payload):
         self.placed_payloads.append(payload)
         from types import SimpleNamespace
-        return SimpleNamespace(order_id="new-ord-123", client_order_id=payload.get("clientOrderId"))
+
+        return SimpleNamespace(
+            order_id="new-ord-123", client_order_id=payload.get("clientOrderId")
+        )
 
     async def get_order(self, order_id):
         from types import SimpleNamespace
+
         for o in self.orders_list:
             if o.get("order_id") == order_id:
                 return SimpleNamespace(**o)
@@ -117,14 +129,17 @@ class MockTossClient:
     async def modify_order(self, order_id, payload):
         self.placed_payloads.append(payload)
         from types import SimpleNamespace
+
         return SimpleNamespace(order_id="mod-ord-456")
 
     async def cancel_order(self, order_id):
         from types import SimpleNamespace
+
         return SimpleNamespace(order_id="can-ord-789")
 
     async def buying_power(self, *, currency):
         from types import SimpleNamespace
+
         return SimpleNamespace(currency=currency, cash_buying_power=Decimal("10000.0"))
 
 
@@ -132,6 +147,7 @@ class MockTossClient:
 async def test_place_order_defaults_to_dry_run_and_does_not_call_broker(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -155,6 +171,7 @@ async def test_place_order_defaults_to_dry_run_and_does_not_call_broker(monkeypa
 async def test_place_order_requires_confirm_when_dry_run_false(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -179,6 +196,7 @@ async def test_place_order_requires_confirm_when_dry_run_false(monkeypatch):
 async def test_high_value_kr_order_requires_explicit_confirm_high_value(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -205,10 +223,12 @@ async def test_high_value_kr_order_requires_explicit_confirm_high_value(monkeypa
 async def test_place_sell_blocks_below_avg_floor_for_limit_and_market(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
     from decimal import Decimal
+
     mock_client = MockTossClient(monkeypatch)
     mock_client.holdings_list = [
         {
@@ -247,7 +267,7 @@ async def test_place_sell_blocks_below_avg_floor_for_limit_and_market(monkeypatc
             "symbol": "AAPL",
             "last_price": Decimal("100.0"),
             "timestamp": "2026-06-12T00:00:00Z",
-            "currency": "USD"
+            "currency": "USD",
         }
     ]
     res_market = await toss_place_order(
@@ -267,6 +287,7 @@ async def test_place_sell_blocks_below_avg_floor_for_limit_and_market(monkeypatc
 async def test_place_order_blocks_opposite_pending_before_post(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -286,7 +307,7 @@ async def test_place_order_blocks_opposite_pending_before_post(monkeypatch):
             "currency": "USD",
             "ordered_at": "2026-06-12T00:00:00Z",
             "canceled_at": None,
-            "execution": {}
+            "execution": {},
         }
     ]
 
@@ -310,6 +331,7 @@ async def test_place_order_blocks_opposite_pending_before_post(monkeypatch):
 async def test_modify_kr_requires_price_and_quantity(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -328,7 +350,7 @@ async def test_modify_kr_requires_price_and_quantity(monkeypatch):
             "currency": "KRW",
             "ordered_at": "2026-06-12T00:00:00Z",
             "canceled_at": None,
-            "execution": {}
+            "execution": {},
         }
     ]
 
@@ -350,6 +372,7 @@ async def test_modify_kr_requires_price_and_quantity(monkeypatch):
 async def test_modify_us_rejects_quantity(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -368,7 +391,7 @@ async def test_modify_us_rejects_quantity(monkeypatch):
             "currency": "USD",
             "ordered_at": "2026-06-12T00:00:00Z",
             "canceled_at": None,
-            "execution": {}
+            "execution": {},
         }
     ]
 
@@ -390,6 +413,7 @@ async def test_modify_us_rejects_quantity(monkeypatch):
 async def test_modify_sell_reprice_blocks_below_avg_floor(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -408,7 +432,7 @@ async def test_modify_sell_reprice_blocks_below_avg_floor(monkeypatch):
             "currency": "USD",
             "ordered_at": "2026-06-12T00:00:00Z",
             "canceled_at": None,
-            "execution": {}
+            "execution": {},
         }
     ]
     mock_client.holdings_list = [
@@ -444,6 +468,7 @@ async def test_modify_sell_reprice_blocks_below_avg_floor(monkeypatch):
 async def test_modify_requires_confirm_when_dry_run_false(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -462,7 +487,7 @@ async def test_modify_requires_confirm_when_dry_run_false(monkeypatch):
             "currency": "USD",
             "ordered_at": "2026-06-12T00:00:00Z",
             "canceled_at": None,
-            "execution": {}
+            "execution": {},
         }
     ]
 
@@ -481,6 +506,7 @@ async def test_modify_requires_confirm_when_dry_run_false(monkeypatch):
 async def test_cancel_requires_confirm_when_dry_run_false(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -500,6 +526,7 @@ async def test_cancel_requires_confirm_when_dry_run_false(monkeypatch):
 async def test_modify_and_cancel_surface_replacement_order_id(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -518,7 +545,7 @@ async def test_modify_and_cancel_surface_replacement_order_id(monkeypatch):
             "currency": "USD",
             "ordered_at": "2026-06-12T00:00:00Z",
             "canceled_at": None,
-            "execution": {}
+            "execution": {},
         }
     ]
 
@@ -551,17 +578,23 @@ async def test_modify_and_cancel_surface_replacement_order_id(monkeypatch):
 async def test_get_order_history_uses_closed_cursor_pagination_args(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
     mock_client = MockTossClient(monkeypatch)
     seen_args = {}
-    async def fake_list_orders(status, symbol=None, from_date=None, to_date=None, cursor=None, limit=None):
+
+    async def fake_list_orders(
+        status, symbol=None, from_date=None, to_date=None, cursor=None, limit=None
+    ):
         seen_args["status"] = status
         seen_args["cursor"] = cursor
         seen_args["limit"] = limit
         from types import SimpleNamespace
+
         return SimpleNamespace(orders=[], next_cursor="cur456", has_next=True)
+
     monkeypatch.setattr(mock_client, "list_orders", fake_list_orders)
 
     res = await toss_get_order_history(
@@ -582,6 +615,7 @@ async def test_get_order_history_uses_closed_cursor_pagination_args(monkeypatch)
 async def test_get_positions_shapes_holdings(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
@@ -618,6 +652,7 @@ async def test_get_positions_shapes_holdings(monkeypatch):
 async def test_get_orderable_cash_reads_currency(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
+
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 

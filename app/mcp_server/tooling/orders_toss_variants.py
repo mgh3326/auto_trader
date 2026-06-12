@@ -68,7 +68,9 @@ async def _client_context():
         await client.aclose()
 
 
-def _infer_market(symbol: str, market: Literal["kr", "us"] | None) -> Literal["kr", "us"]:
+def _infer_market(
+    symbol: str, market: Literal["kr", "us"] | None
+) -> Literal["kr", "us"]:
     if market is not None:
         val = str(market).strip().lower()
         if val not in ("kr", "us"):
@@ -296,9 +298,15 @@ async def toss_preview_order(
     _check_mode_arg(account_mode, account_type)
 
     mkt = _infer_market(symbol, market)
-    quantity_dec = _decimal_string(quantity, "quantity") if quantity is not None else None
+    quantity_dec = (
+        _decimal_string(quantity, "quantity") if quantity is not None else None
+    )
     price_dec = _decimal_string(price, "price") if price is not None else None
-    order_amount_dec = _decimal_string(order_amount, "order_amount") if order_amount is not None else None
+    order_amount_dec = (
+        _decimal_string(order_amount, "order_amount")
+        if order_amount is not None
+        else None
+    )
 
     payload: dict[str, Any] = {
         "clientOrderId": _new_client_order_id(),
@@ -342,9 +350,15 @@ async def toss_place_order(
     _check_mode_arg(account_mode, account_type)
 
     mkt = _infer_market(symbol, market)
-    quantity_dec = _decimal_string(quantity, "quantity") if quantity is not None else None
+    quantity_dec = (
+        _decimal_string(quantity, "quantity") if quantity is not None else None
+    )
     price_dec = _decimal_string(price, "price") if price is not None else None
-    order_amount_dec = _decimal_string(order_amount, "order_amount") if order_amount is not None else None
+    order_amount_dec = (
+        _decimal_string(order_amount, "order_amount")
+        if order_amount is not None
+        else None
+    )
 
     payload: dict[str, Any] = {
         "clientOrderId": _new_client_order_id(),
@@ -384,17 +398,34 @@ async def toss_place_order(
         }
 
     # Guard: high-value KR order
-    if (guard := _high_value_error(mkt, quantity_dec, price_dec, order_amount_dec, confirm_high_value_order, base_response)) is not None:
+    if (
+        guard := _high_value_error(
+            mkt,
+            quantity_dec,
+            price_dec,
+            order_amount_dec,
+            confirm_high_value_order,
+            base_response,
+        )
+    ) is not None:
         return guard
 
     async def execute_order(client: TossReadClient):
         # Guard: opposite pending order check
-        if (opp_guard := await _opposite_pending_error(client, symbol, side, base_response)) is not None:
+        if (
+            opp_guard := await _opposite_pending_error(
+                client, symbol, side, base_response
+            )
+        ) is not None:
             return opp_guard
 
         # Guard: sell loss check
         if side == "sell":
-            if (sell_guard := await _sell_loss_guard(client, symbol, order_type, price_dec, base_response)) is not None:
+            if (
+                sell_guard := await _sell_loss_guard(
+                    client, symbol, order_type, price_dec, base_response
+                )
+            ) is not None:
                 return sell_guard
 
         try:
@@ -447,8 +478,14 @@ async def toss_modify_order(
         orig_order_type = orig_order.order_type.lower()
 
         mkt = _infer_market(symbol, market)
-        new_price_dec = _decimal_string(new_price, "new_price") if new_price is not None else None
-        new_quantity_dec = _decimal_string(new_quantity, "new_quantity") if new_quantity is not None else None
+        new_price_dec = (
+            _decimal_string(new_price, "new_price") if new_price is not None else None
+        )
+        new_quantity_dec = (
+            _decimal_string(new_quantity, "new_quantity")
+            if new_quantity is not None
+            else None
+        )
 
         if mkt == "kr":
             if new_price_dec is None or new_quantity_dec is None:
@@ -482,10 +519,23 @@ async def toss_modify_order(
             payload["confirmHighValueOrder"] = True
 
         if side == "sell" and orig_order_type == "limit":
-            if (sell_guard := await _sell_loss_guard(client, symbol, "limit", new_price_dec, base_response)) is not None:
+            if (
+                sell_guard := await _sell_loss_guard(
+                    client, symbol, "limit", new_price_dec, base_response
+                )
+            ) is not None:
                 return sell_guard
 
-        if (high_value_guard := _high_value_error(mkt, new_quantity_dec, new_price_dec, None, confirm_high_value_order, base_response)) is not None:
+        if (
+            high_value_guard := _high_value_error(
+                mkt,
+                new_quantity_dec,
+                new_price_dec,
+                None,
+                confirm_high_value_order,
+                base_response,
+            )
+        ) is not None:
             return high_value_guard
 
         if dry_run:
@@ -599,21 +649,29 @@ async def toss_get_order_history(
             )
             orders_list = []
             for o in page.orders:
-                orders_list.append({
-                    "order_id": o.order_id,
-                    "symbol": o.symbol,
-                    "side": o.side,
-                    "order_type": o.order_type,
-                    "time_in_force": o.time_in_force,
-                    "status": o.status,
-                    "price": _stringify_decimal(o.price) if o.price is not None else None,
-                    "quantity": _stringify_decimal(o.quantity) if o.quantity is not None else None,
-                    "order_amount": _stringify_decimal(o.order_amount) if o.order_amount is not None else None,
-                    "currency": o.currency,
-                    "ordered_at": o.ordered_at,
-                    "canceled_at": o.canceled_at,
-                    "execution": o.execution,
-                })
+                orders_list.append(
+                    {
+                        "order_id": o.order_id,
+                        "symbol": o.symbol,
+                        "side": o.side,
+                        "order_type": o.order_type,
+                        "time_in_force": o.time_in_force,
+                        "status": o.status,
+                        "price": _stringify_decimal(o.price)
+                        if o.price is not None
+                        else None,
+                        "quantity": _stringify_decimal(o.quantity)
+                        if o.quantity is not None
+                        else None,
+                        "order_amount": _stringify_decimal(o.order_amount)
+                        if o.order_amount is not None
+                        else None,
+                        "currency": o.currency,
+                        "ordered_at": o.ordered_at,
+                        "canceled_at": o.canceled_at,
+                        "execution": o.execution,
+                    }
+                )
             return {
                 "success": True,
                 **base_response,
@@ -643,19 +701,29 @@ async def toss_get_positions(
             res = await client.holdings(symbol=symbol)
             items_list = []
             for item in res.items:
-                items_list.append({
-                    "symbol": item.symbol,
-                    "name": item.name,
-                    "market_country": item.market_country,
-                    "currency": item.currency,
-                    "quantity": _stringify_decimal(item.quantity) if item.quantity is not None else None,
-                    "last_price": _stringify_decimal(item.last_price) if item.last_price is not None else None,
-                    "average_purchase_price": _stringify_decimal(item.average_purchase_price) if item.average_purchase_price is not None else None,
-                    "market_value": item.market_value,
-                    "profit_loss": item.profit_loss,
-                    "daily_profit_loss": item.daily_profit_loss,
-                    "cost": item.cost,
-                })
+                items_list.append(
+                    {
+                        "symbol": item.symbol,
+                        "name": item.name,
+                        "market_country": item.market_country,
+                        "currency": item.currency,
+                        "quantity": _stringify_decimal(item.quantity)
+                        if item.quantity is not None
+                        else None,
+                        "last_price": _stringify_decimal(item.last_price)
+                        if item.last_price is not None
+                        else None,
+                        "average_purchase_price": _stringify_decimal(
+                            item.average_purchase_price
+                        )
+                        if item.average_purchase_price is not None
+                        else None,
+                        "market_value": item.market_value,
+                        "profit_loss": item.profit_loss,
+                        "daily_profit_loss": item.daily_profit_loss,
+                        "cost": item.cost,
+                    }
+                )
             return {
                 "success": True,
                 **base_response,
@@ -693,10 +761,30 @@ async def toss_get_orderable_cash(
 
 
 def register_toss_live_order_tools(mcp: FastMCP) -> None:
-    mcp.tool(name="toss_preview_order", description="Preview a live order on Toss Securities.")(toss_preview_order)
-    mcp.tool(name="toss_place_order", description="Place a live order on Toss Securities.")(toss_place_order)
-    mcp.tool(name="toss_modify_order", description="Modify a pending live order on Toss Securities.")(toss_modify_order)
-    mcp.tool(name="toss_cancel_order", description="Cancel a pending live order on Toss Securities.")(toss_cancel_order)
-    mcp.tool(name="toss_get_order_history", description="Retrieve live order history from Toss Securities.")(toss_get_order_history)
-    mcp.tool(name="toss_get_positions", description="Retrieve current holding positions from Toss Securities.")(toss_get_positions)
-    mcp.tool(name="toss_get_orderable_cash", description="Retrieve available cash/buying power from Toss Securities.")(toss_get_orderable_cash)
+    mcp.tool(
+        name="toss_preview_order",
+        description="Preview a live order on Toss Securities.",
+    )(toss_preview_order)
+    mcp.tool(
+        name="toss_place_order", description="Place a live order on Toss Securities."
+    )(toss_place_order)
+    mcp.tool(
+        name="toss_modify_order",
+        description="Modify a pending live order on Toss Securities.",
+    )(toss_modify_order)
+    mcp.tool(
+        name="toss_cancel_order",
+        description="Cancel a pending live order on Toss Securities.",
+    )(toss_cancel_order)
+    mcp.tool(
+        name="toss_get_order_history",
+        description="Retrieve live order history from Toss Securities.",
+    )(toss_get_order_history)
+    mcp.tool(
+        name="toss_get_positions",
+        description="Retrieve current holding positions from Toss Securities.",
+    )(toss_get_positions)
+    mcp.tool(
+        name="toss_get_orderable_cash",
+        description="Retrieve available cash/buying power from Toss Securities.",
+    )(toss_get_orderable_cash)

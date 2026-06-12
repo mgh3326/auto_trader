@@ -268,6 +268,7 @@ async def test_place_order_posts_json_with_account_header_and_client_order_id() 
     assert seen["path"] == "/api/v1/orders"
     assert seen["headers"]["x-tossinvest-account"] == "999"
     import json
+
     assert json.loads(seen["body"]) == payload
     assert res.order_id == "new-ord-123"
     assert res.client_order_id == "abc123"
@@ -305,6 +306,7 @@ async def test_modify_order_posts_to_modify_path_and_parses_new_order_id() -> No
     assert seen["method"] == "POST"
     assert seen["path"] == "/api/v1/orders/orig-ord-123/modify"
     import json
+
     assert json.loads(seen["body"]) == payload
     assert res.order_id == "mod-ord-456"
 
@@ -336,5 +338,6 @@ async def test_cancel_order_posts_to_cancel_path_and_parses_new_order_id() -> No
     assert seen["method"] == "POST"
     assert seen["path"] == "/api/v1/orders/orig-ord-123/cancel"
     import json
+
     assert json.loads(seen["body"]) == {}
     assert res.order_id == "can-ord-789"
