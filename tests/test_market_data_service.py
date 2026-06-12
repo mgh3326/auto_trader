@@ -1183,3 +1183,93 @@ def test_market_data_exports_get_short_interest() -> None:
     assert getattr(market_data, "get_short_interest", None) is getattr(
         market_data_service, "get_short_interest", None
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_intraday_toss_frame_aggregates_1m_to_5m(monkeypatch):
+    from app.services.market_data import toss_ohlcv
+
+    one_minute = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 0),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "value": 1000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:01:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 1),
+                "open": 100.0,
+                "high": 105.0,
+                "low": 98.0,
+                "close": 104.0,
+                "volume": 20.0,
+                "value": 2080.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:02:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 2),
+                "open": 104.0,
+                "high": 106.0,
+                "low": 103.0,
+                "close": 105.0,
+                "volume": 30.0,
+                "value": 3150.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:03:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 3),
+                "open": 105.0,
+                "high": 107.0,
+                "low": 104.0,
+                "close": 106.0,
+                "volume": 40.0,
+                "value": 4240.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:04:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 4),
+                "open": 106.0,
+                "high": 108.0,
+                "low": 105.0,
+                "close": 107.0,
+                "volume": 50.0,
+                "value": 5350.0,
+            },
+        ]
+    )
+
+    class FakeClient:
+        async def aclose(self): ...
+
+    monkeypatch.setattr(toss_ohlcv.TossReadClient, "from_settings", lambda: FakeClient())
+    monkeypatch.setattr(
+        toss_ohlcv,
+        "fetch_toss_candles_frame",
+        AsyncMock(return_value=one_minute),
+    )
+
+    frame = await toss_ohlcv.fetch_kr_intraday_toss_frame(
+        symbol="005930",
+        period="5m",
+        count=1,
+        end_date=None,
+    )
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["open"] == 100.0
+    assert frame.iloc[0]["high"] == 108.0
+    assert frame.iloc[0]["low"] == 98.0
+    assert frame.iloc[0]["close"] == 107.0
+    assert frame.iloc[0]["volume"] == 150.0
+
