@@ -4,7 +4,7 @@ Pytest configuration and common fixtures for auto-trader tests.
 
 import asyncio
 import os
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -106,6 +106,128 @@ def _ensure_test_env() -> None:
 _ensure_test_env()
 
 from app.core.config import settings
+
+MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
+MARKET_VALUATION_SOURCE_MODEL_CHECK_NAME = (
+    "ck_market_valuation_snapshots_ck_market_valuation_snapshots_source"
+)
+MARKET_VALUATION_SOURCE_VALUES = ("naver_finance", "yahoo", "toss_openapi")
+
+SNAPSHOT_KIND_CHECK_NAME = "ck_investment_snapshots_snapshot_kind"
+SNAPSHOT_KIND_MODEL_CHECK_NAME = (
+    "ck_investment_snapshots_ck_investment_snapshots_snapshot_kind"
+)
+SNAPSHOT_KIND_CHECK_NAMES = (
+    SNAPSHOT_KIND_MODEL_CHECK_NAME,
+    SNAPSHOT_KIND_CHECK_NAME,
+)
+SNAPSHOT_KIND_VALUES = (
+    "portfolio",
+    "market",
+    "news",
+    "symbol",
+    "candidate_universe",
+    "browser_probe",
+    "invest_page",
+    "journal",
+    "watch_context",
+    "naver_remote_debug",
+    "toss_remote_debug",
+    "llm_input_frozen",
+    "pending_orders",
+    "validated_run_card",
+    "kr_market_ranking",
+    "investor_flow",
+)
+
+
+def _quote_ident(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _check_constraint_sql(column_name: str, values: tuple[str, ...]) -> str:
+    values_sql = ",".join(f"'{value}'" for value in values)
+    return f"CHECK ({column_name} IN ({values_sql}))"
+
+
+def _constraint_definitions_need_refresh(
+    definitions: Iterable[str | None],
+    required_values: tuple[str, ...],
+) -> bool:
+    definitions = list(definitions)
+    if not definitions:
+        return True
+    return any(
+        not all(value in (definition or "") for value in required_values)
+        for definition in definitions
+    )
+
+
+async def _ensure_market_valuation_source_constraint(conn, sql_text) -> None:
+    constraints = await conn.execute(
+        sql_text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'market_valuation_snapshots'::regclass "
+            "AND pg_get_constraintdef(oid) LIKE '%source%' "
+            "AND contype = 'c'"
+        )
+    )
+    rows = list(constraints)
+    if not _constraint_definitions_need_refresh(
+        [row[1] for row in rows],
+        MARKET_VALUATION_SOURCE_VALUES,
+    ):
+        return
+
+    for name, _definition in rows:
+        await conn.execute(
+            sql_text(
+                "ALTER TABLE market_valuation_snapshots "
+                f"DROP CONSTRAINT IF EXISTS {_quote_ident(name)}"
+            )
+        )
+    await conn.execute(
+        sql_text(
+            "ALTER TABLE market_valuation_snapshots "
+            f"ADD CONSTRAINT {MARKET_VALUATION_SOURCE_CHECK_NAME} "
+            f"{_check_constraint_sql('source', MARKET_VALUATION_SOURCE_VALUES)}"
+        )
+    )
+
+
+async def _ensure_investment_snapshot_kind_constraint(conn, sql_text) -> None:
+    names_sql = ",".join(f"'{name}'" for name in SNAPSHOT_KIND_CHECK_NAMES)
+    constraints = await conn.execute(
+        sql_text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.investment_snapshots'::regclass "
+            f"AND conname IN ({names_sql}) "
+            "AND contype = 'c'"
+        )
+    )
+    rows = list(constraints)
+    if not _constraint_definitions_need_refresh(
+        [row[1] for row in rows],
+        SNAPSHOT_KIND_VALUES,
+    ):
+        return
+
+    for name in SNAPSHOT_KIND_CHECK_NAMES:
+        await conn.execute(
+            sql_text(
+                "ALTER TABLE review.investment_snapshots "
+                f"DROP CONSTRAINT IF EXISTS {_quote_ident(name)}"
+            )
+        )
+    await conn.execute(
+        sql_text(
+            "ALTER TABLE review.investment_snapshots "
+            f"ADD CONSTRAINT {SNAPSHOT_KIND_CHECK_NAME} "
+            f"{_check_constraint_sql('snapshot_kind', SNAPSHOT_KIND_VALUES)}"
+        )
+    )
 
 
 @pytest.fixture(scope="session")
@@ -537,6 +659,73 @@ async def db_session():
                             "ADD COLUMN high_52w_date DATE"
                         )
                     )
+                # ROB-534 — Toss symbol master columns.
+                for table, cols in [
+                    (
+                        "kr_symbol_universe",
+                        [
+                            ("security_type", "VARCHAR(20)"),
+                            ("is_common_share", "BOOLEAN"),
+                            ("listing_status", "VARCHAR(20)"),
+                            ("list_date", "DATE"),
+                            ("delist_date", "DATE"),
+                            ("shares_outstanding", "NUMERIC(30, 0)"),
+                            ("leverage_factor", "NUMERIC(12, 6)"),
+                            ("krx_trading_suspended", "BOOLEAN"),
+                            ("nxt_trading_suspended", "BOOLEAN"),
+                            ("isin", "VARCHAR(20)"),
+                            ("toss_master_updated_at", "TIMESTAMP WITH TIME ZONE"),
+                        ],
+                    ),
+                    (
+                        "us_symbol_universe",
+                        [
+                            ("security_type", "VARCHAR(20)"),
+                            ("is_common_share", "BOOLEAN"),
+                            ("listing_status", "VARCHAR(20)"),
+                            ("list_date", "DATE"),
+                            ("delist_date", "DATE"),
+                            ("shares_outstanding", "NUMERIC(30, 0)"),
+                            ("leverage_factor", "NUMERIC(12, 6)"),
+                            ("isin", "VARCHAR(20)"),
+                            ("toss_master_updated_at", "TIMESTAMP WITH TIME ZONE"),
+                        ],
+                    ),
+                ]:
+                    for col_name, col_type in cols:
+                        has_col = (
+                            await conn.execute(
+                                text(
+                                    f"SELECT 1 FROM information_schema.columns "
+                                    f"WHERE table_name = '{table}' AND column_name = '{col_name}'"
+                                )
+                            )
+                        ).first()
+                        if not has_col:
+                            await conn.execute(
+                                text(
+                                    f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                                )
+                            )
+                await _ensure_market_valuation_source_constraint(conn, text)
+                # Recreate unique constraint if missing
+                has_uq = (
+                    await conn.execute(
+                        text(
+                            "SELECT 1 FROM pg_constraint "
+                            "WHERE conrelid = 'market_valuation_snapshots'::regclass "
+                            "AND conname = 'uq_market_valuation_snapshots_market_symbol_date_source'"
+                        )
+                    )
+                ).first()
+                if not has_uq:
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE market_valuation_snapshots "
+                            "ADD CONSTRAINT uq_market_valuation_snapshots_market_symbol_date_source "
+                            "UNIQUE (market, symbol, snapshot_date, source)"
+                        )
+                    )
                 # ROB-443 PR1 — funding_rate added to the (persistent) crypto
                 # screener snapshot table. Same fresh-DB/create_all logic: only
                 # ALTER when genuinely missing to avoid an AccessExclusive lock.
@@ -685,37 +874,9 @@ async def db_session():
                         "))"
                     )
                 )
-                # ROB-329 — extend investment_snapshots.snapshot_kind CHECK to
-                # include 'validated_run_card' (and 'pending_orders' from
-                # ROB-274 P2). create_all is no-op on the persistent test
-                # table, so drop+recreate here; canonical schema lives in
-                # migration 20260527_rob329_extend_snapshot_kind_run_card.py.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_snapshots "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_snapshots_ck_investment_snapshots_snapshot_kind"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_snapshots "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_snapshots_snapshot_kind"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_snapshots "
-                        "ADD CONSTRAINT ck_investment_snapshots_snapshot_kind "
-                        "CHECK (snapshot_kind IN ("
-                        "'portfolio','market','news','symbol','candidate_universe',"
-                        "'browser_probe','invest_page','journal','watch_context',"
-                        "'naver_remote_debug','toss_remote_debug','llm_input_frozen',"
-                        "'pending_orders','validated_run_card'"
-                        "))"
-                    )
-                )
+                # Avoid repeated AccessExclusive constraint refreshes on this
+                # hot table while xdist workers are already running test bodies.
+                await _ensure_investment_snapshot_kind_constraint(conn, text)
                 # ROB-274 — proposal-state columns + operation-aware CHECKs on
                 # investment_report_items. Mirrors the persistent-DB patch
                 # pattern above; the canonical schema lives in migration
