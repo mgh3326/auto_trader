@@ -8,6 +8,7 @@ Every tool is hard-pinned to ``account_mode="toss_live"``. They:
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -20,11 +21,17 @@ from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
 )
+from app.mcp_server.tooling.toss_live_ledger import (
+    record_toss_place_order,
+    record_toss_replacement_order,
+)
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "toss_preview_order",
@@ -34,6 +41,7 @@ TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "toss_get_order_history",
     "toss_get_positions",
     "toss_get_orderable_cash",
+    "toss_reconcile_orders",
 }
 
 
@@ -416,6 +424,16 @@ async def toss_place_order(
     dry_run: bool = True,
     confirm: bool = False,
     confirm_high_value_order: bool = False,
+    reason: str | None = None,
+    exit_reason: str | None = None,
+    thesis: str | None = None,
+    strategy: str | None = None,
+    target_price: str | int | None = None,
+    stop_loss: str | int | None = None,
+    min_hold_days: int | None = None,
+    notes: str | None = None,
+    indicators_snapshot: dict[str, Any] | None = None,
+    report_item_uuid: str | None = None,
     account_mode: str | None = None,
     account_type: str | None = None,
 ) -> dict[str, Any]:
@@ -431,6 +449,14 @@ async def toss_place_order(
         _decimal_string(order_amount, "order_amount")
         if order_amount is not None
         else None
+    )
+    target_price_dec = (
+        _decimal_string(target_price, "target_price")
+        if target_price is not None
+        else None
+    )
+    stop_loss_dec = (
+        _decimal_string(stop_loss, "stop_loss") if stop_loss is not None else None
     )
 
     payload: dict[str, Any] = {
@@ -510,12 +536,46 @@ async def toss_place_order(
 
         try:
             res = await client.place_order(payload)
+            raw_response = {
+                "orderId": res.order_id,
+                "clientOrderId": res.client_order_id,
+                "payload": _json_safe(payload),
+            }
+            ledger = await record_toss_place_order(
+                market=mkt,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                time_in_force=time_in_force,
+                quantity=quantity_dec,
+                price=price_dec,
+                order_amount=order_amount_dec,
+                currency=("KRW" if mkt == "kr" else "USD"),
+                client_order_id=res.client_order_id or str(payload["clientOrderId"]),
+                broker_order_id=res.order_id,
+                raw_response=raw_response,
+                reason=reason,
+                exit_reason=exit_reason,
+                thesis=thesis,
+                strategy=strategy,
+                target_price=target_price_dec,
+                stop_loss=stop_loss_dec,
+                min_hold_days=min_hold_days,
+                notes=notes,
+                indicators_snapshot=indicators_snapshot,
+                report_item_uuid=report_item_uuid,
+            )
             return {
                 "success": True,
                 **base_response,
                 "mutation_sent": True,
                 "order_id": res.order_id,
                 "client_order_id": res.client_order_id,
+                **ledger,
+                "message": (
+                    "Toss live order accepted and recorded accepted-only; "
+                    "run toss_reconcile_orders to book confirmed fills."
+                ),
             }
         except Exception as exc:
             return _toss_error_response(exc, {**base_response, "mutation_sent": True})
@@ -643,6 +703,26 @@ async def toss_modify_order(
 
         try:
             res = await client.modify_order(order_id, payload)
+            ledger = await record_toss_replacement_order(
+                operation_kind="modify",
+                market=mkt,
+                symbol=symbol,
+                side=side,
+                order_type=orig_order_type,
+                time_in_force=orig_order.time_in_force,
+                quantity=new_quantity_dec or orig_order.quantity,
+                price=new_price_dec or orig_order.price,
+                order_amount=orig_order.order_amount,
+                currency=orig_order.currency,
+                original_order_id=order_id,
+                replacement_order_id=res.order_id,
+                raw_response={
+                    "operation": "modify",
+                    "originalOrderId": order_id,
+                    "replacementOrderId": res.order_id,
+                    "payload": _json_safe(payload),
+                },
+            )
             return {
                 "success": True,
                 **base_response,
@@ -650,6 +730,7 @@ async def toss_modify_order(
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
                 "operation_semantics": "Toss modify returns a newly issued orderId; it is not the original order id.",
+                **ledger,
             }
         except Exception as exc:
             return _toss_error_response(exc, {**base_response, "mutation_sent": True})
@@ -701,13 +782,38 @@ async def toss_cancel_order(
 
     try:
         async with _client_context() as client:
+            try:
+                orig_order = await client.get_order(order_id)
+            except Exception as exc:
+                return _toss_error_response(exc, base_response)
+            mkt = _infer_market(orig_order.symbol, None)
             res = await client.cancel_order(order_id)
+            ledger = await record_toss_replacement_order(
+                operation_kind="cancel",
+                market=mkt,
+                symbol=orig_order.symbol,
+                side=str(orig_order.side).lower(),
+                order_type=str(orig_order.order_type).lower(),
+                time_in_force=orig_order.time_in_force,
+                quantity=orig_order.quantity,
+                price=orig_order.price,
+                order_amount=orig_order.order_amount,
+                currency=orig_order.currency,
+                original_order_id=order_id,
+                replacement_order_id=res.order_id,
+                raw_response={
+                    "operation": "cancel",
+                    "originalOrderId": order_id,
+                    "replacementOrderId": res.order_id,
+                },
+            )
             return {
                 "success": True,
                 **base_response,
                 "mutation_sent": True,
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
+                **ledger,
                 "operation_semantics": "Toss cancel returns a newly issued orderId; it is not the original order id.",
             }
     except Exception as exc:
@@ -857,6 +963,28 @@ async def toss_get_orderable_cash(
         return _toss_error_response(exc, base_response)
 
 
+async def toss_reconcile_orders(
+    symbol: str | None = None,
+    order_id: str | None = None,
+    market: Literal["kr", "us"] | None = None,
+    dry_run: bool = True,
+    limit: int = 100,
+    account_mode: str | None = None,
+    account_type: str | None = None,
+) -> dict[str, Any]:
+    if (guard := _entry_guard(account_mode, account_type)) is not None:
+        return guard
+    from app.mcp_server.tooling.toss_live_ledger import toss_reconcile_orders_impl
+
+    return await toss_reconcile_orders_impl(
+        symbol=symbol,
+        order_id=order_id,
+        market=market,
+        dry_run=dry_run,
+        limit=limit,
+    )
+
+
 def register_toss_live_order_tools(mcp: FastMCP) -> None:
     mcp.tool(
         name="toss_preview_order",
@@ -880,7 +1008,8 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "is never inferred. Before POST the tool blocks opposite pending "
             "orders across all paginated OPEN pages and applies the live sell "
             "loss guard (sell price/current market proxy must be >= "
-            "avg_purchase_price*1.01)."
+            "avg_purchase_price*1.01). Supports optional metadata (note, "
+            "reason, strategy, signal) for ledger recording."
         ),
     )(toss_place_order)
     mcp.tool(
@@ -930,3 +1059,13 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "default-disabled by Toss API config."
         ),
     )(toss_get_orderable_cash)
+    mcp.tool(
+        name="toss_reconcile_orders",
+        description=(
+            "Reconcile Toss Securities live KR/US orders from the local "
+            "review.toss_live_order_ledger against single-order broker evidence "
+            "from GET /orders/{orderId}. Books fill/journal/realized_pnl only "
+            "from confirmed execution evidence and is delta-idempotent. "
+            "dry_run=True by default."
+        ),
+    )(toss_reconcile_orders)
