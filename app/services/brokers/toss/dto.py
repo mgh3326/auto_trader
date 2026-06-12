@@ -264,3 +264,27 @@ def parse_order(raw: dict[str, Any]) -> TossOrder:
     return parse_orders({"orders": [raw], "nextCursor": None, "hasNext": False}).orders[
         0
     ]
+
+
+@dataclass(frozen=True)
+class TossOrderPlacementResult:
+    order_id: str
+    client_order_id: str | None
+
+
+@dataclass(frozen=True)
+class TossOrderOperationResult:
+    order_id: str
+
+
+def parse_order_placement_result(raw: dict[str, Any]) -> TossOrderPlacementResult:
+    return TossOrderPlacementResult(
+        order_id=str(raw["orderId"]),
+        client_order_id=(
+            str(raw["clientOrderId"]) if raw.get("clientOrderId") is not None else None
+        ),
+    )
+
+
+def parse_order_operation_result(raw: dict[str, Any]) -> TossOrderOperationResult:
+    return TossOrderOperationResult(order_id=str(raw["orderId"]))

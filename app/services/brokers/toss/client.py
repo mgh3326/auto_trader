@@ -9,11 +9,15 @@ from app.core.config import settings
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.dto import (
     TossAccount,
+    TossOrderOperationResult,
+    TossOrderPlacementResult,
     parse_accounts,
     parse_buying_power,
     parse_commissions,
     parse_holdings,
     parse_order,
+    parse_order_operation_result,
+    parse_order_placement_result,
     parse_orders,
     parse_prices,
     parse_sellable_quantity,
@@ -66,6 +70,7 @@ class TossReadClient:
         *,
         group: TossApiGroup,
         params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
         account_required: bool = False,
     ) -> Any:
         await self._rate_limiter.acquire(group)
@@ -74,14 +79,14 @@ class TossReadClient:
         if account_required:
             headers["X-Tossinvest-Account"] = str(await self._resolve_account_seq())
         response = await self._client.request(
-            method, path, params=params, headers=headers
+            method, path, params=params, json=json, headers=headers
         )
         if response.status_code == 429:
             await asyncio.sleep(
                 retry_delay_seconds(response.headers.get("Retry-After"), attempt=0)
             )
             response = await self._client.request(
-                method, path, params=params, headers=headers
+                method, path, params=params, json=json, headers=headers
             )
         try:
             return parse_toss_response(response)
@@ -90,7 +95,7 @@ class TossReadClient:
                 token = await self._token_manager.get_access_token(force_reissue=True)
                 headers["Authorization"] = f"Bearer {token}"
                 retry = await self._client.request(
-                    method, path, params=params, headers=headers
+                    method, path, params=params, json=json, headers=headers
                 )
                 return parse_toss_response(retry)
             raise
@@ -291,6 +296,41 @@ class TossReadClient:
                 "GET",
                 "/api/v1/commissions",
                 group=TossApiGroup.ORDER_INFO,
+                account_required=True,
+            )
+        )
+
+    async def place_order(self, payload: dict[str, Any]) -> TossOrderPlacementResult:
+        return parse_order_placement_result(
+            await self._request(
+                "POST",
+                "/api/v1/orders",
+                group=TossApiGroup.ORDER,
+                json=payload,
+                account_required=True,
+            )
+        )
+
+    async def modify_order(
+        self, order_id: str, payload: dict[str, Any]
+    ) -> TossOrderOperationResult:
+        return parse_order_operation_result(
+            await self._request(
+                "POST",
+                f"/api/v1/orders/{order_id}/modify",
+                group=TossApiGroup.ORDER,
+                json=payload,
+                account_required=True,
+            )
+        )
+
+    async def cancel_order(self, order_id: str) -> TossOrderOperationResult:
+        return parse_order_operation_result(
+            await self._request(
+                "POST",
+                f"/api/v1/orders/{order_id}/cancel",
+                group=TossApiGroup.ORDER,
+                json={},
                 account_required=True,
             )
         )
