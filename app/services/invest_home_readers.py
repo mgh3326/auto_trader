@@ -584,13 +584,11 @@ class TossApiHomeReader:
                         else None,
                         priceState="live",
                         sourceOfTruth=True,
-                        isTradeable=True,
+                        isTradeable=False,
                         manualOnly=False,
-                        sellableQuantity=float(position.sellable_quantity)
-                        if position.sellable_quantity is not None
-                        else None,
+                        sellableQuantity=0.0,
                         pendingSellQuantity=0.0,
-                        referenceQuantity=0.0,
+                        referenceQuantity=float(position.quantity),
                     )
                 )
 
@@ -620,14 +618,7 @@ class TossApiHomeReader:
                     if snapshot.cash_usd is not None
                     else None,
                 ),
-                buyingPower=CashAmounts(
-                    krw=float(snapshot.cash_krw)
-                    if snapshot.cash_krw is not None
-                    else None,
-                    usd=float(snapshot.cash_usd)
-                    if snapshot.cash_usd is not None
-                    else None,
-                ),
+                buyingPower=CashAmounts(),
             )
             warning = None
             if snapshot.errors:

@@ -128,12 +128,13 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
 CRYPTO_STOP_LOSS_PCT = -4.5
 CRYPTO_MEAN_REVERSION_RSI_EXIT = 46.0
 
-# ROB-357 — provenance label for Upbit (crypto-live) holdings. The MCP
+# ROB-357/ROB-532 provenance labels for non-KIS live holdings. The MCP
 # ``account_mode`` selector vocabulary ({db_simulated, kis_mock, kis_live}) is a
-# KIS/paper *routing* selector and has no Upbit member, so an Upbit-only holdings
-# read used to inherit the ``kis_live`` routing default and mislabel the source.
-# This descriptive provenance value never participates in order routing.
+# KIS/paper routing selector, so non-KIS live rows must not inherit the
+# ``kis_live`` default and mislabel the source. These descriptive provenance
+# values never participate in order routing.
 UPBIT_LIVE_PROVENANCE = "upbit_live"
+TOSS_API_PROVENANCE = "toss_api"
 
 # ROB-469 PR2: bound per-call fan-out concurrency so a large portfolio can't explode
 # the task count and stall the MCP event loop.
@@ -146,25 +147,27 @@ def _provenance_account_mode(
 ) -> str:
     """Derive a per-account holdings provenance label (ROB-357).
 
-    Upbit holdings are crypto-live and must surface ``upbit_live`` rather than
+    Upbit and Toss API holdings must surface their live source rather than
     inheriting the KIS-defaulted routing selector. KIS / paper / manual groups
     keep the resolved routing mode unchanged.
     """
     if broker == "upbit" or source == "upbit_api":
         return UPBIT_LIVE_PROVENANCE
+    if broker == "toss" and source == "toss_api":
+        return TOSS_API_PROVENANCE
     return routing_mode
 
 
 def _account_order_routable(*, source: str | None) -> bool:
     """Whether an account group's holdings are routable by an automated order tool.
 
-    Manual holdings (toss/samsung/수동 입력, ``source="manual"``) are reference-only
-    and cannot be sold via kis_live/kis_mock (or any) order tool. Everything else
-    (``kis_api`` / ``upbit_api`` / paper sources) sells via its own channel. This is
-    the authoritative sellability signal; ``account_mode`` stays a provenance label
-    (ROB-357) and is intentionally left unchanged.
+    Manual holdings (toss/samsung/수동 입력, ``source="manual"``) and ROB-532
+    Toss API holdings are reference-only for order mutation until a Toss order
+    path exists. KIS / Upbit / paper sources sell via their own channels. This
+    is the authoritative sellability signal; ``account_mode`` stays a
+    provenance label (ROB-357) and is intentionally left unchanged.
     """
-    return source != "manual"
+    return source not in {"manual", "toss_api"}
 
 
 def _build_crypto_strategy_signal(
@@ -1376,6 +1379,13 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         )
         if not explicit_selector and crypto_scoped:
             response["account_mode"] = UPBIT_LIVE_PROVENANCE
+        toss_api_scoped = (account or "").strip().lower() == "toss" and any(
+            position.get("source") == "toss_api"
+            for account_group in response.get("accounts", [])
+            for position in account_group.get("positions", [])
+        )
+        if not explicit_selector and toss_api_scoped:
+            response["account_mode"] = TOSS_API_PROVENANCE
         return response
 
     @mcp.tool(

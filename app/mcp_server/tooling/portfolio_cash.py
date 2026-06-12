@@ -177,7 +177,7 @@ async def get_cash_balance_impl(
                             "broker": "toss",
                             "currency": "KRW",
                             "balance": toss_krw,
-                            "orderable": toss_krw,
+                            "orderable": 0.0,
                             "formatted": _format_cash_amount(toss_krw, "KRW"),
                         }
                     )
@@ -190,7 +190,7 @@ async def get_cash_balance_impl(
                             "broker": "toss",
                             "currency": "USD",
                             "balance": toss_usd,
-                            "orderable": toss_usd,
+                            "orderable": 0.0,
                             "formatted": _format_cash_amount(toss_usd, "USD"),
                         }
                     )

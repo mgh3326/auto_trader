@@ -430,10 +430,9 @@ def _no_holdings_sell_message(symbol: str, market_type: str, is_mock: bool) -> s
     if bool(getattr(settings, "toss_api_enabled", False)):
         return (
             f"No sellable holdings for {symbol} in the KIS subaccount that "
-            f"{channel} routes to. If this symbol is held at Toss, use the "
-            "Toss API order path after Toss live-order tools are enabled; "
-            "manual Samsung/legacy holdings remain reference-only. Check "
-            "get_holdings 'order_routable'/'account_mode'."
+            f"{channel} routes to. Toss API and manual Samsung/legacy holdings "
+            "are reference-only until their own live-order tools are enabled. "
+            "Check get_holdings 'order_routable'/'account_mode'."
         )
     else:
         return (

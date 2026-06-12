@@ -1078,7 +1078,7 @@ Broker-specific contract:
   - `orderable`: USD orderable cash minus pending US buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
 - **Toss (`account="toss"`, only when `TOSS_API_ENABLED=true`)**
   - `balance`: Toss buying power for the row currency
-  - `orderable`: same as `balance`; Toss portfolio integration is read-only in ROB-532, while order mutation tools are delivered separately
+  - `orderable`: `0.0`; Toss portfolio integration is read-only in ROB-532, while order mutation tools are delivered separately
   - Emits one KRW row when KRW buying power is available and one USD row when USD buying power is available
   - If `account="toss"` is requested and the Toss API read fails, the tool fails closed; in all-account mode it records a partial `toss_api` error
 
@@ -1132,7 +1132,7 @@ Response contract additions:
 - `filter_reason`: filter status string, e.g. `minimum_value < 1000` or `equity_kr < 5000, equity_us < 10, crypto < 5000`
 - `errors`: includes per-symbol price lookup failures for holdings price refresh (example fields: `source`, `market`, `symbol`, `stage`, `error`)
 - `filters.minimum_value`: when `minimum_value=None` in the request, this field contains the per-currency threshold dict that was applied
-- When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`, and `order_routable=true`. The per-position `sellable_quantity` field comes from Toss `/api/v1/sellable-quantity`.
+- When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`, and `order_routable=false` until Toss live-order tools exist. The per-position `sellable_quantity` field comes from Toss `/api/v1/sellable-quantity` and is informational in ROB-532.
 - When Toss API holdings succeed, duplicate Toss `manual_holdings` rows for the same market/symbol are hidden from normal output. KIS and Toss holdings for the same symbol are not deduplicated because they are separate broker subaccounts.
 - When Toss API holdings fail, existing Toss `manual_holdings` rows remain visible as fallback and the response includes a partial `source="toss_api"` error.
 

@@ -257,17 +257,17 @@ describe("buildScopedPortfolioPanel", () => {
     expect(options.find((option) => option.key === "toss_manual")?.cashBalances).toEqual({ krw: null, usd: null });
   });
 
-  it("builds live Toss API filter options with tradeable quantities and cash", () => {
+  it("builds live Toss API filter options with read-only quantities and cash", () => {
     const tossApiGroup: GroupedHolding = {
       ...baseGroup,
       groupId: "US:equity:USD:BRK.B:toss_api",
       symbol: "BRK.B",
       displayName: "Berkshire Hathaway B",
       totalQuantity: 1.5,
-      tradeableQuantity: 1.5,
-      sellableQuantity: 1.25,
+      tradeableQuantity: 0,
+      sellableQuantity: 0,
       pendingSellQuantity: 0,
-      referenceQuantity: 0,
+      referenceQuantity: 1.5,
       costBasis: 600,
       valueNative: 645.18,
       valueKrw: 838_734,
@@ -282,11 +282,11 @@ describe("buildScopedPortfolioPanel", () => {
           quantity: 1.5,
           accountKind: "live",
           sourceOfTruth: true,
-          isTradeable: true,
+          isTradeable: false,
           manualOnly: false,
-          sellableQuantity: 1.25,
+          sellableQuantity: 0,
           pendingSellQuantity: 0,
-          referenceQuantity: 0,
+          referenceQuantity: 1.5,
           averageCost: 400,
           costBasis: 600,
           valueNative: 645.18,
@@ -311,7 +311,7 @@ describe("buildScopedPortfolioPanel", () => {
           pnlKrw: 58_734,
           pnlRate: 58_734 / 780_000,
           cashBalances: { krw: 123_456, usd: 789.01 },
-          buyingPower: { krw: 123_456, usd: 789.01 },
+          buyingPower: {},
         },
       ],
       groupedHoldings: [tossApiGroup],
@@ -322,9 +322,9 @@ describe("buildScopedPortfolioPanel", () => {
     expect(scoped.selected.label).toBe("Toss");
     expect(scoped.cashBalances).toEqual({ krw: 123_456, usd: 789.01 });
     expect(scoped.groupedHoldings[0]!.includedSources).toEqual(["toss_api"]);
-    expect(scoped.groupedHoldings[0]!.tradeableQuantity).toBe(1.5);
-    expect(scoped.groupedHoldings[0]!.sellableQuantity).toBe(1.25);
-    expect(scoped.groupedHoldings[0]!.referenceQuantity).toBe(0);
+    expect(scoped.groupedHoldings[0]!.tradeableQuantity).toBe(0);
+    expect(scoped.groupedHoldings[0]!.sellableQuantity).toBe(0);
+    expect(scoped.groupedHoldings[0]!.referenceQuantity).toBe(1.5);
   });
 
   it("recomputes KIS totals and cash from sourceBreakdown only", () => {

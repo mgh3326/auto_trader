@@ -1390,7 +1390,7 @@ async def test_kis_mock_reader_degrades_when_wall_time_bound_exceeded(
 
 
 @pytest.mark.asyncio
-async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch):
+async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch):
     from decimal import Decimal
 
     from app.services import invest_home_readers as readers
@@ -1433,15 +1433,17 @@ async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch
     assert result.warning is None
     assert result.accounts[0].source == "toss_api"
     assert result.accounts[0].accountKind == "live"
-    assert result.accounts[0].buyingPower.krw == 123456.0
-    assert result.accounts[0].buyingPower.usd == 789.01
+    assert result.accounts[0].cashBalances.krw == 123456.0
+    assert result.accounts[0].cashBalances.usd == 789.01
+    assert result.accounts[0].buyingPower.krw is None
+    assert result.accounts[0].buyingPower.usd is None
     holding = result.holdings[0]
     assert holding.source == "toss_api"
     assert holding.sourceOfTruth is True
-    assert holding.isTradeable is True
+    assert holding.isTradeable is False
     assert holding.manualOnly is False
-    assert holding.sellableQuantity == 1.25
-    assert holding.referenceQuantity == 0.0
+    assert holding.sellableQuantity == 0.0
+    assert holding.referenceQuantity == 1.5
 
 
 @pytest.mark.asyncio

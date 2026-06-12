@@ -4,7 +4,7 @@
 
 **Goal:** Switch Toss portfolio read surfaces from `manual_holdings` reference-only data to Toss Open API data when `TOSS_API_ENABLED=true`, while preserving the existing manual path when the flag is off or the API read fails.
 
-**Architecture:** Reuse the ROB-530 `TossReadClient` and add a small portfolio adapter that converts Toss holdings, buying power, and sellable quantity into existing MCP and Invest Home read models. `manual_holdings` remains as fallback and verification data; it is hidden only when Toss API succeeds for the same Toss symbol. No DB migration and no order mutation are introduced.
+**Architecture:** Reuse the ROB-530 `TossReadClient` and add a small portfolio adapter that converts Toss holdings, buying power, and sellable quantity into existing MCP and Invest Home read models. `manual_holdings` remains as fallback and verification data; it is hidden only when Toss API succeeds for the same Toss symbol. No DB migration and no order mutation are introduced. Merge-gate update: Toss API rows remain read-only in ROB-532, so order-routability and orderable-capital signals stay false/zero until a separate Toss order path exists.
 
 **Tech Stack:** Python 3.13, FastAPI service layer, MCP tooling, TaskIQ-safe async reads, dataclasses, Decimal, Pydantic v2 schemas, pytest, pytest-asyncio, Ruff, ty.
 
@@ -51,8 +51,8 @@ Reason: this is read-only integration, but it changes live broker sellability/ro
 - If Toss API fails, keep existing Toss manual rows visible and add a non-fatal warning/error entry for `source="toss_api"`.
 - Do not deduplicate KIS and Toss holdings. If KIS and Toss both hold `005930`, both accounts stay visible because they are separate broker subaccounts.
 - Toss symbols are already compatible with DB format. Preserve `BRK.B`; do not convert it to `BRK-B`, `BRK/B`, or another display format.
-- Toss KRW buying power contributes to `summary.total_krw`. Toss USD buying power contributes to `summary.total_usd`. USD-to-KRW conversion happens only in `get_available_capital`, matching existing behavior for KIS overseas cash.
-- Toss API success must surface `sellableQuantity` from `/api/v1/sellable-quantity`. Do not infer sellable quantity from total quantity when Toss returns a value.
+- Toss KRW buying power contributes to `get_cash_balance.summary.total_krw`. Toss USD buying power contributes to `get_cash_balance.summary.total_usd`. Toss API cash rows report `orderable=0.0`, so they do not inflate `get_available_capital.summary.total_orderable_krw` until Toss live-order tools exist.
+- Toss API success may surface MCP per-position `sellable_quantity` from `/api/v1/sellable-quantity` as informational read data. Invest Home must keep Toss API holdings `isTradeable=false`, `sellableQuantity=0.0`, and `referenceQuantity=quantity` until a Toss order path exists.
 
 ## File Structure
 
@@ -68,7 +68,7 @@ Reason: this is read-only integration, but it changes live broker sellability/ro
   - Add Toss cash rows behind `settings.toss_api_enabled`.
   - Include Toss cash in `get_cash_balance_impl()` so `get_available_capital_impl()` inherits the new rows.
 - Modify: `app/mcp_server/tooling/order_validation.py`
-  - Refresh the no-holdings sell message so Toss is no longer described as always reference-only when the API path exists.
+  - Refresh the no-holdings sell message so Toss API provenance is explicit while remaining reference-only until a Toss order path exists.
 - Modify: `app/schemas/invest_home.py`
   - Add `toss_api` to `AccountSourceLiteral`.
   - Keep manual defaults limited to `toss_manual`, `pension_manual`, and `isa_manual`.
@@ -437,7 +437,7 @@ from app.services.toss_portfolio_service import (
 
 
 @pytest.mark.asyncio
-async def test_get_holdings_toss_api_enabled_adds_routable_toss_account(monkeypatch):
+async def test_get_holdings_toss_api_enabled_adds_read_only_toss_account(monkeypatch):
     from app.mcp_server.tooling import portfolio_holdings
 
     async def fake_collect_kis_positions(*args, **kwargs):
@@ -484,7 +484,7 @@ async def test_get_holdings_toss_api_enabled_adds_routable_toss_account(monkeypa
 
     assert result["accounts"][0]["account"] == "toss"
     assert result["accounts"][0]["broker"] == "toss"
-    assert result["accounts"][0]["order_routable"] is True
+    assert result["accounts"][0]["order_routable"] is False
     assert result["accounts"][0]["positions"][0]["symbol"] == "BRK.B"
     assert result["accounts"][0]["positions"][0]["sellable_quantity"] == 1.25
 
@@ -608,7 +608,7 @@ Run:
 
 ```bash
 uv run pytest \
-  tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_enabled_adds_routable_toss_account \
+  tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_enabled_adds_read_only_toss_account \
   tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_success_hides_duplicate_toss_manual \
   tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_failure_keeps_manual_fallback \
   -q
@@ -743,7 +743,7 @@ Run:
 
 ```bash
 uv run pytest \
-  tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_enabled_adds_routable_toss_account \
+  tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_enabled_adds_read_only_toss_account \
   tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_success_hides_duplicate_toss_manual \
   tests/test_mcp_portfolio_tools.py::test_get_holdings_toss_api_failure_keeps_manual_fallback \
   -q
@@ -901,7 +901,7 @@ Inside `get_cash_balance_impl()`, after `strict_mode = account_filter is not Non
                             "broker": "toss",
                             "currency": "KRW",
                             "balance": toss_krw,
-                            "orderable": toss_krw,
+                            "orderable": 0.0,
                             "formatted": _format_cash_amount(toss_krw, "KRW"),
                         }
                     )
@@ -914,7 +914,7 @@ Inside `get_cash_balance_impl()`, after `strict_mode = account_filter is not Non
                             "broker": "toss",
                             "currency": "USD",
                             "balance": toss_usd,
-                            "orderable": toss_usd,
+                            "orderable": 0.0,
                             "formatted": _format_cash_amount(toss_usd, "USD"),
                         }
                     )
@@ -1069,7 +1069,7 @@ from app.services.toss_portfolio_service import (
 
 
 @pytest.mark.asyncio
-async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch):
+async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch):
     from app.services import invest_home_readers as readers
 
     async def fake_fetch_toss_snapshot():
@@ -1104,15 +1104,17 @@ async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch
     assert result.warning is None
     assert result.accounts[0].source == "toss_api"
     assert result.accounts[0].accountKind == "live"
-    assert result.accounts[0].buyingPower.krw == 123456.0
-    assert result.accounts[0].buyingPower.usd == 789.01
+    assert result.accounts[0].cashBalances.krw == 123456.0
+    assert result.accounts[0].cashBalances.usd == 789.01
+    assert result.accounts[0].buyingPower.krw is None
+    assert result.accounts[0].buyingPower.usd is None
     holding = result.holdings[0]
     assert holding.source == "toss_api"
     assert holding.sourceOfTruth is True
-    assert holding.isTradeable is True
+    assert holding.isTradeable is False
     assert holding.manualOnly is False
-    assert holding.sellableQuantity == 1.25
-    assert holding.referenceQuantity == 0.0
+    assert holding.sellableQuantity == 0.0
+    assert holding.referenceQuantity == 1.5
 ```
 
 - [ ] **Step 2: Run reader test to verify failure**
@@ -1120,7 +1122,7 @@ async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch
 Run:
 
 ```bash
-uv run pytest tests/test_invest_home_readers.py::test_toss_api_home_reader_maps_tradeable_holdings_and_cash -q
+uv run pytest tests/test_invest_home_readers.py::test_toss_api_home_reader_maps_read_only_holdings_and_cash -q
 ```
 
 Expected: FAIL because `AccountSourceLiteral` does not allow `toss_api` and `TossApiHomeReader` does not exist.
@@ -1221,13 +1223,11 @@ class TossApiHomeReader:
                         else None,
                         priceState="live",
                         sourceOfTruth=True,
-                        isTradeable=True,
+                        isTradeable=False,
                         manualOnly=False,
-                        sellableQuantity=float(position.sellable_quantity)
-                        if position.sellable_quantity is not None
-                        else None,
+                        sellableQuantity=0.0,
                         pendingSellQuantity=0.0,
-                        referenceQuantity=0.0,
+                        referenceQuantity=float(position.quantity),
                     )
                 )
 
@@ -1249,10 +1249,7 @@ class TossApiHomeReader:
                     krw=float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
                     usd=float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
                 ),
-                buyingPower=CashAmounts(
-                    krw=float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
-                    usd=float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
-                ),
+                buyingPower=CashAmounts(),
             )
             warning = None
             if snapshot.errors:
@@ -1279,7 +1276,7 @@ class TossApiHomeReader:
 Run:
 
 ```bash
-uv run pytest tests/test_invest_home_readers.py::test_toss_api_home_reader_maps_tradeable_holdings_and_cash -q
+uv run pytest tests/test_invest_home_readers.py::test_toss_api_home_reader_maps_read_only_holdings_and_cash -q
 ```
 
 Expected: PASS.
@@ -1326,10 +1323,10 @@ async def test_get_home_uses_toss_api_instead_of_manual_when_toss_api_has_holdin
                 valueNative=645.18,
                 valueKrw=None,
                 sourceOfTruth=True,
-                isTradeable=True,
+                isTradeable=False,
                 manualOnly=False,
-                sellableQuantity=1.25,
-                referenceQuantity=0.0,
+                sellableQuantity=0.0,
+                referenceQuantity=1.5,
             )
         ]
     )
@@ -1363,9 +1360,9 @@ async def test_get_home_uses_toss_api_instead_of_manual_when_toss_api_has_holdin
     result = await service.get_home(user_id=1)
 
     assert [h.source for h in result.holdings] == ["toss_api"]
-    assert result.groupedHoldings[0].tradeableQuantity == 1.5
-    assert result.groupedHoldings[0].sellableQuantity == 1.25
-    assert result.groupedHoldings[0].referenceQuantity == 0.0
+    assert result.groupedHoldings[0].tradeableQuantity == 0.0
+    assert result.groupedHoldings[0].sellableQuantity == 0.0
+    assert result.groupedHoldings[0].referenceQuantity == 1.5
 
 
 @pytest.mark.asyncio
@@ -1697,7 +1694,7 @@ In `app/mcp_server/README.md`, under `get_cash_balance` broker-specific contract
 ```markdown
 - **Toss (`account="toss"`, only when `TOSS_API_ENABLED=true`)**
   - `balance`: Toss buying power for the row currency
-  - `orderable`: same as `balance`; Toss portfolio integration is read-only in ROB-532, while order mutation tools are delivered separately
+  - `orderable`: `0.0`; Toss portfolio integration is read-only in ROB-532, while order mutation tools are delivered separately
   - Emits one KRW row when KRW buying power is available and one USD row when USD buying power is available
   - If `account="toss"` is requested and the Toss API read fails, the tool fails closed; in all-account mode it records a partial `toss_api` error
 ```
@@ -1707,7 +1704,7 @@ In `app/mcp_server/README.md`, under `get_cash_balance` broker-specific contract
 Under `get_holdings` response contract additions, add:
 
 ```markdown
-- When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`, and `order_routable=true`. The per-position `sellable_quantity` field comes from Toss `/api/v1/sellable-quantity`.
+- When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`, and `order_routable=false` until Toss live-order tools exist. The per-position `sellable_quantity` field comes from Toss `/api/v1/sellable-quantity` and is informational in ROB-532.
 - When Toss API holdings succeed, duplicate Toss `manual_holdings` rows for the same market/symbol are hidden from normal output. KIS and Toss holdings for the same symbol are not deduplicated because they are separate broker subaccounts.
 - When Toss API holdings fail, existing Toss `manual_holdings` rows remain visible as fallback and the response includes a partial `source="toss_api"` error.
 ```
@@ -1797,10 +1794,10 @@ Expected: changes are limited to read-only portfolio surfaces, tests, and docs. 
 ## Self-Review Checklist
 
 - ROB-532 flag-off behavior is covered by existing manual holdings tests and must remain unchanged.
-- Flag-on MCP holdings emits Toss API rows with `order_routable=true`.
+- Flag-on MCP holdings emits Toss API rows with `order_routable=false` until Toss live-order tools exist.
 - Flag-on MCP holdings hides only Toss manual duplicate rows, not KIS rows.
-- Flag-on cash includes Toss KRW and USD buying power.
-- Invest Home accepts `toss_api` and marks it live/tradeable/source-of-truth.
+- Flag-on cash includes Toss KRW and USD buying power as balances, but `orderable=0.0` keeps them out of available-capital order sizing.
+- Invest Home accepts `toss_api` and marks it live/source-of-truth, but not tradeable or sellable until Toss live-order tools exist.
 - Morning report no longer shows `"수동 관리"` for Toss cash when the API is enabled and returns cash.
 - No migration.
 - No order mutation.
