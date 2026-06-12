@@ -111,6 +111,7 @@ class MockTossClient:
         self.holdings_list = []
         self.orders_list = []
         self.prices_list = []
+        self.warnings_list = []
         self.get_order_calls = 0
 
         if monkeypatch:
@@ -121,6 +122,19 @@ class MockTossClient:
 
     async def aclose(self):
         pass
+
+    async def warnings(self, symbol: str):
+        from app.services.brokers.toss.dto import TossWarningInfo
+
+        return [
+            TossWarningInfo(
+                warning_type=w.get("warning_type", "VI_STATIC"),
+                exchange=w.get("exchange", "KRX"),
+                start_date=w.get("start_date"),
+                end_date=w.get("end_date"),
+            )
+            for w in self.warnings_list
+        ]
 
     async def holdings(self, *, symbol=None):
         # returns simple dataclass mock
@@ -1505,3 +1519,68 @@ async def test_order_history_json_safes_datetime_timestamps(monkeypatch):
     order = res["orders"][0]
     assert order["ordered_at"] == ordered_at.isoformat()
     assert order["canceled_at"] == canceled_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_preview_order_includes_warnings(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.warnings_list = [
+        {
+            "warning_type": "OVERHEATED",
+            "exchange": "KRX",
+            "start_date": "2026-06-12",
+            "end_date": None,
+        }
+    ]
+
+    res = await toss_preview_order(
+        symbol="005930",
+        side="buy",
+        quantity="10",
+        price="70000",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert len(res["warnings"]) == 1
+    assert res["warnings"][0]["warning_type"] == "OVERHEATED"
+
+
+@pytest.mark.asyncio
+async def test_place_order_blocked_by_liquidation_trading(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.warnings_list = [
+        {
+            "warning_type": "LIQUIDATION_TRADING",
+            "exchange": "KRX",
+            "start_date": "2026-06-12",
+            "end_date": None,
+        }
+    ]
+
+    res = await toss_place_order(
+        symbol="005930",
+        side="buy",
+        quantity="10",
+        price="70000",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is False
+    assert "blocked" in res["error"].lower()
+    assert len(res["warnings"]) == 1
+    assert res["warnings"][0]["warning_type"] == "LIQUIDATION_TRADING"

@@ -21,6 +21,7 @@ from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
     register_kis_mock_order_tools,
 )
+from app.services.brokers.toss.dto import TossWarningInfo
 from tests._mcp_tooling_support import DummyMCP
 
 
@@ -402,6 +403,87 @@ class TestKisLivePlaceOrder:
         )
         assert result["success"] is True
         assert captured.get("is_mock") is False
+
+    @pytest.mark.asyncio
+    async def test_dry_run_includes_active_toss_warnings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp = _build_live_mcp()
+
+        class _WarningsClient:
+            async def warnings(self, symbol: str):
+                assert symbol == "005930"
+                return [
+                    TossWarningInfo(
+                        warning_type="OVERHEATED",
+                        exchange="KRX",
+                        start_date="2026-06-12",
+                        end_date=None,
+                    )
+                ]
+
+            async def aclose(self) -> None:
+                pass
+
+        async def fake_place_order_impl(**kwargs: Any) -> dict[str, Any]:
+            assert kwargs["dry_run"] is True
+            return {"success": True, "dry_run": True}
+
+        monkeypatch.setattr(order_execution, "_place_order_impl", fake_place_order_impl)
+        monkeypatch.setattr(
+            orders_kis_variants.TossReadClient,
+            "from_settings",
+            lambda: _WarningsClient(),
+        )
+
+        result = await mcp.tools["kis_live_place_order"](
+            symbol="005930", side="buy", price=50000.0, dry_run=True
+        )
+
+        assert result["success"] is True
+        assert result["warnings"][0]["warning_type"] == "OVERHEATED"
+
+    @pytest.mark.asyncio
+    async def test_live_buy_blocks_active_liquidation_trading_before_kis_post(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp = _build_live_mcp()
+        called = {"placed": False}
+
+        class _WarningsClient:
+            async def warnings(self, symbol: str):
+                assert symbol == "005930"
+                return [
+                    TossWarningInfo(
+                        warning_type="LIQUIDATION_TRADING",
+                        exchange="KRX",
+                        start_date="2026-06-12",
+                        end_date=None,
+                    )
+                ]
+
+            async def aclose(self) -> None:
+                pass
+
+        async def fake_place_order_impl(**kwargs: Any) -> dict[str, Any]:
+            called["placed"] = True
+            return {"success": True, "dry_run": kwargs["dry_run"]}
+
+        monkeypatch.setattr(order_execution, "_place_order_impl", fake_place_order_impl)
+        monkeypatch.setattr(
+            orders_kis_variants.TossReadClient,
+            "from_settings",
+            lambda: _WarningsClient(),
+        )
+
+        result = await mcp.tools["kis_live_place_order"](
+            symbol="005930", side="buy", price=50000.0, dry_run=False
+        )
+
+        assert result["success"] is False
+        assert result["mutation_sent"] is False
+        assert "LIQUIDATION_TRADING" in result["error"]
+        assert called["placed"] is False
 
 
 # ===========================================================================

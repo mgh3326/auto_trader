@@ -325,3 +325,23 @@ def parse_candles(raw: dict[str, Any]) -> TossCandlesPage:
         candles=candles,
         next_before=str(next_before) if next_before is not None else None,
     )
+
+
+@dataclass(frozen=True)
+class TossWarningInfo:
+    warning_type: str
+    exchange: str | None
+    start_date: str | None
+    end_date: str | None
+
+
+def parse_warnings(raw: list[dict[str, Any]]) -> list[TossWarningInfo]:
+    return [
+        TossWarningInfo(
+            warning_type=str(row["warningType"]),
+            exchange=row.get("exchange"),
+            start_date=row.get("startDate"),
+            end_date=row.get("endDate"),
+        )
+        for row in raw
+    ]

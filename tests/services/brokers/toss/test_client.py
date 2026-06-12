@@ -385,3 +385,43 @@ async def test_cancel_order_posts_to_cancel_path_and_parses_new_order_id() -> No
     assert seen["path"] == "/api/v1/orders/orig-ord-123/cancel"
     assert json.loads(seen["body"]) == {}
     assert res.order_id == "can-ord-789"
+
+
+@pytest.mark.asyncio
+async def test_warnings_fetches_and_parses() -> None:
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(
+            200,
+            json=_json(
+                [
+                    {
+                        "warningType": "LIQUIDATION_TRADING",
+                        "exchange": "KRX",
+                        "startDate": "2026-06-12",
+                        "endDate": None,
+                    }
+                ]
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        warnings = await client.warnings("005930")
+    finally:
+        await client.aclose()
+
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/api/v1/stocks/005930/warnings"
+    assert len(warnings) == 1
+    assert warnings[0].warning_type == "LIQUIDATION_TRADING"
+    assert warnings[0].exchange == "KRX"
+    assert warnings[0].start_date == "2026-06-12"
+    assert warnings[0].end_date is None
