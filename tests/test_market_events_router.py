@@ -9,11 +9,18 @@ from fastapi.testclient import TestClient
 from tests.market_events_test_helpers import (
     build_market_events_app,
     clean_non_tradingview_market_events,
+    market_events_test_lock,
 )
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_market_events(db_session):
+async def _market_events_lock():
+    async with market_events_test_lock():
+        yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_market_events(db_session, _market_events_lock):
     await clean_non_tradingview_market_events(db_session)
     yield
 

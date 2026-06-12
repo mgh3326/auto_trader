@@ -12,10 +12,17 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
 from app.models.market_events import MarketEventIngestionPartition
+from tests.market_events_test_helpers import market_events_test_lock
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_partitions(db_session):
+async def _market_events_lock():
+    async with market_events_test_lock():
+        yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_partitions(db_session, _market_events_lock):
     await db_session.execute(delete(MarketEventIngestionPartition))
     await db_session.commit()
     yield

@@ -391,6 +391,25 @@ def _is_kr_toss_common_stock(symbol: str, name: str | None) -> bool:
     return True
 
 
+def _is_toss_common_stock_row(
+    *,
+    symbol: str,
+    name: str | None,
+    security_type: str | None,
+    is_common_share: bool | None,
+    trading_suspended: bool | None,
+) -> bool:
+    if trading_suspended is True:
+        return False
+    if security_type is not None and security_type.upper() not in {"STOCK", "REIT"}:
+        return False
+    if is_common_share is False:
+        return False
+    if is_common_share is True:
+        return True
+    return _is_kr_toss_common_stock(symbol, name)
+
+
 def _external_failure_warning(exc: BaseException) -> str:
     # Keep provider hostnames/tokens out of logs and user-facing warnings; the
     # error class is enough to diagnose transient DNS/network failures here.
@@ -539,6 +558,7 @@ async def _load_consecutive_gainers_from_snapshots(
     candidate_snaps = result.scalars().all()
 
     symbol_names: dict[str, str] = {}
+    symbol_meta: dict[str, dict[str, Any]] = {}
     sector_map: dict[str, str] = {}
     if market == "kr" and candidate_snaps:
         from app.models.kr_symbol_universe import KRSymbolUniverse
@@ -552,6 +572,10 @@ async def _load_consecutive_gainers_from_snapshots(
                     KRSymbolUniverse.name,
                     SymbolSector.name_kr.label("sector_name_kr"),
                     SymbolSector.name_en.label("sector_name_en"),
+                    KRSymbolUniverse.security_type,
+                    KRSymbolUniverse.is_common_share,
+                    KRSymbolUniverse.krx_trading_suspended,
+                    KRSymbolUniverse.nxt_trading_suspended,
                 )
                 .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
                 .where(
@@ -561,6 +585,19 @@ async def _load_consecutive_gainers_from_snapshots(
             )
             _name_rows = name_result.all()
             symbol_names = {row.symbol: row.name for row in _name_rows}
+            symbol_meta = {
+                row.symbol: {
+                    "security_type": getattr(row, "security_type", None),
+                    "is_common_share": getattr(row, "is_common_share", None),
+                    "krx_trading_suspended": getattr(
+                        row, "krx_trading_suspended", None
+                    ),
+                    "nxt_trading_suspended": getattr(
+                        row, "nxt_trading_suspended", None
+                    ),
+                }
+                for row in _name_rows
+            }
             sector_map = {
                 row.symbol: label
                 for row in _name_rows
@@ -662,8 +699,14 @@ async def _load_consecutive_gainers_from_snapshots(
     for snap in candidate_snaps:
         if snap.symbol in seen:
             continue
-        if market == "kr" and not _is_kr_toss_common_stock(
-            snap.symbol, symbol_names.get(snap.symbol)
+        meta = symbol_meta.get(snap.symbol, {})
+        if market == "kr" and not _is_toss_common_stock_row(
+            symbol=snap.symbol,
+            name=symbol_names.get(snap.symbol),
+            security_type=meta.get("security_type"),
+            is_common_share=meta.get("is_common_share"),
+            trading_suspended=meta.get("krx_trading_suspended")
+            or meta.get("nxt_trading_suspended"),
         ):
             continue
         seen.add(snap.symbol)
@@ -817,6 +860,7 @@ async def _load_investor_flow_discovery_from_snapshots(
     candidate_snaps = result.scalars().all()
 
     symbol_names: dict[str, str] = {}
+    symbol_meta: dict[str, dict[str, Any]] = {}
     sector_map: dict[str, str] = {}
     if candidate_snaps:
         from app.models.kr_symbol_universe import KRSymbolUniverse
@@ -830,6 +874,10 @@ async def _load_investor_flow_discovery_from_snapshots(
                     KRSymbolUniverse.name,
                     SymbolSector.name_kr.label("sector_name_kr"),
                     SymbolSector.name_en.label("sector_name_en"),
+                    KRSymbolUniverse.security_type,
+                    KRSymbolUniverse.is_common_share,
+                    KRSymbolUniverse.krx_trading_suspended,
+                    KRSymbolUniverse.nxt_trading_suspended,
                 )
                 .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
                 .where(
@@ -839,6 +887,19 @@ async def _load_investor_flow_discovery_from_snapshots(
             )
             _name_rows = name_result.all()
             symbol_names = {row.symbol: row.name for row in _name_rows}
+            symbol_meta = {
+                row.symbol: {
+                    "security_type": getattr(row, "security_type", None),
+                    "is_common_share": getattr(row, "is_common_share", None),
+                    "krx_trading_suspended": getattr(
+                        row, "krx_trading_suspended", None
+                    ),
+                    "nxt_trading_suspended": getattr(
+                        row, "nxt_trading_suspended", None
+                    ),
+                }
+                for row in _name_rows
+            }
             sector_map = {
                 row.symbol: label
                 for row in _name_rows
@@ -962,7 +1023,15 @@ async def _load_investor_flow_discovery_from_snapshots(
     for snap in candidate_snaps:
         if snap.symbol in seen:
             continue
-        if not _is_kr_toss_common_stock(snap.symbol, symbol_names.get(snap.symbol)):
+        meta = symbol_meta.get(snap.symbol, {})
+        if not _is_toss_common_stock_row(
+            symbol=snap.symbol,
+            name=symbol_names.get(snap.symbol),
+            security_type=meta.get("security_type"),
+            is_common_share=meta.get("is_common_share"),
+            trading_suspended=meta.get("krx_trading_suspended")
+            or meta.get("nxt_trading_suspended"),
+        ):
             continue
         seen.add(snap.symbol)
         state = classify_investor_flow_partition(

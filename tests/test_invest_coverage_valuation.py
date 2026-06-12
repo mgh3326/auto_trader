@@ -431,3 +431,44 @@ async def test_us_valuation_partition_computed_at_helper(db_session):
         )
     )
     await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_market_valuation_accepts_toss_openapi_market_cap(db_session) -> None:
+    from app.services.market_valuation_snapshots.repository import (
+        MarketValuationSnapshotsRepository,
+        MarketValuationSnapshotUpsert,
+    )
+
+    repo = MarketValuationSnapshotsRepository(db_session)
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol == "005930",
+            MarketValuationSnapshot.snapshot_date == dt.date(2026, 6, 12),
+            MarketValuationSnapshot.source == "toss_openapi",
+        )
+    )
+    await db_session.commit()
+
+    await repo.upsert(
+        [
+            MarketValuationSnapshotUpsert(
+                market="kr",
+                symbol="005930",
+                snapshot_date=dt.date(2026, 6, 12),
+                source="toss_openapi",
+                market_cap=Decimal("409239502560000"),
+                raw_payload={"source": "toss_openapi"},
+            )
+        ]
+    )
+    await db_session.commit()
+
+    rows = await repo.latest_for_symbols(market="kr", symbols={"005930"})
+    matching = [
+        r
+        for r in rows
+        if r.source == "toss_openapi" and r.snapshot_date == dt.date(2026, 6, 12)
+    ]
+    assert len(matching) == 1
+    assert matching[0].market_cap == Decimal("409239502560000")

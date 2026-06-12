@@ -2,10 +2,34 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 from sqlalchemy import delete, select
+
+MARKET_EVENTS_TEST_LOCK_ID = 128_534
+
+
+@asynccontextmanager
+async def market_events_test_lock():
+    """Serialize DB-backed market_events tests that share the same tables."""
+    from sqlalchemy import text
+
+    from app.core.db import engine
+
+    async with engine.connect() as guard:
+        await guard.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": MARKET_EVENTS_TEST_LOCK_ID},
+        )
+        try:
+            yield
+        finally:
+            await guard.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": MARKET_EVENTS_TEST_LOCK_ID},
+            )
 
 
 async def clean_non_tradingview_market_events(db_session) -> None:

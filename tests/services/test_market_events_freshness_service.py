@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,16 @@ from app.services.market_events.freshness_service import (
     STALE_AFTER_HOURS,
     MarketEventsFreshnessService,
 )
+from tests.market_events_test_helpers import market_events_test_lock
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _market_events_lock(request):
+    if request.node.get_closest_marker("integration") is None:
+        yield
+        return
+    async with market_events_test_lock():
+        yield
 
 
 def _add_partition(
