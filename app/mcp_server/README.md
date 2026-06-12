@@ -429,6 +429,9 @@ The `default` profile registers eight typed `toss_live` MCP tools:
 - `toss_get_orderable_cash`
 - `toss_reconcile_orders`
 
+Operator activation and the one-share live smoke are documented in
+[`docs/runbooks/toss-live-smoke.md`](../../docs/runbooks/toss-live-smoke.md).
+
 #### Toss Safety Rules and Gates
 
 - **API Enablement**: Toss live tools are default-disabled. They fail closed unless `TOSS_API_ENABLED=true` and `validate_toss_api_config()` returns no missing keys.
