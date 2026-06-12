@@ -67,6 +67,10 @@ from app.services.market_data.constants import (
     US_INTRADAY_OHLCV_PERIODS,
     validate_ohlcv_period,
 )
+from app.services.market_data.toss_ohlcv import (
+    fetch_daily_toss_frame,
+    fetch_kr_intraday_toss_frame,
+)
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_intraday_candles_read_service import read_us_intraday_candles
 from app.services.us_symbol_universe_service import (
@@ -75,10 +79,6 @@ from app.services.us_symbol_universe_service import (
     USSymbolUniverseEmptyError,
     get_us_exchange_by_symbol,
     search_us_symbols,
-)
-from app.services.market_data.toss_ohlcv import (
-    fetch_daily_toss_frame,
-    fetch_kr_intraday_toss_frame,
 )
 
 if TYPE_CHECKING:

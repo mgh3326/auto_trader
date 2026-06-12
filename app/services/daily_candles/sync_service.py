@@ -290,13 +290,13 @@ async def _build_default_service() -> DailyCandleSyncService:
     invocation, so this is acceptable.
     """
     import app.services.brokers.upbit.client as upbit_service
+    from app.core.config import settings
     from app.core.db import AsyncSessionLocal
     from app.services.brokers.kis.client import KISClient
     from app.services.daily_candles.kis_daily_fetcher import (
         fetch_kr_daily_unclamped,
         fetch_us_daily_unclamped,
     )
-    from app.core.config import settings
     from app.services.daily_candles.toss_daily_fetcher import fetch_daily_toss_unclamped
     from app.services.daily_candles.yahoo_us_fallback import (
         fetch_us_daily_yahoo_fallback,

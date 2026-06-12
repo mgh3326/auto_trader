@@ -176,8 +176,11 @@ async def test_service_close_awaits_callbacks():
 
 @pytest.mark.asyncio
 async def test_kr_empty_kis_falls_back_to_toss_daily():
-    from app.services.daily_candles.sync_service import DailyCandleSyncService, SyncTarget
     from app.services.daily_candles.repository import MarketKey
+    from app.services.daily_candles.sync_service import (
+        DailyCandleSyncService,
+        SyncTarget,
+    )
 
     upserted_rows = []
 
@@ -213,8 +216,11 @@ async def test_kr_empty_kis_falls_back_to_toss_daily():
 
 @pytest.mark.asyncio
 async def test_us_empty_kis_and_yahoo_falls_back_to_toss_daily():
-    from app.services.daily_candles.sync_service import DailyCandleSyncService, SyncTarget
     from app.services.daily_candles.repository import MarketKey
+    from app.services.daily_candles.sync_service import (
+        DailyCandleSyncService,
+        SyncTarget,
+    )
 
     upserted_rows = []
 
