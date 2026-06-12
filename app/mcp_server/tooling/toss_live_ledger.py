@@ -146,7 +146,10 @@ async def _reconcile_one_toss_row(
     base["local_status"] = evidence.local_status
 
     if evidence.verdict == "pending":
-        if evidence.local_status in {"cancel_rejected", "replace_rejected"} and not dry_run:
+        if (
+            evidence.local_status in {"cancel_rejected", "replace_rejected"}
+            and not dry_run
+        ):
             async with _order_session_factory()() as db:
                 svc = TossLiveOrderLedgerService(db)
                 await svc.update_reconcile_outcome(
@@ -313,7 +316,9 @@ async def toss_reconcile_orders_impl(
         try:
             outcome = await _reconcile_one_toss_row(row, dry_run=dry_run)
         except Exception as exc:
-            logger.warning("toss reconcile failed order_id=%s: %s", row.broker_order_id, exc)
+            logger.warning(
+                "toss reconcile failed order_id=%s: %s", row.broker_order_id, exc
+            )
             outcome = {
                 "ledger_id": row.id,
                 "order_id": row.broker_order_id,

@@ -33,7 +33,9 @@ def _patch_session_factory(db_session):
     def factory_call():
         return mock_cm
 
-    with patch.object(toss_live_ledger, "_order_session_factory", return_value=factory_call):
+    with patch.object(
+        toss_live_ledger, "_order_session_factory", return_value=factory_call
+    ):
         yield
 
 
@@ -87,7 +89,9 @@ async def test_reconcile_filled_buy_books_once(db_session):
 
     with (
         patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
-        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)) as m_fill,
+        patch.object(
+            mod, "_save_order_fill", new=AsyncMock(return_value=101)
+        ) as m_fill,
         patch.object(
             mod,
             "_create_trade_journal_for_buy",

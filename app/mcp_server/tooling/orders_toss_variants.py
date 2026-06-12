@@ -456,9 +456,7 @@ async def toss_place_order(
         else None
     )
     stop_loss_dec = (
-        _decimal_string(stop_loss, "stop_loss")
-        if stop_loss is not None
-        else None
+        _decimal_string(stop_loss, "stop_loss") if stop_loss is not None else None
     )
 
     payload: dict[str, Any] = {

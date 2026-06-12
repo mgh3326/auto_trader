@@ -448,12 +448,8 @@ class TossLiveOrderLedger(Base):
 
     __tablename__ = "toss_live_order_ledger"
     __table_args__ = (
-        UniqueConstraint(
-            "client_order_id", name="uq_toss_live_ledger_client_order_id"
-        ),
-        UniqueConstraint(
-            "broker_order_id", name="uq_toss_live_ledger_broker_order_id"
-        ),
+        UniqueConstraint("client_order_id", name="uq_toss_live_ledger_client_order_id"),
+        UniqueConstraint("broker_order_id", name="uq_toss_live_ledger_broker_order_id"),
         CheckConstraint("broker = 'toss'", name="toss_live_ledger_broker_toss"),
         CheckConstraint(
             "account_mode = 'toss_live'",
@@ -489,9 +485,7 @@ class TossLiveOrderLedger(Base):
     )
 
     broker: Mapped[str] = mapped_column(Text, nullable=False, default="toss")
-    account_mode: Mapped[str] = mapped_column(
-        Text, nullable=False, default="toss_live"
-    )
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False, default="toss_live")
     operation_kind: Mapped[str] = mapped_column(Text, nullable=False)
 
     market: Mapped[str] = mapped_column(Text, nullable=False)

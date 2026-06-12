@@ -106,7 +106,15 @@ async def test_adapter_fetches_single_order_detail():
     class _Row:
         broker_order_id = "ord-1"
 
-    client = SimpleNamespace(get_order=AsyncMock(return_value=_order("FILLED", {"filledQuantity": Decimal("1"), "averageFilledPrice": Decimal("10")})), aclose=AsyncMock())
+    client = SimpleNamespace(
+        get_order=AsyncMock(
+            return_value=_order(
+                "FILLED",
+                {"filledQuantity": Decimal("1"), "averageFilledPrice": Decimal("10")},
+            )
+        ),
+        aclose=AsyncMock(),
+    )
 
     with patch.object(ev.TossReadClient, "from_settings", return_value=client):
         evidence = await ev.TossEvidenceAdapter().fetch_evidence(_Row())

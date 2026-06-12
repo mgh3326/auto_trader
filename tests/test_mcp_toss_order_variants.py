@@ -1589,6 +1589,7 @@ async def test_place_order_records_accepted_only_toss_ledger(monkeypatch):
     assert recorded["strategy"] == "swing"
     assert recorded["report_item_uuid"] == "11111111-1111-1111-1111-111111111111"
 
+
 @pytest.mark.asyncio
 async def test_modify_order_records_replacement_chain(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
@@ -1617,15 +1618,12 @@ async def test_modify_order_records_replacement_chain(monkeypatch):
     ]
 
     recorded = []
+
     async def fake_record(**kwargs):
         recorded.append(kwargs)
         return {"ledger_id": 538}
 
-    monkeypatch.setattr(
-        otv,
-        "record_toss_replacement_order",
-        fake_record
-    )
+    monkeypatch.setattr(otv, "record_toss_replacement_order", fake_record)
     res = await toss_modify_order(
         order_id="orig-ord-123",
         new_price="155.0",
@@ -1673,15 +1671,12 @@ async def test_cancel_order_records_audit_replacement_chain(monkeypatch):
     ]
 
     recorded = []
+
     async def fake_record(**kwargs):
         recorded.append(kwargs)
         return {"ledger_id": 538}
 
-    monkeypatch.setattr(
-        otv,
-        "record_toss_replacement_order",
-        fake_record
-    )
+    monkeypatch.setattr(otv, "record_toss_replacement_order", fake_record)
     res = await toss_cancel_order(
         order_id="orig-ord-789",
         dry_run=False,
