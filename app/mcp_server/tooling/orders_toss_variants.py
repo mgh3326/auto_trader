@@ -579,7 +579,50 @@ async def toss_get_order_history(
 ) -> dict[str, Any]:
     _config_error()
     _check_mode_arg(account_mode, account_type)
-    return {"success": True}
+
+    base_response = {
+        "source": "toss",
+        "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+    }
+
+    toss_status = "CLOSED" if status == "closed" else "OPEN"
+
+    try:
+        async with _client_context() as client:
+            page = await client.list_orders(
+                status=toss_status,
+                symbol=symbol,
+                from_date=from_date,
+                to_date=to_date,
+                cursor=cursor,
+                limit=limit,
+            )
+            orders_list = []
+            for o in page.orders:
+                orders_list.append({
+                    "order_id": o.order_id,
+                    "symbol": o.symbol,
+                    "side": o.side,
+                    "order_type": o.order_type,
+                    "time_in_force": o.time_in_force,
+                    "status": o.status,
+                    "price": _stringify_decimal(o.price) if o.price is not None else None,
+                    "quantity": _stringify_decimal(o.quantity) if o.quantity is not None else None,
+                    "order_amount": _stringify_decimal(o.order_amount) if o.order_amount is not None else None,
+                    "currency": o.currency,
+                    "ordered_at": o.ordered_at,
+                    "canceled_at": o.canceled_at,
+                    "execution": o.execution,
+                })
+            return {
+                "success": True,
+                **base_response,
+                "orders": orders_list,
+                "next_cursor": page.next_cursor,
+                "has_next": page.has_next,
+            }
+    except Exception as exc:
+        return _toss_error_response(exc, base_response)
 
 
 async def toss_get_positions(
@@ -589,7 +632,38 @@ async def toss_get_positions(
 ) -> dict[str, Any]:
     _config_error()
     _check_mode_arg(account_mode, account_type)
-    return {"success": True}
+
+    base_response = {
+        "source": "toss",
+        "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+    }
+
+    try:
+        async with _client_context() as client:
+            res = await client.holdings(symbol=symbol)
+            items_list = []
+            for item in res.items:
+                items_list.append({
+                    "symbol": item.symbol,
+                    "name": item.name,
+                    "market_country": item.market_country,
+                    "currency": item.currency,
+                    "quantity": _stringify_decimal(item.quantity) if item.quantity is not None else None,
+                    "last_price": _stringify_decimal(item.last_price) if item.last_price is not None else None,
+                    "average_purchase_price": _stringify_decimal(item.average_purchase_price) if item.average_purchase_price is not None else None,
+                    "market_value": item.market_value,
+                    "profit_loss": item.profit_loss,
+                    "daily_profit_loss": item.daily_profit_loss,
+                    "cost": item.cost,
+                })
+            return {
+                "success": True,
+                **base_response,
+                "items": items_list,
+                "overview": res.raw_overview,
+            }
+    except Exception as exc:
+        return _toss_error_response(exc, base_response)
 
 
 async def toss_get_orderable_cash(
@@ -599,7 +673,23 @@ async def toss_get_orderable_cash(
 ) -> dict[str, Any]:
     _config_error()
     _check_mode_arg(account_mode, account_type)
-    return {"success": True}
+
+    base_response = {
+        "source": "toss",
+        "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+    }
+
+    try:
+        async with _client_context() as client:
+            res = await client.buying_power(currency=currency)
+            return {
+                "success": True,
+                **base_response,
+                "cash_buying_power": _stringify_decimal(res.cash_buying_power),
+                "currency": res.currency,
+            }
+    except Exception as exc:
+        return _toss_error_response(exc, base_response)
 
 
 def register_toss_live_order_tools(mcp: FastMCP) -> None:

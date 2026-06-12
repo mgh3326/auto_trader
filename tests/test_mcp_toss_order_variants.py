@@ -8,6 +8,9 @@ from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
     register_toss_live_order_tools,
     toss_cancel_order,
+    toss_get_order_history,
+    toss_get_orderable_cash,
+    toss_get_positions,
     toss_modify_order,
     toss_place_order,
 )
@@ -82,7 +85,7 @@ class MockTossClient:
         items = []
         for item in self.holdings_list:
             items.append(SimpleNamespace(**item))
-        return SimpleNamespace(items=items)
+        return SimpleNamespace(items=items, raw_overview={})
 
     async def list_orders(self, *, status, symbol=None, **kwargs):
         from types import SimpleNamespace
@@ -119,6 +122,10 @@ class MockTossClient:
     async def cancel_order(self, order_id):
         from types import SimpleNamespace
         return SimpleNamespace(order_id="can-ord-789")
+
+    async def buying_power(self, *, currency):
+        from types import SimpleNamespace
+        return SimpleNamespace(currency=currency, cash_buying_power=Decimal("10000.0"))
 
 
 @pytest.mark.asyncio
@@ -538,3 +545,88 @@ async def test_modify_and_cancel_surface_replacement_order_id(monkeypatch):
     assert res_modify["original_order_id"] == "orig-ord-123"
     assert res_modify["replacement_order_id"] == "mod-ord-456"
     assert "newly issued orderId" in res_modify["operation_semantics"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_uses_closed_cursor_pagination_args(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    seen_args = {}
+    async def fake_list_orders(status, symbol=None, from_date=None, to_date=None, cursor=None, limit=None):
+        seen_args["status"] = status
+        seen_args["cursor"] = cursor
+        seen_args["limit"] = limit
+        from types import SimpleNamespace
+        return SimpleNamespace(orders=[], next_cursor="cur456", has_next=True)
+    monkeypatch.setattr(mock_client, "list_orders", fake_list_orders)
+
+    res = await toss_get_order_history(
+        status="closed",
+        cursor="cur123",
+        limit=20,
+        account_mode="toss_live",
+    )
+    assert res["success"] is True
+    assert seen_args["status"] == "CLOSED"
+    assert seen_args["cursor"] == "cur123"
+    assert seen_args["limit"] == 20
+    assert res["next_cursor"] == "cur456"
+    assert res["has_next"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_positions_shapes_holdings(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10.5"),
+            "average_purchase_price": Decimal("150.0"),
+            "last_price": Decimal("155.0"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+
+    res = await toss_get_positions(
+        account_mode="toss_live",
+    )
+    assert res["success"] is True
+    item = res["items"][0]
+    assert item["symbol"] == "AAPL"
+    assert item["quantity"] == "10.5"
+    assert item["average_purchase_price"] == "150"
+    assert item["last_price"] == "155"
+    assert item["currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_get_orderable_cash_reads_currency(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    MockTossClient(monkeypatch)
+
+    res = await toss_get_orderable_cash(
+        currency="USD",
+        account_mode="toss_live",
+    )
+    assert res["success"] is True
+    assert res["cash_buying_power"] == "10000"
+    assert res["currency"] == "USD"
