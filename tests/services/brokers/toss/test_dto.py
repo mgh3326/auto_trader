@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.brokers.toss.dto import (
+    parse_candles,
     parse_decimal_string,
     parse_holdings,
     parse_orders,
@@ -125,3 +126,49 @@ def test_parse_orders_converts_execution_decimals() -> None:
 
     assert orders.orders[0].status == "FUTURE_STATUS"
     assert orders.orders[0].execution["commission"] == Decimal("0.10")
+
+
+def test_parse_candles_converts_decimal_strings_and_cursor() -> None:
+    page = parse_candles(
+        {
+            "candles": [
+                {
+                    "timestamp": "2026-06-12T09:14:00.000+09:00",
+                    "openPrice": "330250",
+                    "highPrice": "330500",
+                    "lowPrice": "330000",
+                    "closePrice": "330500",
+                    "volume": "10276",
+                    "currency": "KRW",
+                }
+            ],
+            "nextBefore": "2026-06-12T09:13:00.000+09:00",
+        }
+    )
+
+    assert page.next_before == "2026-06-12T09:13:00.000+09:00"
+    assert page.candles[0].timestamp == "2026-06-12T09:14:00.000+09:00"
+    assert page.candles[0].open_price == Decimal("330250")
+    assert page.candles[0].close_price == Decimal("330500")
+    assert page.candles[0].volume == Decimal("10276")
+    assert page.candles[0].currency == "KRW"
+
+
+def test_parse_candles_rejects_float_prices() -> None:
+    with pytest.raises(TypeError, match="float"):
+        parse_candles(
+            {
+                "candles": [
+                    {
+                        "timestamp": "2026-06-12T09:14:00.000+09:00",
+                        "openPrice": 330250.0,
+                        "highPrice": "330500",
+                        "lowPrice": "330000",
+                        "closePrice": "330500",
+                        "volume": "10276",
+                        "currency": "KRW",
+                    }
+                ],
+                "nextBefore": None,
+            }
+        )
