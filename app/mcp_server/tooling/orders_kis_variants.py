@@ -13,6 +13,7 @@ tools in orders_registration.py are unchanged; these are additive.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 from app.core.config import validate_kis_mock_config
@@ -27,9 +28,16 @@ from app.mcp_server.tooling.orders_modify_cancel import (
     cancel_order_impl,
     modify_order_impl,
 )
+from app.services.brokers.toss.client import TossReadClient
+from app.services.brokers.toss.warnings_guard import (
+    WarningsGuardResult,
+    check_warnings_guard,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 KIS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "kis_live_place_order",
@@ -107,6 +115,40 @@ def _check_mode_arg(
                 "account_mode": pinned_mode,
             }
     return None
+
+
+def _warning_payload(result: WarningsGuardResult) -> list[dict[str, str | None]]:
+    return [
+        {
+            "warning_type": warning.warning_type,
+            "exchange": warning.exchange,
+            "start_date": warning.start_date,
+            "end_date": warning.end_date,
+        }
+        for warning in result.warnings
+    ]
+
+
+async def _check_toss_warnings_for_kis_buy(symbol: str) -> WarningsGuardResult:
+    client = None
+    try:
+        client = TossReadClient.from_settings()
+        return await check_warnings_guard(client, symbol, market="kr")
+    except Exception as exc:
+        logger.warning(
+            "Failed to check Toss warnings for KIS live order symbol=%s; proceeding fail-open: %s",
+            symbol,
+            exc,
+            exc_info=True,
+        )
+        return WarningsGuardResult(
+            ok=True,
+            warnings=[],
+            error_message=f"Warnings check failed: {exc} (fail-open)",
+        )
+    finally:
+        if client is not None:
+            await client.aclose()
 
 
 def _prepare_variant_call(
@@ -228,7 +270,23 @@ async def _place_order_variant(
         return early_response
     if str(order_type).lower().strip() != "limit":
         return _limit_order_error(tool_name, symbol, order_type)
-    return apply_account_routing_metadata(
+
+    warning_result: WarningsGuardResult | None = None
+    is_live_buy = pinned_mode == ACCOUNT_MODE_KIS_LIVE and str(side).lower() == "buy"
+    if is_live_buy:
+        warning_result = await _check_toss_warnings_for_kis_buy(symbol)
+        if not dry_run and not warning_result.ok:
+            return {
+                "success": False,
+                "source": "kis",
+                "account_mode": ACCOUNT_MODE_KIS_LIVE,
+                "dry_run": dry_run,
+                "mutation_sent": False,
+                "error": warning_result.error_message,
+                "warnings": _warning_payload(warning_result),
+            }
+
+    result = apply_account_routing_metadata(
         await order_execution._place_order_impl(
             symbol=symbol,
             side=side,
@@ -253,6 +311,11 @@ async def _place_order_variant(
         ),
         routing,
     )
+    if warning_result is not None:
+        result["warnings"] = _warning_payload(warning_result)
+        if warning_result.error_message:
+            result["warnings_check_message"] = warning_result.error_message
+    return result
 
 
 async def _cancel_order_variant(

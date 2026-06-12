@@ -360,7 +360,10 @@ official KIS mock, and KIS live account paths:
   use `KIS_MOCK_BASE_URL`, which defaults to the official KIS mock host
   `https://openapivts.koreainvestment.com:29443`.
 - `account_mode="kis_live"` or omitted: existing live KIS behavior. For
-  `place_order`, `dry_run=True` remains the default.
+  `place_order`, `dry_run=True` remains the default. KR live buy paths query
+  Toss stock warnings before order submission; active `LIQUIDATION_TRADING`
+  blocks non-dry-run buys before KIS POST, while lookup failures are fail-open
+  and surfaced in the response metadata.
 - `account_mode="toss_live"`: official Toss Securities live KR/US account. Uses Toss credentials, maps to `toss_live` routing, and fails closed when `TOSS_API_ENABLED=false` or credentials are missing. Actual Toss order mutation POSTs also require `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true`; keep this false until the accepted-order ledger and operator live-smoke hold are cleared.
 
 Do not use `account_type="paper"` for official KIS mock. It is always DB
@@ -433,6 +436,7 @@ The `default` profile registers eight typed `toss_live` MCP tools:
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
 - **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas.
 - **High-Value Orders**: KR orders with a computable notional value >= 100,000,000 KRW fail locally unless `confirm_high_value_order=True` is supplied.
+- **KR Stock Warnings**: KR order previews include active Toss warning rows. Confirmed non-dry-run KR orders call the same warnings guard before mutation and block active `LIQUIDATION_TRADING`; Toss warning lookup failures are fail-open and reported as `warnings_check_message`.
 - **Sell Loss-Sell Guard**: For sell orders and sell reprices, holdings cost basis is validated. Sells block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. If the holding/cost basis cannot be resolved, the sell fails closed.
 - **Opposite Pending Orders**: Before placing a non-dry-run order, the tool queries all paginated `OPEN` order pages for the symbol and blocks the order if an opposite-side pending order already exists. Pagination anomalies fail closed.
 - **Modify Semantics**:

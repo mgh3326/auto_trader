@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from decimal import Decimal
@@ -26,12 +27,14 @@ from app.mcp_server.tooling.toss_live_ledger import (
     record_toss_replacement_order,
 )
 from app.services.brokers.toss import TossReadClient
+from app.services.brokers.toss.dto import TossWarningInfo
 from app.services.brokers.toss.errors import TossApiResponseError
+from app.services.brokers.toss.warnings_guard import check_warnings_guard
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-
-logger = logging.getLogger(__name__)
 
 TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "toss_preview_order",
@@ -100,6 +103,20 @@ async def _client_context():
         yield client
     finally:
         await client.aclose()
+
+
+def _warning_payload(
+    warnings: Iterable[TossWarningInfo],
+) -> list[dict[str, str | None]]:
+    return [
+        {
+            "warning_type": w.warning_type,
+            "exchange": w.exchange,
+            "start_date": w.start_date,
+            "end_date": w.end_date,
+        }
+        for w in warnings
+    ]
 
 
 def _infer_market(
@@ -403,12 +420,34 @@ async def toss_preview_order(
     if order_amount_dec is not None:
         payload["orderAmount"] = _stringify_decimal(order_amount_dec)
 
+    warnings_list = []
+    warnings_check_msg = None
+    try:
+        async with _client_context() as client:
+            guard_res = await check_warnings_guard(client, symbol, market=mkt)
+            warnings_list = [
+                {
+                    "warning_type": w.warning_type,
+                    "exchange": w.exchange,
+                    "start_date": w.start_date,
+                    "end_date": w.end_date,
+                }
+                for w in guard_res.warnings
+            ]
+            if guard_res.error_message:
+                warnings_check_msg = guard_res.error_message
+    except Exception as exc:
+        logger.error("Failed to check warnings in preview: %s", exc, exc_info=True)
+        warnings_check_msg = f"Failed to check warnings: {exc}"
+
     return {
         "success": True,
         "preview": True,
         "market": mkt,
         "payload_preview": payload,
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+        "warnings": warnings_list,
+        "warnings_check_message": warnings_check_msg,
     }
 
 
@@ -517,6 +556,17 @@ async def toss_place_order(
         return mutation_gate
 
     async def execute_order(client: TossReadClient):
+        # Guard: Warnings check
+        guard_res = await check_warnings_guard(client, symbol, market=mkt)
+        guard_warnings = _warning_payload(guard_res.warnings)
+        if not guard_res.ok:
+            return {
+                "success": False,
+                **base_response,
+                "error": guard_res.error_message,
+                "warnings": guard_warnings,
+            }
+
         # Guard: opposite pending order check
         if (
             opp_guard := await _opposite_pending_error(
@@ -572,6 +622,8 @@ async def toss_place_order(
                 "order_id": res.order_id,
                 "client_order_id": res.client_order_id,
                 **ledger,
+                "warnings": guard_warnings,
+                "warnings_check_message": guard_res.error_message,
                 "message": (
                     "Toss live order accepted and recorded accepted-only; "
                     "run toss_reconcile_orders to book confirmed fills."

@@ -11,7 +11,7 @@
 - **Service**: Implemented `TossLiveOrderLedgerService` for lifecycle management.
 - **Evidence**: Implemented `TossFillEvidence` classifier to handle Toss-specific order states and fees.
 - **Reconcile Kernel**: Implemented `toss_reconcile_orders_impl` to automate fill booking and journal creation/closure.
-- **MCP Integration**: 
+- **MCP Integration**:
     - Extended `toss_place_order` with comprehensive metadata (thesis, strategy, etc.).
     - Wired `toss_modify_order` and `toss_cancel_order` into the replacement ledger.
     - Registered `toss_reconcile_orders` tool.

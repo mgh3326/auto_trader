@@ -11,6 +11,7 @@ from app.services.brokers.toss.dto import (
     TossAccount,
     TossOrderOperationResult,
     TossOrderPlacementResult,
+    TossWarningInfo,
     parse_accounts,
     parse_buying_power,
     parse_candles,
@@ -23,6 +24,7 @@ from app.services.brokers.toss.dto import (
     parse_prices,
     parse_sellable_quantity,
     parse_stocks,
+    parse_warnings,
 )
 from app.services.brokers.toss.errors import TossApiResponseError, parse_toss_response
 from app.services.brokers.toss.rate_limiter import (
@@ -155,11 +157,13 @@ class TossReadClient:
             )
         )
 
-    async def warnings(self, symbol: str) -> Any:
-        return await self._request(
-            "GET",
-            f"/api/v1/stocks/{symbol}/warnings",
-            group=TossApiGroup.STOCK,
+    async def warnings(self, symbol: str) -> list[TossWarningInfo]:
+        return parse_warnings(
+            await self._request(
+                "GET",
+                f"/api/v1/stocks/{symbol}/warnings",
+                group=TossApiGroup.STOCK,
+            )
         )
 
     async def candles(

@@ -172,3 +172,35 @@ def test_parse_candles_rejects_float_prices() -> None:
                 "nextBefore": None,
             }
         )
+
+
+def test_parse_warnings_converts_fields() -> None:
+    from app.services.brokers.toss.dto import parse_warnings
+
+    warnings = parse_warnings(
+        [
+            {
+                "warningType": "OVERHEATED",
+                "exchange": "KRX",
+                "startDate": "2026-03-20",
+                "endDate": "2026-03-27",
+            },
+            {
+                "warningType": "VI_STATIC",
+                "exchange": None,
+                "startDate": "2026-03-26",
+                "endDate": None,
+            },
+        ]
+    )
+
+    assert len(warnings) == 2
+    assert warnings[0].warning_type == "OVERHEATED"
+    assert warnings[0].exchange == "KRX"
+    assert warnings[0].start_date == "2026-03-20"
+    assert warnings[0].end_date == "2026-03-27"
+
+    assert warnings[1].warning_type == "VI_STATIC"
+    assert warnings[1].exchange is None
+    assert warnings[1].start_date == "2026-03-26"
+    assert warnings[1].end_date is None

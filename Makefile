@@ -85,6 +85,9 @@ sync-upbit-symbol-universe: ## Sync Upbit symbol universe for crypto symbol reso
 sync-us-symbol-universe: ## Sync US symbol universe for US symbol/exchange resolution
 	uv run python scripts/sync_us_symbol_universe.py
 
+sync-toss-warnings: ## Sync Toss warnings for KR market
+	uv run python scripts/sync_toss_warnings.py
+
 sync-kr-candles-backfill: ## Backfill KR candles for recent sessions
 	uv run python scripts/sync_kr_candles.py --mode backfill --sessions 10
 
