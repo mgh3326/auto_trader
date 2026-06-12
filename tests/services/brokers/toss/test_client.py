@@ -66,7 +66,13 @@ async def test_holdings_auto_resolves_single_account_header() -> None:
             return httpx.Response(
                 200,
                 json=_json(
-                    [{"accountNo": "12345678", "accountSeq": 1, "accountType": "BROKERAGE"}]
+                    [
+                        {
+                            "accountNo": "12345678",
+                            "accountSeq": 1,
+                            "accountType": "BROKERAGE",
+                        }
+                    ]
                 ),
                 request=request,
             )
@@ -90,7 +96,9 @@ async def test_holdings_auto_resolves_single_account_header() -> None:
 async def test_prices_rejects_more_than_200_symbols() -> None:
     client = TossReadClient(
         token_manager=_TokenManager(),
-        transport=httpx.MockTransport(lambda request: httpx.Response(500, request=request)),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(500, request=request)
+        ),
     )
     try:
         with pytest.raises(ValueError, match="1..200"):

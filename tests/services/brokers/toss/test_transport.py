@@ -42,18 +42,14 @@ async def test_on_request_rejects_absolute_url_to_other_host() -> None:
 
 @pytest.mark.asyncio
 async def test_on_request_accepts_toss_host() -> None:
-    request = httpx.Request(
-        "GET", "https://openapi.tossinvest.com/api/v1/accounts"
-    )
+    request = httpx.Request("GET", "https://openapi.tossinvest.com/api/v1/accounts")
 
     await _on_request(request)
 
 
 @pytest.mark.asyncio
 async def test_on_response_rejects_redirect() -> None:
-    request = httpx.Request(
-        "GET", "https://openapi.tossinvest.com/api/v1/accounts"
-    )
+    request = httpx.Request("GET", "https://openapi.tossinvest.com/api/v1/accounts")
     response = httpx.Response(
         302,
         headers={"location": "https://evil.example.com/api/v1/accounts"},

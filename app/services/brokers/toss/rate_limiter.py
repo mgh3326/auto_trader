@@ -44,9 +44,7 @@ class TossRateLimiter:
         self._lock = asyncio.Lock()
 
     @staticmethod
-    def limit_for(
-        group: TossApiGroup, *, now: datetime | None = None
-    ) -> int:
+    def limit_for(group: TossApiGroup, *, now: datetime | None = None) -> int:
         now = now or datetime.now(ZoneInfo("Asia/Seoul"))
         if group in {TossApiGroup.ORDER, TossApiGroup.ORDER_INFO}:
             if now.hour == 9 and 0 <= now.minute < 10:

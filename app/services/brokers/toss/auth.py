@@ -98,7 +98,9 @@ class TossOAuthTokenManager:
         secret = settings_obj.toss_api_client_secret
         if not isinstance(secret, SecretStr):
             secret = SecretStr(str(secret))
-        base_url = getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
+        base_url = (
+            getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
+        )
         return cls(
             client_id=str(settings_obj.toss_api_client_id),
             client_secret=secret,

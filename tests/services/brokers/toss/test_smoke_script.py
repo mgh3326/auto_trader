@@ -37,7 +37,9 @@ async def test_run_preflight_redacts_secret(monkeypatch, capsys) -> None:
         async def aclose(self):
             return None
 
-    monkeypatch.setattr(toss_live_smoke.TossReadClient, "from_settings", lambda: FakeClient())
+    monkeypatch.setattr(
+        toss_live_smoke.TossReadClient, "from_settings", lambda: FakeClient()
+    )
 
     code = await toss_live_smoke.run_preflight(["005930"])
 

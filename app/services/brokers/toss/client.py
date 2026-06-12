@@ -42,7 +42,9 @@ class TossReadClient:
 
     @classmethod
     def from_settings(cls, settings_obj: Any = settings) -> TossReadClient:
-        base_url = getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
+        base_url = (
+            getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
+        )
         return cls(
             token_manager=TossOAuthTokenManager.from_settings(settings_obj),
             account_seq=getattr(settings_obj, "toss_api_account_seq", None),
@@ -66,7 +68,9 @@ class TossReadClient:
         headers = {"Authorization": f"Bearer {token}"}
         if account_required:
             headers["X-Tossinvest-Account"] = str(await self._resolve_account_seq())
-        response = await self._client.request(method, path, params=params, headers=headers)
+        response = await self._client.request(
+            method, path, params=params, headers=headers
+        )
         try:
             return parse_toss_response(response)
         except TossApiResponseError as exc:

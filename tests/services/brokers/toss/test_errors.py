@@ -13,7 +13,9 @@ from app.services.brokers.toss.errors import (
 
 def _response(status_code: int, payload: dict, headers: dict[str, str] | None = None):
     request = httpx.Request("GET", "https://openapi.tossinvest.com/api/v1/accounts")
-    return httpx.Response(status_code, json=payload, headers=headers or {}, request=request)
+    return httpx.Response(
+        status_code, json=payload, headers=headers or {}, request=request
+    )
 
 
 def test_parse_toss_response_returns_result() -> None:

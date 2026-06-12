@@ -177,7 +177,13 @@ def parse_holdings(raw: dict[str, Any]) -> TossHoldings:
 
 def _parse_execution(raw: dict[str, Any]) -> dict[str, Any]:
     parsed = dict(raw)
-    for key in ("filledQuantity", "averageFilledPrice", "filledAmount", "commission", "tax"):
+    for key in (
+        "filledQuantity",
+        "averageFilledPrice",
+        "filledAmount",
+        "commission",
+        "tax",
+    ):
         if key in parsed:
             parsed[key] = parse_optional_decimal_string(parsed[key])
     return parsed
@@ -255,4 +261,6 @@ def parse_commissions(raw: list[dict[str, Any]]) -> list[TossCommission]:
 
 
 def parse_order(raw: dict[str, Any]) -> TossOrder:
-    return parse_orders({"orders": [raw], "nextCursor": None, "hasNext": False}).orders[0]
+    return parse_orders({"orders": [raw], "nextCursor": None, "hasNext": False}).orders[
+        0
+    ]
