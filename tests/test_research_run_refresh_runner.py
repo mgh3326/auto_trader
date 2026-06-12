@@ -212,3 +212,96 @@ async def test_happy_path_completed(monkeypatch):
     assert result["proposal_count"] == 2
     assert result["session_uuid"] == str(session_uuid)
     assert captured_session[0].commits == 1
+
+
+def test_preopen_window_excludes_xkrx_holiday(monkeypatch):
+    import app.jobs.research_run_refresh_runner as runner
+
+    monkeypatch.setattr(runner, "is_trading_session", lambda market, day: False)
+
+    assert _within_window(stage="preopen", now=datetime(2026, 5, 5, 8, 10)) is False
+
+
+@pytest.mark.asyncio
+async def test_holiday_gate_skips_before_db_work(monkeypatch):
+    import app.jobs.research_run_refresh_runner as runner
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "research_run_refresh_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "research_run_refresh_user_id", 1, raising=False)
+    monkeypatch.setattr(
+        settings, "research_run_refresh_market_hours_only", True, raising=False
+    )
+    monkeypatch.setattr(runner, "is_trading_session", lambda market, day: False)
+
+    result = await run_research_run_refresh(
+        stage="preopen",
+        market_scope="kr",
+        db_factory=_fake_factory,
+        now_local=lambda: datetime(2026, 5, 5, 8, 10),
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "outside_trading_hours"
+
+
+@pytest.mark.asyncio
+async def test_nxt_aftermarket_skips_when_toss_calendar_closes_session(monkeypatch):
+    import app.jobs.research_run_refresh_runner as runner
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "research_run_refresh_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "research_run_refresh_user_id", 1, raising=False)
+    monkeypatch.setattr(
+        settings, "research_run_refresh_market_hours_only", True, raising=False
+    )
+    monkeypatch.setattr(runner, "is_trading_session", lambda market, day: True)
+    monkeypatch.setattr(
+        runner,
+        "get_kr_nxt_session_from_toss",
+        AsyncMock(return_value="closed"),
+    )
+
+    result = await run_research_run_refresh(
+        stage="nxt_aftermarket",
+        market_scope="kr",
+        db_factory=_fake_factory,
+        now_local=lambda: datetime(2026, 6, 11, 15, 45),
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "outside_trading_hours"
+
+
+@pytest.mark.asyncio
+async def test_preopen_regular_open_allows_toss_regular_session(monkeypatch):
+    import app.jobs.research_run_refresh_runner as runner
+    from app.core.config import settings
+    from app.services import research_run_decision_session_service as svc
+
+    monkeypatch.setattr(settings, "research_run_refresh_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "research_run_refresh_user_id", 1, raising=False)
+    monkeypatch.setattr(
+        settings, "research_run_refresh_market_hours_only", True, raising=False
+    )
+    monkeypatch.setattr(runner, "is_trading_session", lambda market, day: True)
+    monkeypatch.setattr(
+        runner,
+        "get_kr_toss_session_from_toss",
+        AsyncMock(return_value="regular"),
+    )
+    monkeypatch.setattr(
+        svc,
+        "resolve_research_run",
+        AsyncMock(side_effect=svc.ResearchRunNotFound("none")),
+    )
+
+    result = await run_research_run_refresh(
+        stage="preopen",
+        market_scope="kr",
+        db_factory=_fake_factory,
+        now_local=lambda: datetime(2026, 6, 11, 9, 3),
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "no_research_run"

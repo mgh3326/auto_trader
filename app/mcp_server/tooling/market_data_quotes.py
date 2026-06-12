@@ -53,6 +53,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services import kis_ohlcv_cache
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.toss.market_calendar import get_kr_nxt_session_from_toss
 from app.services.execution_strength.query_service import compute_execution_strength
 from app.services.kr_hourly_candles_read_service import (
     read_kr_hourly_candles_1h,
@@ -301,7 +302,7 @@ def _validate_crypto_orderbook_symbol_input(symbol: str | int) -> str:
     return value
 
 
-_NXT_AFTER_OPEN = datetime.time(16, 0)
+_NXT_AFTER_OPEN = datetime.time(15, 30)
 _NXT_AFTER_CLOSE = datetime.time(20, 0)
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -313,15 +314,21 @@ def _current_kst_datetime(now: datetime.datetime | None = None) -> datetime.date
     return current.astimezone(_KST)
 
 
-def _nxt_quote_session(
+async def _nxt_quote_session(
     data_state: str,
     *,
     now: datetime.datetime | None = None,
 ) -> str | None:
+    current = _current_kst_datetime(now)
+    toss_session = await get_kr_nxt_session_from_toss(current)
+    if toss_session in {"nxt_premarket", "nxt_after"}:
+        return toss_session
+    if toss_session == "closed":
+        return None
+
     if data_state == DATA_STATE_PREMARKET_UNAVAILABLE:
         return "nxt_premarket"
 
-    current = _current_kst_datetime(now)
     if not is_kr_session_day(current.date()):
         return None
 
@@ -1176,7 +1183,7 @@ async def _get_quote_impl(
         # previous_close used for gap calculations.
         data_state = kr_market_data_state()
         quote = await _fetch_quote_equity_kr(symbol)
-        session = _nxt_quote_session(data_state)
+        session = await _nxt_quote_session(data_state)
         if session is not None:
             overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
             if overlay is not None:

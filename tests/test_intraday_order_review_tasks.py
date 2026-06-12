@@ -26,11 +26,13 @@ class TestTradingHoursCheck:
         assert _is_kr_trading_hours(dt) is False
 
     def test_us_trading_hours_late_night(self):
-        dt = datetime(2026, 3, 16, 0, 30)
+        # 2026-03-17 00:30 KST is Monday 11:30 ET (NYSE regular session)
+        dt = datetime(2026, 3, 17, 0, 30)
         assert _is_us_trading_hours(dt) is True
 
     def test_us_trading_hours_early_morning(self):
-        dt = datetime(2026, 3, 16, 4, 0)
+        # 2026-03-17 04:00 KST is Monday 15:00 ET (NYSE regular session)
+        dt = datetime(2026, 3, 17, 4, 0)
         assert _is_us_trading_hours(dt) is True
 
     def test_us_trading_hours_daytime(self):
