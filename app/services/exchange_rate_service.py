@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
 import logging
 import time
-from typing import TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import httpx
 
@@ -17,8 +20,73 @@ _lock: asyncio.Lock | None = None
 _lock_loop: asyncio.AbstractEventLoop | None = None
 
 
+@dataclass(frozen=True)
+class UsdKrwExchangeRateQuote:
+    rate: float
+    mid_rate: float
+    source: Literal["toss", "open_er_api"]
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    basis_point: float | None = None
+    rate_change_type: str | None = None
+
+    @property
+    def default_rate(self) -> float:
+        return self.mid_rate
+
+
 class _ExchangeRatePayload(TypedDict):
     rates: dict[str, float]
+
+
+def _parse_decimal_float(value: object) -> float:
+    if isinstance(value, float):
+        raise TypeError("Toss decimal values must be strings, not float")
+    if value is None:
+        raise TypeError("Decimal value is required")
+    return float(Decimal(str(value)))
+
+
+def _parse_optional_decimal_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return _parse_decimal_float(value)
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _parse_toss_usd_krw_quote(raw: dict[str, Any]) -> UsdKrwExchangeRateQuote:
+    if raw.get("baseCurrency") != "USD" or raw.get("quoteCurrency") != "KRW":
+        raise ValueError("Toss exchange-rate response is not USD/KRW")
+    return UsdKrwExchangeRateQuote(
+        rate=_parse_decimal_float(raw["rate"]),
+        mid_rate=_parse_decimal_float(raw["midRate"]),
+        source="toss",
+        valid_from=_parse_datetime(raw.get("validFrom")),
+        valid_until=_parse_datetime(raw.get("validUntil")),
+        basis_point=_parse_optional_decimal_float(raw.get("basisPoint")),
+        rate_change_type=str(raw["rateChangeType"])
+        if raw.get("rateChangeType") is not None
+        else None,
+    )
+
+
+def _parse_open_er_api_usd_krw_quote(
+    data: _ExchangeRatePayload,
+) -> UsdKrwExchangeRateQuote:
+    rate = float(data["rates"]["KRW"])
+    return UsdKrwExchangeRateQuote(
+        rate=rate,
+        mid_rate=rate,
+        source="open_er_api",
+    )
 
 
 def _get_lock() -> asyncio.Lock:
