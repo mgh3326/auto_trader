@@ -12,10 +12,6 @@ from app.core.config import settings, validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_kis_symbol
 from app.mcp_server.env_utils import _env_int
-from app.services.toss_portfolio_service import (
-    TossPortfolioPosition,
-    fetch_toss_portfolio_snapshot,
-)
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
     normalize_account_mode,
@@ -105,6 +101,10 @@ from app.services.brokers.kis.client import KISClient
 from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
+from app.services.toss_portfolio_service import (
+    TossPortfolioPosition,
+    fetch_toss_portfolio_snapshot,
+)
 from app.services.upbit_symbol_universe_service import (
     UpbitSymbolInactiveError,
     UpbitSymbolNotRegisteredError,
@@ -490,7 +490,8 @@ def _same_toss_symbol(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return (
         str(left.get("broker") or "").lower() == "toss"
         and str(right.get("broker") or "").lower() == "toss"
-        and str(left.get("instrument_type") or "") == str(right.get("instrument_type") or "")
+        and str(left.get("instrument_type") or "")
+        == str(right.get("instrument_type") or "")
         and _normalize_position_symbol(
             str(left.get("symbol") or ""),
             str(left.get("instrument_type") or ""),
@@ -850,9 +851,11 @@ async def _collect_portfolio_positions(
     toss_api_errors: list[dict[str, Any]] = []
     toss_api_succeeded = False
     if bool(getattr(settings, "toss_api_enabled", False)):
-        toss_api_positions, toss_api_errors, toss_api_succeeded = (
-            await _collect_toss_api_positions(market_filter)
-        )
+        (
+            toss_api_positions,
+            toss_api_errors,
+            toss_api_succeeded,
+        ) = await _collect_toss_api_positions(market_filter)
         positions.extend(toss_api_positions)
         errors.extend(toss_api_errors)
 

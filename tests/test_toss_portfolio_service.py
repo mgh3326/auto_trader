@@ -84,7 +84,9 @@ async def test_fetch_toss_portfolio_snapshot_maps_holdings_sellable_and_cash() -
 
 
 @pytest.mark.asyncio
-async def test_fetch_toss_portfolio_snapshot_keeps_position_when_sellable_fails() -> None:
+async def test_fetch_toss_portfolio_snapshot_keeps_position_when_sellable_fails() -> (
+    None
+):
     class Client(_FakeTossClient):
         async def sellable_quantity(self, *, symbol: str) -> TossSellableQuantity:
             raise RuntimeError(f"sellable failed for {symbol}")

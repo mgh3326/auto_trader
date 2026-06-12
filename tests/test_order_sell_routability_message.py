@@ -96,4 +96,3 @@ def test_no_holdings_sell_message_preserves_reference_only_when_disabled(monkeyp
 
     assert "toss/samsung" in msg
     assert "reference-only" in msg
-

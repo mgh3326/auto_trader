@@ -3443,8 +3443,12 @@ async def test_fetch_price_map_us_fail_closed_when_all_sources_fail(monkeypatch)
 @pytest.mark.asyncio
 async def test_get_holdings_toss_api_enabled_adds_routable_toss_account(monkeypatch):
     from decimal import Decimal
-    from app.services.toss_portfolio_service import TossPortfolioPosition, TossPortfolioSnapshot
+
     from app.mcp_server.tooling import portfolio_holdings
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
 
     async def fake_collect_kis_positions(*args, **kwargs):
         return [], []
@@ -3481,10 +3485,18 @@ async def test_get_holdings_toss_api_enabled_adds_routable_toss_account(monkeypa
         )
 
     monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
-    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions)
-    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions)
-    monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions)
-    monkeypatch.setattr(portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
 
     result = await portfolio_holdings._get_holdings_impl(minimum_value=0)
 
@@ -3498,8 +3510,12 @@ async def test_get_holdings_toss_api_enabled_adds_routable_toss_account(monkeypa
 @pytest.mark.asyncio
 async def test_get_holdings_toss_api_success_hides_duplicate_toss_manual(monkeypatch):
     from decimal import Decimal
-    from app.services.toss_portfolio_service import TossPortfolioPosition, TossPortfolioSnapshot
+
     from app.mcp_server.tooling import portfolio_holdings
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
 
     async def fake_collect_kis_positions(*args, **kwargs):
         return [], []
@@ -3551,10 +3567,18 @@ async def test_get_holdings_toss_api_success_hides_duplicate_toss_manual(monkeyp
         )
 
     monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
-    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions)
-    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions)
-    monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions)
-    monkeypatch.setattr(portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
 
     result = await portfolio_holdings._get_holdings_impl(minimum_value=0)
 
@@ -3566,8 +3590,6 @@ async def test_get_holdings_toss_api_success_hides_duplicate_toss_manual(monkeyp
 
 @pytest.mark.asyncio
 async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
-    from decimal import Decimal
-    from app.services.toss_portfolio_service import TossPortfolioPosition, TossPortfolioSnapshot
     from app.mcp_server.tooling import portfolio_holdings
 
     async def fake_collect_kis_positions(*args, **kwargs):
@@ -3600,10 +3622,18 @@ async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
         raise RuntimeError("toss unavailable")
 
     monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
-    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions)
-    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions)
-    monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions)
-    monkeypatch.setattr(portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_manual_positions", fake_collect_manual_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
 
     result = await portfolio_holdings._get_holdings_impl(minimum_value=0)
 
@@ -3619,10 +3649,11 @@ async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_cash_balance_toss_api_enabled_adds_krw_and_usd(monkeypatch):
-    from unittest.mock import AsyncMock
     from decimal import Decimal
-    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+    from unittest.mock import AsyncMock
+
     from app.mcp_server.tooling import portfolio_cash
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
 
     async def fake_fetch_toss_snapshot():
         return TossPortfolioSnapshot(
@@ -3632,8 +3663,14 @@ async def test_get_cash_balance_toss_api_enabled_adds_krw_and_usd(monkeypatch):
         )
 
     monkeypatch.setattr(portfolio_cash.settings, "toss_api_enabled", True)
-    monkeypatch.setattr(portfolio_cash.upbit_service, "fetch_krw_cash_summary", AsyncMock(side_effect=RuntimeError("skip upbit")))
-    monkeypatch.setattr(portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+    monkeypatch.setattr(
+        portfolio_cash.upbit_service,
+        "fetch_krw_cash_summary",
+        AsyncMock(side_effect=RuntimeError("skip upbit")),
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
 
     result = await portfolio_cash.get_cash_balance_impl(account="toss")
 
@@ -3663,16 +3700,15 @@ async def test_get_cash_balance_toss_api_enabled_adds_krw_and_usd(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_cash_balance_toss_api_failure_is_strict_for_toss_filter(monkeypatch):
-    from app.services.toss_portfolio_service import TossPortfolioSnapshot
     from app.mcp_server.tooling import portfolio_cash
 
     async def fake_fetch_toss_snapshot():
         raise RuntimeError("toss cash unavailable")
 
     monkeypatch.setattr(portfolio_cash.settings, "toss_api_enabled", True)
-    monkeypatch.setattr(portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+    monkeypatch.setattr(
+        portfolio_cash, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
 
     with pytest.raises(RuntimeError, match="Toss cash balance query failed"):
         await portfolio_cash.get_cash_balance_impl(account="toss")
-
-

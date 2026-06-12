@@ -621,8 +621,9 @@ async def test_fetch_kr_morning_report_promotes_screening_error_payload_to_top_l
 
 @pytest.mark.asyncio
 async def test_kr_morning_report_includes_toss_api_cash(monkeypatch):
-    import app.services.n8n_kr_morning_report_service as service
     from decimal import Decimal
+
+    import app.services.n8n_kr_morning_report_service as service
     from app.services.toss_portfolio_service import TossPortfolioSnapshot
 
     monkeypatch.setattr(service.settings, "toss_api_enabled", True)
@@ -634,11 +635,21 @@ async def test_kr_morning_report_includes_toss_api_cash(monkeypatch):
             cash_usd=Decimal("789.01"),
         )
 
-    monkeypatch.setattr(service, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
-    monkeypatch.setattr(service, "_get_portfolio_overview", AsyncMock(return_value={"holdings": [], "warnings": []}))
-    monkeypatch.setattr(service, "_fetch_kis_cash_balance", AsyncMock(return_value=1000000.0))
+    monkeypatch.setattr(
+        service, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(
+        service,
+        "_get_portfolio_overview",
+        AsyncMock(return_value={"holdings": [], "warnings": []}),
+    )
+    monkeypatch.setattr(
+        service, "_fetch_kis_cash_balance", AsyncMock(return_value=1000000.0)
+    )
     monkeypatch.setattr(service, "fetch_pending_orders", AsyncMock(return_value=[]))
-    monkeypatch.setattr(service, "_fetch_screening", AsyncMock(return_value={"results": []}))
+    monkeypatch.setattr(
+        service, "_fetch_screening", AsyncMock(return_value={"results": []})
+    )
 
     payload = await service.fetch_kr_morning_report(top_n=3)
 
@@ -647,4 +658,3 @@ async def test_kr_morning_report_includes_toss_api_cash(monkeypatch):
     assert payload["cash_balance"]["toss_usd"] == 789.01
     assert payload["cash_balance"]["total_krw"] == 1123456.0
     assert payload["cash_balance"]["toss_krw_fmt"] != "수동 관리"
-

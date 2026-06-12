@@ -561,7 +561,11 @@ class TossApiHomeReader:
                 )
 
             pnl_rate: float | None = None
-            if cost_basis_krw_total and cost_basis_krw_total > 0 and pnl_krw_total is not None:
+            if (
+                cost_basis_krw_total
+                and cost_basis_krw_total > 0
+                and pnl_krw_total is not None
+            ):
                 pnl_rate = pnl_krw_total / cost_basis_krw_total
 
             account = Account(
@@ -575,19 +579,29 @@ class TossApiHomeReader:
                 pnlKrw=pnl_krw_total,
                 pnlRate=pnl_rate,
                 cashBalances=CashAmounts(
-                    krw=float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
-                    usd=float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
+                    krw=float(snapshot.cash_krw)
+                    if snapshot.cash_krw is not None
+                    else None,
+                    usd=float(snapshot.cash_usd)
+                    if snapshot.cash_usd is not None
+                    else None,
                 ),
                 buyingPower=CashAmounts(
-                    krw=float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
-                    usd=float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
+                    krw=float(snapshot.cash_krw)
+                    if snapshot.cash_krw is not None
+                    else None,
+                    usd=float(snapshot.cash_usd)
+                    if snapshot.cash_usd is not None
+                    else None,
                 ),
             )
             warning = None
             if snapshot.errors:
                 warning = InvestHomeWarning(
                     source="toss_api",
-                    message="; ".join(str(item.get("error")) for item in snapshot.errors),
+                    message="; ".join(
+                        str(item.get("error")) for item in snapshot.errors
+                    ),
                 )
             return _SourceFetchResult(
                 accounts=[account],

@@ -444,7 +444,6 @@ def _no_holdings_sell_message(symbol: str, market_type: str, is_mock: bool) -> s
         )
 
 
-
 async def _get_holdings_for_order(
     symbol: str, market_type: str, is_mock: bool = False
 ) -> dict[str, Any] | None:

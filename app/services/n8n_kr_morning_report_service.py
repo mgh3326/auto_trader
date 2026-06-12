@@ -10,13 +10,13 @@ from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
 from app.services.brokers.kis.client import KISClient
-from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 from app.services.n8n_formatting import (
     fmt_amount,
     fmt_date_with_weekday,
     fmt_pnl,
 )
 from app.services.n8n_pending_orders_service import fetch_pending_orders
+from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,8 @@ async def fetch_kr_morning_report(
         "toss_krw": toss_cash_krw,
         "toss_krw_fmt": fmt_amount(toss_cash_krw)
         if toss_cash_krw is not None
-        else "API 미사용" if not bool(getattr(settings, "toss_api_enabled", False))
+        else "API 미사용"
+        if not bool(getattr(settings, "toss_api_enabled", False))
         else "조회 실패",
         "toss_usd": toss_cash_usd,
         "toss_usd_fmt": f"{toss_cash_usd:,.2f} USD"
@@ -209,7 +210,9 @@ async def _fetch_kis_cash_balance() -> float:
     return float(payload.get("stck_cash_ord_psbl_amt") or 0)
 
 
-async def _fetch_toss_cash_balance() -> tuple[float | None, float | None, list[dict[str, str]]]:
+async def _fetch_toss_cash_balance() -> tuple[
+    float | None, float | None, list[dict[str, str]]
+]:
     if not bool(getattr(settings, "toss_api_enabled", False)):
         return None, None, []
     try:
@@ -218,7 +221,10 @@ async def _fetch_toss_cash_balance() -> tuple[float | None, float | None, list[d
             float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
             float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
             [
-                {"source": str(item.get("source", "toss_api")), "error": str(item.get("error", ""))}
+                {
+                    "source": str(item.get("source", "toss_api")),
+                    "error": str(item.get("error", "")),
+                }
                 for item in snapshot.errors
             ],
         )

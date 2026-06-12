@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
-from decimal import Decimal
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.core.timezone import now_kst
-from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 from app.mcp_server.tooling.shared import (
     logger,
     to_float,
@@ -23,6 +22,7 @@ from app.services.brokers.kis import (
     extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
+from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
@@ -201,7 +201,9 @@ async def get_cash_balance_impl(
                     raise RuntimeError(
                         f"Toss cash balance query failed: {exc}"
                     ) from exc
-                errors.append({"source": "toss_api", "market": "cash", "error": str(exc)})
+                errors.append(
+                    {"source": "toss_api", "market": "cash", "error": str(exc)}
+                )
 
     if account_filter is None or account_filter in ("upbit",):
         try:

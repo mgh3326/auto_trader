@@ -43,7 +43,9 @@ def _h(**kw) -> Holding:
 
 @pytest.mark.unit
 def test_home_included_sources_is_locked() -> None:
-    assert HOME_INCLUDED_SOURCES == frozenset({"kis", "upbit", "toss_manual", "toss_api"})
+    assert HOME_INCLUDED_SOURCES == frozenset(
+        {"kis", "upbit", "toss_manual", "toss_api"}
+    )
 
 
 @pytest.mark.unit
@@ -951,6 +953,7 @@ class _Reader:
 
     async def fetch(self, *, user_id):
         from app.services.invest_home_service import _SourceFetchResult
+
         return _SourceFetchResult(
             accounts=self.accounts,
             holdings=self.holdings,
@@ -1062,4 +1065,3 @@ async def test_get_home_falls_back_to_manual_when_toss_api_returns_warning_only(
 
     assert [h.source for h in result.holdings] == ["toss_manual"]
     assert any(w.source == "toss_api" for w in result.meta.warnings)
-

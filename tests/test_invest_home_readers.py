@@ -1392,11 +1392,12 @@ async def test_kis_mock_reader_degrades_when_wall_time_bound_exceeded(
 @pytest.mark.asyncio
 async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch):
     from decimal import Decimal
+
+    from app.services import invest_home_readers as readers
     from app.services.toss_portfolio_service import (
         TossPortfolioPosition,
         TossPortfolioSnapshot,
     )
-    from app.services import invest_home_readers as readers
 
     async def fake_fetch_toss_snapshot():
         return TossPortfolioSnapshot(
@@ -1423,7 +1424,9 @@ async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch
             cash_usd=Decimal("789.01"),
         )
 
-    monkeypatch.setattr(readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
 
     result = await readers.TossApiHomeReader().fetch(user_id=1)
 
@@ -1439,4 +1442,3 @@ async def test_toss_api_home_reader_maps_tradeable_holdings_and_cash(monkeypatch
     assert holding.manualOnly is False
     assert holding.sellableQuantity == 1.25
     assert holding.referenceQuantity == 0.0
-

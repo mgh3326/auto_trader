@@ -28,7 +28,9 @@ from app.schemas.invest_home import (
 
 logger = logging.getLogger(__name__)
 
-HOME_INCLUDED_SOURCES: frozenset[str] = frozenset({"kis", "upbit", "toss_manual", "toss_api"})
+HOME_INCLUDED_SOURCES: frozenset[str] = frozenset(
+    {"kis", "upbit", "toss_manual", "toss_api"}
+)
 
 _PAPER: frozenset[str] = frozenset(
     {"kis_mock", "kiwoom_mock", "alpaca_paper", "db_simulated"}
@@ -396,8 +398,12 @@ class InvestHomeService:
                         accounts.extend(toss_api_result.accounts)
                         holdings.extend(toss_api_result.holdings)
                 except Exception as exc:
-                    logger.warning("[invest_home] toss_api fetch failed: %s", exc, exc_info=True)
-                    warnings.append(InvestHomeWarning(source="toss_api", message=str(exc)))
+                    logger.warning(
+                        "[invest_home] toss_api fetch failed: %s", exc, exc_info=True
+                    )
+                    warnings.append(
+                        InvestHomeWarning(source="toss_api", message=str(exc))
+                    )
 
         if toss_api_result is None or not (
             toss_api_result.holdings or toss_api_result.accounts
@@ -545,8 +551,14 @@ class InvestHomeService:
                             accounts.extend(toss_api_result.accounts)
                             holdings.extend(toss_api_result.holdings)
                     except Exception as exc:
-                        logger.warning("[invest_home] toss_api fetch failed: %s", exc, exc_info=True)
-                        warnings.append(InvestHomeWarning(source="toss_api", message=str(exc)))
+                        logger.warning(
+                            "[invest_home] toss_api fetch failed: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                        warnings.append(
+                            InvestHomeWarning(source="toss_api", message=str(exc))
+                        )
 
             if toss_api_result is None or not (
                 toss_api_result.holdings or toss_api_result.accounts
@@ -564,16 +576,21 @@ class InvestHomeService:
                         holdings.extend(result.holdings)
                         if result.warning is not None:
                             warnings.append(result.warning)
-                        toss_account = build_manual_account_from_holdings(result.holdings)
+                        toss_account = build_manual_account_from_holdings(
+                            result.holdings
+                        )
                         if toss_account is not None:
                             accounts.append(toss_account)
                     except Exception as exc:
                         logger.warning(
-                            "[invest_home] toss_manual fetch failed: %s", exc, exc_info=True
+                            "[invest_home] toss_manual fetch failed: %s",
+                            exc,
+                            exc_info=True,
                         )
                         warnings.append(
                             InvestHomeWarning(
-                                source="toss_manual", message=str(exc) or type(exc).__name__
+                                source="toss_manual",
+                                message=str(exc) or type(exc).__name__,
                             )
                         )
 
