@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
-
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
 from app.mcp_server.tooling.order_journal import (
@@ -152,12 +148,18 @@ async def _reconcile_one_toss_row(
     if evidence.verdict == "pending":
         if evidence.local_status in {"cancel_rejected", "replace_rejected"} and not dry_run:
             async with _order_session_factory()() as db:
-                await TossLiveOrderLedgerService(db).update_reconcile_outcome(
+                svc = TossLiveOrderLedgerService(db)
+                await svc.update_reconcile_outcome(
                     ledger_id=row.id,
                     status=evidence.local_status,
                     broker_status=evidence.broker_status,
                     raw_response=evidence.raw_order,
                 )
+                if row.original_order_id and row.broker_order_id:
+                    await svc.clear_replacement_link(
+                        original_order_id=row.original_order_id,
+                        replacement_order_id=row.broker_order_id,
+                    )
         base["action"] = "noop_pending"
         return base
 

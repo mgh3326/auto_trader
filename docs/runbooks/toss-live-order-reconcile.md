@@ -39,6 +39,19 @@ toss_reconcile_orders(order_id="ORDER_ID", dry_run=False)
 - `REPLACED` with `filledQuantity > 0`: book the new filled delta and mark the original row `replaced`; the replacement row remains reconcilable.
 - `CANCEL_REJECTED` / `REPLACE_REJECTED`: record the rejected operation row and keep the original order open.
 
+## Replacement Chain Notes
+
+Successful modify/cancel requests record the replacement `orderId` in
+`replaced_by_order_id`, but the original order row is not locally marked
+terminal at request time. Reconcile must still fetch the original order detail
+because Toss can report partial fills on the original order before it reaches
+`REPLACED` or `CANCELED`.
+
+Cancel-operation rows are audit rows, but they stay reconcilable until their
+single-order detail resolves. If Toss returns `CANCEL_REJECTED` or
+`REPLACE_REJECTED`, reconcile marks the replacement operation row rejected and
+clears the original row's replacement link so the original order remains open.
+
 ## Operational Hold
 
 Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until ROB-539 live smoke and stronger-model/CTO review clear this path. This feature changes live-order bookkeeping and must stay under `hold_for_final_review` until cleared.

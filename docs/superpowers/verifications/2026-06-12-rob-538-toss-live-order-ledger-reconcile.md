@@ -15,6 +15,7 @@
     - Extended `toss_place_order` with comprehensive metadata (thesis, strategy, etc.).
     - Wired `toss_modify_order` and `toss_cancel_order` into the replacement ledger.
     - Registered `toss_reconcile_orders` tool.
+- **Replacement Chain Fix**: Replacement links no longer terminal-close the original order at request time; original rows remain reconcilable until Toss order-detail evidence confirms `REPLACED`/`CANCELED`. Rejected replacement rows clear the original replacement link.
 - **Safety**: Maintained existing safety gates (sell loss guard, high value confirmation, opposite pending checks) while adding the operational hold.
 
 ## Verification Evidence
@@ -29,7 +30,7 @@ uv run pytest \
   tests/test_mcp_toss_order_variants.py \
   -q
 ```
-**Outcome**: 57 passed, 2 warnings.
+**Outcome**: 59 passed, 2 warnings.
 
 ### Lint Results
 ```bash
@@ -47,6 +48,12 @@ uv run ruff check \
 ```
 **Outcome**: All clear.
 
+### Type Check Results
+```bash
+uv run ty check app tests
+```
+**Outcome**: All checks passed.
+
 ### Alembic Heads
 ```bash
 uv run alembic heads
@@ -54,7 +61,7 @@ uv run alembic heads
 **Outcome**: `20260612_rob538_toss_live_order_ledger (head)`
 
 ## Risk and Hold Status
-- **Linear Labels**: Added `hold_for_final_review`, `risk_high_loss`, `risk_high_complexity`.
+- **Linear Labels**: Added `Feature`, `auto_trader`, `candidate_for_opus`, `high_risk_change`, `needs_stronger_model_review`, `hold_for_final_review`.
 - **Hold Comment**: Operational hold in place. `TOSS_LIVE_ORDER_MUTATIONS_ENABLED` must remain `false` until final review clears the live-smoke hold.
 
 ## Runbook

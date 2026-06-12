@@ -102,7 +102,64 @@ async def test_mark_replaced_links_original_to_replacement(db_session):
     refreshed = await db_session.get(TossLiveOrderLedger, original.id)
     assert refreshed is not None
     assert refreshed.replaced_by_order_id == replacement.broker_order_id
-    assert refreshed.status == "replaced"
+    assert refreshed.status == "accepted"
+
+
+async def test_list_open_keeps_original_and_cancel_audit_row_reconcilable(
+    db_session,
+):
+    svc = TossLiveOrderLedgerService(db_session)
+    await svc.record_send(
+        operation_kind="place",
+        market="kr",
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("1"),
+        price=Decimal("70000"),
+        order_amount=None,
+        currency="KRW",
+        client_order_id="cid-open-original",
+        broker_order_id="ord-open-original",
+        original_order_id=None,
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+    )
+    await svc.record_send(
+        operation_kind="cancel",
+        market="kr",
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("1"),
+        price=Decimal("70000"),
+        order_amount=None,
+        currency="KRW",
+        client_order_id="cid-cancel-audit",
+        broker_order_id="ord-cancel-audit",
+        original_order_id="ord-open-original",
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+    )
+    await svc.mark_replaced(
+        broker_order_id="ord-open-original",
+        replaced_by_order_id="ord-cancel-audit",
+    )
+
+    rows = await svc.list_open(symbol="005930")
+
+    assert [row.broker_order_id for row in rows] == [
+        "ord-open-original",
+        "ord-cancel-audit",
+    ]
 
 
 async def test_update_reconcile_outcome_records_fee_tax_and_settlement(db_session):

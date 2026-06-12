@@ -100,6 +100,12 @@ class TossLiveOrderLedgerService:
     async def mark_replaced(
         self, *, broker_order_id: str, replaced_by_order_id: str
     ) -> None:
+        """Link an original order to a Toss replacement without closing it.
+
+        The original order's terminal state is evidence-gated. Reconcile must
+        still fetch the original order detail because Toss can report fills on
+        the original order before it becomes REPLACED/CANCELED.
+        """
         stmt = select(TossLiveOrderLedger).where(
             TossLiveOrderLedger.broker_order_id == broker_order_id
         )
@@ -107,7 +113,21 @@ class TossLiveOrderLedgerService:
         if row is None:
             return
         row.replaced_by_order_id = replaced_by_order_id
-        row.status = "replaced"
+        await self._db.commit()
+
+    async def clear_replacement_link(
+        self, *, original_order_id: str, replacement_order_id: str
+    ) -> None:
+        stmt = select(TossLiveOrderLedger).where(
+            TossLiveOrderLedger.broker_order_id == original_order_id,
+            TossLiveOrderLedger.replaced_by_order_id == replacement_order_id,
+        )
+        row = (await self._db.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return
+        row.replaced_by_order_id = None
+        if row.status == "replaced":
+            row.status = "partial" if row.filled_qty else "accepted"
         await self._db.commit()
 
     async def list_open(
@@ -121,14 +141,18 @@ class TossLiveOrderLedgerService:
         stmt = select(TossLiveOrderLedger).where(
             TossLiveOrderLedger.status.in_(("accepted", "pending", "partial"))
         )
-        stmt = stmt.where(TossLiveOrderLedger.operation_kind.in_(("place", "modify")))
+        stmt = stmt.where(
+            TossLiveOrderLedger.operation_kind.in_(("place", "modify", "cancel"))
+        )
         if symbol:
             stmt = stmt.where(TossLiveOrderLedger.symbol == symbol)
         if order_id:
             stmt = stmt.where(TossLiveOrderLedger.broker_order_id == order_id)
         if market:
             stmt = stmt.where(TossLiveOrderLedger.market == market)
-        stmt = stmt.order_by(TossLiveOrderLedger.created_at.asc()).limit(limit)
+        stmt = stmt.order_by(
+            TossLiveOrderLedger.created_at.asc(), TossLiveOrderLedger.id.asc()
+        ).limit(limit)
         rows = list((await self._db.execute(stmt)).scalars().all())
         for row in rows:
             self._db.expunge(row)

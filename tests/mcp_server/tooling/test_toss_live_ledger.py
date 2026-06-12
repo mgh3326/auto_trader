@@ -192,3 +192,60 @@ async def test_reconcile_impl_lists_only_toss_rows(db_session):
     assert out["success"] is True
     assert out["dry_run"] is True
     assert out["counts"] == {"pending": 1}
+
+
+async def test_rejected_replacement_reopens_original_order(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    original = await _accepted(db_session)
+    replacement = await TossLiveOrderLedgerService(db_session).record_send(
+        operation_kind="modify",
+        market="us",
+        symbol="AAPL",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("2"),
+        price=Decimal("191"),
+        order_amount=None,
+        currency="USD",
+        client_order_id="cid-rejected-replacement",
+        broker_order_id="ord-rejected-replacement",
+        original_order_id=original.broker_order_id,
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+    )
+    original.replaced_by_order_id = replacement.broker_order_id
+    await db_session.commit()
+    db_session.expunge(replacement)
+
+    evidence = TossFillEvidence(
+        verdict="pending",
+        local_status="replace_rejected",
+        broker_status="REPLACE_REJECTED",
+        filled_qty=Decimal("0"),
+        avg_price=None,
+        commission=None,
+        tax=None,
+        fee_total=Decimal("0"),
+        settlement_date=None,
+        raw_order={"status": "REPLACE_REJECTED"},
+        reason="replace rejected",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()):
+        out = await mod._reconcile_one_toss_row(replacement, dry_run=False)
+
+    assert out["action"] == "noop_pending"
+    refreshed_original = await db_session.get(TossLiveOrderLedger, original.id)
+    refreshed_replacement = await db_session.get(TossLiveOrderLedger, replacement.id)
+    assert refreshed_original.status == "accepted"
+    assert refreshed_original.replaced_by_order_id is None
+    assert refreshed_replacement.status == "replace_rejected"
