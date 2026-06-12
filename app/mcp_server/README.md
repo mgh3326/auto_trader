@@ -77,10 +77,10 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - US intraday `end_date="YYYY-MM-DD"` is interpreted as ET `20:00:00` for that market date; timestamp inputs use the exact provided instant
 - KR OHLCV behavior:
   - KR `day` keeps the existing Redis-backed `kis_ohlcv_cache` path when `end_date` is omitted
-  - KR `1m` reads DB-first from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
-  - KR `5m/15m/30m/1h` read DB-first from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
   - KR intraday (`1m/5m/15m/30m/1h`) uses Toss candles first when `TOSS_API_ENABLED` is configured, then falls back to the existing DB/KIS reader
   - Toss only provides `1m`; `5m/15m/30m/1h` are aggregated from Toss `1m` using the same bucket rules as the KIS path
+  - When Toss is unavailable or disabled, KR `1m` falls back to DB-first reads from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
+  - When Toss is unavailable or disabled, KR `5m/15m/30m/1h` fall back to DB-first reads from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
   - On Toss fallback, KR intraday overlays the most recent 30 minutes from `public.kr_candles_1m` + KIS minute API to cover the unchanged 10-minute sync cadence
   - KR intraday includes the current partial bucket when minute data is available
   - KIS minute venues are merged with strict dedup to prevent double-counting (API overwrites DB per minute+venue)
