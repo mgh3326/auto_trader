@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 
 _EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/USD"
 _CACHE_KEY = "usd_krw"
-_CACHE_TTL_SECONDS = 300.0
-_cache: dict[str, dict[str, float]] = {}
+_OPEN_ER_API_CACHE_TTL_SECONDS = 300.0
+_MIN_TOSS_CACHE_TTL_SECONDS = 1.0
+_cache: dict[str, dict[str, object]] = {}
 _lock: asyncio.Lock | None = None
 _lock_loop: asyncio.AbstractEventLoop | None = None
 
@@ -100,12 +101,31 @@ def _get_lock() -> asyncio.Lock:
         _lock_loop = loop
     return _lock
 
+def _now_utc() -> datetime:
+    return datetime.now(UTC)
 
-def _get_cached_rate(now: float) -> float | None:
+
+def _quote_cache_ttl_seconds(quote: UsdKrwExchangeRateQuote) -> float:
+    if quote.source == "toss" and quote.valid_until is not None:
+        ttl = (quote.valid_until - _now_utc()).total_seconds()
+        return max(ttl, _MIN_TOSS_CACHE_TTL_SECONDS)
+    return _OPEN_ER_API_CACHE_TTL_SECONDS
+
+
+def _get_cached_quote(now: float) -> UsdKrwExchangeRateQuote | None:
     cached = _cache.get(_CACHE_KEY)
-    if cached and cached["expires_at"] > now:
-        return cached["rate"]
+    if cached and float(cached["expires_at"]) > now:
+        quote = cached["quote"]
+        if isinstance(quote, UsdKrwExchangeRateQuote):
+            return quote
     return None
+
+
+def _set_cached_quote(quote: UsdKrwExchangeRateQuote, now: float) -> None:
+    _cache[_CACHE_KEY] = {
+        "quote": quote,
+        "expires_at": now + _quote_cache_ttl_seconds(quote),
+    }
 
 
 async def _fetch_toss_usd_krw_quote() -> UsdKrwExchangeRateQuote:
@@ -149,26 +169,28 @@ async def _fetch_usd_krw_rate_details() -> UsdKrwExchangeRateQuote:
     return await _fetch_open_er_api_usd_krw_quote()
 
 
-async def get_usd_krw_rate() -> float:
+async def get_usd_krw_rate_details() -> UsdKrwExchangeRateQuote:
     now = time.monotonic()
-    cached_rate = _get_cached_rate(now)
-    if cached_rate is not None:
-        return cached_rate
+    cached_quote = _get_cached_quote(now)
+    if cached_quote is not None:
+        return cached_quote
 
     async with _get_lock():
         now = time.monotonic()
-        cached_rate = _get_cached_rate(now)
-        if cached_rate is not None:
-            return cached_rate
+        cached_quote = _get_cached_quote(now)
+        if cached_quote is not None:
+            return cached_quote
 
-        rate = await _fetch_usd_krw_rate()
-        _cache[_CACHE_KEY] = {
-            "rate": rate,
-            "expires_at": now + _CACHE_TTL_SECONDS,
-        }
-        return rate
+        quote = await _fetch_usd_krw_rate_details()
+        _set_cached_quote(quote, now)
+        return quote
+
+
+async def get_usd_krw_rate() -> float:
+    quote = await get_usd_krw_rate_details()
+    return quote.default_rate
 
 
 async def get_usd_krw_quote() -> float:
-    """Return the current USD/KRW quote for watch-alert FX checks."""
+    """Return the default USD/KRW quote for existing scalar consumers."""
     return await get_usd_krw_rate()

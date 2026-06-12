@@ -125,3 +125,74 @@ async def test_get_usd_krw_rate_details_falls_back_when_toss_fails(
 
     assert quote.source == "open_er_api"
     assert quote.default_rate == pytest.approx(1498.7)
+
+
+@pytest.mark.asyncio
+async def test_cache_uses_toss_valid_until(monkeypatch) -> None:
+    calls = 0
+    now_utc = datetime(2026, 6, 12, 0, 30, 0, tzinfo=UTC)
+    monotonic_now = 1000.0
+
+    async def fake_fetch() -> mod.UsdKrwExchangeRateQuote:
+        nonlocal calls
+        calls += 1
+        return mod.UsdKrwExchangeRateQuote(
+            rate=1522.2 + calls,
+            mid_rate=1522.05 + calls,
+            source="toss",
+            valid_until=datetime(2026, 6, 12, 0, 31, 0, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(mod, "_now_utc", lambda: now_utc)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: monotonic_now)
+    monkeypatch.setattr(mod, "_fetch_usd_krw_rate_details", fake_fetch)
+
+    first = await mod.get_usd_krw_rate_details()
+    second = await mod.get_usd_krw_rate_details()
+
+    assert first is second
+    assert calls == 1
+
+    monotonic_now = 1059.9
+    third = await mod.get_usd_krw_rate_details()
+
+    assert third is first
+    assert calls == 1
+
+    monotonic_now = 1060.1
+    fourth = await mod.get_usd_krw_rate_details()
+
+    assert fourth is not first
+    assert fourth.mid_rate == pytest.approx(1524.05)
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_uses_fixed_ttl_for_open_er_api(monkeypatch) -> None:
+    calls = 0
+    monotonic_now = 2000.0
+
+    async def fake_fetch() -> mod.UsdKrwExchangeRateQuote:
+        nonlocal calls
+        calls += 1
+        return mod.UsdKrwExchangeRateQuote(
+            rate=1498.7 + calls,
+            mid_rate=1498.7 + calls,
+            source="open_er_api",
+        )
+
+    monkeypatch.setattr(mod.time, "monotonic", lambda: monotonic_now)
+    monkeypatch.setattr(mod, "_fetch_usd_krw_rate_details", fake_fetch)
+
+    first = await mod.get_usd_krw_rate_details()
+    monotonic_now = 2299.9
+    second = await mod.get_usd_krw_rate_details()
+
+    assert second is first
+    assert calls == 1
+
+    monotonic_now = 2300.1
+    third = await mod.get_usd_krw_rate_details()
+
+    assert third is not first
+    assert calls == 2
