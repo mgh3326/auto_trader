@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
 from app.mcp_server.tooling.order_journal import (
@@ -20,55 +25,112 @@ logger = logging.getLogger(__name__)
 
 async def record_toss_place_order(
     *,
-    order_id: str,
+    market: str,
     symbol: str,
     side: str,
-    quantity: Decimal,
-    price: Decimal,
-    market: str,
-    currency: str,
-    note: str | None = None,
-    reason: str | None = None,
-    strategy: str | None = None,
-    signal: str | None = None,
-) -> None:
-    """Records a newly placed Toss order as accepted in the ledger."""
+    order_type: str,
+    time_in_force: str,
+    quantity: Decimal | None,
+    price: Decimal | None,
+    order_amount: Decimal | None,
+    currency: str | None,
+    client_order_id: str,
+    broker_order_id: str | None,
+    raw_response: dict[str, Any],
+    reason: str | None,
+    exit_reason: str | None,
+    thesis: str | None,
+    strategy: str | None,
+    target_price: Decimal | None,
+    stop_loss: Decimal | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+    report_item_uuid: str | None,
+) -> dict[str, Any]:
+    status = "accepted" if broker_order_id else "rejected"
     async with _order_session_factory()() as db:
-        await TossLiveOrderLedgerService(db).record_order(
-            broker_order_id=order_id,
-            symbol=symbol,
-            side=side.lower(),
+        row = await TossLiveOrderLedgerService(db).record_send(
             operation_kind="place",
-            status="accepted",
+            market=market,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            time_in_force=time_in_force,
             quantity=quantity,
             price=price,
-            market=market,
+            order_amount=order_amount,
             currency=currency,
-            notes=note,
+            client_order_id=client_order_id,
+            broker_order_id=broker_order_id,
+            original_order_id=None,
+            status=status,
+            broker_status=None,
+            response_code="0" if status == "accepted" else None,
+            response_message=None,
+            raw_response=raw_response,
             reason=reason,
+            thesis=thesis,
             strategy=strategy,
-            signal=signal,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            exit_reason=exit_reason,
+            indicators_snapshot=indicators_snapshot,
+            report_item_uuid=report_item_uuid,
         )
+    return {
+        "ledger_id": row.id,
+        "broker_status": row.status,
+        "fill_recorded": False,
+        "journal_created": False,
+    }
 
 
 async def record_toss_replacement_order(
     *,
-    original_order_id: str,
-    replacement_order_id: str,
-    operation_kind: Literal["modify", "cancel"],
+    operation_kind: str,
+    market: str,
     symbol: str,
     side: str,
-) -> None:
-    """Records a Toss modify/cancel replacement chain in the ledger."""
+    order_type: str,
+    time_in_force: str | None,
+    quantity: Decimal | None,
+    price: Decimal | None,
+    order_amount: Decimal | None,
+    currency: str | None,
+    original_order_id: str,
+    replacement_order_id: str,
+    raw_response: dict[str, Any],
+) -> dict[str, Any]:
     async with _order_session_factory()() as db:
-        await TossLiveOrderLedgerService(db).record_order(
-            broker_order_id=replacement_order_id,
-            symbol=symbol,
-            side=side.lower(),
+        svc = TossLiveOrderLedgerService(db)
+        row = await svc.record_send(
             operation_kind=operation_kind,
+            market=market,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            time_in_force=time_in_force,
+            quantity=quantity,
+            price=price,
+            order_amount=order_amount,
+            currency=currency,
+            client_order_id=uuid.uuid4().hex,
+            broker_order_id=replacement_order_id,
+            original_order_id=original_order_id,
             status="accepted",
-            parent_order_id=original_order_id,
+            broker_status=None,
+            response_code="0",
+            response_message=None,
+            raw_response=raw_response,
         )
+        await svc.mark_replaced(
+            broker_order_id=original_order_id,
+            replaced_by_order_id=replacement_order_id,
+        )
+    return {"ledger_id": row.id, "broker_status": row.status}
 
 
 async def _reconcile_one_toss_row(

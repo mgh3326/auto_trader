@@ -1520,45 +1520,48 @@ async def test_place_order_records_accepted_only_toss_ledger(monkeypatch):
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
 
-    mock_client = MockTossClient(monkeypatch)
+    _ = MockTossClient(monkeypatch)
 
-    # Mock ledger.record_toss_place_order
-    recorded_calls = []
+    recorded = {}
 
-    async def fake_record(**kwargs):
-        recorded_calls.append(kwargs)
+    async def fake_record_toss_place_order(**kwargs):
+        recorded.update(kwargs)
+        return {
+            "ledger_id": 538,
+            "broker_status": "accepted",
+            "fill_recorded": False,
+            "journal_created": False,
+        }
 
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_toss_variants.record_toss_place_order",
-        fake_record
+        otv,
+        "record_toss_place_order",
+        fake_record_toss_place_order,
     )
 
     res = await toss_place_order(
         symbol="AAPL",
         side="buy",
-        quantity="10",
-        price="150.0",
+        quantity="2",
+        price="190",
         dry_run=False,
         confirm=True,
         account_mode="toss_live",
-        note="test note",
-        reason="test reason",
-        strategy="test strategy",
-        signal="test signal",
+        thesis="entry thesis",
+        strategy="swing",
+        report_item_uuid="11111111-1111-1111-1111-111111111111",
     )
 
     assert res["success"] is True
-    assert len(recorded_calls) == 1
-    call = recorded_calls[0]
-    assert call["order_id"] == "new-ord-123"
-    assert call["symbol"] == "AAPL"
-    assert call["side"] == "BUY"
-    assert call["quantity"] == Decimal("10")
-    assert call["price"] == Decimal("150.0")
-    assert call["note"] == "test note"
-    assert call["reason"] == "test reason"
-    assert call["strategy"] == "test strategy"
-    assert call["signal"] == "test signal"
+    assert res["mutation_sent"] is True
+    assert res["ledger_id"] == 538
+    assert res["broker_status"] == "accepted"
+    assert res["fill_recorded"] is False
+    assert recorded["client_order_id"] == res["client_order_id"]
+    assert recorded["broker_order_id"] == res["order_id"]
+    assert recorded["thesis"] == "entry thesis"
+    assert recorded["strategy"] == "swing"
+    assert recorded["report_item_uuid"] == "11111111-1111-1111-1111-111111111111"
 
 @pytest.mark.asyncio
 async def test_modify_order_records_replacement_chain(monkeypatch):
