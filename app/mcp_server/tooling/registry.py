@@ -78,6 +78,9 @@ from app.mcp_server.tooling.orders_kis_variants import (
     register_live_reconcile_tools,
 )
 from app.mcp_server.tooling.orders_registration import register_order_tools
+from app.mcp_server.tooling.orders_toss_variants import (
+    register_toss_live_order_tools,
+)
 from app.mcp_server.tooling.paper_account_registration import (
     register_paper_account_tools,
 )
@@ -163,6 +166,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_kis_live_order_tools(mcp)
         register_kis_mock_order_tools(mcp)
         register_live_reconcile_tools(mcp)
+        register_toss_live_order_tools(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)

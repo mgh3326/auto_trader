@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 
 import httpx
@@ -273,3 +274,114 @@ async def test_candles_returns_typed_page_and_sends_query_params() -> None:
     }
     assert page.next_before == "2026-06-11T00:00:00.000+09:00"
     assert page.candles[0].close_price == Decimal("326000")
+
+
+@pytest.mark.asyncio
+async def test_place_order_posts_json_with_account_header_and_client_order_id() -> None:
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["headers"] = dict(request.headers)
+        seen["body"] = request.read().decode("utf-8")
+        return httpx.Response(
+            200,
+            json=_json(
+                {
+                    "orderId": "new-ord-123",
+                    "clientOrderId": "abc123",
+                }
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=999,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        payload = {
+            "symbol": "AAPL",
+            "side": "BUY",
+            "orderType": "LIMIT",
+            "quantity": "10",
+            "price": "150.0",
+            "clientOrderId": "abc123",
+        }
+        res = await client.place_order(payload)
+    finally:
+        await client.aclose()
+
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/orders"
+    assert seen["headers"]["x-tossinvest-account"] == "999"
+    assert json.loads(seen["body"]) == payload
+    assert res.order_id == "new-ord-123"
+    assert res.client_order_id == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_modify_order_posts_to_modify_path_and_parses_new_order_id() -> None:
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = request.read().decode("utf-8")
+        return httpx.Response(
+            200,
+            json=_json({"orderId": "mod-ord-456"}),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=999,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        payload = {
+            "orderType": "LIMIT",
+            "price": "155.0",
+            "quantity": "12",
+        }
+        res = await client.modify_order("orig-ord-123", payload)
+    finally:
+        await client.aclose()
+
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/orders/orig-ord-123/modify"
+    assert json.loads(seen["body"]) == payload
+    assert res.order_id == "mod-ord-456"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_posts_to_cancel_path_and_parses_new_order_id() -> None:
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = request.read().decode("utf-8")
+        return httpx.Response(
+            200,
+            json=_json({"orderId": "can-ord-789"}),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=999,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        res = await client.cancel_order("orig-ord-123")
+    finally:
+        await client.aclose()
+
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/orders/orig-ord-123/cancel"
+    assert json.loads(seen["body"]) == {}
+    assert res.order_id == "can-ord-789"

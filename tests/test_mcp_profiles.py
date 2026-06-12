@@ -25,6 +25,9 @@ from app.mcp_server.tooling.orders_kis_variants import (
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
+from app.mcp_server.tooling.orders_toss_variants import (
+    TOSS_LIVE_ORDER_TOOL_NAMES,
+)
 from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL_NAMES
 from app.mcp_server.tooling.paper_analytics_registration import (
     PAPER_ANALYTICS_TOOL_NAMES,
@@ -86,6 +89,10 @@ class TestDefaultProfile:
     def test_registers_typed_kis_mock_variants(self) -> None:
         mcp = _build_mcp(McpProfile.DEFAULT)
         assert KIS_MOCK_ORDER_TOOL_NAMES <= mcp.tools.keys()
+
+    def test_registers_typed_toss_live_variants(self) -> None:
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert TOSS_LIVE_ORDER_TOOL_NAMES <= mcp.tools.keys()
 
     def test_does_not_register_split_profile_tools(self) -> None:
         mcp = _build_mcp(McpProfile.DEFAULT)
@@ -186,6 +193,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         | KIS_LIVE_ORDER_TOOL_NAMES
         | KIS_MOCK_ORDER_TOOL_NAMES
         | LIVE_RECONCILE_TOOL_NAMES
+        | TOSS_LIVE_ORDER_TOOL_NAMES
     ),
     McpProfile.HERMES_PAPER_KIS: set(KIS_MOCK_ORDER_TOOL_NAMES),
     McpProfile.CRYPTO: _LEGACY_ORDER_TOOL_NAMES | LIVE_RECONCILE_TOOL_NAMES,
@@ -200,6 +208,7 @@ _ALL_ORDER_TOOL_NAMES = (
     | LIVE_RECONCILE_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
     | _ALPACA_MUTATING
+    | TOSS_LIVE_ORDER_TOOL_NAMES
 )
 
 

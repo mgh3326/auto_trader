@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import SecretStr
 
-from app.core.config import validate_toss_api_config
+from app.core.config import Settings, validate_toss_api_config
 
 
 class _Settings:
@@ -29,3 +29,16 @@ def test_validate_toss_api_config_reports_names_only() -> None:
 
     assert validate_toss_api_config(Configured()) == []
     assert "secret-value" not in repr(Configured.toss_api_client_secret)
+
+
+def test_toss_live_order_mutation_gate_defaults_false() -> None:
+    configured = Settings(
+        kis_app_key="kis-key",
+        kis_app_secret="kis-secret",
+        opendart_api_key="dart-key",
+        upbit_access_key="upbit-key",
+        upbit_secret_key="upbit-secret",
+        SECRET_KEY="TestSecret123-" + "x" * 32,
+    )
+
+    assert configured.toss_live_order_mutations_enabled is False
