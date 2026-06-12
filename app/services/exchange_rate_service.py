@@ -100,6 +100,7 @@ def _get_lock() -> asyncio.Lock:
         _lock_loop = loop
     return _lock
 
+
 def _now_utc() -> datetime:
     return datetime.now(UTC)
 
