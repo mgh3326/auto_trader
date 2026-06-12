@@ -62,3 +62,14 @@ async def fetch_kr_daily_toss(
         max_pages=max_pages,
     )
     return _to_daily_frame(raw)
+
+
+async def fetch_daily_toss_unclamped(*, symbol: str, n: int) -> pd.DataFrame:
+    """Fetch daily candles from Toss using a settings-configured client."""
+    from app.services.brokers.toss.client import TossReadClient
+    client = TossReadClient.from_settings()
+    try:
+        return await fetch_kr_daily_toss(client=client, symbol=symbol, n=n)
+    finally:
+        await client.aclose()
+

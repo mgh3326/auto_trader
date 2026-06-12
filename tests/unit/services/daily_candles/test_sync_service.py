@@ -172,3 +172,79 @@ async def test_service_close_awaits_callbacks():
     await svc.close()
 
     close_callback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kr_empty_kis_falls_back_to_toss_daily():
+    from app.services.daily_candles.sync_service import DailyCandleSyncService, SyncTarget
+    from app.services.daily_candles.repository import MarketKey
+
+    upserted_rows = []
+
+    class Repo:
+        session = AsyncMock()
+
+        async def upsert_rows(self, *, market, rows):
+            upserted_rows.extend(rows)
+            return len(rows)
+
+    Repo.session.commit = AsyncMock()
+    svc = DailyCandleSyncService(
+        repository=Repo(),
+        kis_kr_fetcher=AsyncMock(return_value=pd.DataFrame()),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        toss_kr_fetcher=AsyncMock(
+            return_value=pd.DataFrame(
+                [{"date": "2026-06-12", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10, "value": 20}]
+            )
+        ),
+    )
+
+    result = await svc.sync_one(
+        target=SyncTarget(market=MarketKey.KR, symbol="005930", partition="KRX"),
+        horizon_bars=1,
+    )
+
+    assert result.fallback_used is True
+    assert upserted_rows[0].source == "toss"
+
+
+@pytest.mark.asyncio
+async def test_us_empty_kis_and_yahoo_falls_back_to_toss_daily():
+    from app.services.daily_candles.sync_service import DailyCandleSyncService, SyncTarget
+    from app.services.daily_candles.repository import MarketKey
+
+    upserted_rows = []
+
+    class Repo:
+        session = AsyncMock()
+
+        async def upsert_rows(self, *, market, rows):
+            upserted_rows.extend(rows)
+            return len(rows)
+
+    Repo.session.commit = AsyncMock()
+    svc = DailyCandleSyncService(
+        repository=Repo(),
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(return_value=pd.DataFrame()),
+        yahoo_us_fetcher=AsyncMock(return_value=[]),
+        upbit_crypto_fetcher=AsyncMock(),
+        toss_us_fetcher=AsyncMock(
+            return_value=pd.DataFrame(
+                [{"date": "2026-06-12", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10, "value": 20}]
+            )
+        ),
+    )
+
+    result = await svc.sync_one(
+        target=SyncTarget(market=MarketKey.US, symbol="AAPL", partition="NASD"),
+        horizon_bars=1,
+    )
+
+    assert result.fallback_used is True
+    assert upserted_rows[0].source == "toss_fallback"
+
+
