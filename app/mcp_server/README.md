@@ -419,7 +419,7 @@ The error names variables only — never values.
 
 ### Toss Live Order MCP Tools
 
-The `default` profile registers seven typed `toss_live_*` MCP tools:
+The `default` profile registers eight typed `toss_live` MCP tools:
 - `toss_preview_order`
 - `toss_place_order`
 - `toss_modify_order`
@@ -427,12 +427,14 @@ The `default` profile registers seven typed `toss_live_*` MCP tools:
 - `toss_get_order_history`
 - `toss_get_positions`
 - `toss_get_orderable_cash`
+- `toss_reconcile_orders`
 
 #### Toss Safety Rules and Gates
 
 - **API Enablement**: Toss live tools are default-disabled. They fail closed unless `TOSS_API_ENABLED=true` and `validate_toss_api_config()` returns no missing keys.
 - **Account Mode Routing**: All Toss tools require `account_mode="toss_live"` (or `account_type="toss_live"`) and reject any mismatched account parameters.
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
+- **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas.
 - **High-Value Orders**: KR orders with a computable notional value >= 100,000,000 KRW fail locally unless `confirm_high_value_order=True` is supplied.
 - **KR Stock Warnings**: KR order previews include active Toss warning rows. Confirmed non-dry-run KR orders call the same warnings guard before mutation and block active `LIQUIDATION_TRADING`; Toss warning lookup failures are fail-open and reported as `warnings_check_message`.
 - **Sell Loss-Sell Guard**: For sell orders and sell reprices, holdings cost basis is validated. Sells block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. If the holding/cost basis cannot be resolved, the sell fails closed.

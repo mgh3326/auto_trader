@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -11,6 +11,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     Enum,
     ForeignKey,
     Index,
@@ -422,6 +423,108 @@ class LiveOrderLedger(Base):
     # reconcile outcomes (filled_qty = 이미 booked된 누적 체결량, 델타 멱등용)
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    trade_id: Mapped[int | None] = mapped_column(BigInteger)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class TossLiveOrderLedger(Base):
+    """ROB-538 — Toss live order lifecycle ledger.
+
+    Toss orders are recorded accepted-only at send time. Fills, journals, and
+    realized PnL are booked only by toss_reconcile_orders from GET
+    /orders/{orderId} evidence.
+    """
+
+    __tablename__ = "toss_live_order_ledger"
+    __table_args__ = (
+        UniqueConstraint("client_order_id", name="uq_toss_live_ledger_client_order_id"),
+        UniqueConstraint("broker_order_id", name="uq_toss_live_ledger_broker_order_id"),
+        CheckConstraint("broker = 'toss'", name="toss_live_ledger_broker_toss"),
+        CheckConstraint(
+            "account_mode = 'toss_live'",
+            name="toss_live_ledger_account_mode_toss_live",
+        ),
+        CheckConstraint(
+            "operation_kind IN ('place','modify','cancel')",
+            name="toss_live_ledger_operation_kind",
+        ),
+        CheckConstraint("market IN ('kr','us')", name="toss_live_ledger_market"),
+        CheckConstraint("side IN ('buy','sell')", name="toss_live_ledger_side"),
+        CheckConstraint(
+            "order_type IN ('limit','market')", name="toss_live_ledger_order_type"
+        ),
+        CheckConstraint(
+            "status IN ("
+            "'accepted','rejected','pending','partial','filled','cancelled',"
+            "'replaced','cancel_rejected','replace_rejected','anomaly'"
+            ")",
+            name="toss_live_ledger_status",
+        ),
+        Index("ix_toss_live_ledger_status", "status"),
+        Index("ix_toss_live_ledger_market_symbol", "market", "symbol"),
+        Index("ix_toss_live_ledger_broker_status", "broker_status"),
+        Index("ix_toss_live_ledger_report_item_uuid", "report_item_uuid"),
+        Index("ix_toss_live_ledger_replaced_by", "replaced_by_order_id"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    trade_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+
+    broker: Mapped[str] = mapped_column(Text, nullable=False, default="toss")
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False, default="toss_live")
+    operation_kind: Mapped[str] = mapped_column(Text, nullable=False)
+
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    order_type: Mapped[str] = mapped_column(Text, nullable=False)
+    time_in_force: Mapped[str | None] = mapped_column(Text)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    order_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    currency: Mapped[str | None] = mapped_column(Text)
+
+    client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
+    broker_order_id: Mapped[str | None] = mapped_column(Text)
+    original_order_id: Mapped[str | None] = mapped_column(Text)
+    replaced_by_order_id: Mapped[str | None] = mapped_column(Text)
+
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    broker_status: Mapped[str | None] = mapped_column(Text)
+    response_code: Mapped[str | None] = mapped_column(Text)
+    response_message: Mapped[str | None] = mapped_column(Text)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB)
+
+    reason: Mapped[str | None] = mapped_column(Text)
+    thesis: Mapped[str | None] = mapped_column(Text)
+    strategy: Mapped[str | None] = mapped_column(Text)
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
+    notes: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+
+    filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    commission: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    tax: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    settlement_date: Mapped[date | None] = mapped_column(Date)
     trade_id: Mapped[int | None] = mapped_column(BigInteger)
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
