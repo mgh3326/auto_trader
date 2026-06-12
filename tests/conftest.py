@@ -537,6 +537,94 @@ async def db_session():
                             "ADD COLUMN high_52w_date DATE"
                         )
                     )
+                # ROB-534 — Toss symbol master columns.
+                for table, cols in [
+                    (
+                        "kr_symbol_universe",
+                        [
+                            ("security_type", "VARCHAR(20)"),
+                            ("is_common_share", "BOOLEAN"),
+                            ("listing_status", "VARCHAR(20)"),
+                            ("list_date", "DATE"),
+                            ("delist_date", "DATE"),
+                            ("shares_outstanding", "NUMERIC(30, 0)"),
+                            ("leverage_factor", "NUMERIC(12, 6)"),
+                            ("krx_trading_suspended", "BOOLEAN"),
+                            ("nxt_trading_suspended", "BOOLEAN"),
+                            ("isin", "VARCHAR(20)"),
+                            ("toss_master_updated_at", "TIMESTAMP WITH TIME ZONE"),
+                        ],
+                    ),
+                    (
+                        "us_symbol_universe",
+                        [
+                            ("security_type", "VARCHAR(20)"),
+                            ("is_common_share", "BOOLEAN"),
+                            ("listing_status", "VARCHAR(20)"),
+                            ("list_date", "DATE"),
+                            ("delist_date", "DATE"),
+                            ("shares_outstanding", "NUMERIC(30, 0)"),
+                            ("leverage_factor", "NUMERIC(12, 6)"),
+                            ("isin", "VARCHAR(20)"),
+                            ("toss_master_updated_at", "TIMESTAMP WITH TIME ZONE"),
+                        ],
+                    ),
+                ]:
+                    for col_name, col_type in cols:
+                        has_col = (
+                            await conn.execute(
+                                text(
+                                    f"SELECT 1 FROM information_schema.columns "
+                                    f"WHERE table_name = '{table}' AND column_name = '{col_name}'"
+                                )
+                            )
+                        ).first()
+                        if not has_col:
+                            await conn.execute(
+                                text(
+                                    f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                                )
+                            )
+                # Query all check constraints on market_valuation_snapshots and drop them if they validate source
+                constraints = await conn.execute(
+                    text(
+                        "SELECT conname FROM pg_constraint "
+                        "WHERE conrelid = 'market_valuation_snapshots'::regclass "
+                        "AND pg_get_constraintdef(oid) LIKE '%source%' "
+                        "AND contype = 'c'"
+                    )
+                )
+                for row in constraints:
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE market_valuation_snapshots DROP CONSTRAINT IF EXISTS {row[0]}"
+                        )
+                    )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE market_valuation_snapshots "
+                        "ADD CONSTRAINT ck_market_valuation_snapshots_source "
+                        "CHECK (source IN ('naver_finance', 'yahoo', 'toss_openapi'))"
+                    )
+                )
+                # Recreate unique constraint if missing
+                has_uq = (
+                    await conn.execute(
+                        text(
+                            "SELECT 1 FROM pg_constraint "
+                            "WHERE conrelid = 'market_valuation_snapshots'::regclass "
+                            "AND conname = 'uq_market_valuation_snapshots_market_symbol_date_source'"
+                        )
+                    )
+                ).first()
+                if not has_uq:
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE market_valuation_snapshots "
+                            "ADD CONSTRAINT uq_market_valuation_snapshots_market_symbol_date_source "
+                            "UNIQUE (market, symbol, snapshot_date, source)"
+                        )
+                    )
                 # ROB-443 PR1 — funding_rate added to the (persistent) crypto
                 # screener snapshot table. Same fresh-DB/create_all logic: only
                 # ALTER when genuinely missing to avoid an AccessExclusive lock.

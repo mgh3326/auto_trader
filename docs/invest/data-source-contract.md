@@ -85,6 +85,8 @@ Phase 4  push (ingest)
 4. **Toss screener/popular/watchlist를 보나?** `low_trust_attention` `retail_attention` 시드로만. **buy rationale 금지, primary market-data 권위 금지, account/order truth 금지.** `may_affect_ranking=False` 고정. stale screener는 "오늘 신규 후보"에서 제외하되 stale context로는 표시.
 5. **공식 리포트 flow?** 위 "공식 리포트 생성 flow" 참조 (`prepare_bundle` → `get_hermes_context` → Hermes compose → `create_from_hermes_composition`).
 6. **보조 MCP 직접 호출은 언제 흡수?** 위 "보조 MCP는 언제 collector로 흡수되나" 참조.
+7. **Toss Open API를 통한 Universe Enrichment 및 Market Cap 산출은 어떻게 이뤄지나?** `toss_openapi` 소스를 통해 `kr_symbol_universe` 및 `us_symbol_universe`에 symbol-master 메타데이터(보안구분, 보통주여부, ISIN, 상장일 등)를 보강하며, `market_valuation_snapshots` 테이블에 `source='toss_openapi'`로 일자별 시가총액(`shares_outstanding * last_price`)을 기록합니다. 이는 Scraping이 아닌 공식 Open API 보강 경로입니다.
+
 
 ## Freshness 정책 (이슈 §4)
 

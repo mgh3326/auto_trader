@@ -1,6 +1,17 @@
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import TIMESTAMP, Boolean, ForeignKey, Index, Integer, String, func
+from sqlalchemy import (
+    TIMESTAMP,
+    Boolean,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -26,6 +37,23 @@ class KRSymbolUniverse(Base):
         Integer, ForeignKey("symbol_sectors.id"), nullable=True
     )
     sector_updated_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    security_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_common_share: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    listing_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    list_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delist_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    shares_outstanding: Mapped[Decimal | None] = mapped_column(
+        Numeric(30, 0), nullable=True
+    )
+    leverage_factor: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 6), nullable=True
+    )
+    krx_trading_suspended: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    nxt_trading_suspended: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    isin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    toss_master_updated_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
