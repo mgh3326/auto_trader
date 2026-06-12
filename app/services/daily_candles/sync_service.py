@@ -50,6 +50,7 @@ KISKrFetcher = Callable[..., Awaitable[pd.DataFrame]]
 KISUsFetcher = Callable[..., Awaitable[pd.DataFrame]]
 YahooUsFetcher = Callable[..., Awaitable[list[YahooFallbackRow]]]
 UpbitCryptoFetcher = Callable[..., Awaitable[pd.DataFrame]]
+TossDailyFetcher = Callable[..., Awaitable[pd.DataFrame]]
 
 
 class DailyCandleSyncService:
@@ -61,6 +62,8 @@ class DailyCandleSyncService:
         kis_us_fetcher: KISUsFetcher,
         yahoo_us_fetcher: YahooUsFetcher,
         upbit_crypto_fetcher: UpbitCryptoFetcher,
+        toss_kr_fetcher: TossDailyFetcher | None = None,
+        toss_us_fetcher: TossDailyFetcher | None = None,
         close_callbacks: list[Callable[[], object]] | None = None,
     ) -> None:
         self._repository = repository
@@ -68,6 +71,8 @@ class DailyCandleSyncService:
         self._kis_us = kis_us_fetcher
         self._yahoo_us = yahoo_us_fetcher
         self._upbit = upbit_crypto_fetcher
+        self._toss_kr = toss_kr_fetcher
+        self._toss_us = toss_us_fetcher
         self._close_callbacks = close_callbacks or []
 
     async def close(self) -> None:
@@ -89,9 +94,25 @@ class DailyCandleSyncService:
         rows = frame_to_rows(
             frame, symbol=target.symbol, partition=target.partition, source="kis"
         )
+        fallback_used = False
+        if not rows and self._toss_kr is not None:
+            logger.warning(
+                "KIS returned no rows for KR symbol; attempting Toss fallback symbol=%s",
+                target.symbol,
+            )
+            toss_frame = await self._toss_kr(symbol=target.symbol, n=horizon_bars)
+            rows = frame_to_rows(
+                toss_frame,
+                symbol=target.symbol,
+                partition=target.partition,
+                source="toss",
+            )
+            fallback_used = True
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
         await self._commit_or_rollback()
-        return SyncOneResult(target=target, rows_upserted=upserted, fallback_used=False)
+        return SyncOneResult(
+            target=target, rows_upserted=upserted, fallback_used=fallback_used
+        )
 
     async def _sync_us(self, target: SyncTarget, horizon_bars: int) -> SyncOneResult:
         frame = await self._kis_us(
@@ -116,6 +137,27 @@ class DailyCandleSyncService:
         )
         fallback_rows = await self._yahoo_us(symbol=target.symbol, n=horizon_bars)
         if not fallback_rows:
+            if self._toss_us is not None:
+                logger.warning(
+                    "Yahoo returned no rows for US symbol; attempting Toss fallback symbol=%s exchange=%s",
+                    target.symbol,
+                    target.partition,
+                )
+                toss_frame = await self._toss_us(symbol=target.symbol, n=horizon_bars)
+                repo_rows = frame_to_rows(
+                    toss_frame,
+                    symbol=target.symbol,
+                    partition=target.partition,
+                    source="toss_fallback",
+                )
+                if repo_rows:
+                    upserted = await self._repository.upsert_rows(
+                        market=target.market, rows=repo_rows
+                    )
+                    await self._commit_or_rollback()
+                    return SyncOneResult(
+                        target=target, rows_upserted=upserted, fallback_used=True
+                    )
             return SyncOneResult(
                 target=target,
                 rows_upserted=0,
@@ -256,12 +298,14 @@ async def _build_default_service() -> DailyCandleSyncService:
     invocation, so this is acceptable.
     """
     import app.services.brokers.upbit.client as upbit_service
+    from app.core.config import settings
     from app.core.db import AsyncSessionLocal
     from app.services.brokers.kis.client import KISClient
     from app.services.daily_candles.kis_daily_fetcher import (
         fetch_kr_daily_unclamped,
         fetch_us_daily_unclamped,
     )
+    from app.services.daily_candles.toss_daily_fetcher import fetch_daily_toss_unclamped
     from app.services.daily_candles.yahoo_us_fallback import (
         fetch_us_daily_yahoo_fallback,
     )
@@ -283,11 +327,16 @@ async def _build_default_service() -> DailyCandleSyncService:
     async def _upbit(*, market: str, days: int) -> pd.DataFrame:
         return await upbit_service.fetch_ohlcv(market=market, days=days, period="day")
 
+    async def _toss(*, symbol: str, n: int) -> pd.DataFrame:
+        return await fetch_daily_toss_unclamped(symbol=symbol, n=n)
+
     return DailyCandleSyncService(
         repository=DailyCandlesRepository(session=session),
         kis_kr_fetcher=_kr,
         kis_us_fetcher=_us,
         yahoo_us_fetcher=_yahoo,
         upbit_crypto_fetcher=_upbit,
+        toss_kr_fetcher=_toss if settings.toss_api_enabled else None,
+        toss_us_fetcher=_toss if settings.toss_api_enabled else None,
         close_callbacks=[session.close, kis.close],
     )

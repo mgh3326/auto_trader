@@ -1183,3 +1183,216 @@ def test_market_data_exports_get_short_interest() -> None:
     assert getattr(market_data, "get_short_interest", None) is getattr(
         market_data_service, "get_short_interest", None
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_intraday_toss_frame_aggregates_1m_to_5m(monkeypatch):
+    from app.services.market_data import toss_ohlcv
+
+    one_minute = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 0),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "value": 1000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:01:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 1),
+                "open": 100.0,
+                "high": 105.0,
+                "low": 98.0,
+                "close": 104.0,
+                "volume": 20.0,
+                "value": 2080.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:02:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 2),
+                "open": 104.0,
+                "high": 106.0,
+                "low": 103.0,
+                "close": 105.0,
+                "volume": 30.0,
+                "value": 3150.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:03:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 3),
+                "open": 105.0,
+                "high": 107.0,
+                "low": 104.0,
+                "close": 106.0,
+                "volume": 40.0,
+                "value": 4240.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:04:00"),
+                "date": dt.date(2026, 6, 12),
+                "time": dt.time(9, 4),
+                "open": 106.0,
+                "high": 108.0,
+                "low": 105.0,
+                "close": 107.0,
+                "volume": 50.0,
+                "value": 5350.0,
+            },
+        ]
+    )
+
+    class FakeClient:
+        async def aclose(self): ...
+
+    monkeypatch.setattr(
+        toss_ohlcv.TossReadClient, "from_settings", lambda: FakeClient()
+    )
+    monkeypatch.setattr(
+        toss_ohlcv,
+        "fetch_toss_candles_frame",
+        AsyncMock(return_value=one_minute),
+    )
+
+    frame = await toss_ohlcv.fetch_kr_intraday_toss_frame(
+        symbol="005930",
+        period="5m",
+        count=1,
+        end_date=None,
+    )
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["open"] == 100.0
+    assert frame.iloc[0]["high"] == 108.0
+    assert frame.iloc[0]["low"] == 98.0
+    assert frame.iloc[0]["close"] == 107.0
+    assert frame.iloc[0]["volume"] == 150.0
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_intraday_uses_toss_first(monkeypatch):
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            }
+        ]
+    )
+    toss_mock = AsyncMock(return_value=df)
+    kis_mock = AsyncMock(side_effect=AssertionError("KIS fallback should not run"))
+    monkeypatch.setattr(market_data_service, "fetch_kr_intraday_toss_frame", toss_mock)
+    monkeypatch.setattr(market_data_service, "read_kr_intraday_candles", kis_mock)
+
+    candles = await market_data_service.get_ohlcv(
+        "005930",
+        "kr",
+        "1m",
+        count=10,
+    )
+
+    toss_mock.assert_awaited_once_with(
+        symbol="005930",
+        period="1m",
+        count=10,
+        end_date=None,
+    )
+    assert candles[0].source == "toss"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_intraday_falls_back_to_kis_when_toss_fails(monkeypatch):
+    fallback_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_kr_intraday_toss_frame",
+        AsyncMock(side_effect=RuntimeError("toss disabled")),
+    )
+    read_mock = AsyncMock(return_value=fallback_df)
+    monkeypatch.setattr(market_data_service, "read_kr_intraday_candles", read_mock)
+
+    candles = await market_data_service.get_ohlcv(
+        "005930",
+        "kr",
+        "5m",
+        count=10,
+    )
+
+    read_mock.assert_awaited_once_with(
+        symbol="005930",
+        period="5m",
+        count=10,
+        end_date=None,
+    )
+    assert candles[0].source == "kis"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_day_uses_toss_when_yahoo_fails(monkeypatch):
+    toss_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 13:00:00"),
+                "open": 293.72,
+                "high": 297.0,
+                "low": 289.59,
+                "close": 295.63,
+                "volume": 32125204.0,
+                "value": 9497000000.0,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_yahoo_ohlcv",
+        AsyncMock(side_effect=RuntimeError("yahoo down")),
+    )
+    toss_mock = AsyncMock(return_value=toss_df)
+    monkeypatch.setattr(market_data_service, "fetch_daily_toss_frame", toss_mock)
+
+    candles = await market_data_service.get_ohlcv("AAPL", "us", "day", count=5)
+
+    toss_mock.assert_awaited_once_with(symbol="AAPL", count=5, end_date=None)
+    assert candles[0].source == "toss"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_week_does_not_use_toss_fallback(monkeypatch):
+    from app.services.domain_errors import UpstreamUnavailableError
+
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_yahoo_ohlcv",
+        AsyncMock(side_effect=RuntimeError("yahoo down")),
+    )
+    toss_mock = AsyncMock()
+    monkeypatch.setattr(market_data_service, "fetch_daily_toss_frame", toss_mock)
+
+    with pytest.raises(UpstreamUnavailableError):
+        await market_data_service.get_ohlcv("AAPL", "us", "week", count=5)
+
+    toss_mock.assert_not_awaited()

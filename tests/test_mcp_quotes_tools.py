@@ -597,6 +597,94 @@ async def test_get_quote_korean_equity_after_hours_routes_to_nxt(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_quote_korean_equity_after_hours_routes_to_nxt_at_1535(monkeypatch):
+    """ROB-536: NXT after starts at 15:30 KST, not 16:00."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    tools = build_tools()
+    df = _two_row_kr_quote_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    get_orderbook_mock = AsyncMock(return_value=_nxt_quote_book(expected_price=113900))
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: "market_closed",
+    )
+    monkeypatch.setattr(market_data_quotes, "is_kr_session_day", lambda date: True)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "now_kst",
+        lambda: pd.Timestamp("2026-06-11 15:35:00", tz="Asia/Seoul").to_pydatetime(),
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "get_kr_nxt_session_from_toss",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
+    assert result["session"] == "nxt_after"
+    assert result["data_state"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_equity_respects_toss_partial_nxt_holiday(monkeypatch):
+    """ROB-536: Toss calendar can close NXT after while XKRX regular day exists."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    tools = build_tools()
+    df = _two_row_kr_quote_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    get_orderbook_mock = AsyncMock()
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "kr_market_data_state",
+        lambda *a, **k: "market_closed",
+    )
+    monkeypatch.setattr(market_data_quotes, "is_kr_session_day", lambda date: True)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "now_kst",
+        lambda: pd.Timestamp("2026-06-11 15:45:00", tz="Asia/Seoul").to_pydatetime(),
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "get_kr_nxt_session_from_toss",
+        AsyncMock(return_value="closed"),
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+
+    result = await tools["get_quote"]("005930")
+
+    get_orderbook_mock.assert_not_awaited()
+    assert result["data_state"] == "market_closed"
+    assert "session" not in result
+
+
+@pytest.mark.asyncio
 async def test_get_quote_korean_equity_regular_session_skips_nxt_orderbook(
     monkeypatch,
 ):

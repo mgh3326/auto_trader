@@ -34,6 +34,7 @@ const SOURCE_TO_PILL: Record<AccountSource, PillTone> = {
   kis_mock: "paper",
   upbit: "upbit",
   toss_manual: "toss",
+  toss_api: "toss",
   isa_manual: "isa",
   pension_manual: "pension",
   alpaca_paper: "paper",

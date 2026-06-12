@@ -13,6 +13,7 @@ from app.services.brokers.toss.dto import (
     TossOrderPlacementResult,
     parse_accounts,
     parse_buying_power,
+    parse_candles,
     parse_commissions,
     parse_holdings,
     parse_order,
@@ -179,15 +180,17 @@ class TossReadClient:
                 "interval": interval,
                 "count": count,
                 "before": before,
-                "adjusted": adjusted,
+                "adjusted": str(adjusted).lower() if adjusted is not None else None,
             }.items()
             if value is not None
         }
-        return await self._request(
-            "GET",
-            "/api/v1/candles",
-            group=TossApiGroup.MARKET_DATA_CHART,
-            params=params,
+        return parse_candles(
+            await self._request(
+                "GET",
+                "/api/v1/candles",
+                group=TossApiGroup.MARKET_DATA_CHART,
+                params=params,
+            )
         )
 
     async def exchange_rate(

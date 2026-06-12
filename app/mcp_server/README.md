@@ -53,6 +53,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - NXT price selection order is `expected_price` (`price_source: "nxt_expected_price"`), then best bid/ask mid (`"nxt_mid"`), then a single available best ask or bid (`"nxt_best_ask"` / `"nxt_best_bid"`).
   - A successful NXT overlay returns `data_state: "fresh"`, `regular_session_data_state` with the KRX classifier value, and venue diagnostics (`venue`, `venue_label`, `kis_market_code`, `source_endpoint`, `source_tr_id`) when KIS supplies them.
   - If the NXT orderbook is empty or unavailable, `get_quote` keeps the ROB-464 stale-session behavior: KRX daily `price`, `data_state` from `kr_market_data_state()`, and no NXT diagnostic fields.
+  - KR NXT overlay honors Toss market-calendar partial-session closures when the Toss API is enabled; otherwise it falls back to XKRX session days and the corrected NXT windows.
 - `get_orderbook(symbol, market="kr")`
 - US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`
   - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them
@@ -71,14 +72,17 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Crypto `1m` / `5m` / `15m` / `30m` rows expose `timestamp`, `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`, `trade_amount` and do not expose raw `datetime`
 - US OHLCV behavior:
   - US `day`/`week`/`month` uses Yahoo Finance (`app.services.brokers.yahoo.client.fetch_ohlcv`)
+  - US daily uses Yahoo first and Toss as a `period="day"` fallback; US `week` and `month` remain Yahoo-only
   - US intraday (`1m`/`5m`/`15m`/`30m`/`1h`) uses KIS via DB-first reader (`read_us_intraday_candles`) with ET-naive timestamps
   - US intraday rows include `session` field (`PRE_MARKET`, `REGULAR`, `POST_MARKET`)
   - US intraday `end_date="YYYY-MM-DD"` is interpreted as ET `20:00:00` for that market date; timestamp inputs use the exact provided instant
 - KR OHLCV behavior:
   - KR `day` keeps the existing Redis-backed `kis_ohlcv_cache` path when `end_date` is omitted
-  - KR `1m` reads DB-first from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
-  - KR `5m/15m/30m/1h` read DB-first from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
-  - KR intraday (`1m/5m/15m/30m/1h`) overlays the most recent 30 minutes from `public.kr_candles_1m` + KIS minute API to cover the unchanged 10-minute sync cadence
+  - KR intraday (`1m/5m/15m/30m/1h`) uses Toss candles first when `TOSS_API_ENABLED` is configured, then falls back to the existing DB/KIS reader
+  - Toss only provides `1m`; `5m/15m/30m/1h` are aggregated from Toss `1m` using the same bucket rules as the KIS path
+  - When Toss is unavailable or disabled, KR `1m` falls back to DB-first reads from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
+  - When Toss is unavailable or disabled, KR `5m/15m/30m/1h` fall back to DB-first reads from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
+  - On Toss fallback, KR intraday overlays the most recent 30 minutes from `public.kr_candles_1m` + KIS minute API to cover the unchanged 10-minute sync cadence
   - KR intraday includes the current partial bucket when minute data is available
   - KIS minute venues are merged with strict dedup to prevent double-counting (API overwrites DB per minute+venue)
   - KIS minute API call plan (KST):
@@ -457,7 +461,7 @@ Behavior:
 - Valid KR requests use KIS endpoint `inquire-asking-price-exp-ccn` (TR_ID `FHKST01010200`) and return 10-level asks/bids, total residual quantities, expected match metadata, and integer-valued `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread`
 - Valid crypto requests use Upbit orderbook data and return the same shared snapshot fields, but `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread` can be fractional numbers
 - `expected_qty` keeps the public `int | null` contract; when KIS leaves `output2.antc_cnqn` blank or omits it, the response serializes `expected_qty` as `null` instead of inventing a fallback quantity
-- During the NXT session (`16:00`-`20:00` KST), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
+- During the NXT after session (`15:30`-`20:00` KST; Toss market-calendar when available, corrected hardcoded fallback otherwise), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
 - Successful responses always include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, `spread_pct`, `bid_walls`, and `ask_walls`
 - Successful KR responses include venue diagnostics: `venue`, `venue_label`, `kis_market_code`, `source_endpoint`, `source_tr_id`, `is_empty_book`, `requires_final_recheck`, and (when empty) `empty_reason`
 - Successful KR responses use `source: "kis"`, `instrument_type: "equity_kr"`, and return `bid_walls: []`, `ask_walls: []`
@@ -1104,6 +1108,11 @@ Broker-specific contract:
 - **KIS overseas (`account="kis_overseas"`)**
   - `balance`: USD cash balance (`frcr_dncl_amt1` fallback `frcr_dncl_amt_2`)
   - `orderable`: USD orderable cash minus pending US buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
+- **Toss (`account="toss"`, only when `TOSS_API_ENABLED=true`)**
+  - `balance`: Toss buying power for the row currency
+  - `orderable`: `0.0`; Toss portfolio integration is read-only in ROB-532, while order mutation tools are delivered separately
+  - Emits one KRW row when KRW buying power is available and one USD row when USD buying power is available
+  - If `account="toss"` is requested and the Toss API read fails, the tool fails closed; in all-account mode it records a partial `toss_api` error
 
 Response shape:
 - `accounts`: per-account cash entries
@@ -1155,6 +1164,9 @@ Response contract additions:
 - `filter_reason`: filter status string, e.g. `minimum_value < 1000` or `equity_kr < 5000, equity_us < 10, crypto < 5000`
 - `errors`: includes per-symbol price lookup failures for holdings price refresh (example fields: `source`, `market`, `symbol`, `stage`, `error`)
 - `filters.minimum_value`: when `minimum_value=None` in the request, this field contains the per-currency threshold dict that was applied
+- When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`, and `order_routable=false` until Toss live-order tools exist. The per-position `sellable_quantity` field comes from Toss `/api/v1/sellable-quantity` and is informational in ROB-532.
+- When Toss API holdings succeed, duplicate Toss `manual_holdings` rows for the same market/symbol are hidden from normal output. KIS and Toss holdings for the same symbol are not deduplicated because they are separate broker subaccounts.
+- When Toss API holdings fail, existing Toss `manual_holdings` rows remain visible as fallback and the response includes a partial `source="toss_api"` error.
 
 Market routing:
 - `market` can override routing: `crypto|upbit`, `kr|kis|krx|kospi|kosdaq`, `us|yahoo|nasdaq|nyse`

@@ -34,6 +34,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Manual holdings user id (default: 1)",
     )
+    parser.add_argument(
+        "--source",
+        choices=["kis", "toss"],
+        default="kis",
+        help="Pipeline source (default: kis)",
+    )
     return parser
 
 
@@ -47,7 +53,9 @@ async def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             sessions=max(args.sessions, 1),
             user_id=args.user_id,
+            source=args.source,
         )
+
         if result.get("status") != "completed":
             logger.error("KR candles sync failed: %s", result)
             return 1
