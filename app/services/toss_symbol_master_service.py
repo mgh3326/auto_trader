@@ -237,10 +237,13 @@ async def sync_toss_symbol_master(
             if changed:
                 updates += 1
 
+    existing_stocks = {
+        symbol: stock for symbol, stock in all_stocks.items() if symbol in existing
+    }
     payloads = _market_cap_payloads(
         market=market,
         snapshot_date=snapshot_date,
-        stocks=all_stocks,
+        stocks=existing_stocks,
         prices=all_prices,
     )
     if request.commit:

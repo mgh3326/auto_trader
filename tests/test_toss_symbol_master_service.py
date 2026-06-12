@@ -6,6 +6,8 @@ from decimal import Decimal
 import pytest
 
 from app.models.kr_symbol_universe import KRSymbolUniverse
+from app.models.market_valuation_snapshot import MarketValuationSnapshot
+from app.models.us_symbol_universe import USSymbolUniverse
 from app.services.brokers.toss.dto import TossPrice, TossStockInfo
 from app.services.toss_symbol_master_service import (
     TossSymbolMasterSyncRequest,
@@ -129,3 +131,123 @@ async def test_sync_toss_symbol_master_commit_updates_master_and_market_cap(
     assert row.krx_trading_suspended is False
     assert result.market_cap_payloads == 1
     assert result.market_cap_nonnull == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_symbol_master_commit_updates_us_common_stock_flag(
+    db_session,
+) -> None:
+    import sqlalchemy as sa
+
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol == "AAPL")
+    )
+    db_session.add(
+        USSymbolUniverse(
+            symbol="AAPL",
+            exchange="NASDAQ",
+            name_en="Apple Inc.",
+            is_active=True,
+            is_common_stock=None,
+        )
+    )
+    await db_session.commit()
+
+    result = await sync_toss_symbol_master(
+        db_session,
+        client=FakeTossClient(),
+        request=TossSymbolMasterSyncRequest(
+            market="us",
+            symbols=("AAPL",),
+            commit=True,
+            snapshot_date=dt.date(2026, 6, 12),
+        ),
+    )
+
+    row = await db_session.get(USSymbolUniverse, "AAPL")
+    assert row.security_type == "STOCK"
+    assert row.is_common_share is True
+    assert row.is_common_stock is True
+    assert row.shares_outstanding == Decimal("14687356000")
+    assert result.market_cap_payloads == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_symbol_master_batches_symbols_by_200(db_session) -> None:
+    import sqlalchemy as sa
+
+    symbols = tuple(f"{idx:06d}" for idx in range(201))
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_(symbols))
+    )
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol=symbol,
+                name=f"테스트{symbol}",
+                exchange="KOSPI",
+                is_active=True,
+            )
+            for symbol in symbols
+        ]
+    )
+    await db_session.commit()
+    client = FakeTossClient()
+
+    result = await sync_toss_symbol_master(
+        db_session,
+        client=client,
+        request=TossSymbolMasterSyncRequest(
+            market="kr",
+            symbols=symbols,
+            commit=False,
+            snapshot_date=dt.date(2026, 6, 12),
+        ),
+    )
+
+    assert result.batches == 2
+    assert [len(batch) for batch in client.stock_batches] == [200, 1]
+    assert [len(batch) for batch in client.price_batches] == [200, 1]
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_symbol_master_skips_market_cap_for_unregistered_symbol(
+    db_session,
+) -> None:
+    import sqlalchemy as sa
+
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "999999")
+    )
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol == "999999"
+        )
+    )
+    await db_session.commit()
+
+    result = await sync_toss_symbol_master(
+        db_session,
+        client=FakeTossClient(),
+        request=TossSymbolMasterSyncRequest(
+            market="kr",
+            symbols=("999999",),
+            commit=True,
+            snapshot_date=dt.date(2026, 6, 12),
+        ),
+    )
+
+    rows = (
+        (
+            await db_session.execute(
+                sa.select(MarketValuationSnapshot).where(
+                    MarketValuationSnapshot.symbol == "999999"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert result.stocks_matched == 1
+    assert result.market_cap_payloads == 0
+    assert rows == []
