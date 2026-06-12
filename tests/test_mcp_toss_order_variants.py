@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from app.mcp_server.tooling.orders_toss_variants import (
@@ -54,3 +56,226 @@ async def test_toss_tools_reject_wrong_account_mode(monkeypatch):
             price="150.0",
             account_mode="kis_live",
         )
+
+
+class MockTossClient:
+    def __init__(self, monkeypatch=None):
+        self.placed_payloads = []
+        self.holdings_list = []
+        self.orders_list = []
+        self.prices_list = []
+
+        if monkeypatch:
+            monkeypatch.setattr(
+                "app.mcp_server.tooling.orders_toss_variants.TossReadClient.from_settings",
+                lambda *args, **kwargs: self
+            )
+
+    async def aclose(self):
+        pass
+
+    async def holdings(self, *, symbol=None):
+        # returns simple dataclass mock
+        from types import SimpleNamespace
+        items = []
+        for item in self.holdings_list:
+            items.append(SimpleNamespace(**item))
+        return SimpleNamespace(items=items)
+
+    async def list_orders(self, *, status, symbol=None, **kwargs):
+        from types import SimpleNamespace
+        orders = []
+        for o in self.orders_list:
+            if symbol and o.get("symbol") != symbol:
+                continue
+            if status and o.get("status") != status:
+                continue
+            orders.append(SimpleNamespace(**o))
+        return SimpleNamespace(orders=orders, next_cursor=None, has_next=False)
+
+    async def prices(self, symbols):
+        from types import SimpleNamespace
+        return [SimpleNamespace(**item) for item in self.prices_list if item.get("symbol") in symbols]
+
+    async def place_order(self, payload):
+        self.placed_payloads.append(payload)
+        from types import SimpleNamespace
+        return SimpleNamespace(order_id="new-ord-123", client_order_id=payload.get("clientOrderId"))
+
+
+@pytest.mark.asyncio
+async def test_place_order_defaults_to_dry_run_and_does_not_call_broker(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+
+    res = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="10",
+        price="150.0",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert res["dry_run"] is True
+    assert res["mutation_sent"] is False
+    assert not mock_client.placed_payloads
+
+
+@pytest.mark.asyncio
+async def test_place_order_requires_confirm_when_dry_run_false(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+
+    res = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="10",
+        price="150.0",
+        dry_run=False,
+        confirm=False,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is False
+    assert "confirm=True" in res["error"]
+    assert not mock_client.placed_payloads
+
+
+@pytest.mark.asyncio
+async def test_high_value_kr_order_requires_explicit_confirm_high_value(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+
+    # 005930 is 6 digits -> KR market. Notional = 2000 * 50000 = 100,000,000
+    res = await toss_place_order(
+        symbol="005930",
+        side="buy",
+        quantity="2000",
+        price="50000",
+        dry_run=False,
+        confirm=True,
+        confirm_high_value_order=False,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is False
+    assert "high-value" in res["error"].lower()
+    assert not mock_client.placed_payloads
+
+
+@pytest.mark.asyncio
+async def test_place_sell_blocks_below_avg_floor_for_limit_and_market(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    from decimal import Decimal
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100.0"),
+            "last_price": Decimal("102.0"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    # average_purchase_price * 1.01 = 101.0
+
+    # Limit sell below 101.0 (e.g. 100.0) -> block
+    res_limit = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity="5",
+        price="100.0",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+    assert res_limit["success"] is False
+    assert "below average purchase price floor" in res_limit["error"]
+
+    # Market sell when current price is below 101.0 (e.g. 100.0) -> block
+    mock_client.prices_list = [
+        {
+            "symbol": "AAPL",
+            "last_price": Decimal("100.0"),
+            "timestamp": "2026-06-12T00:00:00Z",
+            "currency": "USD"
+        }
+    ]
+    res_market = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="market",
+        quantity="5",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+    assert res_market["success"] is False
+    assert "below average purchase price floor" in res_market["error"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_blocks_opposite_pending_before_post(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    # symbol AAPL has pending SELL order
+    mock_client.orders_list = [
+        {
+            "order_id": "ord-existing",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {}
+        }
+    ]
+
+    # Try to BUY AAPL -> block
+    res = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="5",
+        price="140.0",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is False
+    assert "opposite pending order exists" in res["error"]
+    assert not mock_client.placed_payloads
