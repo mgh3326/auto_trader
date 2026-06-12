@@ -12,13 +12,20 @@ async def run_kr_candles_sync(
     mode: str,
     sessions: int = 10,
     user_id: int = 1,
+    source: str = "kis",
 ) -> dict[str, object]:
     try:
-        result = await sync_kr_candles(mode=mode, sessions=sessions, user_id=user_id)
+        result = await sync_kr_candles(
+            mode=mode,
+            sessions=sessions,
+            user_id=user_id,
+            source=source,
+        )
         return {
             "status": "completed",
             **result,
         }
+
     except Exception as exc:
         logger.error("KR candles sync failed: %s", exc, exc_info=True)
         return {

@@ -26,6 +26,7 @@ from app.services.candles_sync_common import (
     read_cursor_utc,
 )
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.market_data.toss_ohlcv import fetch_kr_intraday_toss_frame
 
 logger = logging.getLogger(__name__)
 
@@ -515,11 +516,16 @@ async def sync_kr_candles(
     mode: str,
     sessions: int = 10,
     user_id: int = 1,
+    source: str = "kis",
 ) -> dict[str, object]:
     normalized_mode = normalize_mode(mode)
     session_count = max(int(sessions), 1)
     now_kst = datetime.now(_KST)
     session_day_today = _is_session_day_kst(now_kst.date())
+
+    normalized_source = str(source or "kis").strip().lower()
+    if normalized_source not in {"kis", "toss"}:
+        raise ValueError("source must be 'kis' or 'toss'")
 
     kis = KISClient()
 
@@ -549,6 +555,7 @@ async def sync_kr_candles(
                 "pairs_skipped": 0,
                 "rows_upserted": 0,
                 "pages_fetched": 0,
+                "source": normalized_source,
             }
 
         universe_rows, table_has_rows = await _load_universe_context(
@@ -560,6 +567,86 @@ async def sync_kr_candles(
             universe_rows=universe_rows,
             table_has_rows=table_has_rows,
         )
+
+        if normalized_source == "toss":
+            rows_upserted = 0
+            for symbol in sorted(target_symbols):
+                try:
+                    toss_frame = await fetch_kr_intraday_toss_frame(
+                        symbol=symbol,
+                        period="1m",
+                        count=200,
+                        end_date=None,
+                    )
+                    if toss_frame.empty:
+                        continue
+
+                    day_rows = []
+                    for item in toss_frame.to_dict("records"):
+                        raw_dt = item.get("datetime")
+                        if raw_dt is None:
+                            continue
+                        parsed = pd.to_datetime(raw_dt)
+                        if pd.isna(parsed):
+                            continue
+                        parsed_dt = parsed.to_pydatetime()
+
+                        open_val = float(item["open"])
+                        high_val = float(item["high"])
+                        low_val = float(item["low"])
+                        close_val = float(item["close"])
+                        volume_val = float(item["volume"])
+                        value_val = float(item["value"])
+
+                        if parsed_dt.tzinfo is None:
+                            local_dt = parsed_dt.replace(tzinfo=_KST)
+                        else:
+                            local_dt = parsed_dt.astimezone(_KST)
+                        local_dt = local_dt.replace(second=0, microsecond=0)
+
+                        day_rows.append(
+                            MinuteCandleRow(
+                                time_utc=_convert_kis_datetime_to_utc(local_dt),
+                                local_time=local_dt,
+                                symbol=symbol,
+                                venue="KRX",
+                                open=open_val,
+                                high=high_val,
+                                low=low_val,
+                                close=close_val,
+                                volume=volume_val,
+                                value=value_val,
+                            )
+                        )
+
+                    if day_rows:
+                        rows_upserted += await _upsert_rows(session, day_rows)
+                        await session.commit()
+                except Exception as exc:
+                    await session.rollback()
+                    logger.error(
+                        "Failed to sync Toss candles for symbol=%s: %s",
+                        symbol,
+                        exc,
+                        exc_info=True,
+                    )
+
+            return {
+                "mode": normalized_mode,
+                "sessions": session_count,
+                "skipped": rows_upserted == 0,
+                "symbols_total": len(target_symbols),
+                "symbol_venues_total": len(target_symbols),
+                "pairs_processed": len(target_symbols),
+                "pairs_skipped": 0,
+                "rows_upserted": rows_upserted,
+                "pages_fetched": len(target_symbols),
+                "source": "toss",
+                "warnings": [
+                    "Toss minute candles are stored under venue='KRX' because kr_candles_1m has no provider source column; do not treat venue as provider provenance for source='toss'."
+                ],
+            }
+
         venue_plan = _build_venue_plan(rows_by_symbol)
 
         backfill_days: list[date] | None = None
@@ -625,9 +712,11 @@ async def sync_kr_candles(
             "pairs_skipped": pairs_skipped,
             "rows_upserted": rows_upserted,
             "pages_fetched": pages_fetched,
+            "source": normalized_source,
         }
     finally:
         await session.close()
+
 
 
 __all__ = ["sync_kr_candles"]
