@@ -1554,3 +1554,110 @@ async def test_place_order_records_accepted_only_toss_ledger(monkeypatch):
     assert call["reason"] == "test reason"
     assert call["strategy"] == "test strategy"
     assert call["signal"] == "test signal"
+
+@pytest.mark.asyncio
+async def test_modify_order_records_replacement_chain(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+
+    recorded = []
+    async def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_toss_variants.record_toss_replacement_order",
+        fake_record
+    )
+
+    res = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="155.0",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert len(recorded) == 1
+    call = recorded[0]
+    assert call["original_order_id"] == "orig-ord-123"
+    assert call["replacement_order_id"] == "mod-ord-456"
+    assert call["operation_kind"] == "modify"
+    assert call["symbol"] == "AAPL"
+    assert call["side"] == "buy"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_records_audit_replacement_chain(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-789",
+            "symbol": "005930",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("50000"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "KRW",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+
+    recorded = []
+    async def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_toss_variants.record_toss_replacement_order",
+        fake_record
+    )
+
+    res = await toss_cancel_order(
+        order_id="orig-ord-789",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert len(recorded) == 1
+    call = recorded[0]
+    assert call["original_order_id"] == "orig-ord-789"
+    assert call["replacement_order_id"] == "can-ord-789"
+    assert call["operation_kind"] == "cancel"
+    assert call["symbol"] == "005930"
+    assert call["side"] == "sell"

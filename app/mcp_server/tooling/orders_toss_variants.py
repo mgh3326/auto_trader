@@ -21,7 +21,10 @@ from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
 )
-from app.mcp_server.tooling.toss_live_ledger import record_toss_place_order
+from app.mcp_server.tooling.toss_live_ledger import (
+    record_toss_place_order,
+    record_toss_replacement_order,
+)
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError
 
@@ -671,6 +674,21 @@ async def toss_modify_order(
 
         try:
             res = await client.modify_order(order_id, payload)
+
+            ledger = {}
+            try:
+                await record_toss_replacement_order(
+                    original_order_id=order_id,
+                    replacement_order_id=res.order_id,
+                    operation_kind="modify",
+                    symbol=symbol,
+                    side=side,
+                )
+                ledger["recorded_to_ledger"] = True
+            except Exception as ledger_exc:
+                logger.warning("Failed to record Toss modify to ledger: %s", ledger_exc)
+                ledger["recorded_to_ledger"] = False
+
             return {
                 "success": True,
                 **base_response,
@@ -678,6 +696,7 @@ async def toss_modify_order(
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
                 "operation_semantics": "Toss modify returns a newly issued orderId; it is not the original order id.",
+                **ledger,
             }
         except Exception as exc:
             return _toss_error_response(exc, {**base_response, "mutation_sent": True})
@@ -729,7 +748,36 @@ async def toss_cancel_order(
 
     try:
         async with _client_context() as client:
+            # Need original symbol/side for ledger recording
+            try:
+                orig_order = await client.get_order(order_id)
+                symbol = orig_order.symbol
+                side = orig_order.side.lower()
+            except Exception as lookup_exc:
+                logger.warning(
+                    "Failed to lookup original order %s for cancel ledger: %s",
+                    order_id,
+                    lookup_exc,
+                )
+                symbol = "UNKNOWN"
+                side = "buy"
+
             res = await client.cancel_order(order_id)
+
+            ledger = {}
+            try:
+                await record_toss_replacement_order(
+                    original_order_id=order_id,
+                    replacement_order_id=res.order_id,
+                    operation_kind="cancel",
+                    symbol=symbol,
+                    side=side,
+                )
+                ledger["recorded_to_ledger"] = True
+            except Exception as ledger_exc:
+                logger.warning("Failed to record Toss cancel to ledger: %s", ledger_exc)
+                ledger["recorded_to_ledger"] = False
+
             return {
                 "success": True,
                 **base_response,
@@ -737,6 +785,7 @@ async def toss_cancel_order(
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
                 "operation_semantics": "Toss cancel returns a newly issued orderId; it is not the original order id.",
+                **ledger,
             }
     except Exception as exc:
         return _toss_error_response(exc, {**base_response, "mutation_sent": True})

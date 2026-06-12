@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
 from app.mcp_server.tooling.order_journal import (
@@ -48,6 +48,26 @@ async def record_toss_place_order(
             reason=reason,
             strategy=strategy,
             signal=signal,
+        )
+
+
+async def record_toss_replacement_order(
+    *,
+    original_order_id: str,
+    replacement_order_id: str,
+    operation_kind: Literal["modify", "cancel"],
+    symbol: str,
+    side: str,
+) -> None:
+    """Records a Toss modify/cancel replacement chain in the ledger."""
+    async with _order_session_factory()() as db:
+        await TossLiveOrderLedgerService(db).record_order(
+            broker_order_id=replacement_order_id,
+            symbol=symbol,
+            side=side.lower(),
+            operation_kind=operation_kind,
+            status="accepted",
+            parent_order_id=original_order_id,
         )
 
 
