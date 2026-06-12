@@ -10,6 +10,9 @@ from typing import Any, Literal, TypedDict, cast
 
 import httpx
 
+from app.core.config import settings
+from app.services.brokers.toss.client import TossReadClient
+
 logger = logging.getLogger(__name__)
 
 _EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/USD"
@@ -105,15 +108,45 @@ def _get_cached_rate(now: float) -> float | None:
     return None
 
 
-async def _fetch_usd_krw_rate() -> float:
+async def _fetch_toss_usd_krw_quote() -> UsdKrwExchangeRateQuote:
+    client = TossReadClient.from_settings()
+    try:
+        raw = await client.exchange_rate(base_currency="USD", quote_currency="KRW")
+    finally:
+        await client.aclose()
+    if not isinstance(raw, dict):
+        raise TypeError("Toss exchange-rate response must be an object")
+    quote = _parse_toss_usd_krw_quote(raw)
+    logger.debug(
+        "Fetched USD/KRW exchange rate from Toss: rate=%s mid_rate=%s valid_until=%s",
+        quote.rate,
+        quote.mid_rate,
+        quote.valid_until,
+    )
+    return quote
+
+
+async def _fetch_open_er_api_usd_krw_quote() -> UsdKrwExchangeRateQuote:
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.get(_EXCHANGE_RATE_URL)
         _ = response.raise_for_status()
         data = cast(_ExchangeRatePayload, response.json())
 
-    rate = float(data["rates"]["KRW"])
-    logger.debug("Fetched USD/KRW exchange rate: %s", rate)
-    return rate
+    quote = _parse_open_er_api_usd_krw_quote(data)
+    logger.debug("Fetched USD/KRW exchange rate from open.er-api.com: %s", quote.rate)
+    return quote
+
+
+async def _fetch_usd_krw_rate_details() -> UsdKrwExchangeRateQuote:
+    if bool(getattr(settings, "toss_api_enabled", False)):
+        try:
+            return await _fetch_toss_usd_krw_quote()
+        except Exception as exc:
+            logger.warning(
+                "Toss USD/KRW exchange-rate fetch failed; falling back to open.er-api.com: %s",
+                exc,
+            )
+    return await _fetch_open_er_api_usd_krw_quote()
 
 
 async def get_usd_krw_rate() -> float:

@@ -45,3 +45,83 @@ def test_parse_open_er_api_quote_exposes_same_rate_and_mid_rate() -> None:
     assert quote.default_rate == pytest.approx(1498.7)
     assert quote.valid_from is None
     assert quote.valid_until is None
+
+
+@pytest.mark.asyncio
+async def test_get_usd_krw_rate_details_uses_toss_when_enabled(monkeypatch) -> None:
+    toss_quote = mod.UsdKrwExchangeRateQuote(
+        rate=1522.2,
+        mid_rate=1522.05,
+        source="toss",
+        valid_until=datetime(2026, 6, 12, 0, 31, tzinfo=UTC),
+    )
+    fallback_called = False
+
+    async def fake_toss() -> mod.UsdKrwExchangeRateQuote:
+        return toss_quote
+
+    async def fake_fallback() -> mod.UsdKrwExchangeRateQuote:
+        nonlocal fallback_called
+        fallback_called = True
+        return mod.UsdKrwExchangeRateQuote(
+            rate=1498.7,
+            mid_rate=1498.7,
+            source="open_er_api",
+        )
+
+    monkeypatch.setattr(mod.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(mod, "_fetch_toss_usd_krw_quote", fake_toss)
+    monkeypatch.setattr(mod, "_fetch_open_er_api_usd_krw_quote", fake_fallback)
+
+    quote = await mod._fetch_usd_krw_rate_details()
+
+    assert quote is toss_quote
+    assert fallback_called is False
+
+
+@pytest.mark.asyncio
+async def test_get_usd_krw_rate_details_uses_fallback_when_toss_disabled(
+    monkeypatch,
+) -> None:
+    async def fail_toss() -> mod.UsdKrwExchangeRateQuote:
+        raise AssertionError("Toss should not be called when disabled")
+
+    async def fake_fallback() -> mod.UsdKrwExchangeRateQuote:
+        return mod.UsdKrwExchangeRateQuote(
+            rate=1498.7,
+            mid_rate=1498.7,
+            source="open_er_api",
+        )
+
+    monkeypatch.setattr(mod.settings, "toss_api_enabled", False)
+    monkeypatch.setattr(mod, "_fetch_toss_usd_krw_quote", fail_toss)
+    monkeypatch.setattr(mod, "_fetch_open_er_api_usd_krw_quote", fake_fallback)
+
+    quote = await mod._fetch_usd_krw_rate_details()
+
+    assert quote.source == "open_er_api"
+    assert quote.default_rate == pytest.approx(1498.7)
+
+
+@pytest.mark.asyncio
+async def test_get_usd_krw_rate_details_falls_back_when_toss_fails(
+    monkeypatch,
+) -> None:
+    async def fail_toss() -> mod.UsdKrwExchangeRateQuote:
+        raise RuntimeError("Toss is unavailable")
+
+    async def fake_fallback() -> mod.UsdKrwExchangeRateQuote:
+        return mod.UsdKrwExchangeRateQuote(
+            rate=1498.7,
+            mid_rate=1498.7,
+            source="open_er_api",
+        )
+
+    monkeypatch.setattr(mod.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(mod, "_fetch_toss_usd_krw_quote", fail_toss)
+    monkeypatch.setattr(mod, "_fetch_open_er_api_usd_krw_quote", fake_fallback)
+
+    quote = await mod._fetch_usd_krw_rate_details()
+
+    assert quote.source == "open_er_api"
+    assert quote.default_rate == pytest.approx(1498.7)
