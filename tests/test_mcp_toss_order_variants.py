@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -717,6 +718,12 @@ async def test_modify_and_cancel_surface_replacement_order_id(monkeypatch):
         }
     ]
 
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 123}),
+    )
+
     res_cancel = await toss_cancel_order(
         order_id="orig-ord-123",
         dry_run=False,
@@ -1391,6 +1398,25 @@ async def test_cancel_dry_run_and_broker_error_paths(monkeypatch):
 
     monkeypatch.setattr(mock_client, "cancel_order", raise_cancel_error)
 
+    # Seed the order so get_order succeeds before cancel_order is called
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+
     failed = await toss_cancel_order(
         order_id="orig-ord-123",
         dry_run=False,
@@ -1593,12 +1619,13 @@ async def test_modify_order_records_replacement_chain(monkeypatch):
     recorded = []
     async def fake_record(**kwargs):
         recorded.append(kwargs)
+        return {"ledger_id": 538}
 
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_toss_variants.record_toss_replacement_order",
+        otv,
+        "record_toss_replacement_order",
         fake_record
     )
-
     res = await toss_modify_order(
         order_id="orig-ord-123",
         new_price="155.0",
@@ -1648,12 +1675,13 @@ async def test_cancel_order_records_audit_replacement_chain(monkeypatch):
     recorded = []
     async def fake_record(**kwargs):
         recorded.append(kwargs)
+        return {"ledger_id": 538}
 
     monkeypatch.setattr(
-        "app.mcp_server.tooling.orders_toss_variants.record_toss_replacement_order",
+        otv,
+        "record_toss_replacement_order",
         fake_record
     )
-
     res = await toss_cancel_order(
         order_id="orig-ord-789",
         dry_run=False,
