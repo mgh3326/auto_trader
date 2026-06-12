@@ -35,6 +35,10 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         output["price_error"] = position["price_error"]
     if "strategy_signal" in position:
         output["strategy_signal"] = position["strategy_signal"]
+    if "sellable_quantity" in position:
+        output["sellable_quantity"] = position["sellable_quantity"]
+    if "source" in position:
+        output["source"] = position["source"]
     return output
 
 

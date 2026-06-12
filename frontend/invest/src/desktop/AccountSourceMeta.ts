@@ -32,6 +32,13 @@ const SOURCE_META: Record<AccountSource, AccountSourceMeta> = {
     kindLabel: "수동",
     tone: "toss",
   },
+  toss_api: {
+    label: "Toss",
+    shortLabel: "Toss",
+    badge: "Live",
+    kindLabel: "실계좌",
+    tone: "toss",
+  },
   pension_manual: {
     label: "연금 수동",
     shortLabel: "연금",

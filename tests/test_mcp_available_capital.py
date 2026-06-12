@@ -227,6 +227,97 @@ async def test_get_available_capital_toss_filter_uses_manual_cash_path(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_get_available_capital_toss_api_cash_is_reference_only(monkeypatch):
+    """Toss API cash is visible as balance but excluded from orderable capital."""
+    from decimal import Decimal
+
+    from app.mcp_server.tooling import portfolio_cash
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    async def mock_get_usd_krw_rate():
+        return 1300.0
+
+    monkeypatch.setattr(portfolio_cash.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(
+        portfolio_cash, "fetch_toss_cash_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(portfolio_cash, "get_usd_krw_rate", mock_get_usd_krw_rate)
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl(account="toss", include_manual=False)
+
+    assert [account["balance"] for account in result["accounts"]] == [
+        123456.0,
+        789.01,
+    ]
+    assert [account["orderable"] for account in result["accounts"]] == [0.0, 0.0]
+    assert result["accounts"][1]["krw_equivalent"] == 0.0
+    assert result["summary"]["total_orderable_krw"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_does_not_add_toss_balance_to_all_account_total(
+    monkeypatch,
+):
+    """All-account orderable total must remain broker-orderable, not Toss balance."""
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        assert account is None
+        return {
+            "accounts": [
+                {
+                    "account": "kis_domestic",
+                    "currency": "KRW",
+                    "balance": 1_000_000.0,
+                    "orderable": 900_000.0,
+                },
+                {
+                    "account": "toss",
+                    "broker": "toss",
+                    "currency": "KRW",
+                    "balance": 123_456.0,
+                    "orderable": 0.0,
+                },
+                {
+                    "account": "toss",
+                    "broker": "toss",
+                    "currency": "USD",
+                    "balance": 789.01,
+                    "orderable": 0.0,
+                },
+            ],
+            "summary": {"total_krw": 1_123_456.0, "total_usd": 789.01},
+            "errors": [],
+        }
+
+    async def mock_get_usd_krw_rate():
+        return 1300.0
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(portfolio_cash, "get_usd_krw_rate", mock_get_usd_krw_rate)
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl(include_manual=False)
+
+    assert result["accounts"][2]["krw_equivalent"] == 0.0
+    assert result["summary"]["total_orderable_krw"] == 900_000.0
+
+
+@pytest.mark.asyncio
 async def test_get_available_capital_excludes_stale_manual_cash_from_total(monkeypatch):
     """Stale manual cash is excluded from total_orderable_krw and reported separately (ROB-467)."""
     from app.mcp_server.tooling import portfolio_cash

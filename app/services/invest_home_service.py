@@ -28,7 +28,9 @@ from app.schemas.invest_home import (
 
 logger = logging.getLogger(__name__)
 
-HOME_INCLUDED_SOURCES: frozenset[str] = frozenset({"kis", "upbit", "toss_manual"})
+HOME_INCLUDED_SOURCES: frozenset[str] = frozenset(
+    {"kis", "upbit", "toss_manual", "toss_api"}
+)
 
 _PAPER: frozenset[str] = frozenset(
     {"kis_mock", "kiwoom_mock", "alpaca_paper", "db_simulated"}
@@ -70,6 +72,24 @@ def _reference_quantity(h: Holding) -> float:
     if h.manualOnly or not _is_tradeable_holding(h):
         return max(h.quantity, 0.0)
     return 0.0
+
+
+def _filter_manual_holdings_for_toss_api(
+    manual_holdings: Iterable[Holding],
+    toss_api_holdings: Iterable[Holding],
+) -> list[Holding]:
+    toss_api_keys = {
+        _group_id(holding)
+        for holding in toss_api_holdings
+        if holding.source == "toss_api"
+    }
+    if not toss_api_keys:
+        return list(manual_holdings)
+    return [
+        holding
+        for holding in manual_holdings
+        if not (holding.source == "toss_manual" and _group_id(holding) in toss_api_keys)
+    ]
 
 
 def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
@@ -328,11 +348,13 @@ class InvestHomeService:
         kis_reader,
         upbit_reader,
         manual_reader,
+        toss_api_reader=None,
         paper_readers: Sequence[object] | None = None,
     ) -> None:
         self._kis = kis_reader
         self._upbit = upbit_reader
         self._manual = manual_reader
+        self._toss_api = toss_api_reader
         self._paper_readers: Sequence[object] = paper_readers or []
 
     async def get_home(
@@ -351,11 +373,8 @@ class InvestHomeService:
         for fetcher, src in (
             (self._kis.fetch, "kis"),
             (self._upbit.fetch, "upbit"),
-            (self._manual.fetch, "toss_manual"),
         ):
-            span_name = (
-                "invest.home.manual" if src == "toss_manual" else f"invest.home.{src}"
-            )
+            span_name = f"invest.home.{src}"
             with sentry_sdk.start_span(op="invest.home.reader", name=span_name) as span:
                 span.set_tag("source", src)
                 span.set_tag("include_paper", include_paper)
@@ -370,12 +389,6 @@ class InvestHomeService:
                     hidden_counts.upbitDust += result.hidden_counts.upbitDust
                     if result.warning is not None:
                         warnings.append(result.warning)
-                    if src == "toss_manual":
-                        toss_account = build_manual_account_from_holdings(
-                            result.holdings
-                        )
-                        if toss_account is not None:
-                            accounts.append(toss_account)
                 except Exception as exc:
                     logger.warning(
                         "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
@@ -385,6 +398,61 @@ class InvestHomeService:
                             source=src, message=str(exc) or type(exc).__name__
                         )
                     )
+
+        toss_api_result: _SourceFetchResult | None = None
+        toss_api_holdings: list[Holding] = []
+        if self._toss_api is not None:
+            with sentry_sdk.start_span(
+                op="invest.home.reader", name="invest.home.toss_api"
+            ) as span:
+                span.set_tag("source", "toss_api")
+                span.set_tag("include_paper", include_paper)
+                if paper_sources is not None:
+                    span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
+                try:
+                    toss_api_result = await self._toss_api.fetch(user_id=user_id)
+                    if toss_api_result.warning is not None:
+                        warnings.append(toss_api_result.warning)
+                    if toss_api_result.holdings or toss_api_result.accounts:
+                        accounts.extend(toss_api_result.accounts)
+                        holdings.extend(toss_api_result.holdings)
+                        toss_api_holdings = list(toss_api_result.holdings)
+                except Exception as exc:
+                    logger.warning(
+                        "[invest_home] toss_api fetch failed: %s", exc, exc_info=True
+                    )
+                    warnings.append(
+                        InvestHomeWarning(source="toss_api", message=str(exc))
+                    )
+
+        with sentry_sdk.start_span(
+            op="invest.home.reader", name="invest.home.manual"
+        ) as span:
+            span.set_tag("source", "toss_manual")
+            span.set_tag("include_paper", include_paper)
+            if paper_sources is not None:
+                span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
+            try:
+                result = await self._manual.fetch(user_id=user_id)
+                manual_holdings = _filter_manual_holdings_for_toss_api(
+                    result.holdings, toss_api_holdings
+                )
+                accounts.extend(result.accounts)
+                holdings.extend(manual_holdings)
+                if result.warning is not None:
+                    warnings.append(result.warning)
+                toss_account = build_manual_account_from_holdings(manual_holdings)
+                if toss_account is not None:
+                    accounts.append(toss_account)
+            except Exception as exc:
+                logger.warning(
+                    "[invest_home] toss_manual fetch failed: %s", exc, exc_info=True
+                )
+                warnings.append(
+                    InvestHomeWarning(
+                        source="toss_manual", message=str(exc) or type(exc).__name__
+                    )
+                )
 
         if include_paper:
             for reader in self._paper_readers:
@@ -461,13 +529,8 @@ class InvestHomeService:
             for fetcher, src in (
                 (self._kis.fetch, "kis"),
                 (self._upbit.fetch, "upbit"),
-                (self._manual.fetch, "toss_manual"),
             ):
-                span_name = (
-                    "invest.home.manual"
-                    if src == "toss_manual"
-                    else f"invest.home.{src}"
-                )
+                span_name = f"invest.home.{src}"
                 with sentry_sdk.start_span(
                     op="invest.home.reader", name=span_name
                 ) as span:
@@ -481,12 +544,6 @@ class InvestHomeService:
                         holdings.extend(result.holdings)
                         if result.warning is not None:
                             warnings.append(result.warning)
-                        if src == "toss_manual":
-                            toss_account = build_manual_account_from_holdings(
-                                result.holdings
-                            )
-                            if toss_account is not None:
-                                accounts.append(toss_account)
                     except Exception as exc:
                         logger.warning(
                             "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
@@ -496,6 +553,66 @@ class InvestHomeService:
                                 source=src, message=str(exc) or type(exc).__name__
                             )
                         )
+
+            toss_api_result: _SourceFetchResult | None = None
+            toss_api_holdings: list[Holding] = []
+            if self._toss_api is not None:
+                with sentry_sdk.start_span(
+                    op="invest.home.reader", name="invest.home.toss_api"
+                ) as span:
+                    span.set_tag("source", "toss_api")
+                    span.set_tag("include_paper", include_paper)
+                    if paper_sources is not None:
+                        span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
+                    try:
+                        toss_api_result = await self._toss_api.fetch(user_id=user_id)
+                        if toss_api_result.warning is not None:
+                            warnings.append(toss_api_result.warning)
+                        if toss_api_result.holdings or toss_api_result.accounts:
+                            accounts.extend(toss_api_result.accounts)
+                            holdings.extend(toss_api_result.holdings)
+                            toss_api_holdings = list(toss_api_result.holdings)
+                    except Exception as exc:
+                        logger.warning(
+                            "[invest_home] toss_api fetch failed: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                        warnings.append(
+                            InvestHomeWarning(source="toss_api", message=str(exc))
+                        )
+
+            with sentry_sdk.start_span(
+                op="invest.home.reader", name="invest.home.manual"
+            ) as span:
+                span.set_tag("source", "toss_manual")
+                span.set_tag("include_paper", include_paper)
+                if paper_sources is not None:
+                    span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
+                try:
+                    result = await self._manual.fetch(user_id=user_id)
+                    manual_holdings = _filter_manual_holdings_for_toss_api(
+                        result.holdings, toss_api_holdings
+                    )
+                    accounts.extend(result.accounts)
+                    holdings.extend(manual_holdings)
+                    if result.warning is not None:
+                        warnings.append(result.warning)
+                    toss_account = build_manual_account_from_holdings(manual_holdings)
+                    if toss_account is not None:
+                        accounts.append(toss_account)
+                except Exception as exc:
+                    logger.warning(
+                        "[invest_home] toss_manual fetch failed: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    warnings.append(
+                        InvestHomeWarning(
+                            source="toss_manual",
+                            message=str(exc) or type(exc).__name__,
+                        )
+                    )
 
             if include_paper:
                 for reader in self._paper_readers:

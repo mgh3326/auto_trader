@@ -61,6 +61,7 @@ const SOURCE_LABEL: Record<AccountSource, string> = {
   kis: "KIS",
   upbit: "Upbit",
   toss_manual: "Toss 수동",
+  toss_api: "Toss",
   pension_manual: "퇴직연금",
   isa_manual: "ISA",
   kis_mock: "KIS 모의",

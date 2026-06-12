@@ -73,3 +73,26 @@ async def test_validate_sell_side_uses_routability_message(monkeypatch):
     assert err is not None
     assert "kis_mock" in captured["msg"]
     assert "reference-only" in captured["msg"]
+
+
+def test_no_holdings_sell_message_mentions_toss_api_when_enabled(monkeypatch):
+    from app.mcp_server.tooling import order_validation
+
+    monkeypatch.setattr(order_validation.settings, "toss_api_enabled", True)
+
+    msg = order_validation._no_holdings_sell_message("005930", "equity_kr", False)
+
+    assert "KIS subaccount" in msg
+    assert "Toss API" in msg
+    assert "reference-only" in msg
+
+
+def test_no_holdings_sell_message_preserves_reference_only_when_disabled(monkeypatch):
+    from app.mcp_server.tooling import order_validation
+
+    monkeypatch.setattr(order_validation.settings, "toss_api_enabled", False)
+
+    msg = order_validation._no_holdings_sell_message("005930", "equity_kr", False)
+
+    assert "toss/samsung" in msg
+    assert "reference-only" in msg
