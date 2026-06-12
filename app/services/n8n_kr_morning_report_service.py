@@ -5,10 +5,12 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
 from app.services.brokers.kis.client import KISClient
+from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 from app.services.n8n_formatting import (
     fmt_amount,
     fmt_date_with_weekday,
@@ -82,6 +84,9 @@ async def fetch_kr_morning_report(
         logger.error("Failed to fetch KIS cash balance: %s", results[1])
         errors.append({"source": "cash", "error": str(results[1])})
 
+    toss_cash_krw, toss_cash_usd, toss_cash_errors = await _fetch_toss_cash_balance()
+    errors.extend(toss_cash_errors)
+
     # Process holdings
     holdings = _build_holdings(portfolio_raw)
 
@@ -95,13 +100,21 @@ async def fetch_kr_morning_report(
     )
 
     # Process cash balance
+    toss_krw_for_total = toss_cash_krw or 0.0
     cash_balance = {
         "kis_krw": kis_cash,
         "kis_krw_fmt": fmt_amount(kis_cash),
-        "toss_krw": None,
-        "toss_krw_fmt": "수동 관리",
-        "total_krw": kis_cash,
-        "total_krw_fmt": fmt_amount(kis_cash),
+        "toss_krw": toss_cash_krw,
+        "toss_krw_fmt": fmt_amount(toss_cash_krw)
+        if toss_cash_krw is not None
+        else "API 미사용" if not bool(getattr(settings, "toss_api_enabled", False))
+        else "조회 실패",
+        "toss_usd": toss_cash_usd,
+        "toss_usd_fmt": f"{toss_cash_usd:,.2f} USD"
+        if toss_cash_usd is not None
+        else None,
+        "total_krw": kis_cash + toss_krw_for_total,
+        "total_krw_fmt": fmt_amount(kis_cash + toss_krw_for_total),
     }
 
     # Process screening
@@ -194,6 +207,23 @@ async def _fetch_kis_cash_balance() -> float:
     client = KISClient()
     payload = await client.inquire_domestic_cash_balance()
     return float(payload.get("stck_cash_ord_psbl_amt") or 0)
+
+
+async def _fetch_toss_cash_balance() -> tuple[float | None, float | None, list[dict[str, str]]]:
+    if not bool(getattr(settings, "toss_api_enabled", False)):
+        return None, None, []
+    try:
+        snapshot = await fetch_toss_portfolio_snapshot()
+        return (
+            float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
+            float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
+            [
+                {"source": str(item.get("source", "toss_api")), "error": str(item.get("error", ""))}
+                for item in snapshot.errors
+            ],
+        )
+    except Exception as exc:
+        return None, None, [{"source": "toss_api", "error": str(exc)}]
 
 
 async def _fetch_screening(screen_strategy: str | None, top_n: int) -> dict[str, Any]:

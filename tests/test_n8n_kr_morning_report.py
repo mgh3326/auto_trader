@@ -120,7 +120,7 @@ async def test_fetch_kr_morning_report_groups_kis_and_toss_kr_holdings():
     assert result["holdings"]["combined"]["total_count"] == 2
     assert result["cash_balance"]["kis_krw"] == pytest.approx(45000.0)
     assert result["cash_balance"]["toss_krw"] is None
-    assert result["cash_balance"]["toss_krw_fmt"] == "수동 관리"
+    assert result["cash_balance"]["toss_krw_fmt"] == "API 미사용"
 
 
 @pytest.mark.asyncio
@@ -617,3 +617,34 @@ async def test_fetch_kr_morning_report_promotes_screening_error_payload_to_top_l
     assert result["success"] is False
     assert any(err["source"] == "screening" for err in result["errors"])
     assert any("upstream failed" in err["error"] for err in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_kr_morning_report_includes_toss_api_cash(monkeypatch):
+    import app.services.n8n_kr_morning_report_service as service
+    from decimal import Decimal
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    monkeypatch.setattr(service.settings, "toss_api_enabled", True)
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    monkeypatch.setattr(service, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot)
+    monkeypatch.setattr(service, "_get_portfolio_overview", AsyncMock(return_value={"holdings": [], "warnings": []}))
+    monkeypatch.setattr(service, "_fetch_kis_cash_balance", AsyncMock(return_value=1000000.0))
+    monkeypatch.setattr(service, "fetch_pending_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_fetch_screening", AsyncMock(return_value={"results": []}))
+
+    payload = await service.fetch_kr_morning_report(top_n=3)
+
+    assert payload["cash_balance"]["kis_krw"] == 1000000.0
+    assert payload["cash_balance"]["toss_krw"] == 123456.0
+    assert payload["cash_balance"]["toss_usd"] == 789.01
+    assert payload["cash_balance"]["total_krw"] == 1123456.0
+    assert payload["cash_balance"]["toss_krw_fmt"] != "수동 관리"
+
