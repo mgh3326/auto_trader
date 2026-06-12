@@ -572,7 +572,6 @@ async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
     }
 
 
-
 # ============================================================================
 # Korean Equity OHLCV Tests
 # ============================================================================
@@ -1163,6 +1162,7 @@ async def test_get_ohlcv_market_us_rejects_crypto_prefix():
     ):
         await tools["get_ohlcv"]("KRW-BTC", market="us")
 
+
 @pytest.mark.asyncio
 async def test_get_ohlcv_kr_intraday_uses_toss_first_in_mcp(monkeypatch):
     tools = build_tools()
@@ -1209,7 +1209,9 @@ async def test_get_ohlcv_us_day_uses_toss_fallback_in_mcp(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(market_data_quotes, "fetch_daily_toss_frame", AsyncMock(return_value=toss_df))
+    monkeypatch.setattr(
+        market_data_quotes, "fetch_daily_toss_frame", AsyncMock(return_value=toss_df)
+    )
 
     result = await tools["get_ohlcv"]("AAPL", market="us", period="day", count=5)
 

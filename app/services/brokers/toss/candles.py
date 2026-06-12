@@ -6,7 +6,17 @@ import pandas as pd
 
 from app.services.brokers.toss.dto import TossCandlesPage
 
-_FRAME_COLUMNS = ["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"]
+_FRAME_COLUMNS = [
+    "datetime",
+    "date",
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "value",
+]
 
 
 class _TossCandleClient(Protocol):
@@ -46,7 +56,12 @@ def toss_candles_page_to_frame(page: TossCandlesPage) -> pd.DataFrame:
         )
     if not records:
         return empty_toss_candles_frame()
-    return pd.DataFrame(records).sort_values("datetime").reset_index(drop=True).loc[:, _FRAME_COLUMNS]
+    return (
+        pd.DataFrame(records)
+        .sort_values("datetime")
+        .reset_index(drop=True)
+        .loc[:, _FRAME_COLUMNS]
+    )
 
 
 async def fetch_toss_candles_frame(
@@ -81,4 +96,9 @@ async def fetch_toss_candles_frame(
     if not frames:
         return empty_toss_candles_frame()
     combined = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["datetime"])
-    return combined.sort_values("datetime").tail(count).reset_index(drop=True).loc[:, _FRAME_COLUMNS]
+    return (
+        combined.sort_values("datetime")
+        .tail(count)
+        .reset_index(drop=True)
+        .loc[:, _FRAME_COLUMNS]
+    )

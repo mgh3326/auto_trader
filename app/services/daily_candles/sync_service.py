@@ -75,7 +75,6 @@ class DailyCandleSyncService:
         self._toss_us = toss_us_fetcher
         self._close_callbacks = close_callbacks or []
 
-
     async def close(self) -> None:
         """Release resources owned by the default service factory."""
         for callback in self._close_callbacks:
@@ -103,12 +102,17 @@ class DailyCandleSyncService:
             )
             toss_frame = await self._toss_kr(symbol=target.symbol, n=horizon_bars)
             rows = frame_to_rows(
-                toss_frame, symbol=target.symbol, partition=target.partition, source="toss"
+                toss_frame,
+                symbol=target.symbol,
+                partition=target.partition,
+                source="toss",
             )
             fallback_used = True
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
         await self._commit_or_rollback()
-        return SyncOneResult(target=target, rows_upserted=upserted, fallback_used=fallback_used)
+        return SyncOneResult(
+            target=target, rows_upserted=upserted, fallback_used=fallback_used
+        )
 
     async def _sync_us(self, target: SyncTarget, horizon_bars: int) -> SyncOneResult:
         frame = await self._kis_us(
@@ -141,14 +145,19 @@ class DailyCandleSyncService:
                 )
                 toss_frame = await self._toss_us(symbol=target.symbol, n=horizon_bars)
                 repo_rows = frame_to_rows(
-                    toss_frame, symbol=target.symbol, partition=target.partition, source="toss_fallback"
+                    toss_frame,
+                    symbol=target.symbol,
+                    partition=target.partition,
+                    source="toss_fallback",
                 )
                 if repo_rows:
                     upserted = await self._repository.upsert_rows(
                         market=target.market, rows=repo_rows
                     )
                     await self._commit_or_rollback()
-                    return SyncOneResult(target=target, rows_upserted=upserted, fallback_used=True)
+                    return SyncOneResult(
+                        target=target, rows_upserted=upserted, fallback_used=True
+                    )
             return SyncOneResult(
                 target=target,
                 rows_upserted=0,
@@ -176,7 +185,6 @@ class DailyCandleSyncService:
         )
         await self._commit_or_rollback()
         return SyncOneResult(target=target, rows_upserted=upserted, fallback_used=True)
-
 
     async def _sync_crypto(
         self, target: SyncTarget, horizon_bars: int
@@ -332,4 +340,3 @@ async def _build_default_service() -> DailyCandleSyncService:
         toss_us_fetcher=_toss if settings.toss_api_enabled else None,
         close_callbacks=[session.close, kis.close],
     )
-

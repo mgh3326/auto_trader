@@ -718,5 +718,4 @@ async def sync_kr_candles(
         await session.close()
 
 
-
 __all__ = ["sync_kr_candles"]

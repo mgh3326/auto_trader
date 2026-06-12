@@ -309,7 +309,9 @@ async def test_run_kr_candles_sync_passes_source(monkeypatch):
 
     result = await kr_candles.run_kr_candles_sync(mode="incremental", source="toss")
 
-    sync_mock.assert_awaited_once_with(mode="incremental", sessions=10, user_id=1, source="toss")
+    sync_mock.assert_awaited_once_with(
+        mode="incremental", sessions=10, user_id=1, source="toss"
+    )
     assert result["success"] is True
 
 
@@ -406,5 +408,3 @@ async def test_sync_kr_candles_toss_source_warning(monkeypatch):
     assert result["pairs_processed"] == 1
     assert any("provider source column" in w for w in result.get("warnings", []))
     upsert_mock.assert_awaited_once()
-
-

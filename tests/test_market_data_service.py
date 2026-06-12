@@ -1252,7 +1252,9 @@ async def test_fetch_kr_intraday_toss_frame_aggregates_1m_to_5m(monkeypatch):
     class FakeClient:
         async def aclose(self): ...
 
-    monkeypatch.setattr(toss_ohlcv.TossReadClient, "from_settings", lambda: FakeClient())
+    monkeypatch.setattr(
+        toss_ohlcv.TossReadClient, "from_settings", lambda: FakeClient()
+    )
     monkeypatch.setattr(
         toss_ohlcv,
         "fetch_toss_candles_frame",
@@ -1347,6 +1349,7 @@ async def test_get_ohlcv_kr_intraday_falls_back_to_kis_when_toss_fails(monkeypat
         end_date=None,
     )
     assert candles[0].source == "kis"
+
 
 @pytest.mark.asyncio
 async def test_get_ohlcv_us_day_uses_toss_when_yahoo_fails(monkeypatch):

@@ -62,7 +62,15 @@ async def test_fetch_kr_daily_toss_returns_frame_for_single_page():
 
     assert isinstance(frame, pd.DataFrame)
     assert len(frame) == 2
-    assert list(frame.columns) == ["date", "open", "high", "low", "close", "volume", "value"]
+    assert list(frame.columns) == [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "value",
+    ]
     assert client.calls[0]["symbol"] == "005930"
     assert client.calls[0]["interval"] == "1d"
     assert client.calls[0]["adjusted"] is True

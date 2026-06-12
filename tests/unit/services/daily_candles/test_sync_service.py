@@ -200,7 +200,17 @@ async def test_kr_empty_kis_falls_back_to_toss_daily():
         upbit_crypto_fetcher=AsyncMock(),
         toss_kr_fetcher=AsyncMock(
             return_value=pd.DataFrame(
-                [{"date": "2026-06-12", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10, "value": 20}]
+                [
+                    {
+                        "date": "2026-06-12",
+                        "open": 1,
+                        "high": 2,
+                        "low": 1,
+                        "close": 2,
+                        "volume": 10,
+                        "value": 20,
+                    }
+                ]
             )
         ),
     )
@@ -240,7 +250,17 @@ async def test_us_empty_kis_and_yahoo_falls_back_to_toss_daily():
         upbit_crypto_fetcher=AsyncMock(),
         toss_us_fetcher=AsyncMock(
             return_value=pd.DataFrame(
-                [{"date": "2026-06-12", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10, "value": 20}]
+                [
+                    {
+                        "date": "2026-06-12",
+                        "open": 1,
+                        "high": 2,
+                        "low": 1,
+                        "close": 2,
+                        "volume": 10,
+                        "value": 20,
+                    }
+                ]
             )
         ),
     )
@@ -252,5 +272,3 @@ async def test_us_empty_kis_and_yahoo_falls_back_to_toss_daily():
 
     assert result.fallback_used is True
     assert upserted_rows[0].source == "toss_fallback"
-
-
