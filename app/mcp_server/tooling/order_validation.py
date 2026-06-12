@@ -427,12 +427,22 @@ def _no_holdings_sell_message(symbol: str, market_type: str, is_mock: bool) -> s
     if market_type == "crypto":
         return f"No holdings found for {symbol} on Upbit"
     channel = "kis_mock" if is_mock else "kis_live"
-    return (
-        f"No sellable holdings for {symbol} in the KIS subaccount that "
-        f"{channel} routes to. Holdings in other broker subaccounts "
-        f"(e.g. toss/samsung) are reference-only and cannot be sold via this "
-        f"channel — check get_holdings 'order_routable'/'account_mode'."
-    )
+    if bool(getattr(settings, "toss_api_enabled", False)):
+        return (
+            f"No sellable holdings for {symbol} in the KIS subaccount that "
+            f"{channel} routes to. If this symbol is held at Toss, use the "
+            "Toss API order path after Toss live-order tools are enabled; "
+            "manual Samsung/legacy holdings remain reference-only. Check "
+            "get_holdings 'order_routable'/'account_mode'."
+        )
+    else:
+        return (
+            f"No sellable holdings for {symbol} in the KIS subaccount that "
+            f"{channel} routes to. Holdings in other broker subaccounts "
+            f"(e.g. toss/samsung) are reference-only and cannot be sold via this "
+            f"channel — check get_holdings 'order_routable'/'account_mode'."
+        )
+
 
 
 async def _get_holdings_for_order(
