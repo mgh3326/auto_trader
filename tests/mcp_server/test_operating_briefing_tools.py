@@ -64,6 +64,7 @@ def test_operating_briefing_tool_names_register() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
 async def test_list_active_watches_impl_returns_rationale_and_filters(
     db_session: AsyncSession,
 ) -> None:
@@ -408,6 +409,7 @@ async def test_latest_report_summary_excludes_superseded_advisory(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
 async def test_get_operating_briefing_reads_active_watch_and_session_context(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
