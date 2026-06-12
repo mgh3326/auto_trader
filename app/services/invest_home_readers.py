@@ -36,6 +36,7 @@ from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.invest_home_service import _SourceFetchResult
 from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
 from app.services.upbit_symbol_universe_service import (
     get_active_upbit_markets,
     get_upbit_warning_markets,
@@ -482,6 +483,123 @@ class UpbitHomeReader:
                 accounts=[],
                 holdings=[],
                 warning=InvestHomeWarning(source="upbit", message=str(exc)),
+            )
+
+
+class TossApiHomeReader:
+    """Toss Open API live portfolio reader."""
+
+    async def fetch(self, *, user_id: int) -> _SourceFetchResult:
+        del user_id
+        try:
+            snapshot = await fetch_toss_portfolio_snapshot()
+            holdings: list[Holding] = []
+            value_krw_total = 0.0
+            cost_basis_krw_total: float | None = 0.0
+            pnl_krw_total: float | None = 0.0
+
+            for position in snapshot.positions:
+                currency = "KRW" if position.instrument_type == "equity_kr" else "USD"
+                market = "KR" if position.instrument_type == "equity_kr" else "US"
+                value_native = (
+                    float(position.evaluation_amount)
+                    if position.evaluation_amount is not None
+                    else None
+                )
+                value_krw = value_native if currency == "KRW" else None
+                pnl_krw = (
+                    float(position.profit_loss)
+                    if currency == "KRW" and position.profit_loss is not None
+                    else None
+                )
+                cost_basis = float(position.quantity * position.avg_buy_price)
+                if value_krw is not None:
+                    value_krw_total += value_krw
+                else:
+                    cost_basis_krw_total = None
+                    pnl_krw_total = None
+                if cost_basis_krw_total is not None and currency == "KRW":
+                    cost_basis_krw_total += cost_basis
+                elif currency != "KRW":
+                    cost_basis_krw_total = None
+                if pnl_krw_total is not None and pnl_krw is not None:
+                    pnl_krw_total += pnl_krw
+                elif currency != "KRW":
+                    pnl_krw_total = None
+
+                holdings.append(
+                    Holding(
+                        holdingId=f"toss_api:{position.symbol}",
+                        accountId="toss_api_account",
+                        source="toss_api",
+                        accountKind="live",
+                        symbol=position.symbol,
+                        market=market,
+                        assetType="equity",
+                        assetCategory="kr_stock" if market == "KR" else "us_stock",
+                        displayName=position.name,
+                        quantity=float(position.quantity),
+                        averageCost=float(position.avg_buy_price),
+                        costBasis=cost_basis,
+                        currency=currency,
+                        valueNative=value_native,
+                        valueKrw=value_krw,
+                        pnlKrw=pnl_krw,
+                        pnlRate=float(position.profit_rate)
+                        if position.profit_rate is not None
+                        else None,
+                        priceState="live",
+                        sourceOfTruth=True,
+                        isTradeable=True,
+                        manualOnly=False,
+                        sellableQuantity=float(position.sellable_quantity)
+                        if position.sellable_quantity is not None
+                        else None,
+                        pendingSellQuantity=0.0,
+                        referenceQuantity=0.0,
+                    )
+                )
+
+            pnl_rate: float | None = None
+            if cost_basis_krw_total and cost_basis_krw_total > 0 and pnl_krw_total is not None:
+                pnl_rate = pnl_krw_total / cost_basis_krw_total
+
+            account = Account(
+                accountId="toss_api_account",
+                displayName="Toss",
+                source="toss_api",
+                accountKind="live",
+                includedInHome=True,
+                valueKrw=value_krw_total,
+                costBasisKrw=cost_basis_krw_total,
+                pnlKrw=pnl_krw_total,
+                pnlRate=pnl_rate,
+                cashBalances=CashAmounts(
+                    krw=float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
+                    usd=float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
+                ),
+                buyingPower=CashAmounts(
+                    krw=float(snapshot.cash_krw) if snapshot.cash_krw is not None else None,
+                    usd=float(snapshot.cash_usd) if snapshot.cash_usd is not None else None,
+                ),
+            )
+            warning = None
+            if snapshot.errors:
+                warning = InvestHomeWarning(
+                    source="toss_api",
+                    message="; ".join(str(item.get("error")) for item in snapshot.errors),
+                )
+            return _SourceFetchResult(
+                accounts=[account],
+                holdings=holdings,
+                warning=warning,
+            )
+        except Exception as exc:
+            logger.warning("Toss API fetch failed: %s", exc, exc_info=True)
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(source="toss_api", message=str(exc)),
             )
 
 
