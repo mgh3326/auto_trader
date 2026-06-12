@@ -264,3 +264,40 @@ def parse_order(raw: dict[str, Any]) -> TossOrder:
     return parse_orders({"orders": [raw], "nextCursor": None, "hasNext": False}).orders[
         0
     ]
+
+
+@dataclass(frozen=True)
+class TossCandle:
+    timestamp: str
+    open_price: Decimal
+    high_price: Decimal
+    low_price: Decimal
+    close_price: Decimal
+    volume: Decimal
+    currency: str
+
+
+@dataclass(frozen=True)
+class TossCandlesPage:
+    candles: list[TossCandle]
+    next_before: str | None
+
+
+def parse_candles(raw: dict[str, Any]) -> TossCandlesPage:
+    candles = [
+        TossCandle(
+            timestamp=str(row["timestamp"]),
+            open_price=parse_decimal_string(row["openPrice"]),
+            high_price=parse_decimal_string(row["highPrice"]),
+            low_price=parse_decimal_string(row["lowPrice"]),
+            close_price=parse_decimal_string(row["closePrice"]),
+            volume=parse_decimal_string(row["volume"]),
+            currency=str(row["currency"]),
+        )
+        for row in raw.get("candles", [])
+    ]
+    next_before = raw.get("nextBefore")
+    return TossCandlesPage(
+        candles=candles,
+        next_before=str(next_before) if next_before is not None else None,
+    )

@@ -68,6 +68,10 @@ from app.services.market_data.constants import (
     US_INTRADAY_OHLCV_PERIODS,
     validate_ohlcv_period,
 )
+from app.services.market_data.toss_ohlcv import (
+    fetch_daily_toss_frame,
+    fetch_kr_intraday_toss_frame,
+)
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_intraday_candles_read_service import read_us_intraday_candles
 from app.services.us_symbol_universe_service import (
@@ -949,12 +953,35 @@ async def _fetch_ohlcv_equity_kr(
             end_date=end_date,
         )
     elif period in KR_INTRADAY_OHLCV_PERIODS:
-        df = await read_kr_intraday_candles(
-            symbol=symbol,
-            period=period,
-            count=capped_count,
-            end_date=end_date,
-        )
+        try:
+            df = await fetch_kr_intraday_toss_frame(
+                symbol=symbol,
+                period=period,
+                count=capped_count,
+                end_date=end_date,
+            )
+            return _build_ohlcv_payload(
+                symbol=symbol,
+                instrument_type="equity_kr",
+                source="toss",
+                period=period,
+                count=capped_count,
+                df=df,
+                include_indicators=include_indicators,
+            )
+        except Exception as toss_exc:
+            logger.info(
+                "Toss KR intraday OHLCV fallback to KIS (MCP) symbol=%s period=%s error=%s",
+                symbol,
+                period,
+                toss_exc,
+            )
+            df = await read_kr_intraday_candles(
+                symbol=symbol,
+                period=period,
+                count=capped_count,
+                end_date=end_date,
+            )
     else:
         kis_period_map = {"week": "W", "month": "M"}
         df = await kis.inquire_daily_itemchartprice(
@@ -1006,15 +1033,26 @@ async def _fetch_ohlcv_equity_us(
             include_indicators=include_indicators,
         )
 
-    # day/week/month use Yahoo Finance
+    # day/week/month use Yahoo Finance with Toss day-only fallback
     capped_count = min(count, 100)
-    df = await yahoo_service.fetch_ohlcv(
-        ticker=symbol, days=capped_count, period=period, end_date=end_date
-    )
+    try:
+        df = await yahoo_service.fetch_ohlcv(
+            ticker=symbol, days=capped_count, period=period, end_date=end_date
+        )
+        source = "yahoo"
+    except Exception:
+        if period != "day":
+            raise
+        df = await fetch_daily_toss_frame(
+            symbol=symbol,
+            count=capped_count,
+            end_date=end_date,
+        )
+        source = "toss"
     return _build_ohlcv_payload(
         symbol=symbol,
         instrument_type="equity_us",
-        source="yahoo",
+        source=source,
         period=period,
         count=capped_count,
         df=df,
