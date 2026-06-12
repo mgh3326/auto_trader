@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -19,7 +20,11 @@ from app.services.brokers.toss.dto import (
     parse_stocks,
 )
 from app.services.brokers.toss.errors import TossApiResponseError, parse_toss_response
-from app.services.brokers.toss.rate_limiter import TossApiGroup, TossRateLimiter
+from app.services.brokers.toss.rate_limiter import (
+    TossApiGroup,
+    TossRateLimiter,
+    retry_delay_seconds,
+)
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
 
 _TOKEN_CODES = {"invalid-token", "expired-token"}
@@ -71,6 +76,13 @@ class TossReadClient:
         response = await self._client.request(
             method, path, params=params, headers=headers
         )
+        if response.status_code == 429:
+            await asyncio.sleep(
+                retry_delay_seconds(response.headers.get("Retry-After"), attempt=0)
+            )
+            response = await self._client.request(
+                method, path, params=params, headers=headers
+            )
         try:
             return parse_toss_response(response)
         except TossApiResponseError as exc:

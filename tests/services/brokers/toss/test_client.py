@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
 import httpx
@@ -167,3 +168,59 @@ async def test_get_order_retries_once_after_invalid_token() -> None:
 
     assert order.order_id == "ord-1"
     assert token_calls == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                429,
+                json={
+                    "error": {
+                        "requestId": "rate-1",
+                        "code": "too-many-requests",
+                        "message": "slow down",
+                        "data": {"retryAfterSeconds": "2"},
+                    }
+                },
+                headers={"Retry-After": "2"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=_json(
+                [
+                    {
+                        "symbol": "AAPL",
+                        "timestamp": "2026-06-12T00:00:00Z",
+                        "lastPrice": "190.12",
+                        "currency": "USD",
+                    }
+                ]
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        prices = await client.prices(["AAPL"])
+    finally:
+        await client.aclose()
+
+    assert calls == 2
+    assert sleeps == [2.0]
+    assert prices[0].last_price == Decimal("190.12")

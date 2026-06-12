@@ -15,9 +15,11 @@ from pydantic import SecretStr
 
 from app.core.config import settings, validate_toss_api_config
 from app.services.brokers.toss.errors import (
+    TossApiDisabled,
     TossMissingCredentials,
     TossTokenIssuanceUnavailable,
 )
+from app.services.brokers.toss.rate_limiter import TossApiGroup, TossRateLimiter
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ class TossOAuthTokenManager:
         client_id: str,
         client_secret: SecretStr,
         base_url: str = DEFAULT_TOSS_BASE_URL,
+        rate_limiter: TossRateLimiter | None = None,
     ) -> None:
         if not client_id.strip():
             raise TossMissingCredentials("TOSS_API_CLIENT_ID is empty")
@@ -77,6 +80,7 @@ class TossOAuthTokenManager:
         self._client_id = client_id
         self._client_secret = client_secret
         self._base_url = base_url
+        self._rate_limiter = rate_limiter or TossRateLimiter()
         self._namespace = f"toss:oauth:{_client_fingerprint(client_id)}"
         self.token_key = f"{self._namespace}:access_token"
         self.lock_key = f"{self._namespace}:lock"
@@ -89,6 +93,10 @@ class TossOAuthTokenManager:
 
     @classmethod
     def from_settings(cls, settings_obj: Any = settings) -> TossOAuthTokenManager:
+        if not bool(getattr(settings_obj, "toss_api_enabled", False)):
+            raise TossApiDisabled(
+                "Toss API is disabled: TOSS_API_ENABLED is not truthy"
+            )
         missing = validate_toss_api_config(settings_obj)
         if missing:
             raise TossMissingCredentials(
@@ -192,6 +200,7 @@ class TossOAuthTokenManager:
             logger.debug("Toss OAuth lock release best-effort failure: %s", exc)
 
     async def _issue_token(self) -> TossToken:
+        await self._rate_limiter.acquire(TossApiGroup.AUTH)
         async with build_toss_client(base_url=self._base_url) as client:
             response = await client.post(
                 "/oauth2/token",

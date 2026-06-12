@@ -4,15 +4,18 @@ import asyncio
 import json
 from dataclasses import dataclass
 
+import httpx
 import pytest
 from pydantic import SecretStr
 from redis.asyncio import RedisError
 
 from app.services.brokers.toss import auth
 from app.services.brokers.toss.errors import (
+    TossApiDisabled,
     TossMissingCredentials,
     TossTokenIssuanceUnavailable,
 )
+from app.services.brokers.toss.rate_limiter import TossApiGroup
 
 pytestmark = pytest.mark.asyncio
 
@@ -76,14 +79,30 @@ def fake_redis(monkeypatch):
     return redis
 
 
-async def test_from_settings_fails_closed_missing_gate() -> None:
+async def test_from_settings_disabled_raises_toss_api_disabled() -> None:
     settings = _Settings(toss_api_enabled=False)
 
-    with pytest.raises(TossMissingCredentials) as exc_info:
+    with pytest.raises(TossApiDisabled) as exc_info:
         auth.TossOAuthTokenManager.from_settings(settings)
 
     assert "TOSS_API_ENABLED" in str(exc_info.value)
     assert "client-secret" not in str(exc_info.value)
+
+
+async def test_from_settings_missing_credentials_raises_names_only() -> None:
+    settings = _Settings(
+        toss_api_enabled=True,
+        toss_api_client_id=None,
+        toss_api_client_secret=None,
+    )
+
+    with pytest.raises(TossMissingCredentials) as exc_info:
+        auth.TossOAuthTokenManager.from_settings(settings)
+
+    message = str(exc_info.value)
+    assert "TOSS_API_CLIENT_ID" in message
+    assert "TOSS_API_CLIENT_SECRET" in message
+    assert "client-secret" not in message
 
 
 async def test_concurrent_cold_start_issues_exactly_once(fake_redis, monkeypatch):
@@ -157,3 +176,45 @@ async def test_cached_token_is_reused(fake_redis):
     )
 
     assert await manager.get_access_token() == "cached-token"
+
+
+async def test_issue_token_uses_auth_rate_limiter(monkeypatch):
+    acquired: list[TossApiGroup] = []
+
+    class FakeLimiter:
+        async def acquire(self, group: TossApiGroup) -> None:
+            acquired.append(group)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, path, *, data, headers):
+            assert path == "/oauth2/token"
+            assert data["client_secret"] == "client-secret"
+            assert headers["Content-Type"] == "application/x-www-form-urlencoded"
+            request = httpx.Request(
+                "POST", "https://openapi.tossinvest.com/oauth2/token"
+            )
+            return httpx.Response(
+                200,
+                json={"access_token": "issued-token", "expires_in": 86399},
+                request=request,
+            )
+
+    monkeypatch.setattr(auth, "build_toss_client", lambda *, base_url: FakeClient())
+
+    manager = auth.TossOAuthTokenManager(
+        client_id="client-id",
+        client_secret=SecretStr("client-secret"),
+        base_url="https://openapi.tossinvest.com",
+        rate_limiter=FakeLimiter(),
+    )
+
+    token = await manager._issue_token()
+
+    assert token.access_token == "issued-token"
+    assert acquired == [TossApiGroup.AUTH]
