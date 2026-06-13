@@ -63,14 +63,17 @@ def _available_filters(preset: str) -> dict[str, dict[str, Any]]:
 
 
 # ROB-445: presets whose filter_overrides build_screener_results actually CONSUMES.
-# Mirrors the two `if filter_overrides:` dispatch branches in screener_service:
-#   - consecutive_gainers (~1789): consecutive_gainers loader thresholds — ANY market
+# Mirrors the `if filter_overrides:` dispatch branches in screener_service:
+#   - consecutive_gainers: consecutive_gainers loader thresholds — ANY market
 #     (the branch has no market gate; it lives inside `if preset_id == "consecutive_gainers"`)
-#   - crypto presets (~1966): apply_filter_conditions — ONLY when market == "crypto"
+#   - oversold_recovery (ROB-543): an `rsi <= N` override tightens max_rsi — ANY market
+#   - crypto presets: apply_filter_conditions — ONLY when market == "crypto"
 # Every other preset (incl. high_yield_value, which HAS a snapshot_kind but no dispatch
 # branch) silently drops filters → must warn. The old `snapshot_kind is None` guard missed
 # exactly high_yield_value (it has a kind), which is the ROB-445 silent no-op.
-_THREADED_ANY_MARKET: frozenset[str] = frozenset({"consecutive_gainers"})
+_THREADED_ANY_MARKET: frozenset[str] = frozenset(
+    {"consecutive_gainers", "oversold_recovery"}
+)
 
 
 def _filters_are_threaded(preset: str, market: str) -> bool:
@@ -353,7 +356,11 @@ async def screen_stocks_snapshot_impl(
             "배선하지 않아 지원하지 않습니다 (필터 미적용)."
         )
         merged_results = [r for r in merged_results if not r.get("isWatched")]
+    # ROB-543 Slice B: surface how many held rows exclude_held removed so the
+    # caller can reason about coverage (0 when the filter is off).
+    excluded_held_count = 0
     if exclude_held:
+        excluded_held_count = sum(1 for r in merged_results if r.get("isHeld"))
         merged_results = [r for r in merged_results if not r.get("isHeld")]
     if exclude_symbols:
         excluded_symbols = {_normalize_symbol_key(s) for s in exclude_symbols}
@@ -415,6 +422,8 @@ async def screen_stocks_snapshot_impl(
         ],
         "snapshotKind": snapshot_kind,
         "holdings": holdings_meta,
+        # ROB-543 Slice B: number of held rows exclude_held dropped (0 when off).
+        "excluded_held_count": excluded_held_count,
         "discoveryFilters": {
             "exclude_watched": exclude_watched,
             "exclude_held": exclude_held,
