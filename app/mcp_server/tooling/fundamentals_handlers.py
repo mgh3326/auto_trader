@@ -221,7 +221,18 @@ def _register_fundamentals_tools_impl(
             "Get same-day intraday provisional foreign/institution net-buy "
             "quantity estimates for a Korean stock. Returns KIS "
             "investor-trend-estimate rows with provisional/as_of metadata. "
-            "Korean stocks only."
+            "Korean stocks only. The KIS payload carries no date, so session "
+            "attribution is machine-readable via these ADDITIVE fields: "
+            "`confidence` ('observed' = KRX session live; 'inferred' = "
+            "after-close same session day, today's date is correct but unstamped "
+            "by the payload; 'carry_over' = future slot or non-session day, rows "
+            "belong to a prior session), `as_of_date` (ISO DATE; for carry_over "
+            "this is the previous XKRX trading session DATE only — never a "
+            "fabricated prior-day time), `is_prior_session` (bool), and `warning` "
+            "(structured {code, message} when carry_over, else null). `as_of` is "
+            "a full ISO datetime only for observed/inferred and is null for "
+            "carry_over — it is never silently upgraded from null to a stamped "
+            "value. The existing `as_of`/`note` keys are unchanged for back-compat."
         ),
     )
     async def get_intraday_investor_flow(

@@ -4898,6 +4898,11 @@ class TestGetIntradayInvestorFlow:
         assert result["provisional"] is True
         assert result["as_of"] == "2026-06-10T14:30:00+09:00"
         assert result["as_of_time_kst"] == "14:30"
+        # ROB-542: machine-readable session metadata.
+        assert result["as_of_date"] == "2026-06-10"
+        assert result["confidence"] == "observed"
+        assert result["is_prior_session"] is False
+        assert result["warning"] is None
         assert result["foreign_net_qty"] == -120000
         assert result["institution_net_qty"] == 50000
         assert result["combined_net_qty"] == -70000
@@ -4929,6 +4934,11 @@ class TestGetIntradayInvestorFlow:
 
         assert result["rows"] == []
         assert result["as_of"] is None
+        # ROB-542: no rows → no slot time to classify; fields present but null.
+        assert result["as_of_date"] is None
+        assert result["confidence"] is None
+        assert result["is_prior_session"] is False
+        assert result["warning"] is None
         assert result["foreign_net_qty"] is None
         assert result["institution_net_qty"] is None
         assert result["combined_net_qty"] is None
@@ -4967,11 +4977,22 @@ class TestGetIntradayInvestorFlow:
             "kr_market_data_state",
             lambda: "premarket_unavailable",
         )
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "previous_kr_session",
+            lambda date: _dt.date(2026, 6, 10),
+        )
 
         result = await tools["get_intraday_investor_flow"]("000660")
 
         assert result["as_of"] is None
         assert result["as_of_time_kst"] == "14:30"
+        # ROB-542: future slot → carry_over; as_of stays null, date is prior session.
+        assert result["confidence"] == "carry_over"
+        assert result["is_prior_session"] is True
+        assert result["as_of_date"] == "2026-06-10"
+        assert result["warning"] is not None
+        assert result["warning"]["code"] == "prior_session_carry_over"
         assert result["foreign_net_qty"] == -120000
         assert "previous trading session" in result["note"]
 
@@ -5008,11 +5029,21 @@ class TestGetIntradayInvestorFlow:
             "kr_market_data_state",
             lambda: "market_closed",
         )
+        # 2026-06-13 is a Saturday → prior session is Fri 2026-06-12.
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "previous_kr_session",
+            lambda date: _dt.date(2026, 6, 12),
+        )
 
         result = await tools["get_intraday_investor_flow"]("000660")
 
         assert result["as_of"] is None
         assert result["as_of_time_kst"] == "14:30"
+        # ROB-542: non-session day → carry_over with prior-session date only.
+        assert result["confidence"] == "carry_over"
+        assert result["is_prior_session"] is True
+        assert result["as_of_date"] == "2026-06-12"
         assert result["combined_net_qty"] == -70000
         assert "previous trading session" in result["note"]
 
@@ -5052,6 +5083,11 @@ class TestGetIntradayInvestorFlow:
         result = await tools["get_intraday_investor_flow"]("000660")
 
         assert result["as_of"] == "2026-06-10T14:30:00+09:00"
+        # ROB-542: after-close same session day but state not fresh → inferred.
+        assert result["confidence"] == "inferred"
+        assert result["is_prior_session"] is False
+        assert result["as_of_date"] == "2026-06-10"
+        assert result["warning"] is None
         assert "previous trading session" not in result["note"]
 
     async def test_rejects_non_kr_symbol(self):
