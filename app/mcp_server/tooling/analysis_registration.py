@@ -177,7 +177,13 @@ def register_analysis_tools(
         description=(
             "Analyze multiple stocks in parallel with compact summaries. "
             "Returns per-symbol compact summary (symbol, price, RSI, consensus, supports/resistances) "
-            "by default, or full analysis when quick=False."
+            "by default, or full analysis when quick=False. "
+            "When include_position=True (default), each compact summary carries a "
+            "'position' field: an array (one entry per holding account, since a symbol "
+            "may be held across e.g. toss+samsung) of {account, account_mode, qty, "
+            "avg_buy_price, pnl_pct, order_routable}, or null when not held. "
+            "order_routable mirrors get_holdings exactly (toss/manual -> false); "
+            "account_mode is a provenance label, NOT a routing selector."
         ),
     )
     async def analyze_stock_batch(
@@ -185,12 +191,14 @@ def register_analysis_tools(
         market: str | None = None,
         include_peers: bool = False,
         quick: bool = True,
+        include_position: bool = True,
     ) -> dict[str, Any]:
         return await analyze_stock_batch_impl(
             symbols=symbols,
             market=market,
             include_peers=include_peers,
             quick=quick,
+            include_position=include_position,
         )
 
     @mcp.tool(

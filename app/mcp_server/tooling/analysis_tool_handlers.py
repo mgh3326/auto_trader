@@ -408,7 +408,8 @@ async def _run_batch_analysis(
     *,
     market: str | None,
     include_peers: bool,
-    formatter: Callable[[str, dict[str, Any]], dict[str, Any]],
+    formatter: Callable[..., dict[str, Any]],
+    include_position: bool = False,
 ) -> dict[str, Any]:
     """Shared batch analysis executor for portfolio and stock batch analysis.
 
@@ -416,7 +417,12 @@ async def _run_batch_analysis(
         symbols: List of symbol inputs (1-10 entries)
         market: Optional market override
         include_peers: Whether to include peer analysis
-        formatter: Callable that receives (normalized_symbol, analysis_result) and returns formatted result
+        formatter: Callable that receives (normalized_symbol, analysis_result)
+            and an optional ``position_index`` keyword, returning the formatted
+            result.
+        include_position: When True (ROB-541), make ONE batched holdings fetch
+            for the whole batch and pass the in-memory position index to the
+            formatter. Never fans out per symbol.
 
     Returns:
         Dict with 'results' (symbol -> formatted_result) and 'summary' keys
@@ -436,6 +442,13 @@ async def _run_batch_analysis(
     results: dict[str, Any] = {}
     errors: list[str] = []
     sem = asyncio.Semaphore(5)
+
+    position_index: dict[str, list[dict[str, Any]]] | None = None
+    if include_position:
+        # ONE batched holdings fetch for the WHOLE batch — never per symbol.
+        position_index, position_error = await _build_batch_position_index(market)
+        if position_error:
+            errors.append(position_error)
 
     async def _analyze_one(sym: str) -> dict[str, Any]:
         async with sem:
@@ -457,7 +470,10 @@ async def _run_batch_analysis(
     success_count = 0
     fail_count = 0
     for sym, result in zip(normalized_symbols, analyze_results, strict=True):
-        formatted_result = formatter(sym, result)
+        if position_index is not None:
+            formatted_result = formatter(sym, result, position_index=position_index)
+        else:
+            formatted_result = formatter(sym, result)
         results[sym] = formatted_result
         if "error" not in result:
             success_count += 1
@@ -475,11 +491,123 @@ async def _run_batch_analysis(
     }
 
 
+def _position_index_key(symbol: str, instrument_type: str) -> str:
+    """Normalized lookup key for the in-memory position index (ROB-541)."""
+    from app.mcp_server.tooling.shared import normalize_position_symbol
+
+    inst = instrument_type or ""
+    if inst in {"crypto", "equity_us", "equity_kr"}:
+        return normalize_position_symbol(symbol, inst).upper()
+    return symbol.strip().upper()
+
+
+async def _build_batch_position_index(
+    market: str | None,
+) -> tuple[dict[str, list[dict[str, Any]]], str | None]:
+    """Fetch holdings ONCE for the batch and index them by normalized symbol.
+
+    ROB-541: fail-open — any holdings failure returns an empty index plus a
+    warning string so analysis never breaks on a holdings outage. ``position``
+    is then ``null`` for every symbol (not-held semantics), never fabricated.
+    """
+    from app.mcp_server.tooling.portfolio_holdings import (
+        _account_order_routable,
+        _collect_portfolio_positions,
+        _provenance_account_mode,
+    )
+
+    index: dict[str, list[dict[str, Any]]] = {}
+    try:
+        positions, _errors, _market, _account = await _collect_portfolio_positions(
+            account=None,
+            market=market,
+            include_current_price=False,
+        )
+    except Exception as exc:
+        detail = str(exc).strip() or exc.__class__.__name__
+        logger.warning("analyze_stock_batch holdings lookup failed: %s", detail)
+        return index, f"보유 종목 조회 실패: {detail}"
+
+    for position in positions:
+        symbol = str(position.get("symbol") or "")
+        instrument_type = str(position.get("instrument_type") or "")
+        if not symbol:
+            continue
+        source = position.get("source")
+        entry = {
+            "account": position.get("account"),
+            "account_mode": _provenance_account_mode(
+                broker=position.get("broker"),
+                source=source,
+                routing_mode="kis_live",
+            ),
+            "qty": position.get("quantity"),
+            "avg_buy_price": position.get("avg_buy_price"),
+            "pnl_pct": position.get("profit_rate"),
+            "order_routable": _account_order_routable(source=source),
+            # Internal-only fields for symbol matching — stripped before output.
+            "_symbol": symbol,
+            "_instrument_type": instrument_type,
+        }
+        index.setdefault(_position_index_key(symbol, instrument_type), []).append(entry)
+    return index, None
+
+
+def _lookup_position_for_symbol(
+    *,
+    symbol: str,
+    market_type: str,
+    position_index: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]] | None:
+    """Resolve held positions for ``symbol`` from the prebuilt index (ROB-541).
+
+    Uses ``is_position_symbol_match`` (equity_us dot/slash + crypto-base aware)
+    rather than naive upper() so we never join the wrong position. Returns a
+    LIST (one entry per holding account) or ``None`` when not held; never
+    OR-collapses routability across accounts.
+    """
+    from app.mcp_server.tooling.portfolio_helpers import is_position_symbol_match
+
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # Fast path: direct normalized-key hit.
+    candidates = list(position_index.get(_position_index_key(symbol, market_type), []))
+    # Fallback: scan all entries so equity_us dot/slash variants still match even
+    # when the index key normalization differs from the query normalization.
+    if not candidates:
+        for entries in position_index.values():
+            candidates.extend(entries)
+    for entry in candidates:
+        pos_symbol = str(entry.get("_symbol") or "")
+        pos_inst = str(entry.get("_instrument_type") or market_type)
+        if not pos_symbol:
+            continue
+        dedupe_key = f"{entry.get('account')}|{pos_symbol}"
+        if dedupe_key in seen:
+            continue
+        if is_position_symbol_match(
+            position_symbol=pos_symbol,
+            query_symbol=symbol,
+            instrument_type=pos_inst or market_type,
+        ):
+            seen.add(dedupe_key)
+            matched.append({k: v for k, v in entry.items() if not k.startswith("_")})
+    return matched or None
+
+
 def _summarize_analysis_result(
     symbol: str,
     analysis: dict[str, Any],
+    *,
+    position_index: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """Convert full analysis into compact summary for batch responses."""
+    """Convert full analysis into compact summary for batch responses.
+
+    ROB-541: when ``position_index`` is provided (include_position=True), the
+    compact summary carries a ``position`` field — a LIST (one entry per holding
+    account, because a symbol may be held in multiple accounts e.g. toss+samsung)
+    or ``None`` when not held.
+    """
     # If result is an error, pass through unchanged
     if "error" in analysis:
         return analysis
@@ -495,7 +623,7 @@ def _summarize_analysis_result(
     rsi = (indicators.get("rsi") or {}).get("14")
     sr = analysis.get("support_resistance") or {}
 
-    return {
+    summary: dict[str, Any] = {
         "symbol": symbol,
         "market_type": analysis.get("market_type"),
         "source": analysis.get("source"),
@@ -507,6 +635,13 @@ def _summarize_analysis_result(
         "supports": (sr.get("supports") or [])[:3],  # NOSONAR
         "resistances": (sr.get("resistances") or [])[:3],  # NOSONAR
     }
+    if position_index is not None:
+        summary["position"] = _lookup_position_for_symbol(
+            symbol=symbol,
+            market_type=str(analysis.get("market_type") or ""),
+            position_index=position_index,
+        )
+    return summary
 
 
 async def analyze_stock_batch_impl(
@@ -514,6 +649,7 @@ async def analyze_stock_batch_impl(
     market: str | None = None,
     include_peers: bool = False,
     quick: bool = True,
+    include_position: bool = True,
 ) -> dict[str, Any]:
     """Analyze multiple symbols and return compact per-symbol summaries.
     Args:
@@ -521,15 +657,43 @@ async def analyze_stock_batch_impl(
         market: Optional market override
         include_peers: Whether to include peer analysis
         quick: If True, return compact summary; if False, return full analysis
+        include_position: ROB-541 — when True (default) and quick=True, attach a
+            per-account holdings 'position' array (or null) to each compact
+            summary via a SINGLE batched holdings fetch.
     Returns:
         Dict with 'results' (symbol -> summary) and 'summary' keys
     """
-    formatter = _summarize_analysis_result if quick else (lambda _sym, result: result)
+    # Position attach only applies to the compact summary contract. The full
+    # payload (quick=False) is returned verbatim and never carries 'position'.
+    attach_position = include_position and quick
+
+    if quick:
+
+        def formatter(
+            _sym: str,
+            result: dict[str, Any],
+            *,
+            position_index: dict[str, list[dict[str, Any]]] | None = None,
+        ) -> dict[str, Any]:
+            return _summarize_analysis_result(
+                _sym, result, position_index=position_index
+            )
+    else:
+
+        def formatter(
+            _sym: str,
+            result: dict[str, Any],
+            *,
+            position_index: dict[str, list[dict[str, Any]]] | None = None,
+        ) -> dict[str, Any]:
+            return result
+
     return await _run_batch_analysis(
         symbols,
         market=market,
         include_peers=include_peers,
         formatter=formatter,
+        include_position=attach_position,
     )
 
 

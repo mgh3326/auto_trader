@@ -1144,6 +1144,10 @@ async def _get_holdings_impl(
                 "positions": [],
             },
         )
+        # ROB-541 — stamp the resolved routing mode so the per-position
+        # account_mode (added by position_to_output) matches the GROUP label
+        # exactly, including kis_mock scopes.
+        position.setdefault("routing_mode", routing_account_mode)
         grouped["positions"].append(_position_to_output(position))
 
     accounts = [grouped_accounts[key] for key in sorted(grouped_accounts.keys())]
@@ -1257,6 +1261,12 @@ async def _get_position_impl(
             position["symbol"],
         )
     )
+
+    # ROB-541 — stamp the resolved routing mode so the per-position
+    # account_mode (added by position_to_output) matches the routing scope
+    # exactly, including kis_mock. Mirrors _get_holdings_impl (~1150).
+    for position in matched_positions:
+        position.setdefault("routing_mode", routing.account_mode)
 
     return apply_account_routing_metadata(
         {

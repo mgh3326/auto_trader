@@ -655,6 +655,11 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
     assert result["current_price"] == pytest.approx(100.0)
     assert result["supports"]
     assert result["resistances"]
+    # ROB-541: standalone get_support_resistance must stay unchanged — the
+    # intraday live-price recompute is analyze-only and never annotates this
+    # shared tool's output.
+    assert "distance_basis" not in result
+    assert "distance_basis_price" not in result
 
     strong_supports = [s for s in result["supports"] if s["strength"] == "strong"]
     strong_resistances = [r for r in result["resistances"] if r["strength"] == "strong"]

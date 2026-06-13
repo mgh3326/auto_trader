@@ -2541,6 +2541,55 @@ async def test_get_position_returns_positions_and_not_holding_status(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_get_position_kis_mock_stamps_per_position_account_mode(monkeypatch):
+    """ROB-541 — get_position(account_mode='kis_mock') must label each position
+    with account_mode='kis_mock', mirroring the GROUP-level provenance that
+    get_holdings stamps. Without stamping routing_mode the per-position
+    account_mode (added by position_to_output) silently defaults to kis_live.
+    """
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "account": "kis",
+            "account_name": "기본 계좌",
+            "broker": "kis",
+            "source": "kis_api",
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": "005930",
+            "name": "삼성전자",
+            "quantity": 2.0,
+            "avg_buy_price": 70000.0,
+            "current_price": 71000.0,
+            "evaluation_amount": 142000.0,
+            "profit_loss": 2000.0,
+            "profit_rate": 1.43,
+        },
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "equity_kr", None)),
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings.validate_kis_mock_config",
+        lambda: [],
+    )
+
+    result = await tools["get_position"]("005930", market="kr", account_mode="kis_mock")
+
+    assert result["has_position"] is True
+    assert result["account_mode"] == "kis_mock"
+    assert result["position_count"] == 1
+    position = result["positions"][0]
+    assert position["account_mode"] == "kis_mock"
+    # order_routable must remain correct for a routable broker source.
+    assert position["order_routable"] is True
+
+
+@pytest.mark.asyncio
 async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
     tools = build_tools()
 
