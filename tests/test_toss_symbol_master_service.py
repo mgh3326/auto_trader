@@ -35,7 +35,7 @@ class FakeTossClient:
                     isin_code="KR7005930003" if is_kr else "US0378331005",
                     market="KR" if is_kr else "US",
                     security_type="STOCK",
-                    is_common_share=symbol != "005935",
+                    is_common_share=symbol not in {"005935", "GOOGL"},
                     status="ACTIVE",
                     currency="KRW" if is_kr else "USD",
                     list_date="1975-06-11" if is_kr else "1980-12-12",
@@ -105,6 +105,15 @@ async def test_sync_toss_symbol_master_commit_updates_master_and_market_cap(
 
     await db_session.execute(
         sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "005930")
+    )
+    # ROB-546: gap-fill skips toss market_cap when another source already covers
+    # the key; clear prior valuation rows so this asserts the no-other-source path
+    # deterministically across repeated local runs (db_session does not truncate).
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol == "005930",
+            MarketValuationSnapshot.snapshot_date == dt.date(2026, 6, 12),
+        )
     )
     db_session.add(
         KRSymbolUniverse(
@@ -251,3 +260,114 @@ async def test_sync_toss_symbol_master_skips_market_cap_for_unregistered_symbol(
     assert result.stocks_matched == 1
     assert result.market_cap_payloads == 0
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_skips_market_cap_when_other_source_exists(
+    db_session,
+) -> None:
+    """ROB-546 gap-fill: a toss market_cap row must NOT be written when a
+    naver/yahoo row already exists for the same (market, symbol, date)."""
+    import sqlalchemy as sa
+
+    snapshot_date = dt.date(2026, 6, 12)
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "005930")
+    )
+    await db_session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.symbol == "005930",
+            MarketValuationSnapshot.snapshot_date == snapshot_date,
+        )
+    )
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="005930", name="삼성전자", exchange="KOSPI", is_active=True
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="005930",
+            snapshot_date=snapshot_date,
+            source="naver_finance",
+            per=Decimal("11"),
+            pbr=Decimal("1.2"),
+            roe=Decimal("0.15"),
+            dividend_yield=Decimal("0.02"),
+            market_cap=Decimal("1000000"),
+        )
+    )
+    await db_session.commit()
+
+    result = await sync_toss_symbol_master(
+        db_session,
+        client=FakeTossClient(),
+        request=TossSymbolMasterSyncRequest(
+            market="kr",
+            symbols=("005930",),
+            commit=True,
+            snapshot_date=snapshot_date,
+        ),
+    )
+
+    # master fields still updated even though market_cap row is skipped
+    row = await db_session.get(KRSymbolUniverse, "005930")
+    assert row.shares_outstanding == Decimal("5846278608")
+
+    assert result.market_cap_payloads == 0
+    assert result.market_cap_skipped_existing == 1
+
+    toss_rows = (
+        (
+            await db_session.execute(
+                sa.select(MarketValuationSnapshot).where(
+                    MarketValuationSnapshot.symbol == "005930",
+                    MarketValuationSnapshot.snapshot_date == snapshot_date,
+                    MarketValuationSnapshot.source == "toss_openapi",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert toss_rows == []
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_preserves_existing_us_common_stock(db_session) -> None:
+    """ROB-546 minor: Toss must not flip an already-classified NASDAQ-Trader
+    is_common_stock value; it only fills when currently NULL."""
+    import sqlalchemy as sa
+
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol == "GOOGL")
+    )
+    db_session.add(
+        USSymbolUniverse(
+            symbol="GOOGL",
+            exchange="NASDAQ",
+            name_en="Alphabet Inc.",
+            is_active=True,
+            is_common_stock=True,  # NASDAQ-Trader classified
+        )
+    )
+    await db_session.commit()
+
+    result = await sync_toss_symbol_master(
+        db_session,
+        client=FakeTossClient(),
+        request=TossSymbolMasterSyncRequest(
+            market="us",
+            symbols=("GOOGL",),
+            commit=True,
+            snapshot_date=dt.date(2026, 6, 12),
+        ),
+    )
+
+    row = await db_session.get(USSymbolUniverse, "GOOGL")
+    # Toss reports is_common_share=False for GOOGL, but the existing TRUE is preserved
+    assert row.is_common_share is False
+    assert row.is_common_stock is True
+    # count guard surfaced as a warning
+    assert any("is_common_stock" in w for w in result.warnings)

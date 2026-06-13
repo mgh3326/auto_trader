@@ -48,6 +48,7 @@ class TossSymbolMasterSyncResult:
     master_updates: int
     market_cap_payloads: int
     market_cap_nonnull: int
+    market_cap_skipped_existing: int = 0
     warnings: tuple[str, ...] = ()
     samples: tuple[str, ...] = ()
 
@@ -113,6 +114,10 @@ def _kr_assignments(stock: TossStockInfo, *, now: dt.datetime) -> dict[str, obje
 
 
 def _us_assignments(stock: TossStockInfo, *, now: dt.datetime) -> dict[str, object]:
+    # ROB-546: ``is_common_stock`` is intentionally NOT included here. It is the
+    # authoritative NASDAQ-Trader classification (ROB-204) that drives screener
+    # partition denominators, so Toss must only fill it when currently NULL —
+    # never flip an existing value. Handled separately in the update loop.
     return {
         "security_type": stock.security_type,
         "is_common_share": stock.is_common_share,
@@ -123,7 +128,6 @@ def _us_assignments(stock: TossStockInfo, *, now: dt.datetime) -> dict[str, obje
         "leverage_factor": stock.leverage_factor,
         "isin": stock.isin_code,
         "toss_master_updated_at": now,
-        "is_common_stock": stock.is_common_share,
     }
 
 
@@ -145,9 +149,12 @@ def _market_cap_payloads(
     snapshot_date: dt.date,
     stocks: dict[str, TossStockInfo],
     prices: dict[str, TossPrice],
+    skip_symbols: frozenset[str] = frozenset(),
 ) -> list[MarketValuationSnapshotUpsert]:
     payloads: list[MarketValuationSnapshotUpsert] = []
     for symbol, stock in stocks.items():
+        if symbol in skip_symbols:
+            continue
         price = prices.get(symbol)
         market_cap = (
             stock.shares_outstanding * price.last_price
@@ -213,6 +220,9 @@ async def sync_toss_symbol_master(
     all_stocks: dict[str, TossStockInfo] = {}
     all_prices: dict[str, TossPrice] = {}
     updates = 0
+    # ROB-546: is_common_stock guard (US only) — count rows flipped to TRUE that
+    # were previously NULL. Preserve policy never decreases the TRUE count.
+    common_stock_filled = 0
 
     batches = _chunks(symbols)
     for batch in batches:
@@ -236,20 +246,53 @@ async def sync_toss_symbol_master(
             changed = _count_or_apply(row, assignments, apply=request.commit)
             if changed:
                 updates += 1
+            # ROB-546: fill is_common_stock only when currently NULL; never flip
+            # an existing NASDAQ-Trader classification.
+            if (
+                market == "us"
+                and row.is_common_stock is None
+                and stock.is_common_share is not None
+            ):
+                if request.commit:
+                    row.is_common_stock = stock.is_common_share
+                if stock.is_common_share is True:
+                    common_stock_filled += 1
 
     existing_stocks = {
         symbol: stock for symbol, stock in all_stocks.items() if symbol in existing
     }
+
+    repo = MarketValuationSnapshotsRepository(db)
+    skip_symbols: frozenset[str] = frozenset()
+    if request.include_market_cap and existing_stocks:
+        skip_symbols = frozenset(
+            await repo.symbols_with_other_source(
+                market=market,
+                snapshot_date=snapshot_date,
+                symbols=set(existing_stocks),
+                exclude_source=TOSS_VALUATION_SOURCE,
+            )
+        )
+    skipped_existing = len(skip_symbols & set(existing_stocks))
+
     payloads = _market_cap_payloads(
         market=market,
         snapshot_date=snapshot_date,
         stocks=existing_stocks,
         prices=all_prices,
+        skip_symbols=skip_symbols,
     )
     if request.commit:
         if payloads:
-            await MarketValuationSnapshotsRepository(db).upsert(payloads)
+            await repo.upsert(payloads)
         await db.flush()
+
+    warnings: tuple[str, ...] = ()
+    if market == "us":
+        warnings = (
+            f"is_common_stock TRUE filled (NULL->TRUE) for "
+            f"{common_stock_filled} symbol(s); existing values preserved",
+        )
 
     missing = len(set(symbols) - set(all_stocks))
     return TossSymbolMasterSyncResult(
@@ -262,5 +305,7 @@ async def sync_toss_symbol_master(
         master_updates=updates,
         market_cap_payloads=len(payloads),
         market_cap_nonnull=len(payloads),
+        market_cap_skipped_existing=skipped_existing,
+        warnings=warnings,
         samples=tuple(symbols[:10]),
     )

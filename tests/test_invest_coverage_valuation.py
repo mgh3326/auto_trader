@@ -441,11 +441,13 @@ async def test_market_valuation_accepts_toss_openapi_market_cap(db_session) -> N
     )
 
     repo = MarketValuationSnapshotsRepository(db_session)
+    # ROB-546: latest_for_symbols now prefers metric-rich rows, so clear ALL
+    # sources for this key (not just toss) to assert toss-as-sole-source
+    # deterministically regardless of leftover naver rows from other tests.
     await db_session.execute(
         sa.delete(MarketValuationSnapshot).where(
             MarketValuationSnapshot.symbol == "005930",
             MarketValuationSnapshot.snapshot_date == dt.date(2026, 6, 12),
-            MarketValuationSnapshot.source == "toss_openapi",
         )
     )
     await db_session.commit()
