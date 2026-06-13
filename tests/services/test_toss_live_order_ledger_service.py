@@ -5,12 +5,41 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.models.review import TossLiveOrderLedger
-from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
+from app.services.toss_live_order_ledger_service import (
+    TossLedgerIdempotencyConflict,
+    TossLiveOrderLedgerService,
+    parse_report_item_uuid,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+
+def _place_kwargs(**overrides):
+    base = {
+        "operation_kind": "place",
+        "market": "us",
+        "symbol": "AAPL",
+        "side": "buy",
+        "order_type": "limit",
+        "time_in_force": "DAY",
+        "quantity": Decimal("1"),
+        "price": Decimal("190"),
+        "order_amount": None,
+        "currency": "USD",
+        "client_order_id": "cid-default",
+        "broker_order_id": "ord-default",
+        "original_order_id": None,
+        "status": "accepted",
+        "broker_status": None,
+        "response_code": "0",
+        "response_message": None,
+        "raw_response": {},
+    }
+    base.update(overrides)
+    return base
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -207,3 +236,67 @@ async def test_update_reconcile_outcome_records_fee_tax_and_settlement(db_sessio
     assert refreshed.tax == Decimal("0.01")
     assert refreshed.trade_id == 11
     assert refreshed.journal_id == 22
+
+
+# ROB-545 B1 — report_item_uuid must never raise after a live POST is accepted.
+
+
+async def test_parse_report_item_uuid_is_fail_open_for_malformed():
+    assert parse_report_item_uuid("not-a-uuid") is None
+    assert parse_report_item_uuid("") is None
+    assert parse_report_item_uuid(None) is None
+    valid = "11111111-1111-1111-1111-111111111111"
+    assert str(parse_report_item_uuid(valid)) == valid
+
+
+async def test_record_send_with_malformed_report_item_uuid_records_none(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+
+    row = await svc.record_send(
+        **_place_kwargs(
+            client_order_id="cid-malformed-uuid",
+            broker_order_id="ord-malformed-uuid",
+            report_item_uuid="definitely-not-a-uuid",
+        )
+    )
+
+    assert row.id is not None
+    assert row.report_item_uuid is None
+    assert row.status == "accepted"
+
+
+# ROB-545 B2 — record_send must be idempotent on client_order_id.
+
+
+async def test_record_send_idempotent_replay_returns_existing_row(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+
+    first = await svc.record_send(
+        **_place_kwargs(client_order_id="cid-idem", broker_order_id="ord-idem")
+    )
+    second = await svc.record_send(
+        **_place_kwargs(client_order_id="cid-idem", broker_order_id="ord-idem")
+    )
+
+    assert second.id == first.id
+    rows = (await db_session.execute(select(TossLiveOrderLedger))).scalars().all()
+    assert len(rows) == 1
+
+
+async def test_record_send_conflicting_broker_id_raises_idempotency_conflict(
+    db_session,
+):
+    svc = TossLiveOrderLedgerService(db_session)
+
+    await svc.record_send(
+        **_place_kwargs(client_order_id="cid-anomaly", broker_order_id="ord-first")
+    )
+
+    with pytest.raises(TossLedgerIdempotencyConflict) as excinfo:
+        await svc.record_send(
+            **_place_kwargs(client_order_id="cid-anomaly", broker_order_id="ord-second")
+        )
+
+    assert excinfo.value.client_order_id == "cid-anomaly"
+    assert excinfo.value.existing_broker_order_id == "ord-first"
+    assert excinfo.value.new_broker_order_id == "ord-second"

@@ -132,12 +132,12 @@ async def run_confirm(
             client_order_id_override=client_order_id,
         )
         _print_event(step, result)
+        # ROB-545: track any returned order_id, including from a failed/anomaly
+        # response (e.g. the broker accepted the order but a UNIQUE/idempotency
+        # conflict or DB write failed). A returned order_id means a live order
+        # may exist, so finally-cancel must attempt to cancel it.
         order_id = result.get("order_id")
-        if (
-            result.get("success")
-            and isinstance(order_id, str)
-            and order_id not in opened_order_ids
-        ):
+        if isinstance(order_id, str) and order_id not in opened_order_ids:
             opened_order_ids.append(order_id)
         return result
 
