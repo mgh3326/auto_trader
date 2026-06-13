@@ -12,7 +12,12 @@ DEFAULT_TOSS_BASE_URL: Final[str] = "https://openapi.tossinvest.com"
 DEFAULT_TOSS_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
-def assert_toss_host(host: str | None) -> None:
+def assert_toss_host(host: str | None, *, scheme: str | None = None) -> None:
+    if scheme is not None and scheme != "https":
+        raise TossHostBlocked(
+            f"Scheme {scheme!r} is not allowed for Toss Open API; https is required "
+            "(http would expose the Bearer token and client secret in cleartext)."
+        )
     if host not in TOSS_API_HOSTS:
         raise TossHostBlocked(
             f"Host {host!r} is not in TOSS_API_HOSTS. "
@@ -22,11 +27,11 @@ def assert_toss_host(host: str | None) -> None:
 
 def _assert_base_url_is_toss(base_url: str) -> None:
     parsed = urlsplit(base_url)
-    assert_toss_host(parsed.hostname)
+    assert_toss_host(parsed.hostname, scheme=parsed.scheme)
 
 
 async def _on_request(request: httpx.Request) -> None:
-    assert_toss_host(request.url.host)
+    assert_toss_host(request.url.host, scheme=request.url.scheme)
 
 
 async def _on_response(response: httpx.Response) -> None:

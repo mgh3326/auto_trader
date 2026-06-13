@@ -8,6 +8,7 @@ import pytest
 
 from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
+    _high_value_uncheckable,
     register_toss_live_order_tools,
     toss_cancel_order,
     toss_get_order_history,
@@ -18,6 +19,21 @@ from app.mcp_server.tooling.orders_toss_variants import (
     toss_preview_order,
 )
 from tests._mcp_tooling_support import DummyMCP
+
+
+def test_high_value_uncheckable_true_for_kr_market_order() -> None:
+    """ROB-547: a KR market order has no price -> notional cannot be estimated,
+    so the local 1억 gate cannot evaluate it (must be surfaced, not silently skipped)."""
+    assert _high_value_uncheckable("kr", Decimal("10"), None, None) is True
+
+
+def test_high_value_uncheckable_false_for_kr_limit_order() -> None:
+    assert _high_value_uncheckable("kr", Decimal("10"), Decimal("70000"), None) is False
+
+
+def test_high_value_uncheckable_false_for_us_market_order() -> None:
+    # US notional is in USD; the KRW 1억 gate does not apply (broker-side check).
+    assert _high_value_uncheckable("us", Decimal("10"), None, None) is False
 
 
 @pytest.fixture(autouse=True)

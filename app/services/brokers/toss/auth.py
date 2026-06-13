@@ -19,7 +19,11 @@ from app.services.brokers.toss.errors import (
     TossMissingCredentials,
     TossTokenIssuanceUnavailable,
 )
-from app.services.brokers.toss.rate_limiter import TossApiGroup, TossRateLimiter
+from app.services.brokers.toss.rate_limiter import (
+    TossApiGroup,
+    TossRateLimiter,
+    get_shared_rate_limiter,
+)
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
 
 logger = logging.getLogger(__name__)
@@ -92,7 +96,12 @@ class TossOAuthTokenManager:
         )
 
     @classmethod
-    def from_settings(cls, settings_obj: Any = settings) -> TossOAuthTokenManager:
+    def from_settings(
+        cls,
+        settings_obj: Any = settings,
+        *,
+        rate_limiter: TossRateLimiter | None = None,
+    ) -> TossOAuthTokenManager:
         if not bool(getattr(settings_obj, "toss_api_enabled", False)):
             raise TossApiDisabled(
                 "Toss API is disabled: TOSS_API_ENABLED is not truthy"
@@ -113,14 +122,26 @@ class TossOAuthTokenManager:
             client_id=str(settings_obj.toss_api_client_id),
             client_secret=secret,
             base_url=str(base_url),
+            rate_limiter=rate_limiter or get_shared_rate_limiter(),
         )
 
-    async def get_access_token(self, *, force_reissue: bool = False) -> str:
+    async def get_access_token(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
         if not force_reissue:
             cached = await self._get_cached_token()
             if cached is not None:
                 return cached
-        return await self._issue_single_flight(force_reissue=force_reissue)
+        elif failed_token is not None:
+            # Force-reissue triggered by an invalid/expired token. If the cache
+            # already holds a DIFFERENT token, another caller has reissued —
+            # reuse it instead of churning a fresh one (single-valid-token spec).
+            cached = await self._get_cached_token()
+            if cached is not None and cached != failed_token:
+                return cached
+        return await self._issue_single_flight(
+            force_reissue=force_reissue, failed_token=failed_token
+        )
 
     async def _get_cached_token(self) -> str | None:
         redis_client = await _get_redis_client()
@@ -145,7 +166,9 @@ class TossOAuthTokenManager:
         ttl = max(int(token.expires_in), 1)
         await redis_client.set(self.token_key, json.dumps(payload), ex=ttl)
 
-    async def _issue_single_flight(self, *, force_reissue: bool = False) -> str:
+    async def _issue_single_flight(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
         redis_client = await _get_redis_client()
         lock_token = str(uuid.uuid4())
         acquired = await redis_client.set(
@@ -156,30 +179,39 @@ class TossOAuthTokenManager:
         )
         if acquired:
             try:
+                cached = await self._get_cached_token()
+                if cached is not None:
+                    if not force_reissue:
+                        return cached
+                    # Double-check under the lock: only reissue if the cache
+                    # still holds the failed token (or no failed token was
+                    # supplied). A fresher token means a peer already reissued.
+                    if failed_token is not None and cached != failed_token:
+                        return cached
                 if force_reissue:
                     await redis_client.delete(self.token_key)
-                else:
-                    cached = await self._get_cached_token()
-                    if cached is not None:
-                        return cached
                 issued = await self._issue_token()
                 await self._cache_token(issued)
                 logger.info("Toss OAuth token issued and cached")
                 return issued.access_token
             finally:
                 await self._release_lock(redis_client, lock_token)
-        waited = await self._wait_for_cached_token()
+        waited = await self._wait_for_cached_token(failed_token=failed_token)
         if waited is not None:
             return waited
         raise TossTokenIssuanceUnavailable(
             "Toss OAuth token issuance contended; no cached token after bounded wait"
         )
 
-    async def _wait_for_cached_token(self) -> str | None:
+    async def _wait_for_cached_token(
+        self, *, failed_token: str | None = None
+    ) -> str | None:
         deadline = time.monotonic() + TOKEN_WAIT_TIMEOUT_SECONDS
         while True:
             cached = await self._get_cached_token()
-            if cached is not None:
+            # A contender that hit invalid-token must not accept the dead token
+            # back; wait for a genuinely different (reissued) token.
+            if cached is not None and cached != failed_token:
                 return cached
             if time.monotonic() >= deadline:
                 return None
