@@ -1277,6 +1277,132 @@ async def test_fetch_kr_intraday_toss_frame_aggregates_1m_to_5m(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_kr_intraday_toss_frame_requests_full_depth_not_capped(monkeypatch):
+    """ROB-548: aggregating N buckets needs N*bucket one-minute candles via
+    pagination, not a silent 200 one-minute hard cap (5m@count=100 -> 500, not 200)."""
+    from app.services.market_data import toss_ohlcv
+
+    captured: dict = {}
+
+    async def fake_fetch(
+        *, client, symbol, interval, count, before=None, adjusted=None, max_pages=20
+    ):
+        captured["interval"] = interval
+        captured["count"] = count
+        captured["max_pages"] = max_pages
+        return pd.DataFrame(
+            [
+                {
+                    "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                    "date": dt.date(2026, 6, 12),
+                    "time": dt.time(9, 0),
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                    "volume": 10.0,
+                    "value": 1000.0,
+                }
+            ]
+        )
+
+    class FakeClient:
+        async def aclose(self): ...
+
+    monkeypatch.setattr(
+        toss_ohlcv.TossReadClient, "from_settings", lambda: FakeClient()
+    )
+    monkeypatch.setattr(toss_ohlcv, "fetch_toss_candles_frame", fake_fetch)
+
+    await toss_ohlcv.fetch_kr_intraday_toss_frame(
+        symbol="005930", period="5m", count=100, end_date=None
+    )
+
+    assert captured["interval"] == "1m"
+    assert captured["count"] == 500  # 100 buckets * 5m, not capped at 200
+    assert captured["max_pages"] >= 3  # 500 / 200 -> >= 3 pages
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_1h_uses_db_reader_not_toss(monkeypatch):
+    """ROB-548: 1h must use the DB hourly aggregate (matching the MCP get_ohlcv
+    surface), not Toss 60x1m aggregation. Toss must not be attempted for 1h."""
+    toss_mock = AsyncMock(
+        return_value=pd.DataFrame(
+            [
+                {
+                    "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0,
+                    "volume": 1.0,
+                    "value": 1.0,
+                }
+            ]
+        )
+    )
+    monkeypatch.setattr(market_data_service, "fetch_kr_intraday_toss_frame", toss_mock)
+    hourly_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            }
+        ]
+    )
+    read_mock = AsyncMock(return_value=hourly_df)
+    monkeypatch.setattr(market_data_service, "read_kr_intraday_candles", read_mock)
+
+    candles = await market_data_service.get_ohlcv("005930", "kr", "1h", count=5)
+
+    toss_mock.assert_not_awaited()
+    read_mock.assert_awaited_once_with(
+        symbol="005930", period="1h", count=5, end_date=None
+    )
+    assert candles[0].source == "kis"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_intraday_falls_back_when_toss_returns_empty(monkeypatch):
+    """ROB-548: an empty Toss frame must trigger the KIS/DB fallback, not be
+    returned as an empty source='toss' result."""
+    empty = pd.DataFrame(
+        columns=["datetime", "open", "high", "low", "close", "volume", "value"]
+    )
+    fallback_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_kr_intraday_toss_frame",
+        AsyncMock(return_value=empty),
+    )
+    read_mock = AsyncMock(return_value=fallback_df)
+    monkeypatch.setattr(market_data_service, "read_kr_intraday_candles", read_mock)
+
+    candles = await market_data_service.get_ohlcv("005930", "kr", "5m", count=10)
+
+    read_mock.assert_awaited_once()
+    assert candles[0].source == "kis"
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_kr_intraday_uses_toss_first(monkeypatch):
     df = pd.DataFrame(
         [

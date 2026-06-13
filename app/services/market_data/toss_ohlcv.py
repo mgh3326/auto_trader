@@ -25,7 +25,10 @@ async def fetch_kr_intraday_toss_frame(
     end_date: dt.datetime | None,
 ) -> pd.DataFrame:
     bucket = _KR_INTRADAY_BUCKET_MINUTES[period]
-    request_count = count if bucket == 1 else min(max(count * bucket, bucket), 200)
+    # ROB-548: aggregating N buckets needs N*bucket one-minute candles. Page
+    # through them (200/page) instead of the old single-page 200 hard cap that
+    # silently truncated 5m/15m/30m/1h to ~40/13/6/3 rows.
+    request_count = count if bucket == 1 else max(count * bucket, bucket)
     client = TossReadClient.from_settings()
     try:
         one_minute = await fetch_toss_candles_frame(
@@ -34,6 +37,7 @@ async def fetch_kr_intraday_toss_frame(
             interval="1m",
             count=request_count,
             before=_before_from_end_date(end_date),
+            max_pages=max(1, (request_count + 199) // 200),
         )
     finally:
         await client.aclose()

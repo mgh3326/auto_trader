@@ -672,33 +672,48 @@ async def get_ohlcv(
 
         if resolved_period in KR_INTRADAY_OHLCV_PERIODS:
             capped_count = min(count, 200)
-            try:
-                frame = await fetch_kr_intraday_toss_frame(
-                    symbol=resolved_symbol,
-                    period=resolved_period,
-                    count=capped_count,
-                    end_date=end,
-                )
-                return _to_candle_rows(
-                    frame,
-                    symbol=resolved_symbol,
-                    market=resolved_market,
-                    source="toss",
-                    period=resolved_period,
-                )
-            except Exception as toss_exc:
-                logger.info(
-                    "Toss KR intraday OHLCV fallback to KIS symbol=%s period=%s error=%s",
-                    safe_log_value(resolved_symbol),
-                    resolved_period,
-                    toss_exc,
-                )
+            if resolved_period == "1h":
+                # ROB-548: 1h uses the DB hourly aggregate (matches the MCP
+                # get_ohlcv surface). Aggregating 1h from 60x Toss 1m candles is
+                # heavy (many pages) and shallow, so 1h is not Toss-routed.
                 frame = await read_kr_intraday_candles(
                     symbol=resolved_symbol,
                     period=resolved_period,
                     count=capped_count,
                     end_date=end,
                 )
+            else:
+                try:
+                    frame = await fetch_kr_intraday_toss_frame(
+                        symbol=resolved_symbol,
+                        period=resolved_period,
+                        count=capped_count,
+                        end_date=end,
+                    )
+                    # ROB-548: an empty Toss frame must fall through to the
+                    # KIS/DB reader, not be returned as an empty source="toss".
+                    if frame is None or len(frame) == 0:
+                        raise ValueError("Toss returned an empty intraday frame")
+                    return _to_candle_rows(
+                        frame,
+                        symbol=resolved_symbol,
+                        market=resolved_market,
+                        source="toss",
+                        period=resolved_period,
+                    )
+                except Exception as toss_exc:
+                    logger.info(
+                        "Toss KR intraday OHLCV fallback to KIS symbol=%s period=%s error=%s",
+                        safe_log_value(resolved_symbol),
+                        resolved_period,
+                        toss_exc,
+                    )
+                    frame = await read_kr_intraday_candles(
+                        symbol=resolved_symbol,
+                        period=resolved_period,
+                        count=capped_count,
+                        end_date=end,
+                    )
         else:
             frame = await kis.inquire_minute_chart(
                 code=resolved_symbol,
