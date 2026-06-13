@@ -1427,6 +1427,10 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     monkeypatch.setattr(
         readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
     )
+    # ROB-549: mutations disabled (default) -> reference-only.
+    from app.core.config import settings as _cfg
+
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
 
     result = await readers.TossApiHomeReader().fetch(user_id=1)
 
@@ -1444,6 +1448,57 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     assert holding.manualOnly is False
     assert holding.sellableQuantity == 0.0
     assert holding.referenceQuantity == 1.5
+
+
+@pytest.mark.asyncio
+async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch):
+    """ROB-549: with Toss live mutations armed, toss_api holdings become tradeable
+    and surface the API-provided sellable_quantity instead of discarding it."""
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", True, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+
+    holding = result.holdings[0]
+    assert holding.isTradeable is True
+    assert holding.sellableQuantity == 1.25
+    assert holding.pendingSellQuantity == pytest.approx(0.25)  # qty 1.5 - sellable 1.25
 
 
 @pytest.mark.asyncio
