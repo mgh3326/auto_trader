@@ -380,6 +380,28 @@ def _order_id_error(order_id: str, base: dict[str, Any]) -> dict[str, Any] | Non
     return None
 
 
+_SAFE_CLIENT_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{8,64}$")
+
+
+def _client_order_id_error(
+    client_order_id: str | None, base: dict[str, Any]
+) -> dict[str, Any] | None:
+    if client_order_id is None:
+        return None
+    candidate = client_order_id.strip()
+    if (
+        not candidate
+        or candidate != client_order_id
+        or not _SAFE_CLIENT_ORDER_ID_RE.fullmatch(candidate)
+    ):
+        return {
+            "success": False,
+            **base,
+            "error": f"Unsafe client order id rejected: {client_order_id!r}",
+        }
+    return None
+
+
 async def toss_preview_order(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -451,7 +473,7 @@ async def toss_preview_order(
     }
 
 
-async def toss_place_order(
+async def _toss_place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
     order_type: Literal["limit", "market"] = "limit",
@@ -475,6 +497,7 @@ async def toss_place_order(
     report_item_uuid: str | None = None,
     account_mode: str | None = None,
     account_type: str | None = None,
+    client_order_id_override: str | None = None,
 ) -> dict[str, Any]:
     if (guard := _entry_guard(account_mode, account_type)) is not None:
         return guard
@@ -499,7 +522,7 @@ async def toss_place_order(
     )
 
     payload: dict[str, Any] = {
-        "clientOrderId": _new_client_order_id(),
+        "clientOrderId": client_order_id_override or _new_client_order_id(),
         "symbol": symbol,
         "side": side.upper(),
         "orderType": order_type.upper(),
@@ -520,6 +543,11 @@ async def toss_place_order(
         "dry_run": dry_run,
         "mutation_sent": False,
     }
+
+    if (
+        id_guard := _client_order_id_error(client_order_id_override, base_response)
+    ) is not None:
+        return id_guard
 
     if dry_run:
         return {
@@ -634,6 +662,59 @@ async def toss_place_order(
 
     async with _client_context() as client:
         return await execute_order(client)
+
+
+async def toss_place_order(
+    symbol: str,
+    side: Literal["buy", "sell"],
+    order_type: Literal["limit", "market"] = "limit",
+    quantity: str | int | None = None,
+    price: str | int | None = None,
+    order_amount: str | int | None = None,
+    market: Literal["kr", "us"] | None = None,
+    time_in_force: Literal["DAY", "CLS"] = "DAY",
+    dry_run: bool = True,
+    confirm: bool = False,
+    confirm_high_value_order: bool = False,
+    reason: str | None = None,
+    exit_reason: str | None = None,
+    thesis: str | None = None,
+    strategy: str | None = None,
+    target_price: str | int | None = None,
+    stop_loss: str | int | None = None,
+    min_hold_days: int | None = None,
+    notes: str | None = None,
+    indicators_snapshot: dict[str, Any] | None = None,
+    report_item_uuid: str | None = None,
+    account_mode: str | None = None,
+    account_type: str | None = None,
+) -> dict[str, Any]:
+    return await _toss_place_order_impl(
+        symbol=symbol,
+        side=side,
+        order_type=order_type,
+        quantity=quantity,
+        price=price,
+        order_amount=order_amount,
+        market=market,
+        time_in_force=time_in_force,
+        dry_run=dry_run,
+        confirm=confirm,
+        confirm_high_value_order=confirm_high_value_order,
+        reason=reason,
+        exit_reason=exit_reason,
+        thesis=thesis,
+        strategy=strategy,
+        target_price=target_price,
+        stop_loss=stop_loss,
+        min_hold_days=min_hold_days,
+        notes=notes,
+        indicators_snapshot=indicators_snapshot,
+        report_item_uuid=report_item_uuid,
+        account_mode=account_mode,
+        account_type=account_type,
+        client_order_id_override=None,
+    )
 
 
 async def toss_modify_order(
