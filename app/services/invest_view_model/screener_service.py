@@ -659,6 +659,9 @@ async def _load_consecutive_gainers_from_snapshots(
     market_cap_source: str | None = None
     if market == "kr" and candidate_snaps:
         from app.models.market_valuation_snapshot import MarketValuationSnapshot
+        from app.services.market_valuation_snapshots.repository import (
+            metric_rich_filter,
+        )
 
         val_hp = await resolve_healthy_partition(
             session,
@@ -666,6 +669,7 @@ async def _load_consecutive_gainers_from_snapshots(
             date_col=MarketValuationSnapshot.snapshot_date,
             market_col=MarketValuationSnapshot.market,
             market="kr",
+            row_filter=metric_rich_filter(),  # ROB-551: skip toss-only partitions
         )
         if val_hp is not None:
             market_cap_source = "fallback" if val_hp.is_fallback else "primary"
@@ -922,6 +926,9 @@ async def _load_investor_flow_discovery_from_snapshots(
     market_cap_source: str | None = None
     if candidate_snaps:
         from app.models.market_valuation_snapshot import MarketValuationSnapshot
+        from app.services.market_valuation_snapshots.repository import (
+            metric_rich_filter,
+        )
 
         val_hp = await resolve_healthy_partition(
             session,
@@ -929,6 +936,7 @@ async def _load_investor_flow_discovery_from_snapshots(
             date_col=MarketValuationSnapshot.snapshot_date,
             market_col=MarketValuationSnapshot.market,
             market="kr",
+            row_filter=metric_rich_filter(),  # ROB-551: skip toss-only partitions
         )
         if val_hp is not None:
             market_cap_source = "fallback" if val_hp.is_fallback else "primary"

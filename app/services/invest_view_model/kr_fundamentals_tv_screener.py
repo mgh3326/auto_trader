@@ -575,6 +575,9 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         from app.services.invest_screener_snapshots.partition_health import (
             resolve_healthy_partition,
         )
+        from app.services.market_valuation_snapshots.repository import (
+            metric_rich_filter,
+        )
 
         val_hp = await resolve_healthy_partition(
             session,
@@ -582,6 +585,7 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
             date_col=MarketValuationSnapshot.snapshot_date,
             market_col=MarketValuationSnapshot.market,
             market="kr",
+            row_filter=metric_rich_filter(),  # ROB-551: skip toss-only partitions
         )
         if val_hp and val_hp.partition_date is not None:
             val_rows = await session.execute(

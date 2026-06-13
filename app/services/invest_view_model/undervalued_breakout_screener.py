@@ -86,6 +86,7 @@ async def load_undervalued_breakout_from_snapshots(
         resolve_healthy_partition,
         served_partition_degraded,
     )
+    from app.services.market_valuation_snapshots.repository import metric_rich_filter
 
     val_hp = await resolve_healthy_partition(
         session,
@@ -93,6 +94,7 @@ async def load_undervalued_breakout_from_snapshots(
         date_col=MarketValuationSnapshot.snapshot_date,
         market_col=MarketValuationSnapshot.market,
         market=market,
+        row_filter=metric_rich_filter(),  # ROB-551: skip toss-only partitions
     )
     val_date = val_hp.partition_date if val_hp else None
     if val_date is None:
