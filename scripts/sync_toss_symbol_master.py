@@ -11,13 +11,28 @@ import asyncio
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Dry-run-first Toss symbol master sync (ROB-534).")
+    parser = argparse.ArgumentParser(
+        description="Dry-run-first Toss symbol master sync (ROB-534)."
+    )
     parser.add_argument("--market", choices=["kr", "us"], required=True)
-    parser.add_argument("--symbol", action="append", default=[], help="Restrict to one symbol. Can be repeated.")
+    parser.add_argument(
+        "--symbol",
+        action="append",
+        default=[],
+        help="Restrict to one symbol. Can be repeated.",
+    )
     parser.add_argument("--limit", type=int, default=20)
-    parser.add_argument("--all", action="store_true", help="Process all active universe symbols.")
-    parser.add_argument("--no-market-cap", action="store_true", help="Update master fields only; skip prices/market cap.")
-    parser.add_argument("--commit", action="store_true", help="Write changes. Default is dry-run.")
+    parser.add_argument(
+        "--all", action="store_true", help="Process all active universe symbols."
+    )
+    parser.add_argument(
+        "--no-market-cap",
+        action="store_true",
+        help="Update master fields only; skip prices/market cap.",
+    )
+    parser.add_argument(
+        "--commit", action="store_true", help="Write changes. Default is dry-run."
+    )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit != 20):
         parser.error("--all is mutually exclusive with --symbol and explicit --limit")
@@ -38,6 +53,12 @@ def _print_result(result) -> None:
     print(f"  master_updates: {result.master_updates}")
     print(f"  market_cap_payloads: {result.market_cap_payloads}")
     print(f"  market_cap_nonnull: {result.market_cap_nonnull}")
+    print(
+        f"  market_cap_skipped_existing: {result.market_cap_skipped_existing} "
+        "(gap-fill: other source already covers the key)"
+    )
+    for warning in result.warnings:
+        print(f"  warning: {warning}")
     if result.samples:
         print("samples:")
         for sample in result.samples:
