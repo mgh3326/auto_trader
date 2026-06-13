@@ -647,6 +647,11 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "from each order's send date through today (90-day cap), so "
             "next-day reconciles still book prior-day fills. "
             "dry_run=True by default for safety. KR domestic only. "
+            "realized_pnl_pct (alias journal_pnl_pct, labeled "
+            "realized_pnl_basis='journal_entry') is the per-lot / journal-entry "
+            "(FIFO oldest-first) basis, NOT the account-average; "
+            "place_order preview / get_holdings / get_available_capital remain "
+            "the account-average (pchs_avg_pric) truth. "
             "This is the LOCAL bookkeeping layer (trade/journal/"
             "realized_pnl); the live-account truth is get_holdings / "
             "get_available_capital. An operator-gated periodic auto-"
@@ -686,6 +691,10 @@ def register_live_reconcile_tools(mcp: FastMCP) -> None:
             "against broker fill evidence (overseas daily-order / Upbit order-state). "
             "Books fills/journals/realized_pnl ONLY from confirmed fills (delta-idempotent); "
             "marks unfilled/cancelled without journal side-effects. dry_run=True by default. "
+            "realized_pnl_pct (alias journal_pnl_pct, labeled "
+            "realized_pnl_basis='journal_entry') is the per-lot / journal-entry "
+            "(FIFO oldest-first) basis, NOT the account-average; get_holdings / "
+            "get_available_capital remain the account-average truth. "
             "KR domestic uses kis_live_reconcile_orders instead."
         ),
     )

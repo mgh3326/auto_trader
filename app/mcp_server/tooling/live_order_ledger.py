@@ -293,7 +293,7 @@ async def _reconcile_one_live_row(
                 requester_agent_id=row.dt_requester_agent_id,
                 approval_verified_at=row.trade_date or datetime.now(UTC),
             )
-        await _close_journals_on_sell(
+        close_result = await _close_journals_on_sell(
             symbol=row.symbol,
             sell_quantity=float(delta),
             sell_price=float(avg_price),
@@ -302,6 +302,16 @@ async def _reconcile_one_live_row(
             account=row.broker,
             defensive_trim_ctx=dt_ctx,
         )
+        # ROB-544: surface the labeled close result for parity with
+        # kis_live_reconcile_orders. realized_pnl_pct is the FIFO lot /
+        # journal-entry basis (per-lot entry_price), NOT the account-average.
+        base["journals_closed"] = close_result["journals_closed"]
+        base["closed_journal_ids"] = close_result["closed_ids"]
+        base["realized_pnl_pct"] = close_result["total_pnl_pct"]
+        base["realized_pnl_basis"] = close_result.get(
+            "realized_pnl_basis", "journal_entry"
+        )
+        base["journal_pnl_pct"] = close_result["total_pnl_pct"]
 
     await _update_live_ledger_outcome(
         ledger_id=row.id,

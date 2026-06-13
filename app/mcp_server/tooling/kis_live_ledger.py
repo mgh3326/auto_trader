@@ -685,6 +685,15 @@ async def _reconcile_one_ledger_row(
         base["journals_closed"] = close_result["journals_closed"]
         base["closed_journal_ids"] = close_result["closed_ids"]
         base["realized_pnl_pct"] = close_result["total_pnl_pct"]
+        # ROB-544: label the basis. realized_pnl_pct is the FIFO lot /
+        # journal-entry basis (per-lot entry_price), NOT the account-average
+        # pchs_avg_pric shown in place_order preview / get_holdings.
+        base["realized_pnl_basis"] = close_result.get(
+            "realized_pnl_basis", "journal_entry"
+        )
+        # Explicit alias so the journal-entry semantics are unambiguous to
+        # consumers that already read realized_pnl_pct for back-compat.
+        base["journal_pnl_pct"] = close_result["total_pnl_pct"]
 
     await _update_ledger_outcome(
         ledger_id=row.id,
