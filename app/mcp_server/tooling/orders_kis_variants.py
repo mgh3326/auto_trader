@@ -452,7 +452,6 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "is_mock is hard-pinned to False. "
             "dry_run=True by default for safety. "
             "For buy orders (dry_run=False), thesis and strategy are required. "
-            "Safety limit: max 20 orders/day. "
             "Normal weight-management trims do NOT need defensive_trim — leave "
             "it False. defensive_trim=True only bypasses the sell-side price "
             "floor and requires side='sell', order_type='limit', and an "

@@ -190,7 +190,6 @@ def register_order_tools(mcp: FastMCP) -> None:
             "so a trade journal can be created automatically. "
             "For sell orders, active trade journals are auto-closed in FIFO order. "
             "Use exit_reason to record the sell thesis in the journal. "
-            "Safety limit: max 20 orders/day. "
             "dry_run=True by default for safety. "
             "Set account_type='paper' to route to the virtual paper-trading engine "
             "(no real broker calls, uses PaperTradingService). In paper mode, the "

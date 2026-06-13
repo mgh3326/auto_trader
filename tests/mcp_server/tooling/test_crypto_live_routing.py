@@ -16,7 +16,6 @@ async def test_crypto_limit_is_accepted_only():
 
     with (
         patch.object(oe, "_execute_order", new=AsyncMock(return_value=_exec())),
-        patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch.object(oe, "_record_order_history", new=AsyncMock()),
         patch.object(oe, "_record_fill_and_journals", new=AsyncMock()) as m_legacy,
         patch(
@@ -66,7 +65,6 @@ async def test_crypto_market_inline_confirm():
 
     with (
         patch.object(oe, "_execute_order", new=AsyncMock(return_value=_exec())),
-        patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch.object(oe, "_record_order_history", new=AsyncMock()),
         patch(
             "app.mcp_server.tooling.live_order_ledger._record_live_order",
