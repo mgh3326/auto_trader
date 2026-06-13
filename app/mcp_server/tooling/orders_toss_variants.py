@@ -542,6 +542,10 @@ async def _toss_place_order_impl(
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "dry_run": dry_run,
         "mutation_sent": False,
+        # ROB-545 Major — carry the clientOrderId on every response (incl. error
+        # paths) so a failed/timed-out order can be retried with the *same*
+        # idempotency key instead of minting a new one.
+        "client_order_id": payload["clientOrderId"],
     }
 
     if (
@@ -612,6 +616,7 @@ async def _toss_place_order_impl(
             ) is not None:
                 return sell_guard
 
+        res = None
         try:
             res = await client.place_order(payload)
             raw_response = {
@@ -658,7 +663,15 @@ async def _toss_place_order_impl(
                 ),
             }
         except Exception as exc:
-            return _toss_error_response(exc, {**base_response, "mutation_sent": True})
+            err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
+            # ROB-545 Major/B2 — if the POST already reached Toss (res set) the
+            # broker order id must survive a ledger-write failure or idempotency
+            # anomaly, so reconcile/cancel can still find the live order.
+            if res is not None:
+                err["order_id"] = res.order_id
+                if res.client_order_id is not None:
+                    err["client_order_id"] = res.client_order_id
+            return err
 
     async with _client_context() as client:
         return await execute_order(client)
@@ -834,6 +847,7 @@ async def toss_modify_order(
                 "payload_preview": payload,
             }
 
+        res = None
         try:
             res = await client.modify_order(order_id, payload)
             ledger = await record_toss_replacement_order(
@@ -866,7 +880,14 @@ async def toss_modify_order(
                 **ledger,
             }
         except Exception as exc:
-            return _toss_error_response(exc, {**base_response, "mutation_sent": True})
+            err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
+            # ROB-545 Major — keep the order ids on the error path so the live
+            # order (and any issued replacement) can be reconciled/cancelled.
+            err.setdefault("original_order_id", order_id)
+            if res is not None:
+                err["replacement_order_id"] = res.order_id
+                err.setdefault("order_id", res.order_id)
+            return err
 
     async with _client_context() as client:
         return await execute_modify(client)
@@ -913,12 +934,15 @@ async def toss_cancel_order(
     ) is not None:
         return mutation_gate
 
+    res = None
     try:
         async with _client_context() as client:
             try:
                 orig_order = await client.get_order(order_id)
             except Exception as exc:
-                return _toss_error_response(exc, base_response)
+                return _toss_error_response(
+                    exc, {**base_response, "original_order_id": order_id}
+                )
             mkt = _infer_market(orig_order.symbol, None)
             res = await client.cancel_order(order_id)
             ledger = await record_toss_replacement_order(
@@ -950,7 +974,14 @@ async def toss_cancel_order(
                 "operation_semantics": "Toss cancel returns a newly issued orderId; it is not the original order id.",
             }
     except Exception as exc:
-        return _toss_error_response(exc, {**base_response, "mutation_sent": True})
+        err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
+        # ROB-545 Major — keep the order ids on the error path so the live order
+        # (and any issued cancel replacement) can be reconciled/cancelled.
+        err.setdefault("original_order_id", order_id)
+        if res is not None:
+            err["replacement_order_id"] = res.order_id
+            err.setdefault("order_id", res.order_id)
+        return err
 
 
 async def toss_get_order_history(

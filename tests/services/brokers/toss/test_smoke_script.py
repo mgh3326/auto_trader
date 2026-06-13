@@ -235,6 +235,57 @@ async def test_run_confirm_cancels_duplicate_order_if_idempotency_fails(
 
 
 @pytest.mark.asyncio
+async def test_run_confirm_cancels_order_surfaced_in_anomaly_error_response(
+    monkeypatch,
+) -> None:
+    # ROB-545: the idempotency anomaly is now surfaced as a failed response that
+    # still carries the duplicate order_id, so finally-cancel must cancel it.
+    results = iter(
+        [
+            {
+                "success": True,
+                "order_id": "ord-1",
+                "client_order_id": "cid",
+                "mutation_sent": True,
+            },
+            {
+                "success": False,
+                "order_id": "ord-2",
+                "client_order_id": "cid",
+                "error": "idempotency conflict",
+                "mutation_sent": True,
+            },
+        ]
+    )
+    cancel_calls: list[str] = []
+
+    async def fake_place_for_smoke(**kwargs):
+        return next(results)
+
+    async def fake_cancel_order(*, order_id, dry_run, confirm, account_mode):
+        cancel_calls.append(order_id)
+        return {"success": True, "original_order_id": order_id}
+
+    async def fake_reconcile(**kwargs):
+        return {"success": True, "counts": {"cancelled": 1}, "reconciled": []}
+
+    monkeypatch.setattr(toss_live_smoke, "_place_order_for_smoke", fake_place_for_smoke)
+    monkeypatch.setattr(toss_live_smoke, "toss_cancel_order", fake_cancel_order)
+    monkeypatch.setattr(toss_live_smoke, "toss_reconcile_orders_impl", fake_reconcile)
+
+    code = await toss_live_smoke.run_confirm(
+        market="kr",
+        symbol="005930",
+        quantity="1",
+        price="50000",
+        time_in_force="DAY",
+    )
+
+    assert code == 2
+    assert sorted(cancel_calls) == ["ord-1", "ord-2"]
+
+
+@pytest.mark.asyncio
 async def test_run_confirm_cancels_original_when_idempotency_retry_raises(
     monkeypatch,
 ) -> None:

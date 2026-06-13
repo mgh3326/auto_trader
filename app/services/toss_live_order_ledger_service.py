@@ -12,6 +12,14 @@ from app.models.review import TossLiveOrderLedger
 
 
 def parse_report_item_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
+    """ROB-545 B1 — parse a report_item_uuid fail-open.
+
+    report_item_uuid is free-form agent/Hermes input and audit metadata only.
+    A malformed value must never raise here: ``record_send`` runs *after* the
+    live POST is accepted, so raising would orphan a real broker order (no
+    ledger row -> reconcile can never book the fill). Mirror
+    ``order_execution._coerce_report_item_uuid``: a bad string resolves to None.
+    """
     if value is None:
         return None
     if isinstance(value, uuid.UUID):
@@ -19,7 +27,36 @@ def parse_report_item_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
     candidate = str(value).strip()
     if not candidate:
         return None
-    return uuid.UUID(candidate)
+    try:
+        return uuid.UUID(candidate)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+class TossLedgerIdempotencyConflict(Exception):
+    """ROB-545 B2 — a live order was recorded twice under the same
+    client_order_id but with a *different* broker_order_id.
+
+    The same clientOrderId is Toss's idempotency key, so a different orderId is
+    a genuine broker anomaly (a duplicate live order was created). The caller
+    must surface the new broker_order_id so the duplicate can be cancelled.
+    """
+
+    def __init__(
+        self,
+        *,
+        client_order_id: str,
+        existing_broker_order_id: str | None,
+        new_broker_order_id: str | None,
+    ) -> None:
+        self.client_order_id = client_order_id
+        self.existing_broker_order_id = existing_broker_order_id
+        self.new_broker_order_id = new_broker_order_id
+        super().__init__(
+            f"client_order_id {client_order_id!r} is already recorded with "
+            f"broker_order_id {existing_broker_order_id!r}; refusing to overwrite "
+            f"with {new_broker_order_id!r}."
+        )
 
 
 class TossLiveOrderLedgerService:
@@ -58,6 +95,26 @@ class TossLiveOrderLedgerService:
         indicators_snapshot: dict[str, Any] | None = None,
         report_item_uuid: str | uuid.UUID | None = None,
     ) -> TossLiveOrderLedger:
+        # ROB-545 B2 — idempotent on client_order_id. A live POST retried with
+        # the same clientOrderId (the smoke's idempotency check) must not raise a
+        # UNIQUE IntegrityError: query first, replay the existing row when the
+        # broker_order_id matches, and surface an anomaly when it differs.
+        existing = (
+            await self._db.execute(
+                select(TossLiveOrderLedger).where(
+                    TossLiveOrderLedger.client_order_id == client_order_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if existing.broker_order_id == broker_order_id:
+                return existing
+            raise TossLedgerIdempotencyConflict(
+                client_order_id=client_order_id,
+                existing_broker_order_id=existing.broker_order_id,
+                new_broker_order_id=broker_order_id,
+            )
+
         row = TossLiveOrderLedger(
             trade_date=datetime.now(UTC),
             broker="toss",

@@ -24,6 +24,12 @@ the operator evidence, and the account setup before live operational use.
 - The confirm flow retries the same `clientOrderId` once to verify broker
   idempotency. If Toss returns a different `orderId`, the CLI reports an
   anomaly, attempts to cancel every opened order id, and exits `2`.
+- The ledger is idempotent on `client_order_id` (ROB-545). An idempotent retry
+  that returns the same `orderId` replays the existing ledger row instead of
+  hitting a UNIQUE violation, so the normal place → retry → cancel → reconcile
+  sequence can reach exit `0`. A retry that returns a *different* `orderId`
+  surfaces the new live order id even on the failure response, so finally-cancel
+  can still cancel the duplicate.
 - The confirm flow uses a finally-cancel pattern. If an order id is observed,
   cancel is attempted even when the idempotency retry or reconcile step fails.
 - Reconcile is local bookkeeping. The live account source of truth remains Toss
