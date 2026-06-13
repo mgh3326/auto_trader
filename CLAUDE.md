@@ -235,6 +235,24 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. 7개 도구 모두 `
 - **No secrets printed**: CLI는 missing env key **이름만** 보고, 값 출력 없음
 - **Cancel-before-submit**: `full` 모드는 cancel이 wired이기에만 실주문 제출; finally-block에서 항상 cancel 시도 후 reconcile
 
+### 토스증권 Open API (ROB-529)
+
+토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
+
+- **클라이언트**: `app/services/brokers/toss/` — `transport.py`(host allowlist `openapi.tossinvest.com` + **https 강제**, 3xx 거부), `auth.TossOAuthTokenManager`(OAuth, **client당 유효 토큰 1개**라 Redis 공유+단일비행+failed-token double-check, ROB-262 패턴), `rate_limiter`(프로세스 전역 싱글톤 `get_shared_rate_limiter`, 그룹별 per-group lock TPS, 09:00–09:10 ORDER 3TPS), `errors.parse_toss_response`(envelope + non-json typed), `client.TossReadClient`(read + place/modify/cancel)
+- **주문 MCP 도구**: `app/mcp_server/tooling/orders_toss_variants.py` — `toss_preview/place/modify/cancel_order`, `toss_get_order_history/positions/orderable_cash` (account_mode `toss_live`). dry_run+confirm 이중 게이트, 손실매도 가드, opposite-pending 사전검사, `clientOrderId` 멱등
+- **레저**: `review.toss_live_order_ledger` (`app/services/toss_live_order_ledger_service.py`, accepted-only + `record_send` 멱등 replay) + `toss_reconcile_orders`(단건 상세 fill-evidence, ROB-395/407 패턴)
+- **데이터 소스**: 환율 `exchange_rate_service`(토스 primary+폴백, midRate), 종목 마스터+시총 `toss_symbol_master_service`(gap-fill only — 기존 source 있으면 skip), warnings 가드 `warnings_guard`(LIQUIDATION 매수만 차단·매도 면제), 캔들 `market_data/toss_ohlcv`(1m/5m/15m/30m toss-first 페이지네이션, 1h는 DB hourly), 캘린더 `brokers/toss/market_calendar`(NXT/데이마켓)
+- **CLI/런북**: `scripts/toss_live_smoke.py`(preflight/order-test/confirm), `docs/runbooks/toss-live-smoke.md`, `toss-live-order-reconcile.md`, `toss-symbol-master-sync.md`
+
+**안전 경계 / env 게이트 (모두 default off)**:
+- `TOSS_API_ENABLED` — 마스터 게이트. 미설정 시 read 클라이언트도 `TossApiDisabled`
+- `TOSS_API_CLIENT_ID` / `TOSS_API_CLIENT_SECRET` — 운영 secret(repo commit 금지)
+- `TOSS_LIVE_ORDER_MUTATIONS_ENABLED` — 실주문(place/modify/cancel) **및** 보유 routable/orderable/isTradeable 표면(ROB-549)을 함께 arm. live-smoke 클리어 전까지 false
+- **KR 주문은 계좌 "투자자지시 거래소 = 통합(SOR)" 설정 필수** (아니면 422 `investor-exchange-not-integrated`)
+- ⚠️ `opposite-pending-order-exists`: 동일 종목 반대방향 대기주문 거부 → 매수+매도 래더 동시 거치 불가
+- warnings TaskIQ task(`warnings.toss.sync`)는 **scheduleless** 출고(operator/Prefect 등록); disabled 시 graceful skip
+
 ### Market Events Ingestion Foundation (ROB-128)
 
 시장 이벤트 (US earnings, KR DART 공시, 향후 crypto/economic) 수집·저장·조회 foundation.

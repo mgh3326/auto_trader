@@ -59,11 +59,11 @@ the operator evidence, and the account setup before live operational use.
    uv run alembic upgrade head
    ```
 
-4. Confirm Toss API credentials are present in the operator environment. Do not
-   print values:
+4. Confirm Toss API credentials are present in the operator environment. Print
+   only the key NAMES that are set — never the values:
 
    ```bash
-   env | rg '^TOSS_API_(ENABLED|CLIENT_ID|CLIENT_SECRET|ACCOUNT_SEQ|BASE_URL)='
+   env | cut -d= -f1 | rg '^TOSS_API_(ENABLED|CLIENT_ID|CLIENT_SECRET|ACCOUNT_SEQ|BASE_URL)$'
    ```
 
 5. Confirm buying power is sufficient for the chosen one-share order. The

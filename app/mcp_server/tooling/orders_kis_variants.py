@@ -133,7 +133,10 @@ async def _check_toss_warnings_for_kis_buy(symbol: str) -> WarningsGuardResult:
     client = None
     try:
         client = TossReadClient.from_settings()
-        return await check_warnings_guard(client, symbol, market="kr")
+        # ROB-550: market=None lets the guard auto-detect KR by the 6-digit
+        # symbol pattern, so a US KIS buy (e.g. AAPL) skips the Toss warnings
+        # fetch instead of issuing a wasted lookup.
+        return await check_warnings_guard(client, symbol, market=None)
     except Exception as exc:
         logger.warning(
             "Failed to check Toss warnings for KIS live order symbol=%s; proceeding fail-open: %s",
