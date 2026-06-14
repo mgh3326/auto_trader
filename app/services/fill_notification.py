@@ -10,7 +10,6 @@ from decimal import Decimal
 from typing import Any
 
 from app.core.kr_symbols import KR_SYMBOLS
-from app.core.portfolio_links import build_position_detail_url
 
 logger = logging.getLogger(__name__)
 
@@ -436,38 +435,7 @@ def _format_quantity(value: float) -> str:
     return f"{value:.12f}".rstrip("0").rstrip(".")
 
 
-def format_fill_message(order: FillOrderLike) -> str:
-    normalized = coerce_fill_order(order)
-    side_emoji = _format_side_emoji(normalized.side)
-    side_text = _format_side_text(normalized.side)
-    is_partial = normalized.fill_status == "partial"
-    fill_label = "부분체결" if is_partial else "체결"
-
-    price_diff = ""
-    if normalized.order_price and normalized.order_price != 0:
-        diff_pct = (
-            (normalized.filled_price - normalized.order_price) / normalized.order_price
-        ) * 100
-        price_diff = f" ({diff_pct:+.2f}%)"
-
-    message = (
-        f"{side_emoji} 체결 알림\n\n"
-        f"종목: {normalized.symbol}\n"
-        f"구분: {side_text} {fill_label}\n"
-        f"체결가: {_format_money(normalized.filled_price, normalized.currency)}{price_diff}\n"
-        f"수량: {_format_quantity(normalized.filled_qty)}\n"
-        f"금액: {_format_money(normalized.filled_amount, normalized.currency)}\n"
-        f"시간: {normalized.filled_at}\n\n"
-        f"계좌: {normalized.account}"
-    )
-    if normalized.order_id:
-        message += f"\n주문: {normalized.order_id[:8]}..."
-
-    detail_url = build_position_detail_url(normalized.symbol, normalized.market_type)
-    if detail_url:
-        message += f"\n상세: {detail_url}"
-
-    return message
+# Removed format_fill_message function as part of redesign
 
 
 _KR_SYMBOLS_REVERSE: dict[str, str] | None = None
