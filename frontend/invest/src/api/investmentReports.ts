@@ -15,6 +15,7 @@ import type {
   InvestmentReportBundle,
   InvestmentReportItem,
   InvestmentReportItemDecision,
+  LinkedOrder,
   InvestmentReportListResponse,
   InvestmentWatchAlert,
   InvestmentWatchEvent,
@@ -150,6 +151,27 @@ function asOptionalList(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
 }
 
+function normalizeLinkedOrder(raw: ApiItem): LinkedOrder {
+  return {
+    broker: asOptionalString(raw.broker),
+    accountScope: asOptionalString(raw.account_scope),
+    market: asOptionalString(raw.market),
+    orderNo: asOptionalString(raw.order_no),
+    ledgerId: asNumber(raw.ledger_id, 0),
+    symbol: asOptionalString(raw.symbol),
+    side: asOptionalString(raw.side),
+    status: asOptionalString(raw.status),
+    filledQty: (raw.filled_qty as number | string | null | undefined) ?? null,
+    avgFillPrice:
+      (raw.avg_fill_price as number | string | null | undefined) ?? null,
+    orderTime: asOptionalString(raw.order_time),
+    reconciledAt: asOptionalString(raw.reconciled_at),
+    exitReason: asOptionalString(raw.exit_reason),
+    thesis: asOptionalString(raw.thesis),
+    reportItemUuid: asOptionalString(raw.report_item_uuid),
+  };
+}
+
 function normalizeItem(raw: ApiItem): InvestmentReportItem {
   return {
     itemUuid: asString(raw.item_uuid),
@@ -186,6 +208,11 @@ function normalizeItem(raw: ApiItem): InvestmentReportItem {
     decisionBucket: asOptionalString(raw.decision_bucket),
     citedSymbolReportUuid: asOptionalString(raw.cited_symbol_report_uuid),
     citedDimensionReportUuids: asArray<string>(raw.cited_dimension_report_uuids),
+    // ROB-554 — linked live orders (null when the backend omits / item has none).
+    linkedOrders:
+      raw.linked_orders === null || raw.linked_orders === undefined
+        ? null
+        : asArray<ApiItem>(raw.linked_orders).map(normalizeLinkedOrder),
   };
 }
 

@@ -73,6 +73,16 @@ const DELIVERY_STATUS_COLORS: Record<DeliveryStatus, string> = {
   failed: "var(--danger)",
 };
 
+const LINKED_ORDER_STATUS_LABELS: Record<string, string> = {
+  filled: "체결",
+  partial: "부분체결",
+  accepted: "미체결",
+  submitted: "미체결",
+  pending: "미체결",
+  cancelled: "취소",
+  anomaly: "이상",
+};
+
 function StatusCard({ children }: { children: ReactNode }) {
   return (
     <Card>
@@ -272,6 +282,58 @@ function ItemRow({
       <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
         {item.rationale}
       </div>
+      {item.linkedOrders && item.linkedOrders.length > 0 ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}>
+            주문 · 체결
+          </div>
+          {item.linkedOrders.map((order) => (
+            <div
+              key={order.ledgerId}
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "baseline",
+                flexWrap: "wrap",
+                fontSize: 12,
+                color: "var(--fg-3)",
+                background: "var(--surface-2)",
+                padding: "6px 10px",
+                borderRadius: 8,
+              }}
+            >
+              <Pill
+                tone={order.status === "filled" ? "accent" : "paper"}
+                size="sm"
+              >
+                {LINKED_ORDER_STATUS_LABELS[order.status ?? ""] ??
+                  order.status ??
+                  "—"}
+              </Pill>
+              <span style={{ fontWeight: 700 }}>
+                {order.side === "buy"
+                  ? "매수"
+                  : order.side === "sell"
+                    ? "매도"
+                    : ""}{" "}
+                {order.symbol ?? "—"}
+              </span>
+              <span>
+                {order.filledQty ?? "—"} @ {order.avgFillPrice ?? "—"}
+              </span>
+              {order.orderTime ? <span>· {order.orderTime}</span> : null}
+              {order.orderNo ? (
+                <span>· order {order.orderNo.slice(0, 8)}</span>
+              ) : null}
+              {order.exitReason || order.thesis ? (
+                <span style={{ width: "100%" }}>
+                  {order.exitReason ?? order.thesis}
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {item.watchCondition ? (
         <div
           style={{
