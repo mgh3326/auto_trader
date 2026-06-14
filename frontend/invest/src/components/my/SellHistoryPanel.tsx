@@ -9,21 +9,6 @@ const MARKET_OPTIONS: { key: FillMarket | "all"; label: string }[] = [
   { key: "crypto", label: "코인" },
 ];
 
-const FALLBACK_SYMBOL_NAMES: Record<string, string> = {
-  "000660": "SK하이닉스",
-  "005930": "삼성전자",
-  "000270": "기아",
-  "000660.KS": "SK하이닉스",
-  "004020": "현대제철",
-  "034220": "LG디스플레이",
-  "064350": "현대로템",
-  "096770": "SK이노베이션",
-  QQQ: "Invesco QQQ Trust",
-  QQQM: "Invesco NASDAQ 100 ETF",
-  TSLA: "Tesla",
-  CONL: "GraniteShares 2x Long COIN ETF",
-  CTSH: "Cognizant Technology Solutions",
-};
 
 function toNumber(value: string | number | null | undefined): number | null {
   if (value == null || value === "") return null;
@@ -103,7 +88,7 @@ function sourceBreakdownLabel(data: FillListResponse): string | null {
 }
 
 function symbolDisplayName(row: FillRow): string | null {
-  const name = row.symbol_name ?? row.symbolName ?? FALLBACK_SYMBOL_NAMES[row.symbol] ?? FALLBACK_SYMBOL_NAMES[row.raw_symbol];
+  const name = row.symbol_name ?? row.symbolName;
   if (!name || name === row.symbol) return null;
   return name;
 }
