@@ -1673,3 +1673,72 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
     assert result.accounts[0].valueKrw == pytest.approx(645.18 * 1300.0)
     assert result.accounts[0].costBasisKrw == pytest.approx(600.0 * 1300.0)
     assert result.accounts[0].pnlKrw == pytest.approx(45.18 * 1300.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_portfolio_snapshot_emits_phase_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.services import toss_portfolio_service as toss_service
+
+    started: list[str] = []
+
+    class _Span:
+        def set_data(self, key: str, value: Any) -> None:
+            return None
+
+        def set_tag(self, key: str, value: Any) -> None:
+            return None
+
+    class _SpanContext:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self) -> _Span:
+            started.append(self.name)
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext(name)
+
+    class _Client:
+        async def holdings(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        symbol="005930",
+                        name="삼성전자",
+                        market_country="KR",
+                        quantity=Decimal("2"),
+                        average_purchase_price=Decimal("70000"),
+                        last_price=Decimal("72000"),
+                        market_value={"amount": Decimal("144000")},
+                        profit_loss={"amount": Decimal("4000"), "rate": Decimal("0.0285")},
+                    )
+                ]
+            )
+
+        async def sellable_quantity(self, *, symbol: str) -> SimpleNamespace:
+            assert symbol == "005930"
+            return SimpleNamespace(sellable_quantity=Decimal("1"))
+
+        async def buying_power(self, *, currency: str) -> SimpleNamespace:
+            return SimpleNamespace(currency=currency, cash_buying_power=Decimal("1000"))
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(toss_service.sentry_sdk, "start_span", _start_span)
+
+    snapshot = await toss_service.fetch_toss_portfolio_snapshot(client=_Client())
+
+    assert snapshot.positions[0].symbol == "005930"
+    assert "invest.home.toss_api.holdings" in started
+    assert "invest.home.toss_api.sellable_quantity" in started
+    assert "invest.home.toss_api.buying_power" in started

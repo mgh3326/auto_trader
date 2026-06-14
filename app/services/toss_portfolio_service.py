@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
 
+import sentry_sdk
+
 from app.services.brokers.toss.client import TossReadClient
 
 
@@ -79,11 +81,24 @@ async def fetch_toss_cash_snapshot(
     active_client: TossPortfolioClient = client or TossReadClient.from_settings()
 
     try:
-        buying_power_results = await asyncio.gather(
-            active_client.buying_power(currency="KRW"),
-            active_client.buying_power(currency="USD"),
-            return_exceptions=True,
-        )
+        with sentry_sdk.start_span(
+            op="invest.home.toss_api.phase",
+            name="invest.home.toss_api.buying_power",
+        ) as span:
+            span.set_data("currency_count", 2)
+            buying_power_results = await asyncio.gather(
+                active_client.buying_power(currency="KRW"),
+                active_client.buying_power(currency="USD"),
+                return_exceptions=True,
+            )
+            span.set_data(
+                "error_count",
+                sum(
+                    1
+                    for result in buying_power_results
+                    if isinstance(result, BaseException)
+                ),
+            )
         cash_krw: Decimal | None = None
         cash_usd: Decimal | None = None
         errors: list[dict[str, Any]] = []
@@ -121,16 +136,35 @@ async def fetch_toss_portfolio_snapshot(
     active_client: TossPortfolioClient = client or TossReadClient.from_settings()
 
     try:
-        holdings = await active_client.holdings()
+        with sentry_sdk.start_span(
+            op="invest.home.toss_api.phase",
+            name="invest.home.toss_api.holdings",
+        ) as span:
+            holdings = await active_client.holdings()
+            span.set_data("position_count", len(holdings.items))
+
         errors: list[dict[str, Any]] = []
 
-        sellable_results = await asyncio.gather(
-            *[
-                active_client.sellable_quantity(symbol=item.symbol)
-                for item in holdings.items
-            ],
-            return_exceptions=True,
-        )
+        with sentry_sdk.start_span(
+            op="invest.home.toss_api.phase",
+            name="invest.home.toss_api.sellable_quantity",
+        ) as span:
+            span.set_data("position_count", len(holdings.items))
+            sellable_results = await asyncio.gather(
+                *[
+                    active_client.sellable_quantity(symbol=item.symbol)
+                    for item in holdings.items
+                ],
+                return_exceptions=True,
+            )
+            span.set_data(
+                "error_count",
+                sum(
+                    1
+                    for result in sellable_results
+                    if isinstance(result, BaseException)
+                ),
+            )
 
         positions: list[TossPortfolioPosition] = []
         for item, sellable_result in zip(holdings.items, sellable_results, strict=True):

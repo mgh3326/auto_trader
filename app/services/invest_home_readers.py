@@ -547,7 +547,13 @@ class TossApiHomeReader:
             mutations_enabled = bool(
                 getattr(_settings, "toss_live_order_mutations_enabled", False)
             )
-            snapshot = await fetch_toss_portfolio_snapshot()
+            with sentry_sdk.start_span(
+                op="invest.home.toss_api.phase",
+                name="invest.home.toss_api.snapshot",
+            ) as span:
+                snapshot = await fetch_toss_portfolio_snapshot()
+                span.set_data("position_count", len(snapshot.positions))
+                span.set_data("error_count", len(snapshot.errors))
             holdings: list[Holding] = []
             value_krw_total = 0.0
             cost_basis_krw_total: float | None = 0.0
@@ -560,7 +566,12 @@ class TossApiHomeReader:
                 for position in snapshot.positions
             ):
                 try:
-                    usd_krw_rate = await get_usd_krw_rate()
+                    with sentry_sdk.start_span(
+                        op="invest.home.toss_api.phase",
+                        name="invest.home.toss_api.fx",
+                    ) as span:
+                        usd_krw_rate = await get_usd_krw_rate()
+                        span.set_tag("success", True)
                 except Exception as exc:
                     logger.warning(
                         "USD/KRW FX fetch failed for Toss API reader: %s",
