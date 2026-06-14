@@ -109,7 +109,6 @@ class TestUnifiedWebSocketMonitor:
 
         async def send_side_effect(*args, **kwargs):
             call_order.append("notify")
-            return _success_result("req-ledger-first")
 
         record_mock = AsyncMock(side_effect=record_side_effect)
         send_mock = AsyncMock(side_effect=send_side_effect)
@@ -151,7 +150,6 @@ class TestUnifiedWebSocketMonitor:
 
         async def send_side_effect(*args, **kwargs):
             call_order.append("notify")
-            return _success_result("req-upbit-ledger-first")
 
         record_mock = AsyncMock(side_effect=record_side_effect)
         send_mock = AsyncMock(side_effect=send_side_effect)
