@@ -27,7 +27,10 @@ from app.mcp_server.tooling.fundamentals_sources_yfinance import (
     _fetch_valuation_yfinance,
     _YFinanceSnapshot,
 )
-from app.mcp_server.tooling.market_data_indicators import _fetch_ohlcv_for_indicators
+from app.mcp_server.tooling.market_data_indicators import (
+    _fetch_ohlcv_for_indicators,
+    _split_support_resistance_levels,
+)
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_kr_live_quote,
     _fetch_quote_crypto,
@@ -376,6 +379,55 @@ def _apply_common_results(
         analysis[key] = value
 
 
+def _to_optional_price(value: Any) -> float | None:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
+def _recompute_intraday_support_resistance(
+    analysis: dict[str, Any],
+    market_type: str,
+) -> None:
+    """ROB-541: re-sign S/R level distances against the LIVE quote price.
+
+    The EOD support_resistance payload computes ``distance_pct`` and the
+    support/resistance split against the daily-close ``current_price``. On an
+    intraday gap, that misclassifies levels relative to where the symbol is
+    actually trading. For KR/crypto (which carry a live ``quote.price``), we
+    recompute each level's ``distance_pct`` AND re-split supports vs resistances
+    against the live price.
+
+    The EOD S/R price LEVELS themselves are left intact — only their distance
+    and bucket are recomputed. ``_support_resistance.py`` (shared with the
+    standalone get_support_resistance tool) is NOT touched.
+    """
+    if market_type not in {"equity_kr", "crypto"}:
+        return
+    sr = analysis.get("support_resistance")
+    if not isinstance(sr, dict) or "error" in sr:
+        return
+    quote = analysis.get("quote") or {}
+    live_price = _to_optional_price(quote.get("price") or quote.get("current_price"))
+    if live_price is None:
+        return
+
+    levels = [*(sr.get("supports") or []), *(sr.get("resistances") or [])]
+    if not levels:
+        return
+
+    # Pass copies so the EOD price levels are preserved; the splitter mutates
+    # distance_pct in place, which is exactly the intraday recompute we want.
+    recomputed = [dict(level) for level in levels]
+    supports, resistances = _split_support_resistance_levels(recomputed, live_price)
+    sr["supports"] = supports
+    sr["resistances"] = resistances
+    sr["distance_basis_price"] = round(live_price, 2)
+    sr["distance_basis"] = "live_quote"
+
+
 def _apply_kr_results(analysis: dict[str, Any], task_results: dict[str, Any]) -> None:
     kr_snapshot = task_results.get("kr_snapshot")
     if not isinstance(kr_snapshot, dict):
@@ -540,6 +592,8 @@ async def analyze_stock_impl(
         name=f"assemble response {market_type} {normalized_symbol}",
     ):
         _apply_common_results(analysis, task_results, preloaded_quote)
+        # ROB-541 — re-sign S/R level distances against the live quote (KR/crypto).
+        _recompute_intraday_support_resistance(analysis, market_type)
         _apply_market_specific_results(analysis, task_results, market_type)
         _apply_sector_peers_result(analysis, task_results, market_type, include_peers)
         analysis["errors"] = []

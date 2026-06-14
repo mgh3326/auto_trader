@@ -111,3 +111,57 @@ class TestPositionToOutput:
         }
         output = position_to_output(position)
         assert output["dust"] is False
+        # ROB-541: no source/broker -> routability fields are not fabricated.
+        assert "order_routable" not in output
+        assert "account_mode" not in output
+
+    def _base_position(self, **overrides: object) -> dict:
+        position = {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "market": "kr",
+            "quantity": 10,
+            "avg_buy_price": 70000,
+            "current_price": 75000,
+            "evaluation_amount": 750000,
+            "profit_loss": 50000,
+            "profit_rate": 7.14,
+        }
+        position.update(overrides)
+        return position
+
+    def test_kis_source_routable_true(self) -> None:
+        # ROB-541: per-position order_routable + account_mode mirror get_holdings.
+        output = position_to_output(self._base_position(source="kis_api", broker="kis"))
+        assert output["order_routable"] is True
+        assert output["account_mode"] == "kis_live"
+
+    def test_toss_api_source_routable_false(self) -> None:
+        output = position_to_output(
+            self._base_position(source="toss_api", broker="toss")
+        )
+        assert output["order_routable"] is False
+        assert output["account_mode"] == "toss_api"
+
+    def test_manual_source_routable_false(self) -> None:
+        output = position_to_output(
+            self._base_position(account="samsung", broker="samsung", source="manual")
+        )
+        assert output["order_routable"] is False
+
+    def test_upbit_source_provenance_label(self) -> None:
+        output = position_to_output(
+            self._base_position(
+                symbol="KRW-BTC", market="crypto", broker="upbit", source="upbit_api"
+            )
+        )
+        assert output["order_routable"] is True
+        assert output["account_mode"] == "upbit_live"
+
+    def test_routing_mode_respected_for_kis_mock(self) -> None:
+        # When the position carries routing_mode (stamped by get_holdings),
+        # the per-position account_mode matches the GROUP label exactly.
+        output = position_to_output(
+            self._base_position(source="kis_api", broker="kis", routing_mode="kis_mock")
+        )
+        assert output["account_mode"] == "kis_mock"
