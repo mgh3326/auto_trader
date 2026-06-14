@@ -1,9 +1,14 @@
 """ROB-554 — reverse-lookup of live orders linked to report items.
 
-Given report-item UUIDs, return the live orders (US/crypto + KR) whose
-ROB-473 ``report_item_uuid`` matches, projected into ``LinkedOrderView`` with
-the reconcile-written fill rollup. Single projection source so the web bundle,
-the MCP bundle, and the ROB-473 audit helpers cannot drift.
+Given report-item UUIDs, return the live orders (US/crypto + KR + Toss KR/US)
+whose ROB-473 ``report_item_uuid`` matches, projected into ``LinkedOrderView``
+with the reconcile-written fill rollup. Single projection source so the web
+bundle, the MCP bundle, and the ROB-473 audit helpers cannot drift.
+
+Covers all live ledgers that carry ``report_item_uuid``: ``LiveOrderLedger``
+(US/crypto), ``KISLiveOrderLedger`` (KR domestic), and ``TossLiveOrderLedger``
+(KR/US via Toss). Mock, paper, and demo-broker ledgers do not carry the link
+and are intentionally out of scope.
 """
 
 from __future__ import annotations
@@ -14,7 +19,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.review import KISLiveOrderLedger, LiveOrderLedger
+from app.models.review import (
+    KISLiveOrderLedger,
+    LiveOrderLedger,
+    TossLiveOrderLedger,
+)
 from app.schemas.investment_reports import LinkedOrderView
 
 
@@ -64,14 +73,42 @@ def project_kis_live_order(row: KISLiveOrderLedger) -> LinkedOrderView:
     )
 
 
+def project_toss_live_order(row: TossLiveOrderLedger) -> LinkedOrderView:
+    """Toss (KR/US) ledger row -> LinkedOrderView.
+
+    Toss uses ``account_mode`` (not ``account_scope``) and has no ``order_no``
+    column — fall back to ``broker_order_id`` then ``client_order_id`` for the
+    order id, and leave ``order_time`` empty (Toss records no broker time-of-day
+    string; ``reconciled_at`` carries the fill timestamp).
+    """
+    return LinkedOrderView(
+        broker=row.broker,
+        account_scope=row.account_mode,
+        market=row.market,
+        order_no=row.broker_order_id or row.client_order_id,
+        ledger_id=row.id,
+        symbol=row.symbol,
+        side=row.side,
+        status=row.status,
+        filled_qty=row.filled_qty,
+        avg_fill_price=row.avg_fill_price,
+        order_time=None,
+        reconciled_at=row.reconciled_at,
+        exit_reason=row.exit_reason,
+        thesis=row.thesis,
+        report_item_uuid=row.report_item_uuid,
+    )
+
+
 async def list_linked_orders_for_item_uuids(
     db: AsyncSession, item_uuids: Sequence[UUID]
 ) -> dict[str, list[LinkedOrderView]]:
     """Return ``{str(report_item_uuid): [LinkedOrderView, ...]}`` for the items.
 
-    Two batch queries (one per live ledger), grouped by report_item_uuid.
-    Items with no linked orders are absent from the dict (caller treats missing
-    as "no linked orders"). Most-recent-first within each ledger (id desc).
+    Three batch queries (one per live ledger: US/crypto, KR domestic, Toss),
+    grouped by report_item_uuid. Items with no linked orders are absent from the
+    dict (caller treats missing as "no linked orders"). Most-recent-first within
+    each ledger (id desc).
     """
     grouped: dict[str, list[LinkedOrderView]] = {}
     uuids = list(item_uuids)
@@ -100,6 +137,17 @@ async def list_linked_orders_for_item_uuids(
         .scalars()
         .all()
     )
+    toss_rows = (
+        (
+            await db.execute(
+                select(TossLiveOrderLedger)
+                .where(TossLiveOrderLedger.report_item_uuid.in_(uuids))
+                .order_by(TossLiveOrderLedger.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     for row in live_rows:
         grouped.setdefault(str(row.report_item_uuid), []).append(
@@ -108,5 +156,9 @@ async def list_linked_orders_for_item_uuids(
     for row in kis_rows:
         grouped.setdefault(str(row.report_item_uuid), []).append(
             project_kis_live_order(row)
+        )
+    for row in toss_rows:
+        grouped.setdefault(str(row.report_item_uuid), []).append(
+            project_toss_live_order(row)
         )
     return grouped

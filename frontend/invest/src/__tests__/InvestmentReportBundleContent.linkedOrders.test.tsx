@@ -131,4 +131,60 @@ describe("InvestmentReportBundleContent — ROB-554 linked orders", () => {
     renderContent(makeBundle(makeItem({ linkedOrders: null })));
     expect(screen.queryByText("주문 · 체결")).toBeNull();
   });
+
+  it("renders no order card for an empty linkedOrders array", () => {
+    renderContent(makeBundle(makeItem({ linkedOrders: [] })));
+    expect(screen.queryByText("주문 · 체결")).toBeNull();
+  });
+
+  it.each([
+    ["partial", "부분체결"],
+    ["cancelled", "취소"],
+    ["rejected", "거부"],
+    ["expired", "만료"],
+    ["anomaly", "이상"],
+    ["accepted", "미체결"],
+    ["replaced", "정정됨"],
+    ["cancel_rejected", "취소거부"],
+    ["weird_status", "weird_status"], // unmapped -> raw passthrough
+  ])("renders status %s with label %s", (status, label) => {
+    renderContent(
+      makeBundle(
+        makeItem({
+          linkedOrders: [
+            {
+              ledgerId: 1,
+              orderNo: "o-1",
+              symbol: "BTC",
+              side: "buy",
+              status,
+            },
+          ],
+        }),
+      ),
+    );
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("falls back to an em dash badge for a null status", () => {
+    renderContent(
+      makeBundle(
+        makeItem({
+          linkedOrders: [
+            {
+              ledgerId: 1,
+              orderNo: "o-1",
+              symbol: "BTC",
+              side: "buy",
+              status: null,
+              filledQty: "1",
+              avgFillPrice: "2",
+            },
+          ],
+        }),
+      ),
+    );
+    expect(screen.getByText("주문 · 체결")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
 });
