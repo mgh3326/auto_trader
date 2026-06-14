@@ -55,7 +55,14 @@ def _build_query_service(
 
 def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
     items = bundle["items"]
-    item_responses = [InvestmentReportItemResponse.model_validate(it) for it in items]
+    # ROB-554 — attach reverse-looked-up linked orders (set post-validation;
+    # the ORM item row has no such attribute). Missing key => legacy/no orders.
+    linked_by_uuid = bundle.get("linked_orders_by_item_uuid", {})
+    item_responses = []
+    for it in items:
+        resp = InvestmentReportItemResponse.model_validate(it)
+        resp.linked_orders = linked_by_uuid.get(str(it.item_uuid))
+        item_responses.append(resp)
     decisions_by_item_uuid: dict[str, list[InvestmentReportItemDecisionResponse]] = {}
     for item in items:
         rows = bundle["decisions_by_item"].get(item.id, [])

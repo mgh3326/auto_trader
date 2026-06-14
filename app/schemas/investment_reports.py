@@ -732,6 +732,34 @@ class InvestmentReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class LinkedOrderView(BaseModel):
+    """ROB-554 — read-side view of a live order linked to a report item.
+
+    Sourced from review.live_order_ledger (US/crypto) and
+    review.kis_live_order_ledger (KR) by report_item_uuid (ROB-473). Carries
+    the reconcile-written fill rollup so the decision-log card can show
+    "rationale → order → fill status" without joining the fills table.
+    """
+
+    broker: str | None = None
+    account_scope: str | None = None
+    market: str | None = None
+    order_no: str | None = None
+    ledger_id: int
+    symbol: str | None = None
+    side: str | None = None
+    status: str | None = None
+    filled_qty: Decimal | None = None
+    avg_fill_price: Decimal | None = None
+    order_time: str | None = None
+    reconciled_at: datetime | None = None
+    exit_reason: str | None = None
+    thesis: str | None = None
+    report_item_uuid: UUID | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class InvestmentReportItemResponse(BaseModel):
     """Single ``investment_report_items`` row."""
 
@@ -770,6 +798,11 @@ class InvestmentReportItemResponse(BaseModel):
     cited_symbol_report_uuid: UUID | None = None
     cited_dimension_report_uuids: list[UUID] = Field(default_factory=list)
     cited_snapshot_uuids: list[UUID] = Field(default_factory=list)
+
+    # ROB-554 — live orders linked to this item via report_item_uuid (ROB-473),
+    # with reconcile-written fill rollup. None when the item has no linked orders;
+    # set post-validation by the bundle serializers, not read from the ORM row.
+    linked_orders: list[LinkedOrderView] | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

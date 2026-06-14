@@ -229,9 +229,16 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         decisions_by_item_uuid[str(item.item_uuid)] = [
             InvestmentReportItemDecisionResponse.model_validate(d) for d in rows
         ]
+    # ROB-554 — attach reverse-looked-up linked orders (parity with web serializer).
+    linked_by_uuid = bundle.get("linked_orders_by_item_uuid", {})
+    item_responses = []
+    for it in items:
+        resp = InvestmentReportItemResponse.model_validate(it)
+        resp.linked_orders = linked_by_uuid.get(str(it.item_uuid))
+        item_responses.append(resp)
     return InvestmentReportBundle(
         report=InvestmentReportResponse.model_validate(bundle["report"]),
-        items=[InvestmentReportItemResponse.model_validate(it) for it in items],
+        items=item_responses,
         decisions_by_item_uuid=decisions_by_item_uuid,
         alerts=[
             InvestmentWatchAlertResponse.model_validate(a) for a in bundle["alerts"]
