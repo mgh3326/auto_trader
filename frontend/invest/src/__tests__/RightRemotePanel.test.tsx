@@ -423,3 +423,27 @@ test("paper 선택 후 전체 클릭 시 includePaper=false 로 cleanup", async 
   const thirdCall = fetchSpy.mock.calls[2]?.[0];
   expect(thirdCall?.includePaper).toBeFalsy();
 });
+
+test("crypto portfolio clicks canonicalize bare Upbit base symbols to KRW detail routes", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
+    ...PANEL_RESP,
+    groupedHoldings: PANEL_RESP.groupedHoldings.map((holding) =>
+      holding.market === "CRYPTO"
+        ? {
+            ...holding,
+            groupId: "CRYPTO:crypto:KRW:BTC",
+            symbol: "BTC",
+            displayName: "비트코인",
+          }
+        : holding,
+    ),
+  });
+
+  renderPanel();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
+
+  await user.click(screen.getByRole("button", { name: /비트코인/ }));
+
+  expect(screen.getByTestId("location-probe")).toHaveAttribute("data-path", "/stocks/crypto/KRW-BTC");
+});
