@@ -39,6 +39,7 @@ from app.mcp_server.tooling import (
     fundamentals_sources_naver,
     fundamentals_sources_yfinance,
     market_data_indicators,
+    portfolio_holdings,
     shared,
 )
 from app.mcp_server.tooling.fundamentals import (
@@ -791,6 +792,12 @@ class TestAnalyzeStockBatch:
             return mock_analysis
 
         _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+        # ROB-541: not-held symbol -> position is null. Mock the single batched
+        # holdings fetch so the contract is deterministic without a DB.
+        empty_collect = AsyncMock(return_value=([], [], "equity_kr", None))
+        monkeypatch.setattr(
+            portfolio_holdings, "_collect_portfolio_positions", empty_collect
+        )
 
         result = await tools["analyze_stock_batch"](["005930"], market="kr")
 
@@ -817,7 +824,11 @@ class TestAnalyzeStockBatch:
             },
             "supports": [{"price": 73000}],
             "resistances": [{"price": 77000, "strength": "medium"}],
+            # ROB-541: include_position defaults True; not held -> null.
+            "position": None,
         }
+        # Single batched holdings fetch only — never per symbol.
+        assert empty_collect.await_count == 1
 
     async def test_analyze_stock_batch_quick_summary_crypto_rsi(self, monkeypatch):
         # ROB-451: crypto batch quick summary must surface rsi_14 (flat indicator map),
@@ -838,12 +849,18 @@ class TestAnalyzeStockBatch:
             return mock_analysis
 
         _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
+            AsyncMock(return_value=([], [], "crypto", None)),
+        )
 
         result = await tools["analyze_stock_batch"](["BTC"], market="crypto")
 
         row = result["results"]["BTC"]
         assert row["rsi_14"] == pytest.approx(61.2)  # ROB-451: no longer null
         assert row.get("consensus") is None  # crypto: correct (not a regression)
+        assert row["position"] is None  # ROB-541: BTC not held -> null
 
     async def test_analyze_stock_batch_quick_false_returns_full_payload(
         self, monkeypatch
@@ -888,6 +905,11 @@ class TestAnalyzeStockBatch:
             }
 
         _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", mock_impl)
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
+            AsyncMock(return_value=([], [], "equity_kr", None)),
+        )
 
         result = await tools["analyze_stock_batch"]([12450, "005930"], market="kr")
 
@@ -915,6 +937,11 @@ class TestAnalyzeStockBatch:
             }
 
         _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
+            AsyncMock(return_value=([], [], "equity_kr", None)),
+        )
 
         result = await tools["analyze_stock_batch"](
             ["005930", "000660", "035420"], market="kr"
@@ -922,6 +949,185 @@ class TestAnalyzeStockBatch:
 
         assert "results" in result
         assert call_tracker["max_active"] > 1, "Expected concurrent execution"
+
+    async def test_analyze_stock_batch_position_held_routable(self, monkeypatch):
+        """ROB-541: held KIS-api symbol -> position array, order_routable=True."""
+        tools = build_tools()
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": "005930",
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+                "indicators": {"rsi": {"14": 45.0}},
+                "support_resistance": {"supports": [], "resistances": []},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        kis_position = {
+            "symbol": "005930",
+            "instrument_type": "equity_kr",
+            "account": "kis",
+            "broker": "kis",
+            "source": "kis_api",
+            "quantity": 10,
+            "avg_buy_price": 70000,
+            "profit_rate": 7.14,
+        }
+        collect = AsyncMock(return_value=([kis_position], [], "equity_kr", None))
+        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions", collect)
+
+        result = await tools["analyze_stock_batch"](["005930"], market="kr")
+
+        position = result["results"]["005930"]["position"]
+        assert position == [
+            {
+                "account": "kis",
+                "account_mode": "kis_live",
+                "qty": 10,
+                "avg_buy_price": 70000,
+                "pnl_pct": 7.14,
+                "order_routable": True,
+            }
+        ]
+        assert collect.await_count == 1
+
+    async def test_analyze_stock_batch_position_toss_not_routable(self, monkeypatch):
+        """ROB-541: toss-held symbol -> order_routable=False (matches get_holdings)."""
+        tools = build_tools()
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": "005930",
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+                "support_resistance": {"supports": [], "resistances": []},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        toss_position = {
+            "symbol": "005930",
+            "instrument_type": "equity_kr",
+            "account": "toss",
+            "broker": "toss",
+            "source": "toss_api",
+            "quantity": 5,
+            "avg_buy_price": 72000,
+            "profit_rate": 4.17,
+        }
+        collect = AsyncMock(return_value=([toss_position], [], "equity_kr", None))
+        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions", collect)
+
+        result = await tools["analyze_stock_batch"](["005930"], market="kr")
+
+        position = result["results"]["005930"]["position"]
+        assert len(position) == 1
+        assert position[0]["order_routable"] is False
+        assert position[0]["account_mode"] == "toss_api"
+
+    async def test_analyze_stock_batch_position_multi_account_array(self, monkeypatch):
+        """ROB-541: symbol held in toss + samsung -> 2-element array, no OR-collapse."""
+        tools = build_tools()
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": "005930",
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+                "support_resistance": {"supports": [], "resistances": []},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        positions = [
+            {
+                "symbol": "005930",
+                "instrument_type": "equity_kr",
+                "account": "toss",
+                "broker": "toss",
+                "source": "toss_api",
+                "quantity": 5,
+                "avg_buy_price": 72000,
+                "profit_rate": 4.17,
+            },
+            {
+                "symbol": "005930",
+                "instrument_type": "equity_kr",
+                "account": "samsung",
+                "broker": "samsung",
+                "source": "manual",
+                "quantity": 3,
+                "avg_buy_price": 68000,
+                "profit_rate": 10.29,
+            },
+        ]
+        collect = AsyncMock(return_value=(positions, [], "equity_kr", None))
+        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions", collect)
+
+        result = await tools["analyze_stock_batch"](["005930"], market="kr")
+
+        position = result["results"]["005930"]["position"]
+        assert len(position) == 2
+        accounts = {entry["account"]: entry["order_routable"] for entry in position}
+        # Both reference-only -> both False; never OR-collapsed to a single flag.
+        assert accounts == {"toss": False, "samsung": False}
+        assert collect.await_count == 1
+
+    async def test_analyze_stock_batch_include_position_false_omits_key(
+        self, monkeypatch
+    ):
+        """ROB-541: include_position=False -> no holdings fetch, no 'position' key."""
+        tools = build_tools()
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": "005930",
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+                "support_resistance": {"supports": [], "resistances": []},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+        collect = AsyncMock(return_value=([], [], "equity_kr", None))
+        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions", collect)
+
+        result = await tools["analyze_stock_batch"](
+            ["005930"], market="kr", include_position=False
+        )
+
+        assert "position" not in result["results"]["005930"]
+        assert collect.await_count == 0
+
+    async def test_analyze_stock_batch_position_fail_open(self, monkeypatch):
+        """ROB-541: holdings outage -> position null + warning, analysis survives."""
+        tools = build_tools()
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": "005930",
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+                "support_resistance": {"supports": [], "resistances": []},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        async def boom(**kwargs):
+            raise RuntimeError("broker down")
+
+        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions", boom)
+
+        result = await tools["analyze_stock_batch"](["005930"], market="kr")
+
+        assert result["results"]["005930"]["position"] is None
+        assert any("보유 종목 조회 실패" in w for w in result["summary"]["errors"])
 
 
 @pytest.mark.asyncio
@@ -4898,6 +5104,11 @@ class TestGetIntradayInvestorFlow:
         assert result["provisional"] is True
         assert result["as_of"] == "2026-06-10T14:30:00+09:00"
         assert result["as_of_time_kst"] == "14:30"
+        # ROB-542: machine-readable session metadata.
+        assert result["as_of_date"] == "2026-06-10"
+        assert result["confidence"] == "observed"
+        assert result["is_prior_session"] is False
+        assert result["warning"] is None
         assert result["foreign_net_qty"] == -120000
         assert result["institution_net_qty"] == 50000
         assert result["combined_net_qty"] == -70000
@@ -4929,6 +5140,11 @@ class TestGetIntradayInvestorFlow:
 
         assert result["rows"] == []
         assert result["as_of"] is None
+        # ROB-542: no rows → no slot time to classify; fields present but null.
+        assert result["as_of_date"] is None
+        assert result["confidence"] is None
+        assert result["is_prior_session"] is False
+        assert result["warning"] is None
         assert result["foreign_net_qty"] is None
         assert result["institution_net_qty"] is None
         assert result["combined_net_qty"] is None
@@ -4967,11 +5183,22 @@ class TestGetIntradayInvestorFlow:
             "kr_market_data_state",
             lambda: "premarket_unavailable",
         )
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "previous_kr_session",
+            lambda date: _dt.date(2026, 6, 10),
+        )
 
         result = await tools["get_intraday_investor_flow"]("000660")
 
         assert result["as_of"] is None
         assert result["as_of_time_kst"] == "14:30"
+        # ROB-542: future slot → carry_over; as_of stays null, date is prior session.
+        assert result["confidence"] == "carry_over"
+        assert result["is_prior_session"] is True
+        assert result["as_of_date"] == "2026-06-10"
+        assert result["warning"] is not None
+        assert result["warning"]["code"] == "prior_session_carry_over"
         assert result["foreign_net_qty"] == -120000
         assert "previous trading session" in result["note"]
 
@@ -5008,11 +5235,21 @@ class TestGetIntradayInvestorFlow:
             "kr_market_data_state",
             lambda: "market_closed",
         )
+        # 2026-06-13 is a Saturday → prior session is Fri 2026-06-12.
+        monkeypatch.setattr(
+            intraday_investor_flow,
+            "previous_kr_session",
+            lambda date: _dt.date(2026, 6, 12),
+        )
 
         result = await tools["get_intraday_investor_flow"]("000660")
 
         assert result["as_of"] is None
         assert result["as_of_time_kst"] == "14:30"
+        # ROB-542: non-session day → carry_over with prior-session date only.
+        assert result["confidence"] == "carry_over"
+        assert result["is_prior_session"] is True
+        assert result["as_of_date"] == "2026-06-12"
         assert result["combined_net_qty"] == -70000
         assert "previous trading session" in result["note"]
 
@@ -5052,6 +5289,11 @@ class TestGetIntradayInvestorFlow:
         result = await tools["get_intraday_investor_flow"]("000660")
 
         assert result["as_of"] == "2026-06-10T14:30:00+09:00"
+        # ROB-542: after-close same session day but state not fresh → inferred.
+        assert result["confidence"] == "inferred"
+        assert result["is_prior_session"] is False
+        assert result["as_of_date"] == "2026-06-10"
+        assert result["warning"] is None
         assert "previous trading session" not in result["note"]
 
     async def test_rejects_non_kr_symbol(self):

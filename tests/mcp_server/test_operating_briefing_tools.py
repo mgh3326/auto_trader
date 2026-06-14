@@ -64,6 +64,7 @@ def test_operating_briefing_tool_names_register() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
 async def test_list_active_watches_impl_returns_rationale_and_filters(
     db_session: AsyncSession,
 ) -> None:
@@ -201,6 +202,85 @@ async def test_get_operating_briefing_composes_all_sections(
     assert result["latest_report"]["title"] == "latest plan"
     assert result["session_context"]["entries"][0]["title"] == "handoff"
     assert result["staleness"]["pending_orders"]["freshness_status"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_get_operating_briefing_surfaces_per_account_routability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-541: briefing surfaces per-account order_routable + account_mode so a
+    toss-held (reference-only) symbol is distinguishable from a kis_live-sellable
+    one."""
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    async def fake_holdings(**kwargs):
+        return {
+            "total_positions": 2,
+            "summary": {"total_value": 100},
+            "accounts": [
+                {
+                    "account": "kis",
+                    "account_name": "KIS 주계좌",
+                    "account_mode": "kis_live",
+                    "order_routable": True,
+                    "positions": [{"symbol": "005930"}],
+                },
+                {
+                    "account": "toss",
+                    "account_name": "토스",
+                    "account_mode": "toss_api",
+                    "order_routable": False,
+                    "positions": [{"symbol": "펩트론"}],
+                },
+            ],
+            "errors": [],
+        }
+
+    class FakePendingSnapshot:
+        orders: list = []
+        as_of = "2026-06-11T01:00:00+00:00"
+        freshness_status = "fresh"
+        unavailable_reason = None
+        account_scope = "kis_live"
+
+    async def fake_pending(db, *, market, account_scope):
+        return FakePendingSnapshot()
+
+    async def fake_active_watches(**kwargs):
+        return {
+            "success": True,
+            "count": 0,
+            "as_of": datetime.now(tz=UTC).isoformat(),
+            "filters": kwargs,
+            "active_watches": [],
+        }
+
+    async def fake_latest_report(db, *, market, account_scope):
+        return None
+
+    async def fake_session_context(db, *, market, account_scope, limit):
+        return {"count": 0, "entries": []}
+
+    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
+    monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
+    monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
+    monkeypatch.setattr(ob, "_recent_session_context", fake_session_context)
+
+    result = await ob.get_operating_briefing_impl(
+        market="kr",
+        account_scope="kis_live",
+    )
+
+    accounts = result["holdings"]["accounts"]
+    by_account = {entry["account"]: entry for entry in accounts}
+    assert by_account["kis"]["order_routable"] is True
+    assert by_account["kis"]["account_mode"] == "kis_live"
+    assert by_account["toss"]["order_routable"] is False
+    assert by_account["toss"]["account_mode"] == "toss_api"
+    assert by_account["toss"]["position_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -408,6 +488,7 @@ async def test_latest_report_summary_excludes_superseded_advisory(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
 async def test_get_operating_briefing_reads_active_watch_and_session_context(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,

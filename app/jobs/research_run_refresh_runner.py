@@ -29,6 +29,11 @@ from app.services import (
     research_run_decision_session_service,
     research_run_live_refresh_service,
 )
+from app.services.brokers.toss.market_calendar import (
+    get_kr_nxt_session_from_toss,
+    get_kr_toss_session_from_toss,
+)
+from app.services.market_events.session_calendar import is_trading_session
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +61,7 @@ _KR_NXT_WINDOW = ((15, 30), (20, 30))
 
 def _within_window(*, stage: StageLiteral, now: datetime) -> bool:
     """Return True if `now` falls within the allowed trading window for `stage`."""
-    weekday = now.weekday()  # Mon=0..Sun=6
-    if weekday >= 5:
+    if not is_trading_session("kr", now.date()):
         return False
     minutes = now.hour * 60 + now.minute
     if stage == "preopen":
@@ -69,6 +73,16 @@ def _within_window(*, stage: StageLiteral, now: datetime) -> bool:
     else:
         return False
     return start <= minutes <= end
+
+
+async def _toss_stage_allows_run(*, stage: StageLiteral, now: datetime) -> bool:
+    if stage == "nxt_aftermarket":
+        session = await get_kr_nxt_session_from_toss(now)
+        return session in {None, "nxt_after"}
+    if stage == "preopen":
+        session = await get_kr_toss_session_from_toss(now)
+        return session in {None, "nxt_premarket", "regular"}
+    return False
 
 
 @asynccontextmanager
@@ -118,8 +132,10 @@ async def run_research_run_refresh(
         )
         return {**base, "status": "skipped", "reason": "no_operator_user_configured"}
 
-    if settings.research_run_refresh_market_hours_only and not _within_window(
-        stage=stage, now=now_local()
+    local_now = now_local()
+    if settings.research_run_refresh_market_hours_only and (
+        not _within_window(stage=stage, now=local_now)
+        or not await _toss_stage_allows_run(stage=stage, now=local_now)
     ):
         logger.info(
             "research_run_refresh outside trading hours; skipping (%s/%s)",

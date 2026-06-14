@@ -8,13 +8,14 @@ from typing import TYPE_CHECKING, Any, cast
 import pandas as pd
 
 import app.services.brokers.upbit.client as upbit_service
-from app.core.config import validate_kis_mock_config
+from app.core.config import settings, validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_kis_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
     normalize_account_mode,
+    toss_live_mutations_enabled,
 )
 from app.mcp_server.tooling.concurrency import bounded_gather
 from app.mcp_server.tooling.market_data_indicators import (
@@ -101,6 +102,10 @@ from app.services.brokers.kis.client import KISClient
 from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
+from app.services.toss_portfolio_service import (
+    TossPortfolioPosition,
+    fetch_toss_portfolio_snapshot,
+)
 from app.services.upbit_symbol_universe_service import (
     UpbitSymbolInactiveError,
     UpbitSymbolNotRegisteredError,
@@ -124,12 +129,13 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
 CRYPTO_STOP_LOSS_PCT = -4.5
 CRYPTO_MEAN_REVERSION_RSI_EXIT = 46.0
 
-# ROB-357 — provenance label for Upbit (crypto-live) holdings. The MCP
+# ROB-357/ROB-532 provenance labels for non-KIS live holdings. The MCP
 # ``account_mode`` selector vocabulary ({db_simulated, kis_mock, kis_live}) is a
-# KIS/paper *routing* selector and has no Upbit member, so an Upbit-only holdings
-# read used to inherit the ``kis_live`` routing default and mislabel the source.
-# This descriptive provenance value never participates in order routing.
+# KIS/paper routing selector, so non-KIS live rows must not inherit the
+# ``kis_live`` default and mislabel the source. These descriptive provenance
+# values never participate in order routing.
 UPBIT_LIVE_PROVENANCE = "upbit_live"
+TOSS_API_PROVENANCE = "toss_api"
 
 # ROB-469 PR2: bound per-call fan-out concurrency so a large portfolio can't explode
 # the task count and stall the MCP event loop.
@@ -142,25 +148,34 @@ def _provenance_account_mode(
 ) -> str:
     """Derive a per-account holdings provenance label (ROB-357).
 
-    Upbit holdings are crypto-live and must surface ``upbit_live`` rather than
+    Upbit and Toss API holdings must surface their live source rather than
     inheriting the KIS-defaulted routing selector. KIS / paper / manual groups
     keep the resolved routing mode unchanged.
     """
     if broker == "upbit" or source == "upbit_api":
         return UPBIT_LIVE_PROVENANCE
+    if broker == "toss" and source == "toss_api":
+        return TOSS_API_PROVENANCE
     return routing_mode
 
 
 def _account_order_routable(*, source: str | None) -> bool:
     """Whether an account group's holdings are routable by an automated order tool.
 
-    Manual holdings (toss/samsung/수동 입력, ``source="manual"``) are reference-only
-    and cannot be sold via kis_live/kis_mock (or any) order tool. Everything else
-    (``kis_api`` / ``upbit_api`` / paper sources) sells via its own channel. This is
-    the authoritative sellability signal; ``account_mode`` stays a provenance label
-    (ROB-357) and is intentionally left unchanged.
+    Manual holdings (toss/samsung/수동 입력, ``source="manual"``) are always
+    reference-only. ROB-532 Toss API holdings were reference-only until the Toss
+    order tools existed; ROB-549 gates them on
+    ``TOSS_LIVE_ORDER_MUTATIONS_ENABLED`` so the sellability signal matches the
+    registered toss_live order tools once mutations are armed. KIS / Upbit /
+    paper sources sell via their own channels. This is the authoritative
+    sellability signal; ``account_mode`` stays a provenance label (ROB-357) and
+    is intentionally left unchanged.
     """
-    return source != "manual"
+    if source == "manual":
+        return False
+    if source == "toss_api":
+        return toss_live_mutations_enabled()
+    return True
 
 
 def _build_crypto_strategy_signal(
@@ -482,6 +497,72 @@ async def _collect_manual_positions(
     return positions, errors
 
 
+def _same_toss_symbol(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return (
+        str(left.get("broker") or "").lower() == "toss"
+        and str(right.get("broker") or "").lower() == "toss"
+        and str(left.get("instrument_type") or "")
+        == str(right.get("instrument_type") or "")
+        and _normalize_position_symbol(
+            str(left.get("symbol") or ""),
+            str(left.get("instrument_type") or ""),
+        )
+        == _normalize_position_symbol(
+            str(right.get("symbol") or ""),
+            str(right.get("instrument_type") or ""),
+        )
+    )
+
+
+def _toss_api_position_to_mcp(position: TossPortfolioPosition) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "account": position.account,
+        "account_name": position.account_name,
+        "broker": position.broker,
+        "source": position.source,
+        "instrument_type": position.instrument_type,
+        "market": position.market,
+        "symbol": position.symbol,
+        "name": position.name,
+        "quantity": float(position.quantity),
+        "avg_buy_price": float(position.avg_buy_price),
+        "current_price": float(position.current_price),
+        "evaluation_amount": float(position.evaluation_amount)
+        if position.evaluation_amount is not None
+        else None,
+        "profit_loss": float(position.profit_loss)
+        if position.profit_loss is not None
+        else None,
+        "profit_rate": float(position.profit_rate)
+        if position.profit_rate is not None
+        else None,
+    }
+    if position.sellable_quantity is not None:
+        payload["sellable_quantity"] = float(position.sellable_quantity)
+    return payload
+
+
+async def _collect_toss_api_positions(
+    market_filter: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    if not bool(getattr(settings, "toss_api_enabled", False)):
+        return [], [], False
+    if market_filter == "crypto":
+        return [], [], False
+
+    try:
+        snapshot = await fetch_toss_portfolio_snapshot()
+    except Exception as exc:
+        return [], [{"source": "toss_api", "error": str(exc)}], False
+
+    positions = [
+        _toss_api_position_to_mcp(position)
+        for position in snapshot.positions
+        if market_filter is None or position.instrument_type == market_filter
+    ]
+    return positions, snapshot.errors, True
+
+
 def _has_valid_kis_equity_us_snapshot(position: dict[str, Any]) -> bool:
     if position.get("source") != "kis_api":
         return False
@@ -777,6 +858,32 @@ async def _collect_portfolio_positions(
         positions.extend(source_positions)
         errors.extend(source_errors)
 
+    toss_api_positions: list[dict[str, Any]] = []
+    toss_api_errors: list[dict[str, Any]] = []
+    toss_api_succeeded = False
+    if bool(getattr(settings, "toss_api_enabled", False)):
+        (
+            toss_api_positions,
+            toss_api_errors,
+            toss_api_succeeded,
+        ) = await _collect_toss_api_positions(market_filter)
+        positions.extend(toss_api_positions)
+        errors.extend(toss_api_errors)
+
+    if toss_api_succeeded and toss_api_positions:
+        positions = [
+            position
+            for position in positions
+            if not (
+                position.get("source") == "manual"
+                and str(position.get("broker") or "").lower() == "toss"
+                and any(
+                    _same_toss_symbol(position, toss_position)
+                    for toss_position in toss_api_positions
+                )
+            )
+        ]
+
     if market_filter:
         positions = [
             position
@@ -1045,6 +1152,10 @@ async def _get_holdings_impl(
                 "positions": [],
             },
         )
+        # ROB-541 — stamp the resolved routing mode so the per-position
+        # account_mode (added by position_to_output) matches the GROUP label
+        # exactly, including kis_mock scopes.
+        position.setdefault("routing_mode", routing_account_mode)
         grouped["positions"].append(_position_to_output(position))
 
     accounts = [grouped_accounts[key] for key in sorted(grouped_accounts.keys())]
@@ -1158,6 +1269,12 @@ async def _get_position_impl(
             position["symbol"],
         )
     )
+
+    # ROB-541 — stamp the resolved routing mode so the per-position
+    # account_mode (added by position_to_output) matches the routing scope
+    # exactly, including kis_mock. Mirrors _get_holdings_impl (~1150).
+    for position in matched_positions:
+        position.setdefault("routing_mode", routing.account_mode)
 
     return apply_account_routing_metadata(
         {
@@ -1280,6 +1397,13 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         )
         if not explicit_selector and crypto_scoped:
             response["account_mode"] = UPBIT_LIVE_PROVENANCE
+        toss_api_scoped = (account or "").strip().lower() == "toss" and any(
+            position.get("source") == "toss_api"
+            for account_group in response.get("accounts", [])
+            for position in account_group.get("positions", [])
+        )
+        if not explicit_selector and toss_api_scoped:
+            response["account_mode"] = TOSS_API_PROVENANCE
         return response
 
     @mcp.tool(

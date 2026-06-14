@@ -378,3 +378,90 @@ async def test_reconcile_sell_reattaches_defensive_trim_note():
     assert ctx is not None
     assert ctx.approval_issue_id == "ROB-164"
     assert ctx.requester_agent_id == "trader-agent"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_filled_sell_surfaces_journal_entry_basis():
+    """ROB-544: the US/crypto sell reconcile surfaces the journal-entry (FIFO
+    lot) close result, NOT an account-average.
+
+    realized_pnl_basis=='journal_entry', and both realized_pnl_pct and the
+    explicit journal_pnl_pct alias equal the close result's per-lot
+    total_pnl_pct (mirrors test_reconcile_filled_sell_surfaces_journal_entry_basis
+    in test_kis_live_ledger.py)."""
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await ll._save_live_order_ledger(
+        broker="upbit",
+        account_scope="upbit_live",
+        market="crypto",
+        symbol="KRW-BTC",
+        exchange=None,
+        market_symbol="KRW-BTC",
+        side="sell",
+        order_kind="limit",
+        quantity=1.0,
+        price=974.0,
+        amount=974.0,
+        currency="KRW",
+        order_no="JE-SELL-1",
+        order_time=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    row = await ll._load_live_ledger_row(lid)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("1"), Decimal("974"), None, "filled", ""
+    )
+    # journal-entry (FIFO lot) basis: -2.61% loss, NOT an account-average.
+    close_result = {
+        "journals_closed": 1,
+        "journals_kept": 0,
+        "closed_ids": [77],
+        "total_pnl_pct": -2.61,
+        "realized_pnl_basis": "journal_entry",
+    }
+
+    class _Adapter:
+        broker = "upbit"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=222)),
+        patch.object(
+            ll,
+            "_close_journals_on_sell",
+            new=AsyncMock(return_value=close_result),
+        ),
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=False)
+
+    assert out["verdict"] == "filled"
+    assert out["action"] == "booked"
+    assert out["journals_closed"] == 1
+    assert out["closed_journal_ids"] == [77]
+    assert out["realized_pnl_basis"] == "journal_entry"
+    # both the canonical key and the explicit alias mirror the same FIFO lot
+    # basis value — NOT an account-average.
+    assert out["realized_pnl_pct"] == pytest.approx(-2.61)
+    assert out["journal_pnl_pct"] == pytest.approx(-2.61)

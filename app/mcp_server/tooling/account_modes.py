@@ -5,9 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.core.config import settings
+
 ACCOUNT_MODE_DB_SIMULATED = "db_simulated"
 ACCOUNT_MODE_KIS_MOCK = "kis_mock"
 ACCOUNT_MODE_KIS_LIVE = "kis_live"
+ACCOUNT_MODE_TOSS_LIVE = "toss_live"
+
+
+def toss_live_mutations_enabled(settings_obj: Any = settings) -> bool:
+    """ROB-549: single source of truth for whether Toss live order mutations are
+    armed. Gates toss_api holdings' order-routability / orderable cash /
+    tradeability so they no longer contradict the registered toss_live order
+    tools once the operator flips ``TOSS_LIVE_ORDER_MUTATIONS_ENABLED``."""
+    return bool(getattr(settings_obj, "toss_live_order_mutations_enabled", False))
+
 
 _ACCOUNT_MODE_ALIASES = {
     "db_simulated": (ACCOUNT_MODE_DB_SIMULATED, False),
@@ -18,6 +30,7 @@ _ACCOUNT_MODE_ALIASES = {
     "kis_live": (ACCOUNT_MODE_KIS_LIVE, False),
     "real": (ACCOUNT_MODE_KIS_LIVE, False),
     "live": (ACCOUNT_MODE_KIS_LIVE, True),
+    "toss_live": (ACCOUNT_MODE_TOSS_LIVE, False),
 }
 
 _ACCOUNT_TYPE_ALIASES = {
@@ -26,6 +39,7 @@ _ACCOUNT_TYPE_ALIASES = {
     "live": (ACCOUNT_MODE_KIS_LIVE, True),
     "kis_live": (ACCOUNT_MODE_KIS_LIVE, False),
     "kis_mock": (ACCOUNT_MODE_KIS_MOCK, False),
+    "toss_live": (ACCOUNT_MODE_TOSS_LIVE, False),
 }
 
 
@@ -46,6 +60,10 @@ class AccountRouting:
     @property
     def is_kis_live(self) -> bool:
         return self.account_mode == ACCOUNT_MODE_KIS_LIVE
+
+    @property
+    def is_toss_live(self) -> bool:
+        return self.account_mode == ACCOUNT_MODE_TOSS_LIVE
 
     def response_metadata(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {"account_mode": self.account_mode}
@@ -151,6 +169,7 @@ __all__ = [
     "ACCOUNT_MODE_DB_SIMULATED",
     "ACCOUNT_MODE_KIS_LIVE",
     "ACCOUNT_MODE_KIS_MOCK",
+    "ACCOUNT_MODE_TOSS_LIVE",
     "AccountRouting",
     "apply_account_routing_metadata",
     "normalize_account_mode",

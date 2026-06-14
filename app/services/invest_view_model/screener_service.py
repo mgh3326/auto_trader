@@ -391,6 +391,25 @@ def _is_kr_toss_common_stock(symbol: str, name: str | None) -> bool:
     return True
 
 
+def _is_toss_common_stock_row(
+    *,
+    symbol: str,
+    name: str | None,
+    security_type: str | None,
+    is_common_share: bool | None,
+    trading_suspended: bool | None,
+) -> bool:
+    if trading_suspended is True:
+        return False
+    if security_type is not None and security_type.upper() not in {"STOCK", "REIT"}:
+        return False
+    if is_common_share is False:
+        return False
+    if is_common_share is True:
+        return True
+    return _is_kr_toss_common_stock(symbol, name)
+
+
 def _external_failure_warning(exc: BaseException) -> str:
     # Keep provider hostnames/tokens out of logs and user-facing warnings; the
     # error class is enough to diagnose transient DNS/network failures here.
@@ -539,6 +558,7 @@ async def _load_consecutive_gainers_from_snapshots(
     candidate_snaps = result.scalars().all()
 
     symbol_names: dict[str, str] = {}
+    symbol_meta: dict[str, dict[str, Any]] = {}
     sector_map: dict[str, str] = {}
     if market == "kr" and candidate_snaps:
         from app.models.kr_symbol_universe import KRSymbolUniverse
@@ -552,6 +572,10 @@ async def _load_consecutive_gainers_from_snapshots(
                     KRSymbolUniverse.name,
                     SymbolSector.name_kr.label("sector_name_kr"),
                     SymbolSector.name_en.label("sector_name_en"),
+                    KRSymbolUniverse.security_type,
+                    KRSymbolUniverse.is_common_share,
+                    KRSymbolUniverse.krx_trading_suspended,
+                    KRSymbolUniverse.nxt_trading_suspended,
                 )
                 .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
                 .where(
@@ -561,6 +585,19 @@ async def _load_consecutive_gainers_from_snapshots(
             )
             _name_rows = name_result.all()
             symbol_names = {row.symbol: row.name for row in _name_rows}
+            symbol_meta = {
+                row.symbol: {
+                    "security_type": getattr(row, "security_type", None),
+                    "is_common_share": getattr(row, "is_common_share", None),
+                    "krx_trading_suspended": getattr(
+                        row, "krx_trading_suspended", None
+                    ),
+                    "nxt_trading_suspended": getattr(
+                        row, "nxt_trading_suspended", None
+                    ),
+                }
+                for row in _name_rows
+            }
             sector_map = {
                 row.symbol: label
                 for row in _name_rows
@@ -622,6 +659,9 @@ async def _load_consecutive_gainers_from_snapshots(
     market_cap_source: str | None = None
     if market == "kr" and candidate_snaps:
         from app.models.market_valuation_snapshot import MarketValuationSnapshot
+        from app.services.market_valuation_snapshots.repository import (
+            metric_rich_filter,
+        )
 
         val_hp = await resolve_healthy_partition(
             session,
@@ -629,6 +669,7 @@ async def _load_consecutive_gainers_from_snapshots(
             date_col=MarketValuationSnapshot.snapshot_date,
             market_col=MarketValuationSnapshot.market,
             market="kr",
+            row_filter=metric_rich_filter(),  # ROB-551: skip toss-only partitions
         )
         if val_hp is not None:
             market_cap_source = "fallback" if val_hp.is_fallback else "primary"
@@ -662,8 +703,14 @@ async def _load_consecutive_gainers_from_snapshots(
     for snap in candidate_snaps:
         if snap.symbol in seen:
             continue
-        if market == "kr" and not _is_kr_toss_common_stock(
-            snap.symbol, symbol_names.get(snap.symbol)
+        meta = symbol_meta.get(snap.symbol, {})
+        if market == "kr" and not _is_toss_common_stock_row(
+            symbol=snap.symbol,
+            name=symbol_names.get(snap.symbol),
+            security_type=meta.get("security_type"),
+            is_common_share=meta.get("is_common_share"),
+            trading_suspended=meta.get("krx_trading_suspended")
+            or meta.get("nxt_trading_suspended"),
         ):
             continue
         seen.add(snap.symbol)
@@ -750,6 +797,335 @@ async def load_consecutive_gainers_from_snapshots(
     return result.rows
 
 
+async def _load_oversold_recovery_from_snapshots(
+    session: AsyncSession | None,
+    *,
+    market: str,
+    limit: int = _SNAPSHOT_FIRST_LIMIT,
+    max_rsi: float = 30.0,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> _SnapshotLoadResult | None:
+    """Return oversold rows (RSI14 <= ``max_rsi``) from the latest healthy partition.
+
+    ROB-543: oversold_recovery previously had no snapshot-first branch, so a
+    KRX session-expiry returned 0 live rows. This loader mirrors
+    ``_load_consecutive_gainers_from_snapshots`` (healthy-partition resolution,
+    KR common-stock guard, market_cap enrichment) but its qualifying predicate is
+    a read-time RSI14 computed from ``closes_window`` — there is NO RSI column in
+    the snapshot, so no migration is needed. The existing build job/builder are
+    reused unchanged.
+
+    Like the consecutive_gainers loader: returns None when the check could not be
+    performed (no session / wrong market / DB error / table empty) so callers may
+    fall through; returns a _SnapshotLoadResult (possibly with empty rows) once a
+    partition was found, so historical rows from older partitions are never
+    surfaced. Rows whose ``closes_window`` is shorter than 15 closes yield a null
+    RSI and are dropped honestly (never surfaced without an RSI).
+    """
+    if session is None or market not in {"kr", "us"}:
+        return None
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.services.invest_screener_snapshots.freshness import (
+        classify_state,
+        expected_baseline_date,
+    )
+    from app.services.invest_screener_snapshots.partition_health import (
+        cap_degraded,
+        resolve_healthy_partition,
+    )
+    from app.services.invest_view_model.screener_analysis_enrichment import (
+        build_rsi14_from_closes,
+    )
+
+    now_utc = now()
+    today = expected_baseline_date(market, now=now_utc)
+
+    # Step 1: resolve the latest *healthy* snapshot partition (ROB-426 PR2a).
+    hp = await resolve_healthy_partition(
+        session,
+        model=InvestScreenerSnapshot,
+        date_col=InvestScreenerSnapshot.snapshot_date,
+        market_col=InvestScreenerSnapshot.market,
+        market=market,
+    )
+    latest_snapshot_date = hp.partition_date if hp else None
+    if latest_snapshot_date is None:
+        return None  # no snapshots in the table; fall through to external
+    partition_degraded = bool(hp and (hp.is_fallback or not hp.healthy))
+
+    # Step 2: load the ENTIRE latest partition. RSI14 is NOT a snapshot column, so
+    # it can be neither filtered nor ranked in SQL — there is therefore deliberately
+    # NO ``ORDER BY``/``LIMIT`` here. Ordering by an unrelated column (e.g. symbol)
+    # and truncating BEFORE the Python RSI rank would bias the result toward whichever
+    # ticker codes sort first and SILENTLY drop the genuinely-deepest-oversold names
+    # (ROB-543 regression). InvestScreenerSnapshot is a thin row (no raw_payload; the
+    # only JSONB is closes_window ≤30 floats) and the partition is already
+    # date-bounded to one row per active symbol, so a full read is cheap.
+    stmt = sa.select(InvestScreenerSnapshot).where(
+        InvestScreenerSnapshot.market == market,
+        InvestScreenerSnapshot.snapshot_date == latest_snapshot_date,
+    )
+    try:
+        result = await session.execute(stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "failed to read invest_screener_snapshots (oversold_recovery): %s",
+            exc,
+            exc_info=True,
+        )
+        return None
+
+    partition_snaps = result.scalars().all()
+
+    # Rank the FULL partition by read-time RSI14 (deepest oversold first), THEN
+    # truncate. A window shorter than 15 closes (or non-numeric) yields a null RSI
+    # and the row drops honestly rather than surfacing without an RSI.
+    # ``rsi_evaluated`` counts rows that produced a usable RSI so that a partition
+    # whose closes_window predates the _LOOKBACK>=15 rebuild (every RSI null) can be
+    # distinguished from a partition with genuinely no oversold matches.
+    ranked: list[tuple[float, Any]] = []
+    rsi_evaluated = 0
+    for snap in partition_snaps:
+        closes = snap.closes_window or []
+        if len(closes) < 15:
+            continue
+        rsi = build_rsi14_from_closes(closes)
+        if rsi is None:
+            continue
+        rsi_evaluated += 1
+        if rsi <= max_rsi:
+            ranked.append((rsi, snap))
+    ranked.sort(key=lambda item: (item[0], item[1].symbol))
+
+    # Truncate to a bounded candidate set for the (more expensive) name/sector/
+    # market_cap hydration + common-stock guard — the same over-fetch slack the
+    # consecutive_gainers loader gets for free from its SQL ORDER BY ... LIMIT.
+    candidate_limit = max(limit * 5, limit + 120)
+    candidate_pairs = ranked[:candidate_limit]
+    candidate_snaps = [snap for _rsi, snap in candidate_pairs]
+    if partition_snaps and rsi_evaluated == 0:
+        logger.warning(
+            "oversold_recovery: partition %s has %d rows but none produced a usable "
+            "RSI14 (closes_window shorter than 15) — the partition likely predates "
+            "the _LOOKBACK>=15 rebuild and must be rebuilt before oversold_recovery "
+            "returns rows.",
+            latest_snapshot_date,
+            len(partition_snaps),
+        )
+
+    symbol_names: dict[str, str] = {}
+    symbol_meta: dict[str, dict[str, Any]] = {}
+    sector_map: dict[str, str] = {}
+    if market == "kr" and candidate_snaps:
+        from app.models.kr_symbol_universe import KRSymbolUniverse
+        from app.models.symbol_sectors import SymbolSector
+
+        candidate_symbols = [snap.symbol for snap in candidate_snaps]
+        try:
+            name_result = await session.execute(
+                sa.select(
+                    KRSymbolUniverse.symbol,
+                    KRSymbolUniverse.name,
+                    SymbolSector.name_kr.label("sector_name_kr"),
+                    SymbolSector.name_en.label("sector_name_en"),
+                    KRSymbolUniverse.security_type,
+                    KRSymbolUniverse.is_common_share,
+                    KRSymbolUniverse.krx_trading_suspended,
+                    KRSymbolUniverse.nxt_trading_suspended,
+                )
+                .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
+                .where(
+                    KRSymbolUniverse.symbol.in_(candidate_symbols),
+                    KRSymbolUniverse.is_active.is_(True),
+                )
+            )
+            _name_rows = name_result.all()
+            symbol_names = {row.symbol: row.name for row in _name_rows}
+            symbol_meta = {
+                row.symbol: {
+                    "security_type": getattr(row, "security_type", None),
+                    "is_common_share": getattr(row, "is_common_share", None),
+                    "krx_trading_suspended": getattr(
+                        row, "krx_trading_suspended", None
+                    ),
+                    "nxt_trading_suspended": getattr(
+                        row, "nxt_trading_suspended", None
+                    ),
+                }
+                for row in _name_rows
+            }
+            sector_map = {
+                row.symbol: label
+                for row in _name_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "oversold_recovery: failed to read kr_symbol_universe: %s",
+                exc,
+                exc_info=True,
+            )
+
+    if market == "us" and candidate_snaps:
+        from app.models.symbol_sectors import SymbolSector
+        from app.models.us_symbol_universe import USSymbolUniverse
+
+        try:
+            us_rows = (
+                await session.execute(
+                    sa.select(
+                        USSymbolUniverse.symbol,
+                        SymbolSector.name_kr.label("sector_name_kr"),
+                        SymbolSector.name_en.label("sector_name_en"),
+                    )
+                    .outerjoin(
+                        SymbolSector, USSymbolUniverse.sector_id == SymbolSector.id
+                    )
+                    .where(
+                        USSymbolUniverse.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        )
+                    )
+                )
+            ).all()
+            sector_map = {
+                row.symbol: label
+                for row in us_rows
+                if (
+                    label := (
+                        getattr(row, "sector_name_kr", None)
+                        or getattr(row, "sector_name_en", None)
+                    )
+                )
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "oversold_recovery: us sector lookup failed: %s", exc, exc_info=True
+            )
+
+    # market_cap enrichment (KR) mirrors the consecutive_gainers loader.
+    market_cap_map: dict[str, float] = {}
+    market_cap_source: str | None = None
+    if market == "kr" and candidate_snaps:
+        from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+        val_hp = await resolve_healthy_partition(
+            session,
+            model=MarketValuationSnapshot,
+            date_col=MarketValuationSnapshot.snapshot_date,
+            market_col=MarketValuationSnapshot.market,
+            market="kr",
+        )
+        if val_hp is not None:
+            market_cap_source = "fallback" if val_hp.is_fallback else "primary"
+            try:
+                _mc = await session.execute(
+                    sa.select(
+                        MarketValuationSnapshot.symbol,
+                        MarketValuationSnapshot.market_cap,
+                    ).where(
+                        MarketValuationSnapshot.market == "kr",
+                        MarketValuationSnapshot.snapshot_date == val_hp.partition_date,
+                        MarketValuationSnapshot.symbol.in_(
+                            [snap.symbol for snap in candidate_snaps]
+                        ),
+                    )
+                )
+                market_cap_map = {
+                    r.symbol: float(r.market_cap)
+                    for r in _mc.all()
+                    if r.market_cap is not None
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "oversold_recovery: market_cap lookup failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+
+    # ``candidate_pairs`` is already RSI-ascending (deepest oversold first). Build
+    # rows in that order, applying the common-stock guard, and stop at ``limit`` —
+    # the guard may skip some, which the candidate over-fetch slack covers.
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rsi, snap in candidate_pairs:
+        if len(rows) >= limit:
+            break
+        if snap.symbol in seen:
+            continue
+        meta = symbol_meta.get(snap.symbol, {})
+        if market == "kr" and not _is_toss_common_stock_row(
+            symbol=snap.symbol,
+            name=symbol_names.get(snap.symbol),
+            security_type=meta.get("security_type"),
+            is_common_share=meta.get("is_common_share"),
+            trading_suspended=meta.get("krx_trading_suspended")
+            or meta.get("nxt_trading_suspended"),
+        ):
+            continue
+        seen.add(snap.symbol)
+        state = classify_state(
+            snapshot_date=snap.snapshot_date,
+            computed_at=snap.computed_at,
+            closes_window_len=len(snap.closes_window or []),
+            today_trading_date_value=today,
+            now=now_utc,
+        )
+        if partition_degraded:
+            state = cap_degraded(state)
+        rows.append(
+            {
+                "symbol": snap.symbol,
+                "market": market,
+                "name": symbol_names.get(snap.symbol),
+                "sector": sector_map.get(snap.symbol),
+                "rsi": rsi,
+                "close": float(snap.latest_close)
+                if snap.latest_close is not None
+                else None,
+                "change_rate": float(snap.change_rate)
+                if snap.change_rate is not None
+                else None,
+                "change_amount": float(snap.change_amount)
+                if snap.change_amount is not None
+                else None,
+                "consecutive_up_days": snap.consecutive_up_days,
+                "week_change_rate": float(snap.week_change_rate)
+                if snap.week_change_rate is not None
+                else None,
+                "volume": snap.daily_volume,
+                "daily_closes": list(snap.closes_window or []),
+                "snapshot_date": snap.snapshot_date,
+                "computed_at": snap.computed_at,
+                "_screener_snapshot_state": state,
+                "market_cap": market_cap_map.get(snap.symbol),
+                "_market_cap_source": (
+                    market_cap_source if snap.symbol in market_cap_map else None
+                ),
+            }
+        )
+
+    partition_computed_at: datetime | None = None
+    if rows:
+        partition_computed_at = rows[0].get("computed_at")
+    elif partition_snaps:
+        partition_computed_at = getattr(partition_snaps[0], "computed_at", None)
+    reason, coverage_label = _partition_degradation(hp, rows_empty=not rows)
+    return _SnapshotLoadResult(
+        rows=rows,
+        partition_date=latest_snapshot_date,
+        partition_computed_at=partition_computed_at,
+        degradation_reason=reason,
+        coverage_label=coverage_label,
+    )
+
+
 async def _load_investor_flow_discovery_from_snapshots(
     session: AsyncSession | None,
     *,
@@ -817,6 +1193,7 @@ async def _load_investor_flow_discovery_from_snapshots(
     candidate_snaps = result.scalars().all()
 
     symbol_names: dict[str, str] = {}
+    symbol_meta: dict[str, dict[str, Any]] = {}
     sector_map: dict[str, str] = {}
     if candidate_snaps:
         from app.models.kr_symbol_universe import KRSymbolUniverse
@@ -830,6 +1207,10 @@ async def _load_investor_flow_discovery_from_snapshots(
                     KRSymbolUniverse.name,
                     SymbolSector.name_kr.label("sector_name_kr"),
                     SymbolSector.name_en.label("sector_name_en"),
+                    KRSymbolUniverse.security_type,
+                    KRSymbolUniverse.is_common_share,
+                    KRSymbolUniverse.krx_trading_suspended,
+                    KRSymbolUniverse.nxt_trading_suspended,
                 )
                 .outerjoin(SymbolSector, KRSymbolUniverse.sector_id == SymbolSector.id)
                 .where(
@@ -839,6 +1220,19 @@ async def _load_investor_flow_discovery_from_snapshots(
             )
             _name_rows = name_result.all()
             symbol_names = {row.symbol: row.name for row in _name_rows}
+            symbol_meta = {
+                row.symbol: {
+                    "security_type": getattr(row, "security_type", None),
+                    "is_common_share": getattr(row, "is_common_share", None),
+                    "krx_trading_suspended": getattr(
+                        row, "krx_trading_suspended", None
+                    ),
+                    "nxt_trading_suspended": getattr(
+                        row, "nxt_trading_suspended", None
+                    ),
+                }
+                for row in _name_rows
+            }
             sector_map = {
                 row.symbol: label
                 for row in _name_rows
@@ -861,6 +1255,9 @@ async def _load_investor_flow_discovery_from_snapshots(
     market_cap_source: str | None = None
     if candidate_snaps:
         from app.models.market_valuation_snapshot import MarketValuationSnapshot
+        from app.services.market_valuation_snapshots.repository import (
+            metric_rich_filter,
+        )
 
         val_hp = await resolve_healthy_partition(
             session,
@@ -868,6 +1265,7 @@ async def _load_investor_flow_discovery_from_snapshots(
             date_col=MarketValuationSnapshot.snapshot_date,
             market_col=MarketValuationSnapshot.market,
             market="kr",
+            row_filter=metric_rich_filter(),  # ROB-551: skip toss-only partitions
         )
         if val_hp is not None:
             market_cap_source = "fallback" if val_hp.is_fallback else "primary"
@@ -962,7 +1360,15 @@ async def _load_investor_flow_discovery_from_snapshots(
     for snap in candidate_snaps:
         if snap.symbol in seen:
             continue
-        if not _is_kr_toss_common_stock(snap.symbol, symbol_names.get(snap.symbol)):
+        meta = symbol_meta.get(snap.symbol, {})
+        if not _is_toss_common_stock_row(
+            symbol=snap.symbol,
+            name=symbol_names.get(snap.symbol),
+            security_type=meta.get("security_type"),
+            is_common_share=meta.get("is_common_share"),
+            trading_suspended=meta.get("krx_trading_suspended")
+            or meta.get("nxt_trading_suspended"),
+        ):
             continue
         seen.add(snap.symbol)
         state = classify_investor_flow_partition(
@@ -1973,6 +2379,35 @@ async def build_screener_results(
             )
             if _snapshot_load_result is not None:
                 _snapshot_check_result = _snapshot_load_result.rows
+        elif preset_id == "oversold_recovery":
+            # ROB-543: read-time RSI14 over the latest healthy KIS-OHLCV partition.
+            # The preset starting cap (max_rsi=30) comes from _SCREENING_FILTERS;
+            # an MCP rsi<=N override tightens it via the SNAPSHOT_FILTER_FIELDS
+            # catalog (validate_conditions fail-closes on unknown fields).
+            _osr_max_rsi = float(filters.get("max_rsi") or 30.0)
+            if filter_overrides:
+                from app.services.invest_view_model.screener_filters import (
+                    validate_conditions,
+                )
+
+                _osr_conditions = validate_conditions(
+                    filter_overrides, snapshot_kind="invest_screener_snapshots"
+                )
+                for _c in _osr_conditions:
+                    if _c.field == "rsi" and _c.operator == "lte":
+                        _osr_max_rsi = float(_c.value)
+            _snapshot_load_result = await _load_oversold_recovery_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                max_rsi=_osr_max_rsi,
+                now=now,
+            )
+            if _snapshot_load_result is not None:
+                _snapshot_check_result = _snapshot_load_result.rows
+            _snapshot_empty_warning = (
+                "최신 시세 스냅샷에서 RSI 과매도 조건에 맞는 종목이 없습니다."
+            )
         elif preset_id == "investor_flow_momentum":
             _snapshot_load_result = await _load_investor_flow_discovery_from_snapshots(
                 session,
@@ -2158,6 +2593,24 @@ async def build_screener_results(
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "수급 또는 시세 스냅샷이 아직 적재되지 않아 쌍끌이 매수 후보를 표시할 수 없습니다."
+
+    if (
+        preset_id == "oversold_recovery"
+        and session is not None
+        and _snapshot_check_result is None
+    ):
+        # ROB-543: snapshot-backed. The live screening path returns 0 rows on a
+        # KRX session-expiry (the outage we fix), so when a session was available
+        # but the partition is missing/unreadable, degrade HONESTLY
+        # (dataState=missing + warning) instead of silently falling through to the
+        # live path and hiding the outage. (With no session at all — e.g. a
+        # session-less caller — the live path is still allowed, matching the other
+        # snapshot-first presets that only short-circuit once a session exists.)
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = (
+            "시세 스냅샷이 아직 적재되지 않아 RSI 과매도 후보를 표시할 수 없습니다."
+        )
 
     # ROB-428 PR-C: high_yield_value + undervalued_breakout are now in
     # FUNDAMENTALS_PRESET_SPECS, so their None-handling (loader returned None →

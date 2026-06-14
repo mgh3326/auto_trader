@@ -35,6 +35,28 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         output["price_error"] = position["price_error"]
     if "strategy_signal" in position:
         output["strategy_signal"] = position["strategy_signal"]
+    if "sellable_quantity" in position:
+        output["sellable_quantity"] = position["sellable_quantity"]
+    if "source" in position:
+        output["source"] = position["source"]
+    # ROB-541: surface per-position sellability + provenance so consumers that
+    # only read positions[] (not just the account GROUP) still get the
+    # authoritative order_routable flag and the ROB-357 account_mode label.
+    # Lazy import keeps the canonical helpers in portfolio_holdings.py (which
+    # imports this module) without a circular import at load time.
+    if "source" in position or "broker" in position:
+        from app.mcp_server.tooling.portfolio_holdings import (
+            _account_order_routable,
+            _provenance_account_mode,
+        )
+
+        source = position.get("source")
+        output["order_routable"] = _account_order_routable(source=source)
+        output["account_mode"] = _provenance_account_mode(
+            broker=position.get("broker"),
+            source=source,
+            routing_mode=str(position.get("routing_mode") or "kis_live"),
+        )
     return output
 
 

@@ -137,12 +137,14 @@ router = APIRouter(prefix="/invest/api", tags=["invest"])
 def get_invest_home_service(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InvestHomeService:
+    from app.core.config import settings
     from app.services.invest_home_readers import (
         AlpacaPaperHomeReader,
         KISHomeReader,
         KISMockHomeReader,
         ManualHomeReader,
         SafeKISClient,
+        TossApiHomeReader,
         UpbitHomeReader,
     )
     from app.services.invest_quote_service import InvestQuoteService
@@ -154,6 +156,9 @@ def get_invest_home_service(
         kis_reader=KISHomeReader(db),
         upbit_reader=UpbitHomeReader(db),
         manual_reader=ManualHomeReader(db, quote_service=quote_service),
+        toss_api_reader=TossApiHomeReader()
+        if bool(getattr(settings, "toss_api_enabled", False))
+        else None,
         paper_readers=[KISMockHomeReader(), AlpacaPaperHomeReader()],
     )
 

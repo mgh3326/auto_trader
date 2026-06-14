@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pandas as pd
 import pytest
 
 
@@ -297,3 +298,113 @@ def test_kr_candles_task_cron_remains_ten_minutes() -> None:
 
     assert 'task_name="candles.kr.sync"' in content
     assert '"cron": "*/10 * * * 1-5"' in content
+
+
+@pytest.mark.asyncio
+async def test_run_kr_candles_sync_passes_source(monkeypatch):
+    from app.jobs import kr_candles
+
+    sync_mock = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(kr_candles, "sync_kr_candles", sync_mock)
+
+    result = await kr_candles.run_kr_candles_sync(mode="incremental", source="toss")
+
+    sync_mock.assert_awaited_once_with(
+        mode="incremental", sessions=10, user_id=1, source="toss"
+    )
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_kr_candles_cli_accepts_source(monkeypatch):
+    from scripts import sync_kr_candles
+
+    run_mock = AsyncMock(return_value={"status": "completed", "success": True})
+    monkeypatch.setattr(sync_kr_candles, "run_kr_candles_sync", run_mock)
+
+    code = await sync_kr_candles.main(["--mode", "incremental", "--source", "toss"])
+
+    assert code == 0
+    run_mock.assert_awaited_once()
+    assert run_mock.await_args.kwargs["source"] == "toss"
+
+
+@pytest.mark.asyncio
+async def test_sync_kr_candles_toss_source_warning(monkeypatch):
+    from app.services.kr_candles_sync_service import sync_kr_candles
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return [{"pdno": "005930"}]
+
+    class DummyManualHoldingsService:
+        def __init__(self, session):
+            self.session = session
+
+        async def get_holdings_by_user(self, *, user_id, market_type):
+            return []
+
+    class DummySession:
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
+        async def close(self):
+            return None
+
+    session = DummySession()
+    toss_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-06-12 09:00:00"),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            }
+        ]
+    )
+    upsert_mock = AsyncMock(return_value=1)
+
+    monkeypatch.setattr(
+        "app.services.kr_candles_sync_service.KISClient",
+        DummyKISClient,
+    )
+    monkeypatch.setattr(
+        "app.services.kr_candles_sync_service.ManualHoldingsService",
+        DummyManualHoldingsService,
+    )
+    monkeypatch.setattr(
+        "app.services.kr_candles_sync_service.AsyncSessionLocal",
+        lambda: session,
+    )
+    monkeypatch.setattr(
+        "app.services.kr_candles_sync_service._load_universe_context",
+        AsyncMock(
+            return_value=(
+                [_make_universe_row("005930", nxt_eligible=True, is_active=True)],
+                True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.kr_candles_sync_service.fetch_kr_intraday_toss_frame",
+        AsyncMock(return_value=toss_df),
+    )
+    monkeypatch.setattr(
+        "app.services.kr_candles_sync_service._upsert_rows",
+        upsert_mock,
+    )
+
+    result = await sync_kr_candles(mode="incremental", source="toss")
+
+    assert result["source"] == "toss"
+    assert result["rows_upserted"] == 1
+    assert result["symbol_venues_total"] == 1
+    assert result["pairs_processed"] == 1
+    assert any("provider source column" in w for w in result.get("warnings", []))
+    upsert_mock.assert_awaited_once()

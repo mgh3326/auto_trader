@@ -1387,3 +1387,168 @@ async def test_kis_mock_reader_degrades_when_wall_time_bound_exceeded(
     assert result.warning is not None
     assert result.warning.source == "kis_mock"
     assert "시간" in result.warning.message or "초과" in result.warning.message
+
+
+@pytest.mark.asyncio
+async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch):
+    from decimal import Decimal
+
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    # ROB-549: mutations disabled (default) -> reference-only.
+    from app.core.config import settings as _cfg
+
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+
+    assert result.warning is None
+    assert result.accounts[0].source == "toss_api"
+    assert result.accounts[0].accountKind == "live"
+    assert result.accounts[0].cashBalances.krw == 123456.0
+    assert result.accounts[0].cashBalances.usd == 789.01
+    assert result.accounts[0].buyingPower.krw is None
+    assert result.accounts[0].buyingPower.usd is None
+    holding = result.holdings[0]
+    assert holding.source == "toss_api"
+    assert holding.sourceOfTruth is True
+    assert holding.isTradeable is False
+    assert holding.manualOnly is False
+    assert holding.sellableQuantity == 0.0
+    assert holding.referenceQuantity == 1.5
+
+
+@pytest.mark.asyncio
+async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch):
+    """ROB-549: with Toss live mutations armed, toss_api holdings become tradeable
+    and surface the API-provided sellable_quantity instead of discarding it."""
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", True, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+
+    holding = result.holdings[0]
+    assert holding.isTradeable is True
+    assert holding.sellableQuantity == 1.25
+    assert holding.pendingSellQuantity == pytest.approx(0.25)  # qty 1.5 - sellable 1.25
+
+
+@pytest.mark.asyncio
+async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
+    from decimal import Decimal
+
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
+
+    async def fake_fetch_toss_snapshot():
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    async def fake_fx() -> float:
+        return 1300.0
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(readers, "get_usd_krw_rate", fake_fx)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+
+    assert result.warning is None
+    assert result.holdings[0].valueKrw == pytest.approx(645.18 * 1300.0)
+    assert result.holdings[0].pnlKrw == pytest.approx(45.18 * 1300.0)
+    assert result.accounts[0].valueKrw == pytest.approx(645.18 * 1300.0)
+    assert result.accounts[0].costBasisKrw == pytest.approx(600.0 * 1300.0)
+    assert result.accounts[0].pnlKrw == pytest.approx(45.18 * 1300.0)

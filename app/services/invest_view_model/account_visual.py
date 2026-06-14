@@ -24,6 +24,7 @@ _VISUAL_MAP: dict[str, tuple[Tone, BadgeText, str]] = {
     "kiwoom_mock": ("gray", "Mock", "키움 모의"),
     "upbit": ("purple", "Crypto", "업비트"),
     "alpaca_paper": ("green", "Paper", "Alpaca Paper"),
+    "toss_api": ("purple", "Live", "토스"),
     "toss_manual": ("dashed", "Manual", "토스 수동"),
     "pension_manual": ("dashed", "Manual", "연금 수동"),
     "isa_manual": ("dashed", "Manual", "ISA 수동"),

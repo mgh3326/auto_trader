@@ -1141,8 +1141,14 @@ class TestPlaceOrderHighAmount:
         )
 
     @pytest.mark.asyncio
-    async def test_place_order_daily_limit_blocks_high_amount_order(self, monkeypatch):
-        """Daily order limit is enforced even for high-amount orders."""
+    async def test_real_order_not_blocked_by_daily_limit(self, monkeypatch):
+        """ROB-540: the manual flow is uncapped.
+
+        The dead daily-order cap is gone, so a real (dry_run=False) order must
+        execute regardless of any 'order_count' value — there is no longer any
+        'Daily order limit' rejection. A stale Redis count of 999 (well past the
+        old cap of 20) must NOT block the order.
+        """
         tools = build_tools()
 
         mock = AsyncMock()
@@ -1152,8 +1158,8 @@ class TestPlaceOrderHighAmount:
         mock.fetch_my_coins = AsyncMock(
             return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
         )
-        mock.place_market_buy_order = AsyncMock(
-            return_value={"uuid": _unique_order_id("crypto-limit"), "side": "bid"}
+        mock.place_buy_order = AsyncMock(
+            return_value={"uuid": _unique_order_id("crypto-uncapped"), "side": "bid"}
         )
 
         monkeypatch.setattr(
@@ -1168,16 +1174,30 @@ class TestPlaceOrderHighAmount:
         )
         monkeypatch.setattr(
             upbit_service,
-            "place_market_buy_order",
-            mock.place_market_buy_order,
+            "place_buy_order",
+            mock.place_buy_order,
         )
+        monkeypatch.setattr(
+            upbit_service,
+            "adjust_price_to_upbit_unit",
+            lambda price: price,
+        )
+        # Symbol is NOT in stop-loss cooldown — isolate the assertion to the
+        # (now-deleted) daily-order cap.
+        _patch_runtime_attr(
+            monkeypatch,
+            "_get_crypto_trade_cooldown_service",
+            lambda: FakeCooldownService(in_cooldown=False),
+        )
+        # Simulate a Redis order_count far above the old cap of 20 — proves the
+        # cap is dead and never consulted.
         monkeypatch.setattr(
             settings, "redis_url", "redis://localhost:6379/0", raising=False
         )
 
         class FakeRedisClient:
             async def get(self, key):
-                return "20"
+                return "999"
 
         monkeypatch.setattr(
             "redis.asyncio.from_url", AsyncMock(return_value=FakeRedisClient())
@@ -1194,10 +1214,13 @@ class TestPlaceOrderHighAmount:
             strategy="test-strategy",
         )
 
-        assert result["success"] is False
-        assert "Daily order limit" in result.get(
-            "error", ""
-        ) or "Daily order limit" in result.get("message", "")
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert "Daily order limit" not in str(result.get("error", ""))
+        assert "Daily order limit" not in str(result.get("message", ""))
+        mock.place_buy_order.assert_awaited_once_with(
+            "KRW-BTC", 50000000.0, "0.10000000", "limit"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -2755,3 +2778,35 @@ async def test_ladder_fill_preview_echoes_anchor_as_of():
         anchor_as_of="2026-06-11T09:31:00-04:00",
     )
     assert sell["anchor_as_of"] == "2026-06-11T09:31:00-04:00"
+
+
+@pytest.mark.unit
+def test_order_tool_descriptions_drop_daily_order_cap_advertising() -> None:
+    """ROB-540: neither place_order nor kis_live_place_order advertises a daily cap.
+
+    The dead 'order_count' cap is deleted, so its 'max N orders/day' advertising
+    must be stripped from both MCP tool descriptions.
+    """
+
+    class CapturingMCP:
+        def __init__(self) -> None:
+            self.descriptions: dict[str, str] = {}
+
+        def tool(self, name: str, description: str):
+            self.descriptions[name] = description
+
+            def decorator(func):
+                return func
+
+            return decorator
+
+    mcp = CapturingMCP()
+    orders_registration.register_order_tools(mcp)  # type: ignore[arg-type]
+    orders_kis_variants.register_kis_live_order_tools(mcp)  # type: ignore[arg-type]
+
+    generic_desc = mcp.descriptions["place_order"]
+    kis_live_desc = mcp.descriptions["kis_live_place_order"]
+
+    for description in (generic_desc, kis_live_desc):
+        assert "orders/day" not in description
+        assert "Safety limit: max" not in description

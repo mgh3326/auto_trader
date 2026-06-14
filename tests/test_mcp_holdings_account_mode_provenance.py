@@ -18,6 +18,29 @@ from app.mcp_server.tooling import portfolio_holdings
 from tests._mcp_tooling_support import DummyMCP
 
 
+def test_account_order_routable_toss_api_gated_on_mutations_flag(monkeypatch):
+    """ROB-549: toss_api holdings become routable once Toss live order
+    mutations are enabled; manual holdings stay reference-only regardless."""
+    from app.mcp_server.tooling import account_modes
+
+    monkeypatch.setattr(
+        account_modes.settings,
+        "toss_live_order_mutations_enabled",
+        False,
+        raising=False,
+    )
+    assert portfolio_holdings._account_order_routable(source="toss_api") is False
+    assert portfolio_holdings._account_order_routable(source="manual") is False
+    assert portfolio_holdings._account_order_routable(source="kis_api") is True
+
+    monkeypatch.setattr(
+        account_modes.settings, "toss_live_order_mutations_enabled", True, raising=False
+    )
+    assert portfolio_holdings._account_order_routable(source="toss_api") is True
+    # manual is always reference-only, even with Toss mutations on
+    assert portfolio_holdings._account_order_routable(source="manual") is False
+
+
 def _upbit_position(symbol: str = "KRW-BTC") -> dict:
     return {
         "account": "upbit",
@@ -26,6 +49,25 @@ def _upbit_position(symbol: str = "KRW-BTC") -> dict:
         "source": "upbit_api",
         "instrument_type": "crypto",
         "market": "crypto",
+        "symbol": symbol,
+        "name": symbol,
+        "quantity": 1.0,
+        "avg_buy_price": 100.0,
+        "current_price": None,
+        "evaluation_amount": None,
+        "profit_loss": None,
+        "profit_rate": None,
+    }
+
+
+def _toss_api_position(symbol: str = "BRK.B") -> dict:
+    return {
+        "account": "toss",
+        "account_name": "Toss",
+        "broker": "toss",
+        "source": "toss_api",
+        "instrument_type": "equity_us",
+        "market": "us",
         "symbol": symbol,
         "name": symbol,
         "quantity": 1.0,
@@ -83,6 +125,15 @@ def test_provenance_account_mode_kis_keeps_routing_mode():
     )
 
 
+def test_provenance_account_mode_toss_api_is_toss_api():
+    assert (
+        portfolio_holdings._provenance_account_mode(
+            broker="toss", source="toss_api", routing_mode="kis_live"
+        )
+        == "toss_api"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-account label inside the holdings impl.
 # ---------------------------------------------------------------------------
@@ -102,6 +153,36 @@ async def test_get_holdings_impl_labels_upbit_account_upbit_live(monkeypatch):
 
     by_account = {a["account"]: a for a in result["accounts"]}
     assert by_account["upbit"]["account_mode"] == "upbit_live"
+    assert by_account["kis"]["account_mode"] == "kis_live"
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_impl_labels_toss_api_account_toss_api(monkeypatch):
+    from app.mcp_server.tooling import account_modes
+
+    # Mutations disabled (default): toss_api stays reference-only.
+    monkeypatch.setattr(
+        account_modes.settings,
+        "toss_live_order_mutations_enabled",
+        False,
+        raising=False,
+    )
+
+    async def fake_collect(**_kwargs):
+        return [_toss_api_position("BRK.B"), _kis_position("005930")], [], None, None
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_portfolio_positions", fake_collect
+    )
+
+    result = await portfolio_holdings._get_holdings_impl(
+        include_current_price=False,
+        routing_account_mode="kis_live",
+    )
+
+    by_account = {a["account"]: a for a in result["accounts"]}
+    assert by_account["toss"]["account_mode"] == "toss_api"
+    assert by_account["toss"]["order_routable"] is False
     assert by_account["kis"]["account_mode"] == "kis_live"
 
 
@@ -144,6 +225,25 @@ async def test_get_holdings_tool_account_upbit_top_level_upbit_live(monkeypatch)
     )
 
     assert result["account_mode"] == "upbit_live"
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_tool_account_toss_top_level_toss_api(monkeypatch):
+    async def fake_collect(**_kwargs):
+        return [_toss_api_position("BRK.B")], [], None, "toss"
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_portfolio_positions", fake_collect
+    )
+
+    mcp = DummyMCP()
+    portfolio_holdings._register_portfolio_tools_impl(mcp)
+
+    result = await mcp.tools["get_holdings"](
+        account="toss", include_current_price=False
+    )
+
+    assert result["account_mode"] == "toss_api"
 
 
 @pytest.mark.asyncio
@@ -193,6 +293,10 @@ def test_account_order_routable_manual_is_false():
 def test_account_order_routable_brokered_sources_true():
     assert portfolio_holdings._account_order_routable(source="kis_api") is True
     assert portfolio_holdings._account_order_routable(source="upbit_api") is True
+
+
+def test_account_order_routable_toss_api_is_false_until_order_path_exists():
+    assert portfolio_holdings._account_order_routable(source="toss_api") is False
 
 
 @pytest.mark.asyncio

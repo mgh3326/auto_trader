@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.config import settings
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.account_modes import toss_live_mutations_enabled
 from app.mcp_server.tooling.shared import (
     logger,
     to_float,
@@ -20,6 +23,7 @@ from app.services.brokers.kis import (
     extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
+from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
@@ -116,6 +120,16 @@ def select_usd_row_for_us_order(
     return max(usd_rows, key=extract_usd_orderable_from_row)
 
 
+def _decimal_to_float(value: Decimal | None) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _format_cash_amount(value: float, currency: str) -> str:
+    if currency == "KRW":
+        return f"{int(value):,} KRW"
+    return f"{value:,.2f} {currency}"
+
+
 async def get_cash_balance_impl(
     account: str | None = None,
     *,
@@ -149,6 +163,52 @@ async def get_cash_balance_impl(
 
     account_filter = _normalize_account_filter(account)
     strict_mode = account_filter is not None
+
+    if account_filter is None or account_filter == "toss":
+        if bool(getattr(settings, "toss_api_enabled", False)):
+            try:
+                # ROB-549: surface buying power as orderable only once Toss live
+                # mutations are armed; otherwise keep it reference-only (0.0) so
+                # the cash signal matches the holdings sellability gate.
+                toss_orderable_enabled = toss_live_mutations_enabled()
+                toss_snapshot = await fetch_toss_cash_snapshot()
+                toss_krw = _decimal_to_float(toss_snapshot.cash_krw)
+                toss_usd = _decimal_to_float(toss_snapshot.cash_usd)
+                if toss_krw is not None:
+                    accounts.append(
+                        {
+                            "account": "toss",
+                            "account_name": "Toss",
+                            "broker": "toss",
+                            "currency": "KRW",
+                            "balance": toss_krw,
+                            "orderable": toss_krw if toss_orderable_enabled else 0.0,
+                            "formatted": _format_cash_amount(toss_krw, "KRW"),
+                        }
+                    )
+                    total_krw += toss_krw
+                if toss_usd is not None:
+                    accounts.append(
+                        {
+                            "account": "toss",
+                            "account_name": "Toss",
+                            "broker": "toss",
+                            "currency": "USD",
+                            "balance": toss_usd,
+                            "orderable": toss_usd if toss_orderable_enabled else 0.0,
+                            "formatted": _format_cash_amount(toss_usd, "USD"),
+                        }
+                    )
+                    total_usd += toss_usd
+                errors.extend(toss_snapshot.errors)
+            except Exception as exc:
+                if strict_mode:
+                    raise RuntimeError(
+                        f"Toss cash balance query failed: {exc}"
+                    ) from exc
+                errors.append(
+                    {"source": "toss_api", "market": "cash", "error": str(exc)}
+                )
 
     if account_filter is None or account_filter in ("upbit",):
         try:

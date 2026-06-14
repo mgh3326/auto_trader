@@ -28,7 +28,6 @@ from app.mcp_server.tooling.order_validation import (
     DefensiveTrimContext,
     ScalpingExitContext,
     _check_balance_and_warn,
-    _check_daily_order_limit,
     _get_balance_for_order,
     _get_current_price_for_order,
     _get_holdings_for_order,
@@ -258,8 +257,6 @@ async def _execute_us_order(
 # ---------------------------------------------------------------------------
 # _place_order_impl sub-steps
 # ---------------------------------------------------------------------------
-
-_MAX_ORDERS_PER_DAY = 20
 
 
 def _validate_inputs(
@@ -662,9 +659,6 @@ async def _execute_and_record(
     report_item_uuid: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
-    if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
-        return order_error_fn(f"Daily order limit ({_MAX_ORDERS_PER_DAY}) exceeded")
-
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
     # Best-effort — failure leaves the column NULL and the reconciler will
     # surface the row as `baseline_missing → anomaly` for operator review.
@@ -1150,7 +1144,6 @@ __all__ = [
     "_get_current_price_for_order",
     "_get_holdings_for_order",
     "_get_balance_for_order",
-    "_check_daily_order_limit",
     "_record_order_history",
     "_preview_order",
     "_execute_order",

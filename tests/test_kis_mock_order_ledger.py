@@ -182,11 +182,6 @@ async def test_kis_mock_buy_writes_ledger_and_skips_live(monkeypatch):
     )
     monkeypatch.setattr(
         order_execution,
-        "_check_daily_order_limit",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        order_execution,
         "_record_order_history",
         AsyncMock(),
     )
@@ -278,11 +273,6 @@ async def test_kis_mock_sell_writes_ledger_and_does_not_close_journals(monkeypat
         order_execution,
         "_check_balance_and_warn",
         AsyncMock(return_value=(None, None)),
-    )
-    monkeypatch.setattr(
-        order_execution,
-        "_check_daily_order_limit",
-        AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         order_execution,
@@ -420,11 +410,6 @@ async def test_kis_mock_buy_does_not_require_thesis_strategy(monkeypatch):
     )
     monkeypatch.setattr(
         order_execution,
-        "_check_daily_order_limit",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        order_execution,
         "_record_order_history",
         AsyncMock(),
     )
@@ -504,11 +489,6 @@ async def test_kis_live_kr_path_records_to_live_ledger_not_save_fill(monkeypatch
         order_execution,
         "_check_balance_and_warn",
         AsyncMock(return_value=(None, None)),
-    )
-    monkeypatch.setattr(
-        order_execution,
-        "_check_daily_order_limit",
-        AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         order_execution,
@@ -787,11 +767,6 @@ async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
         order_execution,
         "_check_balance_and_warn",
         AsyncMock(return_value=(None, None)),
-    )
-    monkeypatch.setattr(
-        order_execution,
-        "_check_daily_order_limit",
-        AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         order_execution,

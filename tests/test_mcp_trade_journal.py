@@ -1031,6 +1031,7 @@ class TestCloseJournalsOnSell:
             "journals_kept": 2,
             "closed_ids": [],
             "total_pnl_pct": 0.0,
+            "realized_pnl_basis": "journal_entry",
         }
         mock_session.commit.assert_called_once()
 
@@ -1095,6 +1096,7 @@ class TestCloseJournalsOnSell:
             "journals_kept": 1,
             "closed_ids": [42],
             "total_pnl_pct": pytest.approx(30.0),
+            "realized_pnl_basis": "journal_entry",
         }
         mock_session.commit.assert_called_once()
 
@@ -1227,6 +1229,7 @@ class TestCloseJournalsOnSell:
             "journals_kept": 0,
             "closed_ids": [],
             "total_pnl_pct": 0.0,
+            "realized_pnl_basis": "journal_entry",
         }
         mock_session.commit.assert_called_once()
 
@@ -1312,3 +1315,127 @@ class TestCloseJournalsOnSell:
             "_defensive_trim: approval=ROB-164, caller=agent-cio, "
             "bypassed_floor=avg*1.01_"
         ) in active.notes
+
+    @pytest.mark.asyncio
+    async def test_close_journals_labels_realized_pnl_basis(self) -> None:
+        """ROB-544: result labels the realized_pnl basis as journal_entry (FIFO lot)."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        first = TradeJournal(
+            id=1,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="lot 1",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("2"),
+            created_at=now,
+            updated_at=now,
+        )
+        second = TradeJournal(
+            id=2,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="lot 2",
+            status="active",
+            side="buy",
+            entry_price=Decimal("200"),
+            quantity=Decimal("2"),
+            created_at=now + timedelta(seconds=1),
+            updated_at=now + timedelta(seconds=1),
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [first, second]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=factory,
+        ):
+            # Sell 4 shares at 150 -> both lots close.
+            # lot1 pnl = (150-100)/100 = +50%, qty 2
+            # lot2 pnl = (150-200)/200 = -25%, qty 2
+            # quantity-weighted = (50*2 + -25*2)/4 = +12.5%
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=4.0,
+                sell_price=150.0,
+                exit_reason="full_exit",
+            )
+
+        assert result["realized_pnl_basis"] == "journal_entry"
+        assert result["total_pnl_pct"] == pytest.approx(12.5)
+        assert result["closed_ids"] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_close_journals_one_share_sell_returns_fifo_first_lot_pnl(
+        self,
+    ) -> None:
+        """ROB-544: 1-share sell against two lots (cheap older, expensive newer
+        물타기) returns the FIFO-first (oldest) lot's pnl, NOT the account-average.
+
+        Reproduces the -2.61 vs +8.3 scenario: the older lot was bought higher
+        (entry 100, sell 97.39 -> -2.61%); the newer cheaper averaging-down lot
+        (entry 90, would be +8.21%) is NOT consumed by a 1-share FIFO sell.
+        """
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        older_expensive = TradeJournal(
+            id=10,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="first buy (higher)",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("1"),
+            created_at=now,
+            updated_at=now,
+        )
+        newer_cheaper = TradeJournal(
+            id=11,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="물타기 (averaging down)",
+            status="active",
+            side="buy",
+            entry_price=Decimal("90"),
+            quantity=Decimal("1"),
+            created_at=now + timedelta(seconds=1),
+            updated_at=now + timedelta(seconds=1),
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [older_expensive, newer_cheaper]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=1.0,
+                sell_price=97.39,
+            )
+
+        # FIFO closes the oldest (higher-entry) lot only.
+        assert older_expensive.status == "closed"
+        assert newer_cheaper.status == "active"
+        assert result["closed_ids"] == [10]
+        assert result["realized_pnl_basis"] == "journal_entry"
+        # journal-entry basis: (97.39 - 100) / 100 = -2.61% (the loss),
+        # NOT the +8.21% the cheaper lot or any account-average would show.
+        assert result["total_pnl_pct"] == pytest.approx(-2.61, abs=0.01)

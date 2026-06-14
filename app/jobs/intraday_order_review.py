@@ -7,27 +7,44 @@ TaskIQ schedule declarations belong in app/tasks/intraday_order_review_tasks.py.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from app.core.timezone import now_kst
+from app.services.market_events.session_calendar import regular_session_bounds
 from app.services.n8n_pending_orders_service import fetch_pending_orders
 
 logger = logging.getLogger(__name__)
 
-
-def is_kr_trading_hours(dt: datetime) -> bool:
-    """Return True if dt is within KR market hours (09:00-15:30 KST, Mon-Fri)."""
-    if dt.weekday() >= 5:
-        return False
-    time_val = dt.hour * 100 + dt.minute
-    return 900 <= time_val <= 1530
+_KST = ZoneInfo("Asia/Seoul")
+_ET = ZoneInfo("America/New_York")
 
 
-def is_us_trading_hours(dt: datetime) -> bool:
-    """Return True if dt is within US market hours (23:30-06:00 KST, Mon-Fri)."""
-    if dt.weekday() >= 5:
-        return False
-    return dt.hour >= 23 or dt.hour < 6
+def _as_kst(dt_value: datetime) -> datetime:
+    if dt_value.tzinfo is None:
+        return dt_value.replace(tzinfo=_KST)
+    return dt_value.astimezone(_KST)
+
+
+def _within_utc_bounds(dt_value: datetime, bounds: tuple[datetime, datetime]) -> bool:
+    as_utc = _as_kst(dt_value).astimezone(UTC)
+    start, end = bounds
+    return start <= as_utc < end
+
+
+def is_kr_trading_hours(dt_value: datetime) -> bool:
+    """Return True if dt is within the XKRX regular session."""
+    local = _as_kst(dt_value)
+    bounds = regular_session_bounds("kr", local.date())
+    return bounds is not None and _within_utc_bounds(local, bounds)
+
+
+def is_us_trading_hours(dt_value: datetime) -> bool:
+    """Return True if dt is within the XNYS regular session, DST/holiday aware."""
+    local = _as_kst(dt_value)
+    et_day = local.astimezone(_ET).date()
+    bounds = regular_session_bounds("us", et_day)
+    return bounds is not None and _within_utc_bounds(local, bounds)
 
 
 async def run_crypto_order_review() -> dict[str, object]:

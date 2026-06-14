@@ -407,6 +407,87 @@ async def test_reconcile_filled_buy_books_fill_and_journal(db_session):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_reconcile_filled_sell_surfaces_journal_entry_basis(db_session):
+    """ROB-544: sell reconcile surfaces realized_pnl_basis=='journal_entry'.
+
+    The realized_pnl_pct is the FIFO lot/journal-entry basis (NOT the
+    account-average pchs_avg_pric basis shown in place_order preview).
+    """
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.mcp_server.tooling.kis_live_ledger import _save_kis_live_order_ledger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660",
+        instrument_type="equity_kr",
+        side="sell",
+        order_type="limit",
+        quantity=1.0,
+        price=1000.0,
+        amount=1000.0,
+        currency="KRW",
+        order_no="TEST-RC-SELL",
+        order_time="0930",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    row = await kl._load_ledger_row(lid)
+
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("1"), Decimal("974"), None, "filled", ""
+    )
+    # journal-entry (FIFO lot) basis: -2.61% loss, NOT an account-average.
+    close_result = {
+        "journals_closed": 1,
+        "journals_kept": 0,
+        "closed_ids": [77],
+        "total_pnl_pct": -2.61,
+        "realized_pnl_basis": "journal_entry",
+    }
+    with (
+        patch.object(
+            kl,
+            "_fetch_live_daily_rows",
+            new=AsyncMock(return_value=[{"odno": "TEST-RC-SELL"}]),
+        ),
+        patch.object(kl, "classify_fill_evidence", return_value=filled),
+        patch.object(kl, "_save_order_fill", new=AsyncMock(return_value=222)),
+        patch.object(
+            kl,
+            "_close_journals_on_sell",
+            new=AsyncMock(return_value=close_result),
+        ),
+        patch.object(kl, "_link_journal_to_fill", new=AsyncMock(return_value=None)),
+    ):
+        result = await kl._reconcile_one_ledger_row(row, dry_run=False)
+
+    assert result["verdict"] == "filled"
+    assert result["realized_pnl_pct"] == pytest.approx(-2.61)
+    assert result["realized_pnl_basis"] == "journal_entry"
+    # explicit alias mirrors the same FIFO lot basis value
+    assert result["journal_pnl_pct"] == pytest.approx(-2.61)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_reconcile_pending_is_noop(db_session):
     from decimal import Decimal
     from unittest.mock import AsyncMock, patch

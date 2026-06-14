@@ -107,6 +107,27 @@ def _flatten_positions(holdings: dict[str, Any]) -> list[dict[str, Any]]:
     return positions
 
 
+def _account_routability(holdings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compact per-account routability summary for the briefing (ROB-541).
+
+    Surfaces ``account_mode`` (ROB-357 provenance label) and the authoritative
+    ``order_routable`` flag per account so a toss-held (reference-only) symbol is
+    distinguishable from a kis_live-sellable one without dumping full positions.
+    """
+    accounts: list[dict[str, Any]] = []
+    for account in holdings.get("accounts") or []:
+        accounts.append(
+            {
+                "account": account.get("account"),
+                "account_name": account.get("account_name"),
+                "account_mode": account.get("account_mode"),
+                "order_routable": account.get("order_routable"),
+                "position_count": len(account.get("positions") or []),
+            }
+        )
+    return accounts
+
+
 def _top_movers(holdings: dict[str, Any], *, limit: int = 5) -> list[dict[str, Any]]:
     candidates = []
     for position in _flatten_positions(holdings):
@@ -306,6 +327,9 @@ async def get_operating_briefing_impl(
             "total_positions": holdings.get("total_positions"),
             "summary": holdings.get("summary"),
             "top_movers": _top_movers(holdings),
+            # ROB-541 — per-account routable/account_mode so a reference-only
+            # (toss/manual) holding is distinguishable from a kis_live-sellable one.
+            "accounts": _account_routability(holdings),
             "errors": holdings.get("errors") or [],
         },
         "pending_orders": {

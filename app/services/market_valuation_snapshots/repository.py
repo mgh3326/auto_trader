@@ -14,6 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
 
 
+def metric_rich_filter() -> sa.ColumnElement[bool]:
+    """ROB-551: a valuation row is "metric-rich" when it carries at least one
+    fundamentals metric (per/pbr/roe/dividend_yield). A market_cap-only row
+    (e.g. ``source='toss_openapi'`` gap-fill) is metric-sparse.
+
+    Use this as ``row_filter`` for ``resolve_healthy_partition`` on
+    MarketValuationSnapshot so a toss-only partition (0 metric-rich rows) is not
+    selected as the screener val_date and then emptied by the per>0/pbr>0
+    candidate filters downstream.
+    """
+    return sa.or_(
+        MarketValuationSnapshot.per.isnot(None),
+        MarketValuationSnapshot.pbr.isnot(None),
+        MarketValuationSnapshot.roe.isnot(None),
+        MarketValuationSnapshot.dividend_yield.isnot(None),
+    )
+
+
 class MarketValuationSnapshotUpsert(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -146,6 +164,38 @@ class MarketValuationSnapshotsRepository:
         )
         return {(r.market, r.symbol, r.snapshot_date, r.source) for r in result.all()}
 
+    async def symbols_with_other_source(
+        self,
+        *,
+        market: str,
+        snapshot_date: dt.date,
+        symbols: set[str],
+        exclude_source: str,
+    ) -> set[str]:
+        """ROB-546 gap-fill: symbols that already have a valuation row from a
+        source other than ``exclude_source`` for ``(market, snapshot_date)``.
+
+        Used to skip writing metric-sparse Toss market_cap rows where a
+        metric-rich source (naver_finance/yahoo) already covers the key.
+        """
+        if not symbols:
+            return set()
+        norm_market = market.strip().lower()
+        norm_symbols = {s.strip().upper() for s in symbols}
+        norm_exclude = exclude_source.strip().lower()
+        stmt = (
+            select(MarketValuationSnapshot.symbol)
+            .where(
+                MarketValuationSnapshot.market == norm_market,
+                MarketValuationSnapshot.snapshot_date == snapshot_date,
+                MarketValuationSnapshot.symbol.in_(norm_symbols),
+                MarketValuationSnapshot.source != norm_exclude,
+            )
+            .distinct()
+        )
+        result = await self._session.execute(stmt)
+        return {row[0] for row in result.all()}
+
     async def latest_for_symbols(
         self, *, market: str, symbols: set[str]
     ) -> list[MarketValuationSnapshot]:
@@ -153,6 +203,11 @@ class MarketValuationSnapshotsRepository:
             return []
         norm_market = market.strip().lower()
         norm_symbols = {s.strip().upper() for s in symbols}
+        # ROB-546: prefer rows that actually carry fundamentals metrics so a
+        # metric-sparse market_cap-only row (e.g. toss_openapi, per/pbr/roe NULL)
+        # on a newer snapshot_date does not shadow a metric-rich row. Falls back
+        # to the sparse row only when it is the symbol's sole source.
+        metric_sparse = sa.case((metric_rich_filter(), 0), else_=1)
         stmt = (
             select(MarketValuationSnapshot)
             .where(
@@ -161,6 +216,7 @@ class MarketValuationSnapshotsRepository:
             )
             .order_by(
                 MarketValuationSnapshot.symbol.asc(),
+                metric_sparse.asc(),
                 MarketValuationSnapshot.snapshot_date.desc(),
                 MarketValuationSnapshot.computed_at.desc(),
             )

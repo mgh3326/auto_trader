@@ -43,7 +43,9 @@ def _h(**kw) -> Holding:
 
 @pytest.mark.unit
 def test_home_included_sources_is_locked() -> None:
-    assert HOME_INCLUDED_SOURCES == frozenset({"kis", "upbit", "toss_manual"})
+    assert HOME_INCLUDED_SOURCES == frozenset(
+        {"kis", "upbit", "toss_manual", "toss_api"}
+    )
 
 
 @pytest.mark.unit
@@ -936,3 +938,244 @@ async def test_get_home_default_skips_paper_spans(monkeypatch):
 
     assert "invest.home.alpaca_paper" not in spans
     assert "invest.home.kis_mock" not in spans
+
+
+# ---------------------------------------------------------------------------
+# ROB-532 Toss API fallback & preference tests
+# ---------------------------------------------------------------------------
+
+
+class _Reader:
+    def __init__(self, holdings=None, accounts=None, warning=None):
+        self.holdings = holdings or []
+        self.accounts = accounts or []
+        self.warning = warning
+
+    async def fetch(self, *, user_id):
+        from app.services.invest_home_service import _SourceFetchResult
+
+        return _SourceFetchResult(
+            accounts=self.accounts,
+            holdings=self.holdings,
+            warning=self.warning,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_home_uses_toss_api_instead_of_manual_when_toss_api_has_holdings():
+    from app.services.invest_home_service import InvestHomeService
+
+    toss_api_reader = _Reader(
+        holdings=[
+            Holding(
+                holdingId="toss_api:BRK.B",
+                accountId="toss_api_account",
+                source="toss_api",
+                accountKind="live",
+                symbol="BRK.B",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Berkshire Hathaway B",
+                quantity=1.5,
+                averageCost=400.0,
+                costBasis=600.0,
+                currency="USD",
+                valueNative=645.18,
+                valueKrw=None,
+                sourceOfTruth=True,
+                isTradeable=False,
+                manualOnly=False,
+                sellableQuantity=0.0,
+                referenceQuantity=1.5,
+            )
+        ]
+    )
+    manual_reader = _Reader(
+        holdings=[
+            Holding(
+                holdingId="manual:1",
+                accountId="1",
+                source="toss_manual",
+                accountKind="manual",
+                symbol="BRK.B",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Berkshire Hathaway B",
+                quantity=1.5,
+                averageCost=400.0,
+                costBasis=600.0,
+                currency="USD",
+                manualOnly=True,
+            )
+        ]
+    )
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=manual_reader,
+        toss_api_reader=toss_api_reader,
+    )
+
+    result = await service.get_home(user_id=1)
+
+    assert [h.source for h in result.holdings] == ["toss_api"]
+    assert result.groupedHoldings[0].tradeableQuantity == 0.0
+    assert result.groupedHoldings[0].sellableQuantity == 0.0
+    assert result.groupedHoldings[0].referenceQuantity == 1.5
+
+
+@pytest.mark.asyncio
+async def test_get_home_keeps_manual_holding_when_toss_api_does_not_duplicate_symbol():
+    from app.services.invest_home_service import InvestHomeService
+
+    toss_api_reader = _Reader(
+        holdings=[
+            Holding(
+                holdingId="toss_api:BRK.B",
+                accountId="toss_api_account",
+                source="toss_api",
+                accountKind="live",
+                symbol="BRK.B",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Berkshire Hathaway B",
+                quantity=1.5,
+                averageCost=400.0,
+                costBasis=600.0,
+                currency="USD",
+                sourceOfTruth=True,
+                isTradeable=False,
+                manualOnly=False,
+                sellableQuantity=0.0,
+                referenceQuantity=1.5,
+            )
+        ]
+    )
+    manual_reader = _Reader(
+        holdings=[
+            Holding(
+                holdingId="manual:1",
+                accountId="1",
+                source="toss_manual",
+                accountKind="manual",
+                symbol="AAPL",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Apple",
+                quantity=2.0,
+                averageCost=100.0,
+                costBasis=200.0,
+                currency="USD",
+                manualOnly=True,
+            )
+        ]
+    )
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=manual_reader,
+        toss_api_reader=toss_api_reader,
+    )
+
+    result = await service.get_home(user_id=1)
+
+    assert [h.source for h in result.holdings] == ["toss_api", "toss_manual"]
+    assert {h.symbol for h in result.holdings} == {"BRK.B", "AAPL"}
+
+
+@pytest.mark.asyncio
+async def test_get_home_falls_back_to_manual_when_toss_api_returns_warning_only():
+    from app.schemas.invest_home import InvestHomeWarning
+    from app.services.invest_home_service import InvestHomeService
+
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=_Reader(
+            holdings=[
+                Holding(
+                    holdingId="manual:1",
+                    accountId="1",
+                    source="toss_manual",
+                    accountKind="manual",
+                    symbol="005930",
+                    market="KR",
+                    assetType="equity",
+                    assetCategory="kr_stock",
+                    displayName="삼성전자",
+                    quantity=10.0,
+                    averageCost=65000.0,
+                    costBasis=650000.0,
+                    currency="KRW",
+                    valueNative=700000.0,
+                    valueKrw=700000.0,
+                    manualOnly=True,
+                )
+            ]
+        ),
+        toss_api_reader=_Reader(
+            warning=InvestHomeWarning(source="toss_api", message="toss unavailable")
+        ),
+    )
+
+    result = await service.get_home(user_id=1)
+
+    assert [h.source for h in result.holdings] == ["toss_manual"]
+    assert any(w.source == "toss_api" for w in result.meta.warnings)
+
+
+@pytest.mark.asyncio
+async def test_get_home_falls_back_to_manual_when_toss_api_has_cash_only_account():
+    from app.schemas.invest_home import Account, CashAmounts
+    from app.services.invest_home_service import InvestHomeService
+
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=_Reader(
+            holdings=[
+                Holding(
+                    holdingId="manual:1",
+                    accountId="1",
+                    source="toss_manual",
+                    accountKind="manual",
+                    symbol="BRK.B",
+                    market="US",
+                    assetType="equity",
+                    assetCategory="us_stock",
+                    displayName="Berkshire Hathaway B",
+                    quantity=1.5,
+                    averageCost=400.0,
+                    costBasis=600.0,
+                    currency="USD",
+                    manualOnly=True,
+                )
+            ]
+        ),
+        toss_api_reader=_Reader(
+            accounts=[
+                Account(
+                    accountId="toss_api_account",
+                    displayName="Toss",
+                    source="toss_api",
+                    accountKind="live",
+                    includedInHome=True,
+                    valueKrw=0.0,
+                    cashBalances=CashAmounts(krw=123456.0),
+                    buyingPower=CashAmounts(krw=123456.0),
+                )
+            ]
+        ),
+    )
+
+    result = await service.get_home(user_id=1)
+
+    assert [account.source for account in result.accounts] == [
+        "toss_api",
+        "toss_manual",
+    ]
+    assert [h.source for h in result.holdings] == ["toss_manual"]
