@@ -30,6 +30,9 @@ from app.schemas.investment_reports import (
     ReportSnapshotBundleSummaryView,
     ReportSnapshotDetailResponse,
 )
+from app.services.investment_reports.linked_orders import (
+    list_linked_orders_for_item_uuids,
+)
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_snapshots.repository import (
     InvestmentSnapshotsRepository,
@@ -153,6 +156,11 @@ class InvestmentReportQueryService:
         events = await self._repo.list_events_for_source_reports([report.report_uuid])
         citations = await self._repo.list_news_citations_for_report(report.report_uuid)
 
+        # ROB-554 — reverse-lookup live orders linked via report_item_uuid (ROB-473).
+        linked_orders_by_item_uuid = await list_linked_orders_for_item_uuids(
+            self._session, [it.item_uuid for it in items]
+        )
+
         decisions_by_item: dict[int, list[InvestmentReportItemDecision]] = {
             it.id: [] for it in items
         }
@@ -166,6 +174,7 @@ class InvestmentReportQueryService:
             "alerts": alerts,
             "events": events,
             "news_citations": citations,
+            "linked_orders_by_item_uuid": linked_orders_by_item_uuid,
         }
 
     # ------------------------------------------------------------------

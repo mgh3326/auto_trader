@@ -223,6 +223,26 @@ export interface ProposalDiffEntry {
   to: unknown;
 }
 
+// ROB-554 — a live order linked to a report item via report_item_uuid (ROB-473),
+// with the reconcile-written fill rollup. Read-only; surfaced on the decision log.
+export interface LinkedOrder {
+  broker?: string | null;
+  accountScope?: string | null;
+  market?: string | null;
+  orderNo?: string | null;
+  ledgerId: number;
+  symbol?: string | null;
+  side?: string | null;
+  status?: string | null;
+  filledQty?: number | string | null;
+  avgFillPrice?: number | string | null;
+  orderTime?: string | null;
+  reconciledAt?: string | null;
+  exitReason?: string | null;
+  thesis?: string | null;
+  reportItemUuid?: string | null;
+}
+
 export interface InvestmentReportItem {
   itemUuid: string;
   itemKind: ItemKind;
@@ -255,6 +275,8 @@ export interface InvestmentReportItem {
   decisionBucket?: string | null;
   citedSymbolReportUuid?: string | null;
   citedDimensionReportUuids?: string[];
+  // ROB-554 — live orders linked to this item (null when none).
+  linkedOrders?: LinkedOrder[] | null;
 }
 
 export interface InvestmentReportItemDecision {

@@ -769,7 +769,15 @@ async def kis_live_reconcile_orders_impl(
 async def list_kis_live_orders_by_report_item_uuid(
     report_item_uuid: uuid.UUID,
 ) -> list[dict[str, Any]]:
-    """ROB-473 — return live KR orders linked to a report item (audit)."""
+    """ROB-473 — live KR orders linked to a report item (audit).
+
+    ROB-554 — projects via the shared LinkedOrderView (account_mode ->
+    account_scope, market="kr") so KR and US/crypto share one field mapping.
+    """
+    from app.services.investment_reports.linked_orders import (
+        project_kis_live_order,
+    )
+
     async with _order_session_factory()() as db:
         rows = (
             (
@@ -782,14 +790,4 @@ async def list_kis_live_orders_by_report_item_uuid(
             .scalars()
             .all()
         )
-    return [
-        {
-            "ledger_id": r.id,
-            "order_no": r.order_no,
-            "symbol": r.symbol,
-            "side": r.side,
-            "status": r.status,
-            "report_item_uuid": str(r.report_item_uuid) if r.report_item_uuid else None,
-        }
-        for r in rows
-    ]
+    return [project_kis_live_order(r).model_dump(mode="json") for r in rows]

@@ -275,6 +275,59 @@ describe("fetchInvestmentReportBundle", () => {
     const bundle = await fetchInvestmentReportBundle("uuid-1");
     expect(bundle.reviewSections).toBeNull();
   });
+
+  describe("fetchInvestmentReportBundle linked orders (ROB-554)", () => {
+    it("maps item.linked_orders snake_case to camelCase linkedOrders", async () => {
+      mockFetchOnce({
+        report: { report_uuid: "uuid-1" },
+        items: [
+          {
+            item_uuid: "item-1",
+            rationale: "r",
+            linked_orders: [
+              {
+                broker: "upbit",
+                account_scope: "upbit_live",
+                market: "crypto",
+                order_no: "df98c030-abc",
+                ledger_id: 7,
+                symbol: "BTC",
+                side: "buy",
+                status: "filled",
+                filled_qty: "0.01",
+                avg_fill_price: "96180000",
+                order_time: "2026-06-12T05:03:00Z",
+                report_item_uuid: "item-1",
+              },
+            ],
+          },
+        ],
+        decisions_by_item_uuid: {},
+        alerts: [],
+        events: [],
+      });
+
+      const bundle = await fetchInvestmentReportBundle("uuid-1");
+      const linked = bundle.items[0]!.linkedOrders!;
+      expect(linked).not.toBeNull();
+      expect(linked[0]!.orderNo).toBe("df98c030-abc");
+      expect(linked[0]!.market).toBe("crypto");
+      expect(linked[0]!.ledgerId).toBe(7);
+      expect(linked[0]!.status).toBe("filled");
+    });
+
+    it("maps absent linked_orders to null", async () => {
+      mockFetchOnce({
+        report: { report_uuid: "uuid-2" },
+        items: [{ item_uuid: "item-2", rationale: "r" }],
+        decisions_by_item_uuid: {},
+        alerts: [],
+        events: [],
+      });
+      const bundle = await fetchInvestmentReportBundle("uuid-2");
+      expect(bundle.items[0]!.linkedOrders).toBeNull();
+    });
+  });
 });
 
 describe("fetchReportSnapshotBundle", () => {
