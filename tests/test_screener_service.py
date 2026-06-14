@@ -395,12 +395,10 @@ async def test_request_report_reuses_inflight_job() -> None:
     from app.services.screener_service import ScreenerService
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(return_value="job-1")
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(return_value="job-1")
 
-    service = ScreenerService(
-        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
-    )
+    service = ScreenerService(redis_client=cast(Any, fake_redis), agent_client=agent)
 
     first = await service.request_report(market="us", symbol="AAPL", name="Apple")
     second = await service.request_report(market="us", symbol="AAPL", name="Apple")
@@ -409,7 +407,7 @@ async def test_request_report_reuses_inflight_job() -> None:
     assert first["is_reused"] is False
     assert second["job_id"] == "job-1"
     assert second["is_reused"] is True
-    openclaw.request_analysis.assert_awaited_once()
+    agent.request_analysis.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -422,12 +420,10 @@ async def test_request_report_concurrent_same_symbol_single_dispatch() -> None:
         await asyncio.sleep(0.01)
         return str(kwargs["request_id"])
 
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(side_effect=delayed_request_analysis)
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(side_effect=delayed_request_analysis)
 
-    service = ScreenerService(
-        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
-    )
+    service = ScreenerService(redis_client=cast(Any, fake_redis), agent_client=agent)
 
     first, second = await asyncio.gather(
         service.request_report(market="us", symbol="AAPL", name="Apple"),
@@ -436,7 +432,7 @@ async def test_request_report_concurrent_same_symbol_single_dispatch() -> None:
 
     assert first["job_id"] == second["job_id"]
     assert {first["is_reused"], second["is_reused"]} == {False, True}
-    openclaw.request_analysis.assert_awaited_once()
+    agent.request_analysis.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -464,12 +460,10 @@ async def test_request_report_does_not_downgrade_completed_status() -> None:
     from app.services.screener_service import ScreenerService
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(return_value="job-race")
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(return_value="job-race")
 
-    service = ScreenerService(
-        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
-    )
+    service = ScreenerService(redis_client=cast(Any, fake_redis), agent_client=agent)
     fake_redis.store["screener:report:status:job-race"] = "completed"
 
     result = await service.request_report(market="us", symbol="AAPL", name="Apple")
@@ -484,12 +478,10 @@ async def test_get_report_status_marks_running_when_inflight_exists() -> None:
     from app.services.screener_service import ScreenerService
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(return_value="job-running")
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(return_value="job-running")
 
-    service = ScreenerService(
-        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
-    )
+    service = ScreenerService(redis_client=cast(Any, fake_redis), agent_client=agent)
 
     queued = await service.request_report(market="us", symbol="AAPL", name="Apple")
     status = await service.get_report_status(queued["job_id"])
@@ -520,12 +512,10 @@ async def test_callback_completes_job_and_reuses_report() -> None:
     from app.services.screener_service import ScreenerService
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(return_value="job-2")
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(return_value="job-2")
 
-    service = ScreenerService(
-        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
-    )
+    service = ScreenerService(redis_client=cast(Any, fake_redis), agent_client=agent)
 
     queued = await service.request_report(market="us", symbol="AAPL", name="Apple")
     assert queued["status"] == "queued"
@@ -555,30 +545,28 @@ async def test_callback_completes_job_and_reuses_report() -> None:
     assert status["report"]["decision"] == "hold"
     assert reused["status"] == "completed"
     assert reused["is_reused"] is True
-    openclaw.request_analysis.assert_awaited_once()
+    agent.request_analysis.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_request_report_marks_failed_when_openclaw_request_fails() -> None:
+async def test_request_report_marks_failed_when_agent_request_fails() -> None:
     from app.services.screener_service import ScreenerService
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(side_effect=RuntimeError("openclaw down"))
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(side_effect=RuntimeError("agent down"))
 
-    service = ScreenerService(
-        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
-    )
+    service = ScreenerService(redis_client=cast(Any, fake_redis), agent_client=agent)
 
     result = await service.request_report(market="us", symbol="AAPL", name="Apple")
 
     assert result["status"] == "failed"
     assert result["is_reused"] is False
-    assert "openclaw down" in result["error"]
+    assert "agent down" in result["error"]
 
     status = await service.get_report_status(result["job_id"])
     assert status["status"] == "failed"
-    assert "openclaw down" in status["error"]
+    assert "agent down" in status["error"]
 
 
 @pytest.mark.asyncio
@@ -620,11 +608,9 @@ async def test_callback_payload_mismatch_marks_failed_and_clears_inflight() -> N
     from app.services.screener_service import ScreenerService
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(return_value="job-mismatch")
-    service = ScreenerService(
-        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
-    )
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(return_value="job-mismatch")
+    service = ScreenerService(redis_client=cast(Any, fake_redis), agent_client=agent)
 
     queued = await service.request_report(market="us", symbol="AAPL", name="Apple")
     assert queued["status"] == "queued"

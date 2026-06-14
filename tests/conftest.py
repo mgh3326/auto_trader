@@ -69,7 +69,6 @@ def _ensure_test_env() -> None:
         "ENVIRONMENT": "test",
         "SECRET_KEY": "Test_Secret_Key_12345_Test_Secret_Key_12345",  # Valid complex key for tests
         "MCP_AUTH_TOKEN": "",  # Empty to disable auth for tests
-        "N8N_WATCH_ALERT_WEBHOOK_URL": "",  # Empty = n8n watch webhook disabled in tests
     }
 
     for key, value in default_env_values.items():

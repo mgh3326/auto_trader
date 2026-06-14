@@ -10,13 +10,13 @@ from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import get_fear_greed_index_impl
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi, _calculate_sma
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.services.agent_gateway import AgentGatewayClient
 from app.services.brokers.upbit.client import (
     fetch_multiple_tickers,
     fetch_my_coins,
     fetch_ohlcv,
     fetch_top_traded_coins,
 )
-from app.services.openclaw_client import OpenClawClient
 from app.services.upbit_symbol_universe_service import get_upbit_korean_name_by_coin
 
 logger = logging.getLogger(__name__)
@@ -34,11 +34,11 @@ class DailyScanner:
     def __init__(
         self,
         *,
-        alert_mode: Literal["both", "telegram_only", "openclaw_only", "none"] = "both",
+        alert_mode: Literal["both", "telegram_only", "agent_only", "none"] = "both",
     ):
         self._redis: redis.Redis | None = None
-        self._openclaw = OpenClawClient()
-        self._alert_mode: Literal["both", "telegram_only", "openclaw_only", "none"] = (
+        self._agent = AgentGatewayClient()
+        self._alert_mode: Literal["both", "telegram_only", "agent_only", "none"] = (
             alert_mode
         )
 
@@ -619,37 +619,37 @@ class DailyScanner:
             telegram_sent = await self._send_telegram_alert(message)
             return "telegram" if telegram_sent else None
 
-        if self._alert_mode == "openclaw_only":
-            return await self._send_openclaw_alert(message)
+        if self._alert_mode == "agent_only":
+            return await self._send_agent_alert(message)
 
-        openclaw_request_id = await self._send_openclaw_alert(message)
+        agent_request_id = await self._send_agent_alert(message)
         telegram_sent = await self._send_telegram_alert(message)
-        if openclaw_request_id and telegram_sent:
-            return openclaw_request_id
+        if agent_request_id and telegram_sent:
+            return agent_request_id
 
         logger.error(
-            "Failed to send scan alert in both mode: openclaw_success=%s telegram_success=%s",
-            bool(openclaw_request_id),
+            "Failed to send scan alert in both mode: agent_success=%s telegram_success=%s",
+            bool(agent_request_id),
             telegram_sent,
         )
         return None
 
-    async def _send_openclaw_alert(self, message: str) -> str | None:
+    async def _send_agent_alert(self, message: str) -> str | None:
         try:
-            request_id = await self._openclaw.send_scan_alert(
+            request_id = await self._agent.send_scan_alert(
                 message,
                 mirror_to_telegram=False,
             )
             if not request_id:
-                logger.error("OpenClaw scan alert failed")
+                logger.error("Agent gateway scan alert failed")
             return request_id
         except Exception as exc:
-            logger.error("OpenClaw scan alert error: %s", exc)
+            logger.error("Agent gateway scan alert error: %s", exc)
             return None
 
     async def _send_telegram_alert(self, message: str) -> bool:
         try:
-            sent = await get_trade_notifier().notify_openclaw_message(message)
+            sent = await get_trade_notifier().notify_agent_message(message)
             if not sent:
                 logger.error("Telegram scan alert failed")
             return sent

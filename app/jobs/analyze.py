@@ -62,7 +62,7 @@ async def _analyze_coin_async(currency: str) -> dict[str, object]:
     """단일 코인 분석을 수행하는 비동기 헬퍼.
 
     Note: Gemini analyzer removed. This function is now a no-op placeholder.
-    OpenClaw-based analysis will be implemented in the future.
+    Agent-based analysis will be implemented in the future.
     """
     if not currency:
         return {"status": "failed", "error": "코인 코드가 필요합니다."}
@@ -75,7 +75,7 @@ async def _analyze_coin_async(currency: str) -> dict[str, object]:
         "status": "ignored",
         "currency": currency_code,
         "korean_name": korean_name,
-        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "message": "Gemini analyzer removed. Agent-based analysis coming soon.",
     }
 
 
@@ -309,14 +309,14 @@ async def run_analysis_for_stock(
     """Run analysis for a stock.
 
     Note: Gemini analyzer removed. This function is now a no-op placeholder.
-    OpenClaw-based analysis will be implemented in the future.
+    Agent-based analysis will be implemented in the future.
     """
     return {
         "status": "ignored",
         "symbol": symbol,
         "name": name,
         "instrument_type": instrument_type,
-        "reason": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "reason": "Gemini analyzer removed. Agent-based analysis coming soon.",
     }
 
 
@@ -324,13 +324,13 @@ async def run_analysis_for_my_coins() -> dict[str, object]:
     """Run analysis for user's coins.
 
     Note: Gemini analyzer removed. This function is now a no-op placeholder.
-    OpenClaw-based analysis will be implemented in the future.
+    Agent-based analysis will be implemented in the future.
     """
     return {
         "status": "ignored",
         "analyzed_count": 0,
         "total_count": 0,
-        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "message": "Gemini analyzer removed. Agent-based analysis coming soon.",
         "results": [],
     }
 

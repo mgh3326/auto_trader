@@ -554,7 +554,7 @@ class TradeNotifier:
         )
         return await self._dispatch(embed, "", market_type)
 
-    async def notify_openclaw_message(
+    async def notify_agent_message(
         self,
         message: str,
         parse_mode: str = "Markdown",
@@ -563,7 +563,7 @@ class TradeNotifier:
         market_type: str | None = None,
         skip_discord: bool = False,
     ) -> bool:
-        """Forward an OpenClaw outbound message to Discord or Telegram."""
+        """Forward an agent-gateway outbound message to Discord or Telegram."""
         discord_result = "skipped(no_discord_webhook)"
         telegram_result = "skipped(not_attempted)"
 
@@ -572,7 +572,7 @@ class TradeNotifier:
                 discord_result = "skipped(notifier_disabled)"
                 telegram_result = "skipped(notifier_disabled)"
                 logger.info(
-                    "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                    "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                     correlation_id,
                     discord_result,
                     telegram_result,
@@ -597,7 +597,7 @@ class TradeNotifier:
                     discord_result = "success"
                     telegram_result = "skipped(fallback_not_needed)"
                     logger.info(
-                        "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                        "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                         correlation_id,
                         discord_result,
                         telegram_result,
@@ -609,7 +609,7 @@ class TradeNotifier:
             if not self._has_telegram_delivery_config():
                 telegram_result = "skipped(no_telegram_config)"
                 logger.info(
-                    "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                    "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                     correlation_id,
                     discord_result,
                     telegram_result,
@@ -621,16 +621,16 @@ class TradeNotifier:
             )
             telegram_result = "success" if telegram_success else "failed"
             logger.info(
-                "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                 correlation_id,
                 discord_result,
                 telegram_result,
             )
             return telegram_success
         except Exception as e:
-            logger.error(f"Failed to forward OpenClaw message: {e}")
+            logger.error(f"Failed to forward agent-gateway message: {e}")
             logger.info(
-                "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                 correlation_id,
                 discord_result,
                 telegram_result,

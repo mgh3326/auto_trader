@@ -16,7 +16,7 @@ RESEARCH_RUN_FORBIDDEN_PREFIXES = [
     "app.services.orders",
     "app.services.watch_alerts",
     "app.services.paper_trading_service",
-    "app.services.openclaw_client",
+    "app.services.agent_gateway",
     "app.services.crypto_trade_cooldown_service",
     "app.services.fill_notification",
     "app.services.execution_event",

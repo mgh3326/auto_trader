@@ -16,7 +16,7 @@ Flow:
    call carrying the full immutable trigger snapshot and the locked
    pilot scope.
 
-No broker mutation, no live order submission, no OpenClaw imports.
+No broker mutation, no live order submission, no agent-gateway imports.
 The advisory-only invariant is enforced at the DB CHECK level (Plan
 1) and at the Pydantic validator level (Plan 2) — this test confirms
 the full path through Plans 3 and 4 honours it.

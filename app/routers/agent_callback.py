@@ -11,7 +11,7 @@ from app.core.db import get_db
 from app.models.analysis import StockAnalysisResult
 from app.services.stock_info_service import create_stock_if_not_exists
 
-router = APIRouter(prefix="/api/v1/openclaw", tags=["OpenClaw"])
+router = APIRouter(tags=["AgentGateway"])
 
 
 def _extract_bearer_token(auth_header: str | None) -> str | None:
@@ -26,32 +26,32 @@ def _extract_bearer_token(auth_header: str | None) -> str | None:
     return token or None
 
 
-async def _require_openclaw_callback_token(request: Request) -> None:
-    token = settings.OPENCLAW_CALLBACK_TOKEN
+async def _require_agent_callback_token(request: Request) -> None:
+    token = settings.AGENT_GATEWAY_CALLBACK_TOKEN
     if not token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OPENCLAW_CALLBACK_TOKEN is not configured",
+            detail="AGENT_GATEWAY_CALLBACK_TOKEN is not configured",
         )
     expected = token.strip()
 
     provided = _extract_bearer_token(request.headers.get("authorization"))
     if provided is None:
-        provided = request.headers.get("x-openclaw-token")
+        provided = request.headers.get("x-agent-callback-token")
         provided = provided.strip() if provided else None
 
     if not provided or not hmac.compare_digest(provided, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid OpenClaw callback token",
+            detail="Invalid agent callback token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
 
-# TODO(security): Replace OPENCLAW_CALLBACK_TOKEN with HMAC-signed callbacks.
-# Why: the callback token is embedded into OpenClaw messages and may appear in
-# logs/session history.
-class OpenClawCallbackRequest(BaseModel):
+# TODO(security): Replace AGENT_GATEWAY_CALLBACK_TOKEN with HMAC-signed callbacks.
+# Why: the callback token is embedded into agent-gateway messages and may appear
+# in logs/session history.
+class AgentCallbackRequest(BaseModel):
     request_id: str = Field(description="Correlation ID for this analysis request")
     symbol: str = Field(description="Instrument symbol/ticker")
     name: str = Field(description="Instrument display name")
@@ -77,11 +77,9 @@ class OpenClawCallbackRequest(BaseModel):
     prompt: str | None = None
 
 
-@router.post("/callback")
-async def openclaw_callback(
-    payload: OpenClawCallbackRequest,
-    _: None = Depends(_require_openclaw_callback_token),
-    db: AsyncSession = Depends(get_db),
+async def _persist_agent_callback(
+    payload: AgentCallbackRequest,
+    db: AsyncSession,
 ) -> dict:
     stock_info = await create_stock_if_not_exists(
         symbol=payload.symbol,
@@ -126,3 +124,23 @@ async def openclaw_callback(
         "request_id": payload.request_id,
         "analysis_result_id": record.id,
     }
+
+
+@router.post("/api/v1/agent/callback")
+async def agent_callback(
+    payload: AgentCallbackRequest,
+    _: None = Depends(_require_agent_callback_token),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _persist_agent_callback(payload, db)
+
+
+# Backward-compat alias for operator cutover (same handler). Remove in a
+# follow-up once external agents point at /api/v1/agent/callback.
+@router.post("/api/v1/openclaw/callback")
+async def agent_callback_legacy_alias(
+    payload: AgentCallbackRequest,
+    _: None = Depends(_require_agent_callback_token),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _persist_agent_callback(payload, db)

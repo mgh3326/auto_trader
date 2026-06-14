@@ -40,31 +40,31 @@ class _FakeRedis:
 def screener_app_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[tuple[TestClient, AsyncMock]]:
-    monkeypatch.setattr(settings, "OPENCLAW_CALLBACK_TOKEN", "callback-secret")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_CALLBACK_TOKEN", "callback-secret")
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(return_value="job-e2e")
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(return_value="job-e2e")
+    service = ScreenerService(redis_client=fake_redis, agent_client=agent)
 
     app = FastAPI()
     app.include_router(screener.router)
     app.dependency_overrides[screener.get_screener_service] = lambda: service
 
     with TestClient(app) as client:
-        yield client, openclaw
+        yield client, agent
 
 
 @pytest.fixture
-def screener_app_openclaw_failure(
+def screener_app_agent_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[TestClient]:
-    monkeypatch.setattr(settings, "OPENCLAW_CALLBACK_TOKEN", "callback-secret")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_CALLBACK_TOKEN", "callback-secret")
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    openclaw.request_analysis = AsyncMock(side_effect=RuntimeError("openclaw down"))
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    agent = AsyncMock()
+    agent.request_analysis = AsyncMock(side_effect=RuntimeError("agent down"))
+    service = ScreenerService(redis_client=fake_redis, agent_client=agent)
 
     app = FastAPI()
     app.include_router(screener.router)
@@ -78,11 +78,11 @@ def screener_app_openclaw_failure(
 def screener_app_screening(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[tuple[TestClient, AsyncMock]]:
-    monkeypatch.setattr(settings, "OPENCLAW_CALLBACK_TOKEN", "callback-secret")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_CALLBACK_TOKEN", "callback-secret")
 
     fake_redis = _FakeRedis()
-    openclaw = AsyncMock()
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    agent = AsyncMock()
+    service = ScreenerService(redis_client=fake_redis, agent_client=agent)
     screen_mock = AsyncMock(
         return_value={
             "results": [
@@ -111,7 +111,7 @@ def screener_app_screening(
 def test_screener_report_lifecycle_e2e(
     screener_app_success: tuple[TestClient, AsyncMock],
 ) -> None:
-    client, openclaw = screener_app_success
+    client, agent = screener_app_success
 
     create_res = client.post(
         "/api/screener/report",
@@ -121,7 +121,7 @@ def test_screener_report_lifecycle_e2e(
     create_body = create_res.json()
     assert create_body["job_id"] == "job-e2e"
     assert create_body["status"] in {"queued", "running"}
-    openclaw.request_analysis.assert_awaited_once()
+    agent.request_analysis.assert_awaited_once()
 
     running_res = client.get("/api/screener/report/job-e2e")
     assert running_res.status_code == 200
@@ -170,9 +170,9 @@ def test_screener_report_lifecycle_e2e(
 
 @pytest.mark.integration
 def test_screener_report_failure_contains_error(
-    screener_app_openclaw_failure: TestClient,
+    screener_app_agent_failure: TestClient,
 ) -> None:
-    client = screener_app_openclaw_failure
+    client = screener_app_agent_failure
 
     create_res = client.post(
         "/api/screener/report",
@@ -181,13 +181,13 @@ def test_screener_report_failure_contains_error(
     assert create_res.status_code == 200
     create_body = create_res.json()
     assert create_body["status"] == "failed"
-    assert "openclaw down" in create_body["error"]
+    assert "agent down" in create_body["error"]
 
     status_res = client.get(f"/api/screener/report/{create_body['job_id']}")
     assert status_res.status_code == 200
     status_body = status_res.json()
     assert status_body["status"] == "failed"
-    assert "openclaw down" in status_body["error"]
+    assert "agent down" in status_body["error"]
 
 
 @pytest.mark.integration

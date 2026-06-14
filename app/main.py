@@ -23,6 +23,7 @@ from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
+    agent_callback,
     alpaca_paper_ledger,
     candidate_discovery,
     deprecated_pages,
@@ -43,7 +44,6 @@ from app.routers import (
     news_issues,
     news_radar,
     news_relevance,
-    openclaw_callback,
     order_estimation,
     order_previews,
     portfolio_actions,
@@ -168,7 +168,7 @@ def create_app() -> FastAPI:
     app.include_router(screener.router)
     app.include_router(health.router)
     app.include_router(news_analysis.router)
-    app.include_router(openclaw_callback.router)
+    app.include_router(agent_callback.router)
     app.include_router(user_defaults.router)
     app.include_router(order_estimation.router)
     app.include_router(order_previews.router)
@@ -218,6 +218,7 @@ def create_app() -> FastAPI:
             re.compile(r"^/auth/"),
             re.compile(r"^/admin/"),
             re.compile(r"^/openclaw/"),
+            re.compile(r"^/agent/"),
             re.compile(r"^/ws/"),
             re.compile(r"^/kis/"),
             re.compile(r"^/upbit/"),

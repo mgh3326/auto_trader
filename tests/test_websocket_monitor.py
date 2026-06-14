@@ -11,9 +11,9 @@ from app.services.fill_notification import FillOrder
 
 @pytest.fixture
 def mock_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
-    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
-    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_URL", "http://agent/hooks/agent")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_TOKEN", "test-token")
     monkeypatch.setattr(settings, "kis_ws_is_mock", True)
 
 
@@ -638,7 +638,7 @@ class TestUnifiedWebSocketMonitor:
         monitor.is_running = True
         monitor._started_at_monotonic = asyncio.get_running_loop().time() - 42
         monitor.fills_forwarded = 3
-        monitor.last_openclaw_success_at = "2026-03-09T14:00:00+00:00"
+        monitor.last_agent_success_at = "2026-03-09T14:00:00+00:00"
         monitor.kis_ws = MagicMock(
             is_connected=True,
             messages_received=11,
@@ -659,7 +659,7 @@ class TestUnifiedWebSocketMonitor:
         assert "execution_events_received=4" in caplog.text
         assert "fills_forwarded=3" in caplog.text
         assert "last_pingpong_at=2026-03-09T14:01:10+00:00" in caplog.text
-        assert "last_openclaw_success_at=2026-03-09T14:00:00+00:00" in caplog.text
+        assert "last_agent_success_at=2026-03-09T14:00:00+00:00" in caplog.text
 
     @pytest.mark.asyncio
     async def test_log_health_status_reports_mixed_backend_states_in_both_mode(

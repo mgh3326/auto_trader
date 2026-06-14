@@ -33,7 +33,7 @@ class _FakeRedis:
         self.closed = True
 
 
-class _DummyOpenClawClient:
+class _DummyAgentGatewayClient:
     def __init__(self) -> None:
         self.messages: list[str] = []
 
@@ -67,10 +67,10 @@ def _make_ohlcv(closes: list[float]) -> pd.DataFrame:
 def scanner_env(monkeypatch: pytest.MonkeyPatch):
     from app.jobs import daily_scan
 
-    openclaw = _DummyOpenClawClient()
-    monkeypatch.setattr(daily_scan, "OpenClawClient", lambda: openclaw)
+    agent = _DummyAgentGatewayClient()
+    monkeypatch.setattr(daily_scan, "AgentGatewayClient", lambda: agent)
 
-    scanner = daily_scan.DailyScanner(alert_mode="openclaw_only")
+    scanner = daily_scan.DailyScanner(alert_mode="agent_only")
     fake_redis = _FakeRedis()
     scanner._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
 
@@ -129,7 +129,7 @@ def scanner_env(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(daily_scan.settings, "DAILY_SCAN_ENABLED", True, raising=False)
 
-    return scanner, openclaw, fake_redis, daily_scan
+    return scanner, agent, fake_redis, daily_scan
 
 
 @pytest.mark.asyncio
@@ -140,40 +140,40 @@ async def test_send_alert_telegram_only_success(
 
     scanner = daily_scan.DailyScanner(alert_mode="telegram_only")
     notifier = AsyncMock()
-    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    notifier.notify_agent_message = AsyncMock(return_value=True)
     monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
 
     request_id = await scanner._send_alert("telegram-only alert")
 
     assert request_id == "telegram"
-    notifier.notify_openclaw_message.assert_awaited_once_with("telegram-only alert")
+    notifier.notify_agent_message.assert_awaited_once_with("telegram-only alert")
 
 
 @pytest.mark.asyncio
-async def test_send_alert_openclaw_only_skips_telegram(
+async def test_send_alert_agent_only_skips_telegram(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.jobs import daily_scan
 
-    scanner = daily_scan.DailyScanner(alert_mode="openclaw_only")
+    scanner = daily_scan.DailyScanner(alert_mode="agent_only")
     send_scan_alert_mock = AsyncMock(return_value="scan-1")
     monkeypatch.setattr(
-        scanner._openclaw,
+        scanner._agent,
         "send_scan_alert",
         send_scan_alert_mock,
     )
     notifier = AsyncMock()
-    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    notifier.notify_agent_message = AsyncMock(return_value=True)
     monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
 
-    request_id = await scanner._send_alert("openclaw-only alert")
+    request_id = await scanner._send_alert("agent-only alert")
 
     assert request_id == "scan-1"
     send_scan_alert_mock.assert_awaited_once_with(
-        "openclaw-only alert",
+        "agent-only alert",
         mirror_to_telegram=False,
     )
-    notifier.notify_openclaw_message.assert_not_awaited()
+    notifier.notify_agent_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -185,12 +185,12 @@ async def test_send_alert_both_requires_both_channels_success(
     scanner = daily_scan.DailyScanner(alert_mode="both")
     send_scan_alert_mock = AsyncMock(return_value="scan-1")
     monkeypatch.setattr(
-        scanner._openclaw,
+        scanner._agent,
         "send_scan_alert",
         send_scan_alert_mock,
     )
     notifier = AsyncMock()
-    notifier.notify_openclaw_message = AsyncMock(return_value=False)
+    notifier.notify_agent_message = AsyncMock(return_value=False)
     monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
 
     request_id = await scanner._send_alert("both alert")
@@ -200,7 +200,7 @@ async def test_send_alert_both_requires_both_channels_success(
         "both alert",
         mirror_to_telegram=False,
     )
-    notifier.notify_openclaw_message.assert_awaited_once_with("both alert")
+    notifier.notify_agent_message.assert_awaited_once_with("both alert")
 
 
 @pytest.mark.asyncio
@@ -212,12 +212,12 @@ async def test_send_alert_both_success_when_both_channels_succeed(
     scanner = daily_scan.DailyScanner()
     send_scan_alert_mock = AsyncMock(return_value="scan-1")
     monkeypatch.setattr(
-        scanner._openclaw,
+        scanner._agent,
         "send_scan_alert",
         send_scan_alert_mock,
     )
     notifier = AsyncMock()
-    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    notifier.notify_agent_message = AsyncMock(return_value=True)
     monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
 
     request_id = await scanner._send_alert("both alert")
@@ -227,11 +227,11 @@ async def test_send_alert_both_success_when_both_channels_succeed(
         "both alert",
         mirror_to_telegram=False,
     )
-    notifier.notify_openclaw_message.assert_awaited_once_with("both alert")
+    notifier.notify_agent_message.assert_awaited_once_with("both alert")
 
 
 @pytest.mark.asyncio
-async def test_send_alert_both_fails_when_openclaw_fails(
+async def test_send_alert_both_fails_when_agent_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.jobs import daily_scan
@@ -239,12 +239,12 @@ async def test_send_alert_both_fails_when_openclaw_fails(
     scanner = daily_scan.DailyScanner(alert_mode="both")
     send_scan_alert_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        scanner._openclaw,
+        scanner._agent,
         "send_scan_alert",
         send_scan_alert_mock,
     )
     notifier = AsyncMock()
-    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    notifier.notify_agent_message = AsyncMock(return_value=True)
     monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
 
     request_id = await scanner._send_alert("both alert")
@@ -254,7 +254,7 @@ async def test_send_alert_both_fails_when_openclaw_fails(
         "both alert",
         mirror_to_telegram=False,
     )
-    notifier.notify_openclaw_message.assert_awaited_once_with("both alert")
+    notifier.notify_agent_message.assert_awaited_once_with("both alert")
 
 
 @pytest.mark.asyncio
@@ -262,7 +262,7 @@ async def test_check_overbought_holdings_sends_alert(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -280,8 +280,8 @@ async def test_check_overbought_holdings_sends_alert(
 
     assert len(alerts) == 1
     assert "과매수" in alerts[0]
-    assert len(openclaw.messages) == 1
-    assert "BTC_CTX" in openclaw.messages[0]
+    assert len(agent.messages) == 1
+    assert "BTC_CTX" in agent.messages[0]
 
 
 @pytest.mark.asyncio
@@ -289,7 +289,7 @@ async def test_check_oversold_top30_sends_alert(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -307,8 +307,8 @@ async def test_check_oversold_top30_sends_alert(
 
     assert len(alerts) == 1
     assert "과매도" in alerts[0]
-    assert len(openclaw.messages) == 1
-    assert "BTC_CTX" in openclaw.messages[0]
+    assert len(agent.messages) == 1
+    assert "BTC_CTX" in agent.messages[0]
 
 
 @pytest.mark.asyncio
@@ -316,7 +316,7 @@ async def test_check_price_crash_threshold_applies(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -349,10 +349,10 @@ async def test_check_price_crash_threshold_applies(
     alerts = await scanner.check_price_crash()
 
     assert len(alerts) == 2
-    assert len(openclaw.messages) == 2
-    assert any("+7.00%" in msg for msg in openclaw.messages)
-    assert any("-8.00%" in msg for msg in openclaw.messages)
-    assert all("+3.00%" not in msg for msg in openclaw.messages)
+    assert len(agent.messages) == 2
+    assert any("+7.00%" in msg for msg in agent.messages)
+    assert any("-8.00%" in msg for msg in agent.messages)
+    assert all("+3.00%" not in msg for msg in agent.messages)
 
 
 @pytest.mark.asyncio
@@ -360,7 +360,7 @@ async def test_check_price_crash_filters_non_tradable_holding_markets(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, daily_scan = scanner_env
+    scanner, _agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -390,7 +390,7 @@ async def test_check_price_crash_applies_rank_tiers_and_holding_override(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     top_coins = [{"market": f"KRW-C{i:03d}"} for i in range(1, 121)]
     fetch_tickers = AsyncMock(
@@ -415,10 +415,10 @@ async def test_check_price_crash_applies_rank_tiers_and_holding_override(
     alerts = await scanner.check_price_crash()
 
     assert len(alerts) == 2
-    assert len(openclaw.messages) == 2
-    assert any("C050(C050) 24h +10.00% — 급등 감지" in msg for msg in openclaw.messages)
-    assert any("C115(C115) 24h +5.00% — 급등 감지" in msg for msg in openclaw.messages)
-    assert all("C051(C051)" not in msg for msg in openclaw.messages)
+    assert len(agent.messages) == 2
+    assert any("C050(C050) 24h +10.00% — 급등 감지" in msg for msg in agent.messages)
+    assert any("C115(C115) 24h +5.00% — 급등 감지" in msg for msg in agent.messages)
+    assert all("C051(C051)" not in msg for msg in agent.messages)
 
     await_args = fetch_tickers.await_args
     assert await_args is not None
@@ -434,7 +434,7 @@ async def test_check_price_crash_logs_near_miss_for_tuning(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -456,7 +456,7 @@ async def test_check_price_crash_logs_near_miss_for_tuning(
     alerts = await scanner.check_price_crash()
 
     assert alerts == []
-    assert openclaw.messages == []
+    assert agent.messages == []
     assert any(
         "Crash scan near-miss market=KRW-BTC" in record.message
         for record in caplog.records
@@ -468,7 +468,7 @@ async def test_check_sma20_crossings_filters_non_tradable_holding_markets(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, daily_scan = scanner_env
+    scanner, _agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -496,7 +496,7 @@ async def test_check_fear_greed_extreme_only_alerts(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -514,7 +514,7 @@ async def test_check_fear_greed_extreme_only_alerts(
     )
     alerts = await scanner.check_fear_greed()
     assert len(alerts) == 1
-    assert len(openclaw.messages) == 1
+    assert len(agent.messages) == 1
 
     monkeypatch.setattr(
         daily_scan,
@@ -532,7 +532,7 @@ async def test_check_fear_greed_extreme_only_alerts(
     )
     alerts = await scanner.check_fear_greed()
     assert alerts == []
-    assert len(openclaw.messages) == 1
+    assert len(agent.messages) == 1
 
 
 @pytest.mark.asyncio
@@ -540,7 +540,7 @@ async def test_check_sma20_crossings_detects_golden_and_dead(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     golden = _make_ohlcv(([100.0] * 19) + [95.0, 105.0])
     dead = _make_ohlcv(([100.0] * 19) + [105.0, 95.0])
@@ -569,7 +569,7 @@ async def test_check_sma20_crossings_detects_golden_and_dead(
     assert len(alerts) == 2
     assert any("골든크로스" in msg for msg in alerts)
     assert any("데드크로스" in msg for msg in alerts)
-    assert len(openclaw.messages) == 2
+    assert len(agent.messages) == 2
 
 
 @pytest.mark.asyncio
@@ -577,7 +577,7 @@ async def test_cooldown_blocks_duplicate_alert(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, openclaw, _redis, daily_scan = scanner_env
+    scanner, agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -596,7 +596,7 @@ async def test_cooldown_blocks_duplicate_alert(
 
     assert len(first) == 1
     assert second == []
-    assert len(openclaw.messages) == 1
+    assert len(agent.messages) == 1
 
 
 @pytest.mark.asyncio
@@ -604,7 +604,7 @@ async def test_get_btc_context_builds_summary(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, daily_scan = scanner_env
+    scanner, _agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -637,7 +637,7 @@ async def test_run_methods_skip_when_disabled(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, daily_scan = scanner_env
+    scanner, _agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(daily_scan.settings, "DAILY_SCAN_ENABLED", False, raising=False)
 
@@ -653,7 +653,7 @@ async def test_run_strategy_scan_sends_single_batched_alert(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, daily_scan = scanner_env
+    scanner, _agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -717,7 +717,7 @@ async def test_run_strategy_scan_does_not_send_when_no_alerts(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, _daily_scan = scanner_env
+    scanner, _agent, _redis, _daily_scan = scanner_env
 
     monkeypatch.setattr(
         scanner,
@@ -765,7 +765,7 @@ async def test_run_strategy_scan_returns_zero_when_batched_send_fails(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, _daily_scan = scanner_env
+    scanner, _agent, _redis, _daily_scan = scanner_env
 
     monkeypatch.setattr(
         scanner,
@@ -817,7 +817,7 @@ async def test_run_strategy_scan_records_deduped_cooldowns_on_batch_success(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, _daily_scan = scanner_env
+    scanner, _agent, _redis, _daily_scan = scanner_env
 
     monkeypatch.setattr(
         scanner,
@@ -901,7 +901,7 @@ async def test_run_crash_detection_sends_single_batched_alert(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, daily_scan = scanner_env
+    scanner, _agent, _redis, daily_scan = scanner_env
 
     monkeypatch.setattr(
         daily_scan,
@@ -961,7 +961,7 @@ async def test_run_crash_detection_does_not_send_when_no_alerts(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, _daily_scan = scanner_env
+    scanner, _agent, _redis, _daily_scan = scanner_env
 
     monkeypatch.setattr(
         scanner,
@@ -988,7 +988,7 @@ async def test_run_crash_detection_returns_zero_when_batched_send_fails(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scanner, _openclaw, _redis, _daily_scan = scanner_env
+    scanner, _agent, _redis, _daily_scan = scanner_env
 
     async def fake_check_price_crash(
         send_immediately: bool = True,
@@ -1022,19 +1022,19 @@ async def test_run_crash_detection_returns_zero_when_batched_send_fails(
 @pytest.mark.asyncio
 async def test_alert_mode_none_skips_send(scanner_env):
     """alert_mode='none' should skip sending but return truthy value."""
-    scanner, openclaw, _, _ = scanner_env
+    scanner, agent, _, _ = scanner_env
     scanner._alert_mode = "none"
 
     result = await scanner._send_alert("test message")
 
     assert result == "none"
-    assert len(openclaw.messages) == 0
+    assert len(agent.messages) == 0
 
 
 @pytest.mark.asyncio
 async def test_run_strategy_scan_returns_message_and_details(scanner_env, monkeypatch):
     """run_strategy_scan should return message and structured details."""
-    scanner, openclaw, fake_redis, ds_mod = scanner_env
+    scanner, agent, fake_redis, ds_mod = scanner_env
 
     # Provide one oversold signal
     from unittest.mock import AsyncMock
@@ -1076,7 +1076,7 @@ async def test_run_crash_detection_returns_message_and_details(
     scanner_env, monkeypatch
 ):
     """run_crash_detection should return message and structured details."""
-    scanner, openclaw, fake_redis, ds_mod = scanner_env
+    scanner, agent, fake_redis, ds_mod = scanner_env
 
     from unittest.mock import AsyncMock
 
