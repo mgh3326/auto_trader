@@ -16,6 +16,9 @@
 
 ## Unreleased
 
+### Fixed (invest stock detail — crypto bare symbols)
+- `/invest/stocks/crypto/BTC` now resolves to the canonical Upbit market `KRW-BTC` instead of returning `/invest/api/stock-detail/crypto/BTC 404`. Crypto detail links from the right panel, recent symbols, watchlist, and realtime rows now canonicalize bare Upbit base symbols before navigation, while the backend accepts `BTC`, `btc`, `BTC-KRW`, and `KRW-BTC` route inputs.
+
 ### Added (ROB-305 — Futures Demo `status=NEW` MARKET reconcile)
 - `BinanceFuturesDemoExecutionClient.get_order` — signed `GET /fapi/v1/order?symbol=&origClientOrderId=` single-order status query, plus a `FuturesDemoOrderStatusResult` DTO. This is the bounded fill-evidence source for §4 reconciliation.
 
