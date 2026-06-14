@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class DiscordField(TypedDict):
@@ -17,6 +17,8 @@ class DiscordEmbed(TypedDict):
     description: str
     color: int
     fields: list[DiscordField]
+    url: NotRequired[str]
+
 
 
 # Color constants used by formatters
