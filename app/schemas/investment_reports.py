@@ -760,6 +760,19 @@ class LinkedOrderView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class StockDetailOrderLedgerResponse(BaseModel):
+    """ROB-559 — per-symbol live order history for the stock-detail page.
+
+    Reuses ``LinkedOrderView`` (status + rationale + fill rollup), keyed by
+    symbol instead of report_item_uuid. Live-only; most-recent-first.
+    """
+
+    count: int
+    items: list[LinkedOrderView]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class InvestmentReportItemResponse(BaseModel):
     """Single ``investment_report_items`` row."""
 

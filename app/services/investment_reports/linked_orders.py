@@ -14,6 +14,7 @@ and are intentionally out of scope.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -162,3 +163,104 @@ async def list_linked_orders_for_item_uuids(
             project_toss_live_order(row)
         )
     return grouped
+
+
+async def list_live_orders_for_symbol(
+    db: AsyncSession,
+    market: str,
+    symbol: str,
+    *,
+    days: int = 90,
+    limit: int = 50,
+) -> list[LinkedOrderView]:
+    """ROB-559 — per-symbol live order history across the 3 live ledgers.
+
+    The stock-detail page (``/invest/stocks/{market}/{symbol}``) keys by symbol
+    rather than ``report_item_uuid`` (ROB-554). ``market`` selects the ledgers:
+
+    * ``crypto`` → ``LiveOrderLedger`` (market='crypto'). Crypto symbols are the
+      full Upbit pair as stored, e.g. ``KRW-BTC`` (NOT prefix-stripped 'BTC' —
+      that convention is execution_ledger's), so the URL pair matches directly.
+    * ``us`` → ``LiveOrderLedger`` (market='us') + ``TossLiveOrderLedger`` (us).
+    * ``kr`` → ``KISLiveOrderLedger`` (KR domestic) + ``TossLiveOrderLedger`` (kr).
+
+    Live-only by construction (mock/paper/demo never write these). Each ledger is
+    queried by exact (upper-cased) symbol within the ``days`` window, capped at
+    ``limit``; results merge most-recent-first by ``created_at`` and re-cap.
+    """
+    sym = symbol.strip().upper()
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    collected: list[tuple[datetime, LinkedOrderView]] = []
+
+    async def _add_live(market_value: str) -> None:
+        rows = (
+            (
+                await db.execute(
+                    select(LiveOrderLedger)
+                    .where(
+                        LiveOrderLedger.symbol == sym,
+                        LiveOrderLedger.market == market_value,
+                        LiveOrderLedger.created_at >= cutoff,
+                    )
+                    .order_by(LiveOrderLedger.created_at.desc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            collected.append((row.created_at, project_live_order(row)))
+
+    async def _add_kis() -> None:
+        rows = (
+            (
+                await db.execute(
+                    select(KISLiveOrderLedger)
+                    .where(
+                        KISLiveOrderLedger.symbol == sym,
+                        KISLiveOrderLedger.created_at >= cutoff,
+                    )
+                    .order_by(KISLiveOrderLedger.created_at.desc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            collected.append((row.created_at, project_kis_live_order(row)))
+
+    async def _add_toss(market_value: str) -> None:
+        rows = (
+            (
+                await db.execute(
+                    select(TossLiveOrderLedger)
+                    .where(
+                        TossLiveOrderLedger.symbol == sym,
+                        TossLiveOrderLedger.market == market_value,
+                        TossLiveOrderLedger.created_at >= cutoff,
+                    )
+                    .order_by(TossLiveOrderLedger.created_at.desc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            collected.append((row.created_at, project_toss_live_order(row)))
+
+    if market == "crypto":
+        await _add_live("crypto")
+    elif market == "us":
+        await _add_live("us")
+        await _add_toss("us")
+    elif market == "kr":
+        await _add_kis()
+        await _add_toss("kr")
+    else:
+        return []
+
+    collected.sort(key=lambda t: t[0], reverse=True)
+    return [view for _, view in collected[:limit]]
