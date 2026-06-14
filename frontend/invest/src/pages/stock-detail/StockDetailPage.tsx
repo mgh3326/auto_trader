@@ -6,10 +6,13 @@ import {
   fetchStockDetail,
   fetchStockDetailCandles,
   fetchStockDetailNews,
+  fetchStockDetailOrderLedger,
   fetchStockDetailOrders,
   fetchStockDetailResearchConsensus,
 } from "../../api/stockDetail";
 import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
+import { OrderLedgerCard } from "../../desktop/stock-detail/OrderLedgerCard";
+import type { LinkedOrder } from "../../types/investmentReports";
 import type {
   StockDetailCandlesResponse,
   StockDetailFxSensitivity,
@@ -382,6 +385,7 @@ export function StockDetailPage() {
   const [data, setData] = useState<StockDetailResponse | undefined>();
   const [candles, setCandles] = useState<StockDetailCandlesResponse | undefined>();
   const [orders, setOrders] = useState<StockDetailOrdersResponse | undefined>();
+  const [orderLedger, setOrderLedger] = useState<LinkedOrder[] | undefined>();
   const [news, setNews] = useState<StockDetailNewsResponse | undefined>();
   const [researchConsensus, setResearchConsensus] = useState<StockDetailResearchConsensusResponse | undefined>();
   const [researchErr, setResearchErr] = useState<string | undefined>();
@@ -392,6 +396,7 @@ export function StockDetailPage() {
     setData(undefined);
     setCandles(undefined);
     setOrders(undefined);
+    setOrderLedger(undefined);
     setNews(undefined);
     setResearchConsensus(undefined);
     setResearchErr(undefined);
@@ -411,6 +416,9 @@ export function StockDetailPage() {
     fetchStockDetailOrders({ market, symbol })
       .then((r) => !cancel && setOrders(r))
       .catch(() => undefined);
+    fetchStockDetailOrderLedger({ market, symbol, days: 90 })
+      .then((r) => !cancel && setOrderLedger(r))
+      .catch(() => !cancel && setOrderLedger([]));
     fetchStockDetailNews({ market, symbol, limit: 5 })
       .then((r) => !cancel && setNews(r))
       .catch(() => undefined);
@@ -460,6 +468,7 @@ export function StockDetailPage() {
                 <OrderbookCard data={data} />
                 <OrdersCard orders={orders} />
               </div>
+              <OrderLedgerCard orders={orderLedger} />
               <NewsCard news={news} />
               {data.market === "kr" && data.investorFlow ? (
                 <InvestorFlowCard data={data.investorFlow} />

@@ -6,8 +6,9 @@
 import { useEffect, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 
-import { Card, Pill, type PillTone } from "../../ds";
+import { Card, Pill } from "../../ds";
 import { useInvestmentReportBundle } from "../../hooks/useInvestmentReportBundle";
+import { LinkedOrderRow, linkedOrderKey } from "../orders/LinkedOrderRow";
 import type {
   DeliveryStatus,
   InvestmentReportItem,
@@ -71,39 +72,6 @@ const DELIVERY_STATUS_COLORS: Record<DeliveryStatus, string> = {
   delivered: "var(--success, var(--fg-2))",
   skipped: "var(--warn)",
   failed: "var(--danger)",
-};
-
-// Covers the status vocabularies of all three live ledgers the linked-order
-// lookup reads: LiveOrderLedger (US/crypto), KISLiveOrderLedger (KR), and
-// TossLiveOrderLedger (which adds replaced / *_rejected). Unmapped values fall
-// back to the raw token in the renderer.
-const LINKED_ORDER_STATUS_LABELS: Record<string, string> = {
-  filled: "체결",
-  partial: "부분체결",
-  accepted: "미체결",
-  submitted: "미체결",
-  pending: "미체결",
-  cancelled: "취소",
-  rejected: "거부",
-  expired: "만료",
-  unknown: "확인 불가",
-  replaced: "정정됨",
-  cancel_rejected: "취소거부",
-  replace_rejected: "정정거부",
-  anomaly: "이상",
-};
-
-// Tone by status class: filled/partial → accent (executed), terminal failures
-// → loss, soft-negatives → warn, everything else → neutral paper (default).
-const LINKED_ORDER_STATUS_TONES: Record<string, PillTone> = {
-  filled: "accent",
-  partial: "accent",
-  rejected: "loss",
-  cancel_rejected: "loss",
-  replace_rejected: "loss",
-  anomaly: "loss",
-  cancelled: "warn",
-  expired: "warn",
 };
 
 function StatusCard({ children }: { children: ReactNode }) {
@@ -311,52 +279,7 @@ function ItemRow({
             주문 · 체결
           </div>
           {item.linkedOrders.map((order) => (
-            <div
-              // ledgerId is per-table; the three live ledgers have independent
-              // id sequences, so disambiguate by broker+market to keep keys
-              // unique when one item links orders from more than one ledger.
-              key={`${order.broker ?? ""}:${order.market ?? ""}:${order.ledgerId}`}
-              style={{
-                display: "flex",
-                gap: 8,
-                alignItems: "baseline",
-                flexWrap: "wrap",
-                fontSize: 12,
-                color: "var(--fg-3)",
-                background: "var(--surface-2)",
-                padding: "6px 10px",
-                borderRadius: 8,
-              }}
-            >
-              <Pill
-                tone={LINKED_ORDER_STATUS_TONES[order.status ?? ""] ?? "paper"}
-                size="sm"
-              >
-                {LINKED_ORDER_STATUS_LABELS[order.status ?? ""] ??
-                  order.status ??
-                  "—"}
-              </Pill>
-              <span style={{ fontWeight: 700 }}>
-                {order.side === "buy"
-                  ? "매수"
-                  : order.side === "sell"
-                    ? "매도"
-                    : ""}{" "}
-                {order.symbol ?? "—"}
-              </span>
-              <span>
-                {order.filledQty ?? "—"} @ {order.avgFillPrice ?? "—"}
-              </span>
-              {order.orderTime ? <span>· {order.orderTime}</span> : null}
-              {order.orderNo ? (
-                <span>· order {order.orderNo.slice(0, 8)}</span>
-              ) : null}
-              {order.exitReason || order.thesis ? (
-                <span style={{ width: "100%" }}>
-                  {order.exitReason ?? order.thesis}
-                </span>
-              ) : null}
-            </div>
+            <LinkedOrderRow key={linkedOrderKey(order)} order={order} />
           ))}
         </div>
       ) : null}

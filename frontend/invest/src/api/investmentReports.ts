@@ -151,7 +151,7 @@ function asOptionalList(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
 }
 
-function normalizeLinkedOrder(raw: ApiItem): LinkedOrder {
+export function normalizeLinkedOrder(raw: ApiItem): LinkedOrder {
   return {
     broker: asOptionalString(raw.broker),
     accountScope: asOptionalString(raw.account_scope),
