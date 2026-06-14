@@ -8,6 +8,12 @@ from __future__ import annotations
 import html
 
 from app.core.timezone import format_datetime
+from app.services.fill_notification import (
+    FillEnrichment,
+    FillOrder,
+    format_fill_money,
+    format_fill_quantity,
+)
 
 from .types import DECISION_EMOJI, DECISION_TEXT
 
@@ -323,3 +329,62 @@ def format_toss_price_recommendation_html(
         lines.append(f"<b>상세:</b> {detail_url}")
 
     return "\n".join(lines)
+
+
+def format_fill_notification_telegram(
+    order: FillOrder,
+    *,
+    display_name: str,
+    detail_url: str | None = None,
+    enrichment: FillEnrichment | None = None,
+) -> str:
+    """Telegram(legacy Markdown) 체결 메시지."""
+    is_sell = order.side == "ask"
+    is_partial = order.fill_status == "partial"
+    side_emoji = "🔴" if is_sell else ("🟢" if order.side == "bid" else "⚪")
+    side_text = "매도" if is_sell else ("매수" if order.side == "bid" else "미확인")
+    fill_label = "부분체결" if is_partial else "체결"
+    is_usd = order.currency == "USD"
+
+    price_str = format_fill_money(order.filled_price, is_usd=is_usd)
+    if order.order_price:
+        diff_pct = (order.filled_price - order.order_price) / order.order_price * 100
+        price_str += f" ({diff_pct:+.2f}%)"
+
+    lines = [
+        f"*{side_emoji} {fill_label} · {display_name} \\({order.symbol}\\)*",
+        "",
+        f"*구분:* {side_text} {fill_label}",
+        f"*체결가:* {price_str}",
+        f"*수량:* {format_fill_quantity(order.filled_qty)}",
+        f"*금액:* {format_fill_money(order.filled_amount, is_usd=is_usd)}",
+    ]
+
+    if enrichment is not None:
+        approx = " ~추정" if enrichment.is_approximate else ""
+        if is_sell and enrichment.realized_pnl_amount is not None:
+            sign = "+" if enrichment.realized_pnl_amount >= 0 else ""
+            rate = (
+                f" ({enrichment.realized_pnl_rate:+.2f}%)"
+                if enrichment.realized_pnl_rate is not None else ""
+            )
+            lines.append(
+                f"*실현손익:* {sign}{format_fill_money(enrichment.realized_pnl_amount, is_usd=is_usd)}{rate}{approx}"
+            )
+        elif (not is_sell and enrichment.position_qty is not None
+              and enrichment.position_avg_price is not None):
+            lines.append(
+                f"*보유:* {format_fill_quantity(enrichment.position_qty)} · 평단 "
+                f"{format_fill_money(enrichment.position_avg_price, is_usd=is_usd)}{approx}"
+            )
+
+    account_val = order.account
+    if order.order_id:
+        account_val += f" · 주문 {order.order_id[:8]}…"
+    lines.append(f"*계좌:* {account_val}")
+    lines.append(f"🕒 {format_datetime()}")
+    if detail_url:
+        lines.append(f"[종목 상세 보기]({detail_url})")
+
+    return "\n".join(lines)
+
