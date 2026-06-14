@@ -11,7 +11,7 @@ import { buildScopedPortfolioPanel, type AccountFilterKey } from "./scopeHolding
 import { accountSourceMeta } from "./AccountSourceMeta";
 import type { GroupedHolding, WatchSymbol } from "../types/invest";
 import { formatRelativeTime } from "../format/relativeTime";
-import { stockDetailPath } from "../stockDetailPath";
+import { stockDetailPath, stockDetailRouteSymbol } from "../stockDetailPath";
 
 type RightPanelTab = "portfolio" | "watchlist" | "recent" | "realtime";
 type RealtimeSubTab = "kr" | "us" | "crypto";
@@ -72,7 +72,7 @@ const MARKET_LABEL: Record<MarketKey, string> = {
 };
 
 function stockRouteForMarketKey(market: MarketKey, symbol: string): string {
-  return `/stocks/${market}/${encodeURIComponent(symbol)}`;
+  return `/stocks/${market}/${encodeURIComponent(stockDetailRouteSymbol(market, symbol))}`;
 }
 
 function fmtKrw(v?: number | null): string {
