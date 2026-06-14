@@ -175,18 +175,18 @@ class TestConfigLoading:
         ] == {"rate": 10, "period": 1.0}
 
     def test_public_api_paths_supports_csv_env_string(self, monkeypatch):
-        monkeypatch.setenv("PUBLIC_API_PATHS", "/healthz,/api/n8n/scan")
+        monkeypatch.setenv("PUBLIC_API_PATHS", "/healthz,/api/scan")
 
         cfg = _new_settings()
 
-        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/n8n/scan"]
+        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/scan"]
 
     def test_public_api_paths_supports_json_env_string(self, monkeypatch):
-        monkeypatch.setenv("PUBLIC_API_PATHS", '["/healthz", "/api/n8n/scan"]')
+        monkeypatch.setenv("PUBLIC_API_PATHS", '["/healthz", "/api/scan"]')
 
         cfg = _new_settings()
 
-        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/n8n/scan"]
+        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/scan"]
 
     def test_public_api_paths_supports_empty_string_env(self, monkeypatch):
         monkeypatch.setenv("PUBLIC_API_PATHS", "")

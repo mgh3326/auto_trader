@@ -134,21 +134,6 @@ class AuthMiddleware:
         if self._is_legacy_deprecated_path(path):
             return None
 
-        # n8n API: dedicated API key authentication
-        if path.startswith("/api/n8n/"):
-            if not settings.N8N_API_KEY:
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "N8N_API_KEY not configured"},
-                )
-            api_key = request.headers.get("X-N8N-API-KEY", "")
-            if not hmac.compare_digest(api_key, settings.N8N_API_KEY):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Invalid N8N API key"},
-                )
-            return None
-
         # news-ingestor bulk ingest API: dedicated machine-to-machine token auth.
         # This path deliberately bypasses session-cookie auth only after the
         # internal ingest token has been configured and validated.

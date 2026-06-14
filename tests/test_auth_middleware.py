@@ -33,16 +33,6 @@ async def api_data():
     return {"data": "ok"}
 
 
-@app.get("/api/n8n/pending-orders")
-async def n8n_pending_orders():
-    return {"data": "n8n-ok"}
-
-
-@app.get("/api/n8n/private")
-async def n8n_private():
-    return {"data": "private"}
-
-
 @app.get("/nested/api/data")
 async def nested_api_data():
     return {"data": "nested-ok"}
@@ -114,17 +104,6 @@ def test_api_path_access(client, mock_session_local):
     response = client.get("/api/data")
     assert response.status_code == 200
     assert response.json() == {"data": "ok"}
-
-
-def test_n8n_pending_orders_requires_api_key(client, mock_session_local):
-    """n8n endpoints require X-N8N-API-KEY header."""
-    response = client.get("/api/n8n/pending-orders")
-    assert response.status_code in (401, 403)
-
-
-def test_other_n8n_api_path_without_auth_returns_401(client, mock_session_local):
-    response = client.get("/api/n8n/private", follow_redirects=False)
-    assert response.status_code in (401, 403)
 
 
 def test_nested_api_path_without_auth_returns_401(client, mock_session_local):

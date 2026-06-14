@@ -8,7 +8,7 @@
 
 - Auto Trader production은 MacBook native 서비스(`launchd`)가 단일 owner입니다.
 - 특히 KIS websocket은 **MacBook native single-owner**로만 운영해야 합니다.
-- Raspberry Pi에서 `docker-compose.prod.yml` 또는 `docker-compose.n8n.yml`로 production stack을 다시 올리면 KIS websocket appkey/session 점유 충돌(`OPSP8996 ALREADY IN USE appkey`)을 재발시킬 수 있습니다.
+- Raspberry Pi에서 `docker-compose.prod.yml`로 production stack을 다시 올리면 KIS websocket appkey/session 점유 충돌(`OPSP8996 ALREADY IN USE appkey`)을 재발시킬 수 있습니다.
 
 ## 사용해야 하는 배포 경로
 
@@ -30,7 +30,6 @@ scripts/deploy-native.sh
 cd /home/mgh3326/auto_trader
 
 docker compose --env-file .env.prod -f docker-compose.prod.yml down --remove-orphans
-docker compose --env-file .env.prod -f docker-compose.n8n.yml down --remove-orphans
 ```
 
 정리 후에는 다음을 확인하세요.

@@ -39,8 +39,6 @@ from app.routers import (
     investment_stage_runs,
     kospi200,
     market_events,
-    n8n,
-    n8n_scan,
     news_analysis,
     news_issues,
     news_radar,
@@ -170,8 +168,6 @@ def create_app() -> FastAPI:
     app.include_router(screener.router)
     app.include_router(health.router)
     app.include_router(news_analysis.router)
-    app.include_router(n8n.router)
-    app.include_router(n8n_scan.router)
     app.include_router(openclaw_callback.router)
     app.include_router(user_defaults.router)
     app.include_router(order_estimation.router)
@@ -221,7 +217,6 @@ def create_app() -> FastAPI:
             re.compile(r"^/api/"),
             re.compile(r"^/auth/"),
             re.compile(r"^/admin/"),
-            re.compile(r"^/n8n/"),
             re.compile(r"^/openclaw/"),
             re.compile(r"^/ws/"),
             re.compile(r"^/kis/"),

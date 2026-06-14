@@ -151,7 +151,7 @@ class BoardBriefRender(BaseModel):
 
 
 class TCFollowupRequest(BoardBriefV2Fields):
-    """Request payload for /api/n8n/tc-followup."""
+    """Request payload for the tc-followup brief."""
 
     manual_cash_krw: float = Field(0, ge=0)
     daily_burn_krw: float = Field(0, ge=0)
@@ -164,7 +164,7 @@ class TCFollowupRequest(BoardBriefV2Fields):
 
 
 class CIOFollowupRequest(TCFollowupRequest):
-    """Request payload for /api/n8n/cio-followup."""
+    """Request payload for the cio-followup brief."""
 
     funding_intent: FundingIntent | None = None
     g1_gate: dict[str, Any] | None = None
