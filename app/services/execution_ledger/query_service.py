@@ -67,6 +67,56 @@ def _ledger_item_key(item: ExecutionLedgerRead) -> tuple[str, str, str, str, int
     )
 
 
+# Source authority: reconciler (broker REST) and manual_import (seeded opening
+# lots) are authoritative; websocket rows are provisional real-time notifications.
+_PROVISIONAL_SOURCE = "websocket"
+
+
+def _supersede_key(item: ExecutionLedgerRead) -> tuple[str, str, str, str, str, str, str]:
+    """Order-level identity shared across sources for one logical order.
+
+    Excludes fill_seq, filled_at and correlation_id on purpose: the websocket
+    monitor and the reconciler derive divergent fill_seq (independent hashes) and
+    timestamps for the same order, so only the order-level tuple links the two
+    sources. broker_order_id is leading-zero-normalized to absorb formatting drift.
+    """
+    normalized_order_id = item.broker_order_id.lstrip("0") or item.broker_order_id
+    return (
+        item.broker,
+        item.account_mode,
+        item.venue,
+        item.instrument_type,
+        item.symbol,
+        item.side,
+        normalized_order_id,
+    )
+
+
+def _supersede_provisional_fills(
+    items: list[ExecutionLedgerRead],
+) -> list[ExecutionLedgerRead]:
+    """Drop provisional websocket rows for orders an authoritative row covers.
+
+    The ledger unique key excludes ``source`` and the two writers derive different
+    ``fill_seq`` for the same fill, so one order can land as two+ rows. Once the
+    reconciler books an order it is the authoritative record (it re-fetches the
+    broker's complete filled-order set, aggregating partials), so any websocket row
+    for that order is a duplicate. Websocket rows for not-yet-reconciled orders are
+    preserved. Input order is preserved.
+    """
+    authoritative_orders = {
+        _supersede_key(item)
+        for item in items
+        if item.source != _PROVISIONAL_SOURCE
+    }
+    return [
+        item
+        for item in items
+        if item.source != _PROVISIONAL_SOURCE
+        or _supersede_key(item) not in authoritative_orders
+    ]
+
+
 def _annotate_realized_profit(
     sell_items: list[ExecutionLedgerRead],
     history_items: list[ExecutionLedgerRead],
