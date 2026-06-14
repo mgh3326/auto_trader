@@ -27,9 +27,10 @@ def normalize_position_market_type(market_type: str | None) -> str | None:
 def build_position_detail_url(
     symbol: str | None, market_type: str | None
 ) -> str | None:
-    """Build a URL to the position detail page in the portfolio web UI.
+    """Build a URL to the symbol detail page in the /invest web UI.
 
-    Example: https://mgh3326.duckdns.org/portfolio/positions/kr/035720
+    Example: https://mgh3326.duckdns.org/invest/stocks/kr/005930
+    (구 /portfolio/positions/... 는 410 Gone — ROB-558에서 교체)
     """
     normalized_symbol = str(symbol or "").strip()
     normalized_market = normalize_position_market_type(market_type)
@@ -38,4 +39,5 @@ def build_position_detail_url(
         return None
 
     encoded_symbol = quote(normalized_symbol, safe="-._~")
-    return f"{settings.public_base_url.rstrip('/')}/portfolio/positions/{normalized_market}/{encoded_symbol}"
+    return f"{settings.public_base_url.rstrip('/')}/invest/stocks/{normalized_market}/{encoded_symbol}"
+
