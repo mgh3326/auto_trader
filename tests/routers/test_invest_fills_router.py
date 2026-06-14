@@ -174,9 +174,12 @@ def test_recent_fills_source_breakdown_websocket():
 
 
 @pytest.mark.unit
-def test_recent_fills_no_duplicate_rows():
-    """Each DB row produces exactly one item — unique constraint enforced at DB level."""
-    rows = [_ledger_row(id=1, broker_order_id="ord-001", fill_seq=0)]
+def test_recent_fills_supersedes_websocket_duplicate():
+    """A reconciler + websocket row for the same order collapse to the reconciler row."""
+    rows = [
+        _ledger_row(id=1, broker_order_id="0006366300", fill_seq=1511940115, source="reconciler"),
+        _ledger_row(id=2, broker_order_id="0006366300", fill_seq=654241537, source="websocket"),
+    ]
     run = _reconcile_run_row("kis")
     db = _make_db(rows, [run])
     client = TestClient(_make_app(db))
@@ -184,9 +187,11 @@ def test_recent_fills_no_duplicate_rows():
     resp = client.get("/trading/api/invest/fills/recent")
     assert resp.status_code == 200
     data = resp.json()
-    # exactly one row — deduplication guarantee is at the DB level
     assert data["count"] == 1
     assert len(data["items"]) == 1
+    assert data["items"][0]["source"] == "reconciler"
+    assert data["source_breakdown"]["websocket"] == 0
+    assert data["source_breakdown"]["reconciler"] == 1
 
 
 # ---------------------------------------------------------------------------

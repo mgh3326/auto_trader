@@ -247,6 +247,7 @@ class ExecutionLedgerQueryService:
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
+        items = _supersede_provisional_fills(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
@@ -272,6 +273,7 @@ class ExecutionLedgerQueryService:
         )
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
+        items = _supersede_provisional_fills(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
@@ -302,6 +304,7 @@ class ExecutionLedgerQueryService:
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
+        items = _supersede_provisional_fills(items)
         if items:
             max_sell_at = max(item.filled_at for item in items)
             symbols = {item.symbol for item in items}
@@ -325,6 +328,7 @@ class ExecutionLedgerQueryService:
             history_items = [
                 ExecutionLedgerRead.model_validate(row) for row in history_rows
             ]
+            history_items = _supersede_provisional_fills(history_items)
             items = _annotate_realized_profit(items, history_items)
 
         freshness = await self.freshness()
