@@ -12,7 +12,6 @@ from tenacity import wait_fixed
 
 import app.services.openclaw_client as openclaw_client
 from app.core.config import settings
-from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
 from app.services.openclaw_client import (
     OpenClawClient,
     WatchAlertDeliveryResult,
@@ -61,9 +60,6 @@ def test_build_openclaw_message_can_omit_model_name() -> None:
     assert "model_name" not in schema
 
 
-
-
-
 @pytest.fixture
 def zero_delay_openclaw_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -72,9 +68,6 @@ def zero_delay_openclaw_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
         wait_fixed(0),
         raising=False,
     )
-
-
-
 
 
 # =============================================================================

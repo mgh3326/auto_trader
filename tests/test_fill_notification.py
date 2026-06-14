@@ -2,7 +2,6 @@
 
 import pytest
 
-from app.core.config import settings
 from app.services.fill_notification import (
     FillOrder,
     coerce_fill_order,
@@ -342,31 +341,61 @@ class TestNormalizeKisFill:
 class TestFillHelpers:
     def test_currency_aware_threshold(self):
         from app.services.fill_notification import (
-            FillOrder,
             is_fill_notifiable,
         )
 
-        krw = FillOrder(symbol="005930", side="bid", filled_price=1000,
-                        filled_qty=49, filled_amount=49_000, filled_at="t",
-                        account="kis", market_type="kr", currency="KRW")
+        krw = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=1000,
+            filled_qty=49,
+            filled_amount=49_000,
+            filled_at="t",
+            account="kis",
+            market_type="kr",
+            currency="KRW",
+        )
         assert is_fill_notifiable(krw) is False
-        krw2 = FillOrder(symbol="005930", side="bid", filled_price=1000,
-                         filled_qty=50, filled_amount=50_000, filled_at="t",
-                         account="kis", market_type="kr", currency="KRW")
+        krw2 = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=1000,
+            filled_qty=50,
+            filled_amount=50_000,
+            filled_at="t",
+            account="kis",
+            market_type="kr",
+            currency="KRW",
+        )
         assert is_fill_notifiable(krw2) is True
-        usd = FillOrder(symbol="AAPL", side="bid", filled_price=10,
-                        filled_qty=6, filled_amount=60, filled_at="t",
-                        account="kis", market_type="us", currency="USD")
+        usd = FillOrder(
+            symbol="AAPL",
+            side="bid",
+            filled_price=10,
+            filled_qty=6,
+            filled_amount=60,
+            filled_at="t",
+            account="kis",
+            market_type="us",
+            currency="USD",
+        )
         assert is_fill_notifiable(usd) is True
 
     def test_resolve_display_name_crypto(self):
         from app.services.fill_notification import (
-            FillOrder,
             resolve_fill_display_name,
         )
 
-        order = FillOrder(symbol="KRW-BTC", side="bid", filled_price=1, filled_qty=1,
-                          filled_amount=1, filled_at="t", account="upbit", market_type="crypto")
+        order = FillOrder(
+            symbol="KRW-BTC",
+            side="bid",
+            filled_price=1,
+            filled_qty=1,
+            filled_amount=1,
+            filled_at="t",
+            account="upbit",
+            market_type="crypto",
+        )
         assert resolve_fill_display_name(order) == "BTC"
 
     def test_money_and_qty_fmt(self):
@@ -385,4 +414,3 @@ class TestFillHelpers:
         enr = FillEnrichment()
         assert enr.position_qty is None
         assert enr.is_approximate is True
-

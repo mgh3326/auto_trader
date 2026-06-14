@@ -366,13 +366,17 @@ def format_fill_notification_telegram(
             sign = "+" if enrichment.realized_pnl_amount >= 0 else ""
             rate = (
                 f" ({enrichment.realized_pnl_rate:+.2f}%)"
-                if enrichment.realized_pnl_rate is not None else ""
+                if enrichment.realized_pnl_rate is not None
+                else ""
             )
             lines.append(
                 f"*실현손익:* {sign}{format_fill_money(enrichment.realized_pnl_amount, is_usd=is_usd)}{rate}{approx}"
             )
-        elif (not is_sell and enrichment.position_qty is not None
-              and enrichment.position_avg_price is not None):
+        elif (
+            not is_sell
+            and enrichment.position_qty is not None
+            and enrichment.position_avg_price is not None
+        ):
             lines.append(
                 f"*보유:* {format_fill_quantity(enrichment.position_qty)} · 평단 "
                 f"{format_fill_money(enrichment.position_avg_price, is_usd=is_usd)}{approx}"
@@ -387,4 +391,3 @@ def format_fill_notification_telegram(
         lines.append(f"[종목 상세 보기]({detail_url})")
 
     return "\n".join(lines)
-

@@ -7,19 +7,6 @@ import pytest
 
 from app.core.config import settings
 from app.services.fill_notification import FillOrder
-from app.services.openclaw_client import FillNotificationDeliveryResult
-
-
-def _success_result(request_id: str = "req-123") -> FillNotificationDeliveryResult:
-    return FillNotificationDeliveryResult(status="success", request_id=request_id)
-
-
-def _skipped_result(reason: str) -> FillNotificationDeliveryResult:
-    return FillNotificationDeliveryResult(status="skipped", reason=reason)
-
-
-def _failed_result(reason: str = "request_failed") -> FillNotificationDeliveryResult:
-    return FillNotificationDeliveryResult(status="failed", reason=reason)
 
 
 @pytest.fixture
@@ -554,9 +541,12 @@ class TestUnifiedWebSocketMonitor:
         monitor = UnifiedWebSocketMonitor(mode="kis")
         fake_notifier = AsyncMock()
         fake_notifier.notify_fill = AsyncMock(return_value=True)
-        monkeypatch.setattr("websocket_monitor.get_trade_notifier", lambda: fake_notifier)
-        monkeypatch.setattr("websocket_monitor.fetch_fill_enrichment",
-                            AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            "websocket_monitor.get_trade_notifier", lambda: fake_notifier
+        )
+        monkeypatch.setattr(
+            "websocket_monitor.fetch_fill_enrichment", AsyncMock(return_value=None)
+        )
 
         await monitor._send_fill_notification(
             FillOrder(
@@ -568,7 +558,7 @@ class TestUnifiedWebSocketMonitor:
                 filled_at="2026-06-14T09:31:02",
                 account="kis",
                 market_type="kr",
-                currency="KRW"
+                currency="KRW",
             )
         )
         fake_notifier.notify_fill.assert_awaited_once()
@@ -582,9 +572,12 @@ class TestUnifiedWebSocketMonitor:
         monitor = UnifiedWebSocketMonitor(mode="kis")
         fake_notifier = AsyncMock()
         fake_notifier.notify_fill = AsyncMock(return_value=True)
-        monkeypatch.setattr("websocket_monitor.get_trade_notifier", lambda: fake_notifier)
-        monkeypatch.setattr("websocket_monitor.fetch_fill_enrichment",
-                            AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            "websocket_monitor.get_trade_notifier", lambda: fake_notifier
+        )
+        monkeypatch.setattr(
+            "websocket_monitor.fetch_fill_enrichment", AsyncMock(return_value=None)
+        )
 
         await monitor._send_fill_notification(
             FillOrder(
@@ -596,7 +589,7 @@ class TestUnifiedWebSocketMonitor:
                 filled_at="2026-06-14T09:31:02",
                 account="kis",
                 market_type="kr",
-                currency="KRW"
+                currency="KRW",
             )
         )
         fake_notifier.notify_fill.assert_not_awaited()
@@ -610,9 +603,13 @@ class TestUnifiedWebSocketMonitor:
         monitor = UnifiedWebSocketMonitor(mode="kis")
         fake_notifier = AsyncMock()
         fake_notifier.notify_fill = AsyncMock(return_value=True)
-        monkeypatch.setattr("websocket_monitor.get_trade_notifier", lambda: fake_notifier)
-        monkeypatch.setattr("websocket_monitor.fetch_fill_enrichment",
-                            AsyncMock(side_effect=RuntimeError("boom")))
+        monkeypatch.setattr(
+            "websocket_monitor.get_trade_notifier", lambda: fake_notifier
+        )
+        monkeypatch.setattr(
+            "websocket_monitor.fetch_fill_enrichment",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        )
 
         await monitor._send_fill_notification(
             FillOrder(
@@ -624,7 +621,7 @@ class TestUnifiedWebSocketMonitor:
                 filled_at="2026-06-14T09:31:02",
                 account="kis",
                 market_type="kr",
-                currency="KRW"
+                currency="KRW",
             )
         )
         fake_notifier.notify_fill.assert_awaited_once()

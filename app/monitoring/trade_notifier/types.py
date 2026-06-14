@@ -20,7 +20,6 @@ class DiscordEmbed(TypedDict):
     url: NotRequired[str]
 
 
-
 # Color constants used by formatters
 COLORS: dict[str, int] = {
     "buy": 0x00FF00,

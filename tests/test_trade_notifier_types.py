@@ -88,4 +88,3 @@ class TestTypedDicts:
             "url": "https://example.com/invest/stocks/kr/005930",
         }
         assert embed["url"].endswith("/invest/stocks/kr/005930")
-

@@ -10,8 +10,8 @@ import logging
 
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
-from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.fill_notification import FillEnrichment, FillOrder
+from app.services.kis_holdings_service import get_kis_holding_for_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,9 @@ async def fetch_fill_enrichment(order: FillOrder) -> FillEnrichment | None:
     except Exception:
         logger.warning(
             "fill enrichment failed (fail-open): symbol=%s market=%s",
-            order.symbol, order.market_type, exc_info=True,
+            order.symbol,
+            order.market_type,
+            exc_info=True,
         )
     return None
 
@@ -43,8 +45,11 @@ def _build(order: FillOrder, *, qty: float, avg: float) -> FillEnrichment | None
 async def _fetch_kis(order: FillOrder) -> FillEnrichment | None:
     market = MarketType.KR if order.market_type == "kr" else MarketType.US
     holding = await get_kis_holding_for_ticker(KISClient(), order.symbol, market)
-    return _build(order, qty=float(holding.get("quantity") or 0),
-                  avg=float(holding.get("avg_price") or 0))
+    return _build(
+        order,
+        qty=float(holding.get("quantity") or 0),
+        avg=float(holding.get("avg_price") or 0),
+    )
 
 
 async def _fetch_upbit(order: FillOrder) -> FillEnrichment | None:
@@ -58,6 +63,9 @@ async def _fetch_upbit(order: FillOrder) -> FillEnrichment | None:
     for row in accounts:
         if str(row.get("currency", "")).upper() == currency.upper():
             parsed = parse_upbit_account_row(row)
-            return _build(order, qty=float(parsed["total_quantity"]),
-                          avg=float(parsed["avg_buy_price"]))
+            return _build(
+                order,
+                qty=float(parsed["total_quantity"]),
+                avg=float(parsed["avg_buy_price"]),
+            )
     return None

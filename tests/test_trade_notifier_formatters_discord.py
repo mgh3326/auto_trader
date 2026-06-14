@@ -212,97 +212,15 @@ class TestFormatTossBuyRecommendation:
             detail_url="https://mgh3326.duckdns.org/invest/stocks/kr/005930",
         )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
-        assert (
-            fields["상세"]
-            == "https://mgh3326.duckdns.org/invest/stocks/kr/005930"
-        )
+        assert fields["상세"] == "https://mgh3326.duckdns.org/invest/stocks/kr/005930"
 
 
 @pytest.mark.unit
 class TestFormatFillNotification:
     def test_buy_basic_with_link_and_slippage(self):
-        from app.monitoring.trade_notifier.formatters_discord import format_fill_notification
-        from app.services.fill_notification import FillOrder
-
-        order = FillOrder(
-            symbol="005930",
-            side="bid",
-            filled_price=68500.0,
-            filled_qty=10.0,
-            filled_amount=685000.0,
-            filled_at="2026-06-14T09:31:02",
-            account="kis",
-            order_price=68300.0,
-            order_id="0001234567",
-            market_type="kr",
-            currency="KRW"
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
         )
-        embed = format_fill_notification(
-            order, display_name="삼성전자",
-            detail_url="https://x.test/invest/stocks/kr/005930", enrichment=None,
-        )
-        assert embed["title"] == "🟢 체결 · 삼성전자 (005930)"
-        assert embed["color"] == 0x00FF00
-        assert embed["url"] == "https://x.test/invest/stocks/kr/005930"
-        fields = {f["name"]: f["value"] for f in embed["fields"]}
-        assert fields["구분"] == "매수 체결"
-        assert "68,500원" in fields["체결가"]
-        assert "+0.29%" in fields["체결가"] or "+0.30%" in fields["체결가"]  # vs 68,300
-        assert fields["수량"] == "10"
-        assert fields["금액"] == "685,000원"
-
-    def test_sell_shows_realized_pnl(self):
-        from app.monitoring.trade_notifier.formatters_discord import format_fill_notification
-        from app.services.fill_notification import FillOrder, FillEnrichment
-
-        order = FillOrder(
-            symbol="005930",
-            side="ask",
-            filled_price=68500.0,
-            filled_qty=10.0,
-            filled_amount=685000.0,
-            filled_at="2026-06-14T09:31:02",
-            account="kis",
-            order_price=68300.0,
-            order_id="0001234567",
-            market_type="kr",
-            currency="KRW"
-        )
-        enr = FillEnrichment(realized_pnl_amount=12000.0, realized_pnl_rate=1.8, is_approximate=True)
-        embed = format_fill_notification(order, display_name="삼성전자", detail_url=None, enrichment=enr)
-        assert embed["color"] == 0xFF0000
-        assert "url" not in embed
-        fields = {f["name"]: f["value"] for f in embed["fields"]}
-        assert fields["구분"] == "매도 체결"
-        assert "실현손익" in fields
-        assert "+12,000원" in fields["실현손익"]
-        assert "~추정" in fields["실현손익"]
-
-    def test_buy_shows_position_when_enriched(self):
-        from app.monitoring.trade_notifier.formatters_discord import format_fill_notification
-        from app.services.fill_notification import FillOrder, FillEnrichment
-
-        order = FillOrder(
-            symbol="005930",
-            side="bid",
-            filled_price=68500.0,
-            filled_qty=10.0,
-            filled_amount=685000.0,
-            filled_at="2026-06-14T09:31:02",
-            account="kis",
-            order_price=68300.0,
-            order_id="0001234567",
-            market_type="kr",
-            currency="KRW"
-        )
-        enr = FillEnrichment(position_qty=30.0, position_avg_price=68100.0, is_approximate=True)
-        embed = format_fill_notification(order, display_name="삼성전자", detail_url=None, enrichment=enr)
-        fields = {f["name"]: f["value"] for f in embed["fields"]}
-        assert "보유" in fields
-        assert "30" in fields["보유"] and "68,100원" in fields["보유"]
-
-    def test_partial_label(self):
-        from app.monitoring.trade_notifier.formatters_discord import format_fill_notification
         from app.services.fill_notification import FillOrder
 
         order = FillOrder(
@@ -317,14 +235,115 @@ class TestFormatFillNotification:
             order_id="0001234567",
             market_type="kr",
             currency="KRW",
-            fill_status="partial"
         )
-        embed = format_fill_notification(order, display_name="삼성전자", detail_url=None, enrichment=None)
+        embed = format_fill_notification(
+            order,
+            display_name="삼성전자",
+            detail_url="https://x.test/invest/stocks/kr/005930",
+            enrichment=None,
+        )
+        assert embed["title"] == "🟢 체결 · 삼성전자 (005930)"
+        assert embed["color"] == 0x00FF00
+        assert embed["url"] == "https://x.test/invest/stocks/kr/005930"
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["구분"] == "매수 체결"
+        assert "68,500원" in fields["체결가"]
+        assert "+0.29%" in fields["체결가"] or "+0.30%" in fields["체결가"]  # vs 68,300
+        assert fields["수량"] == "10"
+        assert fields["금액"] == "685,000원"
+
+    def test_sell_shows_realized_pnl(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
+        from app.services.fill_notification import FillEnrichment, FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="ask",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        enr = FillEnrichment(
+            realized_pnl_amount=12000.0, realized_pnl_rate=1.8, is_approximate=True
+        )
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=enr
+        )
+        assert embed["color"] == 0xFF0000
+        assert "url" not in embed
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["구분"] == "매도 체결"
+        assert "실현손익" in fields
+        assert "+12,000원" in fields["실현손익"]
+        assert "~추정" in fields["실현손익"]
+
+    def test_buy_shows_position_when_enriched(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
+        from app.services.fill_notification import FillEnrichment, FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        enr = FillEnrichment(
+            position_qty=30.0, position_avg_price=68100.0, is_approximate=True
+        )
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=enr
+        )
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "보유" in fields
+        assert "30" in fields["보유"] and "68,100원" in fields["보유"]
+
+    def test_partial_label(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
+        from app.services.fill_notification import FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+            fill_status="partial",
+        )
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert fields["구분"] == "매수 부분체결"
 
     def test_no_slippage_when_no_order_price(self):
-        from app.monitoring.trade_notifier.formatters_discord import format_fill_notification
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
         from app.services.fill_notification import FillOrder
 
         order = FillOrder(
@@ -338,12 +357,13 @@ class TestFormatFillNotification:
             order_price=None,
             order_id="0001234567",
             market_type="kr",
-            currency="KRW"
+            currency="KRW",
         )
-        embed = format_fill_notification(order, display_name="삼성전자", detail_url=None, enrichment=None)
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert "vs 주문가" not in fields["체결가"]
-
 
     def test_with_kis(self):
         embed = format_toss_buy_recommendation(

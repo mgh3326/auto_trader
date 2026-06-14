@@ -172,7 +172,6 @@ def _position_url(config: CryptoPendingOrderAlertConfig, symbol: str) -> str | N
     return f"{base}/invest/stocks/crypto/{symbol}"
 
 
-
 def normalize_pending_orders(
     orders: list[dict[str, Any]],
     prices: dict[str, float],

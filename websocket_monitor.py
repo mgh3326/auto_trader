@@ -401,7 +401,9 @@ class UnifiedWebSocketMonitor:
         if not is_fill_notifiable(order):
             logger.info(
                 "Fill notification skipped: below threshold symbol=%s amount=%s currency=%s",
-                order.symbol, order.filled_amount, order.currency,
+                order.symbol,
+                order.filled_amount,
+                order.currency,
             )
             return
 
@@ -409,32 +411,51 @@ class UnifiedWebSocketMonitor:
         try:
             enrichment = await fetch_fill_enrichment(order)
         except Exception:
-            logger.warning("Fill enrichment error (fail-open): symbol=%s",
-                           order.symbol, exc_info=True)
+            logger.warning(
+                "Fill enrichment error (fail-open): symbol=%s",
+                order.symbol,
+                exc_info=True,
+            )
 
         from app.core.portfolio_links import build_position_detail_url
+
         detail_url = build_position_detail_url(order.symbol, order.market_type)
 
         logger.info(
             "Fill notification send start: correlation_id=%s symbol=%s account=%s amount=%s",
-            correlation_id, order.symbol, order.account, order.filled_amount,
+            correlation_id,
+            order.symbol,
+            order.account,
+            order.filled_amount,
         )
         try:
             ok = await get_trade_notifier().notify_fill(
-                order, enrichment=enrichment, detail_url=detail_url,
+                order,
+                enrichment=enrichment,
+                detail_url=detail_url,
             )
             if ok:
                 self.fills_forwarded += 1
                 self.last_openclaw_success_at = datetime.now(UTC).isoformat()
-                logger.info("Fill notification sent: correlation_id=%s symbol=%s result=success",
-                            correlation_id, order.symbol)
+                logger.info(
+                    "Fill notification sent: correlation_id=%s symbol=%s result=success",
+                    correlation_id,
+                    order.symbol,
+                )
             else:
-                logger.warning("Fill notification not delivered: correlation_id=%s symbol=%s",
-                               correlation_id, order.symbol)
+                logger.warning(
+                    "Fill notification not delivered: correlation_id=%s symbol=%s",
+                    correlation_id,
+                    order.symbol,
+                )
         except Exception as e:
-            logger.error("Fill notification error: correlation_id=%s symbol=%s error=%s",
-                         correlation_id, order.symbol, e, exc_info=True)
-
+            logger.error(
+                "Fill notification error: correlation_id=%s symbol=%s error=%s",
+                correlation_id,
+                order.symbol,
+                e,
+                exc_info=True,
+            )
 
     async def _start_upbit_supervisor(self) -> None:
         """

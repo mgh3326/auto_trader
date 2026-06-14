@@ -40,4 +40,3 @@ def build_position_detail_url(
 
     encoded_symbol = quote(normalized_symbol, safe="-._~")
     return f"{settings.public_base_url.rstrip('/')}/invest/stocks/{normalized_market}/{encoded_symbol}"
-

@@ -16,7 +16,6 @@ from app.services.fill_notification import (
 from .types import COLORS, DECISION_EMOJI, DECISION_TEXT, DiscordEmbed, DiscordField
 
 
-
 def _price_fmt(price: float, is_usd: bool, currency: str) -> str:
     return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
 
@@ -530,8 +529,16 @@ def format_fill_notification(
     fields: list[DiscordField] = [
         {"name": "구분", "value": f"{side_text} {fill_label}", "inline": True},
         {"name": "체결가", "value": price_str, "inline": True},
-        {"name": "수량", "value": format_fill_quantity(order.filled_qty), "inline": True},
-        {"name": "금액", "value": format_fill_money(order.filled_amount, is_usd=is_usd), "inline": True},
+        {
+            "name": "수량",
+            "value": format_fill_quantity(order.filled_qty),
+            "inline": True,
+        },
+        {
+            "name": "금액",
+            "value": format_fill_money(order.filled_amount, is_usd=is_usd),
+            "inline": True,
+        },
     ]
 
     if enrichment is not None:
@@ -543,19 +550,26 @@ def format_fill_notification(
                 if enrichment.realized_pnl_rate is not None
                 else ""
             )
-            fields.append({
-                "name": "실현손익",
-                "value": f"{sign}{format_fill_money(enrichment.realized_pnl_amount, is_usd=is_usd)}{rate}{approx}",
-                "inline": True,
-            })
-        elif (not is_sell and enrichment.position_qty is not None
-              and enrichment.position_avg_price is not None):
-            fields.append({
-                "name": "보유",
-                "value": f"{format_fill_quantity(enrichment.position_qty)} · 평단 "
-                         f"{format_fill_money(enrichment.position_avg_price, is_usd=is_usd)}{approx}",
-                "inline": True,
-            })
+            fields.append(
+                {
+                    "name": "실현손익",
+                    "value": f"{sign}{format_fill_money(enrichment.realized_pnl_amount, is_usd=is_usd)}{rate}{approx}",
+                    "inline": True,
+                }
+            )
+        elif (
+            not is_sell
+            and enrichment.position_qty is not None
+            and enrichment.position_avg_price is not None
+        ):
+            fields.append(
+                {
+                    "name": "보유",
+                    "value": f"{format_fill_quantity(enrichment.position_qty)} · 평단 "
+                    f"{format_fill_money(enrichment.position_avg_price, is_usd=is_usd)}{approx}",
+                    "inline": True,
+                }
+            )
 
     account_val = order.account
     if order.order_id:
@@ -571,4 +585,3 @@ def format_fill_notification(
     if detail_url:
         embed["url"] = detail_url
     return embed
-

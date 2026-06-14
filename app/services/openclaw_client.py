@@ -172,8 +172,6 @@ class OpenClawClient:
         )
         return request_id
 
-
-
     async def send_watch_alert_to_router(
         self,
         *,

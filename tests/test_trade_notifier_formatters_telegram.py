@@ -247,16 +247,30 @@ class TestFormatTossPriceRecommendationHtml:
 @pytest.mark.unit
 class TestFormatFillTelegram:
     def test_sell_with_pnl_and_link(self):
-        from app.monitoring.trade_notifier.formatters_telegram import format_fill_notification_telegram
-        from app.services.fill_notification import FillOrder, FillEnrichment
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_fill_notification_telegram,
+        )
+        from app.services.fill_notification import FillEnrichment, FillOrder
 
-        order = FillOrder(symbol="005930", side="ask", filled_price=68500.0, filled_qty=10.0,
-                         filled_amount=685000.0, filled_at="2026-06-14T09:31:02", account="kis",
-                         order_price=68300.0, order_id="0001234567", market_type="kr", currency="KRW")
+        order = FillOrder(
+            symbol="005930",
+            side="ask",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
         enr = FillEnrichment(realized_pnl_amount=12000.0, realized_pnl_rate=1.8)
         msg = format_fill_notification_telegram(
-            order, display_name="삼성전자",
-            detail_url="https://x.test/invest/stocks/kr/005930", enrichment=enr,
+            order,
+            display_name="삼성전자",
+            detail_url="https://x.test/invest/stocks/kr/005930",
+            enrichment=enr,
         )
         assert "매도 체결" in msg
         assert "삼성전자" in msg and "005930" in msg
@@ -264,16 +278,28 @@ class TestFormatFillTelegram:
         assert "[종목 상세 보기](https://x.test/invest/stocks/kr/005930)" in msg
 
     def test_no_link_when_none(self):
-        from app.monitoring.trade_notifier.formatters_telegram import format_fill_notification_telegram
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_fill_notification_telegram,
+        )
         from app.services.fill_notification import FillOrder
 
-        order = FillOrder(symbol="005930", side="ask", filled_price=68500.0, filled_qty=10.0,
-                         filled_amount=685000.0, filled_at="2026-06-14T09:31:02", account="kis",
-                         order_price=68300.0, order_id="0001234567", market_type="kr", currency="KRW")
-        msg = format_fill_notification_telegram(order, display_name="삼성전자",
-                                                detail_url=None, enrichment=None)
+        order = FillOrder(
+            symbol="005930",
+            side="ask",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        msg = format_fill_notification_telegram(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
         assert "종목 상세 보기" not in msg
-
 
     def test_usd_currency(self):
         html_msg = format_toss_price_recommendation_html(

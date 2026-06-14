@@ -49,6 +49,7 @@ class FillOrder:
 @dataclass
 class FillEnrichment:
     """Best-effort 보강 데이터. 항상 근사치(~추정). 조회 실패 시 None 필드."""
+
     position_qty: float | None = None
     position_avg_price: float | None = None
     realized_pnl_amount: float | None = None
@@ -473,4 +474,3 @@ def format_fill_money(value: float, *, is_usd: bool) -> str:
 
 def format_fill_quantity(value: float) -> str:
     return _format_quantity(value)
-

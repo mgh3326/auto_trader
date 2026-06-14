@@ -7,6 +7,7 @@ import logging
 import httpx
 
 from app.core.timezone import format_datetime
+from app.services.fill_notification import FillEnrichment, FillOrder
 
 from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
@@ -15,7 +16,6 @@ from .transports import (
     send_discord_embed_single,
     send_telegram,
 )
-from app.services.fill_notification import FillEnrichment, FillOrder
 from .types import DiscordEmbed
 
 logger = logging.getLogger(__name__)
@@ -268,10 +268,16 @@ class TradeNotifier:
 
         display_name = resolve_fill_display_name(order)
         embed = fmt_discord.format_fill_notification(
-            order, display_name=display_name, detail_url=detail_url, enrichment=enrichment
+            order,
+            display_name=display_name,
+            detail_url=detail_url,
+            enrichment=enrichment,
         )
         telegram_msg = fmt_telegram.format_fill_notification_telegram(
-            order, display_name=display_name, detail_url=detail_url, enrichment=enrichment
+            order,
+            display_name=display_name,
+            detail_url=detail_url,
+            enrichment=enrichment,
         )
         return await self._dispatch(embed, telegram_msg, order.market_type)
 
