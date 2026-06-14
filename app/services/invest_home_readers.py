@@ -486,12 +486,40 @@ class UpbitHomeReader:
             )
 
 
+def _toss_sellable_quantity(position: Any, mutations_enabled: bool) -> float:
+    """ROB-549: 0.0 while reference-only; the API-provided sellable quantity
+    (falling back to full quantity) once Toss live mutations are armed."""
+    if not mutations_enabled:
+        return 0.0
+    sellable = getattr(position, "sellable_quantity", None)
+    if sellable is None:
+        return float(position.quantity)
+    return float(sellable)
+
+
+def _toss_pending_sell_quantity(position: Any, mutations_enabled: bool) -> float:
+    if not mutations_enabled:
+        return 0.0
+    return max(
+        float(position.quantity) - _toss_sellable_quantity(position, mutations_enabled),
+        0.0,
+    )
+
+
 class TossApiHomeReader:
     """Toss Open API live portfolio reader."""
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         del user_id
         try:
+            # ROB-549: gate tradeability/sellable on the live-mutation flag so
+            # toss_api holdings stop contradicting the registered toss_live order
+            # tools once the operator arms TOSS_LIVE_ORDER_MUTATIONS_ENABLED.
+            from app.core.config import settings as _settings
+
+            mutations_enabled = bool(
+                getattr(_settings, "toss_live_order_mutations_enabled", False)
+            )
             snapshot = await fetch_toss_portfolio_snapshot()
             holdings: list[Holding] = []
             value_krw_total = 0.0
@@ -584,10 +612,14 @@ class TossApiHomeReader:
                         else None,
                         priceState="live",
                         sourceOfTruth=True,
-                        isTradeable=False,
+                        isTradeable=mutations_enabled,
                         manualOnly=False,
-                        sellableQuantity=0.0,
-                        pendingSellQuantity=0.0,
+                        sellableQuantity=_toss_sellable_quantity(
+                            position, mutations_enabled
+                        ),
+                        pendingSellQuantity=_toss_pending_sell_quantity(
+                            position, mutations_enabled
+                        ),
                         referenceQuantity=float(position.quantity),
                     )
                 )

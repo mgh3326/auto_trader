@@ -15,6 +15,7 @@ from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
     normalize_account_mode,
+    toss_live_mutations_enabled,
 )
 from app.mcp_server.tooling.concurrency import bounded_gather
 from app.mcp_server.tooling.market_data_indicators import (
@@ -161,13 +162,20 @@ def _provenance_account_mode(
 def _account_order_routable(*, source: str | None) -> bool:
     """Whether an account group's holdings are routable by an automated order tool.
 
-    Manual holdings (toss/samsung/수동 입력, ``source="manual"``) and ROB-532
-    Toss API holdings are reference-only for order mutation until a Toss order
-    path exists. KIS / Upbit / paper sources sell via their own channels. This
-    is the authoritative sellability signal; ``account_mode`` stays a
-    provenance label (ROB-357) and is intentionally left unchanged.
+    Manual holdings (toss/samsung/수동 입력, ``source="manual"``) are always
+    reference-only. ROB-532 Toss API holdings were reference-only until the Toss
+    order tools existed; ROB-549 gates them on
+    ``TOSS_LIVE_ORDER_MUTATIONS_ENABLED`` so the sellability signal matches the
+    registered toss_live order tools once mutations are armed. KIS / Upbit /
+    paper sources sell via their own channels. This is the authoritative
+    sellability signal; ``account_mode`` stays a provenance label (ROB-357) and
+    is intentionally left unchanged.
     """
-    return source not in {"manual", "toss_api"}
+    if source == "manual":
+        return False
+    if source == "toss_api":
+        return toss_live_mutations_enabled()
+    return True
 
 
 def _build_crypto_strategy_signal(

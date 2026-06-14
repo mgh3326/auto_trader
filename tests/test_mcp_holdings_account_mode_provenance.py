@@ -18,6 +18,29 @@ from app.mcp_server.tooling import portfolio_holdings
 from tests._mcp_tooling_support import DummyMCP
 
 
+def test_account_order_routable_toss_api_gated_on_mutations_flag(monkeypatch):
+    """ROB-549: toss_api holdings become routable once Toss live order
+    mutations are enabled; manual holdings stay reference-only regardless."""
+    from app.mcp_server.tooling import account_modes
+
+    monkeypatch.setattr(
+        account_modes.settings,
+        "toss_live_order_mutations_enabled",
+        False,
+        raising=False,
+    )
+    assert portfolio_holdings._account_order_routable(source="toss_api") is False
+    assert portfolio_holdings._account_order_routable(source="manual") is False
+    assert portfolio_holdings._account_order_routable(source="kis_api") is True
+
+    monkeypatch.setattr(
+        account_modes.settings, "toss_live_order_mutations_enabled", True, raising=False
+    )
+    assert portfolio_holdings._account_order_routable(source="toss_api") is True
+    # manual is always reference-only, even with Toss mutations on
+    assert portfolio_holdings._account_order_routable(source="manual") is False
+
+
 def _upbit_position(symbol: str = "KRW-BTC") -> dict:
     return {
         "account": "upbit",
@@ -135,6 +158,16 @@ async def test_get_holdings_impl_labels_upbit_account_upbit_live(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_holdings_impl_labels_toss_api_account_toss_api(monkeypatch):
+    from app.mcp_server.tooling import account_modes
+
+    # Mutations disabled (default): toss_api stays reference-only.
+    monkeypatch.setattr(
+        account_modes.settings,
+        "toss_live_order_mutations_enabled",
+        False,
+        raising=False,
+    )
+
     async def fake_collect(**_kwargs):
         return [_toss_api_position("BRK.B"), _kis_position("005930")], [], None, None
 

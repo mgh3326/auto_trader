@@ -9,6 +9,7 @@ from typing import Any
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.account_modes import toss_live_mutations_enabled
 from app.mcp_server.tooling.shared import (
     logger,
     to_float,
@@ -166,6 +167,10 @@ async def get_cash_balance_impl(
     if account_filter is None or account_filter == "toss":
         if bool(getattr(settings, "toss_api_enabled", False)):
             try:
+                # ROB-549: surface buying power as orderable only once Toss live
+                # mutations are armed; otherwise keep it reference-only (0.0) so
+                # the cash signal matches the holdings sellability gate.
+                toss_orderable_enabled = toss_live_mutations_enabled()
                 toss_snapshot = await fetch_toss_cash_snapshot()
                 toss_krw = _decimal_to_float(toss_snapshot.cash_krw)
                 toss_usd = _decimal_to_float(toss_snapshot.cash_usd)
@@ -177,7 +182,7 @@ async def get_cash_balance_impl(
                             "broker": "toss",
                             "currency": "KRW",
                             "balance": toss_krw,
-                            "orderable": 0.0,
+                            "orderable": toss_krw if toss_orderable_enabled else 0.0,
                             "formatted": _format_cash_amount(toss_krw, "KRW"),
                         }
                     )
@@ -190,7 +195,7 @@ async def get_cash_balance_impl(
                             "broker": "toss",
                             "currency": "USD",
                             "balance": toss_usd,
-                            "orderable": 0.0,
+                            "orderable": toss_usd if toss_orderable_enabled else 0.0,
                             "formatted": _format_cash_amount(toss_usd, "USD"),
                         }
                     )
