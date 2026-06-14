@@ -178,6 +178,91 @@ async def test_cached_token_is_reused(fake_redis):
     assert await manager.get_access_token() == "cached-token"
 
 
+async def test_force_reissue_returns_fresher_cached_token_without_reissuing(
+    fake_redis, monkeypatch
+):
+    """ROB-547: a contender that hit invalid-token must reuse a fresher cached
+    token instead of force-reissuing it away (single-valid-token churn)."""
+    manager = auth.TossOAuthTokenManager(
+        client_id="client-id",
+        client_secret=SecretStr("client-secret"),
+        base_url="https://openapi.tossinvest.com",
+    )
+    # Cache already holds a fresher token T2 (another process reissued).
+    fake_redis.strings[manager.token_key] = json.dumps(
+        {"access_token": "fresh-T2", "expires_at": 4_102_444_800.0}
+    )
+    issue_calls = 0
+
+    async def _issue() -> auth.TossToken:
+        nonlocal issue_calls
+        issue_calls += 1
+        return auth.TossToken(access_token="must-not-issue-T3", expires_in=86399)
+
+    monkeypatch.setattr(manager, "_issue_token", _issue)
+
+    token = await manager.get_access_token(force_reissue=True, failed_token="stale-T1")
+
+    assert token == "fresh-T2"
+    assert issue_calls == 0
+
+
+async def test_force_reissue_reissues_when_cache_still_holds_failed_token(
+    fake_redis, monkeypatch
+):
+    """ROB-547: if the cache still holds the failed token, force-reissue replaces it."""
+    manager = auth.TossOAuthTokenManager(
+        client_id="client-id",
+        client_secret=SecretStr("client-secret"),
+        base_url="https://openapi.tossinvest.com",
+    )
+    fake_redis.strings[manager.token_key] = json.dumps(
+        {"access_token": "stale-T1", "expires_at": 4_102_444_800.0}
+    )
+    issue_calls = 0
+
+    async def _issue() -> auth.TossToken:
+        nonlocal issue_calls
+        issue_calls += 1
+        return auth.TossToken(access_token="new-T2", expires_in=86399)
+
+    monkeypatch.setattr(manager, "_issue_token", _issue)
+
+    token = await manager.get_access_token(force_reissue=True, failed_token="stale-T1")
+
+    assert token == "new-T2"
+    assert issue_calls == 1
+
+
+async def test_contended_force_reissue_never_returns_failed_token(
+    fake_redis, monkeypatch
+):
+    """ROB-547: a contender waiting after invalid-token must not get the dead
+    token back; if only the failed token is ever cached, it times out."""
+    manager = auth.TossOAuthTokenManager(
+        client_id="client-id",
+        client_secret=SecretStr("client-secret"),
+        base_url="https://openapi.tossinvest.com",
+    )
+    fake_redis.strings[manager.lock_key] = "other-owner"
+    fake_redis.strings[manager.token_key] = json.dumps(
+        {"access_token": "stale-T1", "expires_at": 4_102_444_800.0}
+    )
+    issue_calls = 0
+
+    async def _issue() -> auth.TossToken:
+        nonlocal issue_calls
+        issue_calls += 1
+        return auth.TossToken(access_token="must-not-issue", expires_in=86399)
+
+    monkeypatch.setattr(manager, "_issue_token", _issue)
+
+    with pytest.raises(TossTokenIssuanceUnavailable):
+        await manager.get_access_token(force_reissue=True, failed_token="stale-T1")
+
+    assert issue_calls == 0
+
+
 async def test_issue_token_uses_auth_rate_limiter(monkeypatch):
     acquired: list[TossApiGroup] = []
 

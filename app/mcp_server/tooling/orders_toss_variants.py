@@ -184,6 +184,21 @@ def _estimate_krw_notional(
     return None
 
 
+def _high_value_uncheckable(
+    market: Literal["kr", "us"],
+    quantity: Decimal | None,
+    price: Decimal | None,
+    order_amount: Decimal | None,
+) -> bool:
+    """True when a KR order's KRW notional cannot be estimated locally (e.g. a
+    market order has no price), so the local 1억 confirm gate cannot evaluate it.
+    The broker still enforces ``confirm-high-value-required`` server-side."""
+    return (
+        market == "kr"
+        and _estimate_krw_notional(market, quantity, price, order_amount) is None
+    )
+
+
 def _high_value_error(
     market: Literal["kr", "us"],
     quantity: Decimal | None,
@@ -203,6 +218,15 @@ def _high_value_error(
                     "requires confirm_high_value_order=True."
                 ),
             }
+    if notional is None and _high_value_uncheckable(
+        market, quantity, price, order_amount
+    ):
+        logger.warning(
+            "Toss KR order high-value (1억+) local gate could not be evaluated "
+            "(no estimable KRW notional, e.g. market order); relying on broker-side "
+            "confirm-high-value-required enforcement. confirm_high_value_order=%s",
+            confirm_high_value_order,
+        )
     return None
 
 

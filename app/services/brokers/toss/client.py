@@ -30,6 +30,7 @@ from app.services.brokers.toss.errors import TossApiResponseError, parse_toss_re
 from app.services.brokers.toss.rate_limiter import (
     TossApiGroup,
     TossRateLimiter,
+    get_shared_rate_limiter,
     retry_delay_seconds,
 )
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
@@ -57,10 +58,14 @@ class TossReadClient:
         base_url = (
             getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
         )
+        limiter = get_shared_rate_limiter()
         return cls(
-            token_manager=TossOAuthTokenManager.from_settings(settings_obj),
+            token_manager=TossOAuthTokenManager.from_settings(
+                settings_obj, rate_limiter=limiter
+            ),
             account_seq=getattr(settings_obj, "toss_api_account_seq", None),
             base_url=str(base_url),
+            rate_limiter=limiter,
         )
 
     async def aclose(self) -> None:
@@ -95,7 +100,9 @@ class TossReadClient:
             return parse_toss_response(response)
         except TossApiResponseError as exc:
             if exc.envelope.code in _TOKEN_CODES:
-                token = await self._token_manager.get_access_token(force_reissue=True)
+                token = await self._token_manager.get_access_token(
+                    force_reissue=True, failed_token=token
+                )
                 headers["Authorization"] = f"Bearer {token}"
                 retry = await self._client.request(
                     method, path, params=params, json=json, headers=headers

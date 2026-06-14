@@ -2,21 +2,47 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from decimal import Decimal
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
+from app.services.brokers.toss import rate_limiter as rate_limiter_module
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.client import TossReadClient
+
+
+@dataclass
+class _ClientSettings:
+    toss_api_enabled: bool = True
+    toss_api_client_id: str | None = "client-id"
+    toss_api_client_secret: SecretStr | None = SecretStr("client-secret")
+    toss_api_base_url: str | None = "https://openapi.tossinvest.com"
+    toss_api_account_seq: int | None = 1
+
+
+def test_from_settings_shares_process_global_rate_limiter() -> None:
+    """ROB-547: client and its token manager must share the one process-global
+    limiter so group TPS holds across concurrent call sites."""
+    rate_limiter_module.reset_shared_rate_limiter()
+    shared = rate_limiter_module.get_shared_rate_limiter()
+
+    client = TossReadClient.from_settings(_ClientSettings())
+
+    assert client._rate_limiter is shared
+    assert client._token_manager._rate_limiter is shared
 
 
 class _TokenManager(TossOAuthTokenManager):
     def __init__(self) -> None:
         pass
 
-    async def get_access_token(self, *, force_reissue: bool = False) -> str:
-        del force_reissue
+    async def get_access_token(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
+        del force_reissue, failed_token
         return "token-1"
 
 
@@ -113,10 +139,14 @@ async def test_prices_rejects_more_than_200_symbols() -> None:
 async def test_get_order_retries_once_after_invalid_token() -> None:
     calls = 0
     token_calls: list[bool] = []
+    failed_tokens: list[str | None] = []
 
     class TokenManager(_TokenManager):
-        async def get_access_token(self, *, force_reissue: bool = False) -> str:
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
             token_calls.append(force_reissue)
+            failed_tokens.append(failed_token)
             return "token-2" if force_reissue else "token-1"
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -169,6 +199,9 @@ async def test_get_order_retries_once_after_invalid_token() -> None:
 
     assert order.order_id == "ord-1"
     assert token_calls == [False, True]
+    # ROB-547: the reissue must carry the failed token so a peer's fresher
+    # token can be reused instead of force-churning a new one.
+    assert failed_tokens == [None, "token-1"]
 
 
 @pytest.mark.asyncio
