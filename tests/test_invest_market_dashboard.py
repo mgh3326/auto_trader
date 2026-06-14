@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -85,6 +87,80 @@ async def test_build_market_dashboard_degrades_to_partial_on_provider_error() ->
     assert response.sections[0].state == "missing"
     assert response.sections[1].state == "missing"
     assert response.sections[2].state == "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_dashboard_captures_providers_concurrently() -> None:
+    class _ConcurrentProvider(_StubMarketProvider):
+        def __init__(self) -> None:
+            self.active = 0
+            self.peak_active = 0
+
+        async def _enter(self) -> None:
+            self.active += 1
+            self.peak_active = max(self.peak_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+
+        async def get_indices(self) -> dict:
+            await self._enter()
+            return await super().get_indices()
+
+        async def get_fear_greed(self) -> dict:
+            await self._enter()
+            return await super().get_fear_greed()
+
+        async def get_kimchi_premium(self) -> dict:
+            await self._enter()
+            return await super().get_kimchi_premium()
+
+    provider = _ConcurrentProvider()
+
+    response = await build_market_dashboard(provider)
+
+    assert response.state == "fresh"
+    assert provider.peak_active == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_dashboard_emits_provider_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.invest_view_model import market_dashboard_service as service
+
+    started: list[tuple[str, str]] = []
+
+    class _Span:
+        def set_data(self, key: str, value: object) -> None:
+            return None
+
+        def set_tag(self, key: str, value: object) -> None:
+            return None
+
+    class _SpanContext:
+        def __init__(self, op: str, name: str) -> None:
+            self.op = op
+            self.name = name
+
+        def __enter__(self) -> _Span:
+            started.append((self.op, self.name))
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: object) -> _SpanContext:
+        return _SpanContext(op, name)
+
+    monkeypatch.setattr(service.sentry_sdk, "start_span", _start_span)
+
+    await build_market_dashboard(_StubMarketProvider())
+
+    assert ("invest.market.provider", "invest.market.market_index") in started
+    assert ("invest.market.provider", "invest.market.fear_greed") in started
+    assert ("invest.market.provider", "invest.market.kimchi_premium") in started
 
 
 @pytest.fixture
