@@ -604,7 +604,7 @@ class TestTossNotificationService:
         mock_trade_notifier.notify_toss_buy_recommendation.assert_called_once()
         kwargs = mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
         base_url = settings.public_base_url.rstrip("/")
-        assert kwargs["detail_url"] == f"{base_url}/portfolio/positions/kr/005930"
+        assert kwargs["detail_url"] == f"{base_url}/invest/stocks/kr/005930"
 
     @pytest.mark.asyncio
     async def test_process_analysis_result_sell_with_toss(

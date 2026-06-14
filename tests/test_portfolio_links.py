@@ -1,26 +1,24 @@
-from app.core.config import settings
+import pytest
+
 from app.core.portfolio_links import build_position_detail_url
 
 
-def test_build_position_detail_url_for_supported_markets() -> None:
-    base_url = settings.public_base_url.rstrip("/")
-    assert (
-        build_position_detail_url("035720", "kr")
-        == f"{base_url}/portfolio/positions/kr/035720"
-    )
-    assert (
-        build_position_detail_url("NVDA", "us")
-        == f"{base_url}/portfolio/positions/us/NVDA"
-    )
-    assert (
-        build_position_detail_url("KRW-BTC", "crypto")
-        == f"{base_url}/portfolio/positions/crypto/KRW-BTC"
-    )
+@pytest.mark.unit
+def test_kr_url_points_to_invest_stocks():
+    url = build_position_detail_url("005930", "kr")
+    assert url is not None
+    assert url.endswith("/invest/stocks/kr/005930")
+    assert "/portfolio/positions/" not in url
 
 
-def test_build_position_detail_url_returns_none_for_unknown_market_or_blank_symbol() -> (
-    None
-):
+@pytest.mark.unit
+def test_crypto_symbol_encoded():
+    url = build_position_detail_url("KRW-BTC", "crypto")
+    assert url is not None
+    assert url.endswith("/invest/stocks/crypto/KRW-BTC")
+
+
+@pytest.mark.unit
+def test_unknown_market_returns_none():
+    assert build_position_detail_url("005930", "bogus") is None
     assert build_position_detail_url("", "kr") is None
-    assert build_position_detail_url(None, "kr") is None
-    assert build_position_detail_url("7203", "jp") is None

@@ -453,6 +453,22 @@ def test_formatter_keeps_order_id_short_and_includes_link():
 
     assert "12345678" in message
     assert "12345678-aaaa" not in message
-    assert (
-        "https://trader.robinco.dev/portfolio?market=crypto&symbol=KRW-BTC" in message
+    assert "https://trader.robinco.dev/invest/stocks/crypto/KRW-BTC" in message
+
+
+@pytest.mark.unit
+def test_position_url_uses_invest_stocks():
+    from app.services.crypto_pending_order_alert_service import _position_url
+
+    cfg = CryptoPendingOrderAlertConfig(
+        enabled=True,
+        normal_channel_id="1",
+        failure_channel_id="2",
+        normal_webhook_url="http://x",
+        failure_webhook_url="http://y",
+        discord_bot_token=None,
+        trader_base_url="https://x.test",
     )
+    url = _position_url(cfg, "KRW-BTC")
+    assert url == "https://x.test/invest/stocks/crypto/KRW-BTC"
+    assert "/portfolio" not in url

@@ -7,6 +7,7 @@ import logging
 import httpx
 
 from app.core.timezone import format_datetime
+from app.services.fill_notification import FillEnrichment, FillOrder
 
 from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
@@ -254,6 +255,31 @@ class TradeNotifier:
             market_type=market_type,
         )
         return await self._dispatch(embed, telegram_msg, market_type)
+
+    async def notify_fill(
+        self,
+        order: FillOrder,
+        *,
+        enrichment: FillEnrichment | None = None,
+        detail_url: str | None = None,
+    ) -> bool:
+        """체결(fill) 알림. Discord 우선, Telegram fallback."""
+        from app.services.fill_notification import resolve_fill_display_name
+
+        display_name = resolve_fill_display_name(order)
+        embed = fmt_discord.format_fill_notification(
+            order,
+            display_name=display_name,
+            detail_url=detail_url,
+            enrichment=enrichment,
+        )
+        telegram_msg = fmt_telegram.format_fill_notification_telegram(
+            order,
+            display_name=display_name,
+            detail_url=detail_url,
+            enrichment=enrichment,
+        )
+        return await self._dispatch(embed, telegram_msg, order.market_type)
 
     async def notify_sell_order(
         self,

@@ -436,8 +436,6 @@ class Settings(BaseSettings):
     # CLI are scheduleless / dry-run-default even when this is set.
     WATCH_VALIDITY_REVIEW_ENABLED: bool = False
 
-    # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
-    N8N_FILL_WEBHOOK_URL: str = ""
     # Watch Alert router (Phase 0 of ROB-122 — transport-neutral seam).
     # When set, takes precedence over N8N_WATCH_ALERT_WEBHOOK_URL.
     # N8N_WATCH_ALERT_WEBHOOK_URL is the deprecated backward-compat fallback.

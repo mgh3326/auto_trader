@@ -1973,3 +1973,89 @@ async def test_notify_toss_price_recommendation_requires_market_webhook(trade_no
 
     assert result is False
     mock_send.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_fill_routes_to_kr_webhook(trade_notifier):
+    from app.services.fill_notification import FillEnrichment, FillOrder
+
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+    )
+    order = FillOrder(
+        symbol="035420",
+        side="bid",
+        filled_price=68500.0,
+        filled_qty=10.0,
+        filled_amount=685000.0,
+        filled_at="t",
+        account="kis",
+        order_price=68300.0,
+        order_id="0001234567",
+        market_type="kr",
+        currency="KRW",
+    )
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new=AsyncMock(return_value=True),
+        ) as mock_discord,
+        patch.object(
+            trade_notifier, "_send_to_telegram", new=AsyncMock(return_value=True)
+        ) as mock_tg,
+    ):
+        ok = await trade_notifier.notify_fill(
+            order,
+            enrichment=FillEnrichment(position_qty=30.0, position_avg_price=68100.0),
+            detail_url="https://x.test/invest/stocks/kr/035420",
+        )
+    assert ok is True
+    mock_discord.assert_awaited_once()
+    mock_tg.assert_not_awaited()
+    embed_arg = mock_discord.await_args.args[0]
+    assert embed_arg["title"] == "🟢 체결 · NAVER (035420)"
+    assert embed_arg["url"] == "https://x.test/invest/stocks/kr/035420"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_fill_telegram_fallback_when_discord_fails(trade_notifier):
+    from app.services.fill_notification import FillOrder
+
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+    )
+    order = FillOrder(
+        symbol="005930",
+        side="bid",
+        filled_price=68500.0,
+        filled_qty=10.0,
+        filled_amount=685000.0,
+        filled_at="t",
+        account="kis",
+        order_price=68300.0,
+        order_id="0001234567",
+        market_type="kr",
+        currency="KRW",
+    )
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
+            trade_notifier, "_send_to_telegram", new=AsyncMock(return_value=True)
+        ) as mock_tg,
+    ):
+        ok = await trade_notifier.notify_fill(order, enrichment=None, detail_url=None)
+    assert ok is True
+    mock_tg.assert_awaited_once()
