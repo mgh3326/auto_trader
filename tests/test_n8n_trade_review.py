@@ -14,7 +14,7 @@ class TestFilledOrdersService:
         from datetime import datetime
 
         from app.core.timezone import KST
-        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+        from app.services.filled_orders_service import _fetch_upbit_filled
 
         mock_closed = [
             {
@@ -43,12 +43,12 @@ class TestFilledOrdersService:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                "app.services.filled_orders_service.upbit_service.fetch_closed_orders",
                 new_callable=AsyncMock,
                 return_value=mock_closed,
             ),
             patch(
-                "app.services.n8n_filled_orders_service.now_kst",
+                "app.services.filled_orders_service.now_kst",
                 return_value=fixed_now,
             ),
         ):
@@ -62,7 +62,7 @@ class TestFilledOrdersService:
         from datetime import datetime
 
         from app.core.timezone import KST
-        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+        from app.services.filled_orders_service import _fetch_upbit_filled
 
         mock_closed = [
             {
@@ -81,12 +81,12 @@ class TestFilledOrdersService:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                "app.services.filled_orders_service.upbit_service.fetch_closed_orders",
                 new_callable=AsyncMock,
                 return_value=mock_closed,
             ),
             patch(
-                "app.services.n8n_filled_orders_service.now_kst",
+                "app.services.filled_orders_service.now_kst",
                 return_value=fixed_now,
             ),
             caplog.at_level("WARNING"),
@@ -99,21 +99,21 @@ class TestFilledOrdersService:
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_orders(self):
-        from app.services.n8n_filled_orders_service import fetch_filled_orders
+        from app.services.filled_orders_service import fetch_filled_orders
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                "app.services.filled_orders_service.upbit_service.fetch_closed_orders",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_domestic_filled",
+                "app.services.filled_orders_service._fetch_kis_domestic_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
+                "app.services.filled_orders_service._fetch_kis_overseas_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
@@ -128,7 +128,7 @@ class TestFilledOrdersService:
         from datetime import datetime
 
         from app.core.timezone import KST
-        from app.services.n8n_filled_orders_service import fetch_filled_orders
+        from app.services.filled_orders_service import fetch_filled_orders
 
         mock_closed = [
             {
@@ -160,27 +160,27 @@ class TestFilledOrdersService:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                "app.services.filled_orders_service.upbit_service.fetch_closed_orders",
                 new_callable=AsyncMock,
                 return_value=mock_closed,
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_domestic_filled",
+                "app.services.filled_orders_service._fetch_kis_domestic_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
+                "app.services.filled_orders_service._fetch_kis_overseas_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._enrich_with_current_prices",
+                "app.services.filled_orders_service._enrich_with_current_prices",
                 new_callable=AsyncMock,
                 side_effect=lambda orders: orders,
             ),
             patch(
-                "app.services.n8n_filled_orders_service.now_kst",
+                "app.services.filled_orders_service.now_kst",
                 return_value=fixed_now,
             ),
         ):
@@ -195,7 +195,7 @@ class TestFilledOrdersService:
         from datetime import datetime
 
         from app.core.timezone import KST
-        from app.services.n8n_filled_orders_service import fetch_filled_orders
+        from app.services.filled_orders_service import fetch_filled_orders
 
         mock_closed = [
             {
@@ -215,22 +215,22 @@ class TestFilledOrdersService:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                "app.services.filled_orders_service.upbit_service.fetch_closed_orders",
                 new_callable=AsyncMock,
                 return_value=mock_closed,
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_domestic_filled",
+                "app.services.filled_orders_service._fetch_kis_domestic_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
+                "app.services.filled_orders_service._fetch_kis_overseas_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service.now_kst",
+                "app.services.filled_orders_service.now_kst",
                 return_value=fixed_now,
             ),
         ):
@@ -245,7 +245,7 @@ class TestFilledOrdersService:
         from datetime import datetime
 
         from app.core.timezone import KST
-        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+        from app.services.filled_orders_service import _fetch_upbit_filled
 
         cancel_only = [
             {
@@ -275,12 +275,12 @@ class TestFilledOrdersService:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                "app.services.filled_orders_service.upbit_service.fetch_closed_orders",
                 new_callable=AsyncMock,
                 side_effect=[cancel_only, real_fill],
             ),
             patch(
-                "app.services.n8n_filled_orders_service.now_kst",
+                "app.services.filled_orders_service.now_kst",
                 return_value=fixed_now,
             ),
         ):
@@ -294,7 +294,7 @@ class TestFilledOrdersService:
         from datetime import datetime
 
         from app.core.timezone import KST
-        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+        from app.services.filled_orders_service import _fetch_upbit_filled
 
         duplicate = {
             "uuid": "dup-fill",
@@ -310,12 +310,12 @@ class TestFilledOrdersService:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                "app.services.filled_orders_service.upbit_service.fetch_closed_orders",
                 new_callable=AsyncMock,
                 side_effect=[[duplicate], [duplicate]],
             ),
             patch(
-                "app.services.n8n_filled_orders_service.now_kst",
+                "app.services.filled_orders_service.now_kst",
                 return_value=fixed_now,
             ),
         ):

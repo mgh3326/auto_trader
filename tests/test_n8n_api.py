@@ -280,11 +280,11 @@ class TestExchangeRateService:
 class TestN8nPendingOrdersService:
     @pytest.mark.asyncio
     async def test_market_all_fans_out_three_calls(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 side_effect=[
                     _impl_result(orders=[_make_crypto_order()], market="crypto"),
@@ -293,12 +293,12 @@ class TestN8nPendingOrdersService:
                 ],
             ) as mock_impl,
             patch(
-                "app.services.n8n_pending_orders_service.fetch_multiple_current_prices_cached",
+                "app.services.pending_orders_service.fetch_multiple_current_prices_cached",
                 new_callable=AsyncMock,
                 return_value={"KRW-BTC": 96_000_000.0},
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_quote",
+                "app.services.pending_orders_service.get_quote",
                 new_callable=AsyncMock,
                 side_effect=[
                     type("Quote", (), {"price": 71_000.0})(),
@@ -306,7 +306,7 @@ class TestN8nPendingOrdersService:
                 ],
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_usd_krw_rate",
+                "app.services.pending_orders_service.get_usd_krw_rate",
                 new_callable=AsyncMock,
                 return_value=1400.0,
             ),
@@ -327,10 +327,10 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_market_specific_single_call(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=[], market="kr"),
         ) as mock_impl:
@@ -342,11 +342,11 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_pending_keeps_partial_orders(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         order = _make_crypto_order(status="partial")
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=[order], market="crypto"),
         ):
@@ -358,10 +358,10 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_crypto_symbol_stripping(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=[_make_crypto_order()], market="crypto"),
         ):
@@ -375,10 +375,10 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_created_at_kis_format_normalized_to_kst_iso(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(
                 orders=[_make_kr_order(ordered_at="20260315 143000")],
@@ -394,11 +394,11 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_created_at_hhmmss_only_uses_fallback_date(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         as_of = datetime(2026, 3, 17, 15, 0, 0, tzinfo=KST)
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(
                 orders=[_make_kr_order(ordered_at="135334")],
@@ -416,11 +416,11 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_created_at_hhmmss_with_leading_space(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         as_of = datetime(2026, 3, 17, 15, 0, 0, tzinfo=KST)
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(
                 orders=[_make_kr_order(ordered_at=" 135334")],
@@ -438,7 +438,7 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_orders_sorted_by_created_at_ascending(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         orders = [
             _make_kr_order(
@@ -449,7 +449,7 @@ class TestN8nPendingOrdersService:
             ),
         ]
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=orders, market="kr"),
         ):
@@ -464,22 +464,22 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_include_current_price_false_skips_quote_calls(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value=_impl_result(
                     orders=[_make_crypto_order()], market="crypto"
                 ),
             ),
             patch(
-                "app.services.n8n_pending_orders_service.fetch_multiple_current_prices_cached",
+                "app.services.pending_orders_service.fetch_multiple_current_prices_cached",
                 new_callable=AsyncMock,
             ) as mock_crypto_prices,
             patch(
-                "app.services.n8n_pending_orders_service.get_quote",
+                "app.services.pending_orders_service.get_quote",
                 new_callable=AsyncMock,
             ) as mock_quote,
         ):
@@ -494,11 +494,11 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_gap_pct_calculation(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value=_impl_result(
                     orders=[_make_crypto_order(ordered_price=100_000_000.0)],
@@ -506,7 +506,7 @@ class TestN8nPendingOrdersService:
                 ),
             ),
             patch(
-                "app.services.n8n_pending_orders_service.fetch_multiple_current_prices_cached",
+                "app.services.pending_orders_service.fetch_multiple_current_prices_cached",
                 new_callable=AsyncMock,
                 return_value={"KRW-BTC": 105_000_000.0},
             ),
@@ -519,13 +519,13 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_age_hours_and_days(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         ordered_at = (
             (now_kst() - timedelta(hours=50)).replace(microsecond=0).isoformat()
         )
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(
                 orders=[_make_crypto_order(ordered_at=ordered_at)],
@@ -542,13 +542,13 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_explicit_as_of_controls_age_calculation(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         as_of = datetime.fromisoformat("2026-03-17T12:00:00+09:00")
         ordered_at = "2026-03-15T10:00:00+09:00"
 
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(
                 orders=[_make_crypto_order(ordered_at=ordered_at)],
@@ -568,12 +568,12 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_blank_ordered_at_uses_explicit_as_of_fallback(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         as_of = datetime.fromisoformat("2026-03-17T12:00:00+09:00")
 
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(
                 orders=[_make_crypto_order(ordered_at="")],
@@ -593,7 +593,7 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_min_amount_filter(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         orders = [
             _make_kr_order(
@@ -608,7 +608,7 @@ class TestN8nPendingOrdersService:
             ),
         ]
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=orders, market="kr"),
         ):
@@ -623,11 +623,11 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_us_amount_krw_uses_exchange_rate(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value=_impl_result(
                     orders=[
@@ -639,12 +639,12 @@ class TestN8nPendingOrdersService:
                 ),
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_usd_krw_rate",
+                "app.services.pending_orders_service.get_usd_krw_rate",
                 new_callable=AsyncMock,
                 return_value=1400.0,
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_quote",
+                "app.services.pending_orders_service.get_quote",
                 new_callable=AsyncMock,
                 side_effect=Exception("Yahoo unavailable"),
             ),
@@ -657,16 +657,16 @@ class TestN8nPendingOrdersService:
     async def test_exchange_rate_failure_preserves_us_order_and_records_error(
         self,
     ) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value=_impl_result(orders=[_make_us_order()], market="us"),
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_usd_krw_rate",
+                "app.services.pending_orders_service.get_usd_krw_rate",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("rate lookup unavailable"),
             ),
@@ -686,11 +686,11 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_summary_skips_orders_with_null_amount_krw(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 side_effect=[
                     _impl_result(orders=[], market="crypto"),
@@ -712,7 +712,7 @@ class TestN8nPendingOrdersService:
                 ],
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_usd_krw_rate",
+                "app.services.pending_orders_service.get_usd_krw_rate",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("rate lookup unavailable"),
             ),
@@ -730,16 +730,16 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_min_amount_keeps_us_orders_with_null_amount_krw(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value=_impl_result(orders=[_make_us_order()], market="us"),
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_usd_krw_rate",
+                "app.services.pending_orders_service.get_usd_krw_rate",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("rate lookup unavailable"),
             ),
@@ -755,21 +755,21 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_quote_failure_preserves_order_and_records_error(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value=_impl_result(orders=[_make_kr_order()], market="kr"),
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_kr_names_by_symbols",
+                "app.services.pending_orders_service.get_kr_names_by_symbols",
                 new_callable=AsyncMock,
                 return_value={},
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_quote",
+                "app.services.pending_orders_service.get_quote",
                 new_callable=AsyncMock,
                 side_effect=Exception("KIS API timeout"),
             ),
@@ -785,7 +785,7 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_summary_aggregation(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         orders = [
             _make_kr_order(
@@ -800,7 +800,7 @@ class TestN8nPendingOrdersService:
             ),
         ]
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=orders, market="kr"),
         ):
@@ -817,10 +817,10 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_side_filter_passthrough(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=[], market="crypto"),
         ) as mock_impl:
@@ -832,7 +832,7 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_fallback_infer_market_from_order(self) -> None:
-        from app.services.n8n_pending_orders_service import _infer_market_from_order
+        from app.services.pending_orders_service import _infer_market_from_order
 
         assert _infer_market_from_order(_make_us_order()) == "us"
         assert _infer_market_from_order(_make_crypto_order()) == "crypto"
@@ -840,13 +840,13 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_orders_include_fmt_fields(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         as_of = datetime.fromisoformat("2026-03-17T12:00:00+09:00")
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value=_impl_result(
                     orders=[
@@ -861,7 +861,7 @@ class TestN8nPendingOrdersService:
                 ),
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_quote",
+                "app.services.pending_orders_service.get_quote",
                 new_callable=AsyncMock,
                 return_value=type("Quote", (), {"price": 71_000.0})(),
             ),
@@ -883,7 +883,7 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_summary_includes_fmt_fields(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
 
@@ -905,7 +905,7 @@ class TestN8nPendingOrdersService:
             ),
         ]
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(orders=orders, market="kr"),
         ):
@@ -924,12 +924,12 @@ class TestN8nPendingOrdersService:
 
     @pytest.mark.asyncio
     async def test_fmt_fields_present_without_current_price(self) -> None:
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
 
         with patch(
-            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            "app.services.pending_orders_service.get_order_history_impl",
             new_callable=AsyncMock,
             return_value=_impl_result(
                 orders=[_make_crypto_order(ordered_at="2026-03-16T10:00:00+09:00")],
@@ -951,11 +951,11 @@ class TestN8nPendingOrdersService:
     @pytest.mark.asyncio
     async def test_fetch_pending_orders_kr_name_enrichment(self) -> None:
         """KR 미체결 주문에 종목명이 enrichment된다."""
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value={
                     "orders": [
@@ -975,12 +975,12 @@ class TestN8nPendingOrdersService:
                 },
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_kr_names_by_symbols",
+                "app.services.pending_orders_service.get_kr_names_by_symbols",
                 new_callable=AsyncMock,
                 return_value={"064350": "현대로템"},
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_quote",
+                "app.services.pending_orders_service.get_quote",
                 new_callable=AsyncMock,
                 side_effect=Exception("skip"),
             ),
@@ -998,11 +998,11 @@ class TestN8nPendingOrdersService:
     @pytest.mark.asyncio
     async def test_fetch_pending_orders_kr_name_lookup_failure_graceful(self) -> None:
         """종목명 조회 실패 시 name=None, summary_line은 symbol만 표시."""
-        from app.services.n8n_pending_orders_service import fetch_pending_orders
+        from app.services.pending_orders_service import fetch_pending_orders
 
         with (
             patch(
-                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                "app.services.pending_orders_service.get_order_history_impl",
                 new_callable=AsyncMock,
                 return_value={
                     "orders": [
@@ -1022,7 +1022,7 @@ class TestN8nPendingOrdersService:
                 },
             ),
             patch(
-                "app.services.n8n_pending_orders_service.get_kr_names_by_symbols",
+                "app.services.pending_orders_service.get_kr_names_by_symbols",
                 new_callable=AsyncMock,
                 side_effect=Exception("DB down"),
             ),

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from app.core.timezone import now_kst
 from app.services.market_events.session_calendar import regular_session_bounds
-from app.services.n8n_pending_orders_service import fetch_pending_orders
+from app.services.pending_orders_service import fetch_pending_orders
 
 logger = logging.getLogger(__name__)
 

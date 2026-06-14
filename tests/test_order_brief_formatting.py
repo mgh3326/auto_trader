@@ -11,66 +11,66 @@ class TestFmtPrice:
 
     # --- KRW ---
     def test_krw_below_10000_uses_comma(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(2470) == "2,470"
 
     def test_krw_exact_boundary_10000(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(10000) == pytest.approx("1.0만")
 
     def test_krw_10000_to_1m(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(16500) == pytest.approx("1.65만")
         assert fmt_price(70000) == pytest.approx("7.0만")
         assert fmt_price(999999) == pytest.approx("100.0만")
 
     def test_krw_1m_to_100m(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(1080000) == pytest.approx("108.0만")
         assert fmt_price(5_500_000) == pytest.approx("550.0만")
         assert fmt_price(99_999_999) == pytest.approx("10000.0만")
 
     def test_krw_100m_plus_uses_eok(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(108_000_000) == pytest.approx("1.08억")
         assert fmt_price(148_500_000) == pytest.approx("1.49억")
         assert fmt_price(1_500_000_000) == pytest.approx("15.0억")
 
     def test_krw_zero(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(0) == "0"
 
     def test_krw_small_decimal(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(999) == "999"
 
     # --- USD ---
     def test_usd_1000_plus_no_decimals(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(1234.0, "USD") == "$1,234"
 
     def test_usd_below_1000_two_decimals(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(12.5, "USD") == pytest.approx("$12.50")
         assert fmt_price(180.5, "USD") == pytest.approx("$180.50")
 
     def test_usd_zero(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(0, "USD") == pytest.approx("$0.00")
 
     # --- None handling ---
     def test_none_returns_dash(self) -> None:
-        from app.services.n8n_formatting import fmt_price
+        from app.services.order_brief_formatting import fmt_price
 
         assert fmt_price(None) == "-"
 
@@ -80,22 +80,22 @@ class TestFmtGap:
     """Gap percentage with sign prefix."""
 
     def test_positive(self) -> None:
-        from app.services.n8n_formatting import fmt_gap
+        from app.services.order_brief_formatting import fmt_gap
 
         assert fmt_gap(14.0) == pytest.approx("+14.0%")
 
     def test_negative(self) -> None:
-        from app.services.n8n_formatting import fmt_gap
+        from app.services.order_brief_formatting import fmt_gap
 
         assert fmt_gap(-3.2) == pytest.approx("-3.2%")
 
     def test_zero(self) -> None:
-        from app.services.n8n_formatting import fmt_gap
+        from app.services.order_brief_formatting import fmt_gap
 
         assert fmt_gap(0.0) == pytest.approx("0.0%")
 
     def test_none_returns_dash(self) -> None:
-        from app.services.n8n_formatting import fmt_gap
+        from app.services.order_brief_formatting import fmt_gap
 
         assert fmt_gap(None) == "-"
 
@@ -105,28 +105,28 @@ class TestFmtAmount:
     """Amount formatting in KRW: uses 만 for >= 10,000."""
 
     def test_above_10000_uses_man(self) -> None:
-        from app.services.n8n_formatting import fmt_amount
+        from app.services.order_brief_formatting import fmt_amount
 
         assert fmt_amount(312000) == pytest.approx("31.2만")
         assert fmt_amount(6480000) == pytest.approx("648.0만")
 
     def test_large_amount(self) -> None:
-        from app.services.n8n_formatting import fmt_amount
+        from app.services.order_brief_formatting import fmt_amount
 
         assert fmt_amount(34603720) == pytest.approx("3,460.4만")
 
     def test_below_10000_uses_comma(self) -> None:
-        from app.services.n8n_formatting import fmt_amount
+        from app.services.order_brief_formatting import fmt_amount
 
         assert fmt_amount(5000) == "5,000"
 
     def test_zero(self) -> None:
-        from app.services.n8n_formatting import fmt_amount
+        from app.services.order_brief_formatting import fmt_amount
 
         assert fmt_amount(0) == "0"
 
     def test_none_returns_dash(self) -> None:
-        from app.services.n8n_formatting import fmt_amount
+        from app.services.order_brief_formatting import fmt_amount
 
         assert fmt_amount(None) == "-"
 
@@ -136,19 +136,19 @@ class TestFmtAge:
     """Age formatting: days if >= 24h, otherwise hours."""
 
     def test_days(self) -> None:
-        from app.services.n8n_formatting import fmt_age
+        from app.services.order_brief_formatting import fmt_age
 
         assert fmt_age(24) == "1일"
         assert fmt_age(72) == "3일"
 
     def test_hours(self) -> None:
-        from app.services.n8n_formatting import fmt_age
+        from app.services.order_brief_formatting import fmt_age
 
         assert fmt_age(5) == "5시간"
         assert fmt_age(0) == "0시간"
 
     def test_23_hours(self) -> None:
-        from app.services.n8n_formatting import fmt_age
+        from app.services.order_brief_formatting import fmt_age
 
         assert fmt_age(23) == "23시간"
 
@@ -158,7 +158,7 @@ class TestBuildSummaryLine:
     """One-line order summary string."""
 
     def test_build_summary_line_with_name(self) -> None:
-        from app.services.n8n_formatting import build_summary_line
+        from app.services.order_brief_formatting import build_summary_line
 
         order = {
             "symbol": "064350",
@@ -178,7 +178,7 @@ class TestBuildSummaryLine:
 
     def test_build_summary_line_without_name(self) -> None:
         """name이 None이면 기존처럼 symbol만 표시."""
-        from app.services.n8n_formatting import build_summary_line
+        from app.services.order_brief_formatting import build_summary_line
 
         order = {
             "symbol": "BTC",
@@ -195,7 +195,7 @@ class TestBuildSummaryLine:
         assert result.startswith("BTC buy")
 
     def test_full_order(self) -> None:
-        from app.services.n8n_formatting import build_summary_line
+        from app.services.order_brief_formatting import build_summary_line
 
         order = {
             "symbol": "APT",
@@ -213,7 +213,7 @@ class TestBuildSummaryLine:
         )
 
     def test_missing_current_price(self) -> None:
-        from app.services.n8n_formatting import build_summary_line
+        from app.services.order_brief_formatting import build_summary_line
 
         order = {
             "symbol": "BTC",
@@ -229,7 +229,7 @@ class TestBuildSummaryLine:
         assert result == pytest.approx("BTC sell @1.49억 (현재 -, -, 29.7만, 6시간)")
 
     def test_usd_order(self) -> None:
-        from app.services.n8n_formatting import build_summary_line
+        from app.services.order_brief_formatting import build_summary_line
 
         order = {
             "symbol": "AAPL",
@@ -252,14 +252,14 @@ class TestBuildSummaryTitle:
     """Summary title line for the response."""
 
     def test_title_format(self) -> None:
-        from app.services.n8n_formatting import build_summary_title
+        from app.services.order_brief_formatting import build_summary_title
 
         as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
         result = build_summary_title(total=13, buy_count=4, sell_count=9, as_of=as_of)
         assert result == "📋 미체결 리뷰 — 03/16 (13건, 매수 4 / 매도 9)"
 
     def test_title_zero_orders(self) -> None:
-        from app.services.n8n_formatting import build_summary_title
+        from app.services.order_brief_formatting import build_summary_title
 
         as_of = datetime.fromisoformat("2026-03-16T10:00:00+09:00")
         result = build_summary_title(total=0, buy_count=0, sell_count=0, as_of=as_of)

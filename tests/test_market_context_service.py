@@ -123,13 +123,13 @@ class TestMarketContextEndpoint:
         """Test that market context endpoint returns BTC dominance data."""
         with (
             patch(
-                "app.services.n8n_market_context_service.fetch_btc_dominance",
+                "app.services.market_context_service.fetch_btc_dominance",
             ) as mock_btc,
             patch(
-                "app.services.n8n_market_context_service.fetch_fear_greed",
+                "app.services.market_context_service.fetch_fear_greed",
             ) as mock_fg,
             patch(
-                "app.services.n8n_market_context_service.fetch_economic_events_today",
+                "app.services.market_context_service.fetch_economic_events_today",
             ) as mock_econ,
         ):
             mock_btc.return_value = {
@@ -162,13 +162,13 @@ class TestMarketContextEndpoint:
         """Test that market context endpoint returns economic events."""
         with (
             patch(
-                "app.services.n8n_market_context_service.fetch_btc_dominance",
+                "app.services.market_context_service.fetch_btc_dominance",
             ) as mock_btc,
             patch(
-                "app.services.n8n_market_context_service.fetch_fear_greed",
+                "app.services.market_context_service.fetch_fear_greed",
             ) as mock_fg,
             patch(
-                "app.services.n8n_market_context_service.fetch_economic_events_today",
+                "app.services.market_context_service.fetch_economic_events_today",
             ) as mock_econ,
         ):
             mock_btc.return_value = {
@@ -387,7 +387,7 @@ class TestMarketContextService:
     @pytest.mark.asyncio
     async def test_classify_trend_bullish(self) -> None:
         """Test bullish trend classification."""
-        from app.services.n8n_market_context_service import _classify_trend
+        from app.services.market_context_service import _classify_trend
 
         result = _classify_trend(rsi_14=60.0, ema_distance_pct=5.0)
         assert result == "bullish"
@@ -395,7 +395,7 @@ class TestMarketContextService:
     @pytest.mark.asyncio
     async def test_classify_trend_bearish(self) -> None:
         """Test bearish trend classification."""
-        from app.services.n8n_market_context_service import _classify_trend
+        from app.services.market_context_service import _classify_trend
 
         result = _classify_trend(rsi_14=40.0, ema_distance_pct=-5.0)
         assert result == "bearish"
@@ -403,7 +403,7 @@ class TestMarketContextService:
     @pytest.mark.asyncio
     async def test_classify_trend_neutral(self) -> None:
         """Test neutral trend classification."""
-        from app.services.n8n_market_context_service import _classify_trend
+        from app.services.market_context_service import _classify_trend
 
         result = _classify_trend(rsi_14=50.0, ema_distance_pct=1.0)
         assert result == "neutral"
@@ -414,7 +414,7 @@ class TestMarketContextService:
     @pytest.mark.asyncio
     async def test_classify_strength(self) -> None:
         """Test trend strength classification."""
-        from app.services.n8n_market_context_service import _classify_strength
+        from app.services.market_context_service import _classify_strength
 
         assert _classify_strength(45.0) == "strong"
 
@@ -427,7 +427,7 @@ class TestMarketContextService:
     @pytest.mark.asyncio
     async def test_normalize_crypto_symbol(self) -> None:
         """Test crypto symbol normalization."""
-        from app.services.n8n_market_context_service import _normalize_crypto_symbol
+        from app.services.market_context_service import _normalize_crypto_symbol
 
         assert _normalize_crypto_symbol("BTC") == "KRW-BTC"
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.n8n_formatting import (
+from app.services.order_brief_formatting import (
     _fmt_days,
     _fmt_krw,
     _fmt_pct,

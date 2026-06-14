@@ -25,7 +25,7 @@ FORBIDDEN_PURE_SERVICE_IMPORT_PREFIXES = [
     "app.services.redis_token_manager",
     "app.services.kis_websocket",
     "app.services.screener_service",
-    "app.services.n8n_pending_orders_service",
+    "app.services.pending_orders_service",
     "app.services.n8n_pending_review_service",
     "app.mcp_server.tooling.order_execution",
     "app.mcp_server.tooling.orders_history",

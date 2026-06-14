@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from app.core.timezone import now_kst
-from app.services.n8n_pending_orders_service import fetch_pending_orders
+from app.services.pending_orders_service import fetch_pending_orders
 
 logger = logging.getLogger(__name__)
 

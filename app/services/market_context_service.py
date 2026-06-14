@@ -1,4 +1,4 @@
-"""Market context service for n8n integration."""
+"""Market context service — collects macro and symbol-specific context."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ from app.services.brokers.upbit.client import fetch_multiple_tickers
 from app.services.external.btc_dominance import fetch_btc_dominance
 from app.services.external.economic_calendar import fetch_economic_events_today
 from app.services.external.fear_greed import fetch_fear_greed
-from app.services.n8n_formatting import fmt_gap, fmt_price
-from app.services.n8n_pending_orders_service import fetch_pending_orders
+from app.services.order_brief_formatting import fmt_gap, fmt_price
+from app.services.pending_orders_service import fetch_pending_orders
 
 logger = logging.getLogger(__name__)
 

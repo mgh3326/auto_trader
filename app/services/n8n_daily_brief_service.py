@@ -37,9 +37,10 @@ from app.services.cio_coin_briefing.prompts.gate_phrases import (
     G2_RUNWAY_FUEL_LINES,
     PATH_SECTION_AB_REPEAT,
 )
+from app.services.market_context_service import fetch_market_context
 from app.services.n8n_daily_brief_portfolio import _build_portfolio_summary
 from app.services.n8n_daily_brief_rendering import _build_brief_text
-from app.services.n8n_formatting import (
+from app.services.order_brief_formatting import (
     _fmt_days,
     _fmt_krw,
     _fmt_pct,
@@ -49,8 +50,7 @@ from app.services.n8n_formatting import (
     fmt_date_with_weekday,
     fmt_price,
 )
-from app.services.n8n_market_context_service import fetch_market_context
-from app.services.n8n_pending_orders_service import fetch_pending_orders
+from app.services.pending_orders_service import fetch_pending_orders
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-"""Indicator enrichment for filled orders — computes N8nTradeReviewIndicators fields."""
+"""Indicator enrichment for filled orders — computes technical indicators for trade reviews."""
 
 from __future__ import annotations
 
