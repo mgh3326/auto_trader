@@ -16,7 +16,10 @@ export function OrderLedgerCard({
 }) {
   return (
     <Card data-testid="stock-detail-order-ledger">
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>주문 기록</h2>
+      <h2 style={{ margin: "0 0 4px", fontSize: 16 }}>주문 기록</h2>
+      <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)" }}>
+        실거래 주문 이력 (상태 · 근거 · 체결)
+      </p>
       {!orders ? (
         <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p>
       ) : null}

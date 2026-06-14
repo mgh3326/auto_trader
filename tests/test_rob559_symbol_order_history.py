@@ -248,3 +248,55 @@ async def test_endpoint_returns_symbol_order_ledger(session) -> None:
     assert resp.items[0].symbol == pair
     assert resp.items[0].status == "filled"
     assert resp.items[0].filled_qty == Decimal("0.02")
+
+
+async def test_us_canonicalizes_separator_symbol(session) -> None:
+    # ROB-559 review #1 — US tickers may arrive separator-form (BRK-B) but the
+    # ledger stores DB dot-format (BRK.B); the query must canonicalize via
+    # to_db_symbol so the card isn't silently empty.
+    from app.services.investment_reports.linked_orders import (
+        list_live_orders_for_symbol,
+    )
+
+    t = _tok()
+    stored = f"ZZ.{t}"  # ledger storage form (dot)
+    no = f"us-{uuid.uuid4().hex[:8]}"
+    session.add(_live(stored, "us", order_no=no))
+    await session.flush()
+
+    # URL carries the hyphen separator form
+    views = await list_live_orders_for_symbol(session, "us", f"ZZ-{t}")
+    assert [v.order_no for v in views] == [no]
+    # and the dot form still matches (idempotent)
+    again = await list_live_orders_for_symbol(session, "us", f"zz.{t}".upper())
+    assert [v.order_no for v in again] == [no]
+
+
+async def test_us_cross_ledger_ordering_with_per_ledger_overflow(session) -> None:
+    # ROB-559 review #7 — cross-ledger (live+toss) merge is globally created_at-desc
+    # even when one ledger holds more than `limit` rows (per-ledger cap can't drop
+    # a genuinely-recent row).
+    from app.services.investment_reports.linked_orders import (
+        list_live_orders_for_symbol,
+    )
+
+    t = _tok()
+    base = datetime.now(UTC)
+    nos: dict[int, str] = {}
+    for off in (0, 2, 4, 6):  # 4 live rows — exceeds limit=3 (overflow)
+        no = f"live{off}-{uuid.uuid4().hex[:6]}"
+        nos[off] = no
+        session.add(
+            _live(t, "us", order_no=no, created_at=base - timedelta(minutes=off))
+        )
+    for off in (1, 3):  # 2 toss rows, interleaved in time
+        no = f"toss{off}-{uuid.uuid4().hex[:6]}"
+        nos[off] = no
+        session.add(
+            _toss(t, "us", broker_order_id=no, created_at=base - timedelta(minutes=off))
+        )
+    await session.flush()
+
+    views = await list_live_orders_for_symbol(session, "us", t, limit=3)
+    # global created_at desc, truncated to 3 → offsets 0,1,2 (live, toss, live)
+    assert [v.order_no for v in views] == [nos[0], nos[1], nos[2]]

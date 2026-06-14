@@ -44,6 +44,17 @@ export function linkedOrderKey(order: LinkedOrder): string {
   return `${order.broker ?? ""}:${order.market ?? ""}:${order.ledgerId}`;
 }
 
+// Pydantic serializes Decimal to a JSON string; sub-1e-6 magnitudes come through
+// as scientific notation (e.g. "1E-8" for tiny BTC fractions). Render a readable
+// fixed-point number instead, falling back to the raw value if it isn't numeric.
+function fmtAmount(value: number | string | null | undefined): string {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  return Number.isFinite(n)
+    ? n.toLocaleString(undefined, { maximumFractionDigits: 8 })
+    : String(value);
+}
+
 export function LinkedOrderRow({ order }: { order: LinkedOrder }) {
   return (
     <div
@@ -66,9 +77,11 @@ export function LinkedOrderRow({ order }: { order: LinkedOrder }) {
         {order.side === "buy" ? "매수" : order.side === "sell" ? "매도" : ""}{" "}
         {order.symbol ?? "—"}
       </span>
-      <span>
-        {order.filledQty ?? "—"} @ {order.avgFillPrice ?? "—"}
-      </span>
+      {order.filledQty != null || order.avgFillPrice != null ? (
+        <span>
+          {fmtAmount(order.filledQty)} @ {fmtAmount(order.avgFillPrice)}
+        </span>
+      ) : null}
       {order.orderTime ? <span>· {order.orderTime}</span> : null}
       {order.orderNo ? <span>· order {order.orderNo.slice(0, 8)}</span> : null}
       {order.exitReason || order.thesis ? (

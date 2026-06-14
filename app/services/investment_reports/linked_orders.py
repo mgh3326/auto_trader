@@ -20,6 +20,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_db_symbol
 from app.models.review import (
     KISLiveOrderLedger,
     LiveOrderLedger,
@@ -185,20 +186,25 @@ async def list_live_orders_for_symbol(
     * ``kr`` → ``KISLiveOrderLedger`` (KR domestic) + ``TossLiveOrderLedger`` (kr).
 
     Live-only by construction (mock/paper/demo never write these). Each ledger is
-    queried by exact (upper-cased) symbol within the ``days`` window, capped at
-    ``limit``; results merge most-recent-first by ``created_at`` and re-cap.
+    queried by exact symbol within the ``days`` window, capped at ``limit``;
+    results merge most-recent-first by ``created_at`` and re-cap.
+
+    Symbol canonicalization is per-market: US tickers may arrive in separator
+    form (``BRK-B`` / ``BRK/B``) but the ledgers store DB dot-format (``BRK.B``),
+    so US is canonicalized via ``to_db_symbol`` (mirrors the sibling stock-detail
+    endpoints). Crypto keeps its full hyphenated Upbit pair; KR codes are digits.
     """
     sym = symbol.strip().upper()
     cutoff = datetime.now(UTC) - timedelta(days=days)
     collected: list[tuple[datetime, LinkedOrderView]] = []
 
-    async def _add_live(market_value: str) -> None:
+    async def _add_live(market_value: str, match_sym: str) -> None:
         rows = (
             (
                 await db.execute(
                     select(LiveOrderLedger)
                     .where(
-                        LiveOrderLedger.symbol == sym,
+                        LiveOrderLedger.symbol == match_sym,
                         LiveOrderLedger.market == market_value,
                         LiveOrderLedger.created_at >= cutoff,
                     )
@@ -212,13 +218,13 @@ async def list_live_orders_for_symbol(
         for row in rows:
             collected.append((row.created_at, project_live_order(row)))
 
-    async def _add_kis() -> None:
+    async def _add_kis(match_sym: str) -> None:
         rows = (
             (
                 await db.execute(
                     select(KISLiveOrderLedger)
                     .where(
-                        KISLiveOrderLedger.symbol == sym,
+                        KISLiveOrderLedger.symbol == match_sym,
                         KISLiveOrderLedger.created_at >= cutoff,
                     )
                     .order_by(KISLiveOrderLedger.created_at.desc())
@@ -231,13 +237,13 @@ async def list_live_orders_for_symbol(
         for row in rows:
             collected.append((row.created_at, project_kis_live_order(row)))
 
-    async def _add_toss(market_value: str) -> None:
+    async def _add_toss(market_value: str, match_sym: str) -> None:
         rows = (
             (
                 await db.execute(
                     select(TossLiveOrderLedger)
                     .where(
-                        TossLiveOrderLedger.symbol == sym,
+                        TossLiveOrderLedger.symbol == match_sym,
                         TossLiveOrderLedger.market == market_value,
                         TossLiveOrderLedger.created_at >= cutoff,
                     )
@@ -252,13 +258,14 @@ async def list_live_orders_for_symbol(
             collected.append((row.created_at, project_toss_live_order(row)))
 
     if market == "crypto":
-        await _add_live("crypto")
+        await _add_live("crypto", sym)
     elif market == "us":
-        await _add_live("us")
-        await _add_toss("us")
+        us_sym = to_db_symbol(sym)  # BRK-B / BRK/B -> BRK.B (ledger storage form)
+        await _add_live("us", us_sym)
+        await _add_toss("us", us_sym)
     elif market == "kr":
-        await _add_kis()
-        await _add_toss("kr")
+        await _add_kis(sym)
+        await _add_toss("kr", sym)
     else:
         return []
 

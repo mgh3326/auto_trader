@@ -416,7 +416,7 @@ export function StockDetailPage() {
     fetchStockDetailOrders({ market, symbol })
       .then((r) => !cancel && setOrders(r))
       .catch(() => undefined);
-    fetchStockDetailOrderLedger({ market, symbol })
+    fetchStockDetailOrderLedger({ market, symbol, days: 90 })
       .then((r) => !cancel && setOrderLedger(r))
       .catch(() => !cancel && setOrderLedger([]));
     fetchStockDetailNews({ market, symbol, limit: 5 })

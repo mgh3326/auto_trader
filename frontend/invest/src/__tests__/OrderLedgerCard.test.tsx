@@ -30,9 +30,21 @@ describe("OrderLedgerCard (ROB-559)", () => {
     expect(screen.getByText(/order 7aeb17dd/)).toBeInTheDocument();
   });
 
-  it("renders a 미체결 badge for an accepted order", () => {
-    render(<OrderLedgerCard orders={[makeOrder({ status: "accepted" })]} />);
+  it("renders a 미체결 badge and no qty line for an unfilled order", () => {
+    render(
+      <OrderLedgerCard
+        orders={[
+          makeOrder({ status: "accepted", filledQty: null, avgFillPrice: null }),
+        ]}
+      />,
+    );
     expect(screen.getByText("미체결")).toBeInTheDocument();
+    expect(screen.queryByText(/@/)).toBeNull(); // no redundant "— @ —" line
+  });
+
+  it("formats tiny fill quantities without scientific notation", () => {
+    render(<OrderLedgerCard orders={[makeOrder({ filledQty: "1E-8" })]} />);
+    expect(screen.getByText(/0\.00000001/)).toBeInTheDocument();
   });
 
   it("renders the empty state when there are no orders", () => {
