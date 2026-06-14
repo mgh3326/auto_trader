@@ -301,6 +301,31 @@ class TestFormatFillTelegram:
         )
         assert "종목 상세 보기" not in msg
 
+    def test_partial_label(self):
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_fill_notification_telegram,
+        )
+        from app.services.fill_notification import FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+            fill_status="partial",
+        )
+        msg = format_fill_notification_telegram(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
+        assert "매수 부분체결" in msg
+
     def test_usd_currency(self):
         html_msg = format_toss_price_recommendation_html(
             symbol="AAPL",

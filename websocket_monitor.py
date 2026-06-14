@@ -2,7 +2,7 @@
 """
 Unified WebSocket Monitor
 
-Upbit/KIS 체결 WebSocket을 통합하여 OpenClaw Gateway로 체결 알림을 전송합니다.
+Upbit/KIS 체결 WebSocket을 통합하여 TradeNotifier(Discord/Telegram)로 체결 알림을 전송합니다.
 """
 
 import argparse
@@ -54,7 +54,7 @@ class UnifiedWebSocketMonitor:
     """
     통합 WebSocket 모니터
 
-    Upbit/KIS 체결 이벤트를 수신하여 OpenClaw로 체결 알림을 전송합니다.
+    Upbit/KIS 체결 이벤트를 수신하여 TradeNotifier(Discord/Telegram)로 체결 알림을 전송합니다.
     """
 
     def __init__(self, mode: str = "both"):

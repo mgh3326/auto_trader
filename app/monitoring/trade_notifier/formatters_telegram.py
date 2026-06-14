@@ -344,7 +344,7 @@ def format_fill_notification_telegram(
     side_emoji = "🔴" if is_sell else ("🟢" if order.side == "bid" else "⚪")
     side_text = "매도" if is_sell else ("매수" if order.side == "bid" else "미확인")
     fill_label = "부분체결" if is_partial else "체결"
-    is_usd = order.currency == "USD"
+    is_usd = (order.currency or "").upper() == "USD"
 
     price_str = format_fill_money(order.filled_price, is_usd=is_usd)
     if order.order_price:
