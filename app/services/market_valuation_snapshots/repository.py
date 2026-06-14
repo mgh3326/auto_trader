@@ -13,6 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
 
+# asyncpg caps bound arguments per statement at 32767 (signed int16 wire
+# field). Toss symbol-master commits can produce thousands of market_cap rows;
+# with 13 inserted columns, one KR/US all-symbol upsert can exceed the ceiling.
+# Keep a margin for future column growth and derive chunk rows from the actual
+# payload width.
+_MAX_BIND_PARAMS = 30_000
+
+
+def _chunk_rows_for_columns(column_count: int) -> int:
+    """Rows per upsert statement that keep bind params under the asyncpg ceiling."""
+    return max(1, _MAX_BIND_PARAMS // max(1, column_count))
+
 
 def metric_rich_filter() -> sa.ColumnElement[bool]:
     """ROB-551: a valuation row is "metric-rich" when it carries at least one
@@ -75,7 +87,14 @@ class MarketValuationSnapshotsRepository:
         payload = [_normalize_payload(row) for row in rows]
         if not payload:
             return 0
-        stmt = insert(MarketValuationSnapshot).values(payload)
+        chunk_rows = _chunk_rows_for_columns(len(payload[0]))
+        total = 0
+        for start in range(0, len(payload), chunk_rows):
+            total += await self._upsert_chunk(payload[start : start + chunk_rows])
+        return total
+
+    async def _upsert_chunk(self, chunk: list[dict]) -> int:
+        stmt = insert(MarketValuationSnapshot).values(chunk)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_market_valuation_snapshots_market_symbol_date_source",
             set_={
