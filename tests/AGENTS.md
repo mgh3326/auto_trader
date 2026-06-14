@@ -7,7 +7,7 @@
 | Task | Location | Notes |
 |------|----------|-------|
 | Global fixtures, marker registration, and live gating | `tests/conftest.py` | Shared fixtures, env setup, `--run-live`, and live skip wiring |
-| API/router tests | `tests/test_routers.py`, `tests/test_main_sentry.py`, `tests/test_openclaw_callback*.py` | HTTP layer and app lifecycle assertions |
+| API/router tests | `tests/test_routers.py`, `tests/test_main_sentry.py`, `tests/test_agent_callback*.py` | HTTP layer and app lifecycle assertions |
 | Service-layer tests | `tests/test_services_*.py`, `tests/test_*_service*.py` | Business logic and integration boundaries; use `make test-services-split` when you need the former monolith-only scope |
 | Task and scheduler tests | `tests/test_tasks.py`, `tests/test_daily_scan.py`, `tests/test_kis_tasks.py` | TaskIQ-facing logic checks |
 | MCP tool tests | `tests/test_mcp_*.py`, `tests/test_upbit_order_tools.py` | Tool contract and market-behavior coverage |

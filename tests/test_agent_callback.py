@@ -1,4 +1,4 @@
-"""Tests for OpenClaw callback router."""
+"""Tests for the agent gateway callback router (formerly OpenClaw)."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.routers.openclaw_callback import OpenClawCallbackRequest, openclaw_callback
+from app.routers.agent_callback import AgentCallbackRequest, agent_callback
 
 
 @pytest.mark.asyncio
-async def test_openclaw_callback_persists_result_with_prompt_fallback_and_model_prefix() -> (
+async def test_agent_callback_persists_result_with_prompt_fallback_and_model_prefix() -> (
     None
 ):
     class DummyStock:
@@ -25,7 +25,7 @@ async def test_openclaw_callback_persists_result_with_prompt_fallback_and_model_
 
     db.refresh = AsyncMock(side_effect=refresh_side_effect)
 
-    payload = OpenClawCallbackRequest(
+    payload = AgentCallbackRequest(
         request_id="r1",
         symbol="AAPL",
         name="Apple Inc.",
@@ -46,10 +46,10 @@ async def test_openclaw_callback_persists_result_with_prompt_fallback_and_model_
 
     mock_create_stock = AsyncMock(return_value=DummyStock())
     with patch(
-        "app.routers.openclaw_callback.create_stock_if_not_exists",
+        "app.routers.agent_callback.create_stock_if_not_exists",
         new=mock_create_stock,
     ):
-        res = await openclaw_callback(payload, db=db)
+        res = await agent_callback(payload, db=db)
 
     assert res == {"status": "ok", "request_id": "r1", "analysis_result_id": 123}
 
@@ -84,7 +84,7 @@ async def test_openclaw_callback_persists_result_with_prompt_fallback_and_model_
 
 
 @pytest.mark.asyncio
-async def test_openclaw_callback_uses_payload_prompt_when_provided() -> None:
+async def test_agent_callback_uses_payload_prompt_when_provided() -> None:
     class DummyStock:
         id = 7
 
@@ -97,7 +97,7 @@ async def test_openclaw_callback_uses_payload_prompt_when_provided() -> None:
 
     db.refresh = AsyncMock(side_effect=refresh_side_effect)
 
-    payload = OpenClawCallbackRequest(
+    payload = AgentCallbackRequest(
         request_id="r2",
         symbol="BTC",
         name="Bitcoin",
@@ -118,12 +118,98 @@ async def test_openclaw_callback_uses_payload_prompt_when_provided() -> None:
 
     mock_create_stock = AsyncMock(return_value=DummyStock())
     with patch(
-        "app.routers.openclaw_callback.create_stock_if_not_exists",
+        "app.routers.agent_callback.create_stock_if_not_exists",
         new=mock_create_stock,
     ):
-        res = await openclaw_callback(payload, db=db)
+        res = await agent_callback(payload, db=db)
 
     assert res["analysis_result_id"] == 999
     record = db.add.call_args.args[0]
     assert record.prompt == "original prompt"
     assert record.detailed_text == "md"
+
+
+def _callback_payload() -> dict:
+    return {
+        "request_id": "r-alias",
+        "symbol": "AAPL",
+        "name": "Apple Inc.",
+        "instrument_type": "equity_us",
+        "decision": "buy",
+        "confidence": 80,
+        "reasons": ["x"],
+        "price_analysis": {
+            "appropriate_buy_range": {"min": 100, "max": 110},
+            "appropriate_sell_range": {"min": 120, "max": 130},
+            "buy_hope_range": {"min": 95, "max": 98},
+            "sell_target_range": {"min": 150, "max": 160},
+        },
+        "detailed_text": "md",
+        "model_name": None,
+        "prompt": "p",
+    }
+
+
+def _build_app_with_callback_router(monkeypatch: pytest.MonkeyPatch):
+    from fastapi import FastAPI
+
+    from app.core.config import settings
+    from app.routers import agent_callback as agent_callback_router
+
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_CALLBACK_TOKEN", "cb-token")
+
+    app = FastAPI()
+    app.include_router(agent_callback_router.router)
+    return app
+
+
+def test_new_agent_callback_path_is_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    app = _build_app_with_callback_router(monkeypatch)
+
+    async def fake_persist(payload, db):
+        return {
+            "status": "ok",
+            "request_id": payload.request_id,
+            "analysis_result_id": 1,
+        }
+
+    with patch("app.routers.agent_callback._persist_agent_callback", new=fake_persist):
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/v1/agent/callback",
+                json=_callback_payload(),
+                headers={"Authorization": "Bearer cb-token"},
+            )
+
+    assert res.status_code == 200
+    assert res.json()["request_id"] == "r-alias"
+
+
+def test_legacy_openclaw_callback_alias_still_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    app = _build_app_with_callback_router(monkeypatch)
+
+    async def fake_persist(payload, db):
+        return {
+            "status": "ok",
+            "request_id": payload.request_id,
+            "analysis_result_id": 2,
+        }
+
+    with patch("app.routers.agent_callback._persist_agent_callback", new=fake_persist):
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/v1/openclaw/callback",
+                json=_callback_payload(),
+                headers={"Authorization": "Bearer cb-token"},
+            )
+
+    assert res.status_code == 200
+    assert res.json()["analysis_result_id"] == 2

@@ -34,7 +34,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
 
 - `get_market_news(market=None, hours=24, feed_source=None, source=None, keyword=None, limit=20, briefing_filter=False)` [LEGACY — briefing only, not decision evidence]
-  - Fetch recent market news for OpenClaw pre-market briefing
+  - Fetch recent market news for agent pre-market briefing
   - `market`: Optional market scope (`kr`, `us`, `crypto`) for market-separated briefing inputs
   - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_cointelegraph`, `rss_cnbc_earnings`, `rss_cnbc_finance`)
   - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `CNBC`, `Cointelegraph`)

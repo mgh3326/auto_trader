@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.analysis.models import PriceAnalysis
 from app.core.templates import templates
-from app.routers.openclaw_callback import _require_openclaw_callback_token
+from app.routers.agent_callback import _require_agent_callback_token
 from app.services.screener_service import ScreenerService
 
 router = APIRouter(tags=["Screener"])
@@ -204,7 +204,7 @@ async def screener_report_status(
 @router.post("/api/screener/callback")
 async def screener_callback(
     payload: ScreenerCallbackRequest,
-    _: None = Depends(_require_openclaw_callback_token),
+    _: None = Depends(_require_agent_callback_token),
     service: ScreenerService = Depends(get_screener_service),
 ):
     return await service.process_callback(payload.model_dump(exclude_none=True))

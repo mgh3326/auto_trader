@@ -48,6 +48,8 @@ class AuthMiddleware:
 
     # Public API paths (explicit whitelist)
     PUBLIC_API_PATHS: ClassVar[list[str]] = [
+        "/api/v1/agent/callback",
+        # Backward-compat alias for operator cutover (remove in a follow-up).
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
     ]

@@ -6,9 +6,9 @@ events to. This client POSTs a closed payload (see
 identity snapshot from ``investment_watch_events`` plus the linkage
 back to the source report / item / alert.
 
-OpenClaw is the legacy notification surface and is intentionally not
-touched from this module. Plan 5 will remove the OpenClaw-flavoured
-watch-alert path.
+The agent gateway (formerly OpenClaw) is the legacy notification surface
+and is intentionally not touched from this module. The agent-gateway
+watch-alert path has now been removed.
 """
 
 from __future__ import annotations

@@ -416,16 +416,18 @@ class Settings(BaseSettings):
     # Monitoring test route exposure
     EXPOSE_MONITORING_TEST_ROUTES: bool = False
 
-    # OpenClaw integration
-    OPENCLAW_WEBHOOK_URL: str = "http://localhost:18789/hooks/agent"
-    OPENCLAW_TOKEN: str = ""
-    OPENCLAW_CALLBACK_TOKEN: str = ""  # shared secret for inbound callback auth
-    OPENCLAW_CALLBACK_URL: str = "http://localhost:8000/api/v1/openclaw/callback"
-    OPENCLAW_SCREENER_CALLBACK_URL: str = "http://localhost:8000/api/screener/callback"
-    OPENCLAW_ENABLED: bool = False
+    # External AI agent gateway integration (formerly OpenClaw)
+    AGENT_GATEWAY_URL: str = "http://localhost:18789/hooks/agent"
+    AGENT_GATEWAY_TOKEN: str = ""
+    AGENT_GATEWAY_CALLBACK_TOKEN: str = ""  # shared secret for inbound callback auth
+    AGENT_GATEWAY_CALLBACK_URL: str = "http://localhost:8000/api/v1/agent/callback"
+    AGENT_GATEWAY_SCREENER_CALLBACK_URL: str = (
+        "http://localhost:8000/api/screener/callback"
+    )
+    AGENT_GATEWAY_ENABLED: bool = False
 
     # Hermes review-trigger notification (ROB-265 Plan 4). Replaces the
-    # OpenClaw-flavoured watch-alert delivery for ``investment_watch_events``.
+    # agent-gateway watch-alert delivery for ``investment_watch_events``.
     # When ``HERMES_ENABLED`` is False the client skips the HTTP call and
     # returns ``status='skipped'`` — useful for tests and disabled-env runs.
     HERMES_WEBHOOK_URL: str = "http://localhost:18790/hooks/review-trigger"
@@ -435,13 +437,6 @@ class Settings(BaseSettings):
     # ROB-337 Slice 2 — watch validity review job. Default off; the task and
     # CLI are scheduleless / dry-run-default even when this is set.
     WATCH_VALIDITY_REVIEW_ENABLED: bool = False
-
-    # Watch Alert router (Phase 0 of ROB-122 — transport-neutral seam).
-    # When set, takes precedence over N8N_WATCH_ALERT_WEBHOOK_URL.
-    # N8N_WATCH_ALERT_WEBHOOK_URL is the deprecated backward-compat fallback.
-    WATCH_ALERT_ROUTER_URL: str = ""
-    # N8N Watch Alert webhook (deprecated fallback for WATCH_ALERT_ROUTER_URL).
-    N8N_WATCH_ALERT_WEBHOOK_URL: str = ""
 
     # MCP caller identity fallback for non-HTTP/manual runs
     mcp_caller_agent_id_fallback: str | None = Field(

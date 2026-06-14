@@ -2,7 +2,7 @@
 Tests for Toss notification integration in KIS automation tasks.
 
 종목별 자동 실행 시 분석 함수가 no-op 상태임을 확인하는 테스트.
-(Gemini analyzer 제거 후, OpenClaw 기반 대체 전까지 no-op)
+(Gemini analyzer 제거 후, agent 기반 대체 전까지 no-op)
 """
 
 from unittest.mock import AsyncMock, patch

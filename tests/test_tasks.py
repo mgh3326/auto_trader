@@ -25,7 +25,7 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
     assert result["total_count"] == 0
     assert (
         result["message"]
-        == "Gemini analyzer removed. OpenClaw-based analysis coming soon."
+        == "Gemini analyzer removed. Agent-based analysis coming soon."
     )
     assert result["results"] == []
 

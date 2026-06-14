@@ -13,7 +13,7 @@ from redis.exceptions import WatchError
 from app.core.config import settings
 
 if TYPE_CHECKING:
-    from app.services.openclaw_client import OpenClawClient
+    from app.services.agent_gateway import AgentGatewayClient
 
 ScreenMarket = Literal["kr", "us", "crypto"]
 
@@ -60,17 +60,17 @@ class ScreenerService:
     def __init__(
         self,
         redis_client: redis.Redis | None = None,
-        openclaw_client: OpenClawClient | None = None,
+        agent_client: AgentGatewayClient | None = None,
     ) -> None:
         self._redis = redis_client
-        self._openclaw = openclaw_client
+        self._agent = agent_client
 
-    def _get_openclaw(self) -> OpenClawClient:
-        if self._openclaw is None:
-            from app.services.openclaw_client import OpenClawClient
+    def _get_agent(self) -> AgentGatewayClient:
+        if self._agent is None:
+            from app.services.agent_gateway import AgentGatewayClient
 
-            self._openclaw = OpenClawClient()
-        return self._openclaw
+            self._agent = AgentGatewayClient()
+        return self._agent
 
     async def _get_redis(self) -> redis.Redis:
         if self._redis is None:
@@ -662,12 +662,12 @@ class ScreenerService:
         )
         instrument_type = self._instrument_type(normalized_market)
         try:
-            job_id = await self._get_openclaw().request_analysis(
+            job_id = await self._get_agent().request_analysis(
                 prompt=prompt,
                 symbol=normalized_symbol,
                 name=display_name,
                 instrument_type=instrument_type,
-                callback_url=settings.OPENCLAW_SCREENER_CALLBACK_URL,
+                callback_url=settings.AGENT_GATEWAY_SCREENER_CALLBACK_URL,
                 include_model_name=False,
                 request_id=provisional_job_id,
             )

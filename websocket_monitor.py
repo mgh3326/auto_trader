@@ -76,7 +76,7 @@ class UnifiedWebSocketMonitor:
         self._next_health_log_at = 0.0
         self._started_at_monotonic: float | None = None
         self.fills_forwarded = 0
-        self.last_openclaw_success_at: str | None = None
+        self.last_agent_success_at: str | None = None
         self._kis_messages_received_closed = 0
         self._kis_execution_events_received_closed = 0
         self._kis_last_message_at_closed: str | None = None
@@ -436,7 +436,7 @@ class UnifiedWebSocketMonitor:
             )
             if ok:
                 self.fills_forwarded += 1
-                self.last_openclaw_success_at = datetime.now(UTC).isoformat()
+                self.last_agent_success_at = datetime.now(UTC).isoformat()
                 logger.info(
                     "Fill notification sent: correlation_id=%s symbol=%s result=success",
                     correlation_id,
@@ -595,7 +595,7 @@ class UnifiedWebSocketMonitor:
             "upbit_connected=%s kis_connected=%s "
             "messages_received=%s execution_events_received=%s fills_forwarded=%s "
             "last_message_at=%s last_execution_at=%s last_pingpong_at=%s "
-            "last_openclaw_success_at=%s",
+            "last_agent_success_at=%s",
             self.mode,
             connected,
             uptime,
@@ -607,7 +607,7 @@ class UnifiedWebSocketMonitor:
             kis_snapshot["last_message_at"],
             kis_snapshot["last_execution_at"],
             kis_snapshot["last_pingpong_at"],
-            self.last_openclaw_success_at,
+            self.last_agent_success_at,
         )
 
     async def start(self) -> None:
