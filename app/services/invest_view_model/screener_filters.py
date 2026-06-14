@@ -249,6 +249,9 @@ _CRYPTO_PRESET_IDS = (
 # high_yield_value roe>=15/per 0~10) so derived results match today's behavior.
 _PILOT_PRESET_SNAPSHOT: dict[str, str] = {
     "consecutive_gainers": "invest_screener_snapshots",
+    # ROB-543: oversold_recovery filters over the same KIS-OHLCV snapshot
+    # (read-time RSI14 from closes_window — no RSI column / no migration).
+    "oversold_recovery": "invest_screener_snapshots",
     "high_yield_value": "market_valuation_snapshots",
     # ROB-443: crypto presets share one snapshot catalog (composing filters on top).
     **dict.fromkeys(_CRYPTO_PRESET_IDS, _CRYPTO_SNAPSHOT_KIND),
@@ -258,6 +261,8 @@ _PILOT_PRESET_STARTING: dict[str, tuple[ScreenerFilterCondition, ...]] = {
         ScreenerFilterCondition("consecutive_up_days", "gte", 5),
         ScreenerFilterCondition("week_change_rate", "gte", 0.0),
     ),
+    # ROB-543: oversold_recovery starts at RSI <= 30 (matches _SCREENING_FILTERS).
+    "oversold_recovery": (ScreenerFilterCondition("rsi", "lte", 30.0),),
     "high_yield_value": (
         ScreenerFilterCondition("roe", "gte", 15.0),
         ScreenerFilterCondition("per", "lte", 10.0),

@@ -690,6 +690,53 @@ async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_snapshot_tool_reports_excluded_held_count(monkeypatch) -> None:
+    """ROB-543 Slice B: the count of rows dropped by exclude_held is surfaced as
+    excluded_held_count (0 when exclude_held is off)."""
+
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "S1", "isWatched": False, "isHeld": True},
+                    {"symbol": "S2", "isWatched": False, "isHeld": True},
+                    {"symbol": "S3", "isWatched": False, "isHeld": False},
+                ],
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+
+    async def _fake_build_async(**kwargs: Any) -> _Resp:
+        return _Resp()
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build_async,
+    )
+
+    # exclude_held=True drops the two held rows → count == 2
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", exclude_held=True
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S3"]
+    assert out["excluded_held_count"] == 2
+    assert out["discoveryFilters"]["exclude_held"] is True
+
+    # exclude_held=False (default) → no rows dropped → count == 0
+    out2 = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr"
+    )
+    assert out2["excluded_held_count"] == 0
+    assert len(out2["results"]) == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_snapshot_tool_exclude_watched_warns_unsupported_in_mcp(
     monkeypatch,
 ) -> None:
