@@ -82,20 +82,43 @@ class KISHomeReader:
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
-            # 1. Domestic
-            stocks_kr = await self._client.account.fetch_my_stocks(is_overseas=False)
-            margin = await self._client.account.inquire_integrated_margin()
+            with sentry_sdk.start_span(
+                op="invest.home.kis.phase",
+                name="invest.home.kis.domestic_balance",
+            ) as span:
+                stocks_kr = await self._client.account.fetch_my_stocks(
+                    is_overseas=False
+                )
+                span.set_data("holding_count", len(stocks_kr))
+
+            with sentry_sdk.start_span(
+                op="invest.home.kis.phase",
+                name="invest.home.kis.integrated_margin",
+            ) as span:
+                margin = await self._client.account.inquire_integrated_margin()
+                span.set_data("field_count", len(margin))
+
             domestic_cash = extract_domestic_cash_summary_from_integrated_margin(margin)
 
-            # 2. Overseas (simplified to NASD for now as per account.py common usage)
-            stocks_us = await self._client.account.fetch_my_overseas_stocks(
-                exchange_code="NASD"
-            )
+            with sentry_sdk.start_span(
+                op="invest.home.kis.phase",
+                name="invest.home.kis.overseas_balance",
+            ) as span:
+                stocks_us = await self._client.account.fetch_my_overseas_stocks(
+                    exchange_code="NASD"
+                )
+                span.set_data("holding_count", len(stocks_us))
+                span.set_tag("exchange_code", "NASD")
 
             fx_warning: InvestHomeWarning | None = None
             usd_krw_rate: float | None = None
             try:
-                usd_krw_rate = await get_usd_krw_rate()
+                with sentry_sdk.start_span(
+                    op="invest.home.kis.phase",
+                    name="invest.home.kis.fx",
+                ) as span:
+                    usd_krw_rate = await get_usd_krw_rate()
+                    span.set_tag("success", True)
             except Exception as exc:
                 logger.warning("USD/KRW FX fetch failed: %s", exc, exc_info=True)
                 fx_warning = InvestHomeWarning(
@@ -213,10 +236,14 @@ class KISHomeReader:
             # must not be gated by ``stocks_us``.
             if _is_missing_money(usd_balance) or _is_missing_money(usd_buying_power):
                 try:
-                    overseas_margin = (
-                        await self._client.account.inquire_overseas_margin()
-                    )
-                    # US row: crcy_cd=USD and natn_name in {미국, US, USA}
+                    with sentry_sdk.start_span(
+                        op="invest.home.kis.phase",
+                        name="invest.home.kis.overseas_margin_fallback",
+                    ) as span:
+                        overseas_margin = (
+                            await self._client.account.inquire_overseas_margin()
+                        )
+                        span.set_data("row_count", len(overseas_margin))
                     us_margin = next(
                         (
                             m
@@ -688,7 +715,13 @@ class ManualHomeReader:
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
-            raw_holdings = await self._service.get_holdings_by_user(user_id)
+            with sentry_sdk.start_span(
+                op="invest.home.manual.phase",
+                name="invest.home.manual.load_holdings",
+            ) as span:
+                raw_holdings = await self._service.get_holdings_by_user(user_id)
+                span.set_data("raw_holding_count", len(raw_holdings))
+
             toss_holdings = [
                 h
                 for h in raw_holdings
@@ -707,11 +740,30 @@ class ManualHomeReader:
             usd_krw_rate: float | None = None
 
             if self._quote_service:
-                kr_prices = await self._quote_service.fetch_kr_prices(kr_tickers)
-                us_prices = await self._quote_service.fetch_us_prices(us_tickers)
+                with sentry_sdk.start_span(
+                    op="invest.home.manual.phase",
+                    name="invest.home.manual.fetch_kr_prices",
+                ) as span:
+                    span.set_data("ticker_count", len(kr_tickers))
+                    kr_prices = await self._quote_service.fetch_kr_prices(kr_tickers)
+                    span.set_data("price_count", len(kr_prices))
+
+                with sentry_sdk.start_span(
+                    op="invest.home.manual.phase",
+                    name="invest.home.manual.fetch_us_prices",
+                ) as span:
+                    span.set_data("ticker_count", len(us_tickers))
+                    us_prices = await self._quote_service.fetch_us_prices(us_tickers)
+                    span.set_data("price_count", len(us_prices))
+
                 if us_tickers:
                     try:
-                        usd_krw_rate = await get_usd_krw_rate()
+                        with sentry_sdk.start_span(
+                            op="invest.home.manual.phase",
+                            name="invest.home.manual.fx",
+                        ) as span:
+                            usd_krw_rate = await get_usd_krw_rate()
+                            span.set_tag("success", True)
                     except Exception:
                         logger.warning("FX fetch failed for ManualHomeReader")
 
