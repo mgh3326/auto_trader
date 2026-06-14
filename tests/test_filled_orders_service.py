@@ -14,7 +14,7 @@ from app.core.timezone import now_kst
 class TestKISOverseasFilledOrdersFetch:
     @pytest.mark.asyncio
     async def test_uses_single_us_wide_history_query_and_dedupes(self, monkeypatch):
-        from app.services import n8n_filled_orders_service as svc
+        from app.services import filled_orders_service as svc
 
         fake_kis = MagicMock()
         fake_kis.inquire_daily_order_overseas = AsyncMock(
@@ -59,7 +59,7 @@ class TestKISOverseasFilledOrdersFetch:
         self, monkeypatch
     ):
         """Issue 3 regression: dedup must be by (order_id, fill_seq) not order_id alone."""
-        from app.services import n8n_filled_orders_service as svc
+        from app.services import filled_orders_service as svc
 
         # Two rows with same order_id but different execution times → different hash fill_seq
         fake_kis = MagicMock()
@@ -99,7 +99,7 @@ class TestKISOverseasFilledOrdersFetch:
 
     @pytest.mark.asyncio
     async def test_us_wide_history_failure_returns_error(self, monkeypatch):
-        from app.services import n8n_filled_orders_service as svc
+        from app.services import filled_orders_service as svc
 
         fake_kis = MagicMock()
         fake_kis.inquire_daily_order_overseas = AsyncMock(
@@ -118,7 +118,7 @@ class TestUpbitFilledOrdersFetch:
     @pytest.mark.asyncio
     async def test_cancel_with_partial_fill_is_accepted(self, monkeypatch):
         """Issue 1 regression: cancelled orders with executed_volume > 0 must not be dropped."""
-        from app.services import n8n_filled_orders_service as svc
+        from app.services import filled_orders_service as svc
 
         recent_ts = (now_kst() - timedelta(hours=1)).isoformat()
         fake_order = {
@@ -157,7 +157,7 @@ class TestUpbitFilledOrdersFetch:
     async def test_time_window_crawl_continues_after_cancel_only_window(
         self, monkeypatch
     ):
-        from app.services import n8n_filled_orders_service as svc
+        from app.services import filled_orders_service as svc
 
         end_at = now_kst().replace(microsecond=0)
         start_at = end_at - timedelta(days=8)
@@ -227,7 +227,7 @@ class TestUpbitFilledOrdersFetch:
 
     @pytest.mark.asyncio
     async def test_saturated_time_window_is_recursively_split(self, monkeypatch):
-        from app.services import n8n_filled_orders_service as svc
+        from app.services import filled_orders_service as svc
 
         end_at = now_kst().replace(microsecond=0)
         start_at = end_at - timedelta(hours=2)
@@ -291,7 +291,7 @@ class TestUpbitFilledOrdersFetch:
     @pytest.mark.asyncio
     async def test_detail_fetch_failure_falls_back_to_aggregate_fill(self, monkeypatch):
         """When order detail fetch fails, the aggregate fill (no trades) should be returned."""
-        from app.services import n8n_filled_orders_service as svc
+        from app.services import filled_orders_service as svc
 
         recent_ts = (now_kst() - timedelta(hours=1)).isoformat()
         raw_order = {

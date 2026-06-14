@@ -11,7 +11,7 @@ from app.services.brokers.upbit.client import fetch_multiple_current_prices_cach
 from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
 from app.services.market_data import get_quote
-from app.services.n8n_formatting import enrich_order_fmt, enrich_summary_fmt
+from app.services.order_brief_formatting import enrich_order_fmt, enrich_summary_fmt
 
 _MARKETS: tuple[str, ...] = ("crypto", "kr", "us")
 _EQUITY_QUOTE_CONCURRENCY = 5
@@ -224,7 +224,7 @@ async def _enrich_orders_with_indicators(
     """
     # Lazy import to avoid circular dependency
     from app.services.brokers.upbit.client import fetch_multiple_tickers
-    from app.services.n8n_market_context_service import (
+    from app.services.market_context_service import (
         _compute_symbol_indicators,
         _normalize_crypto_symbol,
     )

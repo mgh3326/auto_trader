@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.n8n_formatting import (
+from app.services.order_brief_formatting import (
     fmt_date_with_weekday,
     fmt_pnl,
     fmt_value,

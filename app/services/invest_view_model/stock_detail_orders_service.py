@@ -46,7 +46,7 @@ def _row_symbol(row: dict[str, Any], market: NewsMarket) -> str:
 async def _default_fetch_filled_orders(
     days: int, markets: list[NewsMarket]
 ) -> list[dict[str, Any]]:
-    from app.services.n8n_filled_orders_service import fetch_filled_orders
+    from app.services.filled_orders_service import fetch_filled_orders
 
     payload = await fetch_filled_orders(days=days, markets=",".join(markets))
     return list(payload.get("orders") or [])

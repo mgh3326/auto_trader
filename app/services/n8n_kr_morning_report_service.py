@@ -10,12 +10,12 @@ from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
 from app.services.brokers.kis.client import KISClient
-from app.services.n8n_formatting import (
+from app.services.order_brief_formatting import (
     fmt_amount,
     fmt_date_with_weekday,
     fmt_pnl,
 )
-from app.services.n8n_pending_orders_service import fetch_pending_orders
+from app.services.pending_orders_service import fetch_pending_orders
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
 logger = logging.getLogger(__name__)

@@ -17,7 +17,7 @@ from app.schemas.execution_ledger import (
 )
 from app.services.execution_ledger.normalizers import to_execution_ledger_upsert
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
-from app.services.n8n_filled_orders_service import fetch_filled_orders
+from app.services.filled_orders_service import fetch_filled_orders
 
 Broker = Literal["kis", "upbit"]
 FilledOrdersFetcher = Callable[..., Awaitable[dict[str, Any]]]

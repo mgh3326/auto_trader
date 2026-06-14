@@ -15,8 +15,8 @@ from app.services.execution_ledger.normalizers import (
     _normalize_kis_overseas_filled,
     normalize_upbit_order,
 )
+from app.services.filled_orders_indicators import _enrich_with_indicators
 from app.services.market_data import get_quote
-from app.services.n8n_filled_orders_indicators import _enrich_with_indicators
 
 logger = logging.getLogger(__name__)
 

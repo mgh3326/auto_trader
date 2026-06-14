@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.n8n_formatting import fmt_pnl, fmt_value
+from app.services.order_brief_formatting import fmt_pnl, fmt_value
 
 
 def _build_portfolio_summary(

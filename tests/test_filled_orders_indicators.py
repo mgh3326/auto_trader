@@ -33,14 +33,14 @@ def _make_ohlcv_df(n: int = 250, base_close: float = 100_000_000) -> pd.DataFram
 class TestComputeReviewIndicators:
     @pytest.mark.asyncio
     async def test_returns_all_indicator_fields_for_crypto(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _compute_review_indicators,
         )
 
         df = _make_ohlcv_df(250)
 
         with patch(
-            "app.services.n8n_filled_orders_indicators._fetch_ohlcv_for_indicators",
+            "app.services.filled_orders_indicators._fetch_ohlcv_for_indicators",
             new_callable=AsyncMock,
             return_value=df,
         ):
@@ -69,14 +69,14 @@ class TestComputeReviewIndicators:
 
     @pytest.mark.asyncio
     async def test_returns_none_on_insufficient_data(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _compute_review_indicators,
         )
 
         df = _make_ohlcv_df(10)  # Too few rows
 
         with patch(
-            "app.services.n8n_filled_orders_indicators._fetch_ohlcv_for_indicators",
+            "app.services.filled_orders_indicators._fetch_ohlcv_for_indicators",
             new_callable=AsyncMock,
             return_value=df,
         ):
@@ -86,12 +86,12 @@ class TestComputeReviewIndicators:
 
     @pytest.mark.asyncio
     async def test_returns_none_on_fetch_error(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _compute_review_indicators,
         )
 
         with patch(
-            "app.services.n8n_filled_orders_indicators._fetch_ohlcv_for_indicators",
+            "app.services.filled_orders_indicators._fetch_ohlcv_for_indicators",
             new_callable=AsyncMock,
             side_effect=RuntimeError("API down"),
         ):
@@ -101,14 +101,14 @@ class TestComputeReviewIndicators:
 
     @pytest.mark.asyncio
     async def test_works_for_equity_kr(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _compute_review_indicators,
         )
 
         df = _make_ohlcv_df(250, base_close=80_000)
 
         with patch(
-            "app.services.n8n_filled_orders_indicators._fetch_ohlcv_for_indicators",
+            "app.services.filled_orders_indicators._fetch_ohlcv_for_indicators",
             new_callable=AsyncMock,
             return_value=df,
         ):
@@ -120,7 +120,7 @@ class TestComputeReviewIndicators:
 
     @pytest.mark.asyncio
     async def test_volume_ratio_with_zero_avg_volume(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _compute_review_indicators,
         )
 
@@ -128,7 +128,7 @@ class TestComputeReviewIndicators:
         df["volume"] = 0.0  # All zeros
 
         with patch(
-            "app.services.n8n_filled_orders_indicators._fetch_ohlcv_for_indicators",
+            "app.services.filled_orders_indicators._fetch_ohlcv_for_indicators",
             new_callable=AsyncMock,
             return_value=df,
         ):
@@ -142,7 +142,7 @@ class TestComputeReviewIndicators:
 class TestEnrichWithIndicators:
     @pytest.mark.asyncio
     async def test_enriches_crypto_orders_with_indicators_and_fear_greed(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _enrich_with_indicators,
         )
 
@@ -165,12 +165,12 @@ class TestEnrichWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                "app.services.filled_orders_indicators._compute_review_indicators",
                 new_callable=AsyncMock,
                 return_value=mock_indicators,
             ),
             patch(
-                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                "app.services.filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
                 return_value={"value": 25, "label": "Extreme Fear"},
             ),
@@ -183,7 +183,7 @@ class TestEnrichWithIndicators:
 
     @pytest.mark.asyncio
     async def test_same_symbol_fetched_only_once(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _enrich_with_indicators,
         )
 
@@ -196,11 +196,11 @@ class TestEnrichWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                "app.services.filled_orders_indicators._compute_review_indicators",
                 mock_compute,
             ),
             patch(
-                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                "app.services.filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -212,7 +212,7 @@ class TestEnrichWithIndicators:
 
     @pytest.mark.asyncio
     async def test_equity_orders_skip_fear_greed(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _enrich_with_indicators,
         )
 
@@ -228,12 +228,12 @@ class TestEnrichWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                "app.services.filled_orders_indicators._compute_review_indicators",
                 new_callable=AsyncMock,
                 return_value=mock_indicators,
             ),
             patch(
-                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                "app.services.filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
             ) as _mock_fg,
         ):
@@ -244,7 +244,7 @@ class TestEnrichWithIndicators:
 
     @pytest.mark.asyncio
     async def test_indicator_failure_yields_none(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _enrich_with_indicators,
         )
 
@@ -254,12 +254,12 @@ class TestEnrichWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                "app.services.filled_orders_indicators._compute_review_indicators",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                "app.services.filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -270,7 +270,7 @@ class TestEnrichWithIndicators:
 
     @pytest.mark.asyncio
     async def test_mixed_markets(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _enrich_with_indicators,
         )
 
@@ -288,12 +288,12 @@ class TestEnrichWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                "app.services.filled_orders_indicators._compute_review_indicators",
                 new_callable=AsyncMock,
                 return_value=mock_indicators,
             ),
             patch(
-                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                "app.services.filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
                 return_value={"value": 40},
             ),
@@ -309,7 +309,7 @@ class TestEnrichWithIndicators:
 
     @pytest.mark.asyncio
     async def test_crypto_orders_use_raw_symbol_for_indicator_lookup(self):
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _enrich_with_indicators,
         )
 
@@ -321,11 +321,11 @@ class TestEnrichWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                "app.services.filled_orders_indicators._compute_review_indicators",
                 mock_compute,
             ),
             patch(
-                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                "app.services.filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -338,7 +338,7 @@ class TestEnrichWithIndicators:
     async def test_crypto_orders_keep_quote_market_separate_in_indicator_cache(self):
         from unittest.mock import call
 
-        from app.services.n8n_filled_orders_indicators import (
+        from app.services.filled_orders_indicators import (
             _enrich_with_indicators,
         )
 
@@ -356,11 +356,11 @@ class TestEnrichWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                "app.services.filled_orders_indicators._compute_review_indicators",
                 mock_compute,
             ),
             patch(
-                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                "app.services.filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -426,7 +426,7 @@ class TestFetchFilledOrdersWithIndicators:
     @pytest.mark.asyncio
     async def test_include_indicators_false_skips_enrichment(self):
         """Default behavior — no indicators attached."""
-        from app.services.n8n_filled_orders_service import fetch_filled_orders
+        from app.services.filled_orders_service import fetch_filled_orders
 
         mock_orders = [
             {
@@ -442,22 +442,22 @@ class TestFetchFilledOrdersWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service._fetch_upbit_filled",
+                "app.services.filled_orders_service._fetch_upbit_filled",
                 new_callable=AsyncMock,
                 return_value=(mock_orders, []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_domestic_filled",
+                "app.services.filled_orders_service._fetch_kis_domestic_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
+                "app.services.filled_orders_service._fetch_kis_overseas_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._enrich_with_current_prices",
+                "app.services.filled_orders_service._enrich_with_current_prices",
                 new_callable=AsyncMock,
                 side_effect=lambda o: o,
             ),
@@ -469,7 +469,7 @@ class TestFetchFilledOrdersWithIndicators:
     @pytest.mark.asyncio
     async def test_include_indicators_true_calls_enrichment(self):
         """Verify service passes orders with both stripped symbol and raw_symbol."""
-        from app.services.n8n_filled_orders_service import fetch_filled_orders
+        from app.services.filled_orders_service import fetch_filled_orders
 
         mock_orders = [
             {
@@ -485,27 +485,27 @@ class TestFetchFilledOrdersWithIndicators:
 
         with (
             patch(
-                "app.services.n8n_filled_orders_service._fetch_upbit_filled",
+                "app.services.filled_orders_service._fetch_upbit_filled",
                 new_callable=AsyncMock,
                 return_value=(mock_orders, []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_domestic_filled",
+                "app.services.filled_orders_service._fetch_kis_domestic_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
+                "app.services.filled_orders_service._fetch_kis_overseas_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
             patch(
-                "app.services.n8n_filled_orders_service._enrich_with_current_prices",
+                "app.services.filled_orders_service._enrich_with_current_prices",
                 new_callable=AsyncMock,
                 side_effect=lambda o: o,
             ),
             patch(
-                "app.services.n8n_filled_orders_service._enrich_with_indicators",
+                "app.services.filled_orders_service._enrich_with_indicators",
                 new_callable=AsyncMock,
                 side_effect=lambda o: o,
             ) as mock_enrich,
