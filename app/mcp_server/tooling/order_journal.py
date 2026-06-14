@@ -210,11 +210,22 @@ async def _close_journals_on_sell(
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
+    FIFO lot attribution: active journals are consumed oldest-first
+    (``order_by(created_at.asc())``); the oldest active journal is closed
+    against the sell before any newer averaging-down ("물타기") lot. So the
+    realized PnL is attributed against the per-lot ``entry_price`` of whichever
+    lot(s) the FIFO walk consumes, NOT the position's account-average cost.
+
     - quantity is None: close immediately (legacy/manual case)
     - quantity <= remaining_sell_qty: close and decrement remaining
     - quantity > remaining_sell_qty: stop FIFO (partial sell, leave active)
 
-    Returns dict with journals_closed, journals_kept, closed_ids, total_pnl_pct.
+    Returns dict with journals_closed, journals_kept, closed_ids, total_pnl_pct,
+    and realized_pnl_basis. ``total_pnl_pct`` is quantity-weighted across the
+    FIFO-closed journals' per-lot ``entry_price`` (i.e. journal/lot basis), and
+    ``realized_pnl_basis`` labels it as ``"journal_entry"`` so callers do not
+    confuse it with the account-average basis surfaced by place_order preview /
+    get_holdings / get_available_capital (ROB-544).
     """
     sell_qty_dec = Decimal(str(sell_quantity))
     sell_price_dec = Decimal(str(sell_price))
@@ -274,6 +285,11 @@ async def _close_journals_on_sell(
 
         await db.commit()
 
+    # total_pnl_pct is quantity-weighted across the FIFO-closed journals'
+    # per-lot entry_price (lot basis), NOT the position account-average. The
+    # realized_pnl_basis label (ROB-544) makes this explicit so downstream
+    # reconcile/report consumers don't conflate it with place_order preview's
+    # account-average pchs_avg_pric basis.
     total_pnl_pct = (
         float(weighted_pnl_sum / weighted_qty_sum) if weighted_qty_sum > 0 else 0.0
     )
@@ -282,6 +298,7 @@ async def _close_journals_on_sell(
         "journals_kept": len(journals) - len(closed_ids),
         "closed_ids": closed_ids,
         "total_pnl_pct": total_pnl_pct,
+        "realized_pnl_basis": "journal_entry",
     }
 
 

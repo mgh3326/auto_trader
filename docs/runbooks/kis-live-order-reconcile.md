@@ -97,3 +97,35 @@ Migration for ROB-476 is 0 (non-breaking, backward compatible).
 > **reconcile은 로컬 부기 레이어**(trade/journal/realized_pnl)다. 실계좌 진실은
 > `get_holdings` / `get_available_capital`. reconcile 미실행은 실계좌에 영향을
 > 주지 않으며, 로컬 리포트/성과추적만 비게 된다.
+
+## realized_pnl 기준(basis) 라벨링 (ROB-544)
+
+sell reconcile 응답의 `realized_pnl_pct`(별칭 `journal_pnl_pct`)는
+**per-lot / journal-entry 기준(FIFO)** 이다. `realized_pnl_basis: "journal_entry"`
+라벨이 함께 표면화되어 이를 명시한다.
+
+- **FIFO lot 귀속 규칙**: `_close_journals_on_sell`은 active 저널을
+  `created_at` 오름차순으로 가장 **오래된 lot부터** 소진한다. 매도는 더 새로
+  추가한 물타기(averaging-down) lot보다 먼저 oldest lot에 귀속되며, PnL은 그
+  lot의 `entry_price`에 대해 계산된다(계좌 평균단가가 아님).
+  - 예: lot A(entry 100, 오래됨) + lot B(entry 90, 물타기)를 보유한 상태에서
+    1주를 97.39에 매도 → FIFO가 lot A를 닫고 `realized_pnl_pct == -2.61%`
+    (손실)를 보고한다. 계좌 평균이나 더 싼 lot B 기준(+8.21%)이 아니다.
+- **계좌 평균 기준은 별도 진실**: `place_order` 프리뷰의 손익/평단,
+  `get_holdings`, `get_available_capital`은 계좌 평균단가(`pchs_avg_pric`)
+  기준이며 reconcile의 lot 기준과 의도적으로 다르다. reconcile은
+  `account_avg_pnl_pct`를 계산하지 않는다(매도 전 계좌 평균이
+  `kis_live_order_ledger`에 저장돼 있지 않고, 매도 후 `pchs_avg_pric`를 읽으면
+  오해를 부른다 — fail-closed로 계산하지 않음).
+- US/crypto `live_reconcile_orders`도 동일 라벨(`realized_pnl_basis` +
+  `journal_pnl_pct` 별칭)을 surface한다(parity).
+
+### ROB-474 retrospective와의 기준 일관성 (감사 노트)
+
+`app/services/trade_journal/trade_retrospective_service.py`의
+`_derive_realized_pnl_from_journal`(~:159)과 `build_retrospective_aggregate`
+(~:342)는 **동일한 journal-entry lot 기준**을 소비한다. 현재 reconcile은
+retrospective를 자동 기록하지 않으며, `save_trade_retrospective`는 수동 도구
+(`trade_retrospective_tools.py:44`)다. 향후 reconcile→retrospective auto-emit을
+도입한다면 반드시 `realized_pnl_basis: "journal_entry"` 라벨을 함께 carry하여
+계좌 평균 기준과의 혼동을 방지해야 한다.
