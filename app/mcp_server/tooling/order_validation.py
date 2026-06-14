@@ -533,32 +533,6 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
     return _extract_usd_orderable_from_row(usd_row)
 
 
-async def _check_daily_order_limit(max_orders: int) -> bool:
-    try:
-        import redis.asyncio as redis_async
-
-        redis_url = getattr(settings, "redis_url", None)
-        if not redis_url:
-            return True
-
-        redis = await redis_async.from_url(redis_url)
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        key = f"order_count:{today}"
-
-        count = await redis.get(key)
-        if count is None:
-            count = 0
-        else:
-            count = int(count)
-
-        if count >= max_orders:
-            return False
-
-        return True
-    except Exception:
-        return True
-
-
 async def _record_order_history(
     symbol: str,
     side: str,
