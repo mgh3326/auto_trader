@@ -20,6 +20,14 @@ from app.schemas.execution_ledger import (
 )
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
 
+import logging
+
+from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
+from app.services.upbit_symbol_universe_service import get_upbit_market_display_names
+from app.services.us_symbol_universe_service import get_us_names_by_symbols
+
+logger = logging.getLogger(__name__)
+
 _FRESH_HOURS = 48
 _STALE_HOURS = 72
 
@@ -236,6 +244,56 @@ class ExecutionLedgerQueryService:
         self.db = db
         self.repo = ExecutionLedgerRepository(db)
 
+    async def _attach_symbol_names(
+        self, items: list[ExecutionLedgerRead]
+    ) -> list[ExecutionLedgerRead]:
+        """Best-effort: populate symbol_name from the per-market universe tables.
+
+        Names are cosmetic, so every resolver call fails open — a lookup error
+        leaves symbol_name None and the UI falls back to the raw symbol.
+        """
+        if not items:
+            return items
+
+        kr_symbols = sorted({i.symbol for i in items if i.instrument_type == "equity_kr"})
+        us_symbols = sorted({i.symbol for i in items if i.instrument_type == "equity_us"})
+        crypto_markets = sorted({i.raw_symbol for i in items if i.instrument_type == "crypto"})
+
+        async def _safe(coro, label):
+            try:
+                return await coro
+            except Exception:  # noqa: BLE001 - names are best-effort
+                logger.warning("symbol-name resolution failed for %s", label, exc_info=True)
+                return {}
+
+        kr_names = await _safe(get_kr_names_by_symbols(kr_symbols, self.db), "kr") if kr_symbols else {}
+        us_names = await _safe(get_us_names_by_symbols(us_symbols, self.db), "us") if us_symbols else {}
+        crypto_disp = (
+            await _safe(get_upbit_market_display_names(crypto_markets, self.db), "crypto")
+            if crypto_markets
+            else {}
+        )
+
+        def _name_for(item: ExecutionLedgerRead) -> str | None:
+            if item.instrument_type == "equity_kr":
+                return kr_names.get(item.symbol)
+            if item.instrument_type == "equity_us":
+                return us_names.get(item.symbol)
+            if item.instrument_type == "crypto":
+                disp = crypto_disp.get(item.raw_symbol)
+                if disp:
+                    return disp.get("korean_name") or disp.get("english_name")
+            return None
+
+        annotated: list[ExecutionLedgerRead] = []
+        for item in items:
+            name = _name_for(item)
+            if name and name != item.symbol:
+                annotated.append(item.model_copy(update={"symbol_name": name}))
+            else:
+                annotated.append(item)
+        return annotated
+
     async def list_recent(
         self, *, limit: int = 50, market: str | None = None
     ) -> ExecutionLedgerListResponse:
@@ -248,6 +306,7 @@ class ExecutionLedgerQueryService:
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
         items = _supersede_provisional_fills(items)
+        items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
@@ -274,6 +333,7 @@ class ExecutionLedgerQueryService:
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
         items = _supersede_provisional_fills(items)
+        items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
@@ -330,6 +390,7 @@ class ExecutionLedgerQueryService:
             ]
             history_items = _supersede_provisional_fills(history_items)
             items = _annotate_realized_profit(items, history_items)
+        items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
