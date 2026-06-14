@@ -6,6 +6,8 @@ import type {
   StockDetailResearchConsensusResponse,
   StockDetailResponse,
 } from "../types/stockDetail";
+import { normalizeLinkedOrder } from "./investmentReports";
+import type { LinkedOrder } from "../types/investmentReports";
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { credentials: "include" });
@@ -67,4 +69,23 @@ export async function fetchStockDetailOrders(params: {
   const qs = q.toString();
   const suffix = qs ? `?${qs}` : "";
   return getJson<StockDetailOrdersResponse>(`${stockDetailPath(params.market, params.symbol)}/orders${suffix}`);
+}
+
+// ROB-559 — per-symbol live order history (status + rationale + fill rollup).
+// Backend returns snake_case LinkedOrderView rows; normalize to camelCase
+// LinkedOrder with the same mapper the report bundle uses. Crypto sends the raw
+// Upbit pair (e.g. KRW-BTC) as-is — it matches LiveOrderLedger.symbol directly.
+export async function fetchStockDetailOrderLedger(params: {
+  market: StockDetailMarket;
+  symbol: string;
+  days?: number;
+}): Promise<LinkedOrder[]> {
+  const q = new URLSearchParams();
+  if (params.days !== undefined) q.set("days", String(params.days));
+  const qs = q.toString();
+  const suffix = qs ? `?${qs}` : "";
+  const raw = await getJson<{ count: number; items: Record<string, unknown>[] }>(
+    `${stockDetailPath(params.market, params.symbol)}/order-ledger${suffix}`,
+  );
+  return (raw.items ?? []).map(normalizeLinkedOrder);
 }
