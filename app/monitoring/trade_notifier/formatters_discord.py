@@ -6,8 +6,15 @@ Each function is pure (no I/O, no side effects) and returns a DiscordEmbed dict.
 from __future__ import annotations
 
 from app.core.timezone import format_datetime
+from app.services.fill_notification import (
+    FillEnrichment,
+    FillOrder,
+    format_fill_money,
+    format_fill_quantity,
+)
 
 from .types import COLORS, DECISION_EMOJI, DECISION_TEXT, DiscordEmbed, DiscordField
+
 
 
 def _price_fmt(price: float, is_usd: bool, currency: str) -> str:
@@ -499,3 +506,69 @@ def format_toss_price_recommendation(
         "color": color,
         "fields": fields,
     }
+
+
+def format_fill_notification(
+    order: FillOrder,
+    *,
+    display_name: str,
+    detail_url: str | None = None,
+    enrichment: FillEnrichment | None = None,
+) -> DiscordEmbed:
+    is_sell = order.side == "ask"
+    is_partial = order.fill_status == "partial"
+    side_emoji = "🔴" if is_sell else ("🟢" if order.side == "bid" else "⚪")
+    side_text = "매도" if is_sell else ("매수" if order.side == "bid" else "미확인")
+    fill_label = "부분체결" if is_partial else "체결"
+    is_usd = order.currency == "USD"
+
+    price_str = format_fill_money(order.filled_price, is_usd=is_usd)
+    if order.order_price:
+        diff_pct = (order.filled_price - order.order_price) / order.order_price * 100
+        price_str += f" ({diff_pct:+.2f}% vs 주문가)"
+
+    fields: list[DiscordField] = [
+        {"name": "구분", "value": f"{side_text} {fill_label}", "inline": True},
+        {"name": "체결가", "value": price_str, "inline": True},
+        {"name": "수량", "value": format_fill_quantity(order.filled_qty), "inline": True},
+        {"name": "금액", "value": format_fill_money(order.filled_amount, is_usd=is_usd), "inline": True},
+    ]
+
+    if enrichment is not None:
+        approx = " ~추정" if enrichment.is_approximate else ""
+        if is_sell and enrichment.realized_pnl_amount is not None:
+            sign = "+" if enrichment.realized_pnl_amount >= 0 else ""
+            rate = (
+                f" ({enrichment.realized_pnl_rate:+.2f}%)"
+                if enrichment.realized_pnl_rate is not None
+                else ""
+            )
+            fields.append({
+                "name": "실현손익",
+                "value": f"{sign}{format_fill_money(enrichment.realized_pnl_amount, is_usd=is_usd)}{rate}{approx}",
+                "inline": True,
+            })
+        elif (not is_sell and enrichment.position_qty is not None
+              and enrichment.position_avg_price is not None):
+            fields.append({
+                "name": "보유",
+                "value": f"{format_fill_quantity(enrichment.position_qty)} · 평단 "
+                         f"{format_fill_money(enrichment.position_avg_price, is_usd=is_usd)}{approx}",
+                "inline": True,
+            })
+
+    account_val = order.account
+    if order.order_id:
+        account_val += f" · 주문 {order.order_id[:8]}…"
+    fields.append({"name": "계좌", "value": account_val, "inline": False})
+
+    embed: DiscordEmbed = {
+        "title": f"{side_emoji} {fill_label} · {display_name} ({order.symbol})",
+        "description": f"🕒 {format_datetime()}",
+        "color": COLORS["sell"] if is_sell else COLORS["buy"],
+        "fields": fields,
+    }
+    if detail_url:
+        embed["url"] = detail_url
+    return embed
+
