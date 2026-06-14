@@ -118,17 +118,16 @@ async def _partition_row_count(
     market: str,
     date_col: Any,
     partition_date: dt.date,
+    row_filter: Any | None = None,
 ) -> int:
-    return int(
-        (
-            await session.execute(
-                sa.select(sa.func.count())
-                .select_from(model)
-                .where(market_col == market, date_col == partition_date)
-            )
-        ).scalar()
-        or 0
+    stmt = (
+        sa.select(sa.func.count())
+        .select_from(model)
+        .where(market_col == market, date_col == partition_date)
     )
+    if row_filter is not None:
+        stmt = stmt.where(row_filter)
+    return int((await session.execute(stmt)).scalar() or 0)
 
 
 async def resolve_healthy_partition(
@@ -141,11 +140,19 @@ async def resolve_healthy_partition(
     universe_count: int | None = None,
     min_ratio: float = _MIN_HEALTHY_COVERAGE_RATIO,
     max_scan_back: int = _MAX_PARTITION_SCAN_BACK,
+    row_filter: Any | None = None,
 ) -> HealthyPartition | None:
     """Return the partition to serve (see module docstring).
 
     None only when the table has no partitions for the market. Fail-open: on any
     query error, falls back to a plain max(date_col) treated as healthy.
+
+    ``row_filter`` (ROB-551): an optional SQLAlchemy boolean expression that
+    restricts which rows count toward coverage. Valuation screener loaders pass
+    ``metric_rich_filter()`` so a metric-sparse toss-only partition (market_cap
+    only) is not selected as healthy and then emptied by the per>0/pbr>0
+    candidate filters downstream. Default ``None`` preserves total-row counting
+    for flow/price/screener-snapshot callers.
     """
     try:
         dates = [
@@ -184,6 +191,7 @@ async def resolve_healthy_partition(
                 market=market,
                 date_col=date_col,
                 partition_date=d,
+                row_filter=row_filter,
             )
             if count >= floor:
                 return HealthyPartition(
@@ -201,6 +209,7 @@ async def resolve_healthy_partition(
             market=market,
             date_col=date_col,
             partition_date=newest,
+            row_filter=row_filter,
         )
         return HealthyPartition(
             partition_date=newest,

@@ -101,6 +101,87 @@ async def test_resolve_all_thin_serves_newest_as_last_resort(db_session):
     assert hp.row_count == 5
 
 
+# ── ROB-551: source-aware partition selection for MarketValuationSnapshot ──
+
+_VAL_DATES = {dt.date(2041, 6, 11), dt.date(2041, 6, 12)}
+
+
+async def _cleanup_val(session) -> None:
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    await session.execute(
+        sa.delete(MarketValuationSnapshot).where(
+            MarketValuationSnapshot.snapshot_date.in_(_VAL_DATES)
+        )
+    )
+    await session.flush()
+
+
+async def _seed_val(
+    session, *, snapshot_date: dt.date, count: int, sparse: bool, source: str
+) -> None:
+    from decimal import Decimal
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    for i in range(count):
+        kwargs = {
+            "market": "kr",
+            "symbol": f"{source[:2]}{snapshot_date.day:02d}{i:04d}",
+            "snapshot_date": snapshot_date,
+            "source": source,
+            "market_cap": Decimal("1000000"),
+        }
+        if not sparse:
+            kwargs.update(
+                per=Decimal("11"),
+                pbr=Decimal("1.2"),
+                roe=Decimal("0.15"),
+                dividend_yield=Decimal("0.02"),
+            )
+        session.add(MarketValuationSnapshot(**kwargs))
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_metric_rich_row_filter_skips_toss_only_partition(db_session):
+    """ROB-551: a newer metric-sparse toss-only partition (market_cap only) must
+    not be selected as the screener val_date; the metric-rich naver partition on
+    the older date wins when row_filter counts only metric-rich rows."""
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+    from app.services.market_valuation_snapshots.repository import metric_rich_filter
+
+    await _cleanup_val(db_session)
+    older, newer = dt.date(2041, 6, 11), dt.date(2041, 6, 12)
+    # older: 60 metric-rich naver rows (clears floor). newer: 60 metric-sparse
+    # toss rows (clears floor by TOTAL count, but 0 metric-rich).
+    await _seed_val(
+        db_session, snapshot_date=older, count=60, sparse=False, source="naver_finance"
+    )
+    await _seed_val(
+        db_session, snapshot_date=newer, count=60, sparse=True, source="toss_openapi"
+    )
+
+    kw = {
+        "model": MarketValuationSnapshot,
+        "date_col": MarketValuationSnapshot.snapshot_date,
+        "market_col": MarketValuationSnapshot.market,
+        "market": "kr",
+    }
+
+    # Without the filter (legacy behavior), the newer toss-only partition wins.
+    hp_default = await resolve_healthy_partition(db_session, universe_count=100, **kw)
+    assert hp_default is not None and hp_default.partition_date == newer
+
+    # With the metric-rich filter, the toss-only partition has 0 qualifying rows
+    # and is skipped; the metric-rich older partition is served.
+    hp_filtered = await resolve_healthy_partition(
+        db_session, universe_count=100, row_filter=metric_rich_filter(), **kw
+    )
+    assert hp_filtered is not None and hp_filtered.partition_date == older
+    assert hp_filtered.healthy is True and hp_filtered.is_fallback is True
+
+
 @pytest.mark.asyncio
 async def test_resolve_empty_table_returns_none():
     mock_session = AsyncMock()

@@ -14,6 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
 
 
+def metric_rich_filter() -> sa.ColumnElement[bool]:
+    """ROB-551: a valuation row is "metric-rich" when it carries at least one
+    fundamentals metric (per/pbr/roe/dividend_yield). A market_cap-only row
+    (e.g. ``source='toss_openapi'`` gap-fill) is metric-sparse.
+
+    Use this as ``row_filter`` for ``resolve_healthy_partition`` on
+    MarketValuationSnapshot so a toss-only partition (0 metric-rich rows) is not
+    selected as the screener val_date and then emptied by the per>0/pbr>0
+    candidate filters downstream.
+    """
+    return sa.or_(
+        MarketValuationSnapshot.per.isnot(None),
+        MarketValuationSnapshot.pbr.isnot(None),
+        MarketValuationSnapshot.roe.isnot(None),
+        MarketValuationSnapshot.dividend_yield.isnot(None),
+    )
+
+
 class MarketValuationSnapshotUpsert(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -189,18 +207,7 @@ class MarketValuationSnapshotsRepository:
         # metric-sparse market_cap-only row (e.g. toss_openapi, per/pbr/roe NULL)
         # on a newer snapshot_date does not shadow a metric-rich row. Falls back
         # to the sparse row only when it is the symbol's sole source.
-        metric_sparse = sa.case(
-            (
-                sa.or_(
-                    MarketValuationSnapshot.per.isnot(None),
-                    MarketValuationSnapshot.pbr.isnot(None),
-                    MarketValuationSnapshot.roe.isnot(None),
-                    MarketValuationSnapshot.dividend_yield.isnot(None),
-                ),
-                0,
-            ),
-            else_=1,
-        )
+        metric_sparse = sa.case((metric_rich_filter(), 0), else_=1)
         stmt = (
             select(MarketValuationSnapshot)
             .where(
