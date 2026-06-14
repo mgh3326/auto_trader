@@ -213,3 +213,73 @@ def test_supersede_then_fifo_does_not_double_consume() -> None:
     assert len(annotated) == 1
     assert annotated[0].cost_basis_notional == Decimal("2000000")
     assert annotated[0].realized_profit == Decimal("510000")
+
+
+def test_supersede_merges_us_despite_venue_mismatch() -> None:
+    # US (KIS overseas): the websocket event carries no exchange code, so the
+    # monitor defaults venue to "krx" while the reconciler uses "NASD". They must
+    # still collapse — venue is intentionally excluded from the supersede key.
+    base = datetime(2026, 6, 1, tzinfo=UTC)
+    ws = _item(
+        source="websocket",
+        side="sell",
+        qty="3",
+        price="250",
+        order_id="0000111100",
+        fill_seq=11,
+        filled_at=base,
+        symbol="TSLA",
+        instrument_type="equity_us",
+        venue="krx",
+        currency="USD",
+    )
+    rec = _item(
+        source="reconciler",
+        side="sell",
+        qty="3",
+        price="251",
+        order_id="0000111100",
+        fill_seq=22,
+        filled_at=base + timedelta(minutes=5),
+        symbol="TSLA",
+        instrument_type="equity_us",
+        venue="NASD",
+        currency="USD",
+    )
+
+    kept = _supersede_provisional_fills([ws, rec])
+
+    assert [k.source for k in kept] == ["reconciler"]
+    assert kept[0].venue == "NASD"
+
+
+def test_supersede_keeps_distinct_us_orders() -> None:
+    base = datetime(2026, 6, 1, tzinfo=UTC)
+    a = _item(
+        source="reconciler",
+        side="buy",
+        qty="1",
+        price="250",
+        order_id="0000111100",
+        fill_seq=1,
+        filled_at=base,
+        symbol="TSLA",
+        instrument_type="equity_us",
+        venue="NASD",
+        currency="USD",
+    )
+    b = _item(
+        source="reconciler",
+        side="buy",
+        qty="1",
+        price="255",
+        order_id="0000222200",
+        fill_seq=2,
+        filled_at=base,
+        symbol="TSLA",
+        instrument_type="equity_us",
+        venue="NASD",
+        currency="USD",
+    )
+
+    assert len(_supersede_provisional_fills([a, b])) == 2

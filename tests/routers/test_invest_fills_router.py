@@ -416,3 +416,60 @@ def test_freshness_missing_when_no_reconcile_runs():
     data = resp.json()
     for item in data["items"]:
         assert item["dataState"] == "missing"
+
+
+@pytest.mark.unit
+def test_sell_history_dedups_before_limit_and_reports_true_total():
+    """De-dup runs over the full window before trimming: the websocket dup never
+    leaks at the page boundary, and count is the true de-duped window total."""
+    base = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
+    rows = [
+        _ledger_row(
+            id=2,
+            side="sell",
+            broker_order_id="0006366300",
+            fill_seq=222,
+            source="websocket",
+            filled_at=base + timedelta(minutes=2),
+            filled_notional=Decimal("2510000"),
+        ),
+        _ledger_row(
+            id=1,
+            side="sell",
+            broker_order_id="0006366300",
+            fill_seq=111,
+            source="reconciler",
+            filled_at=base,
+            filled_notional=Decimal("2510000"),
+        ),
+        _ledger_row(
+            id=3,
+            side="sell",
+            broker_order_id="0000342400",
+            fill_seq=333,
+            source="reconciler",
+            filled_at=base - timedelta(days=1),
+            filled_notional=Decimal("7800000"),
+        ),
+        _ledger_row(
+            id=4,
+            side="sell",
+            broker_order_id="0019990600",
+            fill_seq=444,
+            source="reconciler",
+            filled_at=base - timedelta(days=2),
+            filled_notional=Decimal("262500"),
+        ),
+    ]
+    run = _reconcile_run_row("kis")
+    db = _make_db(rows, [run], history_rows=rows)
+    client = TestClient(_make_app(db))
+
+    resp = client.get("/trading/api/invest/fills/sell-history?limit=2")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 4 raw rows -> 3 distinct sells after supersede; count is the true total.
+    assert data["count"] == 3
+    assert len(data["items"]) == 2  # trimmed page
+    assert all(item["source"] == "reconciler" for item in data["items"])
+    assert data["source_breakdown"]["websocket"] == 0

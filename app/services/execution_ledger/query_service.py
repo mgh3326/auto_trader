@@ -80,19 +80,24 @@ _PROVISIONAL_SOURCE = "websocket"
 
 def _supersede_key(
     item: ExecutionLedgerRead,
-) -> tuple[str, str, str, str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     """Order-level identity shared across sources for one logical order.
 
     Excludes fill_seq, filled_at and correlation_id on purpose: the websocket
     monitor and the reconciler derive divergent fill_seq (independent hashes) and
     timestamps for the same order, so only the order-level tuple links the two
     sources. broker_order_id is leading-zero-normalized to absorb formatting drift.
+
+    ``venue`` is intentionally excluded: for US (KIS overseas) the websocket event
+    carries no exchange code so the monitor defaults venue to ``krx`` while the
+    reconciler reads ``ovrs_excg_cd`` (e.g. ``NASD``). Keying on venue would leave
+    those two rows un-merged forever. (broker, account_mode, instrument_type,
+    symbol, side, order_id) already disambiguates distinct orders within a broker.
     """
     normalized_order_id = item.broker_order_id.lstrip("0") or item.broker_order_id
     return (
         item.broker,
         item.account_mode,
-        item.venue,
         item.instrument_type,
         item.symbol,
         item.side,
@@ -296,7 +301,9 @@ class ExecutionLedgerQueryService:
             if item.instrument_type == "equity_us":
                 return us_names.get(item.symbol)
             if item.instrument_type == "crypto":
-                disp = crypto_disp.get(item.raw_symbol)
+                # get_upbit_market_display_names keys its result by the canonical
+                # upper-case market (e.g. KRW-BTC); normalize before lookup.
+                disp = crypto_disp.get(item.raw_symbol.strip().upper())
                 if disp:
                     return disp.get("korean_name") or disp.get("english_name")
             return None
@@ -313,15 +320,18 @@ class ExecutionLedgerQueryService:
     async def list_recent(
         self, *, limit: int = 50, market: str | None = None
     ) -> ExecutionLedgerListResponse:
+        # Over-fetch before de-dup so superseded websocket rows do not consume the
+        # page budget (otherwise a dup-heavy page returns fewer than `limit` rows).
+        # 3x covers the worst-case number of sources for one order.
         stmt = (
             select(ExecutionLedger)
             .order_by(ExecutionLedger.filled_at.desc())
-            .limit(limit)
+            .limit(limit * 3)
         )
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
-        items = _supersede_provisional_fills(items)
+        items = _supersede_provisional_fills(items)[:limit]
         items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
@@ -370,12 +380,14 @@ class ExecutionLedgerQueryService:
         self, *, days: int = 30, market: str | None = None, limit: int = 100
     ) -> ExecutionLedgerListResponse:
         cutoff = datetime.now(UTC) - timedelta(days=days)
+        # No SQL LIMIT: provisional websocket rows must be superseded BEFORE
+        # truncating. Limiting first would let a dup pair straddle the boundary
+        # (the windowed sells are small, so fetching the full window is cheap).
         stmt = (
             select(ExecutionLedger)
             .where(ExecutionLedger.side == "sell")
             .where(ExecutionLedger.filled_at >= cutoff)
             .order_by(ExecutionLedger.filled_at.desc())
-            .limit(limit)
         )
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
         rows = (await self.db.execute(stmt)).scalars().all()
@@ -406,6 +418,10 @@ class ExecutionLedgerQueryService:
             ]
             history_items = _supersede_provisional_fills(history_items)
             items = _annotate_realized_profit(items, history_items)
+        # count is the true de-duped window total; items is the trimmed page so the
+        # UI footer ("총 N건 중 M건 표시") and totals stay consistent.
+        total = len(items)
+        items = items[:limit]
         items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
@@ -413,7 +429,7 @@ class ExecutionLedgerQueryService:
             items, freshness, market
         )
         return ExecutionLedgerListResponse(
-            count=len(items),
+            count=total,
             items=items,
             data_state=data_state,
             source_breakdown=_compute_source_breakdown(items),

@@ -9,7 +9,6 @@ const MARKET_OPTIONS: { key: FillMarket | "all"; label: string }[] = [
   { key: "crypto", label: "코인" },
 ];
 
-
 function toNumber(value: string | number | null | undefined): number | null {
   if (value == null || value === "") return null;
   const parsed = typeof value === "number" ? value : Number(value);
