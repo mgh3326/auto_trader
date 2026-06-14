@@ -169,7 +169,8 @@ def _position_url(config: CryptoPendingOrderAlertConfig, symbol: str) -> str | N
     base = config.trader_base_url.strip().rstrip("/")
     if not base:
         return None
-    return f"{base}/portfolio?market=crypto&symbol={symbol}"
+    return f"{base}/invest/stocks/crypto/{symbol}"
+
 
 
 def normalize_pending_orders(
