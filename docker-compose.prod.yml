@@ -185,5 +185,4 @@ volumes:
   ws-heartbeat:
     name: auto_trader_ws_heartbeat
 
-# n8n은 docker-compose.n8n.yml에서 별도 관리 (caddy와 동일 패턴)
 # 네이티브 PostgreSQL과 Redis 사용으로 볼륨/네트워크 불필요

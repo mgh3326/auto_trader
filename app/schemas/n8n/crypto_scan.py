@@ -106,7 +106,7 @@ class N8nCryptoScanSummary(BaseModel):
 
 
 class N8nCryptoScanResponse(BaseModel):
-    """Top-level response for GET /api/n8n/crypto-scan."""
+    """Top-level response for the crypto-scan payload."""
 
     success: bool = Field(...)
     as_of: str = Field(..., description="Response timestamp in KST ISO8601")

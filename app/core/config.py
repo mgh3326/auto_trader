@@ -472,8 +472,6 @@ class Settings(BaseSettings):
     SESSION_BLACKLIST_FAIL_SAFE: bool = True
     SESSION_BLACKLIST_DB_FALLBACK: bool = True
 
-    # N8N API Key Authentication
-    N8N_API_KEY: str = ""
     PUBLIC_API_PATHS: Annotated[list[str], NoDecode] = []
 
     # news-ingestor machine-to-machine bulk ingest authentication

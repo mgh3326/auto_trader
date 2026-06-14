@@ -3,8 +3,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 
 @pytest.mark.unit
@@ -600,92 +598,3 @@ class TestGetTradeReviews:
 
         delta = parse_period("")
         assert delta.days == 7
-
-
-@pytest.mark.unit
-class TestGetTradeReviewsEndpoint:
-    @pytest.fixture
-    def client(self):
-        """Create test client with n8n router."""
-        from app.routers.n8n import router
-
-        app = FastAPI()
-        app.include_router(router)
-        return TestClient(app)
-
-    def test_get_trade_reviews_default_params(self, client):
-        mock_result = {
-            "period": "2026-03-11 ~ 2026-03-18",
-            "total_count": 0,
-            "reviews": [],
-            "errors": [],
-        }
-        with patch(
-            "app.routers.n8n.get_trade_reviews",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            resp = client.get("/api/n8n/trade-reviews")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["success"] is True
-        assert data["total_count"] == 0
-
-    def test_get_trade_reviews_with_filters(self, client):
-        mock_result = {
-            "period": "2026-03-11 ~ 2026-03-18",
-            "total_count": 1,
-            "reviews": [
-                {
-                    "order_id": "test-001",
-                    "symbol": "BTC",
-                    "market": "crypto",
-                    "side": "buy",
-                    "price": 98000000,
-                    "quantity": 0.015,
-                    "total_amount": 1470000,
-                    "fee": 735,
-                    "currency": "KRW",
-                    "filled_at": "2026-03-17T14:30:00+09:00",
-                    "verdict": "good",
-                    "pnl_pct": 3.27,
-                    "comment": "RSI entry",
-                    "review_type": "daily",
-                    "review_date": "2026-03-18T09:00:00+09:00",
-                    "indicators": None,
-                }
-            ],
-            "errors": [],
-        }
-        with patch(
-            "app.routers.n8n.get_trade_reviews",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            resp = client.get(
-                "/api/n8n/trade-reviews",
-                params={
-                    "period": "30d",
-                    "market": "crypto",
-                    "symbol": "BTC",
-                    "limit": 50,
-                },
-            )
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_count"] == 1
-        assert data["reviews"][0]["symbol"] == "BTC"
-
-    def test_get_trade_reviews_500_on_error(self, client):
-        with patch(
-            "app.routers.n8n.get_trade_reviews",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("DB down"),
-        ):
-            resp = client.get("/api/n8n/trade-reviews")
-
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["success"] is False
