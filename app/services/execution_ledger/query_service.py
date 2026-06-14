@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -19,6 +20,11 @@ from app.schemas.execution_ledger import (
     SourceBreakdown,
 )
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
+from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
+from app.services.upbit_symbol_universe_service import get_upbit_market_display_names
+from app.services.us_symbol_universe_service import get_us_names_by_symbols
+
+logger = logging.getLogger(__name__)
 
 _FRESH_HOURS = 48
 _STALE_HOURS = 72
@@ -65,6 +71,61 @@ def _ledger_item_key(item: ExecutionLedgerRead) -> tuple[str, str, str, str, int
         item.broker_order_id,
         item.fill_seq,
     )
+
+
+# Source authority: reconciler (broker REST) and manual_import (seeded opening
+# lots) are authoritative; websocket rows are provisional real-time notifications.
+_PROVISIONAL_SOURCE = "websocket"
+
+
+def _supersede_key(
+    item: ExecutionLedgerRead,
+) -> tuple[str, str, str, str, str, str]:
+    """Order-level identity shared across sources for one logical order.
+
+    Excludes fill_seq, filled_at and correlation_id on purpose: the websocket
+    monitor and the reconciler derive divergent fill_seq (independent hashes) and
+    timestamps for the same order, so only the order-level tuple links the two
+    sources. broker_order_id is leading-zero-normalized to absorb formatting drift.
+
+    ``venue`` is intentionally excluded: for US (KIS overseas) the websocket event
+    carries no exchange code so the monitor defaults venue to ``krx`` while the
+    reconciler reads ``ovrs_excg_cd`` (e.g. ``NASD``). Keying on venue would leave
+    those two rows un-merged forever. (broker, account_mode, instrument_type,
+    symbol, side, order_id) already disambiguates distinct orders within a broker.
+    """
+    normalized_order_id = item.broker_order_id.lstrip("0") or item.broker_order_id
+    return (
+        item.broker,
+        item.account_mode,
+        item.instrument_type,
+        item.symbol,
+        item.side,
+        normalized_order_id,
+    )
+
+
+def _supersede_provisional_fills(
+    items: list[ExecutionLedgerRead],
+) -> list[ExecutionLedgerRead]:
+    """Drop provisional websocket rows for orders an authoritative row covers.
+
+    The ledger unique key excludes ``source`` and the two writers derive different
+    ``fill_seq`` for the same fill, so one order can land as two+ rows. Once the
+    reconciler books an order it is the authoritative record (it re-fetches the
+    broker's complete filled-order set, aggregating partials), so any websocket row
+    for that order is a duplicate. Websocket rows for not-yet-reconciled orders are
+    preserved. Input order is preserved.
+    """
+    authoritative_orders = {
+        _supersede_key(item) for item in items if item.source != _PROVISIONAL_SOURCE
+    }
+    return [
+        item
+        for item in items
+        if item.source != _PROVISIONAL_SOURCE
+        or _supersede_key(item) not in authoritative_orders
+    ]
 
 
 def _annotate_realized_profit(
@@ -186,17 +247,92 @@ class ExecutionLedgerQueryService:
         self.db = db
         self.repo = ExecutionLedgerRepository(db)
 
+    async def _attach_symbol_names(
+        self, items: list[ExecutionLedgerRead]
+    ) -> list[ExecutionLedgerRead]:
+        """Best-effort: populate symbol_name from the per-market universe tables.
+
+        Names are cosmetic, so every resolver call fails open — a lookup error
+        leaves symbol_name None and the UI falls back to the raw symbol.
+        """
+        if not items:
+            return items
+
+        kr_symbols = sorted(
+            {i.symbol for i in items if i.instrument_type == "equity_kr"}
+        )
+        us_symbols = sorted(
+            {i.symbol for i in items if i.instrument_type == "equity_us"}
+        )
+        crypto_markets = sorted(
+            {i.raw_symbol for i in items if i.instrument_type == "crypto"}
+        )
+
+        async def _safe(coro, label):
+            try:
+                return await coro
+            except Exception:  # noqa: BLE001 - names are best-effort
+                logger.warning(
+                    "symbol-name resolution failed for %s", label, exc_info=True
+                )
+                return {}
+
+        kr_names = (
+            await _safe(get_kr_names_by_symbols(kr_symbols, self.db), "kr")
+            if kr_symbols
+            else {}
+        )
+        us_names = (
+            await _safe(get_us_names_by_symbols(us_symbols, self.db), "us")
+            if us_symbols
+            else {}
+        )
+        crypto_disp = (
+            await _safe(
+                get_upbit_market_display_names(crypto_markets, self.db), "crypto"
+            )
+            if crypto_markets
+            else {}
+        )
+
+        def _name_for(item: ExecutionLedgerRead) -> str | None:
+            if item.instrument_type == "equity_kr":
+                return kr_names.get(item.symbol)
+            if item.instrument_type == "equity_us":
+                return us_names.get(item.symbol)
+            if item.instrument_type == "crypto":
+                # get_upbit_market_display_names keys its result by the canonical
+                # upper-case market (e.g. KRW-BTC); normalize before lookup.
+                disp = crypto_disp.get(item.raw_symbol.strip().upper())
+                if disp:
+                    return disp.get("korean_name") or disp.get("english_name")
+            return None
+
+        annotated: list[ExecutionLedgerRead] = []
+        for item in items:
+            name = _name_for(item)
+            if name and name != item.symbol:
+                annotated.append(item.model_copy(update={"symbol_name": name}))
+            else:
+                annotated.append(item)
+        return annotated
+
     async def list_recent(
         self, *, limit: int = 50, market: str | None = None
     ) -> ExecutionLedgerListResponse:
+        # Over-fetch before de-dup so superseded websocket rows do not consume the
+        # page budget (otherwise a dup-heavy page returns fewer than `limit` rows).
+        # 3x covers the worst-case number of sources for one order.
         stmt = (
             select(ExecutionLedger)
             .order_by(ExecutionLedger.filled_at.desc())
-            .limit(limit)
+            .limit(limit * 3)
         )
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
+        items = _supersede_provisional_fills(items)[:limit]
+        items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
@@ -222,6 +358,8 @@ class ExecutionLedgerQueryService:
         )
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
+        items = _supersede_provisional_fills(items)
+        items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
@@ -242,16 +380,19 @@ class ExecutionLedgerQueryService:
         self, *, days: int = 30, market: str | None = None, limit: int = 100
     ) -> ExecutionLedgerListResponse:
         cutoff = datetime.now(UTC) - timedelta(days=days)
+        # No SQL LIMIT: provisional websocket rows must be superseded BEFORE
+        # truncating. Limiting first would let a dup pair straddle the boundary
+        # (the windowed sells are small, so fetching the full window is cheap).
         stmt = (
             select(ExecutionLedger)
             .where(ExecutionLedger.side == "sell")
             .where(ExecutionLedger.filled_at >= cutoff)
             .order_by(ExecutionLedger.filled_at.desc())
-            .limit(limit)
         )
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
+        items = _supersede_provisional_fills(items)
         if items:
             max_sell_at = max(item.filled_at for item in items)
             symbols = {item.symbol for item in items}
@@ -275,14 +416,20 @@ class ExecutionLedgerQueryService:
             history_items = [
                 ExecutionLedgerRead.model_validate(row) for row in history_rows
             ]
+            history_items = _supersede_provisional_fills(history_items)
             items = _annotate_realized_profit(items, history_items)
+        # count is the true de-duped window total; items is the trimmed page so the
+        # UI footer ("총 N건 중 M건 표시") and totals stay consistent.
+        total = len(items)
+        items = items[:limit]
+        items = await self._attach_symbol_names(items)
 
         freshness = await self.freshness()
         data_state, empty_reason = _state_from_items_and_freshness(
             items, freshness, market
         )
         return ExecutionLedgerListResponse(
-            count=len(items),
+            count=total,
             items=items,
             data_state=data_state,
             source_breakdown=_compute_source_breakdown(items),

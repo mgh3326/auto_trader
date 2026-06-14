@@ -19,6 +19,7 @@ const baseResponse = {
       instrument_type: "equity_kr",
       symbol: "000660",
       raw_symbol: "000660",
+      symbol_name: "SK하이닉스",
       side: "sell",
       broker_order_id: "0006421200",
       fill_seq: 733331392,
@@ -82,3 +83,39 @@ test("SellHistoryPanel refetches with market filter", async () => {
   const [url] = fetchMock.mock.calls[1] as [string, RequestInit];
   expect(url).toContain("market=kr");
 });
+
+test("renders backend symbol_name instead of the code", async () => {
+  const customResponse = {
+    ...baseResponse,
+    items: [
+      {
+        ...baseResponse.items[0],
+        symbol: "035420",
+        symbol_name: "NAVER",
+      },
+    ],
+  };
+  fetchMock.mockResolvedValue({ ok: true, json: async () => customResponse });
+  render(<SellHistoryPanel />);
+  expect(await screen.findByText("NAVER")).toBeInTheDocument();
+  // the code still appears in the secondary line
+  expect(screen.getByText(/035420/)).toBeInTheDocument();
+});
+
+test("falls back to the code when symbol_name is absent", async () => {
+  const customResponse = {
+    ...baseResponse,
+    items: [
+      {
+        ...baseResponse.items[0],
+        symbol: "035420",
+        symbol_name: null,
+      },
+    ],
+  };
+  fetchMock.mockResolvedValue({ ok: true, json: async () => customResponse });
+  render(<SellHistoryPanel />);
+  const elements = await screen.findAllByText(/035420/);
+  expect(elements.length).toBeGreaterThan(0);
+});
+
