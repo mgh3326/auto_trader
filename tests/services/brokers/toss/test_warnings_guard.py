@@ -91,6 +91,33 @@ async def test_warnings_guard_kr_blocking_warning() -> None:
 
 
 @pytest.mark.asyncio
+async def test_warnings_guard_exempts_sell_from_liquidation_block() -> None:
+    """ROB-550: 정리매매(LIQUIDATION_TRADING) must not block a SELL — blocking
+    the exit during a delisting liquidation window traps the position. Buys
+    stay blocked; the warning is still surfaced for sells."""
+    warnings_list = [
+        TossWarningInfo(
+            warning_type="LIQUIDATION_TRADING",
+            exchange="KRX",
+            start_date="2026-06-12",
+            end_date=None,
+        )
+    ]
+    sell_client = DummyClient(warnings_result=warnings_list)
+    sell_result = await check_warnings_guard(
+        sell_client, "005930", side="sell", today=date(2026, 6, 12)
+    )
+    assert sell_result.ok is True
+    assert sell_result.warnings == warnings_list  # still surfaced
+
+    buy_client = DummyClient(warnings_result=warnings_list)
+    buy_result = await check_warnings_guard(
+        buy_client, "005930", side="buy", today=date(2026, 6, 12)
+    )
+    assert buy_result.ok is False
+
+
+@pytest.mark.asyncio
 async def test_warnings_guard_filters_inactive_warnings_before_blocking() -> None:
     warnings_list = [
         TossWarningInfo(

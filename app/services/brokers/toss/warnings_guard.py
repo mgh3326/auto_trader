@@ -32,10 +32,13 @@ async def check_warnings_guard(
     market: str | None = None,
     timeout: float = 3.0,
     today: date | None = None,
+    side: str | None = None,
 ) -> WarningsGuardResult:
     """
     Checks if there are active warnings for the given symbol.
-    Blocks the order if LIQUIDATION_TRADING is active.
+    Blocks a BUY if LIQUIDATION_TRADING is active. A SELL is exempt from the
+    block (ROB-550: blocking the exit during a delisting liquidation window
+    would trap the position) — the warning is still surfaced.
     Fail-open: If the API request fails or times out, allows the order to proceed.
     Only checks KR stock symbols (6 numeric digits).
     """
@@ -64,11 +67,12 @@ async def check_warnings_guard(
             if _is_active_warning(warning, current_date)
         ]
 
-        # Check blocking warning types
+        # Check blocking warning types. A SELL is exempt — the warning is still
+        # surfaced but must not block an exit during liquidation trading.
         blocking = [
             w for w in active_warnings if w.warning_type in _BLOCKING_WARNING_TYPES
         ]
-        if blocking:
+        if blocking and str(side).lower() != "sell":
             blocked_types = ", ".join(w.warning_type for w in blocking)
             return WarningsGuardResult(
                 ok=False,

@@ -470,7 +470,9 @@ async def toss_preview_order(
     warnings_check_msg = None
     try:
         async with _client_context() as client:
-            guard_res = await check_warnings_guard(client, symbol, market=mkt)
+            guard_res = await check_warnings_guard(
+                client, symbol, market=mkt, side=side
+            )
             warnings_list = [
                 {
                     "warning_type": w.warning_type,
@@ -613,7 +615,7 @@ async def _toss_place_order_impl(
 
     async def execute_order(client: TossReadClient):
         # Guard: Warnings check
-        guard_res = await check_warnings_guard(client, symbol, market=mkt)
+        guard_res = await check_warnings_guard(client, symbol, market=mkt, side=side)
         guard_warnings = _warning_payload(guard_res.warnings)
         if not guard_res.ok:
             return {
