@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import settings, validate_toss_api_config
+from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
@@ -228,6 +229,28 @@ def _high_value_error(
             confirm_high_value_order,
         )
     return None
+
+
+def _snap_kr_limit_price(
+    price: Decimal, side: str, market: Literal["kr", "us"], order_type: str
+) -> tuple[Decimal, Decimal | None]:
+    """KR 지정가만 KRX tick에 스냅. 반환 (적용가, 원가 또는 None[무변경])."""
+    if market != "kr" or order_type != "limit" or price <= 0:
+        return price, None
+    adjusted = Decimal(str(adjust_tick_size_kr(float(price), side)))
+    if adjusted == price:
+        return price, None
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Toss KR limit tick-snapped: side=%s original=%s tick=%s adjusted=%s",
+        side,
+        price,
+        get_tick_size_kr(float(price)),
+        adjusted,
+    )
+    return adjusted, price
 
 
 def _live_mutation_disabled_error(
@@ -452,6 +475,18 @@ async def toss_preview_order(
         else None
     )
 
+    tick_meta: dict[str, Any] = {}
+    if price_dec is not None:
+        price_dec, original_for_meta = _snap_kr_limit_price(
+            price_dec, side, mkt, order_type
+        )
+        if original_for_meta is not None:
+            tick_meta = {
+                "tick_adjusted": True,
+                "original_price": _stringify_decimal(original_for_meta),
+                "adjusted_price": _stringify_decimal(price_dec),
+            }
+
     payload: dict[str, Any] = {
         "clientOrderId": _new_client_order_id(),
         "symbol": symbol,
@@ -492,6 +527,7 @@ async def toss_preview_order(
         "success": True,
         "preview": True,
         "market": mkt,
+        **tick_meta,
         "payload_preview": payload,
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "warnings": warnings_list,
@@ -547,6 +583,18 @@ async def _toss_place_order_impl(
         _decimal_string(stop_loss, "stop_loss") if stop_loss is not None else None
     )
 
+    tick_meta: dict[str, Any] = {}
+    if price_dec is not None:
+        price_dec, original_for_meta = _snap_kr_limit_price(
+            price_dec, side, mkt, order_type
+        )
+        if original_for_meta is not None:
+            tick_meta = {
+                "tick_adjusted": True,
+                "original_price": _stringify_decimal(original_for_meta),
+                "adjusted_price": _stringify_decimal(price_dec),
+            }
+
     payload: dict[str, Any] = {
         "clientOrderId": client_order_id_override or _new_client_order_id(),
         "symbol": symbol,
@@ -568,6 +616,7 @@ async def _toss_place_order_impl(
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "dry_run": dry_run,
         "mutation_sent": False,
+        **tick_meta,
         # ROB-545 Major — carry the clientOrderId on every response (incl. error
         # paths) so a failed/timed-out order can be retried with the *same*
         # idempotency key instead of minting a new one.
