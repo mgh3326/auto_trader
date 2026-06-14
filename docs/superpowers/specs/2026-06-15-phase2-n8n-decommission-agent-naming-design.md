@@ -96,11 +96,16 @@
 
 ---
 
-## 6. 미해결 (스펙 리뷰에서 결정)
+## 6. 결정 (리뷰 완료, 2026-06-15)
 
-1. **데이터 서비스 새 이름 확정**: `filled_orders_service` vs `order_fills_service`? `order_brief_formatting` vs `brief_formatting`?
-2. **AgentGateway 새 이름**: `AgentGatewayClient`(추천) vs `AiAgentClient` vs `AutonomousAgentClient`.
-3. **callback 라우터 경로** `/api/v1/openclaw/callback` → 개명(`/api/v1/agent/callback`, 외부 OpenClaw 콜백 URL 영향) vs 유지(하위호환). config `OPENCLAW_CALLBACK_URL` 영향.
-4. **`model_name="openclaw-gpt"`**: 신규 행 `"agent-gpt"`로 변경 vs 유지(쿼리 일관성). 과거 행은 불변.
-5. **request_analysis/send_scan_alert(휴면)**: 개명 유지 vs 완전 삭제(operator 사인오프). 삭제 시 callback 라우터·screener `request_report`·daily_scan alert도 함께.
-6. **슬라이스 순서/PR 수**: 2a 단독 먼저(머지 전 가능) vs 전부 ROB-558 머지 후.
+1. **데이터 서비스 이름**: ✅ `filled_orders_service`, `filled_orders_indicators`, `pending_orders_service`, `market_context_service`, `order_brief_formatting`. (`order_brief_formatting`이 daily-brief 외 광범위하면 구현 중 `order_formatting` 재검토 가능.)
+2. **AgentGateway 이름**: ✅ `AgentGatewayClient` (`app/services/agent_gateway.py`), config `AGENT_GATEWAY_*`.
+3. **callback 라우터 경로**: ✅ 신규 `/api/v1/agent/callback` + 구 `/api/v1/openclaw/callback` **백워드-호환 alias** 유지(operator가 에이전트 config 전환 후 별도 제거).
+4. **`model_name="openclaw-gpt"`**: ✅ **유지**(과거 행 쿼리 일관성). 신규 행도 동일.
+5. **request_analysis/send_scan_alert(휴면)**: ✅ **개명 유지**(삭제 아님). 범용 agent 명으로 보존.
+6. **슬라이스 순서**: ✅ 2a 단독(ROB-558 무충돌, 먼저 가능) → 2b(operator-gated 삭제) → 2c(ROB-558 머지 후 openclaw_client 개명). 각각 독립 PR.
+
+### 플랜 문서
+- 2a: `docs/superpowers/plans/2026-06-15-phase2-2a-rename-data-services.md`
+- 2b: `docs/superpowers/plans/2026-06-15-phase2-2b-delete-dead-n8n-surface.md`
+- 2c: `docs/superpowers/plans/2026-06-15-phase2-2c-openclaw-to-agentgateway.md`

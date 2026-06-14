@@ -12,6 +12,7 @@
 
 > **이름 (스펙 §6.1 — 리뷰에서 확정, 아래는 제안 기본값):**
 > - `n8n_filled_orders_service` → `filled_orders_service`
+> - `n8n_filled_orders_indicators` → `filled_orders_indicators` (filled_orders_service가 `_enrich_with_indicators` import — 같이 개명)
 > - `n8n_pending_orders_service` → `pending_orders_service`
 > - `n8n_market_context_service` → `market_context_service`
 > - `n8n_formatting` → `order_brief_formatting`
@@ -50,6 +51,7 @@ Expected: collect 에러 0, 대상 테스트 그린. 이 숫자를 개명 후와
 ```bash
 cd /Users/mgh3326/work/auto_trader.rob-560
 git mv app/services/n8n_filled_orders_service.py app/services/filled_orders_service.py
+git mv app/services/n8n_filled_orders_indicators.py app/services/filled_orders_indicators.py
 git mv app/services/n8n_pending_orders_service.py app/services/pending_orders_service.py
 git mv app/services/n8n_market_context_service.py app/services/market_context_service.py
 git mv app/services/n8n_formatting.py app/services/order_brief_formatting.py
@@ -59,7 +61,7 @@ git mv app/services/n8n_formatting.py app/services/order_brief_formatting.py
 
 ```bash
 git mv tests/test_n8n_filled_orders_service.py tests/test_filled_orders_service.py
-git mv tests/test_n8n_filled_orders_indicators.py tests/test_filled_orders_indicators.py
+git mv tests/test_n8n_filled_orders_indicators.py tests/test_filled_orders_indicators.py  # 모듈 filled_orders_indicators
 git mv tests/test_n8n_market_context.py tests/test_market_context_service.py
 git mv tests/test_n8n_formatting.py tests/test_order_brief_formatting.py
 git mv tests/services/test_n8n_formatting_extended.py tests/services/test_order_brief_formatting_extended.py
@@ -87,6 +89,7 @@ git mv tests/services/test_n8n_formatting_extended.py tests/services/test_order_
 ```bash
 cd /Users/mgh3326/work/auto_trader.rob-560
 grep -rl 'n8n_filled_orders_service' app/ tests/ | xargs sed -i '' 's/n8n_filled_orders_service/filled_orders_service/g'
+grep -rl 'n8n_filled_orders_indicators' app/ tests/ | xargs sed -i '' 's/n8n_filled_orders_indicators/filled_orders_indicators/g'
 grep -rl 'n8n_pending_orders_service' app/ tests/ | xargs sed -i '' 's/n8n_pending_orders_service/pending_orders_service/g'
 grep -rl 'n8n_market_context_service' app/ tests/ | xargs sed -i '' 's/n8n_market_context_service/market_context_service/g'
 grep -rl 'n8n_formatting' app/ tests/ | xargs sed -i '' 's/n8n_formatting/order_brief_formatting/g'
@@ -96,7 +99,7 @@ grep -rl 'n8n_formatting' app/ tests/ | xargs sed -i '' 's/n8n_formatting/order_
 - [ ] **Step 2: 잔존 참조 0 확인**
 
 ```bash
-grep -rn 'n8n_filled_orders_service\|n8n_pending_orders_service\|n8n_market_context_service\|n8n_formatting' app/ tests/ websocket_monitor.py scripts/
+grep -rn 'n8n_filled_orders_service\|n8n_filled_orders_indicators\|n8n_pending_orders_service\|n8n_market_context_service\|n8n_formatting' app/ tests/ websocket_monitor.py scripts/
 ```
 Expected: **0 매치**.
 
