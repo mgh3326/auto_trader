@@ -354,7 +354,6 @@ async def get_us_names_by_symbols(
         return await _run(session)
 
 
-
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
     normalized_name = normalize_name(name)
     if not normalized_name:

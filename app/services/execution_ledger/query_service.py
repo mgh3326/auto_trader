@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -19,9 +20,6 @@ from app.schemas.execution_ledger import (
     SourceBreakdown,
 )
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
-
-import logging
-
 from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
 from app.services.upbit_symbol_universe_service import get_upbit_market_display_names
 from app.services.us_symbol_universe_service import get_us_names_by_symbols
@@ -80,7 +78,9 @@ def _ledger_item_key(item: ExecutionLedgerRead) -> tuple[str, str, str, str, int
 _PROVISIONAL_SOURCE = "websocket"
 
 
-def _supersede_key(item: ExecutionLedgerRead) -> tuple[str, str, str, str, str, str, str]:
+def _supersede_key(
+    item: ExecutionLedgerRead,
+) -> tuple[str, str, str, str, str, str, str]:
     """Order-level identity shared across sources for one logical order.
 
     Excludes fill_seq, filled_at and correlation_id on purpose: the websocket
@@ -113,9 +113,7 @@ def _supersede_provisional_fills(
     preserved. Input order is preserved.
     """
     authoritative_orders = {
-        _supersede_key(item)
-        for item in items
-        if item.source != _PROVISIONAL_SOURCE
+        _supersede_key(item) for item in items if item.source != _PROVISIONAL_SOURCE
     }
     return [
         item
@@ -255,21 +253,39 @@ class ExecutionLedgerQueryService:
         if not items:
             return items
 
-        kr_symbols = sorted({i.symbol for i in items if i.instrument_type == "equity_kr"})
-        us_symbols = sorted({i.symbol for i in items if i.instrument_type == "equity_us"})
-        crypto_markets = sorted({i.raw_symbol for i in items if i.instrument_type == "crypto"})
+        kr_symbols = sorted(
+            {i.symbol for i in items if i.instrument_type == "equity_kr"}
+        )
+        us_symbols = sorted(
+            {i.symbol for i in items if i.instrument_type == "equity_us"}
+        )
+        crypto_markets = sorted(
+            {i.raw_symbol for i in items if i.instrument_type == "crypto"}
+        )
 
         async def _safe(coro, label):
             try:
                 return await coro
             except Exception:  # noqa: BLE001 - names are best-effort
-                logger.warning("symbol-name resolution failed for %s", label, exc_info=True)
+                logger.warning(
+                    "symbol-name resolution failed for %s", label, exc_info=True
+                )
                 return {}
 
-        kr_names = await _safe(get_kr_names_by_symbols(kr_symbols, self.db), "kr") if kr_symbols else {}
-        us_names = await _safe(get_us_names_by_symbols(us_symbols, self.db), "us") if us_symbols else {}
+        kr_names = (
+            await _safe(get_kr_names_by_symbols(kr_symbols, self.db), "kr")
+            if kr_symbols
+            else {}
+        )
+        us_names = (
+            await _safe(get_us_names_by_symbols(us_symbols, self.db), "us")
+            if us_symbols
+            else {}
+        )
         crypto_disp = (
-            await _safe(get_upbit_market_display_names(crypto_markets, self.db), "crypto")
+            await _safe(
+                get_upbit_market_display_names(crypto_markets, self.db), "crypto"
+            )
             if crypto_markets
             else {}
         )

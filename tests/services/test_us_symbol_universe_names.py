@@ -21,10 +21,30 @@ async def _session_with(rows):
 @pytest.mark.asyncio
 async def test_get_us_names_prefers_korean_then_english_and_canonicalizes() -> None:
     rows = [
-        USSymbolUniverse(symbol="TSLA", exchange="NASDAQ", name_kr="테슬라", name_en="Tesla", is_active=True),
-        USSymbolUniverse(symbol="BRK.B", exchange="NASDAQ", name_kr="", name_en="Berkshire Hathaway", is_active=True),
-        USSymbolUniverse(symbol="QQQ", exchange="NASDAQ", name_kr="", name_en="", is_active=True),
-        USSymbolUniverse(symbol="DEAD", exchange="NASDAQ", name_kr="옛이름", name_en="Old", is_active=False),
+        USSymbolUniverse(
+            symbol="TSLA",
+            exchange="NASDAQ",
+            name_kr="테슬라",
+            name_en="Tesla",
+            is_active=True,
+        ),
+        USSymbolUniverse(
+            symbol="BRK.B",
+            exchange="NASDAQ",
+            name_kr="",
+            name_en="Berkshire Hathaway",
+            is_active=True,
+        ),
+        USSymbolUniverse(
+            symbol="QQQ", exchange="NASDAQ", name_kr="", name_en="", is_active=True
+        ),
+        USSymbolUniverse(
+            symbol="DEAD",
+            exchange="NASDAQ",
+            name_kr="옛이름",
+            name_en="Old",
+            is_active=False,
+        ),
     ]
     session = await _session_with(rows)
     try:
@@ -35,5 +55,5 @@ async def test_get_us_names_prefers_korean_then_english_and_canonicalizes() -> N
 
     assert out["TSLA"] == "테슬라"
     assert out["BRK-B"] == "Berkshire Hathaway"  # keyed by caller's original string
-    assert "QQQ" not in out   # no usable name -> omitted
+    assert "QQQ" not in out  # no usable name -> omitted
     assert "DEAD" not in out  # inactive -> omitted

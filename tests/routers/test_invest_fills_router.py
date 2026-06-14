@@ -177,8 +177,12 @@ def test_recent_fills_source_breakdown_websocket():
 def test_recent_fills_supersedes_websocket_duplicate():
     """A reconciler + websocket row for the same order collapse to the reconciler row."""
     rows = [
-        _ledger_row(id=1, broker_order_id="0006366300", fill_seq=1511940115, source="reconciler"),
-        _ledger_row(id=2, broker_order_id="0006366300", fill_seq=654241537, source="websocket"),
+        _ledger_row(
+            id=1, broker_order_id="0006366300", fill_seq=1511940115, source="reconciler"
+        ),
+        _ledger_row(
+            id=2, broker_order_id="0006366300", fill_seq=654241537, source="websocket"
+        ),
     ]
     run = _reconcile_run_row("kis")
     db = _make_db(rows, [run])
