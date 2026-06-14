@@ -361,7 +361,7 @@ class TestFormatFillMessage:
             "금액: 1,500,300원\n"
             "시간: 2026-02-14T17:30:45\n\n"
             "계좌: upbit\n"
-            f"상세: {base_url}/portfolio/positions/crypto/KRW-BTC"
+            f"상세: {base_url}/invest/stocks/crypto/KRW-BTC"
         )
         assert message == expected
 
@@ -391,7 +391,7 @@ class TestFormatFillMessage:
             "시간: 2026-02-14T17:30:45\n\n"
             "계좌: upbit\n"
             "주문: a3f5d2e1...\n"
-            f"상세: {base_url}/portfolio/positions/crypto/KRW-BTC"
+            f"상세: {base_url}/invest/stocks/crypto/KRW-BTC"
         )
         assert message == expected
 
@@ -419,7 +419,7 @@ class TestFormatFillMessage:
             "금액: 1,505,000원\n"
             "시간: 2026-02-14T18:15:22\n\n"
             "계좌: upbit\n"
-            f"상세: {base_url}/portfolio/positions/crypto/KRW-ETH"
+            f"상세: {base_url}/invest/stocks/crypto/KRW-ETH"
         )
         assert message == expected
 
@@ -491,4 +491,54 @@ class TestFormatFillMessage:
         )
         message = format_fill_message(order)
         base_url = settings.public_base_url.rstrip("/")
-        assert f"상세: {base_url}/portfolio/positions/us/AAPL" in message
+        assert f"상세: {base_url}/invest/stocks/us/AAPL" in message
+
+
+@pytest.mark.unit
+class TestFillHelpers:
+    def test_currency_aware_threshold(self):
+        from app.services.fill_notification import (
+            FillOrder,
+            is_fill_notifiable,
+        )
+
+        krw = FillOrder(symbol="005930", side="bid", filled_price=1000,
+                        filled_qty=49, filled_amount=49_000, filled_at="t",
+                        account="kis", market_type="kr", currency="KRW")
+        assert is_fill_notifiable(krw) is False
+        krw2 = FillOrder(symbol="005930", side="bid", filled_price=1000,
+                         filled_qty=50, filled_amount=50_000, filled_at="t",
+                         account="kis", market_type="kr", currency="KRW")
+        assert is_fill_notifiable(krw2) is True
+        usd = FillOrder(symbol="AAPL", side="bid", filled_price=10,
+                        filled_qty=6, filled_amount=60, filled_at="t",
+                        account="kis", market_type="us", currency="USD")
+        assert is_fill_notifiable(usd) is True
+
+    def test_resolve_display_name_crypto(self):
+        from app.services.fill_notification import (
+            FillOrder,
+            resolve_fill_display_name,
+        )
+
+        order = FillOrder(symbol="KRW-BTC", side="bid", filled_price=1, filled_qty=1,
+                          filled_amount=1, filled_at="t", account="upbit", market_type="crypto")
+        assert resolve_fill_display_name(order) == "BTC"
+
+    def test_money_and_qty_fmt(self):
+        from app.services.fill_notification import (
+            format_fill_money,
+            format_fill_quantity,
+        )
+
+        assert format_fill_money(68500, is_usd=False) == "68,500원"
+        assert format_fill_money(12.5, is_usd=True) == "$12.50"
+        assert format_fill_quantity(10.0) == "10"
+
+    def test_enrichment_defaults(self):
+        from app.services.fill_notification import FillEnrichment
+
+        enr = FillEnrichment()
+        assert enr.position_qty is None
+        assert enr.is_approximate is True
+
