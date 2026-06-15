@@ -12,9 +12,6 @@ from app.schemas.invest_stock_detail import (
     StockDetailQuote,
     StockDetailValuation,
 )
-from app.services.market_data import service as market_data
-from app.services.market_valuation_snapshots import MarketValuationSnapshotsRepository
-from app.services.stock_info_service import StockAnalysisService
 
 
 def _period_for_market_data(period: str) -> str:
@@ -47,6 +44,8 @@ def _change_rate(price: float | None, previous_close: float | None) -> float | N
 async def stock_detail_candle_provider(
     market: NewsMarket, symbol: str, period: str
 ) -> list[dict[str, Any]]:
+    from app.services.market_data import service as market_data
+
     rows = await market_data.get_ohlcv(
         symbol=symbol,
         market=market,
@@ -69,6 +68,8 @@ async def stock_detail_candle_provider(
 async def stock_detail_quote_provider(
     market: NewsMarket, symbol: str, db: Any
 ) -> StockDetailQuote | None:
+    from app.services.market_data import service as market_data
+
     _ = db
     quote = await market_data.get_quote(symbol=symbol, market=market)
     amount = _change_amount(quote.price, quote.previous_close)
@@ -85,6 +86,8 @@ async def stock_detail_quote_provider(
 async def stock_detail_orderbook_provider(
     market: NewsMarket, symbol: str, db: Any
 ) -> StockDetailOrderbook | None:
+    from app.services.market_data import service as market_data
+
     _ = db
     if market == "us":
         return None
@@ -107,6 +110,10 @@ async def stock_detail_orderbook_provider(
 async def stock_detail_valuation_provider(
     market: NewsMarket, symbol: str, db: Any
 ) -> StockDetailValuation | None:
+    from app.services.market_valuation_snapshots import (
+        MarketValuationSnapshotsRepository,
+    )
+
     if market == "crypto" or not hasattr(db, "execute"):
         return None
     rows = await MarketValuationSnapshotsRepository(db).latest_for_symbols(
@@ -145,6 +152,8 @@ def _reasons_top3(value: Any) -> list[str]:
 async def stock_detail_latest_analysis_provider(
     market: NewsMarket, symbol: str, db: Any
 ) -> StockDetailLatestAnalysis | None:
+    from app.services.stock_info_service import StockAnalysisService
+
     _ = market
     if not hasattr(db, "execute"):
         return None
@@ -173,7 +182,9 @@ async def stock_detail_latest_analysis_provider(
     )
 
 
-HoldingProvider = Callable[[int | str, NewsMarket, str, Any], Awaitable[StockDetailHolding | None]]
+HoldingProvider = Callable[
+    [int | str, NewsMarket, str, Any], Awaitable[StockDetailHolding | None]
+]
 
 
 def make_account_panel_holding_provider(home_service: Any) -> HoldingProvider:
@@ -186,7 +197,10 @@ def make_account_panel_holding_provider(home_service: Any) -> HoldingProvider:
         )
         target_market = {"kr": "KR", "us": "US", "crypto": "CRYPTO"}[market]
         for holding in view.groupedHoldings:
-            if holding.market == target_market and str(holding.symbol).upper() == symbol.upper():
+            if (
+                holding.market == target_market
+                and str(holding.symbol).upper() == symbol.upper()
+            ):
                 return StockDetailHolding(
                     totalQuantity=holding.totalQuantity,
                     tradeableQuantity=holding.tradeableQuantity,
