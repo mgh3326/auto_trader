@@ -87,6 +87,36 @@ def test_default_cost_profiles_are_review_required_until_operator_override():
     assert profiles.market_profile("toss", "us").commission_bps == pytest.approx(10)
 
 
+def test_invalid_cost_profile_values_fall_back_to_review_required_defaults():
+    profiles = build_cost_profiles(
+        {
+            "version": 1,
+            "routing": {"position_consolidation_threshold_bps": {"kr": "bad"}},
+            "accounts": {
+                "kis_domestic": {
+                    "markets": {
+                        "kr": {
+                            "commission_bps": "bad",
+                            "fx_spread_bps": "bad",
+                        }
+                    }
+                },
+                "toss": {"limits": {"max_order_notional_krw": "bad"}},
+            },
+        }
+    )
+
+    assert profiles.review_required is True
+    assert profiles.threshold_bps("kr") == pytest.approx(25)
+    assert profiles.market_profile(
+        "kis_domestic", "kr"
+    ).commission_bps == pytest.approx(14.7)
+    assert profiles.market_profile("kis_domestic", "kr").fx_spread_bps == pytest.approx(
+        0
+    )
+    assert profiles.max_order_notional_krw("toss") == pytest.approx(1_000_000)
+
+
 def test_no_existing_holding_recommends_cheapest_eligible_account():
     result = suggest_account_from_snapshot(
         AccountRoutingInput(
@@ -139,6 +169,64 @@ def test_existing_kr_holding_keeps_existing_when_savings_below_threshold():
     )
     assert result["position_consolidation"]["distribution_warning"] is False
     assert "existing_position_below_threshold" in result["reason_codes"]
+
+
+def test_kis_holding_alias_maps_to_domestic_routing_account_for_kr():
+    result = suggest_account_from_snapshot(
+        AccountRoutingInput(
+            symbol="005930",
+            market="kr",
+            side="buy",
+            quantity=10,
+            price=75_000,
+            usd_krw=None,
+            account_costs=DEFAULT_ACCOUNT_COSTS,
+            capital_snapshot=_cash(),
+            holdings_snapshot={
+                "accounts": [
+                    {
+                        "account": "kis",
+                        "broker": "kis",
+                        "positions": [{"symbol": "005930", "quantity": 1}],
+                    }
+                ],
+                "errors": [],
+            },
+        )
+    )
+
+    assert result["recommended_account"] == "kis_domestic"
+    assert result["position_consolidation"]["existing_accounts"] == ["kis_domestic"]
+    assert result["position_consolidation"]["decision"] == "keep_existing"
+
+
+def test_kis_holding_alias_maps_to_overseas_routing_account_for_us():
+    result = suggest_account_from_snapshot(
+        AccountRoutingInput(
+            symbol="AAPL",
+            market="us",
+            side="buy",
+            quantity=2,
+            price=100,
+            usd_krw=1500,
+            account_costs=DEFAULT_ACCOUNT_COSTS,
+            capital_snapshot=_cash(),
+            holdings_snapshot={
+                "accounts": [
+                    {
+                        "account": "kis",
+                        "broker": "kis",
+                        "positions": [{"symbol": "AAPL", "quantity": 1}],
+                    }
+                ],
+                "errors": [],
+            },
+        )
+    )
+
+    assert result["recommended_account"] == "kis_overseas"
+    assert result["position_consolidation"]["existing_accounts"] == ["kis_overseas"]
+    assert result["position_consolidation"]["decision"] == "keep_existing"
 
 
 def test_existing_kr_holding_breaks_consolidation_when_savings_exceed_threshold():

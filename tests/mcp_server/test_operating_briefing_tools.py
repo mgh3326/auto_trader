@@ -588,7 +588,8 @@ async def test_get_operating_briefing_accounts_include_cost_profile(monkeypatch)
             "summary": {},
             "accounts": [
                 {
-                    "account": "kis_domestic",
+                    "account": "kis",
+                    "broker": "kis",
                     "account_name": "기본 계좌",
                     "account_mode": "kis_live",
                     "order_routable": True,
@@ -637,6 +638,6 @@ async def test_get_operating_briefing_accounts_include_cost_profile(monkeypatch)
     result = await ob.get_operating_briefing_impl(market="kr", account_scope="kis_live")
 
     account = result["holdings"]["accounts"][0]
-    assert account["account"] == "kis_domestic"
+    assert account["account"] == "kis"
     assert account["cost_profile"]["commission_bps"] == pytest.approx(1.4)
     assert account["cost_profile"]["source"] == "user_setting"

@@ -125,7 +125,8 @@ async def test_suggest_order_account_impl_uses_snapshots_and_user_costs(monkeypa
         return {
             "accounts": [
                 {
-                    "account": "kis_domestic",
+                    "account": "kis",
+                    "broker": "kis",
                     "positions": [{"symbol": "005930", "quantity": 1}],
                 }
             ],

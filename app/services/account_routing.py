@@ -59,7 +59,7 @@ class AccountCostProfiles:
         fallback = DEFAULT_ACCOUNT_COSTS["routing"][
             "position_consolidation_threshold_bps"
         ][market]
-        return float(thresholds.get(market, fallback))
+        return _float_or_default(thresholds.get(market), fallback)
 
     def account(self, account_id: str) -> dict[str, Any]:
         accounts = self.raw.get("accounts", {}) if isinstance(self.raw, dict) else {}
@@ -77,21 +77,29 @@ class AccountCostProfiles:
             .get(market, {})
         )
         return MarketCostProfile(
-            commission_bps=float(
-                profile.get("commission_bps", default.get("commission_bps", 0.0))
+            commission_bps=_float_or_default(
+                profile.get("commission_bps"),
+                float(default.get("commission_bps", 0.0)),
             ),
-            fx_spread_bps=float(
-                profile.get("fx_spread_bps", default.get("fx_spread_bps", 0.0))
+            fx_spread_bps=_float_or_default(
+                profile.get("fx_spread_bps"),
+                float(default.get("fx_spread_bps", 0.0)),
             ),
         )
 
     def max_order_notional_krw(self, account_id: str) -> float | None:
         account = self.account(account_id)
         limits = account.get("limits", {}) if isinstance(account, dict) else {}
-        value = (
-            limits.get("max_order_notional_krw") if isinstance(limits, dict) else None
+        if not isinstance(limits, dict) or "max_order_notional_krw" not in limits:
+            return None
+        default_limits = (
+            DEFAULT_ACCOUNT_COSTS["accounts"].get(account_id, {}).get("limits", {})
         )
-        return None if value is None else float(value)
+        default_value = default_limits.get("max_order_notional_krw")
+        fallback = None if default_value is None else float(default_value)
+        return _optional_float_or_default(
+            limits.get("max_order_notional_krw"), fallback
+        )
 
 
 @dataclass(frozen=True)
@@ -108,13 +116,79 @@ class AccountRoutingInput:
 
 
 def build_cost_profiles(value: dict[str, Any] | None) -> AccountCostProfiles:
-    if not isinstance(value, dict) or int(value.get("version", 0) or 0) != 1:
+    if not isinstance(value, dict):
         return AccountCostProfiles(
             raw=DEFAULT_ACCOUNT_COSTS,
             source="default_seed",
             review_required=True,
         )
-    return AccountCostProfiles(raw=value, source="user_setting", review_required=False)
+    try:
+        version = int(value.get("version", 0) or 0)
+    except (TypeError, ValueError):
+        version = 0
+    if version != 1:
+        return AccountCostProfiles(
+            raw=DEFAULT_ACCOUNT_COSTS,
+            source="default_seed",
+            review_required=True,
+        )
+    return AccountCostProfiles(
+        raw=value,
+        source="user_setting",
+        review_required=_has_invalid_numeric_values(value),
+    )
+
+
+def _float_or_default(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_float_or_default(value: Any, default: float | None) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_invalid_number(value: Any) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return True
+    return False
+
+
+def _has_invalid_numeric_values(value: dict[str, Any]) -> bool:
+    routing = value.get("routing")
+    if isinstance(routing, dict):
+        thresholds = routing.get("position_consolidation_threshold_bps")
+        if isinstance(thresholds, dict):
+            if any(_is_invalid_number(raw) for raw in thresholds.values()):
+                return True
+
+    accounts = value.get("accounts")
+    if not isinstance(accounts, dict):
+        return False
+    for account in accounts.values():
+        if not isinstance(account, dict):
+            continue
+        limits = account.get("limits")
+        if isinstance(limits, dict) and "max_order_notional_krw" in limits:
+            if _is_invalid_number(limits.get("max_order_notional_krw")):
+                return True
+        markets = account.get("markets")
+        if not isinstance(markets, dict):
+            continue
+        for market_profile in markets.values():
+            if not isinstance(market_profile, dict):
+                continue
+            for key in ("commission_bps", "fx_spread_bps"):
+                if key in market_profile and _is_invalid_number(market_profile[key]):
+                    return True
+    return False
 
 
 def compact_cost_profile(
@@ -123,9 +197,10 @@ def compact_cost_profile(
     value: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     profiles = build_cost_profiles(value)
-    if account_id not in _candidate_accounts(market):
+    cost_account_id = cost_profile_account_id(account_id, market)
+    if cost_account_id not in _candidate_accounts(market):
         return None
-    profile = profiles.market_profile(account_id, market)
+    profile = profiles.market_profile(cost_account_id, market)
     return {
         "commission_bps": profile.commission_bps,
         "fx_spread_bps": profile.fx_spread_bps,
@@ -138,6 +213,31 @@ def _candidate_accounts(market: Market) -> tuple[str, str]:
     if market == "kr":
         return ("kis_domestic", "toss")
     return ("kis_overseas", "toss")
+
+
+def cost_profile_account_id(
+    account_id: str,
+    market: Market,
+    *,
+    broker: str | None = None,
+    source: str | None = None,
+) -> str:
+    """Map holdings account labels to routing/cost account ids.
+
+    KIS holdings are grouped as ``account='kis'`` by portfolio_holdings, while
+    cash/cost profiles are split by market as ``kis_domestic`` and
+    ``kis_overseas``.
+    """
+    normalized = str(account_id or "").strip().lower()
+    normalized_broker = str(broker or "").strip().lower()
+    normalized_source = str(source or "").strip().lower()
+    if (
+        normalized == "kis"
+        or normalized_broker == "kis"
+        or normalized_source == "kis_api"
+    ):
+        return "kis_domestic" if market == "kr" else "kis_overseas"
+    return normalized
 
 
 def _orderable_by_account_currency(
@@ -160,7 +260,12 @@ def _existing_accounts(
     normalized = symbol.strip().upper() if market == "us" else symbol.strip()
     found: list[str] = []
     for account in snapshot.get("accounts") or []:
-        account_id = str(account.get("account") or "")
+        account_id = cost_profile_account_id(
+            str(account.get("account") or ""),
+            market,
+            broker=account.get("broker"),
+            source=account.get("source"),
+        )
         if account_id not in _candidate_accounts(market):
             continue
         for position in account.get("positions") or []:
@@ -396,5 +501,6 @@ __all__ = [
     "MarketCostProfile",
     "build_cost_profiles",
     "compact_cost_profile",
+    "cost_profile_account_id",
     "suggest_account_from_snapshot",
 ]

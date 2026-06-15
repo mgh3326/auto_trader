@@ -456,7 +456,13 @@ async def test_get_available_capital_adds_cost_profiles(monkeypatch):
     monkeypatch.setattr(
         portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
     )
-    monkeypatch.setattr(portfolio_cash, "get_manual_cash_setting", lambda: None)
+
+    async def mock_get_manual_cash_setting():
+        return None
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
     monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
 
     result = await portfolio_cash.get_available_capital_impl()
@@ -470,3 +476,54 @@ async def test_get_available_capital_adds_cost_profiles(monkeypatch):
         "review_required": False,
     }
     assert toss["cost_profile"]["commission_bps"] == pytest.approx(0)
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_degrades_when_cost_profile_setting_fails(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        return {
+            "accounts": [
+                {
+                    "account": "kis_domestic",
+                    "broker": "kis",
+                    "currency": "KRW",
+                    "orderable": 1_000_000.0,
+                }
+            ],
+            "summary": {"total_krw": 1_000_000.0, "total_usd": 0.0},
+            "errors": [],
+        }
+
+    async def mock_get_account_costs_setting():
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
+    )
+
+    async def mock_get_manual_cash_setting():
+        return None
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    result = await portfolio_cash.get_available_capital_impl()
+
+    assert result["accounts"][0]["cost_profile"] == {
+        "commission_bps": 14.7,
+        "fx_spread_bps": 0.0,
+        "source": "default_seed",
+        "review_required": True,
+    }
+    assert result["errors"] == [
+        {"source": "account_costs", "error": "settings unavailable"}
+    ]

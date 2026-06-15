@@ -490,7 +490,12 @@ async def get_available_capital_impl(
             logger.warning("Failed to get manual cash setting: %s", exc)
             errors.append({"source": "manual_cash", "error": str(exc)})
 
-    account_costs = await get_account_costs_setting()
+    try:
+        account_costs = await get_account_costs_setting()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to get account cost setting: %s", exc)
+        errors.append({"source": "account_costs", "error": str(exc)})
+        account_costs = None
     for processed_acc in processed_accounts:
         account_id = str(processed_acc.get("account") or "")
         market = "us" if processed_acc.get("currency") == "USD" else "kr"
