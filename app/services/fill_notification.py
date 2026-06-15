@@ -449,13 +449,19 @@ def _get_kr_symbol_reverse() -> dict[str, str]:
     return _KR_SYMBOLS_REVERSE
 
 
-def resolve_fill_display_name(order: FillOrder) -> str:
+def resolve_symbol_display_name(market_type: str | None, symbol: str) -> str:
     """KR: KR_SYMBOLS 역매핑(미존재 시 코드). US: 심볼. Crypto: KRW-BTC->BTC."""
-    if order.market_type == "kr":
-        return _get_kr_symbol_reverse().get(order.symbol, order.symbol)
-    if order.market_type == "crypto" and "-" in order.symbol:
-        return order.symbol.split("-")[-1]
-    return order.symbol
+    if market_type == "kr":
+        return _get_kr_symbol_reverse().get(symbol, symbol)
+    if market_type == "crypto" and "-" in symbol:
+        return symbol.split("-")[-1]
+    return symbol
+
+
+def resolve_fill_display_name(order: FillOrder) -> str:
+    """Delegate to resolve_symbol_display_name using order properties."""
+    return resolve_symbol_display_name(order.market_type, order.symbol)
+
 
 
 _MIN_NOTIFY_AMOUNT: dict[str, float] = {"KRW": 50_000.0, "USD": 50.0}
