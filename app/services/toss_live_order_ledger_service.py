@@ -253,3 +253,23 @@ class TossLiveOrderLedgerService:
             row.raw_response = raw_response
         row.reconciled_at = datetime.now(UTC)
         await self._db.commit()
+
+    async def mark_manual_review(
+        self,
+        *,
+        ledger_id: int,
+        reason: str,
+        error: dict[str, Any],
+        broker_status: str | None = None,
+    ) -> None:
+        row = await self._db.get(TossLiveOrderLedger, ledger_id)
+        if row is None:
+            return
+        row.status = "anomaly"
+        row.broker_status = broker_status
+        row.requires_manual_review = True
+        row.manual_review_reason = reason
+        row.last_reconcile_error = error
+        row.reconciled_at = datetime.now(UTC)
+        await self._db.commit()
+
