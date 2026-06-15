@@ -227,7 +227,7 @@ async def test_investor_flow_endpoint_returns_read_only_view_model(
         InvestorFlowSnapshotUpsert(
             market="kr",
             symbol="900196",
-            snapshot_date=dt.date.today(),
+            snapshot_date=flow_service._resolve_investor_flow_as_of(),
             foreign_net=10,
             institution_net=20,
             individual_net=-30,
