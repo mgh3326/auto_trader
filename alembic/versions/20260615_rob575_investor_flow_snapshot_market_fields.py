@@ -1,7 +1,7 @@
 """Add market fields to investor flow snapshots for ROB-575.
 
 Revision ID: 20260615_rob575
-Revises: 20260615_rob569_toss_review
+Revises: 20260615_rob568_us_fx_pnl
 Create Date: 2026-06-15
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20260615_rob575"
-down_revision = "20260615_rob569_toss_review"
+down_revision = "20260615_rob568_us_fx_pnl"
 branch_labels = None
 depends_on = None
 
