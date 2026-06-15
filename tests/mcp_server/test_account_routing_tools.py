@@ -156,6 +156,25 @@ async def test_suggest_order_account_impl_uses_snapshots_and_user_costs(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_suggest_order_account_impl_rejects_sell_before_quote(monkeypatch):
+    from app.mcp_server.tooling import account_routing_tools as tools
+
+    async def fail_quote(_symbol):
+        raise AssertionError("quote should not be fetched for unsupported side")
+
+    monkeypatch.setattr(tools, "_fetch_quote_equity_kr", fail_quote)
+
+    with pytest.raises(ValueError, match="buy side only"):
+        await tools.suggest_order_account_impl(
+            symbol="005930",
+            market="kr",
+            side="sell",
+            quantity=10,
+            price=None,
+        )
+
+
+@pytest.mark.asyncio
 async def test_suggest_order_account_impl_fetches_us_fx_when_missing(monkeypatch):
     from app.mcp_server.tooling import account_routing_tools as tools
 

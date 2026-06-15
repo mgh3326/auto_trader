@@ -55,6 +55,10 @@ async def suggest_order_account_impl(
     price: float | None = None,
     usd_krw: float | None = None,
 ) -> dict[str, Any]:
+    if side.lower() != "buy":
+        raise ValueError("suggest_order_account supports buy side only")
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
     normalized_market = _normalize_market(market, symbol)
     resolved_price, price_source = await _resolve_price(
         symbol, normalized_market, price
