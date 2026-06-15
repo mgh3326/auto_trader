@@ -192,10 +192,16 @@ async def test_current_orders_all_merges_kis_and_upbit_with_us_dedupe() -> None:
         )
     )
 
+    from app.services.brokers.toss.dto import TossOrdersPage
+    fake_toss = SimpleNamespace(
+        list_orders=AsyncMock(return_value=TossOrdersPage(orders=[], next_cursor=None, has_next=False)),
+        aclose=AsyncMock(),
+    )
+
     service = CurrentOrdersService(
         kis_client_factory=lambda: fake_kis,
         upbit_client=fake_upbit,
-        toss_client_factory=None,
+        toss_client_factory=lambda: fake_toss,
         clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
     )
 
@@ -268,5 +274,172 @@ async def test_current_orders_unavailable_when_requested_sources_all_fail() -> N
     assert response.empty_reason == "all requested broker sources are unavailable"
     assert response.sources[0].broker == "upbit"
     assert response.sources[0].status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_current_orders_toss_pages_and_splits_kr_us() -> None:
+    from app.services.brokers.toss.dto import TossOrder, TossOrdersPage
+    from app.services.current_orders_service import CurrentOrdersService
+
+    class _FakeTossClient:
+        def __init__(self, pages: list[TossOrdersPage] | None = None, exc: Exception | None = None) -> None:
+            self.pages = pages or []
+            self.exc = exc
+            self.calls: list[dict[str, object]] = []
+            self.closed = False
+
+        async def list_orders(self, **kwargs):
+            self.calls.append(kwargs)
+            if self.exc is not None:
+                raise self.exc
+            index = len(self.calls) - 1
+            return self.pages[index]
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    def _toss_order(order_id: str, symbol: str, *, filled: str = "0") -> TossOrder:
+        return TossOrder(
+            order_id=order_id,
+            symbol=symbol,
+            side="BUY",
+            order_type="LIMIT",
+            time_in_force="DAY",
+            status="OPEN",
+            price=Decimal("100"),
+            quantity=Decimal("10"),
+            order_amount=None,
+            currency="KRW" if symbol.isdigit() else "USD",
+            ordered_at="2026-06-15T09:00:00+09:00",
+            canceled_at=None,
+            execution={"filledQuantity": Decimal(filled)},
+        )
+
+    fake_toss = _FakeTossClient(
+        pages=[
+            TossOrdersPage(orders=[_toss_order("T1", "005930")], next_cursor="next", has_next=True),
+            TossOrdersPage(orders=[_toss_order("T2", "AAPL", filled="2")], next_cursor=None, has_next=False),
+        ]
+    )
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=None,
+        toss_client_factory=lambda: fake_toss,
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="all")
+
+    toss_rows = [item for item in response.items if item.broker == "toss"]
+    assert [(row.market, row.symbol, row.order_no) for row in toss_rows] == [
+        ("kr", "005930", "T1"),
+        ("us", "AAPL", "T2"),
+    ]
+    assert toss_rows[1].remaining_qty == Decimal("8")
+    assert fake_toss.calls == [
+        {"status": "OPEN", "cursor": None},
+        {"status": "OPEN", "cursor": "next"},
+    ]
+    assert fake_toss.closed is True
+
+
+@pytest.mark.asyncio
+async def test_current_orders_toss_kr_filter_keeps_only_kr_orders() -> None:
+    from app.services.brokers.toss.dto import TossOrder, TossOrdersPage
+    from app.services.current_orders_service import CurrentOrdersService
+
+    class _FakeTossClient:
+        def __init__(self, pages: list[TossOrdersPage] | None = None, exc: Exception | None = None) -> None:
+            self.pages = pages or []
+            self.exc = exc
+            self.calls: list[dict[str, object]] = []
+            self.closed = False
+
+        async def list_orders(self, **kwargs):
+            self.calls.append(kwargs)
+            if self.exc is not None:
+                raise self.exc
+            index = len(self.calls) - 1
+            return self.pages[index]
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    def _toss_order(order_id: str, symbol: str, *, filled: str = "0") -> TossOrder:
+        return TossOrder(
+            order_id=order_id,
+            symbol=symbol,
+            side="BUY",
+            order_type="LIMIT",
+            time_in_force="DAY",
+            status="OPEN",
+            price=Decimal("100"),
+            quantity=Decimal("10"),
+            order_amount=None,
+            currency="KRW" if symbol.isdigit() else "USD",
+            ordered_at="2026-06-15T09:00:00+09:00",
+            canceled_at=None,
+            execution={"filledQuantity": Decimal(filled)},
+        )
+
+    fake_toss = _FakeTossClient(
+        pages=[
+            TossOrdersPage(
+                orders=[_toss_order("T1", "005930"), _toss_order("T2", "AAPL")],
+                next_cursor=None,
+                has_next=False,
+            )
+        ]
+    )
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=None,
+        toss_client_factory=lambda: fake_toss,
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="kr")
+
+    assert [(row.broker, row.market, row.symbol) for row in response.items] == [
+        ("toss", "kr", "005930")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_current_orders_toss_disabled_fails_open() -> None:
+    from app.services.brokers.toss.dto import TossOrdersPage
+    from app.services.current_orders_service import CurrentOrdersService
+
+    class _FakeTossClient:
+        def __init__(self, pages: list[TossOrdersPage] | None = None, exc: Exception | None = None) -> None:
+            self.pages = pages or []
+            self.exc = exc
+            self.calls: list[dict[str, object]] = []
+            self.closed = False
+
+        async def list_orders(self, **kwargs):
+            self.calls.append(kwargs)
+            if self.exc is not None:
+                raise self.exc
+            index = len(self.calls) - 1
+            return self.pages[index]
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    fake_toss = _FakeTossClient(exc=RuntimeError("TOSS_API_ENABLED"))
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=None,
+        toss_client_factory=lambda: fake_toss,
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="kr")
+
+    toss_kr = [s for s in response.sources if s.broker == "toss" and s.market == "kr"][0]
+    assert toss_kr.status == "unavailable"
+    assert response.data_state == "unavailable"
+
 
 

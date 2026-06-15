@@ -19,6 +19,8 @@ from app.schemas.open_orders import (
 )
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.upbit import orders as upbit_orders
+from app.services.brokers.toss.client import TossReadClient
+from app.services.brokers.toss.dto import TossOrder
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +169,49 @@ def normalize_upbit_order(row: dict[str, Any]) -> OpenOrderRow:
     )
 
 
+def _default_toss_client() -> Any:
+    return TossReadClient.from_settings()
+
+
+def _toss_market(symbol: str) -> Literal["kr", "us"]:
+    normalized = symbol.strip().upper()
+    return "kr" if len(normalized) == 6 and normalized.isdigit() else "us"
+
+
+def normalize_toss_order(order: TossOrder) -> OpenOrderRow:
+    filled = _decimal(order.execution.get("filledQuantity"))
+    remaining = order.quantity - (filled or Decimal("0"))
+    side_raw = order.side.strip().lower()
+    side: Literal["buy", "sell", "unknown"]
+    if side_raw in {"buy", "bid", "매수"}:
+        side = "buy"
+    elif side_raw in {"sell", "ask", "매도"}:
+        side = "sell"
+    else:
+        side = "unknown"
+    market = _toss_market(order.symbol)
+    return OpenOrderRow(
+        broker="toss",
+        market=market,
+        symbol=order.symbol.strip().upper() if market == "us" else order.symbol.strip(),
+        symbol_name=None,
+        side=side,
+        order_type=order.order_type,
+        time_in_force=order.time_in_force,
+        price=order.price,
+        quantity=order.quantity,
+        remaining_qty=remaining if remaining >= 0 else Decimal("0"),
+        filled_qty=filled,
+        status="pending",
+        raw_status=order.status,
+        ordered_at=_parse_datetime(order.ordered_at),
+        order_no=order.order_id,
+        exchange="TOSS",
+        currency=order.currency,
+    )
+
+
+
 _KIS_US_EXCHANGES: tuple[str, ...] = ("NASD", "NYSE", "AMEX")
 
 
@@ -222,7 +267,7 @@ class CurrentOrdersService:
         *,
         kis_client_factory: Callable[[], _KISClientProtocol] | None = _default_kis_client,
         upbit_client: _UpbitClientProtocol | None = upbit_orders,
-        toss_client_factory: Callable[[], Any] | None = None,
+        toss_client_factory: Callable[[], Any] | None = _default_toss_client,
         clock: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self._kis_client_factory = kis_client_factory
@@ -242,13 +287,18 @@ class CurrentOrdersService:
             tasks.append(self._collect_kis_us())
         if market in ("all", "crypto"):
             tasks.append(self._collect_upbit())
+        if market in ("all", "kr", "us"):
+            tasks.append(self._collect_toss_equities(target_market=market))
 
         results = await asyncio.gather(*tasks)
         rows: list[OpenOrderRow] = []
         sources: list[OpenOrderSourceState] = []
-        for result_rows, result_source in results:
+        for result_rows, result_sources in results:
             rows.extend(result_rows)
-            sources.append(result_source)
+            if isinstance(result_sources, list):
+                sources.extend(result_sources)
+            else:
+                sources.append(result_sources)
 
         rows.sort(key=_sort_key, reverse=True)
         data_state = _overall_state(sources)
@@ -333,4 +383,62 @@ class CurrentOrdersService:
             return [], _source(broker="upbit", market="crypto", status="unavailable", fetched_at=now, count=0, message=f"{type(exc).__name__}: {exc}")
         rows = [normalize_upbit_order(row) for row in raw or [] if isinstance(row, dict)]
         return rows, _source(broker="upbit", market="crypto", status="ok", fetched_at=now, count=len(rows))
+
+    async def _collect_toss_equities(
+        self,
+        *,
+        target_market: OpenOrdersQueryMarket,
+    ) -> tuple[list[OpenOrderRow], OpenOrderSourceState | list[OpenOrderSourceState]]:
+        now = self._clock()
+        markets: tuple[Literal["kr", "us"], ...]
+        if target_market == "kr":
+            markets = ("kr",)
+        elif target_market == "us":
+            markets = ("us",)
+        else:
+            markets = ("kr", "us")
+
+        if self._toss_client_factory is None:
+            states = [
+                _source(broker="toss", market=market, status="unavailable", fetched_at=None, count=0, message="toss_client_unavailable")
+                for market in markets
+            ]
+            return [], states
+
+        client: Any | None = None
+        try:
+            client = self._toss_client_factory()
+            cursor: str | None = None
+            rows: list[OpenOrderRow] = []
+            while True:
+                page = await client.list_orders(status="OPEN", cursor=cursor)
+                rows.extend(normalize_toss_order(order) for order in page.orders)
+                if not page.has_next or not page.next_cursor:
+                    break
+                cursor = page.next_cursor
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Toss open-order fetch failed", exc_info=True)
+            states = [
+                _source(broker="toss", market=market, status="unavailable", fetched_at=now, count=0, message=f"{type(exc).__name__}: {exc}")
+                for market in markets
+            ]
+            return [], states
+        finally:
+            close = getattr(client, "aclose", None)
+            if callable(close):
+                await close()
+
+        filtered = [row for row in rows if row.market in markets]
+        states = [
+            _source(
+                broker="toss",
+                market=market,
+                status="ok",
+                fetched_at=now,
+                count=sum(1 for row in filtered if row.market == market),
+            )
+            for market in markets
+        ]
+        return filtered, states
+
 
