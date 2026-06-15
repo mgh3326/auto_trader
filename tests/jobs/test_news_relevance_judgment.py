@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from app.core.db import AsyncSessionLocal
 from app.jobs.news_relevance_judgment import run_news_relevance_judgment
 from app.models.symbol_news_relevance import SymbolNewsRelevance
 from app.schemas.news_relevance import NewsRelevanceJudgment
@@ -85,6 +86,7 @@ async def _seed_pending_for_market(
     symbol: str,
     n: int = 1,
 ) -> list[int]:
+    """Seed Finnhub-backed market rows for this test module."""
     feed_source = (
         symbol_news_store.FINNHUB_COMPANY_FEED_SOURCE
         if market == "us"
@@ -227,15 +229,15 @@ async def test_us_happy_path_applies_judgments_and_hides_excluded(
         symbol=symbol,
         dry_run=False,
         client=client,
-        session_factory=_SessionFactory(db_session),
     )
 
     assert summary["status"] == "judged"
     assert summary["applied_confirmed"] == 1
     assert summary["applied_excluded"] == 1
-    stored, excluded_count = await symbol_news_store.load_symbol_news(
-        db_session, symbol, "us", limit=10
-    )
+    async with AsyncSessionLocal() as verify_db:
+        stored, excluded_count = await symbol_news_store.load_symbol_news(
+            verify_db, symbol, "us", limit=10
+        )
     assert excluded_count == 1
     assert [row.relevance["status"] for row in stored] == ["confirmed"]
     assert client.calls[0]["market"] == "us"
