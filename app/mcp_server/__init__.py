@@ -33,6 +33,7 @@ AVAILABLE_TOOL_NAMES = [
     "get_short_interest",
     "get_market_index",
     "get_fx_rate",
+    "suggest_order_account",
     "get_support_resistance",
     "get_sector_peers",
     "get_cash_balance",

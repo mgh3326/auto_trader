@@ -91,6 +91,9 @@ from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.account_routing_registration import (
+    register_account_routing_tools,
+)
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
 )
@@ -148,6 +151,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
     # Always: live/mock account read-only tools and journals.
     register_portfolio_tools(mcp)
+    register_account_routing_tools(mcp)
     register_trade_journal_tools(mcp)
     register_mock_loop_retro_tools(mcp)
     register_trade_retrospective_tools(mcp)
