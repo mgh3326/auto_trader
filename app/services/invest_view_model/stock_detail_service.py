@@ -260,9 +260,7 @@ def _daily_row_from_snapshot(row: Any) -> StockDetailInvestorFlowDailyRow:
         volume=getattr(row, "volume", None),
         foreignNet=row.foreign_net,
         foreignHoldingShares=getattr(row, "foreign_holding_shares", None),
-        foreignHoldingRate=_float_or_none(
-            getattr(row, "foreign_holding_rate", None)
-        ),
+        foreignHoldingRate=_float_or_none(getattr(row, "foreign_holding_rate", None)),
         institutionNet=row.institution_net,
         individualNet=row.individual_net,
         doubleBuy=row.double_buy,

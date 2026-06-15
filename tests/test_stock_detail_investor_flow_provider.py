@@ -258,8 +258,9 @@ async def test_kr_detail_default_investor_flow_includes_daily_rows(monkeypatch):
         21299 / 25_118_684
     )
     assert response.investorFlow.periodSummary.foreignHoldingSharesChange == 24_635
-    assert response.investorFlow.periodSummary.foreignHoldingRateChange == pytest.approx(
-        0.02
+    assert (
+        response.investorFlow.periodSummary.foreignHoldingRateChange
+        == pytest.approx(0.02)
     )
     assert response.investorFlow.buyerDecomposition is not None
     assert response.investorFlow.buyerDecomposition.leadingBuyer == "individual"

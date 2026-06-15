@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-from decimal import Decimal, InvalidOperation
 import inspect
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.services.investor_flow_snapshots.repository import InvestorFlowSnapshotUpsert
