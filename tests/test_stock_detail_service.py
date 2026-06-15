@@ -57,6 +57,61 @@ async def _resolve_crypto(market, raw_symbol, db):
 
 
 @pytest.mark.asyncio
+async def test_build_stock_detail_uses_extended_timeout_for_holding(monkeypatch):
+    from app.services.invest_view_model import stock_detail_service as service
+
+    timeouts: dict[str, float] = {}
+
+    async def capturing_optional_block(name, coro, warnings, timeout=3.0):
+        timeouts[name] = timeout
+        return await coro
+
+    async def none_provider(*args, **kwargs):
+        return None
+
+    async def holding_provider(user_id, market, symbol, db):
+        return StockDetailHolding(
+            totalQuantity=1,
+            tradeableQuantity=1,
+            sellableQuantity=1,
+            pendingSellQuantity=0,
+            referenceQuantity=0,
+            averageCost=70000,
+            costBasis=70000,
+            valueNative=71000,
+            valueKrw=71000,
+            pnlKrw=1000,
+            pnlRate=0.014,
+            includedSources=["kis"],
+            priceState="live",
+        )
+
+    monkeypatch.setattr(service, "_run_optional_block", capturing_optional_block)
+
+    await service.build_stock_detail(
+        user_id=1,
+        market="kr",
+        symbol="005930",
+        db=SimpleNamespace(),
+        providers=StockDetailProviders(
+            resolver=_resolve_kr,
+            quote=none_provider,
+            screener=none_provider,
+            valuation=none_provider,
+            holding=holding_provider,
+            latest_analysis=none_provider,
+            orderbook=none_provider,
+            naver_enrichment=none_provider,
+            discussion_signal=none_provider,
+            investor_flow=none_provider,
+        ),
+    )
+
+    assert timeouts["quote"] == pytest.approx(3.0)
+    assert timeouts["holding"] > timeouts["quote"]
+
+
+@pytest.mark.asyncio
 async def test_build_stock_detail_declares_us_orderbook_unsupported():
     response = await build_stock_detail(
         user_id=1,
@@ -368,3 +423,24 @@ def test_build_stock_detail_crypto_orderbook_provider_unavailable_is_explicit():
     assert "orderbook_unavailable" in response.meta.warnings
     assert response.cryptoDetail is not None
     assert response.cryptoDetail.recentTrades.state == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_default_stock_detail_providers_are_not_noop_for_core_blocks():
+    from app.services.invest_view_model.stock_detail_providers import (
+        stock_detail_latest_analysis_provider,
+        stock_detail_orderbook_provider,
+        stock_detail_quote_provider,
+        stock_detail_valuation_provider,
+    )
+    from app.services.invest_view_model.stock_detail_service import (
+        DEFAULT_STOCK_DETAIL_PROVIDERS,
+    )
+
+    assert DEFAULT_STOCK_DETAIL_PROVIDERS.quote is stock_detail_quote_provider
+    assert DEFAULT_STOCK_DETAIL_PROVIDERS.valuation is stock_detail_valuation_provider
+    assert (
+        DEFAULT_STOCK_DETAIL_PROVIDERS.latest_analysis
+        is stock_detail_latest_analysis_provider
+    )
+    assert DEFAULT_STOCK_DETAIL_PROVIDERS.orderbook is stock_detail_orderbook_provider

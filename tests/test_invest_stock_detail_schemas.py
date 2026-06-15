@@ -342,3 +342,26 @@ def test_orderbook_required_iff_supported():
     )
     with pytest.raises(ValidationError):
         StockDetailResponse.model_validate(unsupported_with_book)
+
+
+def test_stock_detail_holding_exposes_tradeable_and_reference_quantities():
+    from app.schemas.invest_stock_detail import StockDetailHolding
+
+    holding = StockDetailHolding(
+        totalQuantity=5,
+        tradeableQuantity=3,
+        sellableQuantity=2,
+        pendingSellQuantity=1,
+        referenceQuantity=2,
+        averageCost=100,
+        costBasis=500,
+        valueNative=550,
+        valueKrw=550,
+        pnlKrw=50,
+        pnlRate=0.1,
+        includedSources=["kis", "toss_manual"],
+        priceState="live",
+    )
+
+    assert holding.tradeableQuantity == 3
+    assert holding.referenceQuantity == 2

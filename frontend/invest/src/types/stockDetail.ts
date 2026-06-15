@@ -178,6 +178,10 @@ export interface StockDetailNaverEnrichment {
 
 export interface StockDetailHolding {
   totalQuantity: number;
+  tradeableQuantity: number;
+  sellableQuantity: number;
+  pendingSellQuantity: number;
+  referenceQuantity: number;
   averageCost: number | null;
   costBasis: number | null;
   valueNative: number | null;

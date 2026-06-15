@@ -107,6 +107,15 @@ class TradeJournal(Base):
     exit_reason: Mapped[str | None] = mapped_column(Text)
     pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
 
+    buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    fx_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    total_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fx_rate_source: Mapped[str | None] = mapped_column(Text)
+    fx_pnl_accuracy: Mapped[str | None] = mapped_column(Text)
+
     # Meta
     account: Mapped[str | None] = mapped_column(Text)
     account_type: Mapped[str] = mapped_column(

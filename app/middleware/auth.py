@@ -49,7 +49,8 @@ class AuthMiddleware:
     # Public API paths (explicit whitelist)
     PUBLIC_API_PATHS: ClassVar[list[str]] = [
         "/api/v1/agent/callback",
-        # Backward-compat alias for operator cutover (remove in a follow-up).
+        # Retired callback alias: allow the missing router to return 404 instead
+        # of masking removal behind auth middleware.
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
     ]

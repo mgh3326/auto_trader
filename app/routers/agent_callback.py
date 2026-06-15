@@ -133,14 +133,3 @@ async def agent_callback(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     return await _persist_agent_callback(payload, db)
-
-
-# Backward-compat alias for operator cutover (same handler). Remove in a
-# follow-up once external agents point at /api/v1/agent/callback.
-@router.post("/api/v1/openclaw/callback")
-async def agent_callback_legacy_alias(
-    payload: AgentCallbackRequest,
-    _: None = Depends(_require_agent_callback_token),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    return await _persist_agent_callback(payload, db)

@@ -9,7 +9,7 @@ from app.tasks import (
     investor_flow_snapshot_tasks,
     journal_counterfactual_tasks,
     journal_verdict_tasks,
-    kis_live_reconcile_tasks,  # noqa: F401
+    kis_live_reconcile_tasks,
     kis_mock_reconciliation_tasks,
     kr_candles_tasks,
     kr_symbol_universe_tasks,
@@ -20,6 +20,7 @@ from app.tasks import (
     pending_orders,
     research_reports_ingest_tasks,
     research_run_refresh_tasks,
+    toss_live_reconcile_tasks,
     toss_warnings_sync_tasks,
     upbit_symbol_universe_tasks,
     us_candles_tasks,
@@ -43,6 +44,7 @@ TASKIQ_TASK_MODULES = (
     news_relevance_judgment_tasks,
     journal_verdict_tasks,
     journal_counterfactual_tasks,
+    kis_live_reconcile_tasks,
     kis_mock_reconciliation_tasks,
     watch_follow_up_tasks,
     research_reports_ingest_tasks,
@@ -54,5 +56,6 @@ TASKIQ_TASK_MODULES = (
     upbit_symbol_universe_tasks,
     us_candles_tasks,
     us_symbol_universe_tasks,
+    toss_live_reconcile_tasks,
     toss_warnings_sync_tasks,
 )

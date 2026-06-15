@@ -693,6 +693,8 @@ def register_live_reconcile_tools(mcp: FastMCP) -> None:
             "against broker fill evidence (overseas daily-order / Upbit order-state). "
             "Books fills/journals/realized_pnl ONLY from confirmed fills (delta-idempotent); "
             "marks unfilled/cancelled without journal side-effects. dry_run=True by default. "
+            "ROB-568: Surfaces US FX PnL split (security_pnl_krw, fx_pnl_krw) "
+            "for overseas equity fills. "
             "realized_pnl_pct (alias journal_pnl_pct, labeled "
             "realized_pnl_basis='journal_entry') is the per-lot / journal-entry "
             "(FIFO oldest-first) basis, NOT the account-average; get_holdings / "

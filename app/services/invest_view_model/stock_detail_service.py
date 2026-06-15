@@ -52,6 +52,12 @@ from app.services.invest_view_model.naver_discussion_signal_poc import (
 from app.services.invest_view_model.naver_stock_detail_poc import (
     build_naver_stock_detail_poc,
 )
+from app.services.invest_view_model.stock_detail_providers import (
+    stock_detail_latest_analysis_provider,
+    stock_detail_orderbook_provider,
+    stock_detail_quote_provider,
+    stock_detail_valuation_provider,
+)
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
     ResolvedSymbol,
     resolve_symbol,
@@ -61,6 +67,9 @@ from app.services.investor_flow_snapshots.repository import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_OPTIONAL_BLOCK_TIMEOUT_SECONDS = 3.0
+_HOLDING_PROVIDER_TIMEOUT_SECONDS = 8.0
 
 Resolver = Callable[[NewsMarket, str, AsyncSession], Awaitable[ResolvedSymbol]]
 Provider = Callable[..., Awaitable[Any]]
@@ -406,10 +415,14 @@ async def _default_investor_flow_provider(
 
 
 async def _run_optional_block(
-    name: str, coro: Awaitable[Any], warnings: list[str]
+    name: str,
+    coro: Awaitable[Any],
+    warnings: list[str],
+    *,
+    timeout: float = _DEFAULT_OPTIONAL_BLOCK_TIMEOUT_SECONDS,
 ) -> Any:
     try:
-        return await asyncio.wait_for(coro, timeout=3)
+        return await asyncio.wait_for(coro, timeout=timeout)
     except TimeoutError:
         warnings.append(f"{name}_timeout")
     except Exception as exc:  # pragma: no cover - exercised by callers with stubs
@@ -421,12 +434,12 @@ async def _run_optional_block(
 @dataclass(frozen=True, slots=True)
 class StockDetailProviders:
     resolver: Resolver = resolve_symbol
-    quote: Provider = _default_quote_provider
+    quote: Provider = stock_detail_quote_provider
     screener: Provider = _none_provider
-    valuation: Provider = _none_provider
+    valuation: Provider = stock_detail_valuation_provider
     holding: Provider = _none_provider
-    latest_analysis: Provider = _none_provider
-    orderbook: Provider = _default_orderbook_provider
+    latest_analysis: Provider = stock_detail_latest_analysis_provider
+    orderbook: Provider = stock_detail_orderbook_provider
     fx_rate: Provider = get_usd_krw_quote
     naver_enrichment: Provider = build_naver_stock_detail_poc
     discussion_signal: Provider = build_naver_discussion_signal_poc
@@ -472,6 +485,7 @@ async def build_stock_detail(
         "holding",
         providers.holding(user_id, market, resolved.symbol_db, db),
         warnings,
+        timeout=_HOLDING_PROVIDER_TIMEOUT_SECONDS,
     )
     latest_analysis_task = _run_optional_block(
         "latest_analysis",
