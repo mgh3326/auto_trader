@@ -3,8 +3,6 @@ from __future__ import annotations
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from app.services.market_events.session_calendar import previous_trading_session
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
@@ -12,6 +10,7 @@ from app.schemas.investor_flow import InvestorFlowItem, InvestorFlowResponse
 from app.services.investor_flow_snapshots.repository import (
     InvestorFlowSnapshotsRepository,
 )
+from app.services.market_events.session_calendar import previous_trading_session
 
 
 def _normalize_symbol(symbol: str) -> str:

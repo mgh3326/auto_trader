@@ -71,9 +71,7 @@ def test_resolve_investor_flow_as_of_defaults_to_previous_kr_session(monkeypatch
         calls.append((market, day))
         return dt.date(2026, 6, 12)
 
-    monkeypatch.setattr(
-        flow_service, "previous_trading_session", fake_previous_session
-    )
+    monkeypatch.setattr(flow_service, "previous_trading_session", fake_previous_session)
 
     now = dt.datetime(2026, 6, 15, 0, 5, tzinfo=dt.UTC)  # Mon 09:05 KST
 
@@ -89,9 +87,9 @@ def test_resolve_investor_flow_as_of_keeps_explicit_effective_date(monkeypatch):
 
     monkeypatch.setattr(flow_service, "previous_trading_session", fail_if_called)
 
-    assert flow_service._resolve_investor_flow_as_of(
-        dt.date(2026, 5, 11)
-    ) == dt.date(2026, 5, 11)
+    assert flow_service._resolve_investor_flow_as_of(dt.date(2026, 5, 11)) == dt.date(
+        2026, 5, 11
+    )
 
 
 @pytest.mark.asyncio
