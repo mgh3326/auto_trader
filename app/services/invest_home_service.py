@@ -7,8 +7,9 @@ mutation 경로(submit/cancel/modify/place_order/watch/order-intent/scheduler/wo
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 
 import sentry_sdk
@@ -339,6 +340,39 @@ class _AccountPanelView:
     warnings: list[InvestHomeWarning]
 
 
+async def _fetch_reader_result(
+    fetcher: Callable[..., Awaitable[_SourceFetchResult]],
+    *,
+    span_name: str,
+    source: str,
+    user_id: int,
+    include_paper: bool,
+    paper_sources: frozenset[str] | None,
+) -> _SourceFetchResult:
+    with sentry_sdk.start_span(op="invest.home.reader", name=span_name) as span:
+        span.set_tag("source", source)
+        span.set_tag("include_paper", include_paper)
+        if paper_sources is not None:
+            span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
+        try:
+            return await fetcher(user_id=user_id)
+        except Exception as exc:
+            logger.warning(
+                "[invest_home] %s fetch failed: %s",
+                source,
+                exc,
+                exc_info=True,
+            )
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(
+                    source=source,
+                    message=str(exc) or type(exc).__name__,
+                ),
+            )
+
+
 class InvestHomeService:
     """Read-only 합성 서비스. mutation 경로 호출 금지."""
 
@@ -370,89 +404,76 @@ class InvestHomeService:
         hidden_holdings: list[Holding] = []
         hidden_counts = InvestHomeHiddenCounts()
 
-        for fetcher, src in (
-            (self._kis.fetch, "kis"),
-            (self._upbit.fetch, "upbit"),
-        ):
-            span_name = f"invest.home.{src}"
-            with sentry_sdk.start_span(op="invest.home.reader", name=span_name) as span:
-                span.set_tag("source", src)
-                span.set_tag("include_paper", include_paper)
-                if paper_sources is not None:
-                    span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
-                try:
-                    result: _SourceFetchResult = await fetcher(user_id=user_id)
+        live_sources = ["kis", "upbit"]
+        live_tasks = [
+            _fetch_reader_result(
+                self._kis.fetch,
+                span_name="invest.home.kis",
+                source="kis",
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            ),
+            _fetch_reader_result(
+                self._upbit.fetch,
+                span_name="invest.home.upbit",
+                source="upbit",
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            ),
+        ]
+        if self._toss_api is not None:
+            live_sources.append("toss_api")
+            live_tasks.append(
+                _fetch_reader_result(
+                    self._toss_api.fetch,
+                    span_name="invest.home.toss_api",
+                    source="toss_api",
+                    user_id=user_id,
+                    include_paper=include_paper,
+                    paper_sources=paper_sources,
+                )
+            )
+
+        live_results = await asyncio.gather(*live_tasks)
+        toss_api_holdings: list[Holding] = []
+
+        for source, result in zip(live_sources, live_results, strict=True):
+            if result.warning is not None:
+                warnings.append(result.warning)
+
+            if source == "toss_api":
+                if result.holdings or result.accounts:
                     accounts.extend(result.accounts)
                     holdings.extend(result.holdings)
-                    hidden_holdings.extend(result.hidden_holdings)
-                    hidden_counts.upbitInactive += result.hidden_counts.upbitInactive
-                    hidden_counts.upbitDust += result.hidden_counts.upbitDust
-                    if result.warning is not None:
-                        warnings.append(result.warning)
-                except Exception as exc:
-                    logger.warning(
-                        "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
-                    )
-                    warnings.append(
-                        InvestHomeWarning(
-                            source=src, message=str(exc) or type(exc).__name__
-                        )
-                    )
+                    toss_api_holdings = list(result.holdings)
+                continue
 
-        toss_api_result: _SourceFetchResult | None = None
-        toss_api_holdings: list[Holding] = []
-        if self._toss_api is not None:
-            with sentry_sdk.start_span(
-                op="invest.home.reader", name="invest.home.toss_api"
-            ) as span:
-                span.set_tag("source", "toss_api")
-                span.set_tag("include_paper", include_paper)
-                if paper_sources is not None:
-                    span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
-                try:
-                    toss_api_result = await self._toss_api.fetch(user_id=user_id)
-                    if toss_api_result.warning is not None:
-                        warnings.append(toss_api_result.warning)
-                    if toss_api_result.holdings or toss_api_result.accounts:
-                        accounts.extend(toss_api_result.accounts)
-                        holdings.extend(toss_api_result.holdings)
-                        toss_api_holdings = list(toss_api_result.holdings)
-                except Exception as exc:
-                    logger.warning(
-                        "[invest_home] toss_api fetch failed: %s", exc, exc_info=True
-                    )
-                    warnings.append(
-                        InvestHomeWarning(source="toss_api", message=str(exc))
-                    )
+            accounts.extend(result.accounts)
+            holdings.extend(result.holdings)
+            hidden_holdings.extend(result.hidden_holdings)
+            hidden_counts.upbitInactive += result.hidden_counts.upbitInactive
+            hidden_counts.upbitDust += result.hidden_counts.upbitDust
 
-        with sentry_sdk.start_span(
-            op="invest.home.reader", name="invest.home.manual"
-        ) as span:
-            span.set_tag("source", "toss_manual")
-            span.set_tag("include_paper", include_paper)
-            if paper_sources is not None:
-                span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
-            try:
-                result = await self._manual.fetch(user_id=user_id)
-                manual_holdings = _filter_manual_holdings_for_toss_api(
-                    result.holdings, toss_api_holdings
-                )
-                accounts.extend(result.accounts)
-                holdings.extend(manual_holdings)
-                if result.warning is not None:
-                    warnings.append(result.warning)
-                toss_account = build_manual_account_from_holdings(manual_holdings)
-                if toss_account is not None:
-                    accounts.append(toss_account)
-            except Exception as exc:
-                logger.warning(
-                    "[invest_home] toss_manual fetch failed: %s", exc, exc_info=True
-                )
-                warnings.append(
-                    InvestHomeWarning(
-                        source="toss_manual", message=str(exc) or type(exc).__name__
-                    )
-                )
+        manual_result = await _fetch_reader_result(
+            self._manual.fetch,
+            span_name="invest.home.manual",
+            source="toss_manual",
+            user_id=user_id,
+            include_paper=include_paper,
+            paper_sources=paper_sources,
+        )
+        manual_holdings = _filter_manual_holdings_for_toss_api(
+            manual_result.holdings, toss_api_holdings
+        )
+        accounts.extend(manual_result.accounts)
+        holdings.extend(manual_holdings)
+        if manual_result.warning is not None:
+            warnings.append(manual_result.warning)
+        toss_account = build_manual_account_from_holdings(manual_holdings)
+        if toss_account is not None:
+            accounts.append(toss_account)
 
         if include_paper:
             for reader in self._paper_readers:
@@ -526,93 +547,73 @@ class InvestHomeService:
             accounts: list[Account] = []
             holdings: list[Holding] = []
 
-            for fetcher, src in (
-                (self._kis.fetch, "kis"),
-                (self._upbit.fetch, "upbit"),
-            ):
-                span_name = f"invest.home.{src}"
-                with sentry_sdk.start_span(
-                    op="invest.home.reader", name=span_name
-                ) as span:
-                    span.set_tag("source", src)
-                    span.set_tag("include_paper", include_paper)
-                    if paper_sources is not None:
-                        span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
-                    try:
-                        result: _SourceFetchResult = await fetcher(user_id=user_id)
+            live_sources = ["kis", "upbit"]
+            live_tasks = [
+                _fetch_reader_result(
+                    self._kis.fetch,
+                    span_name="invest.home.kis",
+                    source="kis",
+                    user_id=user_id,
+                    include_paper=include_paper,
+                    paper_sources=paper_sources,
+                ),
+                _fetch_reader_result(
+                    self._upbit.fetch,
+                    span_name="invest.home.upbit",
+                    source="upbit",
+                    user_id=user_id,
+                    include_paper=include_paper,
+                    paper_sources=paper_sources,
+                ),
+            ]
+            if self._toss_api is not None:
+                live_sources.append("toss_api")
+                live_tasks.append(
+                    _fetch_reader_result(
+                        self._toss_api.fetch,
+                        span_name="invest.home.toss_api",
+                        source="toss_api",
+                        user_id=user_id,
+                        include_paper=include_paper,
+                        paper_sources=paper_sources,
+                    )
+                )
+
+            live_results = await asyncio.gather(*live_tasks)
+            toss_api_holdings: list[Holding] = []
+
+            for source, result in zip(live_sources, live_results, strict=True):
+                if result.warning is not None:
+                    warnings.append(result.warning)
+
+                if source == "toss_api":
+                    if result.holdings or result.accounts:
                         accounts.extend(result.accounts)
                         holdings.extend(result.holdings)
-                        if result.warning is not None:
-                            warnings.append(result.warning)
-                    except Exception as exc:
-                        logger.warning(
-                            "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
-                        )
-                        warnings.append(
-                            InvestHomeWarning(
-                                source=src, message=str(exc) or type(exc).__name__
-                            )
-                        )
+                        toss_api_holdings = list(result.holdings)
+                    continue
 
-            toss_api_result: _SourceFetchResult | None = None
-            toss_api_holdings: list[Holding] = []
-            if self._toss_api is not None:
-                with sentry_sdk.start_span(
-                    op="invest.home.reader", name="invest.home.toss_api"
-                ) as span:
-                    span.set_tag("source", "toss_api")
-                    span.set_tag("include_paper", include_paper)
-                    if paper_sources is not None:
-                        span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
-                    try:
-                        toss_api_result = await self._toss_api.fetch(user_id=user_id)
-                        if toss_api_result.warning is not None:
-                            warnings.append(toss_api_result.warning)
-                        if toss_api_result.holdings or toss_api_result.accounts:
-                            accounts.extend(toss_api_result.accounts)
-                            holdings.extend(toss_api_result.holdings)
-                            toss_api_holdings = list(toss_api_result.holdings)
-                    except Exception as exc:
-                        logger.warning(
-                            "[invest_home] toss_api fetch failed: %s",
-                            exc,
-                            exc_info=True,
-                        )
-                        warnings.append(
-                            InvestHomeWarning(source="toss_api", message=str(exc))
-                        )
+                accounts.extend(result.accounts)
+                holdings.extend(result.holdings)
 
-            with sentry_sdk.start_span(
-                op="invest.home.reader", name="invest.home.manual"
-            ) as span:
-                span.set_tag("source", "toss_manual")
-                span.set_tag("include_paper", include_paper)
-                if paper_sources is not None:
-                    span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
-                try:
-                    result = await self._manual.fetch(user_id=user_id)
-                    manual_holdings = _filter_manual_holdings_for_toss_api(
-                        result.holdings, toss_api_holdings
-                    )
-                    accounts.extend(result.accounts)
-                    holdings.extend(manual_holdings)
-                    if result.warning is not None:
-                        warnings.append(result.warning)
-                    toss_account = build_manual_account_from_holdings(manual_holdings)
-                    if toss_account is not None:
-                        accounts.append(toss_account)
-                except Exception as exc:
-                    logger.warning(
-                        "[invest_home] toss_manual fetch failed: %s",
-                        exc,
-                        exc_info=True,
-                    )
-                    warnings.append(
-                        InvestHomeWarning(
-                            source="toss_manual",
-                            message=str(exc) or type(exc).__name__,
-                        )
-                    )
+            manual_result = await _fetch_reader_result(
+                self._manual.fetch,
+                span_name="invest.home.manual",
+                source="toss_manual",
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            )
+            manual_holdings = _filter_manual_holdings_for_toss_api(
+                manual_result.holdings, toss_api_holdings
+            )
+            accounts.extend(manual_result.accounts)
+            holdings.extend(manual_holdings)
+            if manual_result.warning is not None:
+                warnings.append(manual_result.warning)
+            toss_account = build_manual_account_from_holdings(manual_holdings)
+            if toss_account is not None:
+                accounts.append(toss_account)
 
             if include_paper:
                 for reader in self._paper_readers:

@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+import sentry_sdk
+
 from app.mcp_server.tooling.analysis_tool_handlers import get_fear_greed_index_impl
 from app.mcp_server.tooling.fundamentals._crypto import handle_get_kimchi_premium
 from app.mcp_server.tooling.fundamentals._market_index import handle_get_market_index
@@ -109,7 +111,17 @@ async def _capture(
     label: str, call: Callable[[], Awaitable[Any]]
 ) -> tuple[Any | None, str | None]:
     try:
-        return await asyncio.wait_for(call(), timeout=6), None
+        with sentry_sdk.start_span(
+            op="invest.market.provider",
+            name=f"invest.market.{label}",
+        ) as span:
+            span.set_tag("provider", label)
+            result = await asyncio.wait_for(call(), timeout=6)
+            if isinstance(result, dict):
+                span.set_data("payload_keys", sorted(str(key) for key in result.keys()))
+            elif isinstance(result, list):
+                span.set_data("payload_length", len(result))
+            return result, None
     except Exception as exc:  # provider failures should not break /invest shell
         return None, f"{label}: {exc}"
 
@@ -303,12 +315,14 @@ async def build_market_dashboard(
 ) -> MarketDashboardResponse:
     provider = provider or DefaultMarketDashboardProvider()
     as_of = _now()
-    indices, index_warning = await _capture("market_index", provider.get_indices)
-    fear_greed, fear_greed_warning = await _capture(
-        "fear_greed", provider.get_fear_greed
-    )
-    kimchi, kimchi_warning = await _capture(
-        "kimchi_premium", provider.get_kimchi_premium
+    (
+        (indices, index_warning),
+        (fear_greed, fear_greed_warning),
+        (kimchi, kimchi_warning),
+    ) = await asyncio.gather(
+        _capture("market_index", provider.get_indices),
+        _capture("fear_greed", provider.get_fear_greed),
+        _capture("kimchi_premium", provider.get_kimchi_premium),
     )
 
     sections, warnings = _build_index_sections(indices, index_warning, as_of)

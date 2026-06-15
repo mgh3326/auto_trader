@@ -109,6 +109,56 @@ async def test_kis_reader_excludes_cash_from_value_and_converts_usd(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_kis_reader_emits_provider_phase_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[tuple[str, str, dict[str, Any]]] = []
+
+    class _Span:
+        def __init__(self) -> None:
+            self.data: dict[str, Any] = {}
+
+        def set_data(self, key: str, value: Any) -> None:
+            self.data[key] = value
+
+        def set_tag(self, key: str, value: Any) -> None:
+            self.data[key] = value
+
+    class _SpanContext:
+        def __init__(self, op: str, name: str) -> None:
+            self.op = op
+            self.name = name
+            self.span = _Span()
+
+        def __enter__(self) -> _Span:
+            started.append((self.op, self.name, self.span.data))
+            return self.span
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext(op, name)
+
+    monkeypatch.setattr(readers.sentry_sdk, "start_span", _start_span)
+    monkeypatch.setattr(readers, "SafeKISClient", _FakeKISClient)
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    await readers.KISHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    names = [name for _, name, _ in started]
+    assert "invest.home.kis.domestic_balance" in names
+    assert "invest.home.kis.integrated_margin" in names
+    assert "invest.home.kis.overseas_balance" in names
+    assert "invest.home.kis.fx" in names
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_kis_reader_overseas_margin_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -539,6 +589,77 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
     assert result.holdings[0].assetCategory == "kr_stock"
     assert result.holdings[0].priceState == "missing"
     assert result.warning is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_emits_load_quote_and_fx_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[str] = []
+
+    class _Span:
+        def set_data(self, key: str, value: Any) -> None:
+            return None
+
+        def set_tag(self, key: str, value: Any) -> None:
+            return None
+
+    class _SpanContext:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self) -> _Span:
+            started.append(self.name)
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext(name)
+
+    class _BrokerAccount:
+        broker_type = "toss"
+
+    class _ManualHolding:
+        id = 1
+        broker_account_id = 10
+        broker_account = _BrokerAccount()
+        ticker = "005930"
+        display_name = "삼성전자"
+        market_type = MarketType.KR
+        quantity = 2
+        avg_price = 70_000
+
+    class _ManualHoldingsService:
+        def __init__(self, db: object) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[_ManualHolding]:
+            assert user_id == 1
+            return [_ManualHolding()]
+
+    class _QuoteService:
+        async def fetch_kr_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            assert tickers == ["005930"]
+            return {"005930": 72_000.0}
+
+        async def fetch_us_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            assert tickers == []
+            return {}
+
+    monkeypatch.setattr(readers.sentry_sdk, "start_span", _start_span)
+    monkeypatch.setattr(readers, "ManualHoldingsService", _ManualHoldingsService)
+
+    result = await readers.ManualHomeReader(
+        db=object(), quote_service=_QuoteService()
+    ).fetch(user_id=1)  # type: ignore[arg-type]
+
+    assert result.warning is None
+    assert "invest.home.manual.load_holdings" in started
+    assert "invest.home.manual.fetch_kr_prices" in started
+    assert "invest.home.manual.fetch_us_prices" in started
 
 
 # ---------------------------------------------------------------------------
@@ -1552,3 +1673,75 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
     assert result.accounts[0].valueKrw == pytest.approx(645.18 * 1300.0)
     assert result.accounts[0].costBasisKrw == pytest.approx(600.0 * 1300.0)
     assert result.accounts[0].pnlKrw == pytest.approx(45.18 * 1300.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_portfolio_snapshot_emits_phase_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.services import toss_portfolio_service as toss_service
+
+    started: list[str] = []
+
+    class _Span:
+        def set_data(self, key: str, value: Any) -> None:
+            return None
+
+        def set_tag(self, key: str, value: Any) -> None:
+            return None
+
+    class _SpanContext:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self) -> _Span:
+            started.append(self.name)
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext(name)
+
+    class _Client:
+        async def holdings(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        symbol="005930",
+                        name="삼성전자",
+                        market_country="KR",
+                        quantity=Decimal("2"),
+                        average_purchase_price=Decimal("70000"),
+                        last_price=Decimal("72000"),
+                        market_value={"amount": Decimal("144000")},
+                        profit_loss={
+                            "amount": Decimal("4000"),
+                            "rate": Decimal("0.0285"),
+                        },
+                    )
+                ]
+            )
+
+        async def sellable_quantity(self, *, symbol: str) -> SimpleNamespace:
+            assert symbol == "005930"
+            return SimpleNamespace(sellable_quantity=Decimal("1"))
+
+        async def buying_power(self, *, currency: str) -> SimpleNamespace:
+            return SimpleNamespace(currency=currency, cash_buying_power=Decimal("1000"))
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(toss_service.sentry_sdk, "start_span", _start_span)
+
+    snapshot = await toss_service.fetch_toss_portfolio_snapshot(client=_Client())
+
+    assert snapshot.positions[0].symbol == "005930"
+    assert "invest.home.toss_api.holdings" in started
+    assert "invest.home.toss_api.sellable_quantity" in started
+    assert "invest.home.toss_api.buying_power" in started
