@@ -874,6 +874,21 @@ async def toss_modify_order(
                     "error": "Toss US order modify requires new_price.",
                 }
 
+        # ROB-561 — a KR limit reprice must snap to the KRX tick grid just like
+        # a fresh place, otherwise the modify hits the same tick-size rejection.
+        # Snap BEFORE the sell-loss guard so the guard validates the real price.
+        tick_meta: dict[str, Any] = {}
+        if new_price_dec is not None:
+            new_price_dec, original_for_meta = _snap_kr_limit_price(
+                new_price_dec, side, mkt, orig_order_type
+            )
+            if original_for_meta is not None:
+                tick_meta = {
+                    "tick_adjusted": True,
+                    "original_price": _stringify_decimal(original_for_meta),
+                    "adjusted_price": _stringify_decimal(new_price_dec),
+                }
+
         payload: dict[str, Any] = {
             "orderType": orig_order_type.upper(),
         }
@@ -915,6 +930,7 @@ async def toss_modify_order(
             return {
                 "success": True,
                 **base_response,
+                **tick_meta,
                 "original_order_id": order_id,
                 "payload_preview": payload,
             }
@@ -945,6 +961,7 @@ async def toss_modify_order(
             return {
                 "success": True,
                 **base_response,
+                **tick_meta,
                 "mutation_sent": True,
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,

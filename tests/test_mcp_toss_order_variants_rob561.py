@@ -7,6 +7,7 @@ import pytest
 
 # These will be implemented in ROB-561
 from app.mcp_server.tooling.orders_toss_variants import (
+    toss_modify_order,
     toss_place_order,
     toss_preview_order,
 )
@@ -158,6 +159,76 @@ async def test_toss_place_order_uses_snapped_price_for_sell_loss_guard(monkeypat
         f"Order should succeed after snapping 100950 to 101000. Error: {res.get('error')}"
     )
     assert mock_client.placed_payloads[0]["price"] == "101000"
+
+
+@pytest.mark.asyncio
+async def test_toss_modify_order_snaps_new_price_kr(monkeypatch):
+    """ROB-561: a KR limit reprice via modify must tick-snap new_price too,
+    otherwise the modify hits the same Toss tick-size rejection the original
+    place fix avoids. Buy reprice floors to the nearest tick."""
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "ord-1",
+            "symbol": "005930",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "status": "OPEN",
+        }
+    ]
+
+    # Buy reprice 87350 -> floor 87300 (tick 100 in the 50k-200k band).
+    res = await toss_modify_order(
+        order_id="ord-1",
+        new_price="87350",
+        new_quantity="1",
+        dry_run=True,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True, res.get("error")
+    assert res["payload_preview"]["price"] == "87300"
+    assert res["tick_adjusted"] is True
+    assert res["original_price"] == "87350"
+    assert res["adjusted_price"] == "87300"
+
+
+@pytest.mark.asyncio
+async def test_toss_modify_order_us_not_snapped(monkeypatch):
+    """ROB-561: US reprice must not be snapped (no KRX tick grid)."""
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "ord-us",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "status": "OPEN",
+        }
+    ]
+
+    res = await toss_modify_order(
+        order_id="ord-us",
+        new_price="150.05",
+        dry_run=True,
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True, res.get("error")
+    assert res["payload_preview"]["price"] == "150.05"
+    assert "tick_adjusted" not in res
 
 
 @pytest.mark.asyncio
