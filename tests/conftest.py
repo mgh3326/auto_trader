@@ -1254,6 +1254,44 @@ async def db_session():
                         "ON review.live_order_ledger (report_item_uuid)"
                     )
                 )
+
+                # ROB-568 — US FX PnL fields
+                for table in (
+                    "trade_journals",
+                    "live_order_ledger",
+                    "toss_live_order_ledger",
+                    "trade_retrospectives",
+                ):
+                    for col, ddl in (
+                        ("buy_fx_rate", "NUMERIC(18, 4)"),
+                        ("sell_fx_rate", "NUMERIC(18, 4)"),
+                        ("fx_pnl_krw", "NUMERIC(20, 4)"),
+                        ("security_pnl_usd", "NUMERIC(20, 4)"),
+                        ("security_pnl_krw", "NUMERIC(20, 4)"),
+                        ("total_pnl_krw", "NUMERIC(20, 4)"),
+                        ("fx_rate_source", "TEXT"),
+                        ("fx_pnl_accuracy", "TEXT"),
+                    ):
+                        await conn.execute(
+                            text(
+                                f"ALTER TABLE review.{table} ADD COLUMN IF NOT EXISTS {col} {ddl}"
+                            )
+                        )
+
+                # ROB-568 — TradeRetrospective account_mode constraint
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "DROP CONSTRAINT IF EXISTS ck_trade_retrospectives_account_mode"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "ADD CONSTRAINT ck_trade_retrospectives_account_mode "
+                        "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live'))"
+                    )
+                )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so

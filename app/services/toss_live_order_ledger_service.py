@@ -228,6 +228,14 @@ class TossLiveOrderLedgerService:
         settlement_date: date | None = None,
         trade_id: int | None = None,
         journal_id: int | None = None,
+        buy_fx_rate: Decimal | None = None,
+        sell_fx_rate: Decimal | None = None,
+        fx_pnl_krw: Decimal | None = None,
+        security_pnl_usd: Decimal | None = None,
+        security_pnl_krw: Decimal | None = None,
+        total_pnl_krw: Decimal | None = None,
+        fx_rate_source: str | None = None,
+        fx_pnl_accuracy: str | None = None,
         raw_response: dict[str, Any] | None = None,
     ) -> None:
         row = await self._db.get(TossLiveOrderLedger, ledger_id)
@@ -249,6 +257,24 @@ class TossLiveOrderLedgerService:
             row.trade_id = trade_id
         if journal_id is not None:
             row.journal_id = journal_id
+
+        if buy_fx_rate is not None:
+            row.buy_fx_rate = buy_fx_rate
+        if sell_fx_rate is not None:
+            row.sell_fx_rate = sell_fx_rate
+        if fx_pnl_krw is not None:
+            row.fx_pnl_krw = fx_pnl_krw
+        if security_pnl_usd is not None:
+            row.security_pnl_usd = security_pnl_usd
+        if security_pnl_krw is not None:
+            row.security_pnl_krw = security_pnl_krw
+        if total_pnl_krw is not None:
+            row.total_pnl_krw = total_pnl_krw
+        if fx_rate_source is not None:
+            row.fx_rate_source = fx_rate_source
+        if fx_pnl_accuracy is not None:
+            row.fx_pnl_accuracy = fx_pnl_accuracy
+
         if raw_response is not None:
             row.raw_response = raw_response
         row.reconciled_at = datetime.now(UTC)

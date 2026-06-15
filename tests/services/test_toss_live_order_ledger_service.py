@@ -341,3 +341,31 @@ async def test_mark_manual_review_sets_operator_visible_error(db_session):
     }
     assert refreshed.broker_status is None
     assert refreshed.reconciled_at is not None
+
+
+async def test_update_reconcile_outcome_records_us_fx_fields(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+    row = await svc.record_send(
+        **_place_kwargs(client_order_id="cid-fx", broker_order_id="ord-fx")
+    )
+
+    await svc.update_reconcile_outcome(
+        ledger_id=row.id,
+        status="filled",
+        broker_status="FILLED",
+        buy_fx_rate=Decimal("1389.33"),
+        sell_fx_rate=Decimal("1503.19"),
+        fx_pnl_krw=Decimal("22772.00"),
+        security_pnl_usd=Decimal("60.00"),
+        security_pnl_krw=Decimal("90191.40"),
+        total_pnl_krw=Decimal("112963.40"),
+        fx_rate_source="reconcile_spot",
+        fx_pnl_accuracy="approximate",
+    )
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.buy_fx_rate == Decimal("1389.33")
+    assert refreshed.sell_fx_rate == Decimal("1503.19")
+    assert refreshed.fx_pnl_krw == Decimal("22772.00")
+    assert refreshed.fx_rate_source == "reconcile_spot"
+    assert refreshed.fx_pnl_accuracy == "approximate"
