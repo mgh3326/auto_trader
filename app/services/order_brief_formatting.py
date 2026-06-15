@@ -171,7 +171,7 @@ def fmt_pnl(pct: float | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers (not in __all__) — moved from n8n_daily_brief_service
+# Internal helpers (not in __all__)
 # ---------------------------------------------------------------------------
 
 
