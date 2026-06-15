@@ -240,9 +240,6 @@ def _snap_kr_limit_price(
     adjusted = Decimal(str(adjust_tick_size_kr(float(price), side)))
     if adjusted == price:
         return price, None
-    import logging
-
-    logger = logging.getLogger(__name__)
     logger.info(
         "Toss KR limit tick-snapped: side=%s original=%s tick=%s adjusted=%s",
         side,
