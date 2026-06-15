@@ -733,6 +733,8 @@ class TestTradeJournalRegistration:
             "save_trade_journal",
             "get_trade_journal",
             "update_trade_journal",
+            "list_active_journals",
+            "modify_journal_entry",
         }
 
 
@@ -1032,6 +1034,15 @@ class TestCloseJournalsOnSell:
             "closed_ids": [],
             "total_pnl_pct": 0.0,
             "realized_pnl_basis": "journal_entry",
+            "buy_fx_rate": None,
+            "sell_fx_rate": None,
+            "fx_pnl_krw": None,
+            "security_pnl_usd": None,
+            "security_pnl_krw": None,
+            "total_pnl_krw": None,
+            "fx_rate_source": "unavailable",
+            "fx_pnl_accuracy": "unavailable",
+            "fx_unavailable_journal_ids": [],
         }
         mock_session.commit.assert_called_once()
 
@@ -1097,6 +1108,15 @@ class TestCloseJournalsOnSell:
             "closed_ids": [42],
             "total_pnl_pct": pytest.approx(30.0),
             "realized_pnl_basis": "journal_entry",
+            "buy_fx_rate": None,
+            "sell_fx_rate": None,
+            "fx_pnl_krw": None,
+            "security_pnl_usd": None,
+            "security_pnl_krw": None,
+            "total_pnl_krw": None,
+            "fx_rate_source": "unavailable",
+            "fx_pnl_accuracy": "unavailable",
+            "fx_unavailable_journal_ids": [42],
         }
         mock_session.commit.assert_called_once()
 
@@ -1230,6 +1250,15 @@ class TestCloseJournalsOnSell:
             "closed_ids": [],
             "total_pnl_pct": 0.0,
             "realized_pnl_basis": "journal_entry",
+            "buy_fx_rate": None,
+            "sell_fx_rate": None,
+            "fx_pnl_krw": None,
+            "security_pnl_usd": None,
+            "security_pnl_krw": None,
+            "total_pnl_krw": None,
+            "fx_rate_source": "unavailable",
+            "fx_pnl_accuracy": "unavailable",
+            "fx_unavailable_journal_ids": [],
         }
         mock_session.commit.assert_called_once()
 

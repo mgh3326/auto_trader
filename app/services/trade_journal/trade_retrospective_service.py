@@ -228,6 +228,13 @@ async def save_retrospective(
     # Note: kiwoom_mock is legacy special case; for US/crypto live, evidence
     # should be available.
     fill_evidence_available = account_mode != "kiwoom_mock"
+    if not fill_evidence_available and (
+        realized_pnl is not None or fill_price is not None
+    ):
+        raise RetrospectiveValidationError(
+            f"{account_mode} cannot read fills (ROB-460); "
+            "realized_pnl/fill_price not allowed"
+        )
 
     realized_pnl_value = _to_decimal(realized_pnl)
     realized_pnl_source: str | None = None

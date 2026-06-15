@@ -376,10 +376,27 @@ async def test_reconcile_sell_reattaches_defensive_trim_note():
     with (
         patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
         patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=321)),
-        patch.object(ll, "_close_journals_on_sell", new=AsyncMock()) as m_close,
+        patch.object(
+            ll,
+            "_close_journals_on_sell",
+            new=AsyncMock(
+                return_value={
+                    "journals_closed": 1,
+                    "closed_ids": [42],
+                    "total_pnl_pct": 0.5,
+                    "buy_fx_rate": None,
+                    "sell_fx_rate": None,
+                    "fx_pnl_krw": None,
+                    "security_pnl_usd": None,
+                    "security_pnl_krw": None,
+                    "total_pnl_krw": None,
+                    "fx_rate_source": "unavailable",
+                    "fx_pnl_accuracy": "unavailable",
+                }
+            ),
+        ) as m_close,
     ):
         out = await ll._reconcile_one_live_row(row, dry_run=False)
-
     assert out["verdict"] == "filled"
     m_close.assert_awaited_once()
     ctx = m_close.await_args.kwargs["defensive_trim_ctx"]

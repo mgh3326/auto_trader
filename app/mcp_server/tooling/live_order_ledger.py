@@ -361,22 +361,22 @@ async def _reconcile_one_live_row(
             trade_id=trade_id,
             journal_id=journal_id,
             buy_fx_rate=Decimal(str(fx_summary["buy_fx_rate"]))
-            if fx_summary.get("buy_fx_rate")
+            if fx_summary.get("buy_fx_rate") is not None
             else None,
             sell_fx_rate=Decimal(str(fx_summary["sell_fx_rate"]))
-            if fx_summary.get("sell_fx_rate")
+            if fx_summary.get("sell_fx_rate") is not None
             else None,
             fx_pnl_krw=Decimal(str(fx_summary["fx_pnl_krw"]))
-            if fx_summary.get("fx_pnl_krw")
+            if fx_summary.get("fx_pnl_krw") is not None
             else None,
             security_pnl_usd=Decimal(str(fx_summary["security_pnl_usd"]))
-            if fx_summary.get("security_pnl_usd")
+            if fx_summary.get("security_pnl_usd") is not None
             else None,
             security_pnl_krw=Decimal(str(fx_summary["security_pnl_krw"]))
-            if fx_summary.get("security_pnl_krw")
+            if fx_summary.get("security_pnl_krw") is not None
             else None,
             total_pnl_krw=Decimal(str(fx_summary["total_pnl_krw"]))
-            if fx_summary.get("total_pnl_krw")
+            if fx_summary.get("total_pnl_krw") is not None
             else None,
             fx_rate_source=fx_summary.get("fx_rate_source"),
             fx_pnl_accuracy=fx_summary.get("fx_pnl_accuracy"),
