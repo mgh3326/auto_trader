@@ -48,6 +48,14 @@ async def save_trade_retrospective(
     next_strategy: str | None = None,
     evidence_snapshot: dict | None = None,
     created_by_profile: str | None = None,
+    buy_fx_rate: float | None = None,
+    sell_fx_rate: float | None = None,
+    fx_pnl_krw: float | None = None,
+    security_pnl_usd: float | None = None,
+    security_pnl_krw: float | None = None,
+    total_pnl_krw: float | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
@@ -78,6 +86,14 @@ async def save_trade_retrospective(
                 next_strategy=next_strategy,
                 evidence_snapshot=evidence_snapshot,
                 created_by_profile=created_by_profile,
+                buy_fx_rate=buy_fx_rate,
+                sell_fx_rate=sell_fx_rate,
+                fx_pnl_krw=fx_pnl_krw,
+                security_pnl_usd=security_pnl_usd,
+                security_pnl_krw=security_pnl_krw,
+                total_pnl_krw=total_pnl_krw,
+                fx_rate_source=fx_rate_source,
+                fx_pnl_accuracy=fx_pnl_accuracy,
             )
             await db.commit()
             await db.refresh(row)

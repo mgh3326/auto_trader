@@ -171,3 +171,18 @@ def test_bridge_flag_default_false():
     from app.core.config import settings
 
     assert settings.MOCK_ROUNDTRIP_JOURNAL_BRIDGE_ENABLED is False
+
+
+def test_us_fx_columns_present_on_trade_journal():
+    cols = set(TradeJournal.__table__.columns.keys())
+    for col in (
+        "buy_fx_rate",
+        "sell_fx_rate",
+        "fx_pnl_krw",
+        "security_pnl_usd",
+        "security_pnl_krw",
+        "total_pnl_krw",
+        "fx_rate_source",
+        "fx_pnl_accuracy",
+    ):
+        assert col in cols, f"missing column {col}"

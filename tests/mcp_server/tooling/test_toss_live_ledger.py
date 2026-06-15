@@ -333,3 +333,185 @@ async def test_reconcile_impl_marks_manual_review_on_error_when_not_dry_run(
         "message": "<html>Forbidden apply</html>",
         "data": None,
     }
+
+
+async def test_toss_us_buy_reconcile_captures_buy_fx_rate(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.fx_pnl import FxRateCapture
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session, side="buy")
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("2"),
+        avg_price=Decimal("100"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with (
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod,
+            "capture_reconcile_spot_fx",
+            new=AsyncMock(
+                return_value=FxRateCapture(
+                    rate=Decimal("1389.33"),
+                    fx_rate_source="reconcile_spot",
+                    fx_pnl_accuracy="approximate",
+                )
+            ),
+        ),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ) as m_journal,
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["buy_fx_rate"] == pytest.approx(1389.33)
+    assert out["fx_rate_source"] == "reconcile_spot"
+    assert m_journal.await_args.kwargs["buy_fx_rate"] == 1389.33
+
+
+async def test_toss_us_sell_reconcile_surfaces_fx_pnl(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.fx_pnl import FxRateCapture
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session, side="sell")
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("2"),
+        avg_price=Decimal("130"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+    close_result = {
+        "journals_closed": 1,
+        "journals_kept": 0,
+        "closed_ids": [77],
+        "total_pnl_pct": 30.0,
+        "realized_pnl_basis": "journal_entry",
+        "buy_fx_rate": 1389.33,
+        "sell_fx_rate": 1503.19,
+        "fx_pnl_krw": 22772.0,
+        "security_pnl_usd": 60.0,
+        "security_pnl_krw": 90191.4,
+        "total_pnl_krw": 112963.4,
+        "fx_rate_source": "reconcile_spot",
+        "fx_pnl_accuracy": "approximate",
+        "fx_unavailable_journal_ids": [],
+    }
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with (
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod,
+            "capture_reconcile_spot_fx",
+            new=AsyncMock(
+                return_value=FxRateCapture(
+                    rate=Decimal("1503.19"),
+                    fx_rate_source="reconcile_spot",
+                    fx_pnl_accuracy="approximate",
+                )
+            ),
+        ),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod, "_close_journals_on_sell", new=AsyncMock(return_value=close_result)
+        ),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["fx_pnl_krw"] == 22772.0
+    assert out["total_pnl_krw"] == 112963.4
+    assert out["fx_rate_source"] == "reconcile_spot"
+    assert out["fx_pnl_accuracy"] == "approximate"
+
+
+async def test_toss_us_sell_reconcile_persists_zero_fx_values(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.fx_pnl import FxRateCapture
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session, side="sell")
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("2"),
+        avg_price=Decimal("100"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+    close_result = {
+        "journals_closed": 1,
+        "journals_kept": 0,
+        "closed_ids": [77],
+        "total_pnl_pct": 0.0,
+        "realized_pnl_basis": "journal_entry",
+        "buy_fx_rate": 1500.0,
+        "sell_fx_rate": 1500.0,
+        "fx_pnl_krw": 0.0,
+        "security_pnl_usd": 0.0,
+        "security_pnl_krw": 0.0,
+        "total_pnl_krw": 0.0,
+        "fx_rate_source": "reconcile_spot",
+        "fx_pnl_accuracy": "approximate",
+        "fx_unavailable_journal_ids": [],
+    }
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with (
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod,
+            "capture_reconcile_spot_fx",
+            new=AsyncMock(
+                return_value=FxRateCapture(
+                    rate=Decimal("1500"),
+                    fx_rate_source="reconcile_spot",
+                    fx_pnl_accuracy="approximate",
+                )
+            ),
+        ),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod, "_close_journals_on_sell", new=AsyncMock(return_value=close_result)
+        ),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["fx_pnl_krw"] == 0.0
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.fx_pnl_krw == Decimal("0.0000")
+    assert refreshed.security_pnl_usd == Decimal("0.0000")
+    assert refreshed.total_pnl_krw == Decimal("0.0000")

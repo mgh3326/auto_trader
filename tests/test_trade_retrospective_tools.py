@@ -114,6 +114,28 @@ async def test_aggregate_envelope():
     assert res["groups"][0]["group"] == "A"
 
 
+@pytest.mark.asyncio
+async def test_save_retrospective_accepts_fx_fields():
+    res = await save_trade_retrospective(
+        symbol="AAPL",
+        instrument_type="equity_us",
+        account_mode="toss_live",
+        outcome="filled",
+        realized_pnl=60.0,
+        buy_fx_rate=1389.33,
+        sell_fx_rate=1503.19,
+        fx_pnl_krw=22772.0,
+        security_pnl_usd=60.0,
+        security_pnl_krw=90191.4,
+        total_pnl_krw=112963.4,
+        fx_rate_source="manual",
+        fx_pnl_accuracy="exact",
+    )
+    assert res["success"] is True
+    assert res["data"]["fx_pnl_krw"] == pytest.approx(22772.0)
+    assert res["data"]["fx_pnl_accuracy"] == "exact"
+
+
 def test_tool_names_set_complete():
     from app.mcp_server.tooling.trade_retrospective_registration import (
         TRADE_RETROSPECTIVE_TOOL_NAMES,

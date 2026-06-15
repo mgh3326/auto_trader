@@ -187,3 +187,25 @@ async def test_avg_pnl_pct_value_and_none(db_session: AsyncSession):
         "groups"
     ][0]
     assert g2["avg_pnl_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_aggregate_sums_fx_and_total_krw(db_session: AsyncSession):
+    await svc.save_retrospective(
+        db_session,
+        symbol="AAPL",
+        instrument_type="equity_us",
+        account_mode="toss_live",
+        outcome="filled",
+        strategy_key="A",
+        realized_pnl=60.0,
+        realized_pnl_currency="USD",
+        fx_pnl_krw=22772.0,
+        total_pnl_krw=112963.4,
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_aggregate(db_session, group_by="strategy")
+    group = result["groups"][0]
+    assert group["fx_pnl_krw_sum"] == pytest.approx(22772.0)
+    assert group["total_pnl_krw_sum"] == pytest.approx(112963.4)

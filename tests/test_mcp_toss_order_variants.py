@@ -84,6 +84,8 @@ def test_toss_tool_descriptions_document_live_gates():
     assert "Reconcile Toss Securities live KR/US orders" in reconcile_desc
     assert "dry_run=True" in reconcile_desc
     assert "delta-idempotent" in reconcile_desc
+    assert "US FX PnL" in reconcile_desc
+    assert "fx_pnl_accuracy" in reconcile_desc
 
 
 @pytest.mark.asyncio

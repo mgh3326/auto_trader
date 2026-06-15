@@ -92,6 +92,29 @@ For each row, verify the Toss broker UI/API order detail before booking a fill,
 closing the row, or resetting it for another reconcile attempt. Do not infer a
 cancel or fill from a missing/failed order-detail response.
 
+## US FX PnL Split
+
+Toss `GET /orders/{orderId}` execution does not include fill-time FX fields. For
+US orders only, reconcile captures the current USD/KRW quote from
+`exchange_rate_service` when the fill is booked:
+
+- buy reconcile stores `buy_fx_rate`;
+- sell reconcile stores `sell_fx_rate`;
+- closed FIFO journal lots store `security_pnl_usd`, `security_pnl_krw`, `fx_pnl_krw`, and `total_pnl_krw`;
+- automatic values use `fx_rate_source='reconcile_spot'` and `fx_pnl_accuracy='approximate'`.
+
+Legacy lots with no captured buy FX cannot produce automatic FX PnL. They remain
+`fx_pnl_accuracy='unavailable'` with null FX PnL fields until the operator
+supplies exact values through
+`modify_journal_entry(..., fx_rate_source='manual', fx_pnl_accuracy='exact')`.
+
+```text
+security_pnl_usd = sell_notional_usd - buy_notional_usd
+security_pnl_krw = security_pnl_usd * sell_fx_rate
+fx_pnl_krw = buy_notional_usd * (sell_fx_rate - buy_fx_rate)
+total_pnl_krw = security_pnl_krw + fx_pnl_krw
+```
+
 ## Operational Hold
 
 Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until ROB-539 live smoke and stronger-model/CTO review clear this path. This feature changes live-order bookkeeping and must stay under `hold_for_final_review` until cleared.

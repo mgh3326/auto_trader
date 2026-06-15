@@ -24,11 +24,14 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
         description=(
             "Store a structured trade retrospective (outcome, absolute realized_pnl, "
             "fill/plan price, pnl_pct, rationale/result/lesson/next_strategy) for a "
-            "trade. account_mode in {kis_mock, kiwoom_mock, kis_live, alpaca_paper, "
-            "upbit_live}. Idempotent per correlation_id (omit it to append). "
+            "trade. account_mode in {kis_mock, kiwoom_mock, kis_live, toss_live, "
+            "alpaca_paper, upbit_live}. Idempotent per correlation_id (omit it to "
+            "append). "
             "kiwoom_mock cannot supply realized_pnl/fill_price (no fill evidence, "
             "ROB-460). realized_pnl is caller-supplied, or derived from journal_id "
-            "when entry/exit/qty are present."
+            "when entry/exit/qty are present. ROB-568: accepts US FX PnL fields "
+            "(buy_fx_rate, sell_fx_rate, security_pnl_usd, security_pnl_krw, "
+            "fx_pnl_krw, total_pnl_krw, fx_rate_source, fx_pnl_accuracy)."
         ),
     )(save_trade_retrospective)
     _ = mcp.tool(

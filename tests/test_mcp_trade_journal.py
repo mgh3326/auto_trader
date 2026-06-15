@@ -733,6 +733,8 @@ class TestTradeJournalRegistration:
             "save_trade_journal",
             "get_trade_journal",
             "update_trade_journal",
+            "list_active_journals",
+            "modify_journal_entry",
         }
 
 
@@ -1032,6 +1034,15 @@ class TestCloseJournalsOnSell:
             "closed_ids": [],
             "total_pnl_pct": 0.0,
             "realized_pnl_basis": "journal_entry",
+            "buy_fx_rate": None,
+            "sell_fx_rate": None,
+            "fx_pnl_krw": None,
+            "security_pnl_usd": None,
+            "security_pnl_krw": None,
+            "total_pnl_krw": None,
+            "fx_rate_source": "unavailable",
+            "fx_pnl_accuracy": "unavailable",
+            "fx_unavailable_journal_ids": [],
         }
         mock_session.commit.assert_called_once()
 
@@ -1097,6 +1108,15 @@ class TestCloseJournalsOnSell:
             "closed_ids": [42],
             "total_pnl_pct": pytest.approx(30.0),
             "realized_pnl_basis": "journal_entry",
+            "buy_fx_rate": None,
+            "sell_fx_rate": None,
+            "fx_pnl_krw": None,
+            "security_pnl_usd": None,
+            "security_pnl_krw": None,
+            "total_pnl_krw": None,
+            "fx_rate_source": "unavailable",
+            "fx_pnl_accuracy": "unavailable",
+            "fx_unavailable_journal_ids": [42],
         }
         mock_session.commit.assert_called_once()
 
@@ -1230,6 +1250,15 @@ class TestCloseJournalsOnSell:
             "closed_ids": [],
             "total_pnl_pct": 0.0,
             "realized_pnl_basis": "journal_entry",
+            "buy_fx_rate": None,
+            "sell_fx_rate": None,
+            "fx_pnl_krw": None,
+            "security_pnl_usd": None,
+            "security_pnl_krw": None,
+            "total_pnl_krw": None,
+            "fx_rate_source": "unavailable",
+            "fx_pnl_accuracy": "unavailable",
+            "fx_unavailable_journal_ids": [],
         }
         mock_session.commit.assert_called_once()
 
@@ -1439,3 +1468,194 @@ class TestCloseJournalsOnSell:
         # journal-entry basis: (97.39 - 100) / 100 = -2.61% (the loss),
         # NOT the +8.21% the cheaper lot or any account-average would show.
         assert result["total_pnl_pct"] == pytest.approx(-2.61, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_create_trade_journal_captures_buy_fx_rate():
+    from app.mcp_server.tooling.order_journal import _create_trade_journal_for_buy
+
+    mock_session = AsyncMock()
+
+    async def refresh_side_effect(journal: TradeJournal) -> None:
+        journal.id = 202
+
+    mock_session.refresh.side_effect = refresh_side_effect
+    factory = _mock_session_factory(mock_session)
+
+    with patch(
+        "app.mcp_server.tooling.order_journal._order_session_factory",
+        return_value=factory,
+    ):
+        result = await _create_trade_journal_for_buy(
+            symbol="AAPL",
+            market_type="equity_us",
+            preview={"price": 100.0, "quantity": 2.0, "estimated_value": 200.0},
+            thesis="t",
+            strategy="s",
+            target_price=None,
+            stop_loss=None,
+            min_hold_days=None,
+            notes=None,
+            indicators_snapshot=None,
+            account_type="live",
+            account="toss",
+            buy_fx_rate=1500.25,
+            fx_rate_source="reconcile_spot",
+            fx_pnl_accuracy="approximate",
+        )
+
+    assert result["journal_created"] is True
+    added = mock_session.add.call_args.args[0]
+    assert added.buy_fx_rate == Decimal("1500.25")
+    assert added.fx_rate_source == "reconcile_spot"
+    assert added.fx_pnl_accuracy == "approximate"
+
+
+@pytest.mark.asyncio
+async def test_close_journals_computes_fifo_fx_pnl_for_us_equity():
+    from app.mcp_server.tooling.order_journal import _close_journals_on_sell
+    from app.models.trade_journal import TradeJournal
+
+    j = TradeJournal(
+        id=77,
+        symbol="AAPL",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        status="active",
+        buy_fx_rate=Decimal("1389.33"),
+    )
+
+    mock_session = AsyncMock()
+    mock_scalars = MagicMock()
+    mock_scalars.all.return_value = [j]
+    mock_result = MagicMock()
+    mock_result.scalars.return_value = mock_scalars
+    mock_session.execute.return_value = mock_result
+
+    factory = _mock_session_factory(mock_session)
+    with patch(
+        "app.mcp_server.tooling.order_journal._order_session_factory",
+        return_value=factory,
+    ):
+        res = await _close_journals_on_sell(
+            symbol="AAPL",
+            sell_quantity=2.0,
+            sell_price=130.0,
+            sell_fx_rate=1503.19,
+            fx_rate_source="reconcile_spot",
+            fx_pnl_accuracy="approximate",
+        )
+
+    assert j.status == "closed"
+    assert j.sell_fx_rate == Decimal("1503.19")
+    assert j.fx_pnl_krw == Decimal("22772.0000")
+    assert j.total_pnl_krw == Decimal("112963.4000")
+    assert res["fx_pnl_krw"] == 22772.0
+    assert res["total_pnl_krw"] == 112963.4
+    assert res["buy_fx_rate"] == 1389.33
+
+
+@pytest.mark.asyncio
+async def test_close_journals_handles_missing_buy_fx_for_us_equity():
+    from app.mcp_server.tooling.order_journal import _close_journals_on_sell
+    from app.models.trade_journal import TradeJournal
+
+    j = TradeJournal(
+        id=88,
+        symbol="AAPL",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        status="active",
+        buy_fx_rate=None,  # missing
+    )
+
+    mock_session = AsyncMock()
+    mock_scalars = MagicMock()
+    mock_scalars.all.return_value = [j]
+    mock_result = MagicMock()
+    mock_result.scalars.return_value = mock_scalars
+    mock_session.execute.return_value = mock_result
+
+    factory = _mock_session_factory(mock_session)
+    with patch(
+        "app.mcp_server.tooling.order_journal._order_session_factory",
+        return_value=factory,
+    ):
+        res = await _close_journals_on_sell(
+            symbol="AAPL",
+            sell_quantity=2.0,
+            sell_price=130.0,
+            sell_fx_rate=1503.19,
+        )
+
+    assert j.status == "closed"
+    assert j.fx_pnl_accuracy == "unavailable"
+    assert res["fx_pnl_krw"] is None
+    assert res["fx_unavailable_journal_ids"] == [88]
+
+
+@pytest.mark.asyncio
+async def test_modify_journal_supports_manual_fx_override():
+    from app.mcp_server.tooling.order_journal import modify_journal_entry
+    from app.models.trade_journal import TradeJournal
+
+    j = TradeJournal(
+        id=99,
+        symbol="AAPL",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        status="active",
+        buy_fx_rate=None,
+    )
+
+    mock_session = AsyncMock()
+    mock_session.get.return_value = j
+    factory = _mock_session_factory(mock_session)
+
+    with patch(
+        "app.mcp_server.tooling.order_journal._order_session_factory",
+        return_value=factory,
+    ):
+        result = await modify_journal_entry(
+            journal_id=99,
+            buy_fx_rate=1450.0,
+            fx_rate_source="manual",
+            fx_pnl_accuracy="exact",
+        )
+
+    assert result["success"] is True
+    assert j.buy_fx_rate == Decimal("1450.0")
+    assert j.fx_rate_source == "manual"
+    assert j.fx_pnl_accuracy == "exact"
+
+
+@pytest.mark.asyncio
+async def test_modify_journal_rejects_invalid_fx_labels():
+    """ROB-568: out-of-enum FX labels are rejected before any DB mutation."""
+    from app.mcp_server.tooling.order_journal import modify_journal_entry
+
+    mock_session = AsyncMock()
+    factory = _mock_session_factory(mock_session)
+
+    with patch(
+        "app.mcp_server.tooling.order_journal._order_session_factory",
+        return_value=factory,
+    ):
+        bad_source = await modify_journal_entry(journal_id=99, fx_rate_source="bogus")
+        bad_accuracy = await modify_journal_entry(
+            journal_id=99, fx_pnl_accuracy="super_precise"
+        )
+
+    assert bad_source["success"] is False
+    assert "fx_rate_source" in bad_source["error"]
+    assert bad_accuracy["success"] is False
+    assert "fx_pnl_accuracy" in bad_accuracy["error"]
+    # Validation must short-circuit before loading or committing the journal.
+    mock_session.get.assert_not_called()
+    mock_session.commit.assert_not_called()
