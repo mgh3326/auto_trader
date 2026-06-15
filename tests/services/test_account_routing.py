@@ -117,6 +117,14 @@ def test_invalid_cost_profile_values_fall_back_to_review_required_defaults():
     assert profiles.max_order_notional_krw("toss") == pytest.approx(1_000_000)
 
 
+def test_invalid_cost_profile_version_uses_default_seed():
+    profiles = build_cost_profiles({"version": "bad"})
+
+    assert profiles.source == "default_seed"
+    assert profiles.review_required is True
+    assert profiles.threshold_bps("kr") == pytest.approx(25)
+
+
 def test_no_existing_holding_recommends_cheapest_eligible_account():
     result = suggest_account_from_snapshot(
         AccountRoutingInput(
@@ -139,6 +147,51 @@ def test_no_existing_holding_recommends_cheapest_eligible_account():
     )
     assert result["cost_comparison"]["toss"]["total_cost_krw"] == pytest.approx(0)
     assert result["position_consolidation"]["decision"] == "no_existing_position"
+
+
+@pytest.mark.parametrize(
+    ("side", "market", "quantity", "price", "message"),
+    [
+        ("sell", "kr", 1, 75_000, "buy side only"),
+        ("buy", "crypto", 1, 75_000, "kr/us markets only"),
+        ("buy", "kr", 0, 75_000, "quantity must be positive"),
+        ("buy", "kr", 1, 0, "price must be positive"),
+    ],
+)
+def test_invalid_routing_inputs_raise_before_recommendation(
+    side, market, quantity, price, message
+):
+    with pytest.raises(ValueError, match=message):
+        suggest_account_from_snapshot(
+            AccountRoutingInput(
+                symbol="005930",
+                market=market,
+                side=side,
+                quantity=quantity,
+                price=price,
+                usd_krw=None,
+                account_costs=DEFAULT_ACCOUNT_COSTS,
+                capital_snapshot=_cash(),
+                holdings_snapshot=_holdings([]),
+            )
+        )
+
+
+def test_us_routing_requires_usd_krw_rate():
+    with pytest.raises(ValueError, match="usd_krw is required"):
+        suggest_account_from_snapshot(
+            AccountRoutingInput(
+                symbol="AAPL",
+                market="us",
+                side="buy",
+                quantity=1,
+                price=100,
+                usd_krw=None,
+                account_costs=DEFAULT_ACCOUNT_COSTS,
+                capital_snapshot=_cash(),
+                holdings_snapshot=_holdings([]),
+            )
+        )
 
 
 def test_existing_kr_holding_keeps_existing_when_savings_below_threshold():
@@ -248,6 +301,54 @@ def test_existing_kr_holding_breaks_consolidation_when_savings_exceed_threshold(
     assert result["position_consolidation"]["decision"] == "break_for_cost"
     assert result["position_consolidation"]["distribution_warning"] is True
     assert "distribution_warning" in result["reason_codes"]
+
+
+def test_existing_account_ineligible_recommends_cheapest_eligible_account():
+    result = suggest_account_from_snapshot(
+        AccountRoutingInput(
+            symbol="005930",
+            market="kr",
+            side="buy",
+            quantity=10,
+            price=75_000,
+            usd_krw=None,
+            account_costs=DEFAULT_ACCOUNT_COSTS,
+            capital_snapshot=_cash(kis_domestic=0, toss_krw=1_000_000),
+            holdings_snapshot=_holdings(["kis_domestic"]),
+        )
+    )
+
+    assert result["recommended_account"] == "toss"
+    assert result["position_consolidation"]["decision"] == "existing_account_ineligible"
+    assert result["position_consolidation"]["existing_account_ineligible"] is True
+    assert "not eligible" in result["position_consolidation"]["note"]
+
+
+def test_already_split_position_prefers_cheapest_eligible_account():
+    result = suggest_account_from_snapshot(
+        AccountRoutingInput(
+            symbol="005930",
+            market="kr",
+            side="buy",
+            quantity=10,
+            price=75_000,
+            usd_krw=None,
+            account_costs=DEFAULT_ACCOUNT_COSTS,
+            capital_snapshot=_cash(),
+            holdings_snapshot=_holdings(["kis_domestic", "toss"]),
+        )
+    )
+
+    assert result["recommended_account"] == "toss"
+    assert (
+        result["position_consolidation"]["decision"]
+        == "already_split_cheapest_eligible"
+    )
+    assert result["position_consolidation"]["existing_accounts"] == [
+        "kis_domestic",
+        "toss",
+    ]
+    assert "already split" in result["position_consolidation"]["note"]
 
 
 def test_existing_us_holding_uses_stronger_40_bps_threshold():

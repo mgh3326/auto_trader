@@ -175,6 +175,152 @@ async def test_suggest_order_account_impl_rejects_sell_before_quote(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_suggest_order_account_impl_rejects_bad_quantity_before_quote(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import account_routing_tools as tools
+
+    async def fail_quote(_symbol):
+        raise AssertionError("quote should not be fetched for invalid quantity")
+
+    monkeypatch.setattr(tools, "_fetch_quote_equity_kr", fail_quote)
+
+    with pytest.raises(ValueError, match="quantity must be positive"):
+        await tools.suggest_order_account_impl(
+            symbol="005930",
+            market="kr",
+            side="buy",
+            quantity=0,
+            price=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_suggest_order_account_impl_rejects_invalid_market_before_quote(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import account_routing_tools as tools
+
+    async def fail_quote(_symbol):
+        raise AssertionError("quote should not be fetched for invalid market")
+
+    monkeypatch.setattr(tools, "_fetch_quote_equity_kr", fail_quote)
+    monkeypatch.setattr(tools, "_fetch_quote_equity_us", fail_quote)
+
+    with pytest.raises(ValueError, match="market='kr' or market='us'"):
+        await tools.suggest_order_account_impl(
+            symbol="005930",
+            market="crypto",
+            side="buy",
+            quantity=1,
+            price=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_suggest_order_account_impl_rejects_non_positive_input_price():
+    from app.mcp_server.tooling import account_routing_tools as tools
+
+    with pytest.raises(ValueError, match="price must be positive"):
+        await tools.suggest_order_account_impl(
+            symbol="005930",
+            market="kr",
+            side="buy",
+            quantity=1,
+            price=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_suggest_order_account_impl_resolves_default_kr_quote(monkeypatch):
+    from app.mcp_server.tooling import account_routing_tools as tools
+
+    async def fake_kr_quote(symbol):
+        assert symbol == "005930"
+        return {"price": 76_000, "source": ""}
+
+    async def fake_setting(key):
+        assert key == "account_costs"
+        return None
+
+    async def fake_capital(**kwargs):
+        assert kwargs["include_manual"] is False
+        return {
+            "accounts": [
+                {"account": "kis_domestic", "currency": "KRW", "orderable": 2_000_000},
+                {"account": "toss", "currency": "KRW", "orderable": 1_000_000},
+            ],
+            "errors": [],
+        }
+
+    async def fake_holdings(**kwargs):
+        assert kwargs["market"] == "kr"
+        return {"accounts": [], "errors": []}
+
+    monkeypatch.setattr(tools, "_fetch_quote_equity_kr", fake_kr_quote)
+    monkeypatch.setattr(tools, "get_user_setting", fake_setting)
+    monkeypatch.setattr(tools, "get_available_capital_impl", fake_capital)
+    monkeypatch.setattr(tools, "_get_holdings_impl", fake_holdings)
+
+    result = await tools.suggest_order_account_impl(
+        symbol="005930",
+        market=None,
+        side="buy",
+        quantity=1,
+        price=None,
+    )
+
+    assert result["market"] == "kr"
+    assert result["price"] == pytest.approx(76_000)
+    assert result["price_source"] == "quote"
+
+
+@pytest.mark.asyncio
+async def test_suggest_order_account_impl_resolves_default_us_quote(monkeypatch):
+    from app.mcp_server.tooling import account_routing_tools as tools
+
+    async def fake_us_quote(symbol):
+        assert symbol == "AAPL"
+        return {"price": 100, "source": "fake_us_quote"}
+
+    async def fake_setting(key):
+        assert key == "account_costs"
+        return None
+
+    async def fake_capital(**kwargs):
+        assert kwargs["include_manual"] is False
+        return {
+            "accounts": [
+                {"account": "kis_overseas", "currency": "USD", "orderable": 2_000},
+                {"account": "toss", "currency": "USD", "orderable": 500},
+            ],
+            "errors": [],
+        }
+
+    async def fake_holdings(**kwargs):
+        assert kwargs["market"] == "us"
+        return {"accounts": [], "errors": []}
+
+    monkeypatch.setattr(tools, "_fetch_quote_equity_us", fake_us_quote)
+    monkeypatch.setattr(tools, "get_user_setting", fake_setting)
+    monkeypatch.setattr(tools, "get_available_capital_impl", fake_capital)
+    monkeypatch.setattr(tools, "_get_holdings_impl", fake_holdings)
+
+    result = await tools.suggest_order_account_impl(
+        symbol="AAPL",
+        market=None,
+        side="buy",
+        quantity=1,
+        price=None,
+        usd_krw=1500,
+    )
+
+    assert result["market"] == "us"
+    assert result["price"] == pytest.approx(100)
+    assert result["price_source"] == "fake_us_quote"
+
+
+@pytest.mark.asyncio
 async def test_suggest_order_account_impl_fetches_us_fx_when_missing(monkeypatch):
     from app.mcp_server.tooling import account_routing_tools as tools
 

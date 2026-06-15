@@ -641,3 +641,69 @@ async def test_get_operating_briefing_accounts_include_cost_profile(monkeypatch)
     assert account["account"] == "kis"
     assert account["cost_profile"]["commission_bps"] == pytest.approx(1.4)
     assert account["cost_profile"]["source"] == "user_setting"
+
+
+@pytest.mark.asyncio
+async def test_get_operating_briefing_degrades_when_cost_profile_setting_fails(
+    monkeypatch,
+):
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling import operating_briefing as ob
+
+    async def fake_holdings(**kwargs):
+        return {
+            "total_positions": 1,
+            "summary": {},
+            "accounts": [
+                {
+                    "account": "kis",
+                    "broker": "kis",
+                    "account_name": "기본 계좌",
+                    "account_mode": "kis_live",
+                    "order_routable": True,
+                    "positions": [{"symbol": "005930"}],
+                }
+            ],
+            "errors": [],
+        }
+
+    async def fake_pending(db, *, market, account_scope):
+        return SimpleNamespace(
+            orders=[],
+            as_of=datetime.now(tz=UTC).isoformat(),
+            freshness_status="fresh",
+            unavailable_reason=None,
+        )
+
+    async def fake_active_watches(**kwargs):
+        return {"success": True, "count": 0, "active_watches": []}
+
+    async def fake_latest_report(*args, **kwargs):
+        return None
+
+    async def fake_session_context(*args, **kwargs):
+        return {"count": 0, "entries": []}
+
+    async def fake_account_costs():
+        raise RuntimeError("cost settings unavailable")
+
+    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
+    monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
+    monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
+    monkeypatch.setattr(ob, "_recent_session_context", fake_session_context)
+    monkeypatch.setattr(ob, "get_account_costs_setting", fake_account_costs)
+
+    result = await ob.get_operating_briefing_impl(market="kr", account_scope="kis_live")
+
+    account = result["holdings"]["accounts"][0]
+    assert account["cost_profile"] == {
+        "commission_bps": 14.7,
+        "fx_spread_bps": 0.0,
+        "source": "default_seed",
+        "review_required": True,
+    }
+    assert result["holdings"]["errors"] == [
+        {"source": "account_costs", "error": "cost settings unavailable"}
+    ]
