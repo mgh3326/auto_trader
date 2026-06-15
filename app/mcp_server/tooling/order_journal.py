@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.fx_pnl import (
+    FX_PNL_ACCURACY_UNAVAILABLE,
+    FX_RATE_SOURCE_UNAVAILABLE,
+    compute_us_equity_fx_pnl,
+)
 from app.mcp_server.tooling.order_validation import DefensiveTrimContext
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
@@ -149,6 +154,9 @@ async def _create_trade_journal_for_buy(
     indicators_snapshot: dict[str, Any] | None,
     account_type: str = "live",
     account: str | None = None,
+    buy_fx_rate: float | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
 ) -> dict[str, Any]:
     """Create a draft trade journal entry for a buy order.
 
@@ -184,6 +192,9 @@ async def _create_trade_journal_for_buy(
         account=account_name,
         account_type=account_type,
         status=JournalStatus.draft,
+        buy_fx_rate=Decimal(str(buy_fx_rate)) if buy_fx_rate is not None else None,
+        fx_rate_source=fx_rate_source,
+        fx_pnl_accuracy=fx_pnl_accuracy,
     )
 
     async with _order_session_factory()() as db:
@@ -207,6 +218,9 @@ async def _close_journals_on_sell(
     account_type: str = "live",
     account: str | None = None,
     defensive_trim_ctx: DefensiveTrimContext | None = None,
+    sell_fx_rate: float | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -229,6 +243,7 @@ async def _close_journals_on_sell(
     """
     sell_qty_dec = Decimal(str(sell_quantity))
     sell_price_dec = Decimal(str(sell_price))
+    sell_fx_rate_dec = Decimal(str(sell_fx_rate)) if sell_fx_rate is not None else None
     remaining_qty = sell_qty_dec
     resolved_reason = (exit_reason or "").strip() or "sold_via_place_order"
 
@@ -248,6 +263,15 @@ async def _close_journals_on_sell(
         closed_ids: list[int] = []
         weighted_pnl_sum = Decimal("0")
         weighted_qty_sum = Decimal("0")
+
+        fx_pnl_sum = Decimal("0")
+        security_pnl_usd_sum = Decimal("0")
+        security_pnl_krw_sum = Decimal("0")
+        total_pnl_krw_sum = Decimal("0")
+        fx_buy_notional_sum = Decimal("0")
+        fx_buy_weighted_sum = Decimal("0")
+        fx_computed_count = 0
+        fx_unavailable_journal_ids: list[int] = []
 
         for journal in journals:
             journal_qty = journal.quantity
@@ -281,6 +305,44 @@ async def _close_journals_on_sell(
                     weighted_pnl_sum += pnl_pct * journal_qty
                     weighted_qty_sum += journal_qty
 
+            # ROB-568 — US FX PnL split
+            if (
+                journal.instrument_type == InstrumentType.equity_us
+                and journal_qty is not None
+                and journal.entry_price is not None
+            ):
+                journal.sell_fx_rate = sell_fx_rate_dec
+                fx_values = compute_us_equity_fx_pnl(
+                    buy_price=Decimal(str(journal.entry_price)),
+                    sell_price=sell_price_dec,
+                    quantity=Decimal(str(journal_qty)),
+                    buy_fx_rate=Decimal(str(journal.buy_fx_rate))
+                    if journal.buy_fx_rate is not None
+                    else None,
+                    sell_fx_rate=sell_fx_rate_dec,
+                )
+                if fx_values is None:
+                    journal.fx_rate_source = FX_RATE_SOURCE_UNAVAILABLE
+                    journal.fx_pnl_accuracy = FX_PNL_ACCURACY_UNAVAILABLE
+                    fx_unavailable_journal_ids.append(journal.id)
+                else:
+                    journal.security_pnl_usd = fx_values["security_pnl_usd"]
+                    journal.security_pnl_krw = fx_values["security_pnl_krw"]
+                    journal.fx_pnl_krw = fx_values["fx_pnl_krw"]
+                    journal.total_pnl_krw = fx_values["total_pnl_krw"]
+                    journal.fx_rate_source = fx_rate_source
+                    journal.fx_pnl_accuracy = fx_pnl_accuracy
+
+                    fx_pnl_sum += fx_values["fx_pnl_krw"]
+                    security_pnl_usd_sum += fx_values["security_pnl_usd"]
+                    security_pnl_krw_sum += fx_values["security_pnl_krw"]
+                    total_pnl_krw_sum += fx_values["total_pnl_krw"]
+                    fx_buy_notional_sum += fx_values["buy_notional_usd"]
+                    fx_buy_weighted_sum += fx_values["buy_notional_usd"] * Decimal(
+                        str(journal.buy_fx_rate)
+                    )
+                    fx_computed_count += 1
+
             closed_ids.append(journal.id)
 
         await db.commit()
@@ -299,6 +361,17 @@ async def _close_journals_on_sell(
         "closed_ids": closed_ids,
         "total_pnl_pct": total_pnl_pct,
         "realized_pnl_basis": "journal_entry",
+        "buy_fx_rate": float(fx_buy_weighted_sum / fx_buy_notional_sum)
+        if fx_buy_notional_sum > 0
+        else None,
+        "sell_fx_rate": float(sell_fx_rate_dec) if sell_fx_rate_dec is not None else None,
+        "fx_pnl_krw": float(fx_pnl_sum) if fx_computed_count else None,
+        "security_pnl_usd": float(security_pnl_usd_sum) if fx_computed_count else None,
+        "security_pnl_krw": float(security_pnl_krw_sum) if fx_computed_count else None,
+        "total_pnl_krw": float(total_pnl_krw_sum) if fx_computed_count else None,
+        "fx_rate_source": fx_rate_source if fx_computed_count else FX_RATE_SOURCE_UNAVAILABLE,
+        "fx_pnl_accuracy": fx_pnl_accuracy if fx_computed_count else FX_PNL_ACCURACY_UNAVAILABLE,
+        "fx_unavailable_journal_ids": fx_unavailable_journal_ids,
     }
 
 
