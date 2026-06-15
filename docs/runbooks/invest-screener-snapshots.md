@@ -408,6 +408,33 @@ INVESTOR_FLOW_SNAPSHOTS_COMMIT_ENABLED=true
 
 The registered TaskIQ cron remains `30 8 * * 1-5` KST and is holiday-gated. It targets the previous KR trading session because Naver daily investor-flow rows finalize the next morning.
 
+### Market-field backfill after PR2 migration
+
+PR2 adds nullable columns:
+
+- `close`
+- `change_rate`
+- `volume`
+- `foreign_holding_shares`
+- `foreign_holding_rate`
+
+The migration is additive and nullable. It does not delete or rewrite existing rows, but existing rows remain null for the new fields until the operator runs a commit backfill.
+
+After `uv run alembic upgrade head` and approval:
+
+```bash
+uv run python -m scripts.build_investor_flow_snapshots --market kr --all --days 20 --commit
+```
+
+Read-only verification:
+
+```bash
+uv run pytest tests/test_investor_flow_snapshots_repository.py tests/test_investor_flow_snapshot_builder.py tests/test_stock_detail_investor_flow_provider.py -v
+cd frontend/invest && npm test -- StockDetailPage.test.tsx
+```
+
+For a known KR symbol, confirm the investor-flow daily table shows numeric close, percent change, volume, and foreign holding fields. `change_rate` and `foreign_holding_rate` are percent points, so `2.5` renders as `2.5%` and `47.73` renders as `47.73%`.
+
 ### Verification
 
 ```bash

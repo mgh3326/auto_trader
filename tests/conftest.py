@@ -661,6 +661,16 @@ async def db_session():
                 # ROB-534 — Toss symbol master columns.
                 for table, cols in [
                     (
+                        "investor_flow_snapshots",
+                        [
+                            ("close", "NUMERIC(20, 6)"),
+                            ("change_rate", "NUMERIC(10, 4)"),
+                            ("volume", "BIGINT"),
+                            ("foreign_holding_shares", "BIGINT"),
+                            ("foreign_holding_rate", "NUMERIC(10, 4)"),
+                        ],
+                    ),
+                    (
                         "kr_symbol_universe",
                         [
                             ("security_type", "VARCHAR(20)"),
