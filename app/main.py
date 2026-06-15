@@ -31,6 +31,7 @@ from app.routers import (
     invest_api,
     invest_app_spa,
     invest_fills,
+    invest_open_orders,
     invest_scalping,
     invest_web_spa,
     investment_dimension_reports,
@@ -186,6 +187,7 @@ def create_app() -> FastAPI:
     app.include_router(invest_api.router)
     app.include_router(invest_scalping.router)
     app.include_router(invest_fills.router)
+    app.include_router(invest_open_orders.router)
     app.include_router(invest_app_spa.router)
     app.include_router(invest_web_spa.router)
     app.include_router(trade_journals.router)

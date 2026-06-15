@@ -14,6 +14,7 @@ import { UnifiedHoldingsTable } from "../../components/my/UnifiedHoldingsTable";
 import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
 import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
 import { SignalsPanel } from "../../components/signals/SignalsPanel";
+import { CurrentOrdersPanel } from "../../components/my/CurrentOrdersPanel";
 import { MobilePortfolioPage } from "../mobile/MobilePortfolioPage";
 import type { AssetCategoryKey } from "../../types/filters";
 import type { AccountSource, HomeSummary } from "../../types/invest";
@@ -21,6 +22,20 @@ import type { AccountSource, HomeSummary } from "../../types/invest";
 export function InvestPortfolioRoute() {
   const viewport = useViewport();
   return viewport === "mobile" ? <MobilePortfolioPage /> : <DesktopPortfolioPage />;
+}
+
+function portfolioTitle(tab: PortfolioTab): string {
+  if (tab === "holdings") return "통합 보유 현황";
+  if (tab === "signals") return "내 투자 시그널";
+  if (tab === "currentOrders") return "현재 주문";
+  return "매도 이력";
+}
+
+function portfolioDescription(tab: PortfolioTab): string {
+  if (tab === "holdings") return "KIS, Toss/manual, 모의/수동 계좌를 한 화면에서 비교하고 종목별 출처를 확인합니다.";
+  if (tab === "signals") return "보유·관심 종목과 시장별 AI 분석 시그널을 내 투자 화면에서 함께 확인합니다.";
+  if (tab === "currentOrders") return "KIS/Toss/Upbit 실계좌의 현재 미체결·대기 주문을 읽기 전용으로 확인합니다.";
+  return "KIS/Upbit 체결 보정 ledger 기준 최근 매도 체결을 별도 화면에서 확인합니다.";
 }
 
 export function DesktopPortfolioPage() {
@@ -103,14 +118,10 @@ export function DesktopPortfolioPage() {
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ fontSize: 12, color: "var(--fg-3)", fontWeight: 700 }}>내 투자</div>
                 <h1 style={{ margin: 0, fontSize: 26, lineHeight: 1.2, letterSpacing: "-0.03em" }}>
-                  {activeTab === "holdings" ? "통합 보유 현황" : activeTab === "signals" ? "내 투자 시그널" : "매도 이력"}
+                  {portfolioTitle(activeTab)}
                 </h1>
                 <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 13 }}>
-                  {activeTab === "holdings"
-                    ? "KIS, Toss/manual, 모의/수동 계좌를 한 화면에서 비교하고 종목별 출처를 확인합니다."
-                    : activeTab === "signals"
-                      ? "보유·관심 종목과 시장별 AI 분석 시그널을 내 투자 화면에서 함께 확인합니다."
-                    : "KIS/Upbit 체결 보정 ledger 기준 최근 매도 체결을 별도 화면에서 확인합니다."}
+                  {portfolioDescription(activeTab)}
                 </p>
               </div>
               <PortfolioTabBar activeTab={activeTab} onChange={setActiveTab} />
@@ -134,6 +145,8 @@ export function DesktopPortfolioPage() {
                 </>
               ) : activeTab === "signals" ? (
                 <SignalsPanel />
+              ) : activeTab === "currentOrders" ? (
+                <CurrentOrdersPanel />
               ) : (
                 <SellHistoryPanel />
               )}
