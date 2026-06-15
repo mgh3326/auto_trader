@@ -11,7 +11,9 @@
 **Migration:** 0.
 
 **Execution status (2026-06-15):** Implemented in branch `rob-576` through
-PR1 + PR2 scope. Focused tests, targeted lint/type checks, and `make test-unit`
+PR1 + PR2 scope. The final PR2 implementation reuses the ROB-574 uppercase
+auto-reconcile gates (`TOSS_LIVE_AUTO_RECONCILE_*`) already present in the
+branch lineage. Focused tests, targeted lint/type checks, and `make test-unit`
 passed. Linear label/comment application is still pending because the Linear
 session was expired during follow-up verification.
 
@@ -29,7 +31,7 @@ If the operator does not answer, implement Tasks 1-4 only and leave Tasks 5-7 un
 
 ## File Structure
 
-- Modify `app/core/config.py`: add three default-off Toss gates.
+- Modify `app/core/config.py`: add the default-off Toss fill notification gate.
 - Create `app/monitoring/trade_notifier/runtime.py`: shared notifier setup/shutdown from `settings`.
 - Modify `app/main.py`: use the shared notifier setup/shutdown helper.
 - Modify `app/core/taskiq_broker.py`: use the same helper for worker startup.
@@ -65,7 +67,7 @@ If the operator does not answer, implement Tasks 1-4 only and leave Tasks 5-7 un
 Append this to `tests/services/brokers/toss/test_config.py`:
 
 ```python
-def test_toss_fill_and_auto_reconcile_gates_default_false() -> None:
+def test_toss_fill_notify_gate_defaults_false() -> None:
     configured = Settings(
         kis_app_key="kis-key",
         kis_app_secret="kis-secret",
@@ -76,8 +78,6 @@ def test_toss_fill_and_auto_reconcile_gates_default_false() -> None:
     )
 
     assert configured.toss_fill_notify_enabled is False
-    assert configured.toss_live_auto_reconcile_enabled is False
-    assert configured.toss_live_auto_reconcile_safety_review_passed is False
 ```
 
 - [ ] **Step 2: Write failing MCP lifespan tests**
@@ -144,7 +144,7 @@ Run:
 
 ```bash
 uv run pytest \
-  tests/services/brokers/toss/test_config.py::test_toss_fill_and_auto_reconcile_gates_default_false \
+  tests/services/brokers/toss/test_config.py::test_toss_fill_notify_gate_defaults_false \
   tests/test_mcp_server_lifecycle.py::test_lifespan_skips_trade_notifier_when_toss_fill_notify_disabled \
   tests/test_mcp_server_lifecycle.py::test_lifespan_configures_trade_notifier_when_toss_fill_notify_enabled \
   -v
@@ -152,16 +152,14 @@ uv run pytest \
 
 Expected: FAIL because `Settings` and `app.mcp_server.lifecycle` do not expose the new attributes/helpers yet.
 
-- [ ] **Step 4: Add Toss gate settings**
+- [ ] **Step 4: Add Toss fill notification gate setting**
 
 In `app/core/config.py`, inside the Toss settings block after `toss_live_order_mutations_enabled`, add:
 
 ```python
-    # ROB-576 — Toss fill notification and optional auto-reconcile are inert
-    # until explicitly enabled by the operator.
+    # ROB-576 — Toss fill notifications are inert until explicitly enabled by
+    # the operator. Toss auto-reconcile gates live with the task flags below.
     toss_fill_notify_enabled: bool = False
-    toss_live_auto_reconcile_enabled: bool = False
-    toss_live_auto_reconcile_safety_review_passed: bool = False
 ```
 
 - [ ] **Step 5: Add shared notifier runtime helper**
@@ -362,7 +360,7 @@ Run:
 
 ```bash
 uv run pytest \
-  tests/services/brokers/toss/test_config.py::test_toss_fill_and_auto_reconcile_gates_default_false \
+  tests/services/brokers/toss/test_config.py::test_toss_fill_notify_gate_defaults_false \
   tests/test_mcp_server_lifecycle.py \
   tests/test_taskiq_broker.py \
   -v
@@ -970,9 +968,9 @@ from app.tasks import toss_live_reconcile_tasks as mod
 @pytest.mark.asyncio
 async def test_paused_when_flag_disabled():
     with (
-        patch.object(mod.settings, "toss_live_auto_reconcile_enabled", False),
+        patch.object(mod.settings, "TOSS_LIVE_AUTO_RECONCILE_ENABLED", False),
         patch.object(
-            mod.settings, "toss_live_auto_reconcile_safety_review_passed", True
+            mod.settings, "TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED", True
         ),
         patch.object(mod, "toss_reconcile_orders_impl", AsyncMock()) as kernel,
     ):
@@ -986,9 +984,9 @@ async def test_paused_when_flag_disabled():
 @pytest.mark.asyncio
 async def test_paused_when_safety_review_flag_disabled():
     with (
-        patch.object(mod.settings, "toss_live_auto_reconcile_enabled", True),
+        patch.object(mod.settings, "TOSS_LIVE_AUTO_RECONCILE_ENABLED", True),
         patch.object(
-            mod.settings, "toss_live_auto_reconcile_safety_review_passed", False
+            mod.settings, "TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED", False
         ),
         patch.object(mod, "toss_reconcile_orders_impl", AsyncMock()) as kernel,
     ):
@@ -1003,9 +1001,9 @@ async def test_paused_when_safety_review_flag_disabled():
 async def test_runs_kernel_when_enabled():
     fake = {"success": True, "counts": {"filled": 1}}
     with (
-        patch.object(mod.settings, "toss_live_auto_reconcile_enabled", True),
+        patch.object(mod.settings, "TOSS_LIVE_AUTO_RECONCILE_ENABLED", True),
         patch.object(
-            mod.settings, "toss_live_auto_reconcile_safety_review_passed", True
+            mod.settings, "TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED", True
         ),
         patch.object(
             mod, "toss_reconcile_orders_impl", AsyncMock(return_value=fake)
@@ -1049,12 +1047,12 @@ from app.mcp_server.tooling.toss_live_ledger import toss_reconcile_orders_impl
 
 @broker.task(task_name="toss_live.reconcile_periodic")  # no schedule -> paused
 async def toss_live_reconcile_periodic() -> dict:
-    if not settings.toss_live_auto_reconcile_enabled:
+    if not settings.TOSS_LIVE_AUTO_RECONCILE_ENABLED:
         return {
             "status": "paused",
             "message": "TOSS_LIVE_AUTO_RECONCILE_ENABLED is False",
         }
-    if not settings.toss_live_auto_reconcile_safety_review_passed:
+    if not settings.TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED:
         return {
             "status": "paused",
             "message": "TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED is False",
@@ -1240,4 +1238,4 @@ Confirm:
 
 - Spec coverage: PR1 covers MCP notifier configure, Toss fill normalization, reconcile booking hook, idempotency through existing `delta<=0`, market routing, threshold gate, fail-open notification failure, no enrichment, and docs. PR2 covers paused auto-reconcile with double gate and docs.
 - Placeholder scan: this plan intentionally has no unresolved placeholder tokens, no broad "add tests" instruction without code, and no undefined function names.
-- Type consistency: settings names are `toss_fill_notify_enabled`, `toss_live_auto_reconcile_enabled`, and `toss_live_auto_reconcile_safety_review_passed`; task name is `toss_live.reconcile_periodic`; normalizer name is `normalize_toss_fill`; helper name is `_notify_toss_fill`.
+- Type consistency: settings names are `toss_fill_notify_enabled` and existing uppercase `TOSS_LIVE_AUTO_RECONCILE_*`; task name is `toss_live.reconcile_periodic`; normalizer name is `normalize_toss_fill`; helper name is `_notify_toss_fill`.

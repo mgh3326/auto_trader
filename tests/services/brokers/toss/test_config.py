@@ -44,7 +44,7 @@ def test_toss_live_order_mutation_gate_defaults_false() -> None:
     assert configured.toss_live_order_mutations_enabled is False
 
 
-def test_toss_fill_and_auto_reconcile_gates_default_false() -> None:
+def test_toss_fill_notify_gate_defaults_false() -> None:
     configured = Settings(
         kis_app_key="kis-key",
         kis_app_secret="kis-secret",
@@ -55,5 +55,3 @@ def test_toss_fill_and_auto_reconcile_gates_default_false() -> None:
     )
 
     assert configured.toss_fill_notify_enabled is False
-    assert configured.toss_live_auto_reconcile_enabled is False
-    assert configured.toss_live_auto_reconcile_safety_review_passed is False

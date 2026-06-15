@@ -212,11 +212,9 @@ class Settings(BaseSettings):
     toss_api_base_url: str | None = None
     toss_live_order_mutations_enabled: bool = False
 
-    # ROB-576 — Toss fill notification and optional auto-reconcile are inert
-    # until explicitly enabled by the operator.
+    # ROB-576 — Toss fill notifications are inert until explicitly enabled by
+    # the operator. Toss auto-reconcile gates live with the task flags below.
     toss_fill_notify_enabled: bool = False
-    toss_live_auto_reconcile_enabled: bool = False
-    toss_live_auto_reconcile_safety_review_passed: bool = False
 
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)
