@@ -29,6 +29,7 @@ from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_financials,
     handle_get_insider_transactions,
 )
+from app.mcp_server.tooling.fundamentals._fx_rates import handle_get_fx_rate
 from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
     handle_get_intraday_investor_flow,
 )
@@ -89,6 +90,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_crypto_order_flow",
     "get_crypto_social",
     "get_retail_sentiment",
+    "get_fx_rate",
     "get_market_index",
     "get_upbit_index",
     "get_upbit_altseason",
@@ -430,6 +432,21 @@ def _register_fundamentals_tools_impl(
         window: str = "1d",
     ) -> dict[str, Any]:
         return await handle_get_retail_sentiment(symbol, market, window)
+
+    @mcp.tool(
+        name="get_fx_rate",
+        description=(
+            "Get the current USD/KRW FX spot quote for exchange-timing and "
+            "US-market cash conversion decisions. P1 supports only USDKRW "
+            "spot lookup through the existing exchange-rate service; use "
+            "ROB-565/follow-ups for account-routing total cost, trend, bank, "
+            "or preferential effective-rate modeling."
+        ),
+    )
+    async def get_fx_rate(
+        pair: str = "USDKRW",
+    ) -> dict[str, Any]:
+        return await handle_get_fx_rate(pair)
 
     @mcp.tool(
         name="get_market_index",

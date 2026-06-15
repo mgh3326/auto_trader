@@ -18,6 +18,7 @@ This module contains tests for:
 import asyncio
 import dataclasses
 import json
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import httpx
@@ -42,12 +43,14 @@ from app.mcp_server.tooling import (
     portfolio_holdings,
     shared,
 )
+from app.mcp_server.tooling.fundamentals import _fx_rates as fundamentals_fx_rates
 from app.mcp_server.tooling.fundamentals import (
     _intraday_investor_flow as intraday_investor_flow,
 )
 from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.services import market_data as market_data_service
 from app.services import naver_finance
+from app.services.exchange_rate_service import UsdKrwExchangeRateQuote
 from tests._mcp_tooling_support import (
     _patch_httpx_async_client,
     _patch_runtime_attr,
@@ -1996,6 +1999,117 @@ class TestGetFundingRate:
 
 
 # ---------------------------------------------------------------------------
+# get_fx_rate Tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestGetFxRateHandler:
+    """Tests for the pure get_fx_rate handler."""
+
+    async def test_get_fx_rate_returns_usdkrw_details(self, monkeypatch):
+        async def fake_details() -> UsdKrwExchangeRateQuote:
+            return UsdKrwExchangeRateQuote(
+                rate=1505.7,
+                mid_rate=1505.4,
+                source="toss",
+                valid_from=datetime(2026, 6, 15, 0, 0, tzinfo=UTC),
+                valid_until=datetime(2026, 6, 15, 0, 1, tzinfo=UTC),
+                basis_point=-12.5,
+                rate_change_type="DOWN",
+            )
+
+        monkeypatch.setattr(
+            fundamentals_fx_rates,
+            "get_usd_krw_rate_details",
+            fake_details,
+        )
+
+        result = await fundamentals_fx_rates.handle_get_fx_rate()
+
+        assert result == {
+            "pair": "USDKRW",
+            "base_currency": "USD",
+            "quote_currency": "KRW",
+            "rate": 1505.7,
+            "mid_rate": 1505.4,
+            "default_rate": 1505.4,
+            "source": "toss",
+            "valid_from": "2026-06-15T00:00:00+00:00",
+            "valid_until": "2026-06-15T00:01:00+00:00",
+            "basis_point": -12.5,
+            "rate_change_type": "DOWN",
+        }
+
+    async def test_get_fx_rate_normalizes_pair_aliases(self, monkeypatch):
+        async def fake_details() -> UsdKrwExchangeRateQuote:
+            return UsdKrwExchangeRateQuote(
+                rate=1498.2,
+                mid_rate=1498.2,
+                source="open_er_api",
+            )
+
+        monkeypatch.setattr(
+            fundamentals_fx_rates,
+            "get_usd_krw_rate_details",
+            fake_details,
+        )
+
+        for pair in ("USDKRW", "usdkrw", "USD/KRW", "USD_KRW", "USD-KRW"):
+            result = await fundamentals_fx_rates.handle_get_fx_rate(pair=pair)
+            assert result["pair"] == "USDKRW"
+            assert result["base_currency"] == "USD"
+            assert result["quote_currency"] == "KRW"
+            assert result["default_rate"] == pytest.approx(1498.2)
+            assert result["source"] == "open_er_api"
+            assert result["valid_from"] is None
+            assert result["valid_until"] is None
+            assert result["basis_point"] is None
+            assert result["rate_change_type"] is None
+
+    async def test_get_fx_rate_rejects_unsupported_pair(self):
+        with pytest.raises(ValueError, match="Unsupported FX pair 'EURKRW'"):
+            await fundamentals_fx_rates.handle_get_fx_rate(pair="EURKRW")
+
+
+class TestGetFxRateToolRegistration:
+    """Tests for get_fx_rate MCP registration."""
+
+    @pytest.mark.parametrize("profile", list(McpProfile))
+    def test_get_fx_rate_registered_on_all_profiles(self, profile: McpProfile):
+        tools = _build_tools(profile=profile)
+
+        assert "get_fx_rate" in tools
+
+    @pytest.mark.asyncio
+    async def test_registered_get_fx_rate_delegates_to_handler(self, monkeypatch):
+        tools = build_tools()
+
+        async def fake_details() -> UsdKrwExchangeRateQuote:
+            return UsdKrwExchangeRateQuote(
+                rate=1501.0,
+                mid_rate=1500.5,
+                source="toss",
+                basis_point=3.0,
+                rate_change_type="UP",
+            )
+
+        monkeypatch.setattr(
+            fundamentals_fx_rates,
+            "get_usd_krw_rate_details",
+            fake_details,
+        )
+
+        result = await tools["get_fx_rate"](pair="USD/KRW")
+
+        assert result["pair"] == "USDKRW"
+        assert result["default_rate"] == pytest.approx(1500.5)
+        assert result["source"] == "toss"
+        assert result["basis_point"] == pytest.approx(3.0)
+        assert result["rate_change_type"] == "UP"
+
+
+# ---------------------------------------------------------------------------
 # get_market_index Tool
 # ---------------------------------------------------------------------------
 
@@ -2458,6 +2572,13 @@ class TestGetMarketIndex:
         # fail-open: error payload, never fabricated values
         assert "indices" not in result or not result.get("indices")
         assert result.get("error") and result.get("source") == "coingecko"
+
+    async def test_usdkrw_is_not_market_index(self):
+        """FX pairs must stay on get_fx_rate, not get_market_index."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Unknown index symbol 'USDKRW'"):
+            await tools["get_market_index"](symbol="USDKRW")
 
 
 # ---------------------------------------------------------------------------

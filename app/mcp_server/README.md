@@ -54,6 +54,14 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - A successful NXT overlay returns `data_state: "fresh"`, `regular_session_data_state` with the KRX classifier value, and venue diagnostics (`venue`, `venue_label`, `kis_market_code`, `source_endpoint`, `source_tr_id`) when KIS supplies them.
   - If the NXT orderbook is empty or unavailable, `get_quote` keeps the ROB-464 stale-session behavior: KRX daily `price`, `data_state` from `kr_market_data_state()`, and no NXT diagnostic fields.
   - KR NXT overlay honors Toss market-calendar partial-session closures when the Toss API is enabled; otherwise it falls back to XKRX session days and the corrected NXT windows.
+- `get_fx_rate(pair="USDKRW")`
+  - Read-only spot FX quote for exchange-timing and US-market cash conversion decisions.
+  - P1 supports USD/KRW only. Accepted spellings: `USDKRW`, `USD/KRW`, `USD_KRW`, `USD-KRW`.
+  - Source is `app.services.exchange_rate_service.get_usd_krw_rate_details()`, which uses Toss when enabled and open.er-api as fallback.
+  - Response fields: `pair`, `base_currency`, `quote_currency`, `rate`, `mid_rate`, `default_rate`, `source`, `valid_from`, `valid_until`, `basis_point`, `rate_change_type`.
+  - `default_rate` mirrors the scalar exchange-rate behavior used by existing portfolio and cash consumers.
+  - Unsupported pairs raise a tool argument error. FX pairs are not market indices; `get_market_index("USDKRW")` remains unsupported.
+  - Trends, bank-specific quotes, preferential effective rates, exchange execution, and US-order total-cost routing are outside ROB-567 P1.
 - `get_orderbook(symbol, market="kr")`
 - US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`
   - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them
