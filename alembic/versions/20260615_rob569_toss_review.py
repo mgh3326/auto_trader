@@ -1,6 +1,6 @@
 """ROB-569 add Toss reconcile manual-review fields.
 
-Revision ID: 20260615_rob569_toss_manual_review
+Revision ID: 20260615_rob569_toss_review
 Revises: ec2fbbc5898c
 Create Date: 2026-06-15
 """
@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "20260615_rob569_toss_manual_review"
+revision: str = "20260615_rob569_toss_review"
 down_revision: str | Sequence[str] | None = "ec2fbbc5898c"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

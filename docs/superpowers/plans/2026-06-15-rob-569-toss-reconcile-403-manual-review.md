@@ -28,7 +28,7 @@
   - Add coverage for GET `403 non-json-response` retry after force reissue.
   - Add coverage proving mutation POSTs do not retry the same error.
   - Add coverage proving `429` uses backoff and does not force token reissue.
-- Create `alembic/versions/20260615_rob569_toss_manual_review.py`
+- Create `alembic/versions/20260615_rob569_toss_review.py`
   - Add `requires_manual_review`, `manual_review_reason`, and `last_reconcile_error` to `review.toss_live_order_ledger`.
   - Add an index on `requires_manual_review` for operator queries.
 - Modify `app/models/review.py`
@@ -338,7 +338,7 @@ git commit -m "fix: retry toss get order after 403 non-json auth error"
 ### Task 3: Add Toss Ledger Manual-Review Columns
 
 **Files:**
-- Create: `alembic/versions/20260615_rob569_toss_manual_review.py`
+- Create: `alembic/versions/20260615_rob569_toss_review.py`
 - Modify: `app/models/review.py`
 - Modify: `tests/test_rob538_toss_live_ledger_schema.py`
 
@@ -364,12 +364,12 @@ Expected: FAIL with `missing column requires_manual_review`.
 
 - [ ] **Step 3: Add the Alembic migration**
 
-Create `alembic/versions/20260615_rob569_toss_manual_review.py`:
+Create `alembic/versions/20260615_rob569_toss_review.py`:
 
 ```python
 """ROB-569 add Toss reconcile manual-review fields.
 
-Revision ID: 20260615_rob569_toss_manual_review
+Revision ID: 20260615_rob569_toss_review
 Revises: ec2fbbc5898c
 Create Date: 2026-06-15
 """
@@ -382,7 +382,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = "20260615_rob569_toss_manual_review"
+revision: str = "20260615_rob569_toss_review"
 down_revision: Union[str, Sequence[str], None] = "ec2fbbc5898c"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -453,12 +453,12 @@ uv run pytest tests/test_rob538_toss_live_ledger_schema.py -q
 uv run alembic heads
 ```
 
-Expected: pytest passes; Alembic reports `20260615_rob569_toss_manual_review (head)`.
+Expected: pytest passes; Alembic reports `20260615_rob569_toss_review (head)`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add alembic/versions/20260615_rob569_toss_manual_review.py app/models/review.py tests/test_rob538_toss_live_ledger_schema.py
+git add alembic/versions/20260615_rob569_toss_review.py app/models/review.py tests/test_rob538_toss_live_ledger_schema.py
 git commit -m "feat: add toss ledger manual review fields"
 ```
 
@@ -885,7 +885,7 @@ uv run ruff check \
   tests/services/test_toss_live_order_ledger_service.py \
   tests/mcp_server/tooling/test_toss_live_ledger.py \
   tests/test_rob538_toss_live_ledger_schema.py \
-  alembic/versions/20260615_rob569_toss_manual_review.py
+  alembic/versions/20260615_rob569_toss_review.py
 ```
 
 Expected: no Ruff violations.
@@ -898,7 +898,7 @@ Run:
 uv run alembic heads
 ```
 
-Expected: exactly one head, `20260615_rob569_toss_manual_review (head)`.
+Expected: exactly one head, `20260615_rob569_toss_review (head)`.
 
 - [ ] **Step 4: Update Linear metadata**
 
@@ -922,7 +922,7 @@ git add app/services/brokers/toss/client.py \
   tests/services/test_toss_live_order_ledger_service.py \
   tests/mcp_server/tooling/test_toss_live_ledger.py \
   tests/test_rob538_toss_live_ledger_schema.py \
-  alembic/versions/20260615_rob569_toss_manual_review.py \
+  alembic/versions/20260615_rob569_toss_review.py \
   docs/runbooks/toss-live-order-reconcile.md \
   app/mcp_server/README.md
 git commit -m "chore: verify toss reconcile manual review"
