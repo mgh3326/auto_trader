@@ -17,13 +17,22 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     normalize_account_filter as _normalize_account_filter,
 )
-from app.mcp_server.tooling.user_settings_tools import get_manual_cash_setting
+from app.mcp_server.tooling.user_settings_tools import (
+    get_manual_cash_setting,
+    get_user_setting,
+)
+from app.services.account_routing import compact_cost_profile
 from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
+
+
+async def get_account_costs_setting() -> dict[str, Any] | None:
+    value = await get_user_setting("account_costs")
+    return value if isinstance(value, dict) else None
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
@@ -481,6 +490,19 @@ async def get_available_capital_impl(
             logger.warning("Failed to get manual cash setting: %s", exc)
             errors.append({"source": "manual_cash", "error": str(exc)})
 
+    try:
+        account_costs = await get_account_costs_setting()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to get account cost setting: %s", exc)
+        errors.append({"source": "account_costs", "error": str(exc)})
+        account_costs = None
+    for processed_acc in processed_accounts:
+        account_id = str(processed_acc.get("account") or "")
+        market = "us" if processed_acc.get("currency") == "USD" else "kr"
+        profile = compact_cost_profile(account_id, market, account_costs)
+        if profile is not None:
+            processed_acc["cost_profile"] = profile
+
     return {
         "accounts": processed_accounts,
         "manual_cash": manual_cash_result,
@@ -498,6 +520,7 @@ __all__ = [
     "get_cash_balance_impl",
     "get_available_capital_impl",
     "get_usd_krw_rate",
+    "get_account_costs_setting",
     "is_us_nation_name",
     "extract_usd_orderable_from_row",
     "select_usd_row_for_us_order",

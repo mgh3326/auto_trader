@@ -62,6 +62,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `default_rate` mirrors the scalar exchange-rate behavior used by existing portfolio and cash consumers.
   - Unsupported pairs raise a tool argument error. FX pairs are not market indices; `get_market_index("USDKRW")` remains unsupported.
   - Trends, bank-specific quotes, preferential effective rates, exchange execution, and US-order total-cost routing are outside ROB-567 P1.
+- `suggest_order_account(symbol, market=None, side="buy", quantity, price=None, usd_krw=None)`
+  - Read-only advisory tool. It never submits, previews, routes, modifies, or cancels an order.
+  - Supports KR/US buys only. Crypto, Upbit, manual cash, paper accounts, and sells are out of scope.
+  - Compares KIS/Toss using orderable cash, commission bps, FX spread bps, optional Toss notional limit, and existing-position consolidation.
+  - If a symbol is already held in one candidate account, that account wins unless the cheaper alternative saves at least `position_consolidation_threshold_bps` of order notional.
+  - Default thresholds: KR 25 bps, US 40 bps. US is stricter because FX basis and overseas tax lots split by account.
+  - Always returns `cost_comparison` for both candidate accounts and `position_consolidation` with either `foregone_savings_krw` or `distribution_warning`.
 - `get_orderbook(symbol, market="kr")`
 - US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`
   - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them
@@ -1206,6 +1213,45 @@ These tools provide a generic key-value storage for user preferences and setting
 
 Common settings:
 - `manual_cash`: Stores manually-managed cash amounts (e.g., `{"amount": 15000000}`) for accounts not backed by APIs (Toss, etc.)
+- `account_costs`: Stores broker fee/cost profiles and thresholds used for routing suggestions.
+
+### `account_costs` user setting
+
+`set_user_setting(key="account_costs", value={...})` stores operator-maintained
+broker cost metadata used by `suggest_order_account`, `get_available_capital`,
+and `get_operating_briefing`.
+
+Required shape:
+
+```json
+{
+  "version": 1,
+  "routing": {
+    "position_consolidation_threshold_bps": {"kr": 25, "us": 40}
+  },
+  "accounts": {
+    "kis_domestic": {
+      "broker": "kis",
+      "markets": {"kr": {"commission_bps": 14.7, "fx_spread_bps": 0}}
+    },
+    "kis_overseas": {
+      "broker": "kis",
+      "markets": {"us": {"commission_bps": 25, "fx_spread_bps": 20}}
+    },
+    "toss": {
+      "broker": "toss",
+      "limits": {"max_order_notional_krw": 1000000},
+      "markets": {
+        "kr": {"commission_bps": 0, "fx_spread_bps": 0},
+        "us": {"commission_bps": 10, "fx_spread_bps": 1.7}
+      }
+    }
+  }
+}
+```
+
+Values are basis points. `25` means 0.25%. If the setting is missing or invalid,
+the system uses default seed values and marks the result `review_required`.
 
 ### `update_manual_holdings` spec
 

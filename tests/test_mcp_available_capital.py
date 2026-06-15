@@ -408,3 +408,167 @@ async def test_get_available_capital_includes_fresh_manual_cash_in_total(monkeyp
     assert result["manual_cash"]["included_in_total"] is True
     assert result["summary"]["total_orderable_krw"] == pytest.approx(6000000.0)
     assert result["summary"]["manual_cash_excluded_krw"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_adds_cost_profiles(monkeypatch):
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        return {
+            "accounts": [
+                {
+                    "account": "kis_domestic",
+                    "broker": "kis",
+                    "currency": "KRW",
+                    "orderable": 1_000_000.0,
+                },
+                {
+                    "account": "toss",
+                    "broker": "toss",
+                    "currency": "KRW",
+                    "orderable": 1_000_000.0,
+                },
+            ],
+            "summary": {"total_krw": 2_000_000.0, "total_usd": 0.0},
+            "errors": [],
+        }
+
+    async def mock_get_account_costs_setting():
+        return {
+            "version": 1,
+            "routing": {"position_consolidation_threshold_bps": {"kr": 25, "us": 40}},
+            "accounts": {
+                "kis_domestic": {
+                    "broker": "kis",
+                    "markets": {"kr": {"commission_bps": 1.4, "fx_spread_bps": 0}},
+                },
+                "toss": {
+                    "broker": "toss",
+                    "markets": {"kr": {"commission_bps": 0, "fx_spread_bps": 0}},
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
+    )
+
+    async def mock_get_manual_cash_setting():
+        return None
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    result = await portfolio_cash.get_available_capital_impl()
+
+    kis = next(row for row in result["accounts"] if row["account"] == "kis_domestic")
+    toss = next(row for row in result["accounts"] if row["account"] == "toss")
+    assert kis["cost_profile"] == {
+        "commission_bps": 1.4,
+        "fx_spread_bps": 0.0,
+        "source": "user_setting",
+        "review_required": False,
+    }
+    assert toss["cost_profile"]["commission_bps"] == pytest.approx(0)
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_degrades_when_cost_profile_setting_fails(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        return {
+            "accounts": [
+                {
+                    "account": "kis_domestic",
+                    "broker": "kis",
+                    "currency": "KRW",
+                    "orderable": 1_000_000.0,
+                }
+            ],
+            "summary": {"total_krw": 1_000_000.0, "total_usd": 0.0},
+            "errors": [],
+        }
+
+    async def mock_get_account_costs_setting():
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
+    )
+
+    async def mock_get_manual_cash_setting():
+        return None
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    result = await portfolio_cash.get_available_capital_impl()
+
+    assert result["accounts"][0]["cost_profile"] == {
+        "commission_bps": 14.7,
+        "fx_spread_bps": 0.0,
+        "source": "default_seed",
+        "review_required": True,
+    }
+    assert result["errors"] == [
+        {"source": "account_costs", "error": "settings unavailable"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_degrades_when_manual_cash_setting_fails(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        return {
+            "accounts": [
+                {
+                    "account": "kis_domestic",
+                    "broker": "kis",
+                    "currency": "KRW",
+                    "orderable": 1_000_000.0,
+                }
+            ],
+            "summary": {"total_krw": 1_000_000.0, "total_usd": 0.0},
+            "errors": [],
+        }
+
+    async def mock_get_manual_cash_setting():
+        raise RuntimeError("manual setting unavailable")
+
+    async def mock_get_account_costs_setting():
+        return None
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
+    )
+    monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
+
+    result = await portfolio_cash.get_available_capital_impl(include_manual=True)
+
+    assert result["manual_cash"] is None
+    assert result["errors"] == [
+        {"source": "manual_cash", "error": "manual setting unavailable"}
+    ]
