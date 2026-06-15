@@ -143,7 +143,7 @@ async def test_kr_detail_investor_flow_defaults_to_none_without_snapshots(monkey
     assert response.investorFlow.dailyRows == []
     assert response.investorFlow.periodSummary is None
     assert response.investorFlow.buyerDecomposition is None
-    assert "거래량" in " ".join(response.investorFlow.unavailableLabels)
+    assert response.investorFlow.unavailableLabels == []
 
 
 def test_daily_row_from_snapshot_carries_persisted_market_fields():
