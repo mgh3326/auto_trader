@@ -84,13 +84,17 @@ const aboveFold: StockDetailResponse = {
   },
   holding: {
     totalQuantity: 2,
+    tradeableQuantity: 1,
+    sellableQuantity: 1,
+    pendingSellQuantity: 0,
+    referenceQuantity: 1,
     averageCost: 200,
     costBasis: 400,
     valueNative: 422.68,
     valueKrw: 575000,
     pnlKrw: 30000,
-    pnlRate: 5.5,
-    includedSources: ["kis"],
+    pnlRate: 0.055,
+    includedSources: ["kis", "toss_manual"],
     priceState: "live",
   },
   fxSensitivity: {
@@ -271,6 +275,10 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(screen.getByText("$211.34")).toBeInTheDocument();
   expect(screen.getByText("+1.06%")).toBeInTheDocument();
   expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("2주");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("KIS");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("Toss");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("매매가능 1주");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("참고 1주");
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("환율 민감도");
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("USD/KRW");
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("+₩5,748");

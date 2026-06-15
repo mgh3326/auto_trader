@@ -109,10 +109,17 @@ from app.services.invest_view_model.stock_detail_candles_service import (
 from app.services.invest_view_model.stock_detail_orders_service import (
     build_stock_detail_orders,
 )
+from app.services.invest_view_model.stock_detail_providers import (
+    make_account_panel_holding_provider,
+    stock_detail_candle_provider,
+)
 from app.services.invest_view_model.stock_detail_research_consensus_service import (
     build_stock_detail_research_consensus,
 )
-from app.services.invest_view_model.stock_detail_service import build_stock_detail
+from app.services.invest_view_model.stock_detail_service import (
+    StockDetailProviders,
+    build_stock_detail,
+)
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
     SymbolNotFound,
     resolve_symbol,
@@ -429,6 +436,7 @@ async def get_stock_detail(
     symbol: str,
     user: Annotated[Any, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
 ) -> StockDetailResponse:
     try:
         return await build_stock_detail(
@@ -436,6 +444,9 @@ async def get_stock_detail(
             market=market,
             symbol=symbol,
             db=db,
+            providers=StockDetailProviders(
+                holding=make_account_panel_holding_provider(service)
+            ),
         )
     except SymbolNotFound as exc:
         raise HTTPException(status_code=404, detail="symbol_not_found") from exc
@@ -477,6 +488,7 @@ async def get_stock_detail_candles(
             market=market,
             symbol=symbol,
             period=period,
+            provider=stock_detail_candle_provider,
         )
     except UnsupportedPeriod as exc:
         raise HTTPException(status_code=400, detail=exc.code) from exc

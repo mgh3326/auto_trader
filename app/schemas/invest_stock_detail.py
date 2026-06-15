@@ -332,6 +332,10 @@ class StockDetailHolding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     totalQuantity: float
+    tradeableQuantity: float = 0.0
+    sellableQuantity: float = 0.0
+    pendingSellQuantity: float = 0.0
+    referenceQuantity: float = 0.0
     averageCost: float | None = None
     costBasis: float | None = None
     valueNative: float | None = None
