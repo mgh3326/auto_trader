@@ -23,6 +23,7 @@ async def test_paused_when_flag_disabled():
         patch.object(mod, "toss_reconcile_orders_impl", AsyncMock()) as kernel,
     ):
         result = await mod.toss_live_reconcile_periodic()
+
     assert result["status"] == "paused"
     assert "TOSS_LIVE_AUTO_RECONCILE_ENABLED" in result["message"]
     kernel.assert_not_awaited()
@@ -38,14 +39,15 @@ async def test_paused_when_safety_review_flag_disabled():
         patch.object(mod, "toss_reconcile_orders_impl", AsyncMock()) as kernel,
     ):
         result = await mod.toss_live_reconcile_periodic()
+
     assert result["status"] == "paused"
-    assert "SAFETY_REVIEW" in result["message"]
+    assert "TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED" in result["message"]
     kernel.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_runs_kernel_when_enabled():
-    fake = {"success": True, "counts": {"FILLED": 1}}
+    fake = {"success": True, "counts": {"filled": 1}}
     with (
         patch.object(mod.settings, "TOSS_LIVE_AUTO_RECONCILE_ENABLED", True),
         patch.object(
@@ -56,5 +58,6 @@ async def test_runs_kernel_when_enabled():
         ) as kernel,
     ):
         result = await mod.toss_live_reconcile_periodic()
+
     kernel.assert_awaited_once_with(dry_run=False)
     assert result == fake
