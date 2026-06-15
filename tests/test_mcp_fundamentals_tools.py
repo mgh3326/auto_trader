@@ -2540,6 +2540,13 @@ class TestGetMarketIndex:
         assert "indices" not in result or not result.get("indices")
         assert result.get("error") and result.get("source") == "coingecko"
 
+    async def test_usdkrw_is_not_market_index(self):
+        """FX pairs must stay on get_fx_rate, not get_market_index."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Unknown index symbol 'USDKRW'"):
+            await tools["get_market_index"](symbol="USDKRW")
+
 
 # ---------------------------------------------------------------------------
 # get_sector_peers Tool
