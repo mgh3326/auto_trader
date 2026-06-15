@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterable
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
@@ -17,6 +18,11 @@ class InvestorFlowSnapshotUpsert(BaseModel):
     market: str
     symbol: str
     snapshot_date: dt.date
+    close: Decimal | None = None
+    change_rate: Decimal | None = None
+    volume: int | None = None
+    foreign_holding_shares: int | None = None
+    foreign_holding_rate: Decimal | None = None
     foreign_net: int | None = None
     institution_net: int | None = None
     individual_net: int | None = None

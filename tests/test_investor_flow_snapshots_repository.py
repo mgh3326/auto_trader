@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 import pytest
 
@@ -30,6 +31,11 @@ async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
             institution_consecutive_buy_days=1,
             source="naver_finance",
             collected_at=dt.datetime(2026, 5, 11, 6, 30, tzinfo=dt.UTC),
+            close=Decimal("75000"),
+            change_rate=Decimal("2.5"),
+            volume=15_118_684,
+            foreign_holding_shares=2_790_424_635,
+            foreign_holding_rate=Decimal("47.73"),
         )
     )
     await db_session.commit()
@@ -50,6 +56,11 @@ async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
     assert row.double_sell is False
     assert row.foreign_consecutive_buy_days == 3
     assert row.source == "naver_finance"
+    assert row.close == Decimal("75000")
+    assert row.change_rate == Decimal("2.5")
+    assert row.volume == 15_118_684
+    assert row.foreign_holding_shares == 2_790_424_635
+    assert row.foreign_holding_rate == Decimal("47.73")
 
 
 @pytest.mark.integration
