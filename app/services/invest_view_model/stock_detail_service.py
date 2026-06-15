@@ -52,6 +52,12 @@ from app.services.invest_view_model.naver_discussion_signal_poc import (
 from app.services.invest_view_model.naver_stock_detail_poc import (
     build_naver_stock_detail_poc,
 )
+from app.services.invest_view_model.stock_detail_providers import (
+    stock_detail_latest_analysis_provider,
+    stock_detail_orderbook_provider,
+    stock_detail_quote_provider,
+    stock_detail_valuation_provider,
+)
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
     ResolvedSymbol,
     resolve_symbol,
@@ -421,12 +427,12 @@ async def _run_optional_block(
 @dataclass(frozen=True, slots=True)
 class StockDetailProviders:
     resolver: Resolver = resolve_symbol
-    quote: Provider = _default_quote_provider
+    quote: Provider = stock_detail_quote_provider
     screener: Provider = _none_provider
-    valuation: Provider = _none_provider
+    valuation: Provider = stock_detail_valuation_provider
     holding: Provider = _none_provider
-    latest_analysis: Provider = _none_provider
-    orderbook: Provider = _default_orderbook_provider
+    latest_analysis: Provider = stock_detail_latest_analysis_provider
+    orderbook: Provider = stock_detail_orderbook_provider
     fx_rate: Provider = get_usd_krw_quote
     naver_enrichment: Provider = build_naver_stock_detail_poc
     discussion_signal: Provider = build_naver_discussion_signal_poc

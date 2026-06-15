@@ -368,3 +368,25 @@ def test_build_stock_detail_crypto_orderbook_provider_unavailable_is_explicit():
     assert "orderbook_unavailable" in response.meta.warnings
     assert response.cryptoDetail is not None
     assert response.cryptoDetail.recentTrades.state == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_default_stock_detail_providers_are_not_noop_for_core_blocks():
+    from app.services.invest_view_model.stock_detail_providers import (
+        stock_detail_latest_analysis_provider,
+        stock_detail_orderbook_provider,
+        stock_detail_quote_provider,
+        stock_detail_valuation_provider,
+    )
+    from app.services.invest_view_model.stock_detail_service import (
+        DEFAULT_STOCK_DETAIL_PROVIDERS,
+    )
+
+    assert DEFAULT_STOCK_DETAIL_PROVIDERS.quote is stock_detail_quote_provider
+    assert DEFAULT_STOCK_DETAIL_PROVIDERS.valuation is stock_detail_valuation_provider
+    assert (
+        DEFAULT_STOCK_DETAIL_PROVIDERS.latest_analysis
+        is stock_detail_latest_analysis_provider
+    )
+    assert DEFAULT_STOCK_DETAIL_PROVIDERS.orderbook is stock_detail_orderbook_provider
+
