@@ -508,6 +508,11 @@ class TossLiveOrderLedger(Base):
     response_code: Mapped[str | None] = mapped_column(Text)
     response_message: Mapped[str | None] = mapped_column(Text)
     raw_response: Mapped[dict | None] = mapped_column(JSONB)
+    requires_manual_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    manual_review_reason: Mapped[str | None] = mapped_column(Text)
+    last_reconcile_error: Mapped[dict | None] = mapped_column(JSONB)
 
     reason: Mapped[str | None] = mapped_column(Text)
     thesis: Mapped[str | None] = mapped_column(Text)

@@ -600,6 +600,8 @@ async def db_session():
 
     from app.core.db import AsyncSessionLocal, engine
     from app.models.base import Base
+    import app.models  # noqa: F401
+    import app.models.market_events  # noqa: F401
     from tests._investment_reports_helpers import INVESTMENT_REPORTS_TEST_LOCK_ID
 
     async with engine.connect() as guard:

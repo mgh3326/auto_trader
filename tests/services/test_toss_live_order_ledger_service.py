@@ -341,4 +341,3 @@ async def test_mark_manual_review_sets_operator_visible_error(db_session):
     }
     assert refreshed.broker_status is None
     assert refreshed.reconciled_at is not None
-

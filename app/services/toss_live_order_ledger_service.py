@@ -272,4 +272,3 @@ class TossLiveOrderLedgerService:
         row.last_reconcile_error = error
         row.reconciled_at = datetime.now(UTC)
         await self._db.commit()
-

@@ -15,7 +15,6 @@ from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError
 
 
-
 @dataclass
 class _ClientSettings:
     toss_api_enabled: bool = True
@@ -375,7 +374,9 @@ async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_order_429_non_json_backs_off_without_token_reissue(monkeypatch) -> None:
+async def test_get_order_429_non_json_backs_off_without_token_reissue(
+    monkeypatch,
+) -> None:
     calls = 0
     sleeps: list[float] = []
     token_calls: list[bool] = []
@@ -441,7 +442,6 @@ async def test_get_order_429_non_json_backs_off_without_token_reissue(monkeypatc
     assert sleeps == [2.0]
     assert token_calls == [False]
     assert seen_authorizations == ["Bearer token-1", "Bearer token-1"]
-
 
 
 @pytest.mark.asyncio
