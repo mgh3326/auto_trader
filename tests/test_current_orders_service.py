@@ -157,3 +157,116 @@ def test_normalize_upbit_order_maps_wait_order_shape() -> None:
     assert row.exchange == "UPBIT"
     assert row.currency == "KRW"
 
+
+@pytest.mark.asyncio
+async def test_current_orders_all_merges_kis_and_upbit_with_us_dedupe() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from app.services.current_orders_service import CurrentOrdersService
+
+    async def inquire_overseas_orders(exchange_code: str = "NASD", is_mock: bool = False):
+        assert is_mock is False
+        return {
+            "NASD": [
+                {"odno": "U1", "pdno": "AAPL", "sll_buy_dvsn_cd": "02", "ft_ord_qty": "1", "ft_ord_unpr3": "180", "nccs_qty": "1"}
+            ],
+            "NYSE": [
+                {"odno": "U1", "pdno": "AAPL", "sll_buy_dvsn_cd": "02", "ft_ord_qty": "1", "ft_ord_unpr3": "180", "nccs_qty": "1"}
+            ],
+            "AMEX": [],
+        }[exchange_code]
+
+    fake_kis = SimpleNamespace(
+        inquire_korea_orders=AsyncMock(
+            return_value=[
+                {"ord_no": "K1", "pdno": "005930", "sll_buy_dvsn_cd": "02", "ord_qty": "10", "ord_unpr": "70000"}
+            ]
+        ),
+        inquire_overseas_orders=AsyncMock(side_effect=inquire_overseas_orders),
+    )
+    fake_upbit = SimpleNamespace(
+        fetch_open_orders=AsyncMock(
+            return_value=[
+                {"uuid": "C1", "market": "KRW-BTC", "side": "ask", "price": "99000000", "volume": "0.02", "remaining_volume": "0.02"}
+            ]
+        )
+    )
+
+    service = CurrentOrdersService(
+        kis_client_factory=lambda: fake_kis,
+        upbit_client=fake_upbit,
+        toss_client_factory=None,
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="all")
+
+    assert response.data_state == "ok"
+    assert response.count == 3
+    assert {(item.broker, item.market, item.order_no) for item in response.items} == {
+        ("kis", "kr", "K1"),
+        ("kis", "us", "U1"),
+        ("upbit", "crypto", "C1"),
+    }
+    assert fake_kis.inquire_korea_orders.await_args.kwargs == {"is_mock": False}
+    assert fake_kis.inquire_overseas_orders.await_count == 3
+    assert fake_upbit.fetch_open_orders.await_args.kwargs == {"market": None}
+
+
+@pytest.mark.asyncio
+async def test_current_orders_fails_open_when_one_kis_us_exchange_fails() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from app.services.current_orders_service import CurrentOrdersService
+
+    async def inquire_overseas_orders(exchange_code: str = "NASD", is_mock: bool = False):
+        if exchange_code == "NYSE":
+            raise RuntimeError("NYSE down")
+        return [{"odno": exchange_code, "pdno": "AAPL", "sll_buy_dvsn_cd": "02", "ft_ord_qty": "1"}]
+
+    fake_kis = SimpleNamespace(
+        inquire_korea_orders=AsyncMock(return_value=[]),
+        inquire_overseas_orders=AsyncMock(side_effect=inquire_overseas_orders),
+    )
+    service = CurrentOrdersService(
+        kis_client_factory=lambda: fake_kis,
+        upbit_client=None,
+        toss_client_factory=None,
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="us")
+
+    assert response.data_state == "degraded"
+    assert response.count == 2
+    kis_us = [s for s in response.sources if s.broker == "kis" and s.market == "us"][0]
+    assert kis_us.status == "degraded"
+    assert "NYSE" in (kis_us.message or "")
+    assert any("kis/us" in warning for warning in response.warnings)
+
+
+@pytest.mark.asyncio
+async def test_current_orders_unavailable_when_requested_sources_all_fail() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from app.services.current_orders_service import CurrentOrdersService
+
+    fake_upbit = SimpleNamespace(
+        fetch_open_orders=AsyncMock(side_effect=RuntimeError("upbit down"))
+    )
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=fake_upbit,
+        toss_client_factory=None,
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="crypto")
+
+    assert response.data_state == "unavailable"
+    assert response.items == []
+    assert response.empty_reason == "all requested broker sources are unavailable"
+    assert response.sources[0].broker == "upbit"
+    assert response.sources[0].status == "unavailable"
+
+
