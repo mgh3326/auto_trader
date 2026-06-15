@@ -58,3 +58,18 @@ async def test_insert_and_read_back(db_session: AsyncSession):
     assert got.realized_pnl == Decimal("12345.6700")
     assert got.fill_evidence_available is True  # server_default
     assert got.created_at is not None
+
+
+def test_trade_retrospective_us_fx_columns_present():
+    cols = set(TradeRetrospective.__table__.columns.keys())
+    for col in (
+        "buy_fx_rate",
+        "sell_fx_rate",
+        "fx_pnl_krw",
+        "security_pnl_usd",
+        "security_pnl_krw",
+        "total_pnl_krw",
+        "fx_rate_source",
+        "fx_pnl_accuracy",
+    ):
+        assert col in cols, f"missing column {col}"
