@@ -365,4 +365,3 @@ def test_stock_detail_holding_exposes_tradeable_and_reference_quantities():
 
     assert holding.tradeableQuantity == 3
     assert holding.referenceQuantity == 2
-

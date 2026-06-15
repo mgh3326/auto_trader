@@ -109,13 +109,16 @@ from app.services.invest_view_model.stock_detail_candles_service import (
 from app.services.invest_view_model.stock_detail_orders_service import (
     build_stock_detail_orders,
 )
-from app.services.invest_view_model.stock_detail_research_consensus_service import (
-    build_stock_detail_research_consensus,
-)
-from app.services.invest_view_model.stock_detail_service import StockDetailProviders, build_stock_detail
 from app.services.invest_view_model.stock_detail_providers import (
     make_account_panel_holding_provider,
     stock_detail_candle_provider,
+)
+from app.services.invest_view_model.stock_detail_research_consensus_service import (
+    build_stock_detail_research_consensus,
+)
+from app.services.invest_view_model.stock_detail_service import (
+    StockDetailProviders,
+    build_stock_detail,
 )
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
     SymbolNotFound,

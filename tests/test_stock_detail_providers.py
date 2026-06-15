@@ -6,7 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas.invest_stock_detail import StockDetailHolding
-from app.services.market_data.contracts import Candle, OrderbookLevel, OrderbookSnapshot, Quote
+from app.services.market_data.contracts import (
+    Candle,
+    OrderbookLevel,
+    OrderbookSnapshot,
+    Quote,
+)
 
 
 @pytest.mark.unit
@@ -33,7 +38,9 @@ async def test_market_data_candle_provider_maps_period_and_rows(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(providers.market_data, "get_ohlcv", fake_get_ohlcv)
+    import app.services.market_data.service as market_data_service
+
+    monkeypatch.setattr(market_data_service, "get_ohlcv", fake_get_ohlcv)
 
     rows = await providers.stock_detail_candle_provider("kr", "000270", "1d")
 
@@ -64,7 +71,9 @@ async def test_market_data_quote_provider_maps_quote(monkeypatch):
             previous_close=209.12,
         )
 
-    monkeypatch.setattr(providers.market_data, "get_quote", fake_get_quote)
+    import app.services.market_data.service as market_data_service
+
+    monkeypatch.setattr(market_data_service, "get_quote", fake_get_quote)
 
     quote = await providers.stock_detail_quote_provider("us", "QQQM", object())
 
@@ -81,7 +90,9 @@ async def test_market_data_quote_provider_maps_quote(monkeypatch):
 async def test_market_data_orderbook_provider_maps_kr_snapshot(monkeypatch):
     from app.services.invest_view_model import stock_detail_providers as providers
 
-    async def fake_get_orderbook(symbol: str, market: str = "kr", venue: str | None = None):
+    async def fake_get_orderbook(
+        symbol: str, market: str = "kr", venue: str | None = None
+    ):
         return OrderbookSnapshot(
             symbol=symbol,
             instrument_type="equity_kr",
@@ -93,9 +104,13 @@ async def test_market_data_orderbook_provider_maps_kr_snapshot(monkeypatch):
             bid_ask_ratio=1.2,
         )
 
-    monkeypatch.setattr(providers.market_data, "get_orderbook", fake_get_orderbook)
+    import app.services.market_data.service as market_data_service
 
-    orderbook = await providers.stock_detail_orderbook_provider("kr", "005930", object())
+    monkeypatch.setattr(market_data_service, "get_orderbook", fake_get_orderbook)
+
+    orderbook = await providers.stock_detail_orderbook_provider(
+        "kr", "005930", object()
+    )
 
     assert orderbook is not None
     assert orderbook.asks[0].price == 71100
@@ -110,7 +125,9 @@ async def test_holding_provider_uses_account_panel_parity_without_paper():
     )
 
     class FakeHomeService:
-        async def build_account_panel_view(self, *, user_id: int, include_paper: bool = False, paper_sources=None):
+        async def build_account_panel_view(
+            self, *, user_id: int, include_paper: bool = False, paper_sources=None
+        ):
             assert user_id == 7
             assert include_paper is False
             assert paper_sources is None

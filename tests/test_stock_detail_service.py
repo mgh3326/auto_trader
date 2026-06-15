@@ -389,4 +389,3 @@ async def test_default_stock_detail_providers_are_not_noop_for_core_blocks():
         is stock_detail_latest_analysis_provider
     )
     assert DEFAULT_STOCK_DETAIL_PROVIDERS.orderbook is stock_detail_orderbook_provider
-

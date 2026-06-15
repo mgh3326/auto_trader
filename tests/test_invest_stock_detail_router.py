@@ -10,7 +10,6 @@ import pytest
 async def test_stock_detail_route_passes_account_panel_holding_provider(monkeypatch):
     from app.routers import invest_api
     from app.schemas.invest_stock_detail import StockDetailResponse
-    from app.services.invest_view_model.stock_detail_symbol_resolver import ResolvedSymbol
 
     async def fake_build_stock_detail(*, user_id, market, symbol, db, providers):
         holding = await providers.holding(user_id, market, symbol, db)
@@ -32,7 +31,9 @@ async def test_stock_detail_route_passes_account_panel_holding_provider(monkeypa
         )
 
     class FakeHomeService:
-        async def build_account_panel_view(self, *, user_id, include_paper=False, paper_sources=None):
+        async def build_account_panel_view(
+            self, *, user_id, include_paper=False, paper_sources=None
+        ):
             assert include_paper is False
             return SimpleNamespace(
                 groupedHoldings=[
