@@ -22,7 +22,6 @@ from app.services.fill_notification import (
 from .types import DECISION_EMOJI, DECISION_TEXT
 
 
-
 def format_buy_notification_telegram(
     symbol: str,
     korean_name: str,
@@ -463,4 +462,3 @@ def format_investment_watch_trigger_telegram(
         lines.append(f"[종목 상세]({stock_url}) · [분석 리포트]({report_url})")
 
     return "\n".join(lines)
-

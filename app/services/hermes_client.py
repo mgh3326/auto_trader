@@ -402,4 +402,3 @@ class HermesNotificationClient:
 
     async def close(self) -> None:
         await self._client.aclose()
-

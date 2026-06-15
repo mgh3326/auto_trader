@@ -371,12 +371,15 @@ def test_payload_accepts_planned_action_and_trigger_checklist() -> None:
 @pytest.mark.asyncio
 async def test_python_direct_success_maps_to_success(monkeypatch):
     from unittest.mock import AsyncMock
+
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
     fake = AsyncMock()
     fake.notify_investment_watch = AsyncMock(return_value=True)
-    monkeypatch.setattr("app.monitoring.trade_notifier.get_trade_notifier", lambda: fake)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
+    )
     client = HermesNotificationClient(enabled=True)
     res = await client.send_review_trigger(_base_payload())
     assert res.status == "success"
@@ -387,13 +390,18 @@ async def test_python_direct_success_maps_to_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_python_direct_failure_maps_to_skipped(monkeypatch):
     from unittest.mock import AsyncMock
+
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
     fake = AsyncMock()
     fake.notify_investment_watch = AsyncMock(return_value=False)
-    monkeypatch.setattr("app.monitoring.trade_notifier.get_trade_notifier", lambda: fake)
-    res = await HermesNotificationClient(enabled=True).send_review_trigger(_base_payload())
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
+    )
+    res = await HermesNotificationClient(enabled=True).send_review_trigger(
+        _base_payload()
+    )
     assert res.status == "skipped"
 
 
@@ -401,16 +409,16 @@ async def test_python_direct_failure_maps_to_skipped(monkeypatch):
 @pytest.mark.asyncio
 async def test_python_direct_exception_maps_to_failed(monkeypatch):
     from unittest.mock import AsyncMock
+
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
     fake = AsyncMock()
     fake.notify_investment_watch = AsyncMock(side_effect=RuntimeError("dispatch error"))
-    monkeypatch.setattr("app.monitoring.trade_notifier.get_trade_notifier", lambda: fake)
-    res = await HermesNotificationClient(enabled=True).send_review_trigger(_base_payload())
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
+    )
+    res = await HermesNotificationClient(enabled=True).send_review_trigger(
+        _base_payload()
+    )
     assert res.status == "failed"
-
-
-
-
-

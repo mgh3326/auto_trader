@@ -21,7 +21,6 @@ from app.services.fill_notification import (
 from .types import COLORS, DECISION_EMOJI, DECISION_TEXT, DiscordEmbed, DiscordField
 
 
-
 def _price_fmt(price: float, is_usd: bool, currency: str) -> str:
     return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
 
@@ -613,9 +612,7 @@ def format_investment_watch_trigger(
         {
             "name": "현재값",
             "value": (
-                str(payload.current_value)
-                if payload.current_value is not None
-                else "-"
+                str(payload.current_value) if payload.current_value is not None else "-"
             ),
             "inline": True,
         },
@@ -673,4 +670,3 @@ def format_investment_watch_trigger(
     if payload.invest_links is not None:
         embed["url"] = f"{base_url}{payload.invest_links.stock_path}"
     return embed
-

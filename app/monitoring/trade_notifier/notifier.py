@@ -22,7 +22,6 @@ from .transports import (
 )
 from .types import DiscordEmbed
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -303,7 +302,6 @@ class TradeNotifier:
             payload, display_name=display_name, base_url=base_url
         )
         return await self._dispatch(embed, telegram_msg, payload.market)
-
 
     async def notify_sell_order(
         self,

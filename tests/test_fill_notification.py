@@ -417,7 +417,10 @@ class TestFillHelpers:
 
     def test_resolve_symbol_display_name(self):
         from app.services.fill_notification import resolve_symbol_display_name
+
         assert resolve_symbol_display_name("crypto", "KRW-BTC") == "BTC"
         assert resolve_symbol_display_name("us", "AAPL") == "AAPL"
-        assert resolve_symbol_display_name("kr", "005930") in ("삼성전자", "005930")  # KR_SYMBOLS 의존
-
+        assert resolve_symbol_display_name("kr", "005930") in (
+            "삼성전자",
+            "005930",
+        )  # KR_SYMBOLS 의존

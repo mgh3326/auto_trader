@@ -463,7 +463,6 @@ def resolve_fill_display_name(order: FillOrder) -> str:
     return resolve_symbol_display_name(order.market_type, order.symbol)
 
 
-
 _MIN_NOTIFY_AMOUNT: dict[str, float] = {"KRW": 50_000.0, "USD": 50.0}
 
 

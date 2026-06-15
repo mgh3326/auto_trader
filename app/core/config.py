@@ -436,8 +436,9 @@ class Settings(BaseSettings):
 
     # ROB-566: watch 트리거 알림 전송 수단. "hermes_webhook"(default, 현행 Prefect
     # 수신기로 HTTP POST) | "python_direct"(in-process TradeNotifier 렌더, ROB-558 체결과 동형).
-    WATCH_NOTIFY_TRANSPORT: Literal["hermes_webhook", "python_direct"] = "hermes_webhook"
-
+    WATCH_NOTIFY_TRANSPORT: Literal["hermes_webhook", "python_direct"] = (
+        "hermes_webhook"
+    )
 
     # ROB-337 Slice 2 — watch validity review job. Default off; the task and
     # CLI are scheduleless / dry-run-default even when this is set.

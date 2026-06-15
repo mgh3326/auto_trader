@@ -257,5 +257,5 @@ def test_runbook_exists() -> None:
 @pytest.mark.unit
 def test_watch_notify_transport_defaults_to_hermes_webhook():
     from app.core.config import settings
-    assert settings.WATCH_NOTIFY_TRANSPORT in ("hermes_webhook", "python_direct")
 
+    assert settings.WATCH_NOTIFY_TRANSPORT in ("hermes_webhook", "python_direct")

@@ -379,29 +379,56 @@ class TestFormatFillTelegram:
 def _watch_payload(**kw):
     from decimal import Decimal
     from uuid import uuid4
+
     from app.services.hermes_client import (
-        ReviewTriggerPayload, InvestLinks, OperatorActionGuidance, PriceGuidance,
+        InvestLinks,
+        OperatorActionGuidance,
+        ReviewTriggerPayload,
     )
-    base = dict(
-        event_uuid=uuid4(), alert_uuid=uuid4(), source_report_uuid=uuid4(),
-        source_item_uuid=uuid4(), correlation_id="c1", kst_date="2026-06-15",
-        market="kr", target_kind="asset", symbol="005930", metric="price",
-        operator="below", threshold=Decimal("68000"), threshold_key="k",
-        intent="buy_review", action_mode="notify_only", current_value=Decimal("67500"),
-        scanner_snapshot={}, outcome="notified",
-        invest_links=InvestLinks(report_path="/invest/reports/r1", stock_path="/invest/stocks/kr/005930"),
-        operator_action_guidance=OperatorActionGuidance(headline="알림 전용", requires_operator_review=False, order_behavior="none"),
-        price_guidance=None, planned_action=None, trigger_checklist=None,
-    )
-    base.update(kw); return ReviewTriggerPayload(**base)
+
+    base = {
+        "event_uuid": uuid4(),
+        "alert_uuid": uuid4(),
+        "source_report_uuid": uuid4(),
+        "source_item_uuid": uuid4(),
+        "correlation_id": "c1",
+        "kst_date": "2026-06-15",
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "metric": "price",
+        "operator": "below",
+        "threshold": Decimal("68000"),
+        "threshold_key": "k",
+        "intent": "buy_review",
+        "action_mode": "notify_only",
+        "current_value": Decimal("67500"),
+        "scanner_snapshot": {},
+        "outcome": "notified",
+        "invest_links": InvestLinks(
+            report_path="/invest/reports/r1", stock_path="/invest/stocks/kr/005930"
+        ),
+        "operator_action_guidance": OperatorActionGuidance(
+            headline="알림 전용", requires_operator_review=False, order_behavior="none"
+        ),
+        "price_guidance": None,
+        "planned_action": None,
+        "trigger_checklist": None,
+    }
+    base.update(kw)
+    return ReviewTriggerPayload(**base)
 
 
 @pytest.mark.unit
 class TestFormatWatchTriggerTelegram:
     def test_basic_telegram(self):
-        from app.monitoring.trade_notifier.formatters_telegram import format_investment_watch_trigger_telegram
-        msg = format_investment_watch_trigger_telegram(_watch_payload(), display_name="삼성전자",
-                                                       base_url="https://x.test")
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_investment_watch_trigger_telegram,
+        )
+
+        msg = format_investment_watch_trigger_telegram(
+            _watch_payload(), display_name="삼성전자", base_url="https://x.test"
+        )
         assert "워치 트리거" in msg and "삼성전자" in msg
         assert "price" in msg and "below" in msg and "68000" in msg
         assert "67500" in msg
@@ -409,17 +436,33 @@ class TestFormatWatchTriggerTelegram:
 
     def test_price_guidance_and_checklist_rendered_telegram(self):
         from decimal import Decimal
-        from app.monitoring.trade_notifier.formatters_telegram import format_investment_watch_trigger_telegram
+
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_investment_watch_trigger_telegram,
+        )
         from app.services.hermes_client import PriceGuidance
-        pg = PriceGuidance(entry_review_below_price=Decimal("66000"), max_chase_price=Decimal("69000"),
-                           suggested_limit_price_range=None, invalidation=None)
-        msg = format_investment_watch_trigger_telegram(_watch_payload(price_guidance=pg, trigger_checklist=["수급 확인"]),
-                                                       display_name="삼성전자", base_url="https://x.test")
+
+        pg = PriceGuidance(
+            entry_review_below_price=Decimal("66000"),
+            max_chase_price=Decimal("69000"),
+            suggested_limit_price_range=None,
+            invalidation=None,
+        )
+        msg = format_investment_watch_trigger_telegram(
+            _watch_payload(price_guidance=pg, trigger_checklist=["수급 확인"]),
+            display_name="삼성전자",
+            base_url="https://x.test",
+        )
         assert "가격 가이드" in msg and "체크리스트" in msg
 
     def test_no_link_when_invest_links_none_telegram(self):
-        from app.monitoring.trade_notifier.formatters_telegram import format_investment_watch_trigger_telegram
-        msg = format_investment_watch_trigger_telegram(_watch_payload(invest_links=None),
-                                                       display_name="삼성전자", base_url="https://x.test")
-        assert "종목 상세" not in msg
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_investment_watch_trigger_telegram,
+        )
 
+        msg = format_investment_watch_trigger_telegram(
+            _watch_payload(invest_links=None),
+            display_name="삼성전자",
+            base_url="https://x.test",
+        )
+        assert "종목 상세" not in msg
