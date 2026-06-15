@@ -159,7 +159,7 @@ def _provenance_account_mode(
     return routing_mode
 
 
-def _account_order_routable(*, source: str | None) -> bool:
+def _account_order_routable(*, source: str | None, broker: str | None = None) -> bool:
     """Whether an account group's holdings are routable by an automated order tool.
 
     Manual holdings (toss/samsung/수동 입력, ``source="manual"``) are always
@@ -167,15 +167,18 @@ def _account_order_routable(*, source: str | None) -> bool:
     order tools existed; ROB-549 gates them on
     ``TOSS_LIVE_ORDER_MUTATIONS_ENABLED`` so the sellability signal matches the
     registered toss_live order tools once mutations are armed. KIS / Upbit /
-    paper sources sell via their own channels. This is the authoritative
-    sellability signal; ``account_mode`` stays a provenance label (ROB-357) and
-    is intentionally left unchanged.
+    paper sources sell via their own channels.
+
+    ROB-562: If Toss API is enabled and mutations are enabled, Toss manual
+    fallback holdings are ALSO routable to allow recovery from API outages.
     """
-    if source == "manual":
-        return False
     if source == "toss_api":
         return toss_live_mutations_enabled()
-    return True
+    if source == "manual" and broker == "toss":
+        return bool(getattr(settings, "toss_api_enabled", False)) and bool(
+            toss_live_mutations_enabled()
+        )
+    return source not in {"manual"}
 
 
 def _build_crypto_strategy_signal(
@@ -553,7 +556,11 @@ async def _collect_toss_api_positions(
     try:
         snapshot = await fetch_toss_portfolio_snapshot()
     except Exception as exc:
-        return [], [{"source": "toss_api", "error": str(exc)}], False
+        return (
+            [],
+            [{"source": "toss_api", "error": str(exc), "degraded": True}],
+            False,
+        )
 
     positions = [
         _toss_api_position_to_mcp(position)
@@ -1147,7 +1154,8 @@ async def _get_holdings_impl(
                 # ROB-420 — authoritative sellability: manual (toss/samsung)
                 # holdings are reference-only and not routable by order tools.
                 "order_routable": _account_order_routable(
-                    source=position.get("source")
+                    source=position.get("source"),
+                    broker=position.get("broker"),
                 ),
                 "positions": [],
             },
@@ -1346,8 +1354,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "filters out low-value positions when include_current_price=True. "
             "When minimum_value is None (default), per-currency thresholds are "
             "applied: KRW=5000, USD=10. Explicit number uses uniform threshold. "
-            "Response includes filtered_count, filter_reason, and per-symbol "
-            "price lookup errors. "
+            "Response includes filtered_count, filter_reason, per-symbol "
+            "price lookup errors, and broker-level API errors (potentially "
+            "marked degraded=true during outages). "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings."
         ),
