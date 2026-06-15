@@ -51,7 +51,9 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         )
 
         source = position.get("source")
-        output["order_routable"] = _account_order_routable(source=source)
+        output["order_routable"] = _account_order_routable(
+            source=source, broker=position.get("broker")
+        )
         output["account_mode"] = _provenance_account_mode(
             broker=position.get("broker"),
             source=source,

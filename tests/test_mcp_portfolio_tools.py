@@ -3751,7 +3751,11 @@ async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
 
     assert result["accounts"][0]["order_routable"] is False
     assert result["accounts"][0]["positions"][0]["source"] == "manual"
-    assert {"source": "toss_api", "error": "toss unavailable"} in result["errors"]
+    assert {
+        "source": "toss_api",
+        "error": "toss unavailable",
+        "degraded": True,
+    } in result["errors"]
 
 
 # ---------------------------------------------------------------------------

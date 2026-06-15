@@ -182,8 +182,9 @@ def register_analysis_tools(
             "'position' field: an array (one entry per holding account, since a symbol "
             "may be held across e.g. toss+samsung) of {account, account_mode, qty, "
             "avg_buy_price, pnl_pct, order_routable}, or null when not held. "
-            "order_routable mirrors get_holdings exactly (toss/manual -> false); "
-            "account_mode is a provenance label, NOT a routing selector."
+            "order_routable mirrors get_holdings: manual non-toss (samsung/수기) -> "
+            "false, toss_api -> TOSS_LIVE_ORDER_MUTATIONS_ENABLED, kis/upbit -> true "
+            "(ROB-562); account_mode is a provenance label, NOT a routing selector."
         ),
     )
     async def analyze_stock_batch(
