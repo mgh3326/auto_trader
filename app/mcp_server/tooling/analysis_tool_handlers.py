@@ -544,7 +544,9 @@ async def _build_batch_position_index(
             "qty": position.get("quantity"),
             "avg_buy_price": position.get("avg_buy_price"),
             "pnl_pct": position.get("profit_rate"),
-            "order_routable": _account_order_routable(source=source),
+            "order_routable": _account_order_routable(
+                source=source, broker=position.get("broker")
+            ),
             # Internal-only fields for symbol matching — stripped before output.
             "_symbol": symbol,
             "_instrument_type": instrument_type,
