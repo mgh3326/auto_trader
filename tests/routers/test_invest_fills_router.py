@@ -198,6 +198,73 @@ def test_recent_fills_supersedes_websocket_duplicate():
     assert data["source_breakdown"]["reconciler"] == 1
 
 
+@pytest.mark.unit
+def test_recent_fills_accepts_side_filter():
+    buy = _ledger_row(id=1, side="buy", broker_order_id="buy-1")
+    run = _reconcile_run_row("kis")
+    db = _make_db([buy], [run])
+    client = TestClient(_make_app(db))
+
+    resp = client.get("/trading/api/invest/fills/recent?side=buy")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["items"][0]["side"] == "buy"
+    assert data["items"][0]["broker_order_id"] == "buy-1"
+
+
+@pytest.mark.unit
+def test_recent_fills_rejects_unknown_side():
+    db = _make_db([], [])
+    client = TestClient(_make_app(db))
+
+    resp = client.get("/trading/api/invest/fills/recent?side=hold")
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recent_fills_side_filter_is_applied_before_limit():
+    older_buy = _ledger_row(
+        id=2,
+        side="buy",
+        broker_order_id="buy-old",
+        filled_at=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+    )
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self._rows
+
+    executed = []
+
+    async def _execute(stmt):
+        executed.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+        if len(executed) == 1:
+            return _Result([older_buy])
+        return _Result([_reconcile_run_row("kis")])
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=_execute)
+
+    from app.services.execution_ledger.query_service import ExecutionLedgerQueryService
+
+    response = await ExecutionLedgerQueryService(db).list_recent(limit=1, side="buy")
+
+    assert response.count == 1
+    assert response.items[0].broker_order_id == "buy-old"
+    assert "execution_ledger.side = 'buy'" in executed[0]
+    assert "LIMIT 3" in executed[0]
+
+
 # ---------------------------------------------------------------------------
 # /by-symbol/{symbol}
 # ---------------------------------------------------------------------------

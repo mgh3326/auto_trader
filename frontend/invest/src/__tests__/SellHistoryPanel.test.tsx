@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { SellHistoryPanel } from "../components/my/SellHistoryPanel";
 
 const fetchMock = vi.fn();
@@ -52,8 +53,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function renderSellHistoryPanel(compact = false) {
+  return render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/my?tab=sellHistory"]}>
+      <SellHistoryPanel compact={compact} />
+    </MemoryRouter>,
+  );
+}
+
 test("SellHistoryPanel renders sell ledger rows and uses include credentials", async () => {
-  render(<SellHistoryPanel />);
+  renderSellHistoryPanel();
 
   expect(await screen.findByText("SK하이닉스")).toBeInTheDocument();
   expect(screen.getByText(/000660/)).toBeInTheDocument();
@@ -74,7 +83,7 @@ test("SellHistoryPanel renders sell ledger rows and uses include credentials", a
 });
 
 test("SellHistoryPanel refetches with market filter", async () => {
-  render(<SellHistoryPanel />);
+  renderSellHistoryPanel();
   await screen.findByText("SK하이닉스");
 
   await userEvent.click(screen.getByRole("button", { name: "국내" }));
@@ -96,7 +105,7 @@ test("renders backend symbol_name instead of the code", async () => {
     ],
   };
   fetchMock.mockResolvedValue({ ok: true, json: async () => customResponse });
-  render(<SellHistoryPanel />);
+  renderSellHistoryPanel();
   expect(await screen.findByText("NAVER")).toBeInTheDocument();
   // the code still appears in the secondary line
   expect(screen.getByText(/035420/)).toBeInTheDocument();
@@ -114,8 +123,15 @@ test("falls back to the code when symbol_name is absent", async () => {
     ],
   };
   fetchMock.mockResolvedValue({ ok: true, json: async () => customResponse });
-  render(<SellHistoryPanel />);
+  renderSellHistoryPanel();
   const elements = await screen.findAllByText(/035420/);
   expect(elements.length).toBeGreaterThan(0);
+});
+
+test("SellHistoryPanel links rows to stock detail", async () => {
+  renderSellHistoryPanel();
+
+  const link = await screen.findByRole("link", { name: /SK하이닉스/ });
+  expect(link).toHaveAttribute("href", "/invest/stocks/kr/000660");
 });
 

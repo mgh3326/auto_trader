@@ -9,6 +9,9 @@ from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, Protocol
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.timezone import KST, now_kst
 from app.schemas.open_orders import (
     OpenOrderDataState,
     OpenOrderMarket,
@@ -21,10 +24,12 @@ from app.services.brokers.kis.client import KISClient
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.toss.dto import TossOrder
 from app.services.brokers.upbit import orders as upbit_orders
+from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
+from app.services.upbit_symbol_universe_service import get_upbit_market_display_names
+from app.services.us_symbol_universe_service import get_us_names_by_symbols
 
 logger = logging.getLogger(__name__)
 
-_KST = dt.timezone(dt.timedelta(hours=9), name="KST")
 _KIS_SIDE_BUY = {"02", "buy", "b", "매수"}
 _KIS_SIDE_SELL = {"01", "sell", "s", "매도"}
 
@@ -56,14 +61,14 @@ def _parse_kis_ordered_at(row: dict[str, Any]) -> dt.datetime | None:
     explicit = _parse_datetime(row.get("ordered_at") or row.get("placed_at"))
     if explicit is not None:
         return explicit
-    ord_dt = row.get("ord_dt")
-    ord_tmd = row.get("ord_tmd")
-    if not ord_dt or not ord_tmd:
+    ord_tmd = str(row.get("ord_tmd") or "").strip()
+    if not ord_tmd:
         return None
+    ord_dt = str(row.get("ord_dt") or "").strip() or now_kst().strftime("%Y%m%d")
     try:
-        return dt.datetime.strptime(f"{ord_dt}{ord_tmd}", "%Y%m%d%H%M%S").replace(
-            tzinfo=_KST
-        )
+        return dt.datetime.strptime(
+            f"{ord_dt}{ord_tmd.zfill(6)}", "%Y%m%d%H%M%S"
+        ).replace(tzinfo=KST)
     except ValueError:
         return None
 
@@ -280,6 +285,7 @@ class CurrentOrdersService:
         | None = _default_kis_client,
         upbit_client: _UpbitClientProtocol | None = upbit_orders,
         toss_client_factory: Callable[[], Any] | None = _default_toss_client,
+        db: AsyncSession | None = None,
         clock: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self._kis_client_factory = kis_client_factory
@@ -287,7 +293,78 @@ class CurrentOrdersService:
         self._kis_client: _KISClientProtocol | None = None
         self._upbit_client = upbit_client
         self._toss_client_factory = toss_client_factory
+        self._db = db
         self._clock = clock or (lambda: dt.datetime.now(tz=dt.UTC))
+
+    async def _attach_symbol_names(
+        self, rows: list[OpenOrderRow]
+    ) -> list[OpenOrderRow]:
+        """Best-effort display-name enrichment for broker rows that lack names."""
+        if self._db is None or not rows:
+            return rows
+
+        kr_symbols = sorted(
+            {row.symbol for row in rows if row.market == "kr" and not row.symbol_name}
+        )
+        us_symbols = sorted(
+            {row.symbol for row in rows if row.market == "us" and not row.symbol_name}
+        )
+        crypto_markets = sorted(
+            {
+                row.symbol.strip().upper()
+                for row in rows
+                if row.market == "crypto" and not row.symbol_name
+            }
+        )
+
+        async def _safe(coro, label: str):
+            try:
+                return await coro
+            except Exception:  # noqa: BLE001 - display names must fail open
+                logger.warning(
+                    "open-order symbol-name resolution failed for %s",
+                    label,
+                    exc_info=True,
+                )
+                return {}
+
+        kr_names = (
+            await _safe(get_kr_names_by_symbols(kr_symbols, self._db), "kr")
+            if kr_symbols
+            else {}
+        )
+        us_names = (
+            await _safe(get_us_names_by_symbols(us_symbols, self._db), "us")
+            if us_symbols
+            else {}
+        )
+        crypto_names = (
+            await _safe(
+                get_upbit_market_display_names(crypto_markets, self._db), "crypto"
+            )
+            if crypto_markets
+            else {}
+        )
+
+        enriched: list[OpenOrderRow] = []
+        for row in rows:
+            if row.symbol_name:
+                enriched.append(row)
+                continue
+            name: str | None = None
+            if row.market == "kr":
+                name = kr_names.get(row.symbol)
+            elif row.market == "us":
+                name = us_names.get(row.symbol)
+            elif row.market == "crypto":
+                display = crypto_names.get(row.symbol.strip().upper())
+                if display:
+                    name = display.get("korean_name") or display.get("english_name")
+            if name and name != row.symbol:
+                enriched.append(row.model_copy(update={"symbol_name": name}))
+            else:
+                enriched.append(row)
+        return enriched
 
     async def list_open_orders(
         self,
@@ -355,6 +432,7 @@ class CurrentOrdersService:
                 sources.append(result_sources)
 
         rows.sort(key=_sort_key, reverse=True)
+        rows = await self._attach_symbol_names(rows)
         data_state = _overall_state(sources)
         warnings = [
             f"{source.broker}/{source.market}: {source.message or source.status}"

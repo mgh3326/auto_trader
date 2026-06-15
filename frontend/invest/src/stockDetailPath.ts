@@ -25,8 +25,8 @@ function normalizeCryptoRouteSymbol(symbol: string): string {
   return clean;
 }
 
-export function stockDetailMarketParam(market: Market): StockDetailMarketParam {
-  return MARKET_ROUTE[market];
+export function stockDetailMarketParam(market: RouteMarket): StockDetailMarketParam {
+  return routeMarketParam(market);
 }
 
 export function stockDetailRouteSymbol(market: RouteMarket, symbol: string): string {
@@ -35,9 +35,9 @@ export function stockDetailRouteSymbol(market: RouteMarket, symbol: string): str
   return normalizeCryptoRouteSymbol(cleanSymbol);
 }
 
-export function stockDetailPath(market: Market, symbol: string): string | null {
+export function stockDetailPath(market: RouteMarket, symbol: string): string | null {
   const cleanSymbol = symbol.trim();
   if (!cleanSymbol) return null;
-  const marketParam = MARKET_ROUTE[market];
+  const marketParam = routeMarketParam(market);
   return `/stocks/${marketParam}/${encodeURIComponent(stockDetailRouteSymbol(market, cleanSymbol))}`;
 }

@@ -74,3 +74,40 @@ def test_open_orders_endpoint_rejects_unknown_market() -> None:
 
     assert response.status_code == 422
     assert service.calls == []
+
+
+@pytest.mark.unit
+def test_open_orders_default_service_receives_db_dependency(monkeypatch) -> None:
+    from app.core.db import get_db
+    from app.routers import invest_open_orders
+    from app.routers.dependencies import get_authenticated_user
+
+    captured = {}
+
+    class _Service:
+        def __init__(self, *, db):
+            captured["db"] = db
+
+        async def list_open_orders(self, *, market: str = "all") -> OpenOrdersResponse:
+            return OpenOrdersResponse(
+                market=market,  # type: ignore[arg-type]
+                count=0,
+                data_state="ok",
+                as_of=dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+                items=[],
+                sources=[],
+                warnings=[],
+                empty_reason="no open orders for the selected market",
+            )
+
+    monkeypatch.setattr(invest_open_orders, "CurrentOrdersService", _Service)
+
+    app = FastAPI()
+    app.include_router(invest_open_orders.router)
+    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_db] = lambda: "db-session"
+
+    response = TestClient(app).get("/trading/api/invest/open-orders")
+
+    assert response.status_code == 200
+    assert captured["db"] == "db-session"

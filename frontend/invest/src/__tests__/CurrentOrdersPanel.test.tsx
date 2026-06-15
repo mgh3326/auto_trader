@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 
 import { CurrentOrdersPanel } from "../components/my/CurrentOrdersPanel";
 
@@ -69,8 +70,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function renderCurrentOrdersPanel(compact = false) {
+  return render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/my"]}>
+      <CurrentOrdersPanel compact={compact} />
+    </MemoryRouter>,
+  );
+}
+
 test("CurrentOrdersPanel renders broker rows and degraded source warning", async () => {
-  render(<CurrentOrdersPanel />);
+  renderCurrentOrdersPanel();
 
   expect(await screen.findByText("삼성전자")).toBeInTheDocument();
   expect(screen.getByText("KRW-BTC")).toBeInTheDocument();
@@ -83,7 +92,7 @@ test("CurrentOrdersPanel renders broker rows and degraded source warning", async
 });
 
 test("CurrentOrdersPanel refetches with market filter", async () => {
-  render(<CurrentOrdersPanel />);
+  renderCurrentOrdersPanel();
   await screen.findByText("삼성전자");
 
   await userEvent.click(screen.getByRole("button", { name: "코인" }));
@@ -105,12 +114,33 @@ test("CurrentOrdersPanel renders empty reason", async () => {
     }),
   });
 
-  render(<CurrentOrdersPanel compact />);
+  renderCurrentOrdersPanel(true);
 
   expect(await screen.findByText("no open orders for the selected market")).toBeInTheDocument();
 });
 
-import { MemoryRouter } from "react-router-dom";
+test("CurrentOrdersPanel links symbols to stock detail and labels market orders", async () => {
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      ...baseResponse,
+      items: [
+        {
+          ...baseResponse.items[0],
+          price: null,
+          order_type: "시장가",
+        },
+      ],
+    }),
+  });
+
+  renderCurrentOrdersPanel();
+
+  const link = await screen.findByRole("link", { name: /삼성전자/ });
+  expect(link).toHaveAttribute("href", "/invest/stocks/kr/005930");
+  expect(screen.getByText("시장가")).toBeInTheDocument();
+});
+
 import { PORTFOLIO_TABS, usePortfolioTabSearchParam } from "../components/my/portfolioTabs";
 
 function TabProbe() {
@@ -119,6 +149,7 @@ function TabProbe() {
     <>
       <div data-testid="active-tab">{activeTab}</div>
       <button type="button" onClick={() => setActiveTab("currentOrders")}>set current</button>
+      <button type="button" onClick={() => setActiveTab("buyHistory")}>set buy</button>
     </>
   );
 }
@@ -133,11 +164,21 @@ test("portfolio tabs include current orders and parse the search param", async (
   expect(screen.getByTestId("active-tab")).toHaveTextContent("currentOrders");
 });
 
+test("portfolio tabs include buy history and parse the search param", async () => {
+  expect(PORTFOLIO_TABS.map((tab) => tab.key)).toContain("buyHistory");
+  render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/my?tab=buyHistory"]}>
+      <TabProbe />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("active-tab")).toHaveTextContent("buyHistory");
+});
+
 
 test("CurrentOrdersPanel shows broker label on every row in compact (mobile) mode", async () => {
   // Fix #4: compact layout drops the broker column, so each row must still
   // carry a broker chip — otherwise mobile users can't tell KIS from Toss.
-  render(<CurrentOrdersPanel compact />);
+  renderCurrentOrdersPanel(true);
 
   await screen.findByText("삼성전자");
   expect(screen.getByText("KIS")).toBeInTheDocument();
