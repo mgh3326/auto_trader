@@ -2059,3 +2059,37 @@ async def test_notify_fill_telegram_fallback_when_discord_fails(trade_notifier):
         ok = await trade_notifier.notify_fill(order, enrichment=None, detail_url=None)
     assert ok is True
     mock_tg.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_investment_watch_routes_by_market(trade_notifier):
+    from decimal import Decimal
+    from uuid import uuid4
+    from app.services.hermes_client import (
+        ReviewTriggerPayload, InvestLinks, OperatorActionGuidance,
+    )
+    payload = ReviewTriggerPayload(
+        event_uuid=uuid4(), alert_uuid=uuid4(), source_report_uuid=uuid4(),
+        source_item_uuid=uuid4(), correlation_id="c1", kst_date="2026-06-15",
+        market="kr", target_kind="asset", symbol="005930", metric="price",
+        operator="below", threshold=Decimal("68000"), threshold_key="k",
+        intent="buy_review", action_mode="notify_only", current_value=Decimal("67500"),
+        scanner_snapshot={}, outcome="notified",
+        invest_links=InvestLinks(report_path="/invest/reports/r1", stock_path="/invest/stocks/kr/005930"),
+        operator_action_guidance=OperatorActionGuidance(headline="알림 전용", requires_operator_review=False, order_behavior="none"),
+        price_guidance=None, planned_action=None, trigger_checklist=None,
+    )
+
+    trade_notifier.configure(
+        bot_token="t", chat_ids=["1"], enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr"
+    )
+    with patch.object(trade_notifier, "_send_to_discord_embed_single", new=AsyncMock(return_value=True)) as md, \
+         patch.object(trade_notifier, "_send_to_telegram", new=AsyncMock(return_value=True)) as mt:
+        ok = await trade_notifier.notify_investment_watch(payload)
+    assert ok is True
+    md.assert_awaited_once()
+    mt.assert_not_awaited()
+    assert md.await_args.args[0]["title"].startswith("🔔 워치 트리거")
+
