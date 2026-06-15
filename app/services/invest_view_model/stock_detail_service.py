@@ -255,7 +255,14 @@ def _daily_row_from_snapshot(row: Any) -> StockDetailInvestorFlowDailyRow:
         snapshotDate=row.snapshot_date.isoformat(),
         collectedAt=row.collected_at,
         source=row.source,
+        close=_float_or_none(getattr(row, "close", None)),
+        changeRate=_float_or_none(getattr(row, "change_rate", None)),
+        volume=getattr(row, "volume", None),
         foreignNet=row.foreign_net,
+        foreignHoldingShares=getattr(row, "foreign_holding_shares", None),
+        foreignHoldingRate=_float_or_none(
+            getattr(row, "foreign_holding_rate", None)
+        ),
         institutionNet=row.institution_net,
         individualNet=row.individual_net,
         doubleBuy=row.double_buy,
@@ -278,6 +285,20 @@ def _sum_known(values: list[int | None]) -> int | None:
     return sum(known)
 
 
+def _newest_minus_oldest_known_int(values: list[int | None]) -> int | None:
+    known = [value for value in values if value is not None]
+    if len(known) < 2:
+        return None
+    return known[0] - known[-1]
+
+
+def _newest_minus_oldest_known_float(values: list[float | None]) -> float | None:
+    known = [value for value in values if value is not None]
+    if len(known) < 2:
+        return None
+    return known[0] - known[-1]
+
+
 def _build_period_summary(
     daily_rows: list[StockDetailInvestorFlowDailyRow],
 ) -> StockDetailInvestorFlowPeriodSummary | None:
@@ -287,10 +308,7 @@ def _build_period_summary(
     volume_values = [row.volume for row in daily_rows if row.volume is not None]
     foreign_total = _sum_known(foreign_values)
     volume_total = sum(volume_values) if volume_values else None
-    unavailable = [
-        "종가/등락률/거래량은 investor_flow_snapshots 저장소에 아직 없어 일별 표에서 준비중으로 표시됩니다.",
-        "외국인 보유주수/보유율은 investor_flow_snapshots 저장소에 아직 없어 변화율을 계산하지 않습니다.",
-    ]
+    unavailable: list[str] = []
     return StockDetailInvestorFlowPeriodSummary(
         windowDays=len(daily_rows),
         rowCount=len(daily_rows),
@@ -307,8 +325,12 @@ def _build_period_summary(
         foreignNetToVolumeRatio=(foreign_total / volume_total)
         if foreign_total is not None and volume_total
         else None,
-        foreignHoldingSharesChange=None,
-        foreignHoldingRateChange=None,
+        foreignHoldingSharesChange=_newest_minus_oldest_known_int(
+            [row.foreignHoldingShares for row in daily_rows]
+        ),
+        foreignHoldingRateChange=_newest_minus_oldest_known_float(
+            [row.foreignHoldingRate for row in daily_rows]
+        ),
         unavailableLabels=unavailable,
     )
 
@@ -347,15 +369,11 @@ def _build_buyer_decomposition(
         foreignNet=row.foreignNet,
         institutionNet=row.institutionNet,
         individualNet=row.individualNet,
-        note="급등일 여부는 종가/등락률 저장 전까지 판별하지 않고, 최신 수급 행의 매수 주체 분해만 표시합니다.",
+        note="최신 수급 행 기준입니다.",
     )
 
 
-_INVESTOR_FLOW_UNAVAILABLE_LABELS = [
-    "일별 종가/등락률/거래량: 저장소 미적재",
-    "외국인 보유주수/보유율: 저장소 미적재",
-    "외국인 순매수/거래량 강도: 거래량 저장 전까지 계산 불가",
-]
+_INVESTOR_FLOW_UNAVAILABLE_LABELS: list[str] = []
 
 
 async def _default_investor_flow_provider(
