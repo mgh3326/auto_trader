@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+from decimal import Decimal, InvalidOperation
 import inspect
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -56,6 +57,15 @@ def _int_or_none(value: Any) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
         return None
 
 
@@ -240,6 +250,15 @@ async def build_investor_flow_snapshots(
                     market="kr",
                     symbol=normalized,
                     snapshot_date=snapshot_date,
+                    close=_decimal_or_none(row.get("close")),
+                    change_rate=_decimal_or_none(row.get("change_pct")),
+                    volume=_int_or_none(row.get("volume")),
+                    foreign_holding_shares=_int_or_none(
+                        row.get("foreign_holding_shares")
+                    ),
+                    foreign_holding_rate=_decimal_or_none(
+                        row.get("foreign_holding_rate")
+                    ),
                     foreign_net=foreign_net,
                     institution_net=institution_net,
                     individual_net=individual_net,
