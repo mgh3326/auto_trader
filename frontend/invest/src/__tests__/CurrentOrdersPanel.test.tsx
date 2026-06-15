@@ -149,6 +149,7 @@ function TabProbe() {
     <>
       <div data-testid="active-tab">{activeTab}</div>
       <button type="button" onClick={() => setActiveTab("currentOrders")}>set current</button>
+      <button type="button" onClick={() => setActiveTab("buyHistory")}>set buy</button>
     </>
   );
 }
@@ -161,6 +162,16 @@ test("portfolio tabs include current orders and parse the search param", async (
     </MemoryRouter>,
   );
   expect(screen.getByTestId("active-tab")).toHaveTextContent("currentOrders");
+});
+
+test("portfolio tabs include buy history and parse the search param", async () => {
+  expect(PORTFOLIO_TABS.map((tab) => tab.key)).toContain("buyHistory");
+  render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/my?tab=buyHistory"]}>
+      <TabProbe />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("active-tab")).toHaveTextContent("buyHistory");
 });
 
 

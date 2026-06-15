@@ -12,6 +12,7 @@ import { DesktopHero } from "../../components/home/DesktopHero";
 import { FilterChips } from "../../components/home/FilterChips";
 import { UnifiedHoldingsTable } from "../../components/my/UnifiedHoldingsTable";
 import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
+import { BuyHistoryPanel } from "../../components/my/BuyHistoryPanel";
 import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
 import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import { CurrentOrdersPanel } from "../../components/my/CurrentOrdersPanel";
@@ -28,6 +29,7 @@ function portfolioTitle(tab: PortfolioTab): string {
   if (tab === "holdings") return "통합 보유 현황";
   if (tab === "signals") return "내 투자 시그널";
   if (tab === "currentOrders") return "현재 주문";
+  if (tab === "buyHistory") return "매수 이력";
   return "매도 이력";
 }
 
@@ -35,6 +37,7 @@ function portfolioDescription(tab: PortfolioTab): string {
   if (tab === "holdings") return "KIS, Toss/manual, 모의/수동 계좌를 한 화면에서 비교하고 종목별 출처를 확인합니다.";
   if (tab === "signals") return "보유·관심 종목과 시장별 AI 분석 시그널을 내 투자 화면에서 함께 확인합니다.";
   if (tab === "currentOrders") return "KIS/Toss/Upbit 실계좌의 현재 미체결·대기 주문을 읽기 전용으로 확인합니다.";
+  if (tab === "buyHistory") return "KIS/Upbit 체결 보정 ledger 기준 최근 매수 체결을 별도 화면에서 확인합니다.";
   return "KIS/Upbit 체결 보정 ledger 기준 최근 매도 체결을 별도 화면에서 확인합니다.";
 }
 
@@ -147,6 +150,8 @@ export function DesktopPortfolioPage() {
                 <SignalsPanel />
               ) : activeTab === "currentOrders" ? (
                 <CurrentOrdersPanel />
+              ) : activeTab === "buyHistory" ? (
+                <BuyHistoryPanel />
               ) : (
                 <SellHistoryPanel />
               )}
