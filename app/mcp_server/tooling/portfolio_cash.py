@@ -22,17 +22,17 @@ from app.mcp_server.tooling.user_settings_tools import (
     get_user_setting,
 )
 from app.services.account_routing import compact_cost_profile
-
-
-async def get_account_costs_setting() -> dict[str, Any] | None:
-    value = await get_user_setting("account_costs")
-    return value if isinstance(value, dict) else None
 from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
+
+
+async def get_account_costs_setting() -> dict[str, Any] | None:
+    value = await get_user_setting("account_costs")
+    return value if isinstance(value, dict) else None
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:

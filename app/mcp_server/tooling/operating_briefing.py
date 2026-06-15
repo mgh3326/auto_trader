@@ -10,15 +10,15 @@ from app.mcp_server.tooling.pending_orders_snapshot import (
     DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE,
     collect_pending_orders_snapshot,
 )
-from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
 from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
-from app.services.account_routing import compact_cost_profile
+from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
 from app.schemas.investment_reports import (
     ActiveWatchesListResponse,
     InvestmentWatchAlertResponse,
     OperatingBriefingResponse,
 )
 from app.schemas.session_context import SessionContextResponse
+from app.services.account_routing import compact_cost_profile
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
     _advisory_draft_profiles,

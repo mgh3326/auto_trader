@@ -92,9 +92,7 @@ async def test_suggest_order_account_impl_uses_snapshots_and_user_costs(monkeypa
         assert key == "account_costs"
         return {
             "version": 1,
-            "routing": {
-                "position_consolidation_threshold_bps": {"kr": 25, "us": 40}
-            },
+            "routing": {"position_consolidation_threshold_bps": {"kr": 25, "us": 40}},
             "accounts": {
                 "kis_domestic": {
                     "broker": "kis",
@@ -111,7 +109,11 @@ async def test_suggest_order_account_impl_uses_snapshots_and_user_costs(monkeypa
         assert kwargs["include_manual"] is False
         return {
             "accounts": [
-                {"account": "kis_domestic", "currency": "KRW", "orderable": 2_000_000.0},
+                {
+                    "account": "kis_domestic",
+                    "currency": "KRW",
+                    "orderable": 2_000_000.0,
+                },
                 {"account": "toss", "currency": "KRW", "orderable": 1_000_000.0},
             ],
             "errors": [],
@@ -144,7 +146,9 @@ async def test_suggest_order_account_impl_uses_snapshots_and_user_costs(monkeypa
 
     assert result["success"] is True
     assert result["recommended_account"] == "kis_domestic"
-    assert result["position_consolidation"]["foregone_savings_krw"] == pytest.approx(1102.5)
+    assert result["position_consolidation"]["foregone_savings_krw"] == pytest.approx(
+        1102.5
+    )
     assert result["cost_comparison"]["toss"]["total_cost_krw"] == pytest.approx(0)
     assert result["advisory_only"] is True
     assert result["price_source"] == "input"

@@ -609,9 +609,7 @@ async def test_get_operating_briefing_accounts_include_cost_profile(monkeypatch)
     async def fake_account_costs():
         return {
             "version": 1,
-            "routing": {
-                "position_consolidation_threshold_bps": {"kr": 25, "us": 40}
-            },
+            "routing": {"position_consolidation_threshold_bps": {"kr": 25, "us": 40}},
             "accounts": {
                 "kis_domestic": {
                     "broker": "kis",

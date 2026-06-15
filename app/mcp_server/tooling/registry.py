@@ -40,6 +40,9 @@ from typing import TYPE_CHECKING
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import orders_kiwoom_variants
+from app.mcp_server.tooling.account_routing_registration import (
+    register_account_routing_tools,
+)
 from app.mcp_server.tooling.alpaca_paper import register_alpaca_paper_tools
 from app.mcp_server.tooling.alpaca_paper_ledger_read import (
     register_alpaca_paper_ledger_read_tools,
@@ -91,9 +94,6 @@ from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
-from app.mcp_server.tooling.account_routing_registration import (
-    register_account_routing_tools,
-)
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
 )

@@ -56,7 +56,9 @@ class AccountCostProfiles:
             if isinstance(routing, dict)
             else {}
         )
-        fallback = DEFAULT_ACCOUNT_COSTS["routing"]["position_consolidation_threshold_bps"][market]
+        fallback = DEFAULT_ACCOUNT_COSTS["routing"][
+            "position_consolidation_threshold_bps"
+        ][market]
         return float(thresholds.get(market, fallback))
 
     def account(self, account_id: str) -> dict[str, Any]:
@@ -68,16 +70,27 @@ class AccountCostProfiles:
         account = self.account(account_id)
         markets = account.get("markets", {}) if isinstance(account, dict) else {}
         profile = markets.get(market, {}) if isinstance(markets, dict) else {}
-        default = DEFAULT_ACCOUNT_COSTS["accounts"].get(account_id, {}).get("markets", {}).get(market, {})
+        default = (
+            DEFAULT_ACCOUNT_COSTS["accounts"]
+            .get(account_id, {})
+            .get("markets", {})
+            .get(market, {})
+        )
         return MarketCostProfile(
-            commission_bps=float(profile.get("commission_bps", default.get("commission_bps", 0.0))),
-            fx_spread_bps=float(profile.get("fx_spread_bps", default.get("fx_spread_bps", 0.0))),
+            commission_bps=float(
+                profile.get("commission_bps", default.get("commission_bps", 0.0))
+            ),
+            fx_spread_bps=float(
+                profile.get("fx_spread_bps", default.get("fx_spread_bps", 0.0))
+            ),
         )
 
     def max_order_notional_krw(self, account_id: str) -> float | None:
         account = self.account(account_id)
         limits = account.get("limits", {}) if isinstance(account, dict) else {}
-        value = limits.get("max_order_notional_krw") if isinstance(limits, dict) else None
+        value = (
+            limits.get("max_order_notional_krw") if isinstance(limits, dict) else None
+        )
         return None if value is None else float(value)
 
 
@@ -127,7 +140,9 @@ def _candidate_accounts(market: Market) -> tuple[str, str]:
     return ("kis_overseas", "toss")
 
 
-def _orderable_by_account_currency(snapshot: dict[str, Any]) -> dict[str, dict[str, float]]:
+def _orderable_by_account_currency(
+    snapshot: dict[str, Any],
+) -> dict[str, dict[str, float]]:
     result: dict[str, dict[str, float]] = {}
     for row in snapshot.get("accounts") or []:
         account = str(row.get("account") or "")
@@ -139,7 +154,9 @@ def _orderable_by_account_currency(snapshot: dict[str, Any]) -> dict[str, dict[s
     return result
 
 
-def _existing_accounts(snapshot: dict[str, Any], *, symbol: str, market: Market) -> list[str]:
+def _existing_accounts(
+    snapshot: dict[str, Any], *, symbol: str, market: Market
+) -> list[str]:
     normalized = symbol.strip().upper() if market == "us" else symbol.strip()
     found: list[str] = []
     for account in snapshot.get("accounts") or []:
@@ -245,9 +262,7 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
         for account in candidates
     }
     eligible = {
-        account: row
-        for account, row in cost_comparison.items()
-        if row["eligible"]
+        account: row for account, row in cost_comparison.items() if row["eligible"]
     }
     existing = _existing_accounts(
         input.holdings_snapshot,
@@ -283,7 +298,8 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
             "reason_codes": ["no_eligible_account"],
             "data_quality": data_quality,
             "notes": notes,
-            "errors": input.capital_snapshot.get("errors", []) + input.holdings_snapshot.get("errors", []),
+            "errors": input.capital_snapshot.get("errors", [])
+            + input.holdings_snapshot.get("errors", []),
         }
 
     cheapest = min(eligible, key=lambda key: eligible[key]["total_cost_krw"])
@@ -310,7 +326,10 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
             existing_cost = eligible[preferred_existing]["total_cost_krw"]
             cheapest_cost = eligible[cheapest]["total_cost_krw"]
             savings_vs_existing = max(0.0, existing_cost - cheapest_cost)
-            if cheapest != preferred_existing and savings_vs_existing >= threshold_amount:
+            if (
+                cheapest != preferred_existing
+                and savings_vs_existing >= threshold_amount
+            ):
                 decision = "break_for_cost"
                 recommended = cheapest
                 distribution_warning = True
@@ -349,13 +368,16 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
         "reason_codes": reason_codes,
         "data_quality": data_quality,
         "notes": notes,
-        "errors": input.capital_snapshot.get("errors", []) + input.holdings_snapshot.get("errors", []),
+        "errors": input.capital_snapshot.get("errors", [])
+        + input.holdings_snapshot.get("errors", []),
     }
 
 
 def _consolidation_note(decision: str) -> str:
     if decision == "keep_existing":
-        return "Existing position consolidation wins because savings are below threshold."
+        return (
+            "Existing position consolidation wins because savings are below threshold."
+        )
     if decision == "break_for_cost":
         return "Cheaper account exceeds the consolidation break threshold; distribution warning applies."
     if decision == "existing_account_ineligible":

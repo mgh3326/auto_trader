@@ -9,11 +9,16 @@ from app.mcp_server.tooling.market_data_quotes import (
 from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
 from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
 from app.mcp_server.tooling.user_settings_tools import get_user_setting
-from app.services.account_routing import AccountRoutingInput, suggest_account_from_snapshot
+from app.services.account_routing import (
+    AccountRoutingInput,
+    suggest_account_from_snapshot,
+)
 from app.services.exchange_rate_service import get_usd_krw_rate
 
 
-async def _resolve_price(symbol: str, market: Literal["kr", "us"], price: float | None) -> tuple[float, str]:
+async def _resolve_price(
+    symbol: str, market: Literal["kr", "us"], price: float | None
+) -> tuple[float, str]:
     if price is not None:
         value = float(price)
         if value <= 0:
@@ -51,7 +56,9 @@ async def suggest_order_account_impl(
     usd_krw: float | None = None,
 ) -> dict[str, Any]:
     normalized_market = _normalize_market(market, symbol)
-    resolved_price, price_source = await _resolve_price(symbol, normalized_market, price)
+    resolved_price, price_source = await _resolve_price(
+        symbol, normalized_market, price
+    )
     resolved_usd_krw = usd_krw
     if normalized_market == "us" and resolved_usd_krw is None:
         resolved_usd_krw = await get_usd_krw_rate()

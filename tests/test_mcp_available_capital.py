@@ -437,9 +437,7 @@ async def test_get_available_capital_adds_cost_profiles(monkeypatch):
     async def mock_get_account_costs_setting():
         return {
             "version": 1,
-            "routing": {
-                "position_consolidation_threshold_bps": {"kr": 25, "us": 40}
-            },
+            "routing": {"position_consolidation_threshold_bps": {"kr": 25, "us": 40}},
             "accounts": {
                 "kis_domestic": {
                     "broker": "kis",
@@ -452,8 +450,12 @@ async def test_get_available_capital_adds_cost_profiles(monkeypatch):
             },
         }
 
-    monkeypatch.setattr(portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl)
-    monkeypatch.setattr(portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting)
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
+    )
     monkeypatch.setattr(portfolio_cash, "get_manual_cash_setting", lambda: None)
     monkeypatch.setattr(portfolio_cash, "now_kst", lambda: datetime.now(UTC))
 
