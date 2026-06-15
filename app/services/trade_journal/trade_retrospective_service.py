@@ -24,6 +24,7 @@ _VALID_ACCOUNT_MODES = {
     "kis_mock",
     "kiwoom_mock",
     "kis_live",
+    "toss_live",
     "alpaca_paper",
     "upbit_live",
 }
@@ -34,7 +35,6 @@ _VALID_OUTCOMES = {
     "rejected",
     "cancelled",
 }
-_NO_FILL_ACCOUNT_MODES = {"kiwoom_mock"}  # fills not readable (ROB-460)
 _KST = ZoneInfo("Asia/Seoul")
 
 
@@ -43,15 +43,7 @@ class RetrospectiveValidationError(ValueError):
 
 
 def _normalize_symbol(symbol: str, instrument_type: str) -> str:
-    """Instrument-aware symbol normalization.
-
-    Mirrors ``app.mcp_server.tooling.shared.normalize_position_symbol`` (inlined to
-    avoid a services -> mcp_server import): crypto keeps its dash (KRW-BTC stays
-    KRW-BTC; a bare ticker gets a KRW- prefix), equity_us is canonicalized to the
-    dot form (BRK-B -> BRK.B), everything else is just upper-cased. Bare
-    ``to_db_symbol`` would mangle crypto (KRW-BTC -> KRW.BTC) and diverge from
-    trade_journals/holdings.
-    """
+    """Instrument-aware symbol normalization."""
     normalized = symbol.strip().upper()
     if instrument_type == "crypto":
         if normalized and "-" not in normalized:
@@ -113,6 +105,20 @@ def serialize_retrospective(r: TradeRetrospective) -> dict[str, Any]:
         "realized_pnl_currency": r.realized_pnl_currency,
         "realized_pnl_source": r.realized_pnl_source,
         "pnl_pct": float(r.pnl_pct) if r.pnl_pct is not None else None,
+        "buy_fx_rate": float(r.buy_fx_rate) if r.buy_fx_rate is not None else None,
+        "sell_fx_rate": float(r.sell_fx_rate) if r.sell_fx_rate is not None else None,
+        "fx_pnl_krw": float(r.fx_pnl_krw) if r.fx_pnl_krw is not None else None,
+        "security_pnl_usd": float(r.security_pnl_usd)
+        if r.security_pnl_usd is not None
+        else None,
+        "security_pnl_krw": float(r.security_pnl_krw)
+        if r.security_pnl_krw is not None
+        else None,
+        "total_pnl_krw": float(r.total_pnl_krw)
+        if r.total_pnl_krw is not None
+        else None,
+        "fx_rate_source": r.fx_rate_source,
+        "fx_pnl_accuracy": r.fx_pnl_accuracy,
         "fill_evidence_available": r.fill_evidence_available,
         "rationale": r.rationale,
         "result_summary": r.result_summary,
@@ -156,12 +162,19 @@ class TradeRetrospectiveRepository:
         return "created", row
 
 
-async def _derive_realized_pnl_from_journal(
-    db: AsyncSession, journal_id: int, side: str | None
-) -> Decimal | None:
-    j = (
+async def _load_trade_journal(
+    db: AsyncSession,
+    journal_id: int,
+) -> TradeJournal | None:
+    return (
         await db.execute(select(TradeJournal).where(TradeJournal.id == journal_id))
     ).scalar_one_or_none()
+
+
+def _realized_pnl_from_journal(
+    j: TradeJournal | None,
+    side: str | None,
+) -> Decimal | None:
     if j is None or j.entry_price is None or j.exit_price is None or j.quantity is None:
         return None
     entry = Decimal(str(j.entry_price))
@@ -169,6 +182,12 @@ async def _derive_realized_pnl_from_journal(
     qty = Decimal(str(j.quantity))
     direction = Decimal("-1") if (side or j.side) == "sell" else Decimal("1")
     return (exit_price - entry) * qty * direction
+
+
+async def _derive_realized_pnl_from_journal(
+    db: AsyncSession, journal_id: int, side: str | None
+) -> Decimal | None:
+    return _realized_pnl_from_journal(await _load_trade_journal(db, journal_id), side)
 
 
 async def save_retrospective(
@@ -196,6 +215,14 @@ async def save_retrospective(
     next_strategy: str | None = None,
     evidence_snapshot: dict | None = None,
     created_by_profile: str | None = None,
+    buy_fx_rate: float | None = None,
+    sell_fx_rate: float | None = None,
+    fx_pnl_krw: float | None = None,
+    security_pnl_usd: float | None = None,
+    security_pnl_krw: float | None = None,
+    total_pnl_krw: float | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
 ) -> tuple[str, TradeRetrospective]:
     if account_mode not in _VALID_ACCOUNT_MODES:
         raise RetrospectiveValidationError(f"invalid account_mode: {account_mode}")
@@ -211,7 +238,9 @@ async def save_retrospective(
             f"invalid realized_pnl_currency: {realized_pnl_currency}"
         )
 
-    fill_evidence_available = account_mode not in _NO_FILL_ACCOUNT_MODES
+    # Note: kiwoom_mock is legacy special case; for US/crypto live, evidence
+    # should be available.
+    fill_evidence_available = account_mode != "kiwoom_mock"
     if not fill_evidence_available and (
         realized_pnl is not None or fill_price is not None
     ):
@@ -220,19 +249,38 @@ async def save_retrospective(
             "realized_pnl/fill_price not allowed"
         )
 
+    journal_row = (
+        await _load_trade_journal(db, journal_id)
+        if journal_id is not None and fill_evidence_available
+        else None
+    )
+
     realized_pnl_value = _to_decimal(realized_pnl)
     realized_pnl_source: str | None = None
     if realized_pnl_value is not None:
         realized_pnl_source = "caller_supplied"
     elif journal_id is not None and fill_evidence_available:
-        derived = await _derive_realized_pnl_from_journal(db, journal_id, side)
+        derived = _realized_pnl_from_journal(journal_row, side)
         if derived is not None:
             realized_pnl_value = derived
             realized_pnl_source = "derived_from_journal"
 
-    # An absolute realized_pnl with no currency would be silently dropped from the
-    # per-currency aggregate sum while still moving win_rate. Infer the currency so
-    # every realized_pnl row is countable; refuse if it cannot be determined.
+    if journal_row is not None:
+        if buy_fx_rate is None and journal_row.buy_fx_rate is not None:
+            buy_fx_rate = float(journal_row.buy_fx_rate)
+        if sell_fx_rate is None and journal_row.sell_fx_rate is not None:
+            sell_fx_rate = float(journal_row.sell_fx_rate)
+        if fx_pnl_krw is None and journal_row.fx_pnl_krw is not None:
+            fx_pnl_krw = float(journal_row.fx_pnl_krw)
+        if security_pnl_usd is None and journal_row.security_pnl_usd is not None:
+            security_pnl_usd = float(journal_row.security_pnl_usd)
+        if security_pnl_krw is None and journal_row.security_pnl_krw is not None:
+            security_pnl_krw = float(journal_row.security_pnl_krw)
+        if total_pnl_krw is None and journal_row.total_pnl_krw is not None:
+            total_pnl_krw = float(journal_row.total_pnl_krw)
+        fx_rate_source = fx_rate_source or journal_row.fx_rate_source
+        fx_pnl_accuracy = fx_pnl_accuracy or journal_row.fx_pnl_accuracy
+
     if realized_pnl_value is not None and realized_pnl_currency is None:
         realized_pnl_currency = _infer_currency(instrument_type)
         if realized_pnl_currency is None:
@@ -266,6 +314,14 @@ async def save_retrospective(
         "next_strategy": next_strategy,
         "evidence_snapshot": evidence_snapshot,
         "created_by_profile": created_by_profile,
+        "buy_fx_rate": _to_decimal(buy_fx_rate),
+        "sell_fx_rate": _to_decimal(sell_fx_rate),
+        "fx_pnl_krw": _to_decimal(fx_pnl_krw),
+        "security_pnl_usd": _to_decimal(security_pnl_usd),
+        "security_pnl_krw": _to_decimal(security_pnl_krw),
+        "total_pnl_krw": _to_decimal(total_pnl_krw),
+        "fx_rate_source": fx_rate_source,
+        "fx_pnl_accuracy": fx_pnl_accuracy,
     }
     repo = TradeRetrospectiveRepository(db)
     return await repo.upsert(payload)
@@ -298,8 +354,6 @@ async def get_retrospectives(
 ) -> dict[str, Any]:
     filters = []
     if symbol is not None:
-        # Generic match for all stored forms (crypto keeps its dash, equity_us is
-        # dotted): strip+upper rather than to_db_symbol, which would mangle crypto.
         filters.append(TradeRetrospective.symbol == symbol.strip().upper())
     if account_mode is not None:
         filters.append(TradeRetrospective.account_mode == account_mode)
@@ -391,6 +445,12 @@ async def build_retrospective_aggregate(
                 realized_sum[it.realized_pnl_currency] = realized_sum.get(
                     it.realized_pnl_currency, 0.0
                 ) + float(it.realized_pnl)
+        fx_pnl_krw_sum = sum(
+            float(it.fx_pnl_krw) for it in items if it.fx_pnl_krw is not None
+        )
+        total_pnl_krw_sum = sum(
+            float(it.total_pnl_krw) for it in items if it.total_pnl_krw is not None
+        )
         by_outcome: dict[str, int] = {}
         for it in items:
             by_outcome[it.outcome] = by_outcome.get(it.outcome, 0) + 1
@@ -403,6 +463,8 @@ async def build_retrospective_aggregate(
                 "win_rate_pct": (wins / len(decided) * 100.0) if decided else None,
                 "avg_pnl_pct": _avg([it.pnl_pct for it in items]),
                 "realized_pnl_sum": realized_sum,
+                "fx_pnl_krw_sum": fx_pnl_krw_sum,
+                "total_pnl_krw_sum": total_pnl_krw_sum,
                 "by_outcome": by_outcome,
             }
         )

@@ -189,27 +189,18 @@ def test_new_agent_callback_path_is_registered(
     assert res.json()["request_id"] == "r-alias"
 
 
-def test_legacy_openclaw_callback_alias_still_works(
+def test_legacy_openclaw_callback_alias_is_not_registered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from fastapi.testclient import TestClient
 
     app = _build_app_with_callback_router(monkeypatch)
 
-    async def fake_persist(payload, db):
-        return {
-            "status": "ok",
-            "request_id": payload.request_id,
-            "analysis_result_id": 2,
-        }
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/openclaw/callback",
+            json=_callback_payload(),
+            headers={"Authorization": "Bearer cb-token"},
+        )
 
-    with patch("app.routers.agent_callback._persist_agent_callback", new=fake_persist):
-        with TestClient(app) as client:
-            res = client.post(
-                "/api/v1/openclaw/callback",
-                json=_callback_payload(),
-                headers={"Authorization": "Bearer cb-token"},
-            )
-
-    assert res.status_code == 200
-    assert res.json()["analysis_result_id"] == 2
+    assert res.status_code == 404

@@ -427,6 +427,15 @@ class LiveOrderLedger(Base):
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
+    buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    fx_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    total_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fx_rate_source: Mapped[str | None] = mapped_column(Text)
+    fx_pnl_accuracy: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -533,6 +542,15 @@ class TossLiveOrderLedger(Base):
     trade_id: Mapped[int | None] = mapped_column(BigInteger)
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    fx_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    total_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fx_rate_source: Mapped[str | None] = mapped_column(Text)
+    fx_pnl_accuracy: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
@@ -908,8 +926,8 @@ class TradeRetrospective(Base):
             "correlation_id", name="uq_trade_retrospectives_correlation_id"
         ),
         CheckConstraint(
-            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','alpaca_paper','upbit_live')",
-            name="ck_trade_retrospectives_account_mode",
+            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live')",
+            name="account_mode",
         ),
         CheckConstraint(
             "outcome IN ('filled','partially_filled','unfilled','rejected','cancelled')",
@@ -964,6 +982,16 @@ class TradeRetrospective(Base):
     realized_pnl_currency: Mapped[str | None] = mapped_column(Text)
     realized_pnl_source: Mapped[str | None] = mapped_column(Text)
     pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+
+    buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    fx_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    total_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fx_rate_source: Mapped[str | None] = mapped_column(Text)
+    fx_pnl_accuracy: Mapped[str | None] = mapped_column(Text)
+
     fill_evidence_available: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )

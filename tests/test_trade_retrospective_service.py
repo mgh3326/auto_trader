@@ -316,3 +316,78 @@ async def test_equity_us_symbol_dotted(db_session: AsyncSession):
     )
     await db_session.commit()
     assert row.symbol == "BRK.B"
+
+
+@pytest.mark.asyncio
+async def test_create_retrospective_records_us_fx_fields(db_session: AsyncSession):
+    _, row = await svc.save_retrospective(
+        db_session,
+        symbol="AAPL",
+        instrument_type="equity_us",
+        account_mode="toss_live",
+        outcome="filled",
+        buy_fx_rate=1389.33,
+        sell_fx_rate=1503.19,
+        fx_pnl_krw=22772.0,
+        security_pnl_usd=60.0,
+        security_pnl_krw=90191.4,
+        total_pnl_krw=112963.4,
+        fx_rate_source="reconcile_spot",
+        fx_pnl_accuracy="approximate",
+    )
+    await db_session.commit()
+
+    assert row.buy_fx_rate == Decimal("1389.3300")
+    assert row.sell_fx_rate == Decimal("1503.1900")
+    assert row.fx_pnl_krw == Decimal("22772.0000")
+    assert row.fx_rate_source == "reconcile_spot"
+    assert row.fx_pnl_accuracy == "approximate"
+
+
+@pytest.mark.asyncio
+async def test_retrospective_derives_fx_fields_from_journal(
+    db_session: AsyncSession,
+):
+    j = TradeJournal(
+        symbol="AAPL",
+        instrument_type="equity_us",
+        side="buy",
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        thesis="t",
+        account_type="live",
+        account="toss",
+        status="closed",
+        exit_price=Decimal("130"),
+        exit_date=datetime(2026, 6, 2, tzinfo=UTC),
+        pnl_pct=Decimal("30"),
+        buy_fx_rate=Decimal("1389.3300"),
+        sell_fx_rate=Decimal("1503.1900"),
+        fx_pnl_krw=Decimal("22772.0000"),
+        security_pnl_usd=Decimal("60.0000"),
+        security_pnl_krw=Decimal("90191.4000"),
+        total_pnl_krw=Decimal("112963.4000"),
+        fx_rate_source="reconcile_spot",
+        fx_pnl_accuracy="approximate",
+    )
+    db_session.add(j)
+    await db_session.commit()
+    await db_session.refresh(j)
+
+    _, row = await svc.save_retrospective(
+        db_session,
+        symbol="AAPL",
+        instrument_type="equity_us",
+        account_mode="toss_live",
+        outcome="filled",
+        journal_id=j.id,
+    )
+    await db_session.commit()
+
+    assert row.realized_pnl == Decimal("60.0000")
+    assert row.realized_pnl_currency == "USD"
+    assert row.fx_pnl_krw == Decimal("22772.0000")
+    assert row.security_pnl_usd == Decimal("60.0000")
+    assert row.total_pnl_krw == Decimal("112963.4000")
+    assert row.fx_rate_source == "reconcile_spot"
+    assert row.fx_pnl_accuracy == "approximate"
