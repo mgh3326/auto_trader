@@ -28,6 +28,7 @@ def register_user_settings_tools(mcp: FastMCP) -> None:
         name="set_user_setting",
         description=(
             "Set a user setting value by key (upsert). "
+            "Supported operator-maintained keys include 'manual_cash' and 'account_costs'. "
             "Creates or updates the setting and returns the serialized result with key, value, and updated_at."
         ),
     )(set_user_setting)
