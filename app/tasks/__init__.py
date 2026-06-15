@@ -20,6 +20,7 @@ from app.tasks import (
     pending_orders,
     research_reports_ingest_tasks,
     research_run_refresh_tasks,
+    toss_live_reconcile_tasks,
     toss_warnings_sync_tasks,
     upbit_symbol_universe_tasks,
     us_candles_tasks,
@@ -55,5 +56,6 @@ TASKIQ_TASK_MODULES = (
     upbit_symbol_universe_tasks,
     us_candles_tasks,
     us_symbol_universe_tasks,
+    toss_live_reconcile_tasks,
     toss_warnings_sync_tasks,
 )
