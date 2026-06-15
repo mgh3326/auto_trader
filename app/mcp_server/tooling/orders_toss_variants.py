@@ -1319,6 +1319,7 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "review.toss_live_order_ledger against single-order broker evidence "
             "from GET /orders/{orderId}. Books fill/journal/realized_pnl only "
             "from confirmed execution evidence and is delta-idempotent. "
-            "dry_run=True by default."
+            "ROB-568: Surfaces US FX PnL split (security_pnl_krw, fx_pnl_krw) "
+            "for overseas equity fills. dry_run=True by default."
         ),
     )(toss_reconcile_orders)
