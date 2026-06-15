@@ -133,3 +133,13 @@ test("portfolio tabs include current orders and parse the search param", async (
   expect(screen.getByTestId("active-tab")).toHaveTextContent("currentOrders");
 });
 
+
+test("CurrentOrdersPanel shows broker label on every row in compact (mobile) mode", async () => {
+  // Fix #4: compact layout drops the broker column, so each row must still
+  // carry a broker chip — otherwise mobile users can't tell KIS from Toss.
+  render(<CurrentOrdersPanel compact />);
+
+  await screen.findByText("삼성전자");
+  expect(screen.getByText("KIS")).toBeInTheDocument();
+  expect(screen.getByText("UPBIT")).toBeInTheDocument();
+});

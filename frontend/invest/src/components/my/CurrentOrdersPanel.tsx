@@ -219,6 +219,11 @@ export function CurrentOrdersPanel({ compact = false }: { compact?: boolean }) {
                         {LINKED_ORDER_STATUS_LABELS[row.status] ?? row.status}
                       </Pill>
                       <span style={{ fontSize: 13, fontWeight: 800 }}>{sideLabel(row.side)}</span>
+                      {compact && (
+                        <Pill tone={row.broker} size="sm">
+                          {BROKER_LABEL[row.broker] ?? row.broker}
+                        </Pill>
+                      )}
                     </div>
                     <div style={{ marginTop: 3, fontSize: 11, color: "var(--fg-3)" }}>
                       {formatDateTime(row.ordered_at)} · order {row.order_no.slice(0, 8)}

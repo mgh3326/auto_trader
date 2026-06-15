@@ -583,3 +583,173 @@ async def test_current_orders_empty_reason_reports_partial_source_unavailable() 
         response.empty_reason
         == "some broker sources are unavailable; no open orders from available sources"
     )
+
+
+# ROB-572 review fixes — pin tests ------------------------------------------
+
+
+def _toss_page(order_id: str, symbol: str, *, next_cursor=None, has_next=False):
+    from app.services.brokers.toss.dto import TossOrder, TossOrdersPage
+
+    order = TossOrder(
+        order_id=order_id,
+        symbol=symbol,
+        side="BUY",
+        order_type="LIMIT",
+        time_in_force="DAY",
+        status="OPEN",
+        price=Decimal("100"),
+        quantity=Decimal("10"),
+        order_amount=None,
+        currency="KRW" if symbol.isdigit() else "USD",
+        ordered_at="2026-06-15T09:00:00+09:00",
+        canceled_at=None,
+        execution={"filledQuantity": Decimal("0")},
+    )
+    return TossOrdersPage(orders=[order], next_cursor=next_cursor, has_next=has_next)
+
+
+@pytest.mark.asyncio
+async def test_toss_close_failure_does_not_500_endpoint() -> None:
+    # Fix #1: an aclose() that raises must NOT propagate out of the collector
+    # (which would 500 the whole endpoint and blank every tab).
+    from app.services.current_orders_service import CurrentOrdersService
+
+    class _CloseRaisingToss:
+        async def list_orders(self, **kwargs):
+            return _toss_page("T1", "005930")
+
+        async def aclose(self) -> None:
+            raise RuntimeError("close boom")
+
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=None,
+        toss_client_factory=lambda: _CloseRaisingToss(),
+        clock=lambda: dt.datetime(2026, 6, 15, tzinfo=dt.UTC),
+    )
+    response = await service.list_open_orders(market="kr")
+    # endpoint returned (no exception); the toss kr order survived
+    toss_rows = [r for r in response.items if r.broker == "toss"]
+    assert [r.order_no for r in toss_rows] == ["T1"]
+
+
+@pytest.mark.asyncio
+async def test_collector_unexpected_raise_degrades_not_500() -> None:
+    # Fix #1: a collector that raises unexpectedly degrades only its market(s)
+    # via gather(return_exceptions=True), it does not 500 the request.
+    from app.services.current_orders_service import CurrentOrdersService
+
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=None,
+        toss_client_factory=None,
+        clock=lambda: dt.datetime(2026, 6, 15, tzinfo=dt.UTC),
+    )
+
+    async def _boom() -> tuple:
+        raise RuntimeError("unexpected")
+
+    service._collect_upbit = _boom  # type: ignore[method-assign]
+    response = await service.list_open_orders(market="crypto")
+    assert response.data_state == "unavailable"
+    assert any(
+        s.broker == "upbit" and s.status == "unavailable" for s in response.sources
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_message_omits_exception_detail() -> None:
+    # Fix #2: broker exception text (e.g. a KIS account number) must NOT leak
+    # into the client-facing message/warnings; only the exception type name.
+    from app.services.current_orders_service import CurrentOrdersService
+
+    secret = "12345678-01"
+
+    class _RaisingKIS:
+        async def inquire_korea_orders(self, is_mock: bool = False):
+            raise RuntimeError(f"계좌번호 형식이 올바르지 않습니다: {secret}")
+
+        async def inquire_overseas_orders(
+            self, exchange_code: str = "NASD", is_mock: bool = False
+        ):
+            return []
+
+    service = CurrentOrdersService(
+        kis_client_factory=lambda: _RaisingKIS(),
+        upbit_client=None,
+        toss_client_factory=None,
+        clock=lambda: dt.datetime(2026, 6, 15, tzinfo=dt.UTC),
+    )
+    response = await service.list_open_orders(market="kr")
+    kr = next(s for s in response.sources if s.broker == "kis" and s.market == "kr")
+    assert kr.message == "RuntimeError"
+    assert secret not in (kr.message or "")
+    assert all(secret not in w for w in response.warnings)
+
+
+@pytest.mark.asyncio
+async def test_toss_pagination_stuck_cursor_terminates() -> None:
+    # Fix #3: a stuck/echoing cursor must terminate (no infinite loop).
+    from app.services.current_orders_service import CurrentOrdersService
+
+    class _StuckToss:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def list_orders(self, **kwargs):
+            self.calls += 1
+            return _toss_page(
+                f"T{self.calls}", "005930", next_cursor="stuck", has_next=True
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    fake = _StuckToss()
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=None,
+        toss_client_factory=lambda: fake,
+        clock=lambda: dt.datetime(2026, 6, 15, tzinfo=dt.UTC),
+    )
+    response = await service.list_open_orders(market="kr")
+    # terminated: cursor repeated on the 2nd page so the loop stopped
+    assert fake.calls == 2
+    assert response.count == 2
+
+
+@pytest.mark.asyncio
+async def test_kis_and_toss_same_symbol_kr_not_deduped() -> None:
+    # Scope invariant: KIS and Toss are separate accounts → a same-symbol KR
+    # order from each must BOTH survive (broker-labeled, no cross-broker dedupe).
+    from app.services.current_orders_service import CurrentOrdersService
+
+    class _FakeKIS:
+        async def inquire_korea_orders(self, is_mock: bool = False):
+            return [
+                {"ord_no": "K1", "pdno": "005930", "ord_qty": "10", "ord_unpr": "70000"}
+            ]
+
+        async def inquire_overseas_orders(
+            self, exchange_code: str = "NASD", is_mock: bool = False
+        ):
+            return []
+
+    class _FakeToss:
+        async def list_orders(self, **kwargs):
+            return _toss_page("T1", "005930")
+
+        async def aclose(self) -> None:
+            return None
+
+    service = CurrentOrdersService(
+        kis_client_factory=lambda: _FakeKIS(),
+        upbit_client=None,
+        toss_client_factory=lambda: _FakeToss(),
+        clock=lambda: dt.datetime(2026, 6, 15, tzinfo=dt.UTC),
+    )
+    response = await service.list_open_orders(market="kr")
+    kr_5930 = [r for r in response.items if r.symbol == "005930"]
+    assert {r.broker for r in kr_5930} == {"kis", "toss"}
+    assert len(kr_5930) == 2

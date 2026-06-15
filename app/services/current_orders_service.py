@@ -214,6 +214,10 @@ def normalize_toss_order(order: TossOrder) -> OpenOrderRow:
 
 
 _KIS_US_EXCHANGES: tuple[str, ...] = ("NASD", "NYSE", "AMEX")
+# Bound the Toss OPEN-order pagination: a single operator's open orders never
+# need many pages, so cap it to convert a stuck/echoing cursor (broker
+# misbehavior) into a bounded partial result instead of an infinite loop.
+_TOSS_MAX_PAGES = 50
 
 
 class _KISClientProtocol(Protocol):
@@ -290,20 +294,60 @@ class CurrentOrdersService:
         *,
         market: OpenOrdersQueryMarket = "all",
     ) -> OpenOrdersResponse:
-        tasks = []
-        if market in ("all", "kr"):
-            tasks.append(self._collect_kis_kr())
-        if market in ("all", "us"):
-            tasks.append(self._collect_kis_us())
-        if market in ("all", "crypto"):
-            tasks.append(self._collect_upbit())
-        if market in ("all", "kr", "us"):
-            tasks.append(self._collect_toss_equities(target_market=market))
+        def _fallback(
+            broker: Literal["kis", "toss", "upbit"],
+            markets: tuple[OpenOrderMarket, ...],
+        ) -> list[OpenOrderSourceState]:
+            return [
+                _source(
+                    broker=broker,
+                    market=m,
+                    status="unavailable",
+                    fetched_at=None,
+                    count=0,
+                    message="collector_error",
+                )
+                for m in markets
+            ]
 
-        results = await asyncio.gather(*tasks)
+        specs: list[tuple[Any, list[OpenOrderSourceState]]] = []
+        if market in ("all", "kr"):
+            specs.append((self._collect_kis_kr(), _fallback("kis", ("kr",))))
+        if market in ("all", "us"):
+            specs.append((self._collect_kis_us(), _fallback("kis", ("us",))))
+        if market in ("all", "crypto"):
+            specs.append((self._collect_upbit(), _fallback("upbit", ("crypto",))))
+        if market in ("all", "kr", "us"):
+            toss_markets: tuple[OpenOrderMarket, ...] = (
+                ("kr",)
+                if market == "kr"
+                else ("us",)
+                if market == "us"
+                else ("kr", "us")
+            )
+            specs.append(
+                (
+                    self._collect_toss_equities(target_market=market),
+                    _fallback("toss", toss_markets),
+                )
+            )
+
+        # return_exceptions=True: collectors already fail open per broker, but if
+        # one ever raises unexpectedly it must degrade only its market(s), never
+        # 500 the whole endpoint (which would blank every tab).
+        results = await asyncio.gather(
+            *(coro for coro, _ in specs), return_exceptions=True
+        )
         rows: list[OpenOrderRow] = []
         sources: list[OpenOrderSourceState] = []
-        for result_rows, result_sources in results:
+        for (_, fallback_sources), result in zip(specs, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "open-order collector raised unexpectedly", exc_info=result
+                )
+                sources.extend(fallback_sources)
+                continue
+            result_rows, result_sources = result
             rows.extend(result_rows)
             if isinstance(result_sources, list):
                 sources.extend(result_sources)
@@ -368,7 +412,7 @@ class CurrentOrdersService:
                 status="unavailable",
                 fetched_at=now,
                 count=0,
-                message=f"{type(exc).__name__}: {exc}",
+                message=type(exc).__name__,
             )
         rows = [
             normalize_kis_order(row, market="kr", exchange="KRX")
@@ -400,7 +444,7 @@ class CurrentOrdersService:
                     exchange_code=exchange, is_mock=False
                 )
             except Exception as exc:  # noqa: BLE001
-                errors[exchange] = f"{type(exc).__name__}: {exc}"
+                errors[exchange] = type(exc).__name__
                 continue
             for row in raw or []:
                 if not isinstance(row, dict):
@@ -452,7 +496,7 @@ class CurrentOrdersService:
                 status="unavailable",
                 fetched_at=now,
                 count=0,
-                message=f"{type(exc).__name__}: {exc}",
+                message=type(exc).__name__,
             )
         rows = [
             normalize_upbit_order(row) for row in raw or [] if isinstance(row, dict)
@@ -498,12 +542,22 @@ class CurrentOrdersService:
             client = self._toss_client_factory()
             cursor: str | None = None
             rows: list[OpenOrderRow] = []
-            while True:
+            seen_cursors: set[str] = set()
+            for _ in range(_TOSS_MAX_PAGES):
                 page = await client.list_orders(status="OPEN", cursor=cursor)
                 rows.extend(normalize_toss_order(order) for order in page.orders)
                 if not page.has_next or not page.next_cursor:
                     break
+                if page.next_cursor in seen_cursors:
+                    logger.warning("Toss pagination cursor did not advance; stopping")
+                    break
+                seen_cursors.add(page.next_cursor)
                 cursor = page.next_cursor
+            else:
+                logger.warning(
+                    "Toss pagination hit max page cap (%d); returning partial",
+                    _TOSS_MAX_PAGES,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Toss open-order fetch failed", exc_info=True)
             states = [
@@ -513,7 +567,7 @@ class CurrentOrdersService:
                     status="unavailable",
                     fetched_at=now,
                     count=0,
-                    message=f"{type(exc).__name__}: {exc}",
+                    message=type(exc).__name__,
                 )
                 for market in markets
             ]
@@ -521,7 +575,10 @@ class CurrentOrdersService:
         finally:
             close = getattr(client, "aclose", None)
             if callable(close):
-                await close()
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001 - close must never break the request
+                    logger.warning("Toss client close failed", exc_info=True)
 
         filtered = [row for row in rows if row.market in markets]
         states = [
