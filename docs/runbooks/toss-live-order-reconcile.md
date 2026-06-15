@@ -29,6 +29,23 @@ toss_reconcile_orders(order_id="ORDER_ID", dry_run=True)
 toss_reconcile_orders(order_id="ORDER_ID", dry_run=False)
 ```
 
+## Auto-reconcile (ROB-574)
+
+수동 `toss_reconcile_orders(dry_run=False)` 반복을 피하려면 주기 자동 정산을
+활성화한다. TaskIQ wrapper는 기존 증거-게이트 커널만 호출하며 새 booking 로직은
+없다.
+
+- **Paused TaskIQ 태스크**: `toss_live.reconcile_periodic` — worker에 등록되지만
+  코드 내 `schedule=`은 없다. 외부 recurrence는 robin-prefect-automations에서
+  등록한다.
+- **Activation gates**: `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true` **그리고**
+  `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`가 모두 필요하다. 하나라도
+  미설정 시 `{"status":"paused"}`로 inert.
+- **권장 external cadence**: 장중 수 분 간격 reconcile + 장마감 후 sweep.
+  정확한 cron은 운영 자동화 레포에서 관리한다.
+- **Safety**: 배포만으로 자동 booking은 시작되지 않는다. cron 등록과 env flip은
+  high-risk final review 이후 별도 operator 후속으로 진행한다.
+
 ## Status Semantics
 
 - `PENDING`: no local booking.
