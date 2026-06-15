@@ -1473,7 +1473,6 @@ class TestCloseJournalsOnSell:
 @pytest.mark.asyncio
 async def test_create_trade_journal_captures_buy_fx_rate():
     from app.mcp_server.tooling.order_journal import _create_trade_journal_for_buy
-    from app.models.trade_journal import TradeJournal
 
     mock_session = AsyncMock()
 
@@ -1517,7 +1516,6 @@ async def test_close_journals_computes_fifo_fx_pnl_for_us_equity():
     from app.mcp_server.tooling.order_journal import _close_journals_on_sell
     from app.models.trade_journal import TradeJournal
 
-    now = datetime.now(UTC)
     j = TradeJournal(
         id=77,
         symbol="AAPL",
@@ -1635,3 +1633,29 @@ async def test_modify_journal_supports_manual_fx_override():
     assert j.buy_fx_rate == Decimal("1450.0")
     assert j.fx_rate_source == "manual"
     assert j.fx_pnl_accuracy == "exact"
+
+
+@pytest.mark.asyncio
+async def test_modify_journal_rejects_invalid_fx_labels():
+    """ROB-568: out-of-enum FX labels are rejected before any DB mutation."""
+    from app.mcp_server.tooling.order_journal import modify_journal_entry
+
+    mock_session = AsyncMock()
+    factory = _mock_session_factory(mock_session)
+
+    with patch(
+        "app.mcp_server.tooling.order_journal._order_session_factory",
+        return_value=factory,
+    ):
+        bad_source = await modify_journal_entry(journal_id=99, fx_rate_source="bogus")
+        bad_accuracy = await modify_journal_entry(
+            journal_id=99, fx_pnl_accuracy="super_precise"
+        )
+
+    assert bad_source["success"] is False
+    assert "fx_rate_source" in bad_source["error"]
+    assert bad_accuracy["success"] is False
+    assert "fx_pnl_accuracy" in bad_accuracy["error"]
+    # Validation must short-circuit before loading or committing the journal.
+    mock_session.get.assert_not_called()
+    mock_session.commit.assert_not_called()

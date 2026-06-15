@@ -303,7 +303,9 @@ async def _reconcile_one_live_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account=row.broker,
-            buy_fx_rate=float(fx_capture.rate) if fx_capture and fx_capture.rate else None,
+            buy_fx_rate=float(fx_capture.rate)
+            if fx_capture and fx_capture.rate
+            else None,
             fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
             fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
         )
@@ -337,7 +339,9 @@ async def _reconcile_one_live_row(
             account_type="live",
             account=row.broker,
             defensive_trim_ctx=dt_ctx,
-            sell_fx_rate=float(fx_capture.rate) if fx_capture and fx_capture.rate else None,
+            sell_fx_rate=float(fx_capture.rate)
+            if fx_capture and fx_capture.rate
+            else None,
             fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
             fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
         )

@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.mcp_server.tooling.order_journal import (
-    get_journal_entry,
     list_active_journals,
     modify_journal_entry,
 )
@@ -15,7 +14,10 @@ from app.mcp_server.tooling.trade_journal_tools import (
     save_trade_journal,
     update_trade_journal,
 )
-...
+
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
 TRADE_JOURNAL_TOOL_NAMES: set[str] = {
     "save_trade_journal",
     "get_trade_journal",

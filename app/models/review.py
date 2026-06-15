@@ -929,7 +929,6 @@ class TradeRetrospective(Base):
             "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live')",
             name="account_mode",
         ),
-
         CheckConstraint(
             "outcome IN ('filled','partially_filled','unfilled','rejected','cancelled')",
             name="ck_trade_retrospectives_outcome",

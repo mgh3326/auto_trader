@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.services.exchange_rate_service import (
     UsdKrwExchangeRateQuote,
@@ -18,7 +18,38 @@ FX_PNL_ACCURACY_APPROXIMATE = "approximate"
 FX_PNL_ACCURACY_EXACT = "exact"
 FX_PNL_ACCURACY_UNAVAILABLE = "unavailable"
 
+VALID_FX_RATE_SOURCES = frozenset(
+    {FX_RATE_SOURCE_RECONCILE_SPOT, FX_RATE_SOURCE_MANUAL, FX_RATE_SOURCE_UNAVAILABLE}
+)
+VALID_FX_PNL_ACCURACIES = frozenset(
+    {FX_PNL_ACCURACY_APPROXIMATE, FX_PNL_ACCURACY_EXACT, FX_PNL_ACCURACY_UNAVAILABLE}
+)
+
 _MONEY_4 = Decimal("0.0001")
+
+
+def fx_label_error(
+    fx_rate_source: str | None, fx_pnl_accuracy: str | None
+) -> str | None:
+    """Validate operator-supplied FX labels against their enums.
+
+    ROB-568: ``modify_journal_entry`` is the only path where arbitrary operator
+    strings can reach the ``fx_rate_source`` / ``fx_pnl_accuracy`` columns (Text,
+    no DB CHECK constraint). Reject out-of-enum values before any mutation.
+    Returns an error message for the first invalid label, or ``None`` when both
+    (non-``None``) labels are valid.
+    """
+    if fx_rate_source is not None and fx_rate_source not in VALID_FX_RATE_SOURCES:
+        return (
+            f"invalid fx_rate_source {fx_rate_source!r}; "
+            f"allowed: {sorted(VALID_FX_RATE_SOURCES)}"
+        )
+    if fx_pnl_accuracy is not None and fx_pnl_accuracy not in VALID_FX_PNL_ACCURACIES:
+        return (
+            f"invalid fx_pnl_accuracy {fx_pnl_accuracy!r}; "
+            f"allowed: {sorted(VALID_FX_PNL_ACCURACIES)}"
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -92,6 +123,9 @@ __all__ = [
     "FX_RATE_SOURCE_UNAVAILABLE",
     "FxRateCapture",
     "UsdKrwExchangeRateQuote",
+    "VALID_FX_PNL_ACCURACIES",
+    "VALID_FX_RATE_SOURCES",
     "capture_reconcile_spot_fx",
     "compute_us_equity_fx_pnl",
+    "fx_label_error",
 ]

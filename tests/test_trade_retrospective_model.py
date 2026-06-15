@@ -73,3 +73,8 @@ def test_trade_retrospective_us_fx_columns_present():
         "fx_pnl_accuracy",
     ):
         assert col in cols, f"missing column {col}"
+
+
+def test_trade_retrospective_account_mode_constraint_matches_migration():
+    constraint_names = {c.name for c in TradeRetrospective.__table__.constraints}
+    assert "ck_trade_retrospectives_account_mode" in constraint_names

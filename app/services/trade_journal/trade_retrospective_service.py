@@ -162,12 +162,19 @@ class TradeRetrospectiveRepository:
         return "created", row
 
 
-async def _derive_realized_pnl_from_journal(
-    db: AsyncSession, journal_id: int, side: str | None
-) -> Decimal | None:
-    j = (
+async def _load_trade_journal(
+    db: AsyncSession,
+    journal_id: int,
+) -> TradeJournal | None:
+    return (
         await db.execute(select(TradeJournal).where(TradeJournal.id == journal_id))
     ).scalar_one_or_none()
+
+
+def _realized_pnl_from_journal(
+    j: TradeJournal | None,
+    side: str | None,
+) -> Decimal | None:
     if j is None or j.entry_price is None or j.exit_price is None or j.quantity is None:
         return None
     entry = Decimal(str(j.entry_price))
@@ -175,6 +182,12 @@ async def _derive_realized_pnl_from_journal(
     qty = Decimal(str(j.quantity))
     direction = Decimal("-1") if (side or j.side) == "sell" else Decimal("1")
     return (exit_price - entry) * qty * direction
+
+
+async def _derive_realized_pnl_from_journal(
+    db: AsyncSession, journal_id: int, side: str | None
+) -> Decimal | None:
+    return _realized_pnl_from_journal(await _load_trade_journal(db, journal_id), side)
 
 
 async def save_retrospective(
@@ -236,15 +249,37 @@ async def save_retrospective(
             "realized_pnl/fill_price not allowed"
         )
 
+    journal_row = (
+        await _load_trade_journal(db, journal_id)
+        if journal_id is not None and fill_evidence_available
+        else None
+    )
+
     realized_pnl_value = _to_decimal(realized_pnl)
     realized_pnl_source: str | None = None
     if realized_pnl_value is not None:
         realized_pnl_source = "caller_supplied"
     elif journal_id is not None and fill_evidence_available:
-        derived = await _derive_realized_pnl_from_journal(db, journal_id, side)
+        derived = _realized_pnl_from_journal(journal_row, side)
         if derived is not None:
             realized_pnl_value = derived
             realized_pnl_source = "derived_from_journal"
+
+    if journal_row is not None:
+        if buy_fx_rate is None and journal_row.buy_fx_rate is not None:
+            buy_fx_rate = float(journal_row.buy_fx_rate)
+        if sell_fx_rate is None and journal_row.sell_fx_rate is not None:
+            sell_fx_rate = float(journal_row.sell_fx_rate)
+        if fx_pnl_krw is None and journal_row.fx_pnl_krw is not None:
+            fx_pnl_krw = float(journal_row.fx_pnl_krw)
+        if security_pnl_usd is None and journal_row.security_pnl_usd is not None:
+            security_pnl_usd = float(journal_row.security_pnl_usd)
+        if security_pnl_krw is None and journal_row.security_pnl_krw is not None:
+            security_pnl_krw = float(journal_row.security_pnl_krw)
+        if total_pnl_krw is None and journal_row.total_pnl_krw is not None:
+            total_pnl_krw = float(journal_row.total_pnl_krw)
+        fx_rate_source = fx_rate_source or journal_row.fx_rate_source
+        fx_pnl_accuracy = fx_pnl_accuracy or journal_row.fx_pnl_accuracy
 
     if realized_pnl_value is not None and realized_pnl_currency is None:
         realized_pnl_currency = _infer_currency(instrument_type)
@@ -410,6 +445,12 @@ async def build_retrospective_aggregate(
                 realized_sum[it.realized_pnl_currency] = realized_sum.get(
                     it.realized_pnl_currency, 0.0
                 ) + float(it.realized_pnl)
+        fx_pnl_krw_sum = sum(
+            float(it.fx_pnl_krw) for it in items if it.fx_pnl_krw is not None
+        )
+        total_pnl_krw_sum = sum(
+            float(it.total_pnl_krw) for it in items if it.total_pnl_krw is not None
+        )
         by_outcome: dict[str, int] = {}
         for it in items:
             by_outcome[it.outcome] = by_outcome.get(it.outcome, 0) + 1
@@ -422,6 +463,8 @@ async def build_retrospective_aggregate(
                 "win_rate_pct": (wins / len(decided) * 100.0) if decided else None,
                 "avg_pnl_pct": _avg([it.pnl_pct for it in items]),
                 "realized_pnl_sum": realized_sum,
+                "fx_pnl_krw_sum": fx_pnl_krw_sum,
+                "total_pnl_krw_sum": total_pnl_krw_sum,
                 "by_outcome": by_outcome,
             }
         )

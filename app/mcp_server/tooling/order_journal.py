@@ -17,6 +17,7 @@ from app.mcp_server.tooling.fx_pnl import (
     FX_PNL_ACCURACY_UNAVAILABLE,
     FX_RATE_SOURCE_UNAVAILABLE,
     compute_us_equity_fx_pnl,
+    fx_label_error,
 )
 from app.mcp_server.tooling.order_validation import DefensiveTrimContext
 from app.mcp_server.tooling.shared import logger
@@ -364,13 +365,19 @@ async def _close_journals_on_sell(
         "buy_fx_rate": float(fx_buy_weighted_sum / fx_buy_notional_sum)
         if fx_buy_notional_sum > 0
         else None,
-        "sell_fx_rate": float(sell_fx_rate_dec) if sell_fx_rate_dec is not None else None,
+        "sell_fx_rate": float(sell_fx_rate_dec)
+        if sell_fx_rate_dec is not None
+        else None,
         "fx_pnl_krw": float(fx_pnl_sum) if fx_computed_count else None,
         "security_pnl_usd": float(security_pnl_usd_sum) if fx_computed_count else None,
         "security_pnl_krw": float(security_pnl_krw_sum) if fx_computed_count else None,
         "total_pnl_krw": float(total_pnl_krw_sum) if fx_computed_count else None,
-        "fx_rate_source": fx_rate_source if fx_computed_count else FX_RATE_SOURCE_UNAVAILABLE,
-        "fx_pnl_accuracy": fx_pnl_accuracy if fx_computed_count else FX_PNL_ACCURACY_UNAVAILABLE,
+        "fx_rate_source": fx_rate_source
+        if fx_computed_count
+        else FX_RATE_SOURCE_UNAVAILABLE,
+        "fx_pnl_accuracy": fx_pnl_accuracy
+        if fx_computed_count
+        else FX_PNL_ACCURACY_UNAVAILABLE,
         "fx_unavailable_journal_ids": fx_unavailable_journal_ids,
     }
 
@@ -461,7 +468,9 @@ async def get_journal_entry(journal_id: int) -> dict[str, Any] | None:
             "notes": journal.notes,
             "created_at": journal.created_at.isoformat(),
             "buy_fx_rate": float(journal.buy_fx_rate) if journal.buy_fx_rate else None,
-            "sell_fx_rate": float(journal.sell_fx_rate) if journal.sell_fx_rate else None,
+            "sell_fx_rate": float(journal.sell_fx_rate)
+            if journal.sell_fx_rate
+            else None,
             "fx_pnl_krw": float(journal.fx_pnl_krw) if journal.fx_pnl_krw else None,
             "security_pnl_usd": float(journal.security_pnl_usd)
             if journal.security_pnl_usd
@@ -494,6 +503,10 @@ async def modify_journal_entry(
 
     ROB-568 — supports US FX overrides.
     """
+    label_error = fx_label_error(fx_rate_source, fx_pnl_accuracy)
+    if label_error is not None:
+        return {"success": False, "error": label_error}
+
     async with _order_session_factory()() as db:
         journal = await db.get(TradeJournal, journal_id)
         if journal is None:
@@ -521,7 +534,10 @@ async def modify_journal_entry(
             journal.fx_pnl_accuracy = fx_pnl_accuracy
 
         # If price/fx changed and it's closed US, recompute PnL
-        if journal.status == JournalStatus.closed and journal.instrument_type == InstrumentType.equity_us:
+        if (
+            journal.status == JournalStatus.closed
+            and journal.instrument_type == InstrumentType.equity_us
+        ):
             fx_values = compute_us_equity_fx_pnl(
                 buy_price=journal.entry_price or Decimal("0"),
                 sell_price=journal.exit_price or Decimal("0"),

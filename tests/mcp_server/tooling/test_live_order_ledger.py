@@ -569,7 +569,7 @@ async def test_kis_us_buy_reconcile_captures_buy_fx_rate():
     assert out["buy_fx_rate"] == pytest.approx(1389.33)
     assert out["fx_rate_source"] == "reconcile_spot"
     assert m_buy.await_args.kwargs["buy_fx_rate"] == 1389.33
-    
+
     after = await ll._load_live_ledger_row(lid)
     assert after.buy_fx_rate == Decimal("1389.33")
     assert after.fx_rate_source == "reconcile_spot"
