@@ -753,3 +753,159 @@ async def test_kis_and_toss_same_symbol_kr_not_deduped() -> None:
     kr_5930 = [r for r in response.items if r.symbol == "005930"]
     assert {r.broker for r in kr_5930} == {"kis", "toss"}
     assert len(kr_5930) == 2
+
+
+def test_normalize_kis_kr_order_uses_today_kst_when_ord_dt_missing(monkeypatch) -> None:
+    import app.services.current_orders_service as cos
+    from app.services.current_orders_service import normalize_kis_order
+
+    monkeypatch.setattr(
+        cos,
+        "now_kst",
+        lambda: dt.datetime(2026, 6, 15, 12, 0, tzinfo=cos.KST),
+    )
+
+    row = normalize_kis_order(
+        {
+            "ord_no": "K1",
+            "pdno": "005930",
+            "sll_buy_dvsn_cd": "02",
+            "ord_qty": "10",
+            "ord_unpr": "70000",
+            "ord_tmd": "090100",
+        },
+        market="kr",
+        exchange="KRX",
+    )
+
+    assert row.ordered_at == dt.datetime(2026, 6, 15, 9, 1, tzinfo=cos.KST)
+
+
+@pytest.mark.asyncio
+async def test_current_orders_enriches_missing_toss_and_upbit_names(monkeypatch) -> None:
+    from app.services import current_orders_service as cos
+    from app.services.brokers.toss.dto import TossOrder, TossOrdersPage
+    from app.services.current_orders_service import CurrentOrdersService
+
+    async def fake_kr_names(symbols, db):
+        assert symbols == ["005930"]
+        assert db == "db-session"
+        return {"005930": "삼성전자"}
+
+    async def fake_us_names(symbols, db):
+        assert symbols == ["AAPL"]
+        assert db == "db-session"
+        return {"AAPL": "Apple"}
+
+    async def fake_crypto_names(markets, db):
+        assert markets == ["KRW-BTC"]
+        assert db == "db-session"
+        return {"KRW-BTC": {"korean_name": "비트코인", "english_name": "Bitcoin"}}
+
+    monkeypatch.setattr(cos, "get_kr_names_by_symbols", fake_kr_names)
+    monkeypatch.setattr(cos, "get_us_names_by_symbols", fake_us_names)
+    monkeypatch.setattr(cos, "get_upbit_market_display_names", fake_crypto_names)
+
+    class _FakeToss:
+        async def list_orders(self, **kwargs):
+            return TossOrdersPage(
+                orders=[
+                    TossOrder(
+                        order_id="T1",
+                        symbol="005930",
+                        side="BUY",
+                        order_type="LIMIT",
+                        time_in_force="DAY",
+                        status="OPEN",
+                        price=Decimal("70000"),
+                        quantity=Decimal("1"),
+                        order_amount=None,
+                        currency="KRW",
+                        ordered_at="2026-06-15T09:00:00+09:00",
+                        canceled_at=None,
+                        execution={"filledQuantity": Decimal("0")},
+                    ),
+                    TossOrder(
+                        order_id="T2",
+                        symbol="AAPL",
+                        side="BUY",
+                        order_type="LIMIT",
+                        time_in_force="DAY",
+                        status="OPEN",
+                        price=Decimal("180"),
+                        quantity=Decimal("1"),
+                        order_amount=None,
+                        currency="USD",
+                        ordered_at="2026-06-15T09:00:00+09:00",
+                        canceled_at=None,
+                        execution={"filledQuantity": Decimal("0")},
+                    ),
+                ],
+                next_cursor=None,
+                has_next=False,
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    class _FakeUpbit:
+        async def fetch_open_orders(self, market=None):
+            return [
+                {
+                    "uuid": "UP1",
+                    "market": "KRW-BTC",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "price": "96000000",
+                    "volume": "0.01",
+                    "remaining_volume": "0.01",
+                }
+            ]
+
+    service = CurrentOrdersService(
+        kis_client_factory=None,
+        upbit_client=_FakeUpbit(),
+        toss_client_factory=lambda: _FakeToss(),
+        db="db-session",  # type: ignore[arg-type]
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="all")
+
+    names = {(row.broker, row.market, row.symbol): row.symbol_name for row in response.items}
+    assert names[("toss", "kr", "005930")] == "삼성전자"
+    assert names[("toss", "us", "AAPL")] == "Apple"
+    assert names[("upbit", "crypto", "KRW-BTC")] == "비트코인"
+
+
+@pytest.mark.asyncio
+async def test_current_orders_name_lookup_failure_fails_open(monkeypatch) -> None:
+    from app.services import current_orders_service as cos
+    from app.services.current_orders_service import CurrentOrdersService
+
+    async def boom(*args):
+        raise RuntimeError("name lookup down")
+
+    monkeypatch.setattr(cos, "get_kr_names_by_symbols", boom)
+
+    class _FakeKIS:
+        async def inquire_korea_orders(self, is_mock: bool = False):
+            return [{"ord_no": "K1", "pdno": "005930", "ord_qty": "1", "ord_unpr": "70000"}]
+
+        async def inquire_overseas_orders(self, exchange_code: str = "NASD", is_mock: bool = False):
+            return []
+
+    service = CurrentOrdersService(
+        kis_client_factory=lambda: _FakeKIS(),
+        upbit_client=None,
+        toss_client_factory=None,
+        db="db-session",  # type: ignore[arg-type]
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="kr")
+
+    assert response.count == 1
+    assert response.items[0].symbol == "005930"
+    assert response.items[0].symbol_name is None
+

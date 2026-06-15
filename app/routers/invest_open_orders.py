@@ -6,6 +6,9 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.open_orders import OpenOrdersResponse
@@ -19,8 +22,10 @@ router = APIRouter(
 Market = Literal["all", "kr", "us", "crypto"]
 
 
-def get_current_orders_service() -> CurrentOrdersService:
-    return CurrentOrdersService()
+def get_current_orders_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CurrentOrdersService:
+    return CurrentOrdersService(db=db)
 
 
 @router.get("")
