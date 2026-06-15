@@ -265,7 +265,6 @@ async def test_recent_fills_side_filter_is_applied_before_limit():
     assert "LIMIT 3" in executed[0]
 
 
-
 # ---------------------------------------------------------------------------
 # /by-symbol/{symbol}
 # ---------------------------------------------------------------------------

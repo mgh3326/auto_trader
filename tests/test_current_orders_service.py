@@ -782,7 +782,9 @@ def test_normalize_kis_kr_order_uses_today_kst_when_ord_dt_missing(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_current_orders_enriches_missing_toss_and_upbit_names(monkeypatch) -> None:
+async def test_current_orders_enriches_missing_toss_and_upbit_names(
+    monkeypatch,
+) -> None:
     from app.services import current_orders_service as cos
     from app.services.brokers.toss.dto import TossOrder, TossOrdersPage
     from app.services.current_orders_service import CurrentOrdersService
@@ -872,7 +874,9 @@ async def test_current_orders_enriches_missing_toss_and_upbit_names(monkeypatch)
 
     response = await service.list_open_orders(market="all")
 
-    names = {(row.broker, row.market, row.symbol): row.symbol_name for row in response.items}
+    names = {
+        (row.broker, row.market, row.symbol): row.symbol_name for row in response.items
+    }
     assert names[("toss", "kr", "005930")] == "삼성전자"
     assert names[("toss", "us", "AAPL")] == "Apple"
     assert names[("upbit", "crypto", "KRW-BTC")] == "비트코인"
@@ -890,9 +894,13 @@ async def test_current_orders_name_lookup_failure_fails_open(monkeypatch) -> Non
 
     class _FakeKIS:
         async def inquire_korea_orders(self, is_mock: bool = False):
-            return [{"ord_no": "K1", "pdno": "005930", "ord_qty": "1", "ord_unpr": "70000"}]
+            return [
+                {"ord_no": "K1", "pdno": "005930", "ord_qty": "1", "ord_unpr": "70000"}
+            ]
 
-        async def inquire_overseas_orders(self, exchange_code: str = "NASD", is_mock: bool = False):
+        async def inquire_overseas_orders(
+            self, exchange_code: str = "NASD", is_mock: bool = False
+        ):
             return []
 
     service = CurrentOrdersService(
@@ -908,4 +916,3 @@ async def test_current_orders_name_lookup_failure_fails_open(monkeypatch) -> Non
     assert response.count == 1
     assert response.items[0].symbol == "005930"
     assert response.items[0].symbol_name is None
-

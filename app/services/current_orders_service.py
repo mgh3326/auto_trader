@@ -66,9 +66,9 @@ def _parse_kis_ordered_at(row: dict[str, Any]) -> dt.datetime | None:
         return None
     ord_dt = str(row.get("ord_dt") or "").strip() or now_kst().strftime("%Y%m%d")
     try:
-        return dt.datetime.strptime(f"{ord_dt}{ord_tmd.zfill(6)}", "%Y%m%d%H%M%S").replace(
-            tzinfo=KST
-        )
+        return dt.datetime.strptime(
+            f"{ord_dt}{ord_tmd.zfill(6)}", "%Y%m%d%H%M%S"
+        ).replace(tzinfo=KST)
     except ValueError:
         return None
 
@@ -296,20 +296,36 @@ class CurrentOrdersService:
         self._db = db
         self._clock = clock or (lambda: dt.datetime.now(tz=dt.UTC))
 
-    async def _attach_symbol_names(self, rows: list[OpenOrderRow]) -> list[OpenOrderRow]:
+    async def _attach_symbol_names(
+        self, rows: list[OpenOrderRow]
+    ) -> list[OpenOrderRow]:
         """Best-effort display-name enrichment for broker rows that lack names."""
         if self._db is None or not rows:
             return rows
 
-        kr_symbols = sorted({row.symbol for row in rows if row.market == "kr" and not row.symbol_name})
-        us_symbols = sorted({row.symbol for row in rows if row.market == "us" and not row.symbol_name})
-        crypto_markets = sorted({row.symbol.strip().upper() for row in rows if row.market == "crypto" and not row.symbol_name})
+        kr_symbols = sorted(
+            {row.symbol for row in rows if row.market == "kr" and not row.symbol_name}
+        )
+        us_symbols = sorted(
+            {row.symbol for row in rows if row.market == "us" and not row.symbol_name}
+        )
+        crypto_markets = sorted(
+            {
+                row.symbol.strip().upper()
+                for row in rows
+                if row.market == "crypto" and not row.symbol_name
+            }
+        )
 
         async def _safe(coro, label: str):
             try:
                 return await coro
             except Exception:  # noqa: BLE001 - display names must fail open
-                logger.warning("open-order symbol-name resolution failed for %s", label, exc_info=True)
+                logger.warning(
+                    "open-order symbol-name resolution failed for %s",
+                    label,
+                    exc_info=True,
+                )
                 return {}
 
         kr_names = (
@@ -323,7 +339,9 @@ class CurrentOrdersService:
             else {}
         )
         crypto_names = (
-            await _safe(get_upbit_market_display_names(crypto_markets, self._db), "crypto")
+            await _safe(
+                get_upbit_market_display_names(crypto_markets, self._db), "crypto"
+            )
             if crypto_markets
             else {}
         )

@@ -70,6 +70,8 @@ def test_open_orders_endpoint_rejects_unknown_market() -> None:
     service = _StubCurrentOrdersService()
     client = _make_client(service)
 
+    response = client.get("/trading/api/invest/open-orders?market=paper")
+
     assert response.status_code == 422
     assert service.calls == []
 
@@ -109,4 +111,3 @@ def test_open_orders_default_service_receives_db_dependency(monkeypatch) -> None
 
     assert response.status_code == 200
     assert captured["db"] == "db-session"
-
