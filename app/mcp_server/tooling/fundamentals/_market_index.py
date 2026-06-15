@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.fundamentals_sources_indices import (
     _DEFAULT_INDICES,
     _INDEX_META,
@@ -14,8 +15,32 @@ from app.mcp_server.tooling.fundamentals_sources_indices import (
     _fetch_index_us_current,
     _fetch_index_us_history,
 )
-from app.mcp_server.tooling.market_session import kr_market_data_state
+from app.mcp_server.tooling.market_session import (
+    DATA_STATE_FRESH,
+    DATA_STATE_STALE,
+    kr_market_data_state,
+)
 from app.mcp_server.tooling.shared import error_payload as _error_payload
+
+_KR_INDEX_LAGGING_REASON = "kr_index_fresh_clock_payload_lagging"
+
+
+def _is_zero(value: Any) -> bool:
+    return isinstance(value, (int, float)) and value == 0
+
+
+def _has_distinct_prices(left: Any, right: Any) -> bool:
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return False
+    return left != right
+
+
+def _is_fresh_clock_lagging_kr_index(index: dict[str, Any]) -> bool:
+    return (
+        _is_zero(index.get("change"))
+        and _is_zero(index.get("change_pct"))
+        and _has_distinct_prices(index.get("open"), index.get("current"))
+    )
 
 
 def _tag_kr_index_data_state(index: Any) -> Any:
@@ -25,7 +50,12 @@ def _tag_kr_index_data_state(index: Any) -> Any:
     prior close), which reads as a real flat session.
     """
     if isinstance(index, dict) and "error" not in index:
-        index["data_state"] = kr_market_data_state()
+        data_state = kr_market_data_state()
+        if data_state == DATA_STATE_FRESH and _is_fresh_clock_lagging_kr_index(index):
+            data_state = DATA_STATE_STALE
+            index["data_state_reason"] = _KR_INDEX_LAGGING_REASON
+            index["as_of"] = now_kst().isoformat()
+        index["data_state"] = data_state
     return index
 
 

@@ -22,6 +22,7 @@ import pandas as pd
 
 # data_state values surfaced to MCP callers.
 DATA_STATE_FRESH = "fresh"
+DATA_STATE_STALE = "stale"
 DATA_STATE_PREMARKET_UNAVAILABLE = "premarket_unavailable"
 DATA_STATE_MARKET_CLOSED = "market_closed"
 
