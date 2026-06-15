@@ -485,3 +485,25 @@ class TestNormalizeTossFill:
         assert order.filled_amount == 586.5
         assert order.market_type == "us"
         assert order.currency == "USD"
+
+    def test_normalize_fill_from_mapping_source(self) -> None:
+        order = normalize_toss_fill(
+            {
+                "market": "kr",
+                "symbol": "000660",
+                "side": "buy",
+                "currency": None,
+                "broker_order_id": "toss-map-order-123456",
+                "order_type": "limit",
+                "price": Decimal("180000"),
+            },
+            delta=Decimal("1"),
+            avg_price=Decimal("179500"),
+            fill_status="filled",
+        )
+
+        assert order.symbol == "000660"
+        assert order.side == "bid"
+        assert order.order_id == "toss-map-order-123456"
+        assert order.order_price == 180000
+        assert order.currency == "KRW"
