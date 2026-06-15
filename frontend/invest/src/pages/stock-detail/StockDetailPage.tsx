@@ -12,6 +12,7 @@ import {
 } from "../../api/stockDetail";
 import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
 import { OrderLedgerCard } from "../../desktop/stock-detail/OrderLedgerCard";
+import { accountSourceMeta } from "../../desktop/AccountSourceMeta";
 import type { LinkedOrder } from "../../types/investmentReports";
 import type {
   StockDetailCandlesResponse,
@@ -21,6 +22,7 @@ import type {
   StockDetailOrdersResponse,
   StockDetailResearchConsensusResponse,
   StockDetailResponse,
+  StockDetailHolding,
 } from "../../types/stockDetail";
 
 function fmtPct(v: number | null | undefined): string {
@@ -109,19 +111,40 @@ function TradeGuardrail({ data }: { data: StockDetailResponse }) {
   );
 }
 
+function sourceChips(sources: StockDetailHolding["includedSources"] | undefined) {
+  return (sources ?? []).map((source) => {
+    const meta = accountSourceMeta(source);
+    return (
+      <Pill key={source} tone={meta.tone} size="sm">
+        {meta.shortLabel}
+      </Pill>
+    );
+  });
+}
+
 function HoldingCard({ data }: { data: StockDetailResponse }) {
   const holding = data.holding;
   return (
     <Card data-testid="stock-detail-holding">
       <h2 style={{ margin: "0 0 12px", fontSize: 16 }}>내 보유</h2>
       {holding ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-          <Metric label="수량" value={fmtQty(holding.totalQuantity)} />
-          <Metric label="평단" value={data.currency === "USD" ? `$${holding.averageCost?.toFixed(2) ?? "−"}` : `₩${holding.averageCost?.toLocaleString("ko-KR") ?? "−"}`} />
-          <Metric label="평가금액" value={holding.valueKrw == null ? "−" : `₩${Math.round(holding.valueKrw).toLocaleString("ko-KR")}`} />
-          <div>
-            <div style={{ color: "var(--fg-3)", fontSize: 12 }}>손익</div>
-            <PL value={holding.pnlKrw ?? 0} pct={holding.pnlRate ?? 0} />
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {sourceChips(holding.includedSources)}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
+            <Metric label="수량" value={fmtQty(holding.totalQuantity)} />
+            <Metric label="평단" value={data.currency === "USD" ? `$${holding.averageCost?.toFixed(2) ?? "−"}` : `₩${holding.averageCost?.toLocaleString("ko-KR") ?? "−"}`} />
+            <Metric label="평가금액" value={holding.valueKrw == null ? "−" : `₩${Math.round(holding.valueKrw).toLocaleString("ko-KR")}`} />
+            <div>
+              <div style={{ color: "var(--fg-3)", fontSize: 12 }}>손익</div>
+              <PL value={holding.pnlKrw ?? 0} pct={(holding.pnlRate ?? 0) * 100} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", color: "var(--fg-3)", fontSize: 12 }}>
+            <span>매매가능 {fmtQty(holding.tradeableQuantity)}</span>
+            <span>매도가능 {fmtQty(holding.sellableQuantity)}</span>
+            {holding.referenceQuantity > 0 ? <span>참고 {fmtQty(holding.referenceQuantity)}</span> : null}
           </div>
         </div>
       ) : (
