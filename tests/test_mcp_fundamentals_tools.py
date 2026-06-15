@@ -2167,6 +2167,39 @@ class TestGetMarketIndex:
 
         assert result["indices"][0]["data_state"] == "premarket_unavailable"
 
+    async def test_single_kr_index_downgrades_fresh_when_payload_is_self_inconsistent(
+        self, monkeypatch
+    ):
+        """ROB-564: a fresh-session clock cannot make a lagging Naver index fresh."""
+        tools = build_tools()
+        basic = _naver_basic_json(close="8123.62", change="0", change_pct="0")
+        history = [
+            {
+                "localTradedAt": "2026-06-15",
+                "closePrice": "8123.62",
+                "openPrice": "8263.85",
+                "highPrice": "8434.40",
+                "lowPrice": "8079.77",
+                "accumulatedTradingVolume": "450,000,000",
+            }
+        ]
+        self._patch_naver(monkeypatch, basic, history)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.fundamentals._market_index.kr_market_data_state",
+            lambda *a, **k: "fresh",
+        )
+
+        result = await tools["get_market_index"](symbol="KOSPI")
+
+        idx = result["indices"][0]
+        assert idx["current"] == pytest.approx(8123.62)
+        assert idx["change"] == 0
+        assert idx["change_pct"] == 0
+        assert idx["open"] == pytest.approx(8263.85)
+        assert idx["data_state"] == "stale"
+        assert idx["data_state_reason"] == "kr_index_fresh_clock_payload_lagging"
+        assert "as_of" in idx
+
     async def test_single_us_index(self, monkeypatch):
         """Test fetching a single US index (NASDAQ)."""
         tools = build_tools()

@@ -95,6 +95,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR intraday degrades to DB-backed partial data when recent KIS minute overlay calls fail
   - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
+- `get_market_index(symbol=None, period="day", count=20)`
+  - KR indices (`KOSPI`/`KOSDAQ`) are tagged with `data_state` from the KRX
+    session clock. If the clock is live but the Naver payload is self-inconsistent
+    (`change == 0`, `change_pct == 0`, and `open != current`), the original
+    numeric fields are preserved and `data_state` is downgraded to `"stale"`
+    with `data_state_reason: "kr_index_fresh_clock_payload_lagging"` and `as_of`.
 - `get_investment_opinions(symbol, limit=10, market=None)`
 - `get_short_interest(symbol, days=20)`
   - 6자리 KR 종목코드만 지원 (예: `005930`)
