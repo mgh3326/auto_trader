@@ -29,13 +29,13 @@ from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_financials,
     handle_get_insider_transactions,
 )
+from app.mcp_server.tooling.fundamentals._fx_rates import handle_get_fx_rate
 from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
     handle_get_intraday_investor_flow,
 )
 from app.mcp_server.tooling.fundamentals._market_index import (
     handle_get_market_index,
 )
-from app.mcp_server.tooling.fundamentals._fx_rates import handle_get_fx_rate
 from app.mcp_server.tooling.fundamentals._news import handle_get_news
 from app.mcp_server.tooling.fundamentals._profiles import (
     handle_get_company_profile,

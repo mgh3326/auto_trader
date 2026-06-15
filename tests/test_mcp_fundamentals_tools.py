@@ -16,9 +16,9 @@ This module contains tests for:
 """
 
 import asyncio
-from datetime import UTC, datetime
 import dataclasses
 import json
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import httpx
@@ -43,13 +43,13 @@ from app.mcp_server.tooling import (
     portfolio_holdings,
     shared,
 )
+from app.mcp_server.tooling.fundamentals import _fx_rates as fundamentals_fx_rates
 from app.mcp_server.tooling.fundamentals import (
     _intraday_investor_flow as intraday_investor_flow,
 )
 from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.services import market_data as market_data_service
 from app.services import naver_finance
-from app.mcp_server.tooling.fundamentals import _fx_rates as fundamentals_fx_rates
 from app.services.exchange_rate_service import UsdKrwExchangeRateQuote
 from tests._mcp_tooling_support import (
     _patch_httpx_async_client,
