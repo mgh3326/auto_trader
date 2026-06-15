@@ -1719,7 +1719,10 @@ async def test_toss_portfolio_snapshot_emits_phase_spans(
                         average_purchase_price=Decimal("70000"),
                         last_price=Decimal("72000"),
                         market_value={"amount": Decimal("144000")},
-                        profit_loss={"amount": Decimal("4000"), "rate": Decimal("0.0285")},
+                        profit_loss={
+                            "amount": Decimal("4000"),
+                            "rate": Decimal("0.0285"),
+                        },
                     )
                 ]
             )
