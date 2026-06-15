@@ -28,8 +28,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 - `get_news(symbol, market=None, limit=10)`
   - Fetch symbol-level recent news for decision diagnostics (`kr`: Naver Finance, `us`/`crypto`: Finnhub)
-  - KR: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
-  - `degraded: true` + `fetch_error` appear when the Naver fetch failed and the response was served from DB cache only.
+  - KR/US/crypto: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
+  - When `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=true`, visible `pending` rows in the canonical DB response enqueue `news_relevance.judge_pending`, including rows created during an earlier worker/webhook outage. Duplicate enqueue is acceptable because the worker re-queries pending rows.
+  - `degraded: true` + `fetch_error` appear when provider fetch failed and the response was served from DB cache only.
   - `pending` means "not yet judged" — treat as unverified recall, not confirmed evidence.
   - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
 

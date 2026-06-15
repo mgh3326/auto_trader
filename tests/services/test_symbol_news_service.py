@@ -431,7 +431,7 @@ async def test_kr_no_enqueue_when_no_new_pending(monkeypatch) -> None:
     _patch_naver(monkeypatch, [_RAW_ITEM])
     _patch_store_with_insert_count(
         monkeypatch,
-        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"])],
+        stored=[_stored(1, _RAW_ITEM["url"], _RAW_ITEM["title"], status="confirmed")],
         new_links=0,  # 전부 기존 link — 신규 pending 없음
     )
     kiq = AsyncMock()
@@ -442,6 +442,37 @@ async def test_kr_no_enqueue_when_no_new_pending(monkeypatch) -> None:
     result = await symbol_news_service.fetch_symbol_news("035420", "kr")
     assert result.status == "ok"
     kiq.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_us_existing_pending_reenqueues_judgment_when_flag_on(
+    monkeypatch,
+) -> None:
+    from app.core.config import settings
+    from app.tasks import news_relevance_judgment_tasks
+
+    monkeypatch.setattr(settings, "NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED", True)
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_news_finnhub",
+        AsyncMock(return_value=_FINNHUB_RAW),
+    )
+    _patch_store_with_insert_count(
+        monkeypatch,
+        stored=[_stored_us(1, "https://r/apple-beats", "Apple beats")],
+        new_links=0,
+    )
+    kiq = AsyncMock()
+    monkeypatch.setattr(
+        news_relevance_judgment_tasks.news_relevance_judge_pending, "kiq", kiq
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("AAPL", "us", limit=10)
+
+    assert result.status == "ok"
+    assert result.articles[0].provider_metadata["relevance"]["status"] == "pending"
+    kiq.assert_awaited_once_with(market="us", symbol="AAPL", dry_run=False)
 
 
 _FINNHUB_RAW = {
