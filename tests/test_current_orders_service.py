@@ -507,3 +507,79 @@ async def test_current_orders_toss_disabled_fails_open() -> None:
     ]
     assert toss_kr.status == "unavailable"
     assert response.data_state == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_current_orders_reuses_one_kis_client_per_request() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.services.brokers.toss.dto import TossOrdersPage
+    from app.services.current_orders_service import CurrentOrdersService
+
+    fake_kis = SimpleNamespace(
+        inquire_korea_orders=AsyncMock(return_value=[]),
+        inquire_overseas_orders=AsyncMock(return_value=[]),
+    )
+    fake_toss = SimpleNamespace(
+        list_orders=AsyncMock(
+            return_value=TossOrdersPage(orders=[], next_cursor=None, has_next=False)
+        ),
+        aclose=AsyncMock(),
+    )
+    factory_calls = 0
+
+    def _kis_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return fake_kis
+
+    service = CurrentOrdersService(
+        kis_client_factory=_kis_factory,
+        upbit_client=None,
+        toss_client_factory=lambda: fake_toss,
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="all")
+
+    assert response.data_state == "degraded"
+    assert factory_calls == 1
+    assert fake_kis.inquire_korea_orders.await_count == 1
+    assert fake_kis.inquire_overseas_orders.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_current_orders_empty_reason_reports_partial_source_unavailable() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.services.current_orders_service import CurrentOrdersService
+
+    fake_kis = SimpleNamespace(
+        inquire_korea_orders=AsyncMock(return_value=[]),
+        inquire_overseas_orders=AsyncMock(return_value=[]),
+    )
+
+    class _DisabledToss:
+        async def list_orders(self, **kwargs):
+            raise RuntimeError("TOSS_API_ENABLED")
+
+        async def aclose(self) -> None:
+            return None
+
+    service = CurrentOrdersService(
+        kis_client_factory=lambda: fake_kis,
+        upbit_client=None,
+        toss_client_factory=lambda: _DisabledToss(),
+        clock=lambda: dt.datetime(2026, 6, 15, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="kr")
+
+    assert response.data_state == "degraded"
+    assert response.items == []
+    assert (
+        response.empty_reason
+        == "some broker sources are unavailable; no open orders from available sources"
+    )

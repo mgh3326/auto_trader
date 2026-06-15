@@ -279,6 +279,8 @@ class CurrentOrdersService:
         clock: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self._kis_client_factory = kis_client_factory
+        self._kis_client_initialized = False
+        self._kis_client: _KISClientProtocol | None = None
         self._upbit_client = upbit_client
         self._toss_client_factory = toss_client_factory
         self._clock = clock or (lambda: dt.datetime.now(tz=dt.UTC))
@@ -317,11 +319,15 @@ class CurrentOrdersService:
         ]
         empty_reason = None
         if not rows:
-            empty_reason = (
-                "all requested broker sources are unavailable"
-                if data_state == "unavailable"
-                else "no open orders for the selected market"
-            )
+            if data_state == "unavailable":
+                empty_reason = "all requested broker sources are unavailable"
+            elif data_state == "degraded":
+                empty_reason = (
+                    "some broker sources are unavailable; no open orders from "
+                    "available sources"
+                )
+            else:
+                empty_reason = "no open orders for the selected market"
         return OpenOrdersResponse(
             market=market,
             count=len(rows),
@@ -334,9 +340,11 @@ class CurrentOrdersService:
         )
 
     def _kis(self) -> _KISClientProtocol | None:
-        if self._kis_client_factory is None:
-            return None
-        return self._kis_client_factory()
+        if not self._kis_client_initialized:
+            self._kis_client_initialized = True
+            if self._kis_client_factory is not None:
+                self._kis_client = self._kis_client_factory()
+        return self._kis_client
 
     async def _collect_kis_kr(self) -> tuple[list[OpenOrderRow], OpenOrderSourceState]:
         now = self._clock()
