@@ -25,6 +25,11 @@ def _price_fmt(price: float, is_usd: bool, currency: str) -> str:
     return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
 
 
+def _title_label(display_name: str, symbol: str) -> str:
+    """ROB-571: 이름==심볼이면 중복 'X (X)' 대신 심볼만."""
+    return symbol if display_name == symbol else f"{display_name} ({symbol})"
+
+
 def _append_order_details(
     fields: list[DiscordField],
     prices: list[float],
@@ -582,7 +587,7 @@ def format_fill_notification(
     fields.append({"name": "계좌", "value": account_val, "inline": False})
 
     embed: DiscordEmbed = {
-        "title": f"{side_emoji} {fill_label} · {display_name} ({order.symbol})",
+        "title": f"{side_emoji} {fill_label} · {_title_label(display_name, order.symbol)}",
         "description": f"🕒 {format_datetime()}",
         "color": COLORS["sell"] if is_sell else COLORS["buy"],
         "fields": fields,
@@ -662,7 +667,7 @@ def format_investment_watch_trigger(
     desc = (desc + f"\n🕒 {format_datetime()}").strip()
 
     embed: DiscordEmbed = {
-        "title": f"🔔 워치 트리거 · {display_name} ({payload.symbol})",
+        "title": f"🔔 워치 트리거 · {_title_label(display_name, payload.symbol)}",
         "description": desc,
         "color": COLORS["watch"],
         "fields": fields,
