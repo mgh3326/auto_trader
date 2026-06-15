@@ -68,6 +68,9 @@ from app.services.investor_flow_snapshots.repository import (
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_OPTIONAL_BLOCK_TIMEOUT_SECONDS = 3.0
+_HOLDING_PROVIDER_TIMEOUT_SECONDS = 8.0
+
 Resolver = Callable[[NewsMarket, str, AsyncSession], Awaitable[ResolvedSymbol]]
 Provider = Callable[..., Awaitable[Any]]
 
@@ -412,10 +415,14 @@ async def _default_investor_flow_provider(
 
 
 async def _run_optional_block(
-    name: str, coro: Awaitable[Any], warnings: list[str]
+    name: str,
+    coro: Awaitable[Any],
+    warnings: list[str],
+    *,
+    timeout: float = _DEFAULT_OPTIONAL_BLOCK_TIMEOUT_SECONDS,
 ) -> Any:
     try:
-        return await asyncio.wait_for(coro, timeout=3)
+        return await asyncio.wait_for(coro, timeout=timeout)
     except TimeoutError:
         warnings.append(f"{name}_timeout")
     except Exception as exc:  # pragma: no cover - exercised by callers with stubs
@@ -478,6 +485,7 @@ async def build_stock_detail(
         "holding",
         providers.holding(user_id, market, resolved.symbol_db, db),
         warnings,
+        timeout=_HOLDING_PROVIDER_TIMEOUT_SECONDS,
     )
     latest_analysis_task = _run_optional_block(
         "latest_analysis",

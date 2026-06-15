@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -162,3 +163,46 @@ async def test_holding_provider_uses_account_panel_parity_without_paper():
     assert holding.tradeableQuantity == 2
     assert holding.referenceQuantity == 1
     assert holding.includedSources == ["kis", "toss_manual"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_valuation_provider_converts_dividend_ratio_to_display_percent(
+    monkeypatch,
+):
+    from app.services.invest_view_model import stock_detail_providers as providers
+
+    computed_at = dt.datetime(2026, 6, 15, tzinfo=dt.UTC)
+
+    class FakeRepo:
+        def __init__(self, db):
+            self.db = db
+
+        async def latest_for_symbols(self, *, market, symbols):
+            assert market == "kr"
+            assert symbols == {"005930"}
+            return [
+                SimpleNamespace(
+                    per=Decimal("12.3"),
+                    pbr=Decimal("1.1"),
+                    roe=Decimal("8.5"),
+                    dividend_yield=Decimal("0.0256"),
+                    high_52w=Decimal("90000"),
+                    low_52w=Decimal("60000"),
+                    market_cap=Decimal("500000000000000"),
+                    source="naver_finance",
+                    computed_at=computed_at,
+                )
+            ]
+
+    import app.services.market_valuation_snapshots as valuation_pkg
+
+    monkeypatch.setattr(valuation_pkg, "MarketValuationSnapshotsRepository", FakeRepo)
+
+    valuation = await providers.stock_detail_valuation_provider(
+        "kr", "005930", SimpleNamespace(execute=object())
+    )
+
+    assert valuation is not None
+    assert valuation.dividendYield == pytest.approx(2.56)
+    assert valuation.asOf == computed_at

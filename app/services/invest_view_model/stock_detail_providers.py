@@ -41,6 +41,12 @@ def _change_rate(price: float | None, previous_close: float | None) -> float | N
     return ((price - previous_close) / previous_close) * 100
 
 
+def _ratio_to_percent(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value) * 100
+
+
 async def stock_detail_candle_provider(
     market: NewsMarket, symbol: str, period: str
 ) -> list[dict[str, Any]]:
@@ -126,9 +132,7 @@ async def stock_detail_valuation_provider(
         per=float(row.per) if row.per is not None else None,
         pbr=float(row.pbr) if row.pbr is not None else None,
         roe=float(row.roe) if row.roe is not None else None,
-        dividendYield=(
-            float(row.dividend_yield) if row.dividend_yield is not None else None
-        ),
+        dividendYield=_ratio_to_percent(row.dividend_yield),
         high52w=float(row.high_52w) if row.high_52w is not None else None,
         low52w=float(row.low_52w) if row.low_52w is not None else None,
         marketCap=float(row.market_cap) if row.market_cap is not None else None,
