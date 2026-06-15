@@ -429,12 +429,12 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
           snapshotDate: "2026-05-13",
           collectedAt: "2026-05-13T15:40:00Z",
           source: "naver_finance",
-          close: null,
-          changeRate: null,
-          volume: null,
+          close: 75000,
+          changeRate: 2.5,
+          volume: 15118684,
           foreignNet: 20859,
-          foreignHoldingShares: null,
-          foreignHoldingRate: null,
+          foreignHoldingShares: 2790424635,
+          foreignHoldingRate: 47.73,
           institutionNet: -12931,
           individualNet: 125586,
           doubleBuy: false,
@@ -444,12 +444,12 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
           snapshotDate: "2026-05-12",
           collectedAt: "2026-05-12T15:40:00Z",
           source: "naver_finance",
-          close: null,
-          changeRate: null,
-          volume: null,
+          close: 73500,
+          changeRate: -1.2,
+          volume: 10000000,
           foreignNet: 440,
-          foreignHoldingShares: null,
-          foreignHoldingRate: null,
+          foreignHoldingShares: 2790400000,
+          foreignHoldingRate: 47.71,
           institutionNet: 1024,
           individualNet: -1464,
           doubleBuy: true,
@@ -465,10 +465,10 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
         foreignBuyDays: 2,
         foreignSellDays: 0,
         foreignFlatDays: 0,
-        foreignNetToVolumeRatio: null,
-        foreignHoldingSharesChange: null,
-        foreignHoldingRateChange: null,
-        unavailableLabels: ["거래량 저장 전까지 계산 불가"],
+        foreignNetToVolumeRatio: 21299 / 25118684,
+        foreignHoldingSharesChange: 24635,
+        foreignHoldingRateChange: 0.02,
+        unavailableLabels: [],
       },
       buyerDecomposition: {
         snapshotDate: "2026-05-13",
@@ -479,7 +479,7 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
         individualNet: 125586,
         note: "최신 수급 행 기준입니다.",
       },
-      unavailableLabels: ["외국인 순매수/거래량 강도: 거래량 저장 전까지 계산 불가"],
+      unavailableLabels: [],
       cautionLabel: "투자자별 수급은 지연된 과거 참고 데이터이며 매매 판단을 대신하지 않습니다.",
     },
   });
@@ -495,6 +495,11 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
   expect(card).toHaveTextContent("주도 매수자 분해");
   expect(card).toHaveTextContent("개인 주도");
   expect(card).toHaveTextContent("2026-05-12");
+  expect(card).toHaveTextContent("75,000");
+  expect(card).toHaveTextContent("+2.5%");
+  expect(card).toHaveTextContent("15,118,684");
+  expect(card).toHaveTextContent("2,790,424,635주 / +47.73%");
+  expect(card).not.toHaveTextContent("준비중 지표");
   expect(card).toHaveTextContent("쌍끌이");
   expect(card).toHaveTextContent("매매 판단을 대신하지 않습니다");
 });
