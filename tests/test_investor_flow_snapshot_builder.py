@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,16 @@ async def _fake_fetcher(symbol: str, days: int):
     assert days == 3
     fixtures = {
         "900301": [
-            {"date": "2026-05-12", "foreign_net": 300, "institutional_net": 200},
+            {
+                "date": "2026-05-12",
+                "close": 75000,
+                "change_pct": 2.5,
+                "volume": 15_118_684,
+                "foreign_net": 300,
+                "institutional_net": 200,
+                "foreign_holding_shares": 2_790_424_635,
+                "foreign_holding_rate": 47.73,
+            },
             {"date": "2026-05-11", "foreign_net": 100, "institutional_net": -50},
             {"date": "2026-05-08", "foreign_net": -25, "institutional_net": -75},
         ],
@@ -49,6 +59,11 @@ async def test_build_investor_flow_snapshots_derives_streaks_ranks_and_individua
     assert newest.source == "naver_finance"
     assert newest.collected_at == collected_at
     assert newest.individual_net == -500
+    assert newest.close == Decimal("75000")
+    assert newest.change_rate == Decimal("2.5")
+    assert newest.volume == 15_118_684
+    assert newest.foreign_holding_shares == 2_790_424_635
+    assert newest.foreign_holding_rate == Decimal("47.73")
     assert newest.foreign_consecutive_buy_days == 2
     assert newest.foreign_consecutive_sell_days is None
     assert newest.institution_consecutive_buy_days == 1

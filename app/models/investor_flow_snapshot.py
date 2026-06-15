@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     Date,
     Index,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
     func,
@@ -61,6 +63,15 @@ class InvestorFlowSnapshot(Base):
     market: Mapped[str] = mapped_column(String(8), nullable=False)
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    close: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    change_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    foreign_holding_shares: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    foreign_holding_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
 
     foreign_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     institution_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
