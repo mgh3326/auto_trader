@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from unittest.mock import AsyncMock
 from fastmcp import FastMCP
 from starlette.testclient import TestClient
 
@@ -80,3 +81,50 @@ def test_main_module_wires_health_route() -> None:
 
     paths = {getattr(r, "path", None) for r in main_mod.mcp._additional_http_routes}
     assert "/health" in paths
+
+
+@pytest.mark.unit
+def test_lifespan_skips_trade_notifier_when_toss_fill_notify_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.mcp_server.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle.settings, "toss_fill_notify_enabled", False)
+    configure = AsyncMock()
+    shutdown = AsyncMock()
+    monkeypatch.setattr(lifecycle, "configure_trade_notifier_from_settings", configure)
+    monkeypatch.setattr(lifecycle, "shutdown_trade_notifier", shutdown)
+
+    mcp = FastMCP(name="lifecycle-test", lifespan=build_server_lifespan())
+    app = mcp.http_app()
+    with TestClient(app):
+        pass
+
+    configure.assert_not_called()
+    shutdown.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_lifespan_configures_trade_notifier_when_toss_fill_notify_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.mcp_server.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle.settings, "toss_fill_notify_enabled", True)
+    configure_calls: list[str] = []
+
+    def configure(*, log_context: str) -> bool:
+        configure_calls.append(log_context)
+        return True
+
+    shutdown = AsyncMock()
+    monkeypatch.setattr(lifecycle, "configure_trade_notifier_from_settings", configure)
+    monkeypatch.setattr(lifecycle, "shutdown_trade_notifier", shutdown)
+
+    mcp = FastMCP(name="lifecycle-test", lifespan=build_server_lifespan())
+    app = mcp.http_app()
+    with TestClient(app):
+        pass
+
+    assert configure_calls == ["MCP trade notifier"]
+    shutdown.assert_awaited_once_with(log_context="MCP trade notifier")

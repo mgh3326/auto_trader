@@ -42,3 +42,18 @@ def test_toss_live_order_mutation_gate_defaults_false() -> None:
     )
 
     assert configured.toss_live_order_mutations_enabled is False
+
+
+def test_toss_fill_and_auto_reconcile_gates_default_false() -> None:
+    configured = Settings(
+        kis_app_key="kis-key",
+        kis_app_secret="kis-secret",
+        opendart_api_key="dart-key",
+        upbit_access_key="upbit-key",
+        upbit_secret_key="upbit-secret",
+        SECRET_KEY="TestSecret123-" + "x" * 32,
+    )
+
+    assert configured.toss_fill_notify_enabled is False
+    assert configured.toss_live_auto_reconcile_enabled is False
+    assert configured.toss_live_auto_reconcile_safety_review_passed is False
