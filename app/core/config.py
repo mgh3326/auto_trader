@@ -533,13 +533,19 @@ class Settings(BaseSettings):
     KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED: bool = False
     KIS_MOCK_RECONCILE_PERIODIC_ENABLED: bool = False
 
-    # ROB-475 — paused periodic auto-reconcile for KIS live KR orders.
-    # Default off; operator flips + adds cron in robin-prefect-automations.
+    # ROB-475 / ROB-574 — paused periodic auto-reconcile for KIS live KR orders.
+    # Default off; operator flips + adds recurrence outside this repo.
     # ROB-487 adds a second default-off gate: flipping only the legacy flag
     # is no longer enough — a deployment must carry the fail-closed reconcile
     # semantics AND pass the safety review before unattended booking runs.
     KIS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
     KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
+
+    # ROB-574 — paused periodic auto-reconcile for Toss live KR/US orders.
+    # Default off and scheduleless in this repo. Recurrence belongs to the
+    # operator automation layer; unattended booking requires both gates.
+    TOSS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
+    TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
     # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
     # (no real mock orders) until an operator flips this.
     WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False

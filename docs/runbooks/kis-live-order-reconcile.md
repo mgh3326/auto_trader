@@ -86,11 +86,12 @@ Migration for ROB-476 is 0 (non-breaking, backward compatible).
 - **CLI (온디맨드/cron)**: `uv run python -m scripts.kis_live_auto_reconcile`
   (dry-run 기본), 실제 booking은 `--apply` — 단 `--apply`는 아래 2개 플래그가
   모두 켜져 있어야 동작(exit 2로 거부, 게이트 우회 불가).
-- **Paused TaskIQ 태스크**: `kis_live.reconcile_periodic` — 기본 비활성.
-  활성화에는 **(ROB-487) 2개 플래그가 모두** 필요:
+- **Paused TaskIQ 태스크**: `kis_live.reconcile_periodic` — worker에 등록되지만
+  코드 내 `schedule=`은 없다. 외부 recurrence는 robin-prefect-automations에서
+  등록한다. 활성화에는 **(ROB-487/ROB-574) 2개 플래그가 모두** 필요:
   `KIS_LIVE_AUTO_RECONCILE_ENABLED=true` **그리고**
-  `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true` + cron 등록(robin-prefect-
-  automations). 하나라도 미설정 시 `{"status":"paused"}`로 inert.
+  `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`. 하나라도 미설정 시
+  `{"status":"paused"}`로 inert.
   SAFETY_REVIEW 플래그는 ROB-487 fail-closed semantics + delta-idempotent
   booking이 배포에 포함됐음을 operator가 확인한 뒤에만 켠다.
 

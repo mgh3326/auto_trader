@@ -6,6 +6,14 @@ import pytest
 from app.tasks import kis_live_reconcile_tasks as mod
 
 
+def test_task_registered_without_recurring_schedule():
+    import app.tasks as task_package
+
+    assert mod in task_package.TASKIQ_TASK_MODULES
+    labels = getattr(mod.kis_live_reconcile_periodic, "labels", {}) or {}
+    assert labels.get("schedule") is None
+
+
 @pytest.mark.asyncio
 async def test_paused_when_flag_disabled():
     with (
