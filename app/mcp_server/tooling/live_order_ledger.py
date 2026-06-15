@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory, _to_float
 from app.mcp_server.tooling.live_order_evidence import get_evidence_adapter
 from app.mcp_server.tooling.order_journal import (
@@ -170,6 +171,14 @@ async def _update_live_ledger_outcome(
     avg_fill_price: Decimal | None = None,
     trade_id: int | None = None,
     journal_id: int | None = None,
+    buy_fx_rate: Decimal | None = None,
+    sell_fx_rate: Decimal | None = None,
+    fx_pnl_krw: Decimal | None = None,
+    security_pnl_usd: Decimal | None = None,
+    security_pnl_krw: Decimal | None = None,
+    total_pnl_krw: Decimal | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
 ) -> None:
     async with _order_session_factory()() as db:
         row = await db.get(LiveOrderLedger, ledger_id)
@@ -186,6 +195,24 @@ async def _update_live_ledger_outcome(
             row.trade_id = trade_id
         if journal_id is not None:
             row.journal_id = journal_id
+
+        if buy_fx_rate is not None:
+            row.buy_fx_rate = buy_fx_rate
+        if sell_fx_rate is not None:
+            row.sell_fx_rate = sell_fx_rate
+        if fx_pnl_krw is not None:
+            row.fx_pnl_krw = fx_pnl_krw
+        if security_pnl_usd is not None:
+            row.security_pnl_usd = security_pnl_usd
+        if security_pnl_krw is not None:
+            row.security_pnl_krw = security_pnl_krw
+        if total_pnl_krw is not None:
+            row.total_pnl_krw = total_pnl_krw
+        if fx_rate_source is not None:
+            row.fx_rate_source = fx_rate_source
+        if fx_pnl_accuracy is not None:
+            row.fx_pnl_accuracy = fx_pnl_accuracy
+
         row.reconciled_at = datetime.now(UTC)
         await db.commit()
 
@@ -239,6 +266,11 @@ async def _reconcile_one_live_row(
         base["action"] = "would_book"
         return base
 
+    # ROB-568 — US FX spot capture
+    fx_capture = None
+    if row.market == "us":
+        fx_capture = await capture_reconcile_spot_fx()
+
     trade_id = await _save_order_fill(
         symbol=row.symbol,
         instrument_type=("equity_us" if row.market == "us" else "crypto"),
@@ -252,6 +284,7 @@ async def _reconcile_one_live_row(
         order_id=row.order_no,
     )
     journal_id = row.journal_id
+    fx_summary = None
     if row.side == "buy" and row.journal_id is None:
         jr = await _create_trade_journal_for_buy(
             symbol=row.symbol,
@@ -270,6 +303,9 @@ async def _reconcile_one_live_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account=row.broker,
+            buy_fx_rate=float(fx_capture.rate) if fx_capture and fx_capture.rate else None,
+            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
         )
         journal_id = jr.get("journal_id")
         if trade_id and journal_id:
@@ -293,7 +329,7 @@ async def _reconcile_one_live_row(
                 requester_agent_id=row.dt_requester_agent_id,
                 approval_verified_at=row.trade_date or datetime.now(UTC),
             )
-        close_result = await _close_journals_on_sell(
+        fx_summary = await _close_journals_on_sell(
             symbol=row.symbol,
             sell_quantity=float(delta),
             sell_price=float(avg_price),
@@ -301,26 +337,70 @@ async def _reconcile_one_live_row(
             account_type="live",
             account=row.broker,
             defensive_trim_ctx=dt_ctx,
+            sell_fx_rate=float(fx_capture.rate) if fx_capture and fx_capture.rate else None,
+            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
         )
         # ROB-544: surface the labeled close result for parity with
         # kis_live_reconcile_orders. realized_pnl_pct is the FIFO lot /
         # journal-entry basis (per-lot entry_price), NOT the account-average.
-        base["journals_closed"] = close_result["journals_closed"]
-        base["closed_journal_ids"] = close_result["closed_ids"]
-        base["realized_pnl_pct"] = close_result["total_pnl_pct"]
-        base["realized_pnl_basis"] = close_result.get(
+        base["journals_closed"] = fx_summary["journals_closed"]
+        base["closed_journal_ids"] = fx_summary["closed_ids"]
+        base["realized_pnl_pct"] = fx_summary["total_pnl_pct"]
+        base["realized_pnl_basis"] = fx_summary.get(
             "realized_pnl_basis", "journal_entry"
         )
-        base["journal_pnl_pct"] = close_result["total_pnl_pct"]
+        base["journal_pnl_pct"] = fx_summary["total_pnl_pct"]
 
-    await _update_live_ledger_outcome(
-        ledger_id=row.id,
-        status=new_status,
-        filled_qty=broker_cum,
-        avg_fill_price=avg_price,
-        trade_id=trade_id,
-        journal_id=journal_id,
-    )
+    if fx_summary:
+        await _update_live_ledger_outcome(
+            ledger_id=row.id,
+            status=new_status,
+            filled_qty=broker_cum,
+            avg_fill_price=avg_price,
+            trade_id=trade_id,
+            journal_id=journal_id,
+            buy_fx_rate=Decimal(str(fx_summary["buy_fx_rate"]))
+            if fx_summary.get("buy_fx_rate")
+            else None,
+            sell_fx_rate=Decimal(str(fx_summary["sell_fx_rate"]))
+            if fx_summary.get("sell_fx_rate")
+            else None,
+            fx_pnl_krw=Decimal(str(fx_summary["fx_pnl_krw"]))
+            if fx_summary.get("fx_pnl_krw")
+            else None,
+            security_pnl_usd=Decimal(str(fx_summary["security_pnl_usd"]))
+            if fx_summary.get("security_pnl_usd")
+            else None,
+            security_pnl_krw=Decimal(str(fx_summary["security_pnl_krw"]))
+            if fx_summary.get("security_pnl_krw")
+            else None,
+            total_pnl_krw=Decimal(str(fx_summary["total_pnl_krw"]))
+            if fx_summary.get("total_pnl_krw")
+            else None,
+            fx_rate_source=fx_summary.get("fx_rate_source"),
+            fx_pnl_accuracy=fx_summary.get("fx_pnl_accuracy"),
+        )
+        base.update(fx_summary)
+    else:
+        await _update_live_ledger_outcome(
+            ledger_id=row.id,
+            status=new_status,
+            filled_qty=broker_cum,
+            avg_fill_price=avg_price,
+            trade_id=trade_id,
+            journal_id=journal_id,
+            buy_fx_rate=Decimal(str(fx_capture.rate))
+            if fx_capture and fx_capture.rate
+            else None,
+            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
+        )
+        if fx_capture:
+            base["buy_fx_rate"] = float(fx_capture.rate) if fx_capture.rate else None
+            base["fx_rate_source"] = fx_capture.fx_rate_source
+            base["fx_pnl_accuracy"] = fx_capture.fx_pnl_accuracy
+
     base["action"] = "booked"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id

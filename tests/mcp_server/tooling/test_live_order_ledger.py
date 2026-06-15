@@ -473,3 +473,86 @@ async def test_reconcile_filled_sell_surfaces_journal_entry_basis():
     # basis value — NOT an account-average.
     assert out["realized_pnl_pct"] == pytest.approx(-2.61)
     assert out["journal_pnl_pct"] == pytest.approx(-2.61)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kis_us_buy_reconcile_captures_buy_fx_rate():
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.mcp_server.tooling.fx_pnl import FxRateCapture
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await ll._save_live_order_ledger(
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="AAPL",
+        exchange="NASD",
+        market_symbol=None,
+        side="buy",
+        order_kind="limit",
+        quantity=3.0,
+        price=190.0,
+        amount=570.0,
+        currency="USD",
+        order_no="KIS-US-FX-1",
+        order_time="0930",
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    row = await ll._load_live_ledger_row(lid)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("3"), Decimal("191.5"), None, "filled", ""
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(
+            ll,
+            "capture_reconcile_spot_fx",
+            new=AsyncMock(
+                return_value=FxRateCapture(
+                    rate=Decimal("1389.33"),
+                    fx_rate_source="reconcile_spot",
+                    fx_pnl_accuracy="approximate",
+                )
+            ),
+        ),
+        patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=111)),
+        patch.object(
+            ll,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 9}),
+        ) as m_buy,
+        patch.object(ll, "_link_journal_to_fill", new=AsyncMock(return_value=None)),
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=False)
+
+    assert out["buy_fx_rate"] == pytest.approx(1389.33)
+    assert out["fx_rate_source"] == "reconcile_spot"
+    assert m_buy.await_args.kwargs["buy_fx_rate"] == 1389.33
+    
+    after = await ll._load_live_ledger_row(lid)
+    assert after.buy_fx_rate == Decimal("1389.33")
+    assert after.fx_rate_source == "reconcile_spot"
