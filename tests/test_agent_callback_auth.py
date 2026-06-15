@@ -101,17 +101,10 @@ def test_agent_callback_accepts_x_agent_callback_token(client: TestClient):
     assert res.status_code == 200
 
 
-def test_legacy_openclaw_callback_alias_accepts_valid_token(client: TestClient):
+def test_legacy_openclaw_callback_alias_is_removed(client: TestClient):
     res = client.post(
         "/api/v1/openclaw/callback",
         headers={"Authorization": "Bearer callback-secret"},
         json=_payload(),
     )
-    assert res.status_code == 200
-    body = res.json()
-    assert body["status"] == "ok"
-
-
-def test_legacy_openclaw_callback_alias_rejects_missing_token(client: TestClient):
-    res = client.post("/api/v1/openclaw/callback", json=_payload())
-    assert res.status_code == 401
+    assert res.status_code == 404
