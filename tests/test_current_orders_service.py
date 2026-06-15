@@ -7,8 +7,8 @@ import pytest
 
 from app.schemas.open_orders import (
     OpenOrderRow,
-    OpenOrdersResponse,
     OpenOrderSourceState,
+    OpenOrdersResponse,
 )
 
 
@@ -63,6 +63,7 @@ def test_open_orders_schema_serializes_decimal_rows() -> None:
 
 def test_normalize_kis_kr_order_maps_domestic_pending_shape() -> None:
     from app.services.current_orders_service import normalize_kis_order
+
     row = normalize_kis_order(
         {
             "ord_no": "K1",
@@ -97,6 +98,7 @@ def test_normalize_kis_kr_order_maps_domestic_pending_shape() -> None:
 
 def test_normalize_kis_us_order_maps_overseas_pending_shape() -> None:
     from app.services.current_orders_service import normalize_kis_order
+
     row = normalize_kis_order(
         {
             "odno": "U1",
@@ -128,6 +130,7 @@ def test_normalize_kis_us_order_maps_overseas_pending_shape() -> None:
 
 def test_normalize_upbit_order_maps_wait_order_shape() -> None:
     from app.services.current_orders_service import normalize_upbit_order
+
     row = normalize_upbit_order(
         {
             "uuid": "UP1",
@@ -162,16 +165,33 @@ def test_normalize_upbit_order_maps_wait_order_shape() -> None:
 async def test_current_orders_all_merges_kis_and_upbit_with_us_dedupe() -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
+
     from app.services.current_orders_service import CurrentOrdersService
 
-    async def inquire_overseas_orders(exchange_code: str = "NASD", is_mock: bool = False):
+    async def inquire_overseas_orders(
+        exchange_code: str = "NASD", is_mock: bool = False
+    ):
         assert is_mock is False
         return {
             "NASD": [
-                {"odno": "U1", "pdno": "AAPL", "sll_buy_dvsn_cd": "02", "ft_ord_qty": "1", "ft_ord_unpr3": "180", "nccs_qty": "1"}
+                {
+                    "odno": "U1",
+                    "pdno": "AAPL",
+                    "sll_buy_dvsn_cd": "02",
+                    "ft_ord_qty": "1",
+                    "ft_ord_unpr3": "180",
+                    "nccs_qty": "1",
+                }
             ],
             "NYSE": [
-                {"odno": "U1", "pdno": "AAPL", "sll_buy_dvsn_cd": "02", "ft_ord_qty": "1", "ft_ord_unpr3": "180", "nccs_qty": "1"}
+                {
+                    "odno": "U1",
+                    "pdno": "AAPL",
+                    "sll_buy_dvsn_cd": "02",
+                    "ft_ord_qty": "1",
+                    "ft_ord_unpr3": "180",
+                    "nccs_qty": "1",
+                }
             ],
             "AMEX": [],
         }[exchange_code]
@@ -179,7 +199,13 @@ async def test_current_orders_all_merges_kis_and_upbit_with_us_dedupe() -> None:
     fake_kis = SimpleNamespace(
         inquire_korea_orders=AsyncMock(
             return_value=[
-                {"ord_no": "K1", "pdno": "005930", "sll_buy_dvsn_cd": "02", "ord_qty": "10", "ord_unpr": "70000"}
+                {
+                    "ord_no": "K1",
+                    "pdno": "005930",
+                    "sll_buy_dvsn_cd": "02",
+                    "ord_qty": "10",
+                    "ord_unpr": "70000",
+                }
             ]
         ),
         inquire_overseas_orders=AsyncMock(side_effect=inquire_overseas_orders),
@@ -187,14 +213,24 @@ async def test_current_orders_all_merges_kis_and_upbit_with_us_dedupe() -> None:
     fake_upbit = SimpleNamespace(
         fetch_open_orders=AsyncMock(
             return_value=[
-                {"uuid": "C1", "market": "KRW-BTC", "side": "ask", "price": "99000000", "volume": "0.02", "remaining_volume": "0.02"}
+                {
+                    "uuid": "C1",
+                    "market": "KRW-BTC",
+                    "side": "ask",
+                    "price": "99000000",
+                    "volume": "0.02",
+                    "remaining_volume": "0.02",
+                }
             ]
         )
     )
 
     from app.services.brokers.toss.dto import TossOrdersPage
+
     fake_toss = SimpleNamespace(
-        list_orders=AsyncMock(return_value=TossOrdersPage(orders=[], next_cursor=None, has_next=False)),
+        list_orders=AsyncMock(
+            return_value=TossOrdersPage(orders=[], next_cursor=None, has_next=False)
+        ),
         aclose=AsyncMock(),
     )
 
@@ -223,12 +259,22 @@ async def test_current_orders_all_merges_kis_and_upbit_with_us_dedupe() -> None:
 async def test_current_orders_fails_open_when_one_kis_us_exchange_fails() -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
+
     from app.services.current_orders_service import CurrentOrdersService
 
-    async def inquire_overseas_orders(exchange_code: str = "NASD", is_mock: bool = False):
+    async def inquire_overseas_orders(
+        exchange_code: str = "NASD", is_mock: bool = False
+    ):
         if exchange_code == "NYSE":
             raise RuntimeError("NYSE down")
-        return [{"odno": exchange_code, "pdno": "AAPL", "sll_buy_dvsn_cd": "02", "ft_ord_qty": "1"}]
+        return [
+            {
+                "odno": exchange_code,
+                "pdno": "AAPL",
+                "sll_buy_dvsn_cd": "02",
+                "ft_ord_qty": "1",
+            }
+        ]
 
     fake_kis = SimpleNamespace(
         inquire_korea_orders=AsyncMock(return_value=[]),
@@ -255,6 +301,7 @@ async def test_current_orders_fails_open_when_one_kis_us_exchange_fails() -> Non
 async def test_current_orders_unavailable_when_requested_sources_all_fail() -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
+
     from app.services.current_orders_service import CurrentOrdersService
 
     fake_upbit = SimpleNamespace(
@@ -282,7 +329,11 @@ async def test_current_orders_toss_pages_and_splits_kr_us() -> None:
     from app.services.current_orders_service import CurrentOrdersService
 
     class _FakeTossClient:
-        def __init__(self, pages: list[TossOrdersPage] | None = None, exc: Exception | None = None) -> None:
+        def __init__(
+            self,
+            pages: list[TossOrdersPage] | None = None,
+            exc: Exception | None = None,
+        ) -> None:
             self.pages = pages or []
             self.exc = exc
             self.calls: list[dict[str, object]] = []
@@ -317,8 +368,14 @@ async def test_current_orders_toss_pages_and_splits_kr_us() -> None:
 
     fake_toss = _FakeTossClient(
         pages=[
-            TossOrdersPage(orders=[_toss_order("T1", "005930")], next_cursor="next", has_next=True),
-            TossOrdersPage(orders=[_toss_order("T2", "AAPL", filled="2")], next_cursor=None, has_next=False),
+            TossOrdersPage(
+                orders=[_toss_order("T1", "005930")], next_cursor="next", has_next=True
+            ),
+            TossOrdersPage(
+                orders=[_toss_order("T2", "AAPL", filled="2")],
+                next_cursor=None,
+                has_next=False,
+            ),
         ]
     )
     service = CurrentOrdersService(
@@ -349,7 +406,11 @@ async def test_current_orders_toss_kr_filter_keeps_only_kr_orders() -> None:
     from app.services.current_orders_service import CurrentOrdersService
 
     class _FakeTossClient:
-        def __init__(self, pages: list[TossOrdersPage] | None = None, exc: Exception | None = None) -> None:
+        def __init__(
+            self,
+            pages: list[TossOrdersPage] | None = None,
+            exc: Exception | None = None,
+        ) -> None:
             self.pages = pages or []
             self.exc = exc
             self.calls: list[dict[str, object]] = []
@@ -411,7 +472,11 @@ async def test_current_orders_toss_disabled_fails_open() -> None:
     from app.services.current_orders_service import CurrentOrdersService
 
     class _FakeTossClient:
-        def __init__(self, pages: list[TossOrdersPage] | None = None, exc: Exception | None = None) -> None:
+        def __init__(
+            self,
+            pages: list[TossOrdersPage] | None = None,
+            exc: Exception | None = None,
+        ) -> None:
             self.pages = pages or []
             self.exc = exc
             self.calls: list[dict[str, object]] = []
@@ -437,9 +502,8 @@ async def test_current_orders_toss_disabled_fails_open() -> None:
 
     response = await service.list_open_orders(market="kr")
 
-    toss_kr = [s for s in response.sources if s.broker == "toss" and s.market == "kr"][0]
+    toss_kr = [s for s in response.sources if s.broker == "toss" and s.market == "kr"][
+        0
+    ]
     assert toss_kr.status == "unavailable"
     assert response.data_state == "unavailable"
-
-
-

@@ -13,14 +13,14 @@ from app.schemas.open_orders import (
     OpenOrderDataState,
     OpenOrderMarket,
     OpenOrderRow,
+    OpenOrderSourceState,
     OpenOrdersQueryMarket,
     OpenOrdersResponse,
-    OpenOrderSourceState,
 )
 from app.services.brokers.kis.client import KISClient
-from app.services.brokers.upbit import orders as upbit_orders
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.toss.dto import TossOrder
+from app.services.brokers.upbit import orders as upbit_orders
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,9 @@ def normalize_kis_order(
         side=_kis_side(row),
         order_type=_first_str(row, ("ord_dvsn_name", "ord_dvsn", "order_type")),
         time_in_force=None,
-        price=_decimal(_first_str(row, ("ord_unpr", "ft_ord_unpr3", "ord_unpr3", "price"))),
+        price=_decimal(
+            _first_str(row, ("ord_unpr", "ft_ord_unpr3", "ord_unpr3", "price"))
+        ),
         quantity=quantity,
         remaining_qty=remaining,
         filled_qty=_decimal(_first_str(row, ("ft_ccld_qty", "ccld_qty", "filled_qty"))),
@@ -211,17 +213,22 @@ def normalize_toss_order(order: TossOrder) -> OpenOrderRow:
     )
 
 
-
 _KIS_US_EXCHANGES: tuple[str, ...] = ("NASD", "NYSE", "AMEX")
 
 
 class _KISClientProtocol(Protocol):
-    async def inquire_korea_orders(self, is_mock: bool = False) -> list[dict[str, Any]]: ...
-    async def inquire_overseas_orders(self, exchange_code: str = "NASD", is_mock: bool = False) -> list[dict[str, Any]]: ...
+    async def inquire_korea_orders(
+        self, is_mock: bool = False
+    ) -> list[dict[str, Any]]: ...
+    async def inquire_overseas_orders(
+        self, exchange_code: str = "NASD", is_mock: bool = False
+    ) -> list[dict[str, Any]]: ...
 
 
 class _UpbitClientProtocol(Protocol):
-    async def fetch_open_orders(self, market: str | None = None) -> list[dict[str, Any]]: ...
+    async def fetch_open_orders(
+        self, market: str | None = None
+    ) -> list[dict[str, Any]]: ...
 
 
 def _default_kis_client() -> _KISClientProtocol:
@@ -265,7 +272,8 @@ class CurrentOrdersService:
     def __init__(
         self,
         *,
-        kis_client_factory: Callable[[], _KISClientProtocol] | None = _default_kis_client,
+        kis_client_factory: Callable[[], _KISClientProtocol]
+        | None = _default_kis_client,
         upbit_client: _UpbitClientProtocol | None = upbit_orders,
         toss_client_factory: Callable[[], Any] | None = _default_toss_client,
         clock: Callable[[], dt.datetime] | None = None,
@@ -334,26 +342,55 @@ class CurrentOrdersService:
         now = self._clock()
         kis = self._kis()
         if kis is None:
-            return [], _source(broker="kis", market="kr", status="unavailable", fetched_at=None, count=0, message="kis_client_unavailable")
+            return [], _source(
+                broker="kis",
+                market="kr",
+                status="unavailable",
+                fetched_at=None,
+                count=0,
+                message="kis_client_unavailable",
+            )
         try:
             raw = await kis.inquire_korea_orders(is_mock=False)
         except Exception as exc:  # noqa: BLE001 - endpoint must fail open per broker
             logger.warning("KIS KR open-order fetch failed", exc_info=True)
-            return [], _source(broker="kis", market="kr", status="unavailable", fetched_at=now, count=0, message=f"{type(exc).__name__}: {exc}")
-        rows = [normalize_kis_order(row, market="kr", exchange="KRX") for row in raw or [] if isinstance(row, dict)]
-        return rows, _source(broker="kis", market="kr", status="ok", fetched_at=now, count=len(rows))
+            return [], _source(
+                broker="kis",
+                market="kr",
+                status="unavailable",
+                fetched_at=now,
+                count=0,
+                message=f"{type(exc).__name__}: {exc}",
+            )
+        rows = [
+            normalize_kis_order(row, market="kr", exchange="KRX")
+            for row in raw or []
+            if isinstance(row, dict)
+        ]
+        return rows, _source(
+            broker="kis", market="kr", status="ok", fetched_at=now, count=len(rows)
+        )
 
     async def _collect_kis_us(self) -> tuple[list[OpenOrderRow], OpenOrderSourceState]:
         now = self._clock()
         kis = self._kis()
         if kis is None:
-            return [], _source(broker="kis", market="us", status="unavailable", fetched_at=None, count=0, message="kis_client_unavailable")
+            return [], _source(
+                broker="kis",
+                market="us",
+                status="unavailable",
+                fetched_at=None,
+                count=0,
+                message="kis_client_unavailable",
+            )
         rows: list[OpenOrderRow] = []
         seen: set[str] = set()
         errors: dict[str, str] = {}
         for exchange in _KIS_US_EXCHANGES:
             try:
-                raw = await kis.inquire_overseas_orders(exchange_code=exchange, is_mock=False)
+                raw = await kis.inquire_overseas_orders(
+                    exchange_code=exchange, is_mock=False
+                )
             except Exception as exc:  # noqa: BLE001
                 errors[exchange] = f"{type(exc).__name__}: {exc}"
                 continue
@@ -367,22 +404,58 @@ class CurrentOrdersService:
                     seen.add(order_no)
                 rows.append(normalize_kis_order(row, market="us", exchange=exchange))
         if errors and not rows:
-            return [], _source(broker="kis", market="us", status="unavailable", fetched_at=now, count=0, message="; ".join(f"{k}={v}" for k, v in errors.items()))
+            return [], _source(
+                broker="kis",
+                market="us",
+                status="unavailable",
+                fetched_at=now,
+                count=0,
+                message="; ".join(f"{k}={v}" for k, v in errors.items()),
+            )
         status: OpenOrderDataState = "degraded" if errors else "ok"
         message = "; ".join(f"{k}={v}" for k, v in errors.items()) if errors else None
-        return rows, _source(broker="kis", market="us", status=status, fetched_at=now, count=len(rows), message=message)
+        return rows, _source(
+            broker="kis",
+            market="us",
+            status=status,
+            fetched_at=now,
+            count=len(rows),
+            message=message,
+        )
 
     async def _collect_upbit(self) -> tuple[list[OpenOrderRow], OpenOrderSourceState]:
         now = self._clock()
         if self._upbit_client is None:
-            return [], _source(broker="upbit", market="crypto", status="unavailable", fetched_at=None, count=0, message="upbit_client_unavailable")
+            return [], _source(
+                broker="upbit",
+                market="crypto",
+                status="unavailable",
+                fetched_at=None,
+                count=0,
+                message="upbit_client_unavailable",
+            )
         try:
             raw = await self._upbit_client.fetch_open_orders(market=None)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Upbit open-order fetch failed", exc_info=True)
-            return [], _source(broker="upbit", market="crypto", status="unavailable", fetched_at=now, count=0, message=f"{type(exc).__name__}: {exc}")
-        rows = [normalize_upbit_order(row) for row in raw or [] if isinstance(row, dict)]
-        return rows, _source(broker="upbit", market="crypto", status="ok", fetched_at=now, count=len(rows))
+            return [], _source(
+                broker="upbit",
+                market="crypto",
+                status="unavailable",
+                fetched_at=now,
+                count=0,
+                message=f"{type(exc).__name__}: {exc}",
+            )
+        rows = [
+            normalize_upbit_order(row) for row in raw or [] if isinstance(row, dict)
+        ]
+        return rows, _source(
+            broker="upbit",
+            market="crypto",
+            status="ok",
+            fetched_at=now,
+            count=len(rows),
+        )
 
     async def _collect_toss_equities(
         self,
@@ -400,7 +473,14 @@ class CurrentOrdersService:
 
         if self._toss_client_factory is None:
             states = [
-                _source(broker="toss", market=market, status="unavailable", fetched_at=None, count=0, message="toss_client_unavailable")
+                _source(
+                    broker="toss",
+                    market=market,
+                    status="unavailable",
+                    fetched_at=None,
+                    count=0,
+                    message="toss_client_unavailable",
+                )
                 for market in markets
             ]
             return [], states
@@ -419,7 +499,14 @@ class CurrentOrdersService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Toss open-order fetch failed", exc_info=True)
             states = [
-                _source(broker="toss", market=market, status="unavailable", fetched_at=now, count=0, message=f"{type(exc).__name__}: {exc}")
+                _source(
+                    broker="toss",
+                    market=market,
+                    status="unavailable",
+                    fetched_at=now,
+                    count=0,
+                    message=f"{type(exc).__name__}: {exc}",
+                )
                 for market in markets
             ]
             return [], states
@@ -440,5 +527,3 @@ class CurrentOrdersService:
             for market in markets
         ]
         return filtered, states
-
-

@@ -35,7 +35,9 @@ def _make_client(service: _StubCurrentOrdersService) -> TestClient:
     app = FastAPI()
     app.include_router(invest_open_orders.router)
     app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=1)
-    app.dependency_overrides[invest_open_orders.get_current_orders_service] = lambda: service
+    app.dependency_overrides[invest_open_orders.get_current_orders_service] = lambda: (
+        service
+    )
     return TestClient(app)
 
 
