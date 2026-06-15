@@ -9,6 +9,7 @@ import { pillToneForSource } from "../../desktop/AccountSourceTone";
 import { stockDetailPath } from "../../stockDetailPath";
 import { PL, Pill } from "../../ds";
 import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
+import { CurrentOrdersPanel } from "../../components/my/CurrentOrdersPanel";
 import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
 import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
@@ -310,6 +311,10 @@ export function MobilePortfolioPage() {
           ) : activeTab === "signals" ? (
             <section style={{ padding: "0 16px" }}>
               <SignalsPanel compact />
+            </section>
+          ) : activeTab === "currentOrders" ? (
+            <section style={{ padding: "0 16px" }}>
+              <CurrentOrdersPanel compact />
             </section>
           ) : (
             <section style={{ padding: "0 16px" }}>

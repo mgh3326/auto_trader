@@ -109,3 +109,27 @@ test("CurrentOrdersPanel renders empty reason", async () => {
 
   expect(await screen.findByText("no open orders for the selected market")).toBeInTheDocument();
 });
+
+import { MemoryRouter } from "react-router-dom";
+import { PORTFOLIO_TABS, usePortfolioTabSearchParam } from "../components/my/portfolioTabs";
+
+function TabProbe() {
+  const [activeTab, setActiveTab] = usePortfolioTabSearchParam();
+  return (
+    <>
+      <div data-testid="active-tab">{activeTab}</div>
+      <button type="button" onClick={() => setActiveTab("currentOrders")}>set current</button>
+    </>
+  );
+}
+
+test("portfolio tabs include current orders and parse the search param", async () => {
+  expect(PORTFOLIO_TABS.map((tab) => tab.key)).toContain("currentOrders");
+  render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/my?tab=currentOrders"]}>
+      <TabProbe />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("active-tab")).toHaveTextContent("currentOrders");
+});
+
