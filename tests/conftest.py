@@ -1288,6 +1288,12 @@ async def db_session():
                 await conn.execute(
                     text(
                         "ALTER TABLE review.trade_retrospectives "
+                        "DROP CONSTRAINT IF EXISTS ck_trade_retrospectives_ck_trade_retrospectives_account_mode"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
                         "ADD CONSTRAINT ck_trade_retrospectives_account_mode "
                         "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live'))"
                     )

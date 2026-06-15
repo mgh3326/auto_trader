@@ -316,3 +316,29 @@ async def test_equity_us_symbol_dotted(db_session: AsyncSession):
     )
     await db_session.commit()
     assert row.symbol == "BRK.B"
+
+
+@pytest.mark.asyncio
+async def test_create_retrospective_records_us_fx_fields(db_session: AsyncSession):
+    _, row = await svc.save_retrospective(
+        db_session,
+        symbol="AAPL",
+        instrument_type="equity_us",
+        account_mode="toss_live",
+        outcome="filled",
+        buy_fx_rate=1389.33,
+        sell_fx_rate=1503.19,
+        fx_pnl_krw=22772.0,
+        security_pnl_usd=60.0,
+        security_pnl_krw=90191.4,
+        total_pnl_krw=112963.4,
+        fx_rate_source="reconcile_spot",
+        fx_pnl_accuracy="approximate",
+    )
+    await db_session.commit()
+
+    assert row.buy_fx_rate == Decimal("1389.3300")
+    assert row.sell_fx_rate == Decimal("1503.1900")
+    assert row.fx_pnl_krw == Decimal("22772.0000")
+    assert row.fx_rate_source == "reconcile_spot"
+    assert row.fx_pnl_accuracy == "approximate"

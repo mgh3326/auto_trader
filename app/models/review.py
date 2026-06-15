@@ -926,9 +926,10 @@ class TradeRetrospective(Base):
             "correlation_id", name="uq_trade_retrospectives_correlation_id"
         ),
         CheckConstraint(
-            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','alpaca_paper','upbit_live')",
-            name="ck_trade_retrospectives_account_mode",
+            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live')",
+            name="account_mode",
         ),
+
         CheckConstraint(
             "outcome IN ('filled','partially_filled','unfilled','rejected','cancelled')",
             name="ck_trade_retrospectives_outcome",
