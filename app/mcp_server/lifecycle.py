@@ -18,13 +18,13 @@ from fastmcp.server.lifespan import lifespan as fastmcp_lifespan
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.core.config import settings
 from app.mcp_server.env_utils import (
     get_mcp_color,
     get_mcp_heartbeat_interval_s,
     get_mcp_heartbeat_path,
 )
 from app.mcp_server.heartbeat import heartbeat_loop
-from app.core.config import settings
 from app.monitoring.trade_notifier.runtime import (
     configure_trade_notifier_from_settings,
     shutdown_trade_notifier,

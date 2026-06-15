@@ -7,9 +7,9 @@ These tests run with NO database/redis available, which is itself the proof that
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 from fastmcp import FastMCP
 from starlette.testclient import TestClient
 

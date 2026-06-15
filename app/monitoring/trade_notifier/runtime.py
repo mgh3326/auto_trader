@@ -51,8 +51,12 @@ def configure_trade_notifier_from_settings(
             enabled=True,
             discord_webhook_us=getattr(settings_obj, "discord_webhook_us", None),
             discord_webhook_kr=getattr(settings_obj, "discord_webhook_kr", None),
-            discord_webhook_crypto=getattr(settings_obj, "discord_webhook_crypto", None),
-            discord_webhook_alerts=getattr(settings_obj, "discord_webhook_alerts", None),
+            discord_webhook_crypto=getattr(
+                settings_obj, "discord_webhook_crypto", None
+            ),
+            discord_webhook_alerts=getattr(
+                settings_obj, "discord_webhook_alerts", None
+            ),
         )
 
         configured_systems: list[str] = []
