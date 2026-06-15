@@ -1569,3 +1569,40 @@ async def test_close_journals_handles_missing_buy_fx_for_us_equity():
     assert j.fx_pnl_accuracy == "unavailable"
     assert res["fx_pnl_krw"] is None
     assert res["fx_unavailable_journal_ids"] == [88]
+
+
+@pytest.mark.asyncio
+async def test_modify_journal_supports_manual_fx_override():
+    from app.mcp_server.tooling.order_journal import modify_journal_entry
+    from app.models.trade_journal import TradeJournal
+
+    j = TradeJournal(
+        id=99,
+        symbol="AAPL",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        status="active",
+        buy_fx_rate=None,
+    )
+
+    mock_session = AsyncMock()
+    mock_session.get.return_value = j
+    factory = _mock_session_factory(mock_session)
+
+    with patch(
+        "app.mcp_server.tooling.order_journal._order_session_factory",
+        return_value=factory,
+    ):
+        result = await modify_journal_entry(
+            journal_id=99,
+            buy_fx_rate=1450.0,
+            fx_rate_source="manual",
+            fx_pnl_accuracy="exact",
+        )
+
+    assert result["success"] is True
+    assert j.buy_fx_rate == Decimal("1450.0")
+    assert j.fx_rate_source == "manual"
+    assert j.fx_pnl_accuracy == "exact"

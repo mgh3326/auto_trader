@@ -395,3 +395,145 @@ def _append_defensive_trim_note(
     if existing and existing.strip():
         return f"{existing.rstrip()}\n\n{line}"
     return line
+
+
+async def list_active_journals(
+    *,
+    symbol: str | None = None,
+    account_type: str = "live",
+    account: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List active trade journals for audit/planning."""
+    async with _order_session_factory()() as db:
+        stmt = select(TradeJournal).where(
+            TradeJournal.status == JournalStatus.active,
+            TradeJournal.account_type == account_type,
+        )
+        if symbol:
+            stmt = stmt.where(TradeJournal.symbol == symbol)
+        if account:
+            stmt = stmt.where(TradeJournal.account == account)
+
+        stmt = stmt.order_by(TradeJournal.created_at.desc()).limit(limit)
+        result = await db.execute(stmt)
+        journals = result.scalars().all()
+
+        return [
+            {
+                "journal_id": j.id,
+                "symbol": j.symbol,
+                "instrument_type": j.instrument_type.value,
+                "side": j.side,
+                "entry_price": float(j.entry_price) if j.entry_price else None,
+                "quantity": float(j.quantity) if j.quantity else None,
+                "amount": float(j.amount) if j.amount else None,
+                "status": j.status.value,
+                "thesis": j.thesis,
+                "strategy": j.strategy,
+                "created_at": j.created_at.isoformat(),
+                "buy_fx_rate": float(j.buy_fx_rate) if j.buy_fx_rate else None,
+                "fx_rate_source": j.fx_rate_source,
+                "fx_pnl_accuracy": j.fx_pnl_accuracy,
+            }
+            for j in journals
+        ]
+
+
+async def get_journal_entry(journal_id: int) -> dict[str, Any] | None:
+    """Retrieve a single journal entry by ID."""
+    async with _order_session_factory()() as db:
+        journal = await db.get(TradeJournal, journal_id)
+        if journal is None:
+            return None
+
+        return {
+            "journal_id": journal.id,
+            "symbol": journal.symbol,
+            "instrument_type": journal.instrument_type.value,
+            "side": journal.side,
+            "entry_price": float(journal.entry_price) if journal.entry_price else None,
+            "quantity": float(journal.quantity) if journal.quantity else None,
+            "amount": float(journal.amount) if journal.amount else None,
+            "status": journal.status.value,
+            "thesis": journal.thesis,
+            "strategy": journal.strategy,
+            "notes": journal.notes,
+            "created_at": journal.created_at.isoformat(),
+            "buy_fx_rate": float(journal.buy_fx_rate) if journal.buy_fx_rate else None,
+            "sell_fx_rate": float(journal.sell_fx_rate) if journal.sell_fx_rate else None,
+            "fx_pnl_krw": float(journal.fx_pnl_krw) if journal.fx_pnl_krw else None,
+            "security_pnl_usd": float(journal.security_pnl_usd)
+            if journal.security_pnl_usd
+            else None,
+            "security_pnl_krw": float(journal.security_pnl_krw)
+            if journal.security_pnl_krw
+            else None,
+            "total_pnl_krw": float(journal.total_pnl_krw)
+            if journal.total_pnl_krw
+            else None,
+            "fx_rate_source": journal.fx_rate_source,
+            "fx_pnl_accuracy": journal.fx_pnl_accuracy,
+        }
+
+
+async def modify_journal_entry(
+    journal_id: int,
+    *,
+    thesis: str | None = None,
+    strategy: str | None = None,
+    target_price: float | None = None,
+    stop_loss: float | None = None,
+    notes: str | None = None,
+    buy_fx_rate: float | None = None,
+    sell_fx_rate: float | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
+) -> dict[str, Any]:
+    """Update fields in an existing journal entry.
+
+    ROB-568 — supports US FX overrides.
+    """
+    async with _order_session_factory()() as db:
+        journal = await db.get(TradeJournal, journal_id)
+        if journal is None:
+            return {"success": False, "error": f"Journal {journal_id} not found"}
+
+        if thesis is not None:
+            journal.thesis = thesis.strip()
+        if strategy is not None:
+            journal.strategy = strategy.strip()
+        if target_price is not None:
+            journal.target_price = Decimal(str(target_price))
+        if stop_loss is not None:
+            journal.stop_loss = Decimal(str(stop_loss))
+        if notes is not None:
+            journal.notes = notes
+
+        # FX Overrides
+        if buy_fx_rate is not None:
+            journal.buy_fx_rate = Decimal(str(buy_fx_rate))
+        if sell_fx_rate is not None:
+            journal.sell_fx_rate = Decimal(str(sell_fx_rate))
+        if fx_rate_source is not None:
+            journal.fx_rate_source = fx_rate_source
+        if fx_pnl_accuracy is not None:
+            journal.fx_pnl_accuracy = fx_pnl_accuracy
+
+        # If price/fx changed and it's closed US, recompute PnL
+        if journal.status == JournalStatus.closed and journal.instrument_type == InstrumentType.equity_us:
+            fx_values = compute_us_equity_fx_pnl(
+                buy_price=journal.entry_price or Decimal("0"),
+                sell_price=journal.exit_price or Decimal("0"),
+                quantity=journal.quantity or Decimal("0"),
+                buy_fx_rate=journal.buy_fx_rate,
+                sell_fx_rate=journal.sell_fx_rate,
+            )
+            if fx_values:
+                journal.security_pnl_usd = fx_values["security_pnl_usd"]
+                journal.security_pnl_krw = fx_values["security_pnl_krw"]
+                journal.fx_pnl_krw = fx_values["fx_pnl_krw"]
+                journal.total_pnl_krw = fx_values["total_pnl_krw"]
+
+        await db.commit()
+        return {"success": True, "journal_id": journal.id}
