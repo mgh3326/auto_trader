@@ -12,6 +12,8 @@ from pydantic import SecretStr
 from app.services.brokers.toss import rate_limiter as rate_limiter_module
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.client import TossReadClient
+from app.services.brokers.toss.errors import TossApiResponseError
+
 
 
 @dataclass
@@ -205,6 +207,118 @@ async def test_get_order_retries_once_after_invalid_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_order_retries_once_after_403_non_json_with_reissued_token() -> None:
+    calls = 0
+    token_calls: list[bool] = []
+    failed_tokens: list[str | None] = []
+    seen_authorizations: list[str] = []
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            token_calls.append(force_reissue)
+            failed_tokens.append(failed_token)
+            return "token-2" if force_reissue else "token-1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        seen_authorizations.append(request.headers["Authorization"])
+        if calls == 1:
+            return httpx.Response(
+                403,
+                text="<html><body>Forbidden stale token</body></html>",
+                headers={"cf-ray": "ray-403"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=_json(
+                {
+                    "orderId": "ord-403",
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "timeInForce": "DAY",
+                    "status": "FILLED",
+                    "price": "190",
+                    "quantity": "1",
+                    "orderAmount": None,
+                    "currency": "USD",
+                    "orderedAt": "2026-06-15T00:00:00Z",
+                    "canceledAt": None,
+                    "execution": {"filledQuantity": "1"},
+                }
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        order = await client.get_order("ord-403")
+    finally:
+        await client.aclose()
+
+    assert order.order_id == "ord-403"
+    assert calls == 2
+    assert token_calls == [False, True]
+    assert failed_tokens == [None, "token-1"]
+    assert seen_authorizations == ["Bearer token-1", "Bearer token-2"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_does_not_retry_403_non_json_for_mutation() -> None:
+    calls = 0
+    token_calls: list[bool] = []
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            token_calls.append(force_reissue)
+            return "token-2" if force_reissue else "token-1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            403,
+            text="<html><body>Forbidden mutation</body></html>",
+            headers={"cf-ray": "ray-post-403"},
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=999,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(TossApiResponseError) as exc_info:
+            await client.place_order(
+                {
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "quantity": "1",
+                    "price": "150.0",
+                    "clientOrderId": "cid-post-403",
+                }
+            )
+    finally:
+        await client.aclose()
+
+    assert calls == 1
+    assert token_calls == [False]
+    assert "status=403 code='non-json-response'" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
     calls = 0
     sleeps: list[float] = []
@@ -258,6 +372,76 @@ async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
     assert calls == 2
     assert sleeps == [2.0]
     assert prices[0].last_price == Decimal("190.12")
+
+
+@pytest.mark.asyncio
+async def test_get_order_429_non_json_backs_off_without_token_reissue(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+    token_calls: list[bool] = []
+    seen_authorizations: list[str] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            token_calls.append(force_reissue)
+            return "token-2" if force_reissue else "token-1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        seen_authorizations.append(request.headers["Authorization"])
+        if calls == 1:
+            return httpx.Response(
+                429,
+                text="<html><body>Too Many Requests</body></html>",
+                headers={"Retry-After": "2"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=_json(
+                {
+                    "orderId": "ord-rate",
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "timeInForce": "DAY",
+                    "status": "PENDING",
+                    "price": "190",
+                    "quantity": "1",
+                    "orderAmount": None,
+                    "currency": "USD",
+                    "orderedAt": "2026-06-15T00:00:00Z",
+                    "canceledAt": None,
+                    "execution": {"filledQuantity": "0"},
+                }
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        order = await client.get_order("ord-rate")
+    finally:
+        await client.aclose()
+
+    assert order.order_id == "ord-rate"
+    assert calls == 2
+    assert sleeps == [2.0]
+    assert token_calls == [False]
+    assert seen_authorizations == ["Bearer token-1", "Bearer token-1"]
+
 
 
 @pytest.mark.asyncio

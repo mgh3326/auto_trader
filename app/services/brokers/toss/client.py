@@ -36,6 +36,17 @@ from app.services.brokers.toss.rate_limiter import (
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
 
 _TOKEN_CODES = {"invalid-token", "expired-token"}
+_GET_REISSUABLE_NON_JSON_STATUSES = {403}
+
+
+def _should_retry_get_non_json_auth_error(
+    method: str, exc: TossApiResponseError
+) -> bool:
+    return (
+        method.upper() == "GET"
+        and exc.status_code in _GET_REISSUABLE_NON_JSON_STATUSES
+        and exc.envelope.code == "non-json-response"
+    )
 
 
 class TossReadClient:
@@ -99,7 +110,9 @@ class TossReadClient:
         try:
             return parse_toss_response(response)
         except TossApiResponseError as exc:
-            if exc.envelope.code in _TOKEN_CODES:
+            if exc.envelope.code in _TOKEN_CODES or _should_retry_get_non_json_auth_error(
+                method, exc
+            ):
                 token = await self._token_manager.get_access_token(
                     force_reissue=True, failed_token=token
                 )
