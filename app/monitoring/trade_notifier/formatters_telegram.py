@@ -22,6 +22,11 @@ from app.services.fill_notification import (
 from .types import DECISION_EMOJI, DECISION_TEXT
 
 
+def _title_label_tg(display_name: str, symbol: str) -> str:
+    """ROB-571: 이름==심볼이면 중복 제거(텔레그램 이스케이프)."""
+    return symbol if display_name == symbol else f"{display_name} \\({symbol}\\)"
+
+
 def format_buy_notification_telegram(
     symbol: str,
     korean_name: str,
@@ -356,7 +361,7 @@ def format_fill_notification_telegram(
         price_str += f" ({diff_pct:+.2f}%)"
 
     lines = [
-        f"*{side_emoji} {fill_label} · {display_name} \\({order.symbol}\\)*",
+        f"*{side_emoji} {fill_label} · {_title_label_tg(display_name, order.symbol)}*",
         "",
         f"*구분:* {side_text} {fill_label}",
         f"*체결가:* {price_str}",
@@ -409,7 +414,7 @@ def format_investment_watch_trigger_telegram(
     }.get(payload.outcome, payload.outcome)
 
     lines = [
-        f"*🔔 워치 트리거 · {display_name} \\({payload.symbol}\\)*",
+        f"*🔔 워치 트리거 · {_title_label_tg(display_name, payload.symbol)}*",
         "",
         f"*조건:* {payload.metric} {payload.operator} {payload.threshold}",
         f"*현재값:* {payload.current_value if payload.current_value is not None else '-'}",

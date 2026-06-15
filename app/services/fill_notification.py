@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.core.kr_symbols import KR_SYMBOLS
+from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +462,28 @@ def resolve_symbol_display_name(market_type: str | None, symbol: str) -> str:
 def resolve_fill_display_name(order: FillOrder) -> str:
     """Delegate to resolve_symbol_display_name using order properties."""
     return resolve_symbol_display_name(order.market_type, order.symbol)
+
+
+async def resolve_display_name_db(market_type: str | None, symbol: str) -> str:
+    """DB(kr_symbol_universe) 기반 KR 종목명 해석 (ROB-571).
+
+    KR 코드는 전체 유니버스에서 이름을 조회(011200→HMM). 조회 실패/이름 없음/
+    타 시장은 sync ``resolve_symbol_display_name``으로 fail-open(US=심볼, crypto=split).
+    """
+    if market_type == "kr":
+        try:
+            names = await get_kr_names_by_symbols([symbol])
+            name = names.get(symbol)
+            if name:
+                return name
+        except Exception:
+            logger.debug(
+                "DB display-name resolution failed: %s/%s",
+                market_type,
+                symbol,
+                exc_info=True,
+            )
+    return resolve_symbol_display_name(market_type, symbol)
 
 
 _MIN_NOTIFY_AMOUNT: dict[str, float] = {"KRW": 50_000.0, "USD": 50.0}
