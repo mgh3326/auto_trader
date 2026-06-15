@@ -5,6 +5,8 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from app.core.config import settings
+from app.core.portfolio_links import build_position_detail_url
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
 from app.mcp_server.tooling.order_journal import (
@@ -15,7 +17,12 @@ from app.mcp_server.tooling.order_journal import (
 )
 from app.mcp_server.tooling.toss_live_evidence import TossEvidenceAdapter
 from app.models.review import TossLiveOrderLedger
+from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.toss.errors import TossApiResponseError
+from app.services.fill_notification import (
+    is_fill_notifiable,
+    normalize_toss_fill,
+)
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
 logger = logging.getLogger(__name__)
@@ -153,6 +160,48 @@ async def record_toss_replacement_order(
             replaced_by_order_id=replacement_order_id,
         )
     return {"ledger_id": row.id, "broker_status": row.status}
+
+
+async def _notify_toss_fill(
+    row: TossLiveOrderLedger,
+    *,
+    delta: Decimal,
+    avg_price: Decimal,
+    fill_status: str | None,
+) -> bool:
+    if not settings.toss_fill_notify_enabled:
+        return False
+
+    order = normalize_toss_fill(
+        row,
+        delta=delta,
+        avg_price=avg_price,
+        fill_status=fill_status,
+    )
+    if not is_fill_notifiable(order):
+        logger.info(
+            "toss fill notification skipped below threshold ledger_id=%s order_id=%s amount=%s currency=%s",
+            row.id,
+            row.broker_order_id,
+            order.filled_amount,
+            order.currency,
+        )
+        return False
+
+    try:
+        return await get_trade_notifier().notify_fill(
+            order,
+            enrichment=None,
+            detail_url=build_position_detail_url(row.symbol, row.market),
+        )
+    except Exception:
+        logger.warning(
+            "toss fill notification failed ledger_id=%s order_id=%s",
+            row.id,
+            row.broker_order_id,
+            exc_info=True,
+        )
+        return False
 
 
 async def _reconcile_one_toss_row(
@@ -381,6 +430,12 @@ async def _reconcile_one_toss_row(
     base["action"] = "booked"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id
+    base["fill_notified"] = await _notify_toss_fill(
+        row,
+        delta=delta,
+        avg_price=avg_price,
+        fill_status="partial" if evidence.verdict == "partial" else "filled",
+    )
     return base
 
 
