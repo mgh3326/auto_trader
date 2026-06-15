@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo
+
+from app.services.market_events.session_calendar import previous_trading_session
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +16,29 @@ from app.services.investor_flow_snapshots.repository import (
 
 def _normalize_symbol(symbol: str) -> str:
     return symbol.strip().upper()
+
+
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def _resolve_investor_flow_as_of(
+    as_of: dt.date | None = None, *, now: dt.datetime | None = None
+) -> dt.date:
+    """Effective KR investor-flow snapshot date.
+
+    Naver daily investor-flow rows are loaded next morning for the previous KR
+    session. When callers do not pass an explicit effective date, compare stored
+    snapshots against the previous confirmed XKRX trading session, not calendar
+    today. This removes weekend and holiday false stale banners.
+    """
+    if as_of is not None:
+        return as_of
+    moment = now or dt.datetime.now(dt.UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.UTC)
+    today_kst = moment.astimezone(_KST).date()
+    previous = previous_trading_session("kr", today_kst)
+    return previous or today_kst
 
 
 def _state_for_snapshot(
@@ -86,7 +112,7 @@ async def latest_items_for_symbols(
     normalized_market = market.strip().lower()
     if normalized_market != "kr":
         raise ValueError("investor_flow only supports market=kr")
-    today = as_of or dt.date.today()
+    today = _resolve_investor_flow_as_of(as_of)
     normalized_symbols = [
         _normalize_symbol(symbol) for symbol in symbols if symbol.strip()
     ]
@@ -113,7 +139,7 @@ async def build_investor_flow_cards(
     normalized_market = market.strip().lower()
     if normalized_market != "kr":
         raise ValueError("investor_flow only supports market=kr")
-    today = as_of or dt.date.today()
+    today = _resolve_investor_flow_as_of(as_of)
     normalized_symbols = [
         _normalize_symbol(symbol) for symbol in symbols if symbol.strip()
     ]
