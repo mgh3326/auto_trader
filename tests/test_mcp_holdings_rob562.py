@@ -1,10 +1,9 @@
 from __future__ import annotations
-from decimal import Decimal
-import pytest
-from unittest.mock import AsyncMock
 
-from app.mcp_server.tooling import portfolio_holdings
+import pytest
+
 from app.core.config import settings
+from app.mcp_server.tooling import portfolio_holdings
 
 
 def _toss_api_position(symbol: str = "BRK.B") -> dict:
@@ -78,15 +77,27 @@ def test_position_output_manual_toss_routable_matches_account_group(monkeypatch)
     }
 
     out = position_to_output(
-        {**base, "account": "toss", "broker": "toss", "source": "manual",
-         "symbol": "035720", "name": "카카오"}
+        {
+            **base,
+            "account": "toss",
+            "broker": "toss",
+            "source": "manual",
+            "symbol": "035720",
+            "name": "카카오",
+        }
     )
     assert out["order_routable"] is True
 
     # samsung manual stays reference-only at per-position level too
     out_samsung = position_to_output(
-        {**base, "account": "samsung", "broker": "samsung", "source": "manual",
-         "symbol": "005930", "name": "삼성전자"}
+        {
+            **base,
+            "account": "samsung",
+            "broker": "samsung",
+            "source": "manual",
+            "symbol": "005930",
+            "name": "삼성전자",
+        }
     )
     assert out_samsung["order_routable"] is False
 
