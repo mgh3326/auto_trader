@@ -367,6 +367,30 @@ async def _cleanup_db(db_session):
     await db_session.commit()
 
 
+async def _isolated_snapshot_date(
+    db_session,
+    *,
+    market: str = "kr",
+    floor: dt.date = dt.date(2026, 6, 2),
+) -> dt.date:
+    """Use a partition newer than any persistent test DB residue."""
+    import sqlalchemy as sa
+
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    max_date = (
+        await db_session.execute(
+            sa.select(sa.func.max(MarketValuationSnapshot.snapshot_date)).where(
+                MarketValuationSnapshot.market == market
+            )
+        )
+    ).scalar_one_or_none()
+    candidate = max(max_date or floor, floor) + dt.timedelta(days=7)
+    while candidate.weekday() >= 5:
+        candidate += dt.timedelta(days=1)
+    return candidate
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
@@ -379,7 +403,7 @@ async def test_loader_valuation_filter_max_per_excludes_high_per(db_session):
         load_fundamentals_preset_from_snapshots,
     )
 
-    vd = dt.date(2026, 6, 2)
+    vd = await _isolated_snapshot_date(db_session)
     await db_session.execute(
         sa.delete(MarketValuationSnapshot).where(
             MarketValuationSnapshot.symbol.in_(["906401", "906402"])
@@ -516,7 +540,7 @@ async def test_loader_valuation_filter_dividend_yield_excludes_null(db_session):
         load_fundamentals_preset_from_snapshots,
     )
 
-    vd = dt.date(2026, 6, 2)
+    vd = await _isolated_snapshot_date(db_session)
     await db_session.execute(
         sa.delete(MarketValuationSnapshot).where(
             MarketValuationSnapshot.symbol.in_(["906411", "906412"])
@@ -916,7 +940,7 @@ async def test_loader_valuation_filter_max_pbr_excludes_high_pbr(db_session):
         load_fundamentals_preset_from_snapshots,
     )
 
-    vd = dt.date(2026, 6, 2)
+    vd = await _isolated_snapshot_date(db_session)
     await db_session.execute(
         sa.delete(MarketValuationSnapshot).where(
             MarketValuationSnapshot.symbol.in_(["906421", "906422"])
@@ -978,7 +1002,7 @@ async def test_loader_dedups_symbol_across_multiple_sources(db_session):
         load_fundamentals_preset_from_snapshots,
     )
 
-    vd = dt.date(2026, 6, 2)
+    vd = await _isolated_snapshot_date(db_session)
     await db_session.execute(
         sa.delete(MarketValuationSnapshot).where(
             MarketValuationSnapshot.symbol == "906431"
@@ -1040,7 +1064,7 @@ async def test_loader_end_to_end_includes_and_excludes_with_fundamentals(db_sess
         load_fundamentals_preset_from_snapshots,
     )
 
-    vd = dt.date(2026, 6, 2)
+    vd = await _isolated_snapshot_date(db_session)
     syms = ["906441", "906442"]
     await db_session.execute(
         sa.delete(FinancialFundamentalsSnapshot).where(
@@ -1358,7 +1382,7 @@ async def test_kr_dividend_yield_not_double_scaled(db_session):
     )
 
     sym = "906471"
-    vd = dt.date(2026, 6, 4)
+    vd = await _isolated_snapshot_date(db_session)
     db_session.add(
         MarketValuationSnapshot(
             market="kr",

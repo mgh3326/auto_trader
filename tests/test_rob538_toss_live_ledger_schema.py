@@ -41,6 +41,9 @@ def test_toss_live_order_ledger_model_shape():
         "trade_id",
         "journal_id",
         "reconciled_at",
+        "requires_manual_review",
+        "manual_review_reason",
+        "last_reconcile_error",
     ):
         assert col in cols, f"missing column {col}"
 

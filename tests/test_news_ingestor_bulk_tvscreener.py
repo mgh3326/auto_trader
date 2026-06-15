@@ -169,7 +169,18 @@ class TestTvscreenerServiceContract:
                     .scalars()
                     .all()
                 )
-                run = (await db.execute(select(NewsIngestionRun))).scalars().first()
+                run = (
+                    (
+                        await db.execute(
+                            select(NewsIngestionRun).where(
+                                NewsIngestionRun.run_uuid
+                                == payload["ingestion_run"]["run_uuid"]
+                            )
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
                 return articles, relations, run
 
         import asyncio

@@ -300,3 +300,44 @@ async def test_record_send_conflicting_broker_id_raises_idempotency_conflict(
     assert excinfo.value.client_order_id == "cid-anomaly"
     assert excinfo.value.existing_broker_order_id == "ord-first"
     assert excinfo.value.new_broker_order_id == "ord-second"
+
+
+async def test_mark_manual_review_sets_operator_visible_error(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+    row = await svc.record_send(
+        **_place_kwargs(
+            client_order_id="cid-manual-review",
+            broker_order_id="ord-manual-review",
+        )
+    )
+
+    await svc.mark_manual_review(
+        ledger_id=row.id,
+        reason="reconcile failed; operator must verify Toss order detail",
+        error={
+            "type": "TossApiResponseError",
+            "status_code": 403,
+            "code": "non-json-response",
+            "request_id": "ray-403",
+            "message": "<html>Forbidden</html>",
+        },
+        broker_status=None,
+    )
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed is not None
+    assert refreshed.status == "anomaly"
+    assert refreshed.requires_manual_review is True
+    assert (
+        refreshed.manual_review_reason
+        == "reconcile failed; operator must verify Toss order detail"
+    )
+    assert refreshed.last_reconcile_error == {
+        "type": "TossApiResponseError",
+        "status_code": 403,
+        "code": "non-json-response",
+        "request_id": "ray-403",
+        "message": "<html>Forbidden</html>",
+    }
+    assert refreshed.broker_status is None
+    assert refreshed.reconciled_at is not None

@@ -52,6 +52,46 @@ single-order detail resolves. If Toss returns `CANCEL_REJECTED` or
 `REPLACE_REJECTED`, reconcile marks the replacement operation row rejected and
 clears the original row's replacement link so the original order remains open.
 
+## 403 / non-JSON Manual Review
+
+`toss_reconcile_orders` fetches broker evidence with `GET /orders/{orderId}`.
+When a GET order lookup returns `403` with a non-JSON body, the Toss client
+force-reissues the OAuth token once and retries the same GET. If the retry still
+fails, reconcile fails closed:
+
+- the tool response returns `verdict="anomaly"`, `action="requires_manual_review"`,
+  and structured `error_details`;
+- `review.toss_live_order_ledger.status` becomes `anomaly`;
+- `requires_manual_review=true`, `manual_review_reason`, and
+  `last_reconcile_error` are persisted for operator lookup.
+
+Mutation POSTs (`place`, `modify`, `cancel`) do not use this new 403 retry path.
+They must not be repeated implicitly because a retry can create duplicate live
+order side effects. Rate-limit (`429`) responses continue to use backoff and do
+not trigger token reissue loops.
+
+## Manual Review Query
+
+```sql
+SELECT
+    id,
+    market,
+    symbol,
+    broker_order_id,
+    operation_kind,
+    status,
+    manual_review_reason,
+    last_reconcile_error,
+    updated_at
+FROM review.toss_live_order_ledger
+WHERE requires_manual_review IS TRUE
+ORDER BY updated_at DESC, id DESC;
+```
+
+For each row, verify the Toss broker UI/API order detail before booking a fill,
+closing the row, or resetting it for another reconcile attempt. Do not infer a
+cancel or fill from a missing/failed order-detail response.
+
 ## Operational Hold
 
 Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until ROB-539 live smoke and stronger-model/CTO review clear this path. This feature changes live-order bookkeeping and must stay under `hold_for_final_review` until cleared.

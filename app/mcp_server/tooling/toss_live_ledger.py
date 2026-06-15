@@ -14,9 +14,34 @@ from app.mcp_server.tooling.order_journal import (
 )
 from app.mcp_server.tooling.toss_live_evidence import TossEvidenceAdapter
 from app.models.review import TossLiveOrderLedger
+from app.services.brokers.toss.errors import TossApiResponseError
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
 logger = logging.getLogger(__name__)
+
+
+def _reconcile_error_payload(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, TossApiResponseError):
+        return {
+            "type": exc.__class__.__name__,
+            "status_code": exc.status_code,
+            "code": exc.envelope.code,
+            "request_id": exc.envelope.request_id,
+            "message": exc.envelope.message,
+            "data": exc.envelope.data,
+        }
+    return {
+        "type": exc.__class__.__name__,
+        "message": str(exc) or exc.__class__.__name__,
+    }
+
+
+def _manual_review_reason(row: TossLiveOrderLedger, exc: Exception) -> str:
+    return (
+        "reconcile failed; operator must verify Toss order detail "
+        f"before booking or closing ledger_id={row.id} order_id={row.broker_order_id}: "
+        f"{str(exc) or exc.__class__.__name__}"
+    )
 
 
 async def record_toss_place_order(
@@ -319,11 +344,28 @@ async def toss_reconcile_orders_impl(
             logger.warning(
                 "toss reconcile failed order_id=%s: %s", row.broker_order_id, exc
             )
+            error_details = _reconcile_error_payload(exc)
+            reason = _manual_review_reason(row, exc)
+            if not dry_run:
+                async with _order_session_factory()() as db:
+                    await TossLiveOrderLedgerService(db).mark_manual_review(
+                        ledger_id=row.id,
+                        reason=reason,
+                        error=error_details,
+                    )
             outcome = {
                 "ledger_id": row.id,
                 "order_id": row.broker_order_id,
+                "client_order_id": row.client_order_id,
+                "market": row.market,
+                "symbol": row.symbol,
+                "operation_kind": row.operation_kind,
                 "verdict": "anomaly",
+                "action": "requires_manual_review",
+                "requires_manual_review": True,
+                "manual_review_reason": reason,
                 "error": str(exc) or exc.__class__.__name__,
+                "error_details": error_details,
             }
         reconciled.append(outcome)
         verdict = str(outcome.get("verdict", "anomaly"))

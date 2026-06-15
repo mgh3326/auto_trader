@@ -253,3 +253,83 @@ async def test_rejected_replacement_reopens_original_order(db_session):
     assert refreshed_original.status == "accepted"
     assert refreshed_original.replaced_by_order_id is None
     assert refreshed_replacement.status == "replace_rejected"
+
+
+async def test_reconcile_impl_reports_manual_review_on_error_without_mutating_dry_run(
+    db_session,
+):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.brokers.toss.errors import TossApiResponseError, TossErrorEnvelope
+
+    row = await _accepted(db_session)
+    err = TossApiResponseError(
+        TossErrorEnvelope(
+            request_id="ray-dry",
+            code="non-json-response",
+            message="<html>Forbidden dry-run</html>",
+            data=None,
+        ),
+        status_code=403,
+    )
+
+    with patch.object(mod, "_reconcile_one_toss_row", new=AsyncMock(side_effect=err)):
+        out = await mod.toss_reconcile_orders_impl(dry_run=True)
+
+    assert out["counts"] == {"anomaly": 1}
+    assert out["reconciled"][0]["requires_manual_review"] is True
+    assert out["reconciled"][0]["manual_review_reason"].startswith(
+        "reconcile failed; operator must verify Toss order detail"
+    )
+    assert out["reconciled"][0]["error_details"] == {
+        "type": "TossApiResponseError",
+        "status_code": 403,
+        "code": "non-json-response",
+        "request_id": "ray-dry",
+        "message": "<html>Forbidden dry-run</html>",
+        "data": None,
+    }
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "accepted"
+    assert refreshed.requires_manual_review is False
+    assert refreshed.last_reconcile_error is None
+
+
+async def test_reconcile_impl_marks_manual_review_on_error_when_not_dry_run(
+    db_session,
+):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.brokers.toss.errors import TossApiResponseError, TossErrorEnvelope
+
+    row = await _accepted(db_session)
+    err = TossApiResponseError(
+        TossErrorEnvelope(
+            request_id="ray-apply",
+            code="non-json-response",
+            message="<html>Forbidden apply</html>",
+            data=None,
+        ),
+        status_code=403,
+    )
+
+    with patch.object(mod, "_reconcile_one_toss_row", new=AsyncMock(side_effect=err)):
+        out = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    assert out["counts"] == {"anomaly": 1}
+    assert out["reconciled"][0]["action"] == "requires_manual_review"
+    assert out["reconciled"][0]["requires_manual_review"] is True
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "anomaly"
+    assert refreshed.requires_manual_review is True
+    assert refreshed.manual_review_reason.startswith(
+        "reconcile failed; operator must verify Toss order detail"
+    )
+    assert refreshed.last_reconcile_error == {
+        "type": "TossApiResponseError",
+        "status_code": 403,
+        "code": "non-json-response",
+        "request_id": "ray-apply",
+        "message": "<html>Forbidden apply</html>",
+        "data": None,
+    }
