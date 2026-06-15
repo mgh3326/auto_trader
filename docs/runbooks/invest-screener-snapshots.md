@@ -427,4 +427,3 @@ INVESTOR_FLOW_SNAPSHOTS_COMMIT_ENABLED=false
 ```
 
 This stops cron registration and DB writes. Existing rows remain read-only.
-
