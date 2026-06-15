@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { fetchCurrentOrders } from "../../api/currentOrders";
 import { Pill } from "../../ds";
+import { stockDetailPath } from "../../stockDetailPath";
 import {
   LINKED_ORDER_STATUS_LABELS,
   LINKED_ORDER_STATUS_TONES,
@@ -45,6 +47,15 @@ function formatMoney(value: string | number | null | undefined, currency: string
   }
   if (currency === "KRW") return `₩${Math.round(n).toLocaleString("ko-KR")}`;
   return `${n.toLocaleString("ko-KR")} ${currency ?? ""}`.trim();
+}
+
+function formatOrderPrice(row: CurrentOrderRow): string {
+  if (row.price != null && row.price !== "") return formatMoney(row.price, row.currency);
+  const orderType = row.order_type?.trim();
+  if (!orderType) return "—";
+  const normalized = orderType.toLowerCase();
+  if (normalized === "market" || orderType.includes("시장")) return "시장가";
+  return orderType;
 }
 
 function formatQty(value: string | number | null | undefined, market: string): string {
@@ -211,45 +222,61 @@ export function CurrentOrdersPanel({ compact = false }: { compact?: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
-                <tr key={`${row.broker}:${row.market}:${row.order_no}`}>
-                  <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)" }}>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                      <Pill tone={LINKED_ORDER_STATUS_TONES[row.status] ?? "paper"} size="sm">
-                        {LINKED_ORDER_STATUS_LABELS[row.status] ?? row.status}
-                      </Pill>
-                      <span style={{ fontSize: 13, fontWeight: 800 }}>{sideLabel(row.side)}</span>
-                      {compact && (
-                        <Pill tone={row.broker} size="sm">
-                          {BROKER_LABEL[row.broker] ?? row.broker}
-                        </Pill>
-                      )}
-                    </div>
-                    <div style={{ marginTop: 3, fontSize: 11, color: "var(--fg-3)" }}>
-                      {formatDateTime(row.ordered_at)} · order {row.order_no.slice(0, 8)}
-                    </div>
-                  </td>
-                  <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)" }}>
-                    <div style={{ fontSize: 13, fontWeight: 800 }}>{symbolName(row)}</div>
+              {rows.map((row) => {
+                const href = stockDetailPath(row.market, row.symbol);
+                const name = symbolName(row);
+                const symbolBlock = (
+                  <>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>{name}</div>
                     <div style={{ marginTop: 2, fontSize: 11, color: "var(--fg-3)" }}>
                       {row.symbol} · {MARKET_LABEL[row.market]}{row.exchange ? ` · ${row.exchange}` : ""}
                     </div>
-                  </td>
-                  {!compact && (
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13 }}>
-                      {formatQty(row.remaining_qty, row.market)} / {formatQty(row.quantity, row.market)}
+                  </>
+                );
+
+                return (
+                  <tr key={`${row.broker}:${row.market}:${row.order_no}`}>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)" }}>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                        <Pill tone={LINKED_ORDER_STATUS_TONES[row.status] ?? "paper"} size="sm">
+                          {LINKED_ORDER_STATUS_LABELS[row.status] ?? row.status}
+                        </Pill>
+                        <span style={{ fontSize: 13, fontWeight: 800 }}>{sideLabel(row.side)}</span>
+                        {compact && (
+                          <Pill tone={row.broker} size="sm">
+                            {BROKER_LABEL[row.broker] ?? row.broker}
+                          </Pill>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 3, fontSize: 11, color: "var(--fg-3)" }}>
+                        {formatDateTime(row.ordered_at)} · order {row.order_no.slice(0, 8)}
+                      </div>
                     </td>
-                  )}
-                  <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, textAlign: "right", fontFeatureSettings: '"tnum"' }}>
-                    {formatMoney(row.price, row.currency)}
-                  </td>
-                  {!compact && (
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-3)" }}>
-                      {BROKER_LABEL[row.broker] ?? row.broker}
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)" }}>
+                      {href ? (
+                        <Link to={href} style={{ color: "inherit", textDecoration: "none" }}>
+                          {symbolBlock}
+                        </Link>
+                      ) : (
+                        symbolBlock
+                      )}
                     </td>
-                  )}
-                </tr>
-              ))}
+                    {!compact && (
+                      <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13 }}>
+                        {formatQty(row.remaining_qty, row.market)} / {formatQty(row.quantity, row.market)}
+                      </td>
+                    )}
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, textAlign: "right", fontFeatureSettings: '"tnum"' }}>
+                      {formatOrderPrice(row)}
+                    </td>
+                    {!compact && (
+                      <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-3)" }}>
+                        {BROKER_LABEL[row.broker] ?? row.broker}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--fg-3)" }}>

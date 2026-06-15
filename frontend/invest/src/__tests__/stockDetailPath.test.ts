@@ -18,3 +18,9 @@ test("stock detail route symbol supports lowercase route market keys for recent 
   expect(stockDetailRouteSymbol("crypto", "btc-krw")).toBe("KRW-BTC");
   expect(stockDetailRouteSymbol("us", "BRK-B")).toBe("BRK-B");
 });
+
+test("stock detail path supports lowercase route market keys", () => {
+  expect(stockDetailPath("kr", "005930")).toBe("/stocks/kr/005930");
+  expect(stockDetailPath("us", "BRK-B")).toBe("/stocks/us/BRK-B");
+  expect(stockDetailPath("crypto", "BTC")).toBe("/stocks/crypto/KRW-BTC");
+});
