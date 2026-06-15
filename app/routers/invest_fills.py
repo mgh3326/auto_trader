@@ -13,6 +13,7 @@ from app.routers.dependencies import get_authenticated_user
 from app.schemas.execution_ledger import (
     ExecutionLedgerFreshnessReport,
     ExecutionLedgerListResponse,
+    Side,
 )
 from app.services.execution_ledger.query_service import ExecutionLedgerQueryService
 
@@ -26,8 +27,13 @@ async def recent_fills(
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     market: Market | None = None,
+    side: Side | None = None,
 ) -> ExecutionLedgerListResponse:
-    return await ExecutionLedgerQueryService(db).list_recent(limit=limit, market=market)
+    return await ExecutionLedgerQueryService(db).list_recent(
+        limit=limit,
+        market=market,
+        side=side,
+    )
 
 
 @router.get("/by-symbol/{symbol}")

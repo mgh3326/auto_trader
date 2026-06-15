@@ -318,7 +318,7 @@ class ExecutionLedgerQueryService:
         return annotated
 
     async def list_recent(
-        self, *, limit: int = 50, market: str | None = None
+        self, *, limit: int = 50, market: str | None = None, side: str | None = None
     ) -> ExecutionLedgerListResponse:
         # Over-fetch before de-dup so superseded websocket rows do not consume the
         # page budget (otherwise a dup-heavy page returns fewer than `limit` rows).
@@ -329,6 +329,8 @@ class ExecutionLedgerQueryService:
             .limit(limit * 3)
         )
         stmt = ExecutionLedgerRepository.apply_market_filter(stmt, market)
+        if side is not None:
+            stmt = stmt.where(ExecutionLedger.side == side)
         rows = (await self.db.execute(stmt)).scalars().all()
         items = [ExecutionLedgerRead.model_validate(row) for row in rows]
         items = _supersede_provisional_fills(items)[:limit]
