@@ -11,6 +11,8 @@ from app.mcp_server.tooling.pending_orders_snapshot import (
     collect_pending_orders_snapshot,
 )
 from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
+from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
+from app.services.account_routing import compact_cost_profile
 from app.schemas.investment_reports import (
     ActiveWatchesListResponse,
     InvestmentWatchAlertResponse,
@@ -107,7 +109,12 @@ def _flatten_positions(holdings: dict[str, Any]) -> list[dict[str, Any]]:
     return positions
 
 
-def _account_routability(holdings: dict[str, Any]) -> list[dict[str, Any]]:
+def _account_routability(
+    holdings: dict[str, Any],
+    *,
+    market: str,
+    account_costs: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     """Compact per-account routability summary for the briefing (ROB-541).
 
     Surfaces ``account_mode`` (ROB-357 provenance label) and the authoritative
@@ -116,15 +123,22 @@ def _account_routability(holdings: dict[str, Any]) -> list[dict[str, Any]]:
     """
     accounts: list[dict[str, Any]] = []
     for account in holdings.get("accounts") or []:
-        accounts.append(
-            {
-                "account": account.get("account"),
-                "account_name": account.get("account_name"),
-                "account_mode": account.get("account_mode"),
-                "order_routable": account.get("order_routable"),
-                "position_count": len(account.get("positions") or []),
-            }
-        )
+        row = {
+            "account": account.get("account"),
+            "account_name": account.get("account_name"),
+            "account_mode": account.get("account_mode"),
+            "order_routable": account.get("order_routable"),
+            "position_count": len(account.get("positions") or []),
+        }
+        if market in {"kr", "us"}:
+            profile = compact_cost_profile(
+                str(account.get("account") or ""),
+                market,  # type: ignore[arg-type]
+                account_costs,
+            )
+            if profile is not None:
+                row["cost_profile"] = profile
+        accounts.append(row)
     return accounts
 
 
@@ -301,6 +315,14 @@ async def get_operating_briefing_impl(
         }
 
     active_watches_unavailable_reason = active_watches.get("unavailable_reason")
+    try:
+        account_costs = await get_account_costs_setting()
+    except Exception as exc:  # noqa: BLE001
+        account_costs = None
+        holdings.setdefault("errors", []).append(
+            {"source": "account_costs", "error": str(exc)}
+        )
+
     response = {
         "success": True,
         "market": market,
@@ -329,7 +351,11 @@ async def get_operating_briefing_impl(
             "top_movers": _top_movers(holdings),
             # ROB-541 — per-account routable/account_mode so a reference-only
             # (toss/manual) holding is distinguishable from a kis_live-sellable one.
-            "accounts": _account_routability(holdings),
+            "accounts": _account_routability(
+                holdings,
+                market=market,
+                account_costs=account_costs,
+            ),
             "errors": holdings.get("errors") or [],
         },
         "pending_orders": {
