@@ -330,6 +330,9 @@ class HermesNotificationClient:
     async def send_review_trigger(
         self, payload: ReviewTriggerPayload
     ) -> HermesDeliveryResult:
+        if settings.WATCH_NOTIFY_TRANSPORT == "python_direct":
+            return await self._render_in_process(payload)
+
         if not self._enabled:
             logger.debug(
                 "Hermes disabled — skipping review-trigger delivery: "
@@ -375,6 +378,27 @@ class HermesNotificationClient:
             http_status=response.status_code,
             reason=f"http_{response.status_code}",
         )
+
+    async def _render_in_process(
+        self, payload: ReviewTriggerPayload
+    ) -> HermesDeliveryResult:
+        """ROB-566: Prefect 수신기 대신 TradeNotifier로 직접 렌더. 결과를 3-way로 매핑."""
+        from app.monitoring.trade_notifier import get_trade_notifier
+
+        notifier = get_trade_notifier()
+        try:
+            sent = await notifier.notify_investment_watch(payload)
+        except Exception as exc:
+            logger.warning(
+                "watch in-process render raised: event_uuid=%s error=%s",
+                payload.event_uuid,
+                exc,
+            )
+            return HermesDeliveryResult(status="failed", reason="render_exception")
+        if sent:
+            return HermesDeliveryResult(status="success")
+        # webhook 미설정 등으로 dispatch가 False면 skipped(=alert active 유지, 재시도)
+        return HermesDeliveryResult(status="skipped", reason="discord_not_configured")
 
     async def close(self) -> None:
         await self._client.aclose()

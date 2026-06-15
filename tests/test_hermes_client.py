@@ -365,3 +365,60 @@ def test_payload_accepts_planned_action_and_trigger_checklist() -> None:
     assert payload.planned_action is not None
     assert payload.planned_action.qty == Decimal("1")
     assert payload.trigger_checklist == ["quote ok", "thesis ok"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_python_direct_success_maps_to_success(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
+    fake = AsyncMock()
+    fake.notify_investment_watch = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
+    )
+    client = HermesNotificationClient(enabled=True)
+    res = await client.send_review_trigger(_base_payload())
+    assert res.status == "success"
+    fake.notify_investment_watch.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_python_direct_failure_maps_to_skipped(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
+    fake = AsyncMock()
+    fake.notify_investment_watch = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
+    )
+    res = await HermesNotificationClient(enabled=True).send_review_trigger(
+        _base_payload()
+    )
+    assert res.status == "skipped"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_python_direct_exception_maps_to_failed(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
+    fake = AsyncMock()
+    fake.notify_investment_watch = AsyncMock(side_effect=RuntimeError("dispatch error"))
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
+    )
+    res = await HermesNotificationClient(enabled=True).send_review_trigger(
+        _base_payload()
+    )
+    assert res.status == "failed"

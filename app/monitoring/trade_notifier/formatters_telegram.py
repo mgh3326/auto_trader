@@ -6,6 +6,10 @@ Each function is pure (no I/O) and returns a formatted string.
 from __future__ import annotations
 
 import html
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.hermes_client import ReviewTriggerPayload
 
 from app.core.timezone import format_datetime
 from app.services.fill_notification import (
@@ -389,5 +393,72 @@ def format_fill_notification_telegram(
     lines.append(f"🕒 {format_datetime()}")
     if detail_url:
         lines.append(f"[종목 상세 보기]({detail_url})")
+
+    return "\n".join(lines)
+
+
+def format_investment_watch_trigger_telegram(
+    payload: ReviewTriggerPayload, *, display_name: str, base_url: str
+) -> str:
+    """Format watch trigger notification as Telegram markdown message."""
+    outcome_kr = {
+        "notified": "알림",
+        "review_required": "검토 필요",
+        "preview_attached": "프리뷰 첨부",
+        "executed": "모의 실행",
+    }.get(payload.outcome, payload.outcome)
+
+    lines = [
+        f"*🔔 워치 트리거 · {display_name} \\({payload.symbol}\\)*",
+        "",
+        f"*조건:* {payload.metric} {payload.operator} {payload.threshold}",
+        f"*현재값:* {payload.current_value if payload.current_value is not None else '-'}",
+        f"*시장:* {payload.market}",
+        f"*구분:* {outcome_kr}",
+    ]
+
+    pg = payload.price_guidance
+    if pg is not None:
+        parts = []
+        if pg.entry_review_below_price is not None:
+            parts.append(f"진입검토 ≤ {pg.entry_review_below_price}")
+        if pg.suggested_limit_price_range is not None:
+            parts.append(
+                f"지정가 {pg.suggested_limit_price_range.low}~{pg.suggested_limit_price_range.high}"
+            )
+        if pg.max_chase_price is not None:
+            parts.append(f"최대추격 {pg.max_chase_price}")
+        if (
+            pg.invalidation is not None
+            and getattr(pg.invalidation, "price", None) is not None
+        ):
+            parts.append(f"무효화 {pg.invalidation.price}")
+        if parts:
+            lines.append("")
+            lines.append("*가격 가이드:*")
+            for part in parts:
+                lines.append(f"• {part}")
+
+    if payload.trigger_checklist:
+        lines.append("")
+        lines.append("*체크리스트:*")
+        for c in payload.trigger_checklist:
+            lines.append(f"• {c}")
+
+    desc = ""
+    if payload.operator_action_guidance is not None:
+        desc = payload.operator_action_guidance.headline
+    if desc:
+        lines.append("")
+        lines.append(desc)
+
+    lines.append("")
+    lines.append(f"🕒 {format_datetime()}")
+
+    if payload.invest_links is not None:
+        stock_url = f"{base_url}{payload.invest_links.stock_path}"
+        report_url = f"{base_url}{payload.invest_links.report_path}"
+        lines.append("")
+        lines.append(f"[종목 상세]({stock_url}) · [분석 리포트]({report_url})")
 
     return "\n".join(lines)

@@ -29,6 +29,7 @@ COLORS: dict[str, int] = {
     "summary": 0x00FFFF,
     "failure": 0xFF6600,
     "hold": 0xFFFF00,
+    "watch": 0xF1C40F,
     "default": 0x0000FF,
 }
 

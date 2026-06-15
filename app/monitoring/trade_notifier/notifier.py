@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.hermes_client import ReviewTriggerPayload
 
 import httpx
 
@@ -280,6 +284,24 @@ class TradeNotifier:
             enrichment=enrichment,
         )
         return await self._dispatch(embed, telegram_msg, order.market_type)
+
+    async def notify_investment_watch(
+        self,
+        payload: ReviewTriggerPayload,
+    ) -> bool:
+        """watch 트리거 알림 (ROB-566). Discord 우선, Telegram fallback."""
+        from app.core.config import settings as _settings
+        from app.services.fill_notification import resolve_symbol_display_name
+
+        display_name = resolve_symbol_display_name(payload.market, payload.symbol)
+        base_url = _settings.public_base_url.rstrip("/")
+        embed = fmt_discord.format_investment_watch_trigger(
+            payload, display_name=display_name, base_url=base_url
+        )
+        telegram_msg = fmt_telegram.format_investment_watch_trigger_telegram(
+            payload, display_name=display_name, base_url=base_url
+        )
+        return await self._dispatch(embed, telegram_msg, payload.market)
 
     async def notify_sell_order(
         self,
