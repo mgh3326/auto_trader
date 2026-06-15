@@ -2072,6 +2072,43 @@ class TestGetFxRateHandler:
             await fundamentals_fx_rates.handle_get_fx_rate(pair="EURKRW")
 
 
+class TestGetFxRateToolRegistration:
+    """Tests for get_fx_rate MCP registration."""
+
+    @pytest.mark.parametrize("profile", list(McpProfile))
+    def test_get_fx_rate_registered_on_all_profiles(self, profile: McpProfile):
+        tools = _build_tools(profile=profile)
+
+        assert "get_fx_rate" in tools
+
+    @pytest.mark.asyncio
+    async def test_registered_get_fx_rate_delegates_to_handler(self, monkeypatch):
+        tools = build_tools()
+
+        async def fake_details() -> UsdKrwExchangeRateQuote:
+            return UsdKrwExchangeRateQuote(
+                rate=1501.0,
+                mid_rate=1500.5,
+                source="toss",
+                basis_point=3.0,
+                rate_change_type="UP",
+            )
+
+        monkeypatch.setattr(
+            fundamentals_fx_rates,
+            "get_usd_krw_rate_details",
+            fake_details,
+        )
+
+        result = await tools["get_fx_rate"](pair="USD/KRW")
+
+        assert result["pair"] == "USDKRW"
+        assert result["default_rate"] == pytest.approx(1500.5)
+        assert result["source"] == "toss"
+        assert result["basis_point"] == pytest.approx(3.0)
+        assert result["rate_change_type"] == "UP"
+
+
 # ---------------------------------------------------------------------------
 # get_market_index Tool
 # ---------------------------------------------------------------------------
