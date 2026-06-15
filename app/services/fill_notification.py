@@ -396,6 +396,47 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
     )
 
 
+def _get_fill_source_value(source: Any, key: str, default: Any = None) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def normalize_toss_fill(
+    row: Any,
+    *,
+    delta: Decimal | float | int,
+    avg_price: Decimal | float | int,
+    fill_status: str | None = None,
+    filled_at: Any | None = None,
+) -> FillOrder:
+    """Normalize a Toss live ledger fill delta into the shared FillOrder shape."""
+    symbol = str(_get_fill_source_value(row, "symbol") or "UNKNOWN")
+    market_type = _normalize_market_type(_get_fill_source_value(row, "market"))
+    currency = _normalize_currency(
+        _get_fill_source_value(row, "currency")
+    ) or _default_currency_for_market(market_type, account="toss")
+    filled_price = _safe_float(avg_price)
+    filled_qty = _safe_float(delta)
+    filled_amount = filled_price * filled_qty
+
+    return FillOrder(
+        symbol=symbol,
+        side=_normalize_side(str(_get_fill_source_value(row, "side") or "")),
+        filled_price=filled_price,
+        filled_qty=filled_qty,
+        filled_amount=filled_amount,
+        filled_at=_parse_timestamp(filled_at),
+        account="toss",
+        order_price=_safe_float_or_none(_get_fill_source_value(row, "price")),
+        order_id=_safe_text_or_none(_get_fill_source_value(row, "broker_order_id")),
+        order_type=_safe_text_or_none(_get_fill_source_value(row, "order_type")),
+        fill_status=_normalize_fill_status(fill_status),
+        market_type=market_type,
+        currency=currency,
+    )
+
+
 def _format_side_emoji(side: str) -> str:
     if side == "bid":
         return "🟢"
