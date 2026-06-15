@@ -424,3 +424,54 @@ class TestFormatTossSellRecommendation:
         )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert "-4.6%" in fields["💡 추천 매도가"]
+
+
+def _watch_payload(**kw):
+    from decimal import Decimal
+    from uuid import uuid4
+    from app.services.hermes_client import (
+        ReviewTriggerPayload, InvestLinks, OperatorActionGuidance, PriceGuidance,
+    )
+    base = dict(
+        event_uuid=uuid4(), alert_uuid=uuid4(), source_report_uuid=uuid4(),
+        source_item_uuid=uuid4(), correlation_id="c1", kst_date="2026-06-15",
+        market="kr", target_kind="asset", symbol="005930", metric="price",
+        operator="below", threshold=Decimal("68000"), threshold_key="k",
+        intent="buy_review", action_mode="notify_only", current_value=Decimal("67500"),
+        scanner_snapshot={}, outcome="notified",
+        invest_links=InvestLinks(report_path="/invest/reports/r1", stock_path="/invest/stocks/kr/005930"),
+        operator_action_guidance=OperatorActionGuidance(headline="알림 전용", requires_operator_review=False, order_behavior="none"),
+        price_guidance=None, planned_action=None, trigger_checklist=None,
+    )
+    base.update(kw); return ReviewTriggerPayload(**base)
+
+
+@pytest.mark.unit
+class TestFormatWatchTrigger:
+    def test_basic_with_link_and_fields(self):
+        from app.monitoring.trade_notifier.formatters_discord import format_investment_watch_trigger
+        emb = format_investment_watch_trigger(_watch_payload(), display_name="삼성전자",
+                                              base_url="https://x.test")
+        assert "삼성전자" in emb["title"] and "005930" in emb["title"]
+        assert emb["url"] == "https://x.test/invest/stocks/kr/005930"
+        fields = {f["name"]: f["value"] for f in emb["fields"]}
+        assert "price" in fields["조건"] and "below" in fields["조건"] and "68000" in fields["조건"]
+        assert "67500" in fields["현재값"]
+
+    def test_price_guidance_and_checklist_rendered(self):
+        from decimal import Decimal
+        from app.monitoring.trade_notifier.formatters_discord import format_investment_watch_trigger
+        from app.services.hermes_client import PriceGuidance
+        pg = PriceGuidance(entry_review_below_price=Decimal("66000"), max_chase_price=Decimal("69000"),
+                           suggested_limit_price_range=None, invalidation=None)
+        emb = format_investment_watch_trigger(_watch_payload(price_guidance=pg, trigger_checklist=["수급 확인"]),
+                                              display_name="삼성전자", base_url="https://x.test")
+        names = {f["name"] for f in emb["fields"]}
+        assert "가격 가이드" in names and "체크리스트" in names
+
+    def test_no_link_when_invest_links_none(self):
+        from app.monitoring.trade_notifier.formatters_discord import format_investment_watch_trigger
+        emb = format_investment_watch_trigger(_watch_payload(invest_links=None),
+                                              display_name="삼성전자", base_url="https://x.test")
+        assert "url" not in emb
+

@@ -5,6 +5,11 @@ Each function is pure (no I/O, no side effects) and returns a DiscordEmbed dict.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.hermes_client import ReviewTriggerPayload
+
 from app.core.timezone import format_datetime
 from app.services.fill_notification import (
     FillEnrichment,
@@ -14,6 +19,7 @@ from app.services.fill_notification import (
 )
 
 from .types import COLORS, DECISION_EMOJI, DECISION_TEXT, DiscordEmbed, DiscordField
+
 
 
 def _price_fmt(price: float, is_usd: bool, currency: str) -> str:
@@ -585,3 +591,86 @@ def format_fill_notification(
     if detail_url:
         embed["url"] = detail_url
     return embed
+
+
+def format_investment_watch_trigger(
+    payload: ReviewTriggerPayload, *, display_name: str, base_url: str
+) -> DiscordEmbed:
+    """ROB-566: watch 트리거 Discord 임베드 (Prefect 렌더 대체)."""
+    outcome_kr = {
+        "notified": "알림",
+        "review_required": "검토 필요",
+        "preview_attached": "프리뷰 첨부",
+        "executed": "모의 실행",
+    }.get(payload.outcome, payload.outcome)
+
+    fields: list[DiscordField] = [
+        {
+            "name": "조건",
+            "value": f"{payload.metric} {payload.operator} {payload.threshold}",
+            "inline": True,
+        },
+        {
+            "name": "현재값",
+            "value": (
+                str(payload.current_value)
+                if payload.current_value is not None
+                else "-"
+            ),
+            "inline": True,
+        },
+        {"name": "시장", "value": payload.market, "inline": True},
+        {"name": "구분", "value": outcome_kr, "inline": True},
+    ]
+    pg = payload.price_guidance
+    if pg is not None:
+        parts: list[str] = []
+        if pg.entry_review_below_price is not None:
+            parts.append(f"진입검토 ≤ {pg.entry_review_below_price}")
+        if pg.suggested_limit_price_range is not None:
+            parts.append(
+                f"지정가 {pg.suggested_limit_price_range.low}~{pg.suggested_limit_price_range.high}"
+            )
+        if pg.max_chase_price is not None:
+            parts.append(f"최대추격 {pg.max_chase_price}")
+        if (
+            pg.invalidation is not None
+            and getattr(pg.invalidation, "price", None) is not None
+        ):
+            parts.append(f"무효화 {pg.invalidation.price}")
+        if parts:
+            fields.append(
+                {"name": "가격 가이드", "value": "\n".join(parts), "inline": False}
+            )
+    if payload.trigger_checklist:
+        fields.append(
+            {
+                "name": "체크리스트",
+                "value": "\n".join(f"• {c}" for c in payload.trigger_checklist),
+                "inline": False,
+            }
+        )
+    if payload.invest_links is not None:
+        fields.append(
+            {
+                "name": "링크",
+                "value": f"[리포트]({base_url}{payload.invest_links.report_path}) · [종목]({base_url}{payload.invest_links.stock_path})",
+                "inline": False,
+            }
+        )
+
+    desc = ""
+    if payload.operator_action_guidance is not None:
+        desc = payload.operator_action_guidance.headline
+    desc = (desc + f"\n🕒 {format_datetime()}").strip()
+
+    embed: DiscordEmbed = {
+        "title": f"🔔 워치 트리거 · {display_name} ({payload.symbol})",
+        "description": desc,
+        "color": COLORS["watch"],
+        "fields": fields,
+    }
+    if payload.invest_links is not None:
+        embed["url"] = f"{base_url}{payload.invest_links.stock_path}"
+    return embed
+
