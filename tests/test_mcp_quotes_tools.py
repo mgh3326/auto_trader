@@ -149,6 +149,8 @@ async def test_get_quote_crypto(monkeypatch):
         "instrument_type": "crypto",
         "price": 123.4,
         "source": "upbit",
+        "name": "KRW-BTC",
+        "name_resolved": False,
     }
 
 

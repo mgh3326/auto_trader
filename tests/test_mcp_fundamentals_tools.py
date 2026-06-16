@@ -812,6 +812,8 @@ class TestAnalyzeStockBatch:
         }
         assert result["results"]["005930"] == {
             "symbol": "005930",
+            "name": "삼성전자",
+            "name_resolved": True,
             "market_type": "equity_kr",
             "source": "kis",
             "current_price": 75000,
@@ -864,6 +866,8 @@ class TestAnalyzeStockBatch:
         assert row["rsi_14"] == pytest.approx(61.2)  # ROB-451: no longer null
         assert row.get("consensus") is None  # crypto: correct (not a regression)
         assert row["position"] is None  # ROB-541: BTC not held -> null
+        assert row["name"] == "BTC"
+        assert row["name_resolved"] is False
 
     async def test_analyze_stock_batch_quick_false_returns_full_payload(
         self, monkeypatch
