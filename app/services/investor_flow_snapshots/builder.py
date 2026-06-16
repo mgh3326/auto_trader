@@ -16,6 +16,7 @@ from typing import Any
 
 from app.services.investor_flow_snapshots.repository import InvestorFlowSnapshotUpsert
 from app.services.naver_finance import fetch_investor_trends
+from app.services.naver_finance.discussion import fetch_discussion_rankings
 
 InvestorTrendFetcher = Callable[
     [str, int], Awaitable[Mapping[str, Any]] | Mapping[str, Any]
@@ -206,6 +207,18 @@ async def build_investor_flow_snapshots(
     warnings: list[str] = []
     payloads: list[InvestorFlowSnapshotUpsert] = []
 
+    # ROB-586: Promote discussion sentiment rank (proxy via ranking)
+    # Fetch once per batch for efficiency.
+    discussion_ranking = {}
+    try:
+        dr = await fetch_discussion_rankings(size=100)
+        if dr.get("state") == "fresh":
+            discussion_ranking = {
+                item["code"]: item["rank"] for item in dr.get("items", [])
+            }
+    except Exception as exc:  # noqa: BLE001 — additive/fail-open
+        warnings.append(f"discussion ranking fetch failed: {exc}")
+
     async def build_symbol(
         symbol: str,
     ) -> tuple[list[InvestorFlowSnapshotUpsert], tuple[str, ...]]:
@@ -222,6 +235,10 @@ async def build_investor_flow_snapshots(
             return [], (f"{normalized}: no investor-flow rows returned",)
         built: list[InvestorFlowSnapshotUpsert] = []
         local_warnings: list[str] = []
+
+        # Latest rank applies to the newest row (if fresh).
+        current_discussion_rank = discussion_ranking.get(normalized)
+
         for index, row in enumerate(rows):
             if not isinstance(row, Mapping):
                 local_warnings.append(f"{normalized}: row {index} is not an object")
@@ -235,6 +252,22 @@ async def build_investor_flow_snapshots(
             individual_net = _int_or_none(row.get("individual_net"))
             if individual_net is None:
                 individual_net = _derive_individual(foreign_net, institution_net)
+
+            # ROB-586: Promote foreign ownership levels
+            foreign_holding_shares = _int_or_none(row.get("foreign_holding_shares"))
+            foreign_holding_rate = row.get("foreign_holding_rate")
+            if foreign_holding_rate is not None:
+                try:
+                    foreign_holding_rate = float(foreign_holding_rate)
+                except (TypeError, ValueError):
+                    foreign_holding_rate = None
+
+            # Discussion rank promotion: only apply to the newest row in the data
+            # (which represents the most recent state where the ranking was fresh).
+            discussion_sentiment_rank = None
+            if index == 0 and current_discussion_rank:
+                discussion_sentiment_rank = current_discussion_rank
+
             built.append(
                 InvestorFlowSnapshotUpsert(
                     market="kr",
@@ -243,6 +276,9 @@ async def build_investor_flow_snapshots(
                     foreign_net=foreign_net,
                     institution_net=institution_net,
                     individual_net=individual_net,
+                    foreign_holding_shares=foreign_holding_shares,
+                    foreign_holding_rate=foreign_holding_rate,
+                    discussion_sentiment_rank=discussion_sentiment_rank,
                     source="naver_finance",
                     collected_at=collected_at,
                 )

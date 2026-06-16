@@ -22,6 +22,13 @@ class InvestorFlowItem(BaseModel):
     institutionNet: int | None = None
     individualNet: int | None = None
 
+    # ROB-586: Promote foreign ownership levels
+    foreignHoldingShares: int | None = None
+    foreignHoldingRate: float | None = None
+
+    # ROB-586: Promote discussion sentiment (proxy via ranking)
+    discussionSentimentRank: int | None = None
+
     foreignNetBuyRank: int | None = None
     foreignNetSellRank: int | None = None
     institutionNetBuyRank: int | None = None

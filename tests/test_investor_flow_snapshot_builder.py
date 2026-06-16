@@ -15,7 +15,13 @@ async def _fake_fetcher(symbol: str, days: int):
     assert days == 3
     fixtures = {
         "900301": [
-            {"date": "2026-05-12", "foreign_net": 300, "institutional_net": 200},
+            {
+                "date": "2026-05-12",
+                "foreign_net": 300,
+                "institutional_net": 200,
+                "foreign_holding_shares": 1000,
+                "foreign_holding_rate": 10.5,
+            },
             {"date": "2026-05-11", "foreign_net": 100, "institutional_net": -50},
             {"date": "2026-05-08", "foreign_net": -25, "institutional_net": -75},
         ],
@@ -30,7 +36,13 @@ async def _fake_fetcher(symbol: str, days: int):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_build_investor_flow_snapshots_derives_streaks_ranks_and_individual():
+async def test_build_investor_flow_snapshots_derives_streaks_ranks_and_individual(
+    mocker,
+):
+    mocker.patch(
+        "app.services.investor_flow_snapshots.builder.fetch_discussion_rankings",
+        return_value={"state": "fresh", "items": [{"code": "900301", "rank": 3}]},
+    )
     collected_at = dt.datetime(2026, 5, 12, 7, 0, tzinfo=dt.UTC)
 
     result = await build_investor_flow_snapshots(
@@ -49,6 +61,9 @@ async def test_build_investor_flow_snapshots_derives_streaks_ranks_and_individua
     assert newest.source == "naver_finance"
     assert newest.collected_at == collected_at
     assert newest.individual_net == -500
+    assert newest.foreign_holding_shares == 1000
+    assert newest.foreign_holding_rate == 10.5
+    assert newest.discussion_sentiment_rank == 3
     assert newest.foreign_consecutive_buy_days == 2
     assert newest.foreign_consecutive_sell_days is None
     assert newest.institution_consecutive_buy_days == 1
