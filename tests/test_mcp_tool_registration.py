@@ -126,3 +126,11 @@ async def test_snapshot_report_generator_tools_are_flag_registered(
     )
     enabled_tools = build_tools()
     assert gated <= set(enabled_tools)
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_allocation_registered_in_default_surface() -> None:
+    tools = build_tools()
+
+    assert "get_portfolio_allocation" in tools
+
