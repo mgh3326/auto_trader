@@ -1,4 +1,5 @@
-"""Tests for fill notification normalization and formatting."""
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,6 +7,7 @@ from app.services.fill_notification import (
     FillOrder,
     coerce_fill_order,
     normalize_kis_fill,
+    normalize_toss_fill,
     normalize_upbit_fill,
 )
 
@@ -424,3 +426,84 @@ class TestFillHelpers:
             "삼성전자",
             "005930",
         )  # KR_SYMBOLS 의존
+
+
+class TestNormalizeTossFill:
+    def test_normalize_kr_buy_fill_from_ledger_row(self) -> None:
+        row = SimpleNamespace(
+            market="kr",
+            symbol="005930",
+            side="buy",
+            currency=None,
+            broker_order_id="toss-kr-order-123456",
+            order_type="limit",
+            price=Decimal("70100"),
+        )
+
+        order = normalize_toss_fill(
+            row,
+            delta=Decimal("2"),
+            avg_price=Decimal("70000"),
+            fill_status="partial",
+        )
+
+        assert order.symbol == "005930"
+        assert order.side == "bid"
+        assert order.filled_price == 70000
+        assert order.filled_qty == 2
+        assert order.filled_amount == 140000
+        assert order.account == "toss"
+        assert order.order_price == 70100
+        assert order.order_id == "toss-kr-order-123456"
+        assert order.order_type == "limit"
+        assert order.fill_status == "partial"
+        assert order.market_type == "kr"
+        assert order.currency == "KRW"
+
+    def test_normalize_us_sell_fill_preserves_usd(self) -> None:
+        row = SimpleNamespace(
+            market="us",
+            symbol="AAPL",
+            side="sell",
+            currency="USD",
+            broker_order_id="toss-us-order-123456",
+            order_type="market",
+            price=None,
+        )
+
+        order = normalize_toss_fill(
+            row,
+            delta=Decimal("3"),
+            avg_price=Decimal("195.50"),
+            fill_status="filled",
+        )
+
+        assert order.symbol == "AAPL"
+        assert order.side == "ask"
+        assert order.filled_price == 195.5
+        assert order.filled_qty == 3
+        assert order.filled_amount == 586.5
+        assert order.market_type == "us"
+        assert order.currency == "USD"
+
+    def test_normalize_fill_from_mapping_source(self) -> None:
+        order = normalize_toss_fill(
+            {
+                "market": "kr",
+                "symbol": "000660",
+                "side": "buy",
+                "currency": None,
+                "broker_order_id": "toss-map-order-123456",
+                "order_type": "limit",
+                "price": Decimal("180000"),
+            },
+            delta=Decimal("1"),
+            avg_price=Decimal("179500"),
+            fill_status="filled",
+        )
+
+        assert order.symbol == "000660"
+        assert order.side == "bid"
+        assert order.order_id == "toss-map-order-123456"
+        assert order.order_price == 180000
+        assert order.currency == "KRW"

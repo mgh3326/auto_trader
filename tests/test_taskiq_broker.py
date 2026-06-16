@@ -76,10 +76,12 @@ async def test_worker_init_middleware_configures_notifier_for_discord_only(monke
         is_scheduler_process=False,
     )
     mock_init_sentry = Mock()
-    mock_trade_notifier = Mock()
+    mock_configure = Mock(return_value=True)
     monkeypatch.setattr(taskiq_broker, "init_sentry", mock_init_sentry)
     monkeypatch.setattr(
-        taskiq_broker, "get_trade_notifier", Mock(return_value=mock_trade_notifier)
+        taskiq_broker,
+        "configure_trade_notifier_from_settings",
+        mock_configure,
     )
 
     discord_settings = {
@@ -102,12 +104,7 @@ async def test_worker_init_middleware_configures_notifier_for_discord_only(monke
         enable_sqlalchemy=True,
         enable_httpx=True,
     )
-    mock_trade_notifier.configure.assert_called_once_with(
-        bot_token="",
-        chat_ids=[],
-        enabled=True,
-        **discord_settings,
-    )
+    mock_configure.assert_called_once_with(log_context="Worker trade notifier")
 
 
 @pytest.mark.unit
@@ -120,10 +117,12 @@ async def test_worker_init_middleware_configures_notifier_for_discord_and_telegr
         is_scheduler_process=False,
     )
     mock_init_sentry = Mock()
-    mock_trade_notifier = Mock()
+    mock_configure = Mock(return_value=True)
     monkeypatch.setattr(taskiq_broker, "init_sentry", mock_init_sentry)
     monkeypatch.setattr(
-        taskiq_broker, "get_trade_notifier", Mock(return_value=mock_trade_notifier)
+        taskiq_broker,
+        "configure_trade_notifier_from_settings",
+        mock_configure,
     )
 
     discord_settings = {
@@ -146,9 +145,4 @@ async def test_worker_init_middleware_configures_notifier_for_discord_and_telegr
         enable_sqlalchemy=True,
         enable_httpx=True,
     )
-    mock_trade_notifier.configure.assert_called_once_with(
-        bot_token=taskiq_broker.settings.telegram_token,
-        chat_ids=taskiq_broker.settings.telegram_chat_ids,
-        enabled=True,
-        **discord_settings,
-    )
+    mock_configure.assert_called_once_with(log_context="Worker trade notifier")
