@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
 from app.mcp_server.tooling.fundamentals_sources_binance import (
@@ -156,45 +157,253 @@ async def handle_get_crypto_order_flow(
         if not base:
             raise ValueError("symbol is required")
         market = f"KRW-{base}"
-        capped = min(max(count, 1), 500)
-        trades = await fetch_recent_trades(market=market, count=capped)
+        # We always fetch 500 trades to calculate all windows derived from a single fetch.
+        trades = await fetch_recent_trades(market=market, count=500)
 
-        buy_vol = 0.0
-        sell_vol = 0.0
-        used = 0
+        parsed_ticks = []
         for tick in trades:
-            raw = tick.get("trade_volume")
+            raw_vol = tick.get("trade_volume")
             try:
-                vol = float(raw) if raw is not None else None
+                vol = float(raw_vol) if raw_vol is not None else None
             except (TypeError, ValueError):
                 vol = None
-            if vol is None:
-                continue
-            side = tick.get("ask_bid")
-            if side == "BID":
-                buy_vol += vol
-                used += 1
-            elif side == "ASK":
-                sell_vol += vol
-                used += 1
 
-        total = buy_vol + sell_vol
-        if total > 0:
-            taker_buy_ratio: float | None = round(buy_vol / total, 4)
-            taker_sell_ratio: float | None = round(sell_vol / total, 4)
-            net: float | None = round((buy_vol - sell_vol) / total, 4)
+            side = tick.get("ask_bid")
+
+            # Extract timestamp (in milliseconds)
+            ts = tick.get("timestamp")
+            if ts is not None:
+                try:
+                    ts_val = float(ts)
+                except (TypeError, ValueError):
+                    ts_val = None
+            else:
+                ts_val = None
+                for field in ("trade_timestamp", "trade_date_utc"):
+                    val = tick.get(field)
+                    if val:
+                        try:
+                            text = str(val)
+                            if text.endswith("Z"):
+                                text = text[:-1] + "+00:00"
+                            dt = datetime.datetime.fromisoformat(text)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=datetime.UTC)
+                            ts_val = dt.timestamp() * 1000.0
+                            break
+                        except (ValueError, TypeError):
+                            pass
+
+            if vol is not None and side in ("BID", "ASK"):
+                parsed_ticks.append({"volume": vol, "side": side, "timestamp": ts_val})
+
+        def _calculate_window_stats(
+            ticks_list: list[dict[str, Any]], W: int
+        ) -> dict[str, Any]:
+            ticks_slice = ticks_list[:W]
+            buy_vol = 0.0
+            sell_vol = 0.0
+            max_vol = 0.0
+            used = 0
+            for t in ticks_slice:
+                vol = t["volume"]
+                side = t["side"]
+                if side == "BID":
+                    buy_vol += vol
+                    used += 1
+                    if vol > max_vol:
+                        max_vol = vol
+                elif side == "ASK":
+                    sell_vol += vol
+                    used += 1
+                    if vol > max_vol:
+                        max_vol = vol
+
+            total_vol = buy_vol + sell_vol
+            if total_vol > 0:
+                buy_ratio = round(buy_vol / total_vol, 4)
+                sell_ratio = round(sell_vol / total_vol, 4)
+                net = round((buy_vol - sell_vol) / total_vol, 4)
+                largest_trade_share = round(max_vol / total_vol, 4)
+            else:
+                buy_ratio = sell_ratio = net = largest_trade_share = None
+
+            timestamps = [
+                t["timestamp"] for t in ticks_slice if t["timestamp"] is not None
+            ]
+            if len(timestamps) >= 2:
+                span_seconds = round((timestamps[0] - timestamps[-1]) / 1000.0, 4)
+            else:
+                span_seconds = 0.0
+
+            return {
+                "net": net,
+                "buy_ratio": buy_ratio,
+                "sell_ratio": sell_ratio,
+                "trade_count": used,
+                "span_seconds": span_seconds,
+                "largest_trade_share": largest_trade_share,
+            }
+
+        # Calculate standard windows
+        stats_50 = _calculate_window_stats(parsed_ticks, 50)
+        stats_200 = _calculate_window_stats(parsed_ticks, 200)
+        stats_500 = _calculate_window_stats(parsed_ticks, 500)
+
+        windows_dict = {
+            "50": {
+                "net": stats_50["net"],
+                "buy_ratio": stats_50["buy_ratio"],
+                "trade_count": stats_50["trade_count"],
+                "span_seconds": stats_50["span_seconds"],
+                "largest_trade_share": stats_50["largest_trade_share"],
+            },
+            "200": {
+                "net": stats_200["net"],
+                "buy_ratio": stats_200["buy_ratio"],
+                "trade_count": stats_200["trade_count"],
+                "span_seconds": stats_200["span_seconds"],
+                "largest_trade_share": stats_200["largest_trade_share"],
+            },
+            "500": {
+                "net": stats_500["net"],
+                "buy_ratio": stats_500["buy_ratio"],
+                "trade_count": stats_500["trade_count"],
+                "span_seconds": stats_500["span_seconds"],
+                "largest_trade_share": stats_500["largest_trade_share"],
+            },
+        }
+
+        # Capped default window matching user input `count`
+        capped_default = min(max(count, 1), 500)
+        stats_default = _calculate_window_stats(parsed_ticks, capped_default)
+
+        # Disjoint Segments Analysis
+        recent_stats = stats_50
+        older_stats = _calculate_window_stats(parsed_ticks[50:], 450)
+
+        recent_net = recent_stats["net"]
+        older_net = older_stats["net"]
+
+        epsilon = 0.10
+        if recent_net is None:
+            trend = "neutral"
+        elif older_net is None:
+            if abs(recent_net) < epsilon:
+                trend = "neutral"
+            elif recent_net >= epsilon:
+                trend = "stable_up"
+            else:
+                trend = "stable_down"
         else:
-            # missing != zero: no usable ticks → None, never a fabricated 0.0
-            taker_buy_ratio = taker_sell_ratio = net = None
+            recent_neutral = abs(recent_net) < epsilon
+            older_neutral = abs(older_net) < epsilon
+
+            if recent_neutral and older_neutral:
+                trend = "neutral"
+            elif recent_neutral:
+                if older_net >= epsilon:
+                    trend = "weakening_up"
+                else:
+                    trend = "weakening_down"
+            elif recent_net >= epsilon:
+                if older_neutral:
+                    trend = "strengthening_up"
+                elif older_net <= -epsilon:
+                    trend = "reversing_up"
+                else:
+                    if recent_net > older_net:
+                        trend = "strengthening_up"
+                    elif recent_net < older_net:
+                        trend = "weakening_up"
+                    else:
+                        trend = "stable_up"
+            else:
+                if older_neutral:
+                    trend = "strengthening_down"
+                elif older_net >= epsilon:
+                    trend = "reversing_down"
+                else:
+                    if recent_net < older_net:
+                        trend = "strengthening_down"
+                    elif recent_net > older_net:
+                        trend = "weakening_down"
+                    else:
+                        trend = "stable_down"
+
+        # Confidence
+        confidence = "normal"
+        note_parts = []
+
+        recent_largest_share = stats_50["largest_trade_share"]
+        if recent_largest_share is not None and recent_largest_share > 0.35:
+            confidence = "low"
+            note_parts.append(
+                f"Whale trade dominance detected (largest trade share {recent_largest_share:.1%} > 35%)"
+            )
+
+        recent_trade_count = stats_50["trade_count"]
+        if recent_trade_count < 15:
+            confidence = "low"
+            note_parts.append(f"Low trade count ({recent_trade_count} < 15)")
+
+        # Consensus direction & agreement
+        active_nets = []
+        for w_name in ("50", "200", "500"):
+            w_net = windows_dict[w_name]["net"]
+            if w_net is not None:
+                active_nets.append(w_net)
+
+        if len(active_nets) == 0:
+            direction = "neutral"
+            agreement = True
+            base_note = "No trades found in any analysis window."
+        else:
+            all_buy = all(net >= epsilon for net in active_nets)
+            all_sell = all(net <= -epsilon for net in active_nets)
+            all_neutral = all(abs(net) < epsilon for net in active_nets)
+
+            if all_buy:
+                direction = "buy"
+                agreement = True
+                base_note = f"Consensus buying pressure across active windows (nets: {', '.join(str(n) for n in active_nets)})."
+            elif all_sell:
+                direction = "sell"
+                agreement = True
+                base_note = f"Consensus selling pressure across active windows (nets: {', '.join(str(n) for n in active_nets)})."
+            elif all_neutral:
+                direction = "neutral"
+                agreement = True
+                base_note = "Low net flow (neutral) across all active windows."
+            else:
+                direction = "mixed"
+                agreement = False
+                base_note = f"Divergent flow signal (nets: 50={stats_50['net']}, 200={stats_200['net']}, 500={stats_500['net']})."
+
+        if note_parts:
+            note = f"{base_note} Caution: {'; '.join(note_parts)}."
+        else:
+            note = base_note
 
         return {
             "symbol": market,
-            "taker_buy_ratio": taker_buy_ratio,
-            "taker_sell_ratio": taker_sell_ratio,
-            "net": net,
-            "trade_count": used,
+            "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
             "source": "upbit",
+            "default_window": capped_default,
+            "net": stats_default["net"],
+            "buy_ratio": stats_default["buy_ratio"],
+            "taker_buy_ratio": stats_default["buy_ratio"],
+            "taker_sell_ratio": stats_default["sell_ratio"],
+            "trade_count": stats_default["trade_count"],
             "instrument_type": "crypto",
+            "windows": windows_dict,
+            "consensus": {
+                "direction": direction,
+                "agreement": agreement,
+                "trend": trend,
+                "confidence": confidence,
+                "note": note,
+            },
         }
     except Exception as exc:
         return _error_payload(
