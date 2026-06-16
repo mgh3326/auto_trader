@@ -1235,6 +1235,7 @@ async def _get_quote_impl(
             # previous_close used for gap calculations.
             data_state = kr_market_data_state()
             quote = await _fetch_quote_equity_kr(symbol)
+            quote["data_state"] = data_state
             session = await _nxt_quote_session(data_state)
             if session is not None:
                 overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
@@ -1242,8 +1243,6 @@ async def _get_quote_impl(
                     quote.update(overlay)
                     quote["regular_session_data_state"] = data_state
                     quote["data_state"] = DATA_STATE_FRESH
-            else:
-                quote["data_state"] = data_state
 
         from app.mcp_server.tooling.name_resolution import resolve_names
         resolved = await resolve_names([symbol], market_type)
