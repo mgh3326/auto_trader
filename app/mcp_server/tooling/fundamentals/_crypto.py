@@ -197,6 +197,9 @@ async def handle_get_crypto_order_flow(
             if vol is not None and side in ("BID", "ASK"):
                 parsed_ticks.append({"volume": vol, "side": side, "timestamp": ts_val})
 
+        # Defensive sorting: ensure newest-first for window calculations (ROB-589).
+        parsed_ticks.sort(key=lambda t: t["timestamp"] or 0, reverse=True)
+
         def _calculate_window_stats(
             ticks_list: list[dict[str, Any]], W: int
         ) -> dict[str, Any]:

@@ -175,10 +175,79 @@ def test_build_allocation_reports_per_account_profit_loss() -> None:
 
     by_account = {row["account"]: row for row in result["accounts"]}
     # 140,000 (AAPL USD->KRW) + 50,000 (삼성전자) = 190,000
+    # ROB-589: kis and kis_domestic are merged into 'kis'
+    assert "kis_domestic" not in by_account
     assert by_account["kis"]["profit_loss_krw"] == pytest.approx(190000.0)
+    assert by_account["kis"]["value_krw"] == pytest.approx(
+        (1000 * 1400) + 500000 + 100000
+    )
     assert by_account["upbit"]["profit_loss_krw"] == pytest.approx(-30000.0)
-    # cash-only account carries zero P&L
-    assert by_account["kis_domestic"]["profit_loss_krw"] == pytest.approx(0.0)
+
+
+def test_build_allocation_by_currency_rollup() -> None:
+    # KRW group: KR stocks, KR cash, crypto
+    # USD group: US stocks, USD cash
+    positions = [
+        {
+            "account": "kis",
+            "broker": "kis",
+            "instrument_type": "equity_kr",
+            "symbol": "005930",
+            "evaluation_amount": 500000.0,
+        },
+        {
+            "account": "kis",
+            "broker": "kis",
+            "instrument_type": "equity_us",
+            "symbol": "AAPL",
+            "evaluation_amount": 1000.0,  # 1,400,000 KRW
+        },
+        {
+            "account": "upbit",
+            "broker": "upbit",
+            "instrument_type": "crypto",
+            "symbol": "KRW-BTC",
+            "evaluation_amount": 300000.0,
+        },
+    ]
+    cash_accounts = [
+        {
+            "account": "kis_domestic",
+            "broker": "kis",
+            "currency": "KRW",
+            "balance": 100000.0,
+        },
+        {
+            "account": "kis_overseas",
+            "broker": "kis",
+            "currency": "USD",
+            "balance": 100.0,  # 140,000 KRW
+        },
+    ]
+    result = build_portfolio_allocation(
+        positions=positions,
+        cash_accounts=cash_accounts,
+        usd_krw=1400.0,
+        etf_rows=[],
+        include_cash=True,
+        include_positions=False,
+    )
+
+    by_currency = {row["currency"]: row for row in result["by_currency"]}
+    # KRW: 500,000 + 300,000 + 100,000 = 900,000
+    assert by_currency["KRW"]["value_krw"] == pytest.approx(900000.0)
+    assert by_currency["KRW"]["fx_conversion_needed"] is False
+
+    # USD: 1,400,000 + 140,000 = 1,540,000
+    assert by_currency["USD"]["value_krw"] == pytest.approx(1540000.0)
+    assert by_currency["USD"]["fx_conversion_needed"] is True
+
+    # Check weights: Total = 900,000 + 1,540,000 = 2,440,000
+    # KRW % = 900,000 / 2,440,000 * 100 = 36.885...
+    # USD % = 1,540,000 / 2,440,000 * 100 = 63.114...
+    assert by_currency["KRW"]["weight_pct"] == pytest.approx(36.89, abs=0.01)
+    assert by_currency["USD"]["weight_pct"] == pytest.approx(63.11, abs=0.01)
+
 
 
 def test_build_allocation_warns_and_skips_unvalued_positions() -> None:
