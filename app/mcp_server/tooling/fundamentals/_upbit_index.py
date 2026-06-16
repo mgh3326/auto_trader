@@ -50,9 +50,16 @@ async def handle_get_upbit_index(
         )
 
 
-async def handle_get_upbit_altseason() -> dict[str, Any]:
+async def handle_get_upbit_altseason(
+    include_constituents: bool = False,
+    constituents_limit: int = 50,
+) -> dict[str, Any]:
+    limit = max(1, min(int(constituents_limit), 200))
     try:
-        payload = await upbit_index.fetch_upbit_altseason()
+        payload = await upbit_index.fetch_upbit_altseason(
+            include_constituents=include_constituents,
+            constituents_limit=limit,
+        )
         if payload is None:
             return _error_payload(
                 source="upbit_datalab+upbit_open_api",
@@ -66,3 +73,4 @@ async def handle_get_upbit_altseason() -> dict[str, Any]:
             message=str(exc),
             instrument_type="crypto",
         )
+

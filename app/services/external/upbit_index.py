@@ -51,8 +51,8 @@ _HTTP_TIMEOUT = 10.0
 
 _indices_cache: dict[str, Any] | None = None
 _indices_cache_expires: datetime | None = None
-_altseason_cache: dict[str, Any] | None = None
-_altseason_cache_expires: datetime | None = None
+_altseason_cache: dict[tuple[bool, int], dict[str, Any]] = {}
+_altseason_cache_expires: dict[tuple[bool, int], datetime] = {}
 _cache_lock = asyncio.Lock()
 
 
@@ -62,8 +62,9 @@ def _clear_caches() -> None:
     global _altseason_cache, _altseason_cache_expires
     _indices_cache = None
     _indices_cache_expires = None
-    _altseason_cache = None
-    _altseason_cache_expires = None
+    _altseason_cache = {}
+    _altseason_cache_expires = {}
+
 
 
 async def _get_json(url: str, params: dict[str, Any] | None = None) -> Any:
@@ -177,7 +178,66 @@ async def fetch_upbit_indices() -> dict[str, Any] | None:
     return result.copy()
 
 
-async def _fetch_krw_breadth_24h() -> dict[str, Any] | None:
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coin_from_market(market: str) -> str:
+    if market.startswith("KRW-"):
+        return market.removeprefix("KRW-")
+    return market
+
+
+def _build_altseason_constituents(
+    *,
+    ticker_rows: list[dict[str, Any]],
+    btc_rate: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for ticker in ticker_rows:
+        market = str(ticker.get("market") or "").strip().upper()
+        if market == "KRW-BTC" or not market.startswith("KRW-"):
+            continue
+        rate = _to_float_or_none(ticker.get("signed_change_rate"))
+        if rate is None or rate <= btc_rate:
+            continue
+        relative = rate - btc_rate
+        rows.append(
+            {
+                "symbol": market,
+                "coin": _coin_from_market(market),
+                "price": _to_float_or_none(ticker.get("trade_price")),
+                "change_rate_24h": rate,
+                "change_pct_24h": round(rate * 100, 4),
+                "btc_change_rate_24h": btc_rate,
+                "relative_strength_vs_btc_24h": round(relative, 8),
+                "relative_strength_pct_vs_btc_24h": round(relative * 100, 4),
+                "volume_24h": _to_float_or_none(ticker.get("acc_trade_volume_24h")),
+                "trade_amount_24h": _to_float_or_none(ticker.get("acc_trade_price_24h")),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            row["relative_strength_vs_btc_24h"],
+            row.get("trade_amount_24h") or 0.0,
+            row["symbol"],
+        ),
+        reverse=True,
+    )
+    return [{**row, "rank": idx} for idx, row in enumerate(rows[:limit], 1)]
+
+
+async def _fetch_krw_breadth_24h(
+    *,
+    include_constituents: bool = False,
+    constituents_limit: int = 50,
+) -> dict[str, Any] | None:
     """24h alt-vs-BTC breadth from the official Open API ticker.
 
     breadth = fraction of KRW-quoted non-BTC markets whose 24h change exceeds
@@ -197,10 +257,10 @@ async def _fetch_krw_breadth_24h() -> dict[str, Any] | None:
         logger.warning("Failed to fetch Upbit KRW breadth: %s", exc)
         return None
 
+    ticker_rows = [t for t in tickers if isinstance(t, dict) and t.get("market")]
     rate_by_market = {
-        t["market"]: t.get("signed_change_rate")
-        for t in tickers
-        if isinstance(t, dict) and t.get("market")
+        str(t["market"]).upper(): _to_float_or_none(t.get("signed_change_rate"))
+        for t in ticker_rows
     }
     btc_rate = rate_by_market.get("KRW-BTC")
     if btc_rate is None:
@@ -215,7 +275,7 @@ async def _fetch_krw_breadth_24h() -> dict[str, Any] | None:
         return None
 
     beating = sum(1 for rate in alt_rates if rate > btc_rate)
-    return {
+    result: dict[str, Any] = {
         "window": "24h",
         "method": "open_api_ticker_24h_derived",
         "alts_total": len(alt_rates),
@@ -223,9 +283,22 @@ async def _fetch_krw_breadth_24h() -> dict[str, Any] | None:
         "alts_beating_btc_pct": round(beating / len(alt_rates), 4),
         "btc_change_24h": btc_rate,
     }
+    if include_constituents:
+        constituents = _build_altseason_constituents(
+            ticker_rows=ticker_rows,
+            btc_rate=btc_rate,
+            limit=constituents_limit,
+        )
+        result["constituents"] = constituents
+        result["constituents_count"] = len(constituents)
+    return result
 
 
-async def fetch_upbit_altseason() -> dict[str, Any] | None:
+async def fetch_upbit_altseason(
+    *,
+    include_constituents: bool = False,
+    constituents_limit: int = 50,
+) -> dict[str, Any] | None:
     """Altseason snapshot: UBAI/UBMI ratio + 24h alt-vs-BTC breadth.
 
     Returns a partial dict if one plane is unavailable; ``None`` only if both the
@@ -233,13 +306,16 @@ async def fetch_upbit_altseason() -> dict[str, Any] | None:
     """
     global _altseason_cache, _altseason_cache_expires
 
+    limit = max(1, min(int(constituents_limit), 200))
+    cache_key = (include_constituents, limit)
+
     async with _cache_lock:
         if (
-            _altseason_cache is not None
-            and _altseason_cache_expires
-            and now_kst() < _altseason_cache_expires
+            cache_key in _altseason_cache
+            and cache_key in _altseason_cache_expires
+            and now_kst() < _altseason_cache_expires[cache_key]
         ):
-            return _altseason_cache.copy()
+            return _altseason_cache[cache_key].copy()
 
     indices_payload = await fetch_upbit_indices()
     ratio: float | None = None
@@ -250,7 +326,10 @@ async def fetch_upbit_altseason() -> dict[str, Any] | None:
         if ubai is not None and ubmi:
             ratio = round(float(ubai) / float(ubmi), 6)
 
-    breadth = await _fetch_krw_breadth_24h()
+    breadth = await _fetch_krw_breadth_24h(
+        include_constituents=include_constituents,
+        constituents_limit=limit,
+    )
 
     if ratio is None and breadth is None:
         return None
@@ -264,6 +343,7 @@ async def fetch_upbit_altseason() -> dict[str, Any] | None:
     }
 
     async with _cache_lock:
-        _altseason_cache = result.copy()
-        _altseason_cache_expires = now_kst() + _ALTSEASON_TTL
+        _altseason_cache[cache_key] = result.copy()
+        _altseason_cache_expires[cache_key] = now_kst() + _ALTSEASON_TTL
     return result.copy()
+
