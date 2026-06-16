@@ -222,7 +222,6 @@ async def test_altseason_constituents_includes_relative_strength_zero(monkeypatc
     assert breadth["constituents"][0]["relative_strength_vs_btc_24h"] == 0.0
 
 
-
 @pytest.mark.asyncio
 async def test_altseason_partial_when_breadth_unavailable(monkeypatch):
     """Ratio survives even if the official ticker plane is down."""

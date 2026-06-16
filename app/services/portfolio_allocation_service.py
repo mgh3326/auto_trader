@@ -367,4 +367,3 @@ def build_portfolio_allocation(
         "cash": cash_rows if include_cash else [],
         "warnings": warnings,
     }
-

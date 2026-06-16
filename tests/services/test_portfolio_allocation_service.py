@@ -249,7 +249,6 @@ def test_build_allocation_by_currency_rollup() -> None:
     assert by_currency["USD"]["weight_pct"] == pytest.approx(63.11, abs=0.01)
 
 
-
 def test_build_allocation_warns_and_skips_unvalued_positions() -> None:
     result = build_portfolio_allocation(
         positions=[
