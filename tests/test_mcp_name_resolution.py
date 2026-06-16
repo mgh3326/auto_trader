@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock
 
-from app.mcp_server.tooling.name_resolution import resolve_names
+import pytest
+
 import app.mcp_server.tooling.name_resolution as name_resolution
+from app.mcp_server.tooling.name_resolution import resolve_names
+
 
 @pytest.mark.asyncio
 async def test_resolve_names_kr(monkeypatch):
@@ -18,6 +20,7 @@ async def test_resolve_names_kr(monkeypatch):
     }
     mock_get_kr.assert_called_once_with(["005930", "000660"])
 
+
 @pytest.mark.asyncio
 async def test_resolve_names_us(monkeypatch):
     mock_get_us = AsyncMock(return_value={"AAPL": "Apple Inc."})
@@ -30,10 +33,15 @@ async def test_resolve_names_us(monkeypatch):
     }
     mock_get_us.assert_called_once_with(["AAPL", "MSFT"])
 
+
 @pytest.mark.asyncio
 async def test_resolve_names_crypto(monkeypatch):
-    mock_get_upbit = AsyncMock(return_value={"KRW-BTC": {"korean_name": "비트코인", "english_name": "Bitcoin"}})
-    monkeypatch.setattr(name_resolution, "get_upbit_market_display_names", mock_get_upbit)
+    mock_get_upbit = AsyncMock(
+        return_value={"KRW-BTC": {"korean_name": "비트코인", "english_name": "Bitcoin"}}
+    )
+    monkeypatch.setattr(
+        name_resolution, "get_upbit_market_display_names", mock_get_upbit
+    )
 
     result = await resolve_names(["KRW-BTC", "KRW-ETH"], "crypto")
     assert result == {
@@ -41,6 +49,7 @@ async def test_resolve_names_crypto(monkeypatch):
         "KRW-ETH": {"name": "KRW-ETH", "name_resolved": False},
     }
     mock_get_upbit.assert_called_once_with(["KRW-BTC", "KRW-ETH"])
+
 
 @pytest.mark.asyncio
 async def test_resolve_names_fallback_on_exception(monkeypatch):

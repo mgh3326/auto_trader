@@ -509,12 +509,13 @@ async def _run_batch_analysis(
     resolved_info = {}
     if market_to_symbols:
         from app.mcp_server.tooling.name_resolution import resolve_names
+
         resolution_tasks = []
         mtypes = list(market_to_symbols.keys())
         for mtype in mtypes:
             resolution_tasks.append(resolve_names(market_to_symbols[mtype], mtype))
         resolution_results = await asyncio.gather(*resolution_tasks)
-        for mtype, res_dict in zip(mtypes, resolution_results):
+        for res_dict in resolution_results:
             resolved_info.update(res_dict)
 
     # Inject name and name_resolved into each result

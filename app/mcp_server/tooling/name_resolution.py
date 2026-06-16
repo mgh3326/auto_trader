@@ -1,12 +1,16 @@
 import logging
 from typing import Any
+
 from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
-from app.services.us_symbol_universe_service import get_us_names_by_symbols
 from app.services.upbit_symbol_universe_service import get_upbit_market_display_names
+from app.services.us_symbol_universe_service import get_us_names_by_symbols
 
 logger = logging.getLogger(__name__)
 
-async def resolve_names(symbols: list[str], market_type: str) -> dict[str, dict[str, Any]]:
+
+async def resolve_names(
+    symbols: list[str], market_type: str
+) -> dict[str, dict[str, Any]]:
     results = {}
     if not symbols:
         return results
@@ -37,7 +41,9 @@ async def resolve_names(symbols: list[str], market_type: str) -> dict[str, dict[
             display_info = {}
         for sym in symbols:
             info = display_info.get(sym)
-            name = (info.get("korean_name") or info.get("english_name")) if info else None
+            name = (
+                (info.get("korean_name") or info.get("english_name")) if info else None
+            )
             results[sym] = {"name": name or sym, "name_resolved": name is not None}
     else:
         for sym in symbols:

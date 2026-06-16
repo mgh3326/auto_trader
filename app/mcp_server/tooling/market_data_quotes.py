@@ -452,7 +452,10 @@ async def _build_orderbook_payload(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> dict[str, Any]:
     from app.mcp_server.tooling.name_resolution import resolve_names
-    resolution_task = asyncio.create_task(resolve_names([snapshot.symbol], snapshot.instrument_type))
+
+    resolution_task = asyncio.create_task(
+        resolve_names([snapshot.symbol], snapshot.instrument_type)
+    )
 
     pressure = _classify_orderbook_pressure(snapshot.bid_ask_ratio)
     spread, spread_pct = _calculate_orderbook_spread(snapshot)
@@ -503,7 +506,10 @@ async def _build_orderbook_payload(
         payload["empty_reason"] = snapshot.empty_reason
 
     resolved = await resolution_task
-    info = resolved.get(snapshot.symbol) or {"name": snapshot.symbol, "name_resolved": False}
+    info = resolved.get(snapshot.symbol) or {
+        "name": snapshot.symbol,
+        "name_resolved": False,
+    }
     payload["name"] = info["name"]
     payload["name_resolved"] = info["name_resolved"]
 
@@ -1221,10 +1227,17 @@ async def _get_quote_impl(
     source = source_map[market_type]
 
     from app.mcp_server.tooling.name_resolution import resolve_names
+
     resolution_task = asyncio.create_task(resolve_names([symbol], market_type))
 
     if market_type == "equity_us":
-        quote = await _fetch_quote_equity_us(symbol)
+        try:
+            quote = await _fetch_quote_equity_us(symbol)
+        except Exception:
+            # ROB-584: US quotes propagate errors (not wrapped); cancel the
+            # background name-resolution task so it is not orphaned.
+            resolution_task.cancel()
+            raise
         resolved = await resolution_task
         info = resolved.get(symbol) or {"name": symbol, "name_resolved": False}
         quote["name"] = info["name"]
@@ -1443,6 +1456,7 @@ async def _get_execution_strength_impl(
         raw, symbol=normalized, as_of=now_kst().isoformat()
     )
     from app.mcp_server.tooling.name_resolution import resolve_names
+
     resolution_task = asyncio.create_task(resolve_names([normalized], "equity_kr"))
 
     data_state = kr_market_data_state()

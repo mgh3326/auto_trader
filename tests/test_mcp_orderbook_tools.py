@@ -38,6 +38,13 @@ async def test_get_orderbook_returns_kr_payload(
         "get_orderbook",
         AsyncMock(return_value=_make_snapshot()),
     )
+    from app.mcp_server.tooling import name_resolution
+
+    monkeypatch.setattr(
+        name_resolution,
+        "get_kr_names_by_symbols",
+        AsyncMock(return_value={"005930": "삼성전자"}),
+    )
     tools = build_tools()
 
     result = await tools["get_orderbook"]("5930")
@@ -100,6 +107,13 @@ async def test_get_orderbook_returns_crypto_payload(
         market_data_quotes.market_data_service,
         "get_orderbook",
         get_orderbook_mock,
+    )
+    from app.mcp_server.tooling import name_resolution
+
+    monkeypatch.setattr(
+        name_resolution,
+        "get_upbit_market_display_names",
+        AsyncMock(return_value={}),
     )
     tools = build_tools()
 
@@ -224,6 +238,13 @@ async def test_get_orderbook_preserves_null_expected_qty_in_payload(
         market_data_quotes.market_data_service,
         "get_orderbook",
         AsyncMock(return_value=_make_snapshot(expected_qty=None)),
+    )
+    from app.mcp_server.tooling import name_resolution
+
+    monkeypatch.setattr(
+        name_resolution,
+        "get_kr_names_by_symbols",
+        AsyncMock(return_value={"005930": "삼성전자"}),
     )
     tools = build_tools()
 
