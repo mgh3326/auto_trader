@@ -163,6 +163,40 @@ def _payload_from_raw(
     )
 
 
+async def build_valuation_snapshots_bulk_for_us(
+    *, snapshot_date: dt.date, limit: int | None = None
+) -> MarketValuationBuildResult:
+    from app.services.market_valuation_snapshots.us_provider import (
+        TvScreenerUsValuationProvider,
+    )
+
+    provider = TvScreenerUsValuationProvider()
+    rows = await provider.fetch_rows(limit=limit)
+    payloads = []
+    for row in rows:
+        symbol = row.get("symbol", "").split(":")[-1]  # Strip exchange prefix
+        if not symbol:
+            continue
+        payloads.append(
+            MarketValuationSnapshotUpsert(
+                market="us",
+                symbol=symbol,
+                snapshot_date=snapshot_date,
+                source="tvscreener",
+                per=_to_decimal(row.get("price_earnings_ttm")),
+                pbr=_to_decimal(row.get("price_book_ratio")),
+                roe=_to_decimal(row.get("return_on_equity")),
+                dividend_yield=_to_decimal(row.get("dividends_yield")),
+                market_cap=_to_decimal(row.get("market_cap_basic")),
+                high_52w=_to_decimal(row.get("price_52_week_high")),
+                low_52w=_to_decimal(row.get("price_52_week_low")),
+                high_52w_date=_to_date(row.get("price_52_week_high_date")),
+                raw_payload=row,
+            )
+        )
+    return MarketValuationBuildResult(payloads=tuple(payloads))
+
+
 async def build_valuation_snapshots_for_market(
     *,
     market: str,
@@ -171,10 +205,24 @@ async def build_valuation_snapshots_for_market(
     concurrency: int = 4,
     fetcher: ValuationFetcher | None = None,
     include_high_date: bool = False,
+    use_bulk: bool = False,
 ) -> MarketValuationBuildResult:
     market_norm = market.strip().lower()
     if market_norm not in {"kr", "us"}:
         raise ValueError(f"unsupported market: {market}")
+
+    if market_norm == "us" and use_bulk:
+        bulk_result = await build_valuation_snapshots_bulk_for_us(
+            snapshot_date=snapshot_date,
+        )
+        requested_symbols = {s.strip().upper() for s in symbols if s.strip()}
+        if requested_symbols:
+            filtered_payloads = tuple(
+                p for p in bulk_result.payloads if p.symbol.upper() in requested_symbols
+            )
+            return MarketValuationBuildResult(payloads=filtered_payloads)
+        return bulk_result
+
     # ROB-440 PR4: thread include_high_date into the default fetcher (opt-in heavy
     # OHLC). Custom fetchers manage their own behavior.
     fetch = fetcher or functools.partial(
