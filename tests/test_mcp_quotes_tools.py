@@ -140,6 +140,13 @@ async def test_get_quote_crypto(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(return_value={"KRW-BTC": 123.4})
     monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", mock_fetch)
+    from app.mcp_server.tooling import name_resolution
+
+    monkeypatch.setattr(
+        name_resolution,
+        "get_upbit_market_display_names",
+        AsyncMock(return_value={}),
+    )
 
     result = await tools["get_quote"]("krw-btc")
 
@@ -149,6 +156,8 @@ async def test_get_quote_crypto(monkeypatch):
         "instrument_type": "crypto",
         "price": 123.4,
         "source": "upbit",
+        "name": "KRW-BTC",
+        "name_resolved": False,
     }
 
 

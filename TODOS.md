@@ -20,5 +20,6 @@
 
 ## Completed
 
+- **ROB-584**: Stock name resolution in MCP tool responses (v0.2.4).
 - **ROB-580**: Multi-window crypto order flow improvement (v0.2.1).
 

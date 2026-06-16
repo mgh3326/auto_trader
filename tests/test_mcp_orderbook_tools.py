@@ -38,12 +38,21 @@ async def test_get_orderbook_returns_kr_payload(
         "get_orderbook",
         AsyncMock(return_value=_make_snapshot()),
     )
+    from app.mcp_server.tooling import name_resolution
+
+    monkeypatch.setattr(
+        name_resolution,
+        "get_kr_names_by_symbols",
+        AsyncMock(return_value={"005930": "삼성전자"}),
+    )
     tools = build_tools()
 
     result = await tools["get_orderbook"]("5930")
 
     assert result == {
         "symbol": "005930",
+        "name": "삼성전자",
+        "name_resolved": True,
         "instrument_type": "equity_kr",
         "source": "kis",
         "asks": [{"price": 70100, "quantity": 123}],
@@ -99,6 +108,13 @@ async def test_get_orderbook_returns_crypto_payload(
         "get_orderbook",
         get_orderbook_mock,
     )
+    from app.mcp_server.tooling import name_resolution
+
+    monkeypatch.setattr(
+        name_resolution,
+        "get_upbit_market_display_names",
+        AsyncMock(return_value={}),
+    )
     tools = build_tools()
 
     result = await tools["get_orderbook"]("KRW-BTC", market="crypto")
@@ -106,6 +122,8 @@ async def test_get_orderbook_returns_crypto_payload(
     get_orderbook_mock.assert_awaited_once_with("KRW-BTC", "crypto", venue=None)
     assert result == {
         "symbol": "KRW-BTC",
+        "name": "KRW-BTC",
+        "name_resolved": False,
         "instrument_type": "crypto",
         "source": "upbit",
         "asks": [
@@ -221,12 +239,21 @@ async def test_get_orderbook_preserves_null_expected_qty_in_payload(
         "get_orderbook",
         AsyncMock(return_value=_make_snapshot(expected_qty=None)),
     )
+    from app.mcp_server.tooling import name_resolution
+
+    monkeypatch.setattr(
+        name_resolution,
+        "get_kr_names_by_symbols",
+        AsyncMock(return_value={"005930": "삼성전자"}),
+    )
     tools = build_tools()
 
     result = await tools["get_orderbook"]("5930")
 
     assert result == {
         "symbol": "005930",
+        "name": "삼성전자",
+        "name_resolved": True,
         "instrument_type": "equity_kr",
         "source": "kis",
         "asks": [{"price": 70100, "quantity": 123}],

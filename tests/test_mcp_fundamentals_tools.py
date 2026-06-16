@@ -760,6 +760,13 @@ class TestAnalyzeStockBatch:
     async def test_analyze_stock_batch_quick_summary(self, monkeypatch):
         """Test that analyze_stock_batch returns the compact summary contract."""
         tools = build_tools()
+        from app.mcp_server.tooling import name_resolution
+
+        monkeypatch.setattr(
+            name_resolution,
+            "get_kr_names_by_symbols",
+            AsyncMock(return_value={"005930": "삼성전자"}),
+        )
 
         mock_analysis = {
             "symbol": "005930",
@@ -812,6 +819,8 @@ class TestAnalyzeStockBatch:
         }
         assert result["results"]["005930"] == {
             "symbol": "005930",
+            "name": "삼성전자",
+            "name_resolved": True,
             "market_type": "equity_kr",
             "source": "kis",
             "current_price": 75000,
@@ -837,6 +846,13 @@ class TestAnalyzeStockBatch:
         # ROB-451: crypto batch quick summary must surface rsi_14 (flat indicator map),
         # while consensus stays null (crypto has no analyst-consensus source — correct).
         tools = build_tools()
+        from app.mcp_server.tooling import name_resolution
+
+        monkeypatch.setattr(
+            name_resolution,
+            "get_upbit_market_display_names",
+            AsyncMock(return_value={}),
+        )
 
         mock_analysis = {
             "symbol": "BTC",
@@ -864,6 +880,8 @@ class TestAnalyzeStockBatch:
         assert row["rsi_14"] == pytest.approx(61.2)  # ROB-451: no longer null
         assert row.get("consensus") is None  # crypto: correct (not a regression)
         assert row["position"] is None  # ROB-541: BTC not held -> null
+        assert row["name"] == "BTC"
+        assert row["name_resolved"] is False
 
     async def test_analyze_stock_batch_quick_false_returns_full_payload(
         self, monkeypatch
