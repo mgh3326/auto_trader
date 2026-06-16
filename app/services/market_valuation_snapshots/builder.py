@@ -28,7 +28,10 @@ def _to_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        result = Decimal(str(value))
+        if result.is_nan() or result.is_infinite():
+            return None
+        return result
     except Exception:  # noqa: BLE001
         return None
 
