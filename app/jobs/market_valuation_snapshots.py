@@ -289,26 +289,51 @@ async def run_market_valuation_snapshot_build(
     batches = 0
     finnhub_backfill: Counter[str] = Counter()
     coverage: Counter[str] = Counter(dict.fromkeys(_COVERAGE_FIELDS, 0))
-    for start in range(0, len(symbols), effective_batch_size):
-        batches += 1
+
+    if request.all_symbols and market == "us":
         result = await build_valuation_snapshots_for_market(
             market=market,
-            symbols=symbols[start : start + effective_batch_size],
+            symbols=symbols,
             snapshot_date=today,
             concurrency=request.concurrency,
             include_high_date=request.include_high_date,
+            use_bulk=True,
         )
-        payloads = list(result.payloads)
-        warnings.extend(f"batch {batches}: {warning}" for warning in result.warnings)
-        total_built += len(payloads)
-        distribution.update(p.snapshot_date.isoformat() for p in payloads)
-        idempotency.update(await _classify_idempotency(payloads))
-        samples.extend(_sample(p) for p in payloads[: max(0, 10 - len(samples))])
-        batch_backfill, batch_coverage = _aggregate_report(payloads)
-        finnhub_backfill.update(batch_backfill)
-        coverage.update(batch_coverage)
-        if request.commit and payloads:
-            await _commit_payloads(payloads)
+        payloads_all = list(result.payloads)
+        warnings.extend(f"bulk: {warning}" for warning in result.warnings)
+        for start in range(0, len(payloads_all), effective_batch_size):
+            batches += 1
+            payloads = payloads_all[start : start + effective_batch_size]
+            total_built += len(payloads)
+            distribution.update(p.snapshot_date.isoformat() for p in payloads)
+            idempotency.update(await _classify_idempotency(payloads))
+            samples.extend(_sample(p) for p in payloads[: max(0, 10 - len(samples))])
+            batch_backfill, batch_coverage = _aggregate_report(payloads)
+            finnhub_backfill.update(batch_backfill)
+            coverage.update(batch_coverage)
+            if request.commit and payloads:
+                await _commit_payloads(payloads)
+    else:
+        for start in range(0, len(symbols), effective_batch_size):
+            batches += 1
+            result = await build_valuation_snapshots_for_market(
+                market=market,
+                symbols=symbols[start : start + effective_batch_size],
+                snapshot_date=today,
+                concurrency=request.concurrency,
+                include_high_date=request.include_high_date,
+            )
+            payloads = list(result.payloads)
+            warnings.extend(f"batch {batches}: {warning}" for warning in result.warnings)
+            total_built += len(payloads)
+            distribution.update(p.snapshot_date.isoformat() for p in payloads)
+            idempotency.update(await _classify_idempotency(payloads))
+            samples.extend(_sample(p) for p in payloads[: max(0, 10 - len(samples))])
+            batch_backfill, batch_coverage = _aggregate_report(payloads)
+            finnhub_backfill.update(batch_backfill)
+            coverage.update(batch_coverage)
+            if request.commit and payloads:
+                await _commit_payloads(payloads)
     finished_at = dt.datetime.now(dt.UTC)
     return MarketValuationSnapshotBuildResult(
         market=market,
