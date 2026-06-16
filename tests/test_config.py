@@ -39,6 +39,59 @@ EXPECTED_KIS_API_RATE_LIMITS = {
         "rate": 10,
         "period": 1.0,
     },
+    # KIS Batch Order Rate Limit Handling (8/s)
+    "TTTC0012U|/uapi/domestic-stock/v1/trading/order-cash": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTC0012U|/uapi/domestic-stock/v1/trading/order-cash": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "TTTC0011U|/uapi/domestic-stock/v1/trading/order-cash": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTC0011U|/uapi/domestic-stock/v1/trading/order-cash": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "TTTC0013U|/uapi/domestic-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTC0013U|/uapi/domestic-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "TTTT1002U|/uapi/overseas-stock/v1/trading/order": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTT1002U|/uapi/overseas-stock/v1/trading/order": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "TTTT1006U|/uapi/overseas-stock/v1/trading/order": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTT1006U|/uapi/overseas-stock/v1/trading/order": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTT1001U|/uapi/overseas-stock/v1/trading/order": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "TTTT1004U|/uapi/overseas-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTT1004U|/uapi/overseas-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
 }
 
 EXPECTED_UPBIT_API_RATE_LIMITS = {

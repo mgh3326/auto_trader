@@ -315,6 +315,8 @@ class DomesticOrderClient:
             timeout=10,
             api_name="order_korea_stock",
             tr_id=tr_id,
+            retry_request_errors=False,
+            max_retries_override=3,
         )
 
         if js.get("rt_cd") != "0":
@@ -344,6 +346,8 @@ class DomesticOrderClient:
             "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            "rate_limited": js.get("rate_limited", False),
+            "rate_limit_retries": js.get("rate_limit_retries", 0),
         }
 
         logging.info(
@@ -481,6 +485,8 @@ class DomesticOrderClient:
             timeout=10,
             api_name="cancel_korea_order",
             tr_id=tr_id,
+            retry_request_errors=False,
+            max_retries_override=3,
         )
 
         if js.get("rt_cd") != "0":
@@ -507,6 +513,8 @@ class DomesticOrderClient:
             "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            "rate_limited": js.get("rate_limited", False),
+            "rate_limit_retries": js.get("rate_limit_retries", 0),
         }
 
         logging.info(
@@ -797,6 +805,8 @@ class DomesticOrderClient:
             timeout=10,
             api_name="modify_korea_order",
             tr_id=tr_id,
+            retry_request_errors=False,
+            max_retries_override=3,
         )
 
         if js.get("rt_cd") != "0":
@@ -822,6 +832,8 @@ class DomesticOrderClient:
             "odno": output.get("ODNO") or output.get("ORD_NO"),
             "ord_tmd": output.get("ORD_TMD"),
             "msg": js.get("msg1"),
+            "rate_limited": js.get("rate_limited", False),
+            "rate_limit_retries": js.get("rate_limit_retries", 0),
         }
 
         logging.info(
