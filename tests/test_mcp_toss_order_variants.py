@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -64,6 +65,11 @@ def test_toss_tool_descriptions_document_live_gates():
 
     mcp = RecordingMCP()
     register_toss_live_order_tools(mcp)  # type: ignore[arg-type]
+
+    preview_desc = mcp.descriptions["toss_preview_order"]
+    assert "current_price" in preview_desc
+    assert "fill_distance/order_warnings" in preview_desc
+    assert "fee/FX full-conversion costs" in preview_desc
 
     place_desc = mcp.descriptions["toss_place_order"]
     assert "account_mode='toss_live'" in place_desc
@@ -219,9 +225,47 @@ class MockTossClient:
         return SimpleNamespace(order_id="can-ord-789")
 
     async def buying_power(self, *, currency):
-        from types import SimpleNamespace
-
         return SimpleNamespace(currency=currency, cash_buying_power=Decimal("10000.0"))
+
+
+def _enable_toss_preview(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    return otv
+
+
+def _stub_toss_costs(commission_bps: float = 10.0, fx_spread_bps: float = 1.7):
+    return {
+        "version": 1,
+        "accounts": {
+            "toss": {
+                "broker": "toss",
+                "markets": {
+                    "kr": {"commission_bps": 0.0, "fx_spread_bps": 0.0},
+                    "us": {
+                        "commission_bps": commission_bps,
+                        "fx_spread_bps": fx_spread_bps,
+                    },
+                },
+            }
+        },
+    }
+
+
+def _stub_usd_krw_quote(rate: float = 1360.0):
+    return SimpleNamespace(
+        rate=rate,
+        mid_rate=rate,
+        default_rate=rate,
+        source="toss",
+        valid_from=None,
+        valid_until=None,
+        basis_point=None,
+        rate_change_type=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -964,6 +1008,155 @@ async def test_preview_order_shapes_payload_and_rejects_invalid_inputs(monkeypat
             quantity="not-a-number",
             account_mode="toss_live",
         )
+
+
+@pytest.mark.asyncio
+async def test_toss_preview_buy_limit_above_market_returns_price_distance_and_costs(
+    monkeypatch,
+):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "AVGO", "last_price": Decimal("390"), "currency": "USD"}
+    ]
+    monkeypatch.setattr(
+        otv,
+        "get_account_costs_setting",
+        AsyncMock(return_value=_stub_toss_costs()),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        otv,
+        "get_usd_krw_rate_details",
+        AsyncMock(return_value=_stub_usd_krw_quote()),
+        raising=False,
+    )
+
+    res = await toss_preview_order(
+        symbol="AVGO",
+        side="buy",
+        order_type="limit",
+        quantity="1",
+        price="394",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert res["current_price"] == "390"
+    assert res["current_price_currency"] == "USD"
+    assert res["order_warnings"] == ["buy_limit_above_market"]
+    assert res["fill_distance"] == {
+        "distance_usd": "4",
+        "distance_pct": "1.0256",
+        "currency": "USD",
+        "marketable": True,
+        "direction": "above_market",
+    }
+    assert res["estimated_value"] == "394"
+    assert res["estimated_value_currency"] == "USD"
+    assert res["fee"] == "0.394"
+    assert res["fee_currency"] == "USD"
+    assert res["fx_cost_full_conversion"] == "91.0928"
+    assert res["fx_cost_full_conversion_currency"] == "KRW"
+    assert res["estimated_costs"] == {
+        "notional": "394",
+        "notional_currency": "USD",
+        "fee": "0.394",
+        "fee_currency": "USD",
+        "commission_bps": 10.0,
+        "fx_spread_bps": 1.7,
+        "fx_cost_full_conversion": "91.0928",
+        "fx_cost_full_conversion_currency": "KRW",
+        "fx_rate_usd_krw": "1360",
+        "fx_rate_source": "toss",
+        "fx_assumption": "full_notional_krw_conversion",
+        "cost_profile_source": "user_setting",
+        "cost_profile_review_required": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_toss_preview_sell_limit_below_market_returns_marketable_warning(
+    monkeypatch,
+):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "AVGO", "last_price": Decimal("390"), "currency": "USD"}
+    ]
+    monkeypatch.setattr(
+        otv,
+        "get_account_costs_setting",
+        AsyncMock(return_value=_stub_toss_costs()),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        otv,
+        "get_usd_krw_rate_details",
+        AsyncMock(return_value=_stub_usd_krw_quote()),
+        raising=False,
+    )
+
+    res = await toss_preview_order(
+        symbol="AVGO",
+        side="sell",
+        order_type="limit",
+        quantity="1",
+        price="380",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert res["current_price"] == "390"
+    assert res["order_warnings"] == ["sell_limit_below_market"]
+    assert res["fill_distance"] == {
+        "distance_usd": "10",
+        "distance_pct": "2.5641",
+        "currency": "USD",
+        "marketable": True,
+        "direction": "below_market",
+    }
+
+
+@pytest.mark.asyncio
+async def test_toss_preview_order_degrades_when_price_context_unavailable(monkeypatch):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = []
+    monkeypatch.setattr(
+        otv,
+        "get_account_costs_setting",
+        AsyncMock(return_value=_stub_toss_costs()),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        otv,
+        "get_usd_krw_rate_details",
+        AsyncMock(return_value=_stub_usd_krw_quote()),
+        raising=False,
+    )
+
+    res = await toss_preview_order(
+        symbol="AVGO",
+        side="buy",
+        order_type="limit",
+        quantity="1",
+        price="394",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert res["current_price"] is None
+    assert res["current_price_currency"] is None
+    assert "price_context_unavailable" in res["order_warnings"]
+    assert (
+        "Could not resolve latest price for symbol: AVGO"
+        in res["price_context_message"]
+    )
+    assert "fill_distance" not in res
+    assert res["estimated_value"] == "394"
+    assert res["fee"] == "0.394"
+    assert res["warnings"] == []
 
 
 @pytest.mark.asyncio

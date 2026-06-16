@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.3] - 2026-06-16
+
+### Added (ROB-582 — Cross-asset allocation roll-up)
+- New read-only MCP tool `get_portfolio_allocation`: unified KRW-based asset-class weights (US/KR equity, crypto, cash) across KIS/Toss/Samsung/Upbit holdings and cash, with optional `target_weights` over/underweight drift flags and per-asset-class P&L.
+- KR-listed ETF look-through reclassifies US-index ETFs (e.g. TIGER/KODEX/SOL/RISE 미국S&P500·나스닥100) into effective US-equity exposure via KRX ETF metadata; fail-open to the surface label when metadata is unavailable. No order/mutation path.
+
+## [0.2.2] - 2026-06-16
+
+### Added (ROB-581 — Crypto Discovery Tools)
+- Expose Upbit altseason constituents list with relative strength calculations (vs. BTC).
+- Add crypto `relative_strength` ranking sorting and screening options.
+- Expose a dedicated `get_crypto_top_movers` MCP tool on FastMCP for real-time asset discovery.
+- Update `app/mcp_server/README.md` documentation.
+- Add comprehensive test coverage in `tests/test_upbit_index_service.py`, `tests/test_mcp_top_stocks.py`, and `tests/test_mcp_profiles.py`.
+
+## [0.2.1] - 2026-06-16
+
+### Added (ROB-580 — Multi-window crypto order flow)
+- Multi-window analysis (50, 200, 500 ticks) derived from a single atomic fetch.
+- Disjoint trend consensus (recent 50 vs older 450 ticks) with `strengthening`, `weakening`, and `reversing` categorization.
+- Noise filtering with 0.10 net-flow deadband.
+- Confidence scoring based on trade density and "whale" trade dominance (>35% of volume).
+- Response metadata: `span_seconds`, `largest_trade_share`, `as_of`, and `default_window`.
+
 ## [0.2.0] - 2026-02-12
 ### Changed
 - **Breaking**: `get_open_orders` tool removed. Replaced by `get_order_history(status="pending")`.

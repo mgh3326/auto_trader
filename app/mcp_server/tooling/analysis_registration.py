@@ -9,6 +9,7 @@ from app.mcp_server.tooling.analysis_tool_handlers import (
     analyze_stock_batch_impl,
     analyze_stock_impl,
     get_correlation_impl,
+    get_crypto_top_movers_impl,
     get_disclosures_impl,
     get_dividends_impl,
     get_fear_greed_index_impl,
@@ -40,6 +41,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     # recommend_stocks_impl implementation is retained in
     # analysis_tool_handlers for a future narrow build_buy_plan tool.
     "get_top_stocks",
+    "get_crypto_top_movers",
     "get_disclosures",
     "get_correlation",
     "get_dividends",
@@ -83,7 +85,7 @@ def register_analysis_tools(
             "Get top stocks by ranking type across different markets (KR/US/Crypto). "
             "KR: volume, market_cap, gainers, losers, foreigners "
             "US: volume, market_cap, gainers, losers "
-            "Crypto: volume, gainers, losers."
+            "Crypto: volume, gainers, losers, relative_strength (vs BTC 24h)."
         ),
     )
     async def get_top_stocks(
@@ -93,6 +95,25 @@ def register_analysis_tools(
     ) -> dict[str, Any]:
         return await get_top_stocks_impl(
             market=market,
+            ranking_type=ranking_type,
+            limit=limit,
+        )
+
+    @mcp.tool(
+        name="get_crypto_top_movers",
+        description=(
+            "Read-only Upbit KRW crypto candidate discovery. "
+            "ranking_type supports relative_strength (default, vs BTC 24h), "
+            "volume, gainers, and losers. Returns the same ranking row shape as "
+            "get_top_stocks(market='crypto') with relative-strength fields when "
+            "ranking_type='relative_strength'."
+        ),
+    )
+    async def get_crypto_top_movers(
+        ranking_type: str = "relative_strength",
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return await get_crypto_top_movers_impl(
             ranking_type=ranking_type,
             limit=limit,
         )

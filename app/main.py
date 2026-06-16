@@ -21,7 +21,10 @@ from app.core.taskiq_broker import broker
 from app.middleware.auth import AuthMiddleware
 from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
-from app.monitoring.trade_notifier import get_trade_notifier
+from app.monitoring.trade_notifier.runtime import (
+    configure_trade_notifier_from_settings,
+    shutdown_trade_notifier,
+)
 from app.routers import (
     agent_callback,
     alpaca_paper_ledger,
@@ -243,74 +246,20 @@ def create_app() -> FastAPI:
 
 
 async def setup_monitoring() -> None:
-    """
-    Setup monitoring and observability for the application.
+    """Initialize monitoring services.
 
-    This includes:
+    Includes:
     - Discord webhook trade notifier (primary)
     - Telegram trade notifier (fallback)
     """
-    # Check if any notification system is configured
-    has_discord = any(
-        [
-            settings.discord_webhook_us,
-            settings.discord_webhook_kr,
-            settings.discord_webhook_crypto,
-            settings.discord_webhook_alerts,
-        ]
-    )
-    has_telegram = settings.telegram_token and settings.telegram_chat_id
-
-    if not has_discord and not has_telegram:
-        logger.info("Trade notifier is disabled (no Discord or Telegram configured)")
-        return
-
-    try:
-        # Configure trade notifier with Discord and/or Telegram
-        trade_notifier = get_trade_notifier()
-
-        # Telegram is optional - use empty string if not configured
-        bot_token = settings.telegram_token or ""
-        chat_ids = settings.telegram_chat_ids if has_telegram else []
-
-        trade_notifier.configure(
-            bot_token=bot_token,
-            chat_ids=chat_ids,
-            enabled=True,
-            discord_webhook_us=settings.discord_webhook_us,
-            discord_webhook_kr=settings.discord_webhook_kr,
-            discord_webhook_crypto=settings.discord_webhook_crypto,
-            discord_webhook_alerts=settings.discord_webhook_alerts,
-        )
-
-        # Log what was configured
-        configured_systems = []
-        if has_discord:
-            webhook_count = sum(
-                [
-                    bool(settings.discord_webhook_us),
-                    bool(settings.discord_webhook_kr),
-                    bool(settings.discord_webhook_crypto),
-                    bool(settings.discord_webhook_alerts),
-                ]
-            )
-            configured_systems.append(f"Discord ({webhook_count} webhook(s))")
-        if has_telegram:
-            configured_systems.append(f"Telegram (chat_id={settings.telegram_chat_id})")
-
-        logger.info(f"Trade notifier initialized: {', '.join(configured_systems)}")
-
-    except Exception as e:
-        logger.error(f"Failed to initialize trade notifier: {e}", exc_info=True)
+    configure_trade_notifier_from_settings(log_context="Trade notifier")
 
 
 async def cleanup_monitoring() -> None:
     """Cleanup monitoring resources."""
     # Shutdown trade notifier
     try:
-        trade_notifier = get_trade_notifier()
-        await trade_notifier.shutdown()
-        logger.info("Trade notifier shutdown complete")
+        await shutdown_trade_notifier(log_context="Trade notifier")
     except Exception as e:
         logger.error(f"Error during trade notifier shutdown: {e}", exc_info=True)
 
