@@ -60,7 +60,9 @@ _CRYPTO_RESEARCH_TOOL_NAMES = {
     "get_upbit_index",
     "get_upbit_altseason",
     "get_crypto_fear_greed",
+    "get_crypto_top_movers",
 }
+
 # ROB-503: generic 이름은 제거됨 (crypto-only 구현인데 이름이 시장 비특정).
 # get_fear_greed_index는 ROB-488에서 get_crypto_fear_greed로 리네임.
 _REMOVED_GENERIC_TOOL_NAMES = {
@@ -165,6 +167,10 @@ class TestCryptoProfile:
     def test_keeps_generic_research_surface(self) -> None:
         mcp = _build_mcp(McpProfile.CRYPTO)
         assert {"get_quote", "screen_stocks", "get_holdings"} <= mcp.tools.keys()
+
+    def test_keeps_crypto_discovery_tool(self) -> None:
+        mcp = _build_mcp(McpProfile.CRYPTO)
+        assert "get_crypto_top_movers" in mcp.tools
 
     def test_registers_crypto_trading_surface(self) -> None:
         # A crypto session must be able to trade and settle: generic

@@ -172,7 +172,15 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Results are capped (default 40) and paginated. Check `pagination` in payload.
   - Preset sweeps are capped at 5 presets. Analyst filters are capped at 200 merged rows before enrichment; narrow with preset, market cap, or explicit symbols first.
   - Minimum market-cap filters exclude rows with missing `marketCapValue` and report the excluded count in `warnings`.
+  - Crypto snapshot examples:
+    - `screen_stocks_snapshot(preset="crypto_high_volume", market="crypto", limit=40)`
+    - `screen_stocks_snapshot(preset="crypto_momentum", market="crypto", filters=[{"field":"trade_amount_24h","operator":"gte","value":10000000000}], limit=40)`
+  - Use `get_crypto_top_movers` for live Upbit top movers; use `screen_stocks_snapshot(..., market="crypto")` for persisted snapshot-backed filtering.
+- `get_top_stocks(market="kr", ranking_type="volume", limit=20)` - Cross-market rankings. Crypto supports `volume`, `gainers`, `losers`, and `relative_strength`.
+- `get_crypto_top_movers(ranking_type="relative_strength", limit=20)` - Crypto-only Upbit KRW discovery wrapper. Default ranking sorts non-BTC coins by 24h outperformance vs KRW-BTC.
+- `get_upbit_altseason(include_constituents=false, constituents_limit=50)` - Upbit altseason ratio and 24h breadth. With constituents enabled, `breadth.constituents` lists KRW alts beating BTC with 24h change, vs-BTC relative strength, volume, and traded value.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
+
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
   - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot

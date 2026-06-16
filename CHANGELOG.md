@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.2] - 2026-06-16
+
+### Added (ROB-581 — Crypto Discovery Tools)
+- Expose Upbit altseason constituents list with relative strength calculations (vs. BTC).
+- Add crypto `relative_strength` ranking sorting and screening options.
+- Expose a dedicated `get_crypto_top_movers` MCP tool on FastMCP for real-time asset discovery.
+- Update `app/mcp_server/README.md` documentation.
+- Add comprehensive test coverage in `tests/test_upbit_index_service.py`, `tests/test_mcp_top_stocks.py`, and `tests/test_mcp_profiles.py`.
+
 ## [0.2.1] - 2026-06-16
 
 ### Added (ROB-580 — Multi-window crypto order flow)

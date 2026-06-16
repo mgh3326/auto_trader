@@ -173,7 +173,13 @@ def _map_crypto_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
     market_cap = None
     trade_amount = _to_float(row.get("acc_trade_price_24h"))
 
-    return {
+    relative_strength = _to_optional_float(row.get("relative_strength_vs_btc_24h"))
+    relative_strength_pct = _to_optional_float(
+        row.get("relative_strength_pct_vs_btc_24h")
+    )
+    btc_change_rate = _to_optional_float(row.get("btc_change_rate_24h"))
+
+    mapped = {
         "rank": rank,
         "symbol": symbol,
         "name": name,
@@ -184,6 +190,13 @@ def _map_crypto_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
         "market_cap": market_cap,
         "trade_amount": trade_amount,
     }
+    if relative_strength is not None:
+        mapped["relative_strength_vs_btc_24h"] = relative_strength
+    if relative_strength_pct is not None:
+        mapped["relative_strength_pct_vs_btc_24h"] = relative_strength_pct
+    if btc_change_rate is not None:
+        mapped["btc_change_rate_24h"] = btc_change_rate
+    return mapped
 
 
 # ---------------------------------------------------------------------------
