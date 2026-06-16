@@ -73,4 +73,3 @@ async def handle_get_upbit_altseason(
             message=str(exc),
             instrument_type="crypto",
         )
-

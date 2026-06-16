@@ -502,7 +502,6 @@ def _register_fundamentals_tools_impl(
             constituents_limit=constituents_limit,
         )
 
-
     @mcp.tool(
         name="get_support_resistance",
         description=(

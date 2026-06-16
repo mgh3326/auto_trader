@@ -162,7 +162,6 @@ async def get_crypto_rankings_impl(
     return rankings, "upbit"
 
 
-
 def calculate_pearson_correlation(x: list[float], y: list[float]) -> float:
     """Calculate Pearson correlation coefficient between two lists."""
     n = len(x)

@@ -172,7 +172,6 @@ class TestCryptoProfile:
         mcp = _build_mcp(McpProfile.CRYPTO)
         assert "get_crypto_top_movers" in mcp.tools
 
-
     def test_registers_crypto_trading_surface(self) -> None:
         # A crypto session must be able to trade and settle: generic
         # account_mode order tools are the only Upbit entry point and

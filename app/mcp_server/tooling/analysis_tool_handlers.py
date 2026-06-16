@@ -102,7 +102,6 @@ async def get_top_stocks_impl(
         ("crypto", "relative_strength"),
     }
 
-
     key = (market, ranking_type)
     if key not in supported_combinations:
         return analysis_screening._error_payload(

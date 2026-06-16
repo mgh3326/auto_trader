@@ -54,7 +54,6 @@ ANALYSIS_TOOL_NAMES: set[str] = {
 }
 
 
-
 def register_analysis_tools(
     mcp: FastMCP,
 ) -> None:
@@ -86,7 +85,7 @@ def register_analysis_tools(
             "Get top stocks by ranking type across different markets (KR/US/Crypto). "
             "KR: volume, market_cap, gainers, losers, foreigners "
             "US: volume, market_cap, gainers, losers "
-            "Crypto: volume, gainers, losers."
+            "Crypto: volume, gainers, losers, relative_strength (vs BTC 24h)."
         ),
     )
     async def get_top_stocks(
@@ -118,7 +117,6 @@ def register_analysis_tools(
             ranking_type=ranking_type,
             limit=limit,
         )
-
 
     @mcp.tool(
         name="get_disclosures",

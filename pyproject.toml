@@ -1,6 +1,6 @@
 [project]
 name = "auto-trader"
-version = "0.2.1"
+version = "0.2.2"
 description = ""
 authors = [
     { name = "robin", email = "robin@watcha.com" }

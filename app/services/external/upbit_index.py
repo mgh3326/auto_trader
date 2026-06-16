@@ -66,7 +66,6 @@ def _clear_caches() -> None:
     _altseason_cache_expires = {}
 
 
-
 async def _get_json(url: str, params: dict[str, Any] | None = None) -> Any:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         response = await client.get(url, params=params)
@@ -219,7 +218,9 @@ def _build_altseason_constituents(
                 "relative_strength_vs_btc_24h": round(relative, 8),
                 "relative_strength_pct_vs_btc_24h": round(relative * 100, 4),
                 "volume_24h": _to_float_or_none(ticker.get("acc_trade_volume_24h")),
-                "trade_amount_24h": _to_float_or_none(ticker.get("acc_trade_price_24h")),
+                "trade_amount_24h": _to_float_or_none(
+                    ticker.get("acc_trade_price_24h")
+                ),
             }
         )
     rows.sort(
@@ -346,4 +347,3 @@ async def fetch_upbit_altseason(
         _altseason_cache[cache_key] = result.copy()
         _altseason_cache_expires[cache_key] = now_kst() + _ALTSEASON_TTL
     return result.copy()
-

@@ -210,7 +210,6 @@ async def test_altseason_constituents_list_btc_outperformers(monkeypatch):
     ]
 
 
-
 @pytest.mark.asyncio
 async def test_altseason_partial_when_breadth_unavailable(monkeypatch):
     """Ratio survives even if the official ticker plane is down."""
@@ -304,4 +303,3 @@ async def test_handle_get_upbit_altseason_passes_constituent_options(monkeypatch
         "include_constituents": True,
         "constituents_limit": 200,
     }
-
