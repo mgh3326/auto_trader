@@ -447,7 +447,7 @@ def _build_orderbook_walls(
     )
 
 
-def _build_orderbook_payload(
+async def _build_orderbook_payload(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> dict[str, Any]:
     pressure = _classify_orderbook_pressure(snapshot.bid_ask_ratio)
@@ -497,6 +497,13 @@ def _build_orderbook_payload(
         payload["requires_final_recheck"] = snapshot.requires_final_recheck
     if snapshot.empty_reason is not None:
         payload["empty_reason"] = snapshot.empty_reason
+
+    from app.mcp_server.tooling.name_resolution import resolve_names
+    resolved = await resolve_names([snapshot.symbol], snapshot.instrument_type)
+    info = resolved.get(snapshot.symbol) or {"name": snapshot.symbol, "name_resolved": False}
+    payload["name"] = info["name"]
+    payload["name_resolved"] = info["name_resolved"]
+
     return payload
 
 
@@ -1207,30 +1214,35 @@ async def _get_quote_impl(
 
     market_type, symbol = _resolve_market_type(symbol, market)
 
-    if market_type == "equity_us":
-        return await _fetch_quote_equity_us(symbol)
-
-    source_map = {"crypto": "upbit", "equity_kr": "kis"}
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
     source = source_map[market_type]
 
     try:
-        if market_type == "crypto":
-            return await _fetch_quote_crypto(symbol)
-        # ROB-464: tag stale KRX regular-session data honestly. ROB-511 overlays
-        # an NXT-derived price during NXT sessions while preserving the KRX
-        # previous_close used for gap calculations.
-        data_state = kr_market_data_state()
-        quote = await _fetch_quote_equity_kr(symbol)
-        session = await _nxt_quote_session(data_state)
-        if session is not None:
-            overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
-            if overlay is not None:
-                quote.update(overlay)
-                quote["regular_session_data_state"] = data_state
-                quote["data_state"] = DATA_STATE_FRESH
-                return quote
+        if market_type == "equity_us":
+            quote = await _fetch_quote_equity_us(symbol)
+        elif market_type == "crypto":
+            quote = await _fetch_quote_crypto(symbol)
+        else:
+            # ROB-464: tag stale KRX regular-session data honestly. ROB-511 overlays
+            # an NXT-derived price during NXT sessions while preserving the KRX
+            # previous_close used for gap calculations.
+            data_state = kr_market_data_state()
+            quote = await _fetch_quote_equity_kr(symbol)
+            session = await _nxt_quote_session(data_state)
+            if session is not None:
+                overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
+                if overlay is not None:
+                    quote.update(overlay)
+                    quote["regular_session_data_state"] = data_state
+                    quote["data_state"] = DATA_STATE_FRESH
+            else:
+                quote["data_state"] = data_state
 
-        quote["data_state"] = data_state
+        from app.mcp_server.tooling.name_resolution import resolve_names
+        resolved = await resolve_names([symbol], market_type)
+        info = resolved.get(symbol) or {"name": symbol, "name_resolved": False}
+        quote["name"] = info["name"]
+        quote["name_resolved"] = info["name_resolved"]
         return quote
     except Exception as exc:
         return _error_payload_from_exception(
@@ -1275,7 +1287,7 @@ async def _get_orderbook_impl(
             "crypto" if market_type == "crypto" else "kr",
             venue=venue if market_type == "equity_kr" else None,
         )
-        return _build_orderbook_payload(snapshot)
+        return await _build_orderbook_payload(snapshot)
     except Exception as exc:
         return _error_payload_from_exception(
             source=source,
@@ -1422,7 +1434,8 @@ async def _get_execution_strength_impl(
     if data.execution_strength_pct is None and data_state == DATA_STATE_FRESH:
         # 장중인데 필드가 비어 있으면 "fresh + 전부 null" 로 위장하지 않는다.
         data_state = DATA_STATE_FIELD_UNAVAILABLE
-    return {
+
+    res = {
         "symbol": data.symbol,
         "as_of": data.as_of,
         "tick_time": data.tick_time,
@@ -1434,6 +1447,13 @@ async def _get_execution_strength_impl(
         "source": "kis",
         "instrument_type": "equity_kr",
     }
+
+    from app.mcp_server.tooling.name_resolution import resolve_names
+    resolved = await resolve_names([normalized], "equity_kr")
+    info = resolved.get(normalized) or {"name": normalized, "name_resolved": False}
+    res["name"] = info["name"]
+    res["name_resolved"] = info["name_resolved"]
+    return res
 
 
 def _register_market_data_tools_impl(mcp: FastMCP) -> None:
