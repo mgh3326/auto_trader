@@ -467,6 +467,33 @@ async def _run_batch_analysis(
         *[_analyze_one(s) for s in normalized_symbols]
     )
 
+    # Group successful results by market_type to batch resolve names
+    market_to_symbols = {}
+    for sym, res in zip(normalized_symbols, analyze_results, strict=True):
+        if "error" not in res:
+            mtype = res.get("market_type")
+            if mtype:
+                market_to_symbols.setdefault(mtype, []).append(sym)
+
+    # Call resolve_names for each market type
+    resolved_info = {}
+    if market_to_symbols:
+        from app.mcp_server.tooling.name_resolution import resolve_names
+        resolution_tasks = []
+        mtypes = list(market_to_symbols.keys())
+        for mtype in mtypes:
+            resolution_tasks.append(resolve_names(market_to_symbols[mtype], mtype))
+        resolution_results = await asyncio.gather(*resolution_tasks)
+        for mtype, res_dict in zip(mtypes, resolution_results):
+            resolved_info.update(res_dict)
+
+    # Inject name and name_resolved into each result
+    for sym, res in zip(normalized_symbols, analyze_results, strict=True):
+        if "error" not in res:
+            info = resolved_info.get(sym) or {"name": sym, "name_resolved": False}
+            res["name"] = info["name"]
+            res["name_resolved"] = info["name_resolved"]
+
     success_count = 0
     fail_count = 0
     for sym, result in zip(normalized_symbols, analyze_results, strict=True):
@@ -627,6 +654,8 @@ def _summarize_analysis_result(
 
     summary: dict[str, Any] = {
         "symbol": symbol,
+        "name": analysis.get("name"),
+        "name_resolved": analysis.get("name_resolved", False),
         "market_type": analysis.get("market_type"),
         "source": analysis.get("source"),
         "current_price": quote.get("price") or quote.get("current_price"),
