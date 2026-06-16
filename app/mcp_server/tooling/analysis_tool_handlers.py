@@ -99,7 +99,9 @@ async def get_top_stocks_impl(
         ("crypto", "volume"),
         ("crypto", "gainers"),
         ("crypto", "losers"),
+        ("crypto", "relative_strength"),
     }
+
 
     key = (market, ranking_type)
     if key not in supported_combinations:
