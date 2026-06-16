@@ -1204,6 +1204,36 @@ Market routing:
 - If `market` is omitted, routing is heuristic: KRW-/USDT- prefix -> crypto, 6-digit code -> KR equity, otherwise -> US equity
 - Crypto symbols must include `KRW-` or `USDT-` prefix
 
+### `get_portfolio_allocation` spec
+
+Parameters:
+- `account`: optional account filter matching `get_holdings` and `get_cash_balance` (`kis`, `upbit`, `toss`, `samsung_pension`, `isa`, `paper`, `paper:<name>`)
+- `market`: optional holdings market filter (`kr`, `us`, `crypto`); cash is still included when `include_cash=true` unless `account` excludes the cash account
+- `include_cash`: include cash balances in the allocation denominator, default `true`
+- `include_positions`: include per-position normalized rows, default `false`
+- `target_weights`: optional mapping from asset class to target percent; when omitted, no over/underweight flags are emitted
+- `drift_threshold_pct`: threshold for `overweight` / `underweight` labels when `target_weights` is provided, default `5.0`
+- `account_mode`: same routing selector as `get_holdings` (`db_simulated`, `kis_mock`, `kis_live`)
+
+Behavior:
+- Read-only only. The tool performs no order preview, order placement, mutation, reconciliation, or live approval action.
+- Converts USD holdings and USD cash to KRW using the same exchange-rate service used by portfolio cash tools.
+- Aggregates direct US equity as `us_equity`, KR equity as `kr_equity`, Upbit holdings as `crypto`, and cash as `cash`.
+- Looks through KR-listed ETFs when KRX ETF metadata is available. KR ETFs classified as `미국주식` by `app.services.krx.classify_etf_category()` are counted as effective `us_equity`, while their surface account remains KR/KIS/Toss.
+- Non-US foreign, commodity, bond, and unclear ETF categories are counted as `other` rather than Korean equity.
+- If KRX ETF metadata lookup fails, the tool records a degraded `krx_etf` error and keeps KR ETF positions in their surface `kr_equity` bucket.
+- Positions whose valuation is unavailable are excluded from the denominator and listed in `warnings` with `reason="position_value_unavailable"`.
+
+Response shape:
+- `summary`: KRW total, invested value, cash value, valued/unvalued position counts
+- `asset_classes`: value, weight, direct/look-through split, target/drift fields, and optional weight status
+- `accounts`: account-level KRW roll-up with asset-class children
+- `lookthrough`: KR ETF rows whose effective exposure differs from surface exposure
+- `positions`: returned only when `include_positions=true`
+- `cash`: normalized cash rows when `include_cash=true`
+- `errors`: broker, cash, exchange-rate, or KRX ETF partial failures
+- `warnings`: non-fatal valuation omissions
+
 ### User Settings Tools
 
 - `get_user_setting(key)` - Get a user setting value by key. Returns the JSON value or None if not found.
