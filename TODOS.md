@@ -17,3 +17,8 @@
   stop with an explicit blocker. Same safety boundary as ROB-351 (research-only).
 - **Depends on / blocked by:** ROB-351 families 1-3 outcome; a vetted funding/OI/liquidation
   historical data source.
+
+## Completed
+
+- **ROB-580**: Multi-window crypto order flow improvement (v0.2.1).
+
