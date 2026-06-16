@@ -1,4 +1,4 @@
-"""ROB-574 — paused TaskIQ auto-reconcile for Toss live KR/US orders.
+"""ROB-574/ROB-576 — paused TaskIQ auto-reconcile for Toss live KR/US orders.
 
 Registered with the worker so operators can kick or externally schedule it, but
 it carries no in-code ``schedule=`` label. Recurrence is owned by

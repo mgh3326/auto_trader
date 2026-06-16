@@ -135,3 +135,26 @@ total_pnl_krw = security_pnl_krw + fx_pnl_krw
 ## Operational Hold
 
 Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until ROB-539 live smoke and stronger-model/CTO review clear this path. This feature changes live-order bookkeeping and must stay under `hold_for_final_review` until cleared.
+
+## Fill Notifications (ROB-576)
+
+When `TOSS_FILL_NOTIFY_ENABLED=true`, `toss_reconcile_orders(dry_run=False)` sends a fill notification after a new fill delta is durably booked. Dry runs never notify. Re-running reconcile for an already-booked quantity does not notify because the existing delta-idempotency guard returns `noop_already_booked`.
+
+Notification routing:
+
+- `market="kr"` → `DISCORD_WEBHOOK_KR`
+- `market="us"` → `DISCORD_WEBHOOK_US`
+- Telegram fallback uses the existing `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` settings.
+
+Toss fill notifications intentionally use `enrichment=None`. The existing KR/US fill enrichment reads KIS account state and can display the wrong position/PnL for Toss fills if the same symbol is also held in KIS.
+
+## Auto-Reconcile (ROB-576 PR2)
+
+The optional TaskIQ task `toss_live.reconcile_periodic` is shipped without an in-repo schedule and returns `{"status": "paused"}` until both gates are true:
+
+- `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true`
+- `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`
+
+When enabled, the task calls `toss_reconcile_orders_impl(dry_run=False)`. This still does not place, modify, or cancel live orders; it only books confirmed broker evidence into local trades/journals and triggers fill notifications if `TOSS_FILL_NOTIFY_ENABLED=true`.
+
+Recommended initial external cadence: 1-5 minutes. Start at 5 minutes unless there is an operator need for faster Discord latency, then tighten after watching Toss API rate-limit and OAuth behavior.
