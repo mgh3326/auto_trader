@@ -395,10 +395,10 @@ def _register_fundamentals_tools_impl(
         name="get_crypto_order_flow",
         description=(
             "Get Upbit recent-trade taker order-flow for a KRW crypto market "
-            "(retail buy/sell pressure proxy): volume-weighted taker_buy_ratio, "
-            "taker_sell_ratio, and net (buy-sell, in [-1,1]; >0 = net buying). "
-            "Read-only public Upbit /v1/trades/ticks. count in [1,500]. None "
-            "when no usable ticks."
+            "(retail buy/sell pressure proxy). Returns multi-window (50/200/500) "
+            "ratios and a 'consensus' verdict (direction, trend, confidence, note). "
+            "Prefer 'consensus' over bare 'net' to filter transient noise. "
+            "Read-only public Upbit data; count in [1,500] controls 'default_window'."
         ),
     )
     async def get_crypto_order_flow(symbol: str, count: int = 200) -> dict[str, Any]:

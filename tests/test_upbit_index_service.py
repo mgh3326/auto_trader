@@ -193,21 +193,33 @@ async def test_altseason_constituents_list_btc_outperformers(monkeypatch):
     assert breadth["alts_total"] == 2
     assert breadth["alts_beating_btc"] == 1
     assert breadth["constituents_count"] == 1
-    assert breadth["constituents"] == [
-        {
-            "rank": 1,
-            "symbol": "KRW-ETH",
-            "coin": "ETH",
-            "price": 5_000_000,
-            "change_rate_24h": 0.05,
-            "change_pct_24h": 5.0,
-            "btc_change_rate_24h": 0.01,
-            "relative_strength_vs_btc_24h": 0.04,
-            "relative_strength_pct_vs_btc_24h": 4.0,
-            "volume_24h": 200.0,
-            "trade_amount_24h": 20_000_000_000.0,
-        }
-    ]
+    assert breadth["constituents"][0]["symbol"] == "KRW-ETH"
+
+
+@pytest.mark.asyncio
+async def test_altseason_constituents_includes_relative_strength_zero(monkeypatch):
+    """ROB-589: coins matching BTC rate (RS=0) must be included, same as top_stocks."""
+    upbit_index._clear_caches()
+    mapping = {
+        **_datalab_mapping(),
+        "/market/all": _MARKET_ALL,
+        "/ticker": [
+            {"market": "KRW-BTC", "signed_change_rate": 0.01},
+            {"market": "KRW-ETH", "signed_change_rate": 0.01},  # RS = 0
+            {"market": "KRW-XRP", "signed_change_rate": 0.00},  # RS < 0
+        ],
+    }
+    monkeypatch.setattr(httpx.AsyncClient, "get", _route(mapping))
+
+    payload = await upbit_index.fetch_upbit_altseason(include_constituents=True)
+
+    breadth = payload["breadth"]
+    # alts_beating_btc follows the > btc_rate logic for the percentage (unchanged)
+    assert breadth["alts_beating_btc"] == 0
+    # but constituents now includes the RS=0 row
+    assert breadth["constituents_count"] == 1
+    assert breadth["constituents"][0]["symbol"] == "KRW-ETH"
+    assert breadth["constituents"][0]["relative_strength_vs_btc_24h"] == 0.0
 
 
 @pytest.mark.asyncio

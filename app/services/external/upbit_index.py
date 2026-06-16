@@ -204,7 +204,7 @@ def _build_altseason_constituents(
         if market == "KRW-BTC" or not market.startswith("KRW-"):
             continue
         rate = _to_float_or_none(ticker.get("signed_change_rate"))
-        if rate is None or rate <= btc_rate:
+        if rate is None or rate < btc_rate:
             continue
         relative = rate - btc_rate
         rows.append(

@@ -65,6 +65,8 @@ async def test_get_portfolio_allocation_handler_rolls_up_positions_cash_and_erro
     )
 
     assert result["summary"]["total_value_krw"] == pytest.approx(1600000.0)
+    assert "by_currency" in result
+    assert result["by_currency"][0]["currency"] in {"KRW", "USD"}
     assert result["errors"] == [
         {"source": "holdings", "error": "partial"},
         {"source": "cash", "error": "partial"},
