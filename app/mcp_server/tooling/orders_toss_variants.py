@@ -23,14 +23,17 @@ from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
 )
+from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
 from app.mcp_server.tooling.toss_live_ledger import (
     record_toss_place_order,
     record_toss_replacement_order,
 )
+from app.services.account_routing import build_cost_profiles
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.dto import TossWarningInfo
 from app.services.brokers.toss.errors import TossApiResponseError
 from app.services.brokers.toss.warnings_guard import check_warnings_guard
+from app.services.exchange_rate_service import get_usd_krw_rate_details
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,9 @@ TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "toss_get_orderable_cash",
     "toss_reconcile_orders",
 }
+
+_BPS = Decimal("10000")
+_PRICE_CONTEXT_UNAVAILABLE = "price_context_unavailable"
 
 
 def _config_error() -> dict[str, Any] | None:
@@ -150,6 +156,22 @@ def _stringify_decimal(value: Decimal | None) -> str | None:
         return None
     normalized = value.normalize()
     return f"{normalized:f}"
+
+
+def _decimal_bps(value: float) -> Decimal:
+    return Decimal(str(value)) / _BPS
+
+
+def _quantize_bps_pct(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.0001"))
+
+
+def _currency_for_market(market: Literal["kr", "us"]) -> str:
+    return "KRW" if market == "kr" else "USD"
+
+
+def _distance_key_for_market(market: Literal["kr", "us"]) -> str:
+    return "distance_krw" if market == "kr" else "distance_usd"
 
 
 def _json_safe(value: Any) -> Any:
@@ -283,6 +305,177 @@ async def _latest_price(client: TossReadClient, symbol: str) -> Decimal:
             if p.symbol == symbol:
                 return p.last_price
     raise ValueError(f"Could not resolve latest price for symbol: {symbol}")
+
+
+async def _preview_price_context(
+    client: TossReadClient, symbol: str
+) -> tuple[Decimal | None, str | None, str | None]:
+    try:
+        prices = await client.prices([symbol])
+        for item in prices:
+            if item.symbol == symbol:
+                return item.last_price, item.currency, None
+        return None, None, f"Could not resolve latest price for symbol: {symbol}"
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"Failed to retrieve current price for {symbol}: {exc}"
+
+
+def _limit_fill_context(
+    *,
+    market: Literal["kr", "us"],
+    side: Literal["buy", "sell"],
+    order_type: Literal["limit", "market"],
+    price: Decimal | None,
+    current_price: Decimal | None,
+) -> tuple[list[str], dict[str, Any] | None]:
+    if (
+        order_type != "limit"
+        or price is None
+        or current_price is None
+        or current_price <= Decimal("0")
+        or price == current_price
+    ):
+        return [], None
+
+    direction = "above_market" if price > current_price else "below_market"
+    marketable = (side == "buy" and price > current_price) or (
+        side == "sell" and price < current_price
+    )
+    order_warnings: list[str] = []
+    if side == "buy" and price > current_price:
+        order_warnings.append("buy_limit_above_market")
+    elif side == "sell" and price < current_price:
+        order_warnings.append("sell_limit_below_market")
+    elif side == "sell" and price > current_price:
+        order_warnings.append("sell_limit_above_market")
+
+    distance = abs(price - current_price)
+    distance_pct = _quantize_bps_pct(distance / current_price * Decimal("100"))
+    return order_warnings, {
+        _distance_key_for_market(market): _stringify_decimal(distance),
+        "distance_pct": _stringify_decimal(distance_pct),
+        "currency": _currency_for_market(market),
+        "marketable": marketable,
+        "direction": direction,
+    }
+
+
+def _preview_notional(
+    *,
+    quantity: Decimal | None,
+    effective_price: Decimal | None,
+    order_amount: Decimal | None,
+) -> Decimal | None:
+    if order_amount is not None:
+        return order_amount
+    if quantity is not None and effective_price is not None:
+        return quantity * effective_price
+    return None
+
+
+async def _preview_cost_context(
+    *,
+    market: Literal["kr", "us"],
+    quantity: Decimal | None,
+    effective_price: Decimal | None,
+    order_amount: Decimal | None,
+) -> dict[str, Any]:
+    currency = _currency_for_market(market)
+    notional = _preview_notional(
+        quantity=quantity,
+        effective_price=effective_price,
+        order_amount=order_amount,
+    )
+    if notional is None:
+        return {
+            "estimated_value": None,
+            "estimated_value_currency": currency,
+            "fee": None,
+            "fee_currency": currency,
+            "fx_cost_full_conversion": None,
+            "fx_cost_full_conversion_currency": "KRW" if market == "us" else None,
+            "estimated_costs": {
+                "cost_profile_source": None,
+                "cost_profile_review_required": True,
+                "message": "notional unavailable: quantity/effective price or order_amount required",
+            },
+        }
+
+    try:
+        account_costs = await get_account_costs_setting()
+        cost_profile_message = None
+    except Exception as exc:  # noqa: BLE001
+        account_costs = None
+        cost_profile_message = f"account_costs_unavailable: {exc}"
+
+    profiles = build_cost_profiles(account_costs)
+    profile = profiles.market_profile("toss", market)
+    fee = notional * _decimal_bps(profile.commission_bps)
+    estimated_costs: dict[str, Any] = {
+        "notional": _stringify_decimal(notional),
+        "notional_currency": currency,
+        "fee": _stringify_decimal(fee),
+        "fee_currency": currency,
+        "commission_bps": profile.commission_bps,
+        "fx_spread_bps": profile.fx_spread_bps,
+        "cost_profile_source": profiles.source,
+        "cost_profile_review_required": profiles.review_required,
+    }
+    if cost_profile_message is not None:
+        estimated_costs["cost_profile_message"] = cost_profile_message
+
+    fx_cost_full_conversion: Decimal | None = None
+    fx_cost_full_conversion_currency: str | None = None
+    if market == "us":
+        fx_cost_full_conversion_currency = "KRW"
+        try:
+            quote = await get_usd_krw_rate_details()
+            usd_krw = Decimal(str(quote.default_rate))
+            fx_cost_full_conversion = (
+                notional * usd_krw * _decimal_bps(profile.fx_spread_bps)
+            )
+            estimated_costs.update(
+                {
+                    "fx_cost_full_conversion": _stringify_decimal(
+                        fx_cost_full_conversion
+                    ),
+                    "fx_cost_full_conversion_currency": "KRW",
+                    "fx_rate_usd_krw": _stringify_decimal(usd_krw),
+                    "fx_rate_source": quote.source,
+                    "fx_assumption": "full_notional_krw_conversion",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            estimated_costs.update(
+                {
+                    "fx_cost_full_conversion": None,
+                    "fx_cost_full_conversion_currency": "KRW",
+                    "fx_cost_message": f"fx_rate_unavailable: {exc}",
+                    "fx_assumption": "full_notional_krw_conversion",
+                }
+            )
+    else:
+        fx_cost_full_conversion = Decimal("0")
+        fx_cost_full_conversion_currency = "KRW"
+        estimated_costs.update(
+            {
+                "fx_cost_full_conversion": "0",
+                "fx_cost_full_conversion_currency": "KRW",
+                "fx_assumption": "not_applicable_kr_order",
+            }
+        )
+
+    return {
+        "estimated_value": _stringify_decimal(notional),
+        "estimated_value_currency": currency,
+        "fee": _stringify_decimal(fee),
+        "fee_currency": currency,
+        "fx_cost_full_conversion": _stringify_decimal(fx_cost_full_conversion)
+        if fx_cost_full_conversion is not None
+        else None,
+        "fx_cost_full_conversion_currency": fx_cost_full_conversion_currency,
+        "estimated_costs": estimated_costs,
+    }
 
 
 async def _sell_loss_guard(
@@ -500,8 +693,17 @@ async def toss_preview_order(
 
     warnings_list = []
     warnings_check_msg = None
+    order_warnings: list[str] = []
+    current_price_dec: Decimal | None = None
+    current_price_currency: str | None = None
+    price_context_message: str | None = None
     try:
         async with _client_context() as client:
+            (
+                current_price_dec,
+                current_price_currency,
+                price_context_message,
+            ) = await _preview_price_context(client, symbol)
             guard_res = await check_warnings_guard(
                 client, symbol, market=mkt, side=side
             )
@@ -520,16 +722,45 @@ async def toss_preview_order(
         logger.error("Failed to check warnings in preview: %s", exc, exc_info=True)
         warnings_check_msg = f"Failed to check warnings: {exc}"
 
-    return {
+    if price_context_message is not None:
+        order_warnings.append(_PRICE_CONTEXT_UNAVAILABLE)
+
+    fill_warnings, fill_distance = _limit_fill_context(
+        market=mkt,
+        side=side,
+        order_type=order_type,
+        price=price_dec,
+        current_price=current_price_dec,
+    )
+    order_warnings.extend(fill_warnings)
+
+    effective_price = price_dec if price_dec is not None else current_price_dec
+    cost_context = await _preview_cost_context(
+        market=mkt,
+        quantity=quantity_dec,
+        effective_price=effective_price,
+        order_amount=order_amount_dec,
+    )
+
+    response = {
         "success": True,
         "preview": True,
         "market": mkt,
         **tick_meta,
+        "current_price": _stringify_decimal(current_price_dec),
+        "current_price_currency": current_price_currency,
+        "order_warnings": order_warnings,
         "payload_preview": payload,
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "warnings": warnings_list,
         "warnings_check_message": warnings_check_msg,
+        **cost_context,
     }
+    if price_context_message is not None:
+        response["price_context_message"] = price_context_message
+    if fill_distance is not None:
+        response["fill_distance"] = fill_distance
+    return response
 
 
 async def _toss_place_order_impl(
@@ -1246,7 +1477,10 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "Hard-pinned to account_mode='toss_live'; matching account_mode is "
             "optional and any other value is rejected. market='kr'|'us' is "
             "accepted or inferred from symbol. This is read-only but still "
-            "requires TOSS_API_ENABLED and Toss credentials."
+            "requires TOSS_API_ENABLED and Toss credentials. The response "
+            "includes current_price, fill_distance/order_warnings for limit "
+            "marketability, and estimated Toss fee/FX full-conversion costs "
+            "from account_costs."
         ),
     )(toss_preview_order)
     mcp.tool(

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from app.core.db import AsyncSessionLocal
 from app.jobs.news_relevance_judgment import run_news_relevance_judgment
 from app.models.symbol_news_relevance import SymbolNewsRelevance
 from app.schemas.news_relevance import NewsRelevanceJudgment
@@ -42,10 +43,17 @@ class _FakeClient:
         return self.result
 
 
-def _judgment(article_id: int, symbol: str, *, relevance="high", relationship="direct"):
+def _judgment(
+    article_id: int,
+    symbol: str,
+    *,
+    market: str = "kr",
+    relevance: str = "high",
+    relationship: str = "direct",
+):
     return NewsRelevanceJudgment(
         article_id=article_id,
-        market="kr",
+        market=market,
         symbol=symbol,
         relationship=relationship,
         relevance=relevance,
@@ -68,6 +76,40 @@ async def _seed_pending(db, symbol: str, n: int = 1) -> list[int]:
     ]
     await symbol_news_store.upsert_kr_feed_articles(db, symbol, items)
     rows = await symbol_news_store.list_pending(db, "kr", 50, symbol=symbol)
+    return [row["article_id"] for row in rows]
+
+
+async def _seed_pending_for_market(
+    db,
+    *,
+    market: str,
+    symbol: str,
+    n: int = 1,
+) -> list[int]:
+    """Seed Finnhub-backed market rows for this test module."""
+    feed_source = (
+        symbol_news_store.FINNHUB_COMPANY_FEED_SOURCE
+        if market == "us"
+        else symbol_news_store.FINNHUB_GENERAL_FEED_SOURCE
+    )
+    items = [
+        FeedArticleInput(
+            url=f"https://x/rob579-{market}-{symbol}-{i}-{uuid.uuid4()}",
+            title=f"{symbol} Finnhub article {i}",
+            source="Reuters",
+            published_at=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+            summary=f"{symbol} summary {i}",
+        )
+        for i in range(n)
+    ]
+    await symbol_news_store.upsert_feed_articles(
+        db,
+        market,
+        symbol,
+        items,
+        feed_source=feed_source,
+    )
+    rows = await symbol_news_store.list_pending(db, market, 50, symbol=symbol)
     return [row["article_id"] for row in rows]
 
 
@@ -157,6 +199,49 @@ async def test_happy_path_applies_judgments_with_server_derived_status(
     assert statuses[ids[1]] == "excluded"
     assert len(client.calls) == 1
     assert client.calls[0]["pending"][0]["article_id"] in ids
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_us_happy_path_applies_judgments_and_hides_excluded(
+    db_session,
+) -> None:
+    symbol = f"A{uuid.uuid4().hex[:8].upper()}"
+    ids = await _seed_pending_for_market(db_session, market="us", symbol=symbol, n=2)
+    client = _FakeClient(
+        JudgmentClientResult(
+            status="judged",
+            judgments=[
+                _judgment(ids[0], symbol, market="us", relevance="high"),
+                _judgment(
+                    ids[1],
+                    symbol,
+                    market="us",
+                    relevance="low",
+                    relationship="unrelated",
+                ),
+            ],
+        )
+    )
+
+    summary = await run_news_relevance_judgment(
+        market="us",
+        symbol=symbol,
+        dry_run=False,
+        client=client,
+    )
+
+    assert summary["status"] == "judged"
+    assert summary["applied_confirmed"] == 1
+    assert summary["applied_excluded"] == 1
+    async with AsyncSessionLocal() as verify_db:
+        stored, excluded_count = await symbol_news_store.load_symbol_news(
+            verify_db, symbol, "us", limit=10
+        )
+    assert excluded_count == 1
+    assert [row.relevance["status"] for row in stored] == ["confirmed"]
+    assert client.calls[0]["market"] == "us"
+    assert all(row["market"] == "us" for row in client.calls[0]["pending"])
 
 
 @pytest.mark.integration
