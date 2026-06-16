@@ -359,6 +359,7 @@ async def test_toss_us_buy_reconcile_captures_buy_fx_rate(db_session):
         fetch_evidence = AsyncMock(return_value=evidence)
 
     with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
         patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
         patch.object(
             mod,
@@ -426,6 +427,7 @@ async def test_toss_us_sell_reconcile_surfaces_fx_pnl(db_session):
         fetch_evidence = AsyncMock(return_value=evidence)
 
     with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
         patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
         patch.object(
             mod,
@@ -491,6 +493,7 @@ async def test_toss_us_sell_reconcile_persists_zero_fx_values(db_session):
         fetch_evidence = AsyncMock(return_value=evidence)
 
     with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
         patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
         patch.object(
             mod,
@@ -515,3 +518,203 @@ async def test_toss_us_sell_reconcile_persists_zero_fx_values(db_session):
     assert refreshed.fx_pnl_krw == Decimal("0.0000")
     assert refreshed.security_pnl_usd == Decimal("0.0000")
     assert refreshed.total_pnl_krw == Decimal("0.0000")
+
+
+async def test_reconcile_booked_fill_notifies_when_enabled(db_session):
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session)
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("2"),
+        avg_price=Decimal("191.25"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    notifier = SimpleNamespace(notify_fill=AsyncMock(return_value=True))
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", True),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
+        ),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ),
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+        patch.object(mod, "get_trade_notifier", return_value=notifier),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["action"] == "booked"
+    assert out["fill_notified"] is True
+    notifier.notify_fill.assert_awaited_once()
+    order = notifier.notify_fill.await_args.args[0]
+    assert order.account == "toss"
+    assert order.market_type == "us"
+    assert order.currency == "USD"
+    assert order.filled_qty == 2
+    assert notifier.notify_fill.await_args.kwargs["enrichment"] is None
+    assert notifier.notify_fill.await_args.kwargs["detail_url"].endswith(
+        "/invest/stocks/us/AAPL"
+    )
+
+
+async def test_reconcile_booked_fill_skips_notify_when_gate_disabled(db_session):
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session)
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("2"),
+        avg_price=Decimal("191.25"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    notifier = SimpleNamespace(notify_fill=AsyncMock(return_value=True))
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
+        ),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ),
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+        patch.object(mod, "get_trade_notifier", return_value=notifier),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["action"] == "booked"
+    assert out["fill_notified"] is False
+    notifier.notify_fill.assert_not_awaited()
+
+
+async def test_reconcile_booked_fill_skips_notify_below_threshold(db_session):
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session)
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("2"),
+        avg_price=Decimal("191.25"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    notifier = SimpleNamespace(notify_fill=AsyncMock(return_value=True))
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", True),
+        patch.object(mod, "is_fill_notifiable", return_value=False),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
+        ),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ),
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+        patch.object(mod, "get_trade_notifier", return_value=notifier),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["action"] == "booked"
+    assert out["fill_notified"] is False
+    notifier.notify_fill.assert_not_awaited()
+
+
+async def test_reconcile_booked_fill_notification_failure_is_fail_open(db_session):
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session)
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("2"),
+        avg_price=Decimal("191.25"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    notifier = SimpleNamespace(
+        notify_fill=AsyncMock(side_effect=RuntimeError("discord down"))
+    )
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", True),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
+        ),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ),
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+        patch.object(mod, "get_trade_notifier", return_value=notifier),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["action"] == "booked"
+    assert out["fill_notified"] is False
+    notifier.notify_fill.assert_awaited_once()

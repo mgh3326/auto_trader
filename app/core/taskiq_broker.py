@@ -5,7 +5,7 @@ from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 
 from app.core.config import settings
 from app.monitoring.sentry import init_sentry
-from app.monitoring.trade_notifier import get_trade_notifier
+from app.monitoring.trade_notifier.runtime import configure_trade_notifier_from_settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,39 +19,7 @@ class WorkerInitMiddleware(TaskiqMiddleware):
                 enable_httpx=True,
             )
 
-            # Check if any notification system is configured
-            has_discord = any(
-                [
-                    settings.discord_webhook_us,
-                    settings.discord_webhook_kr,
-                    settings.discord_webhook_crypto,
-                    settings.discord_webhook_alerts,
-                ]
-            )
-            has_telegram = settings.telegram_token and settings.telegram_chat_id
-
-            if has_discord or has_telegram:
-                try:
-                    trade_notifier = get_trade_notifier()
-                    bot_token = settings.telegram_token or ""
-                    chat_ids = settings.telegram_chat_ids if has_telegram else []
-
-                    trade_notifier.configure(
-                        bot_token=bot_token,
-                        chat_ids=chat_ids,
-                        enabled=True,
-                        discord_webhook_us=settings.discord_webhook_us,
-                        discord_webhook_kr=settings.discord_webhook_kr,
-                        discord_webhook_crypto=settings.discord_webhook_crypto,
-                        discord_webhook_alerts=settings.discord_webhook_alerts,
-                    )
-                    logger.info("Worker: Trade notifier initialized")
-                except Exception as exc:
-                    logger.error(
-                        "Worker: Failed to initialize trade notifier: %s",
-                        exc,
-                        exc_info=True,
-                    )
+            configure_trade_notifier_from_settings(log_context="Worker trade notifier")
             return
 
         if getattr(self.broker, "is_scheduler_process", False):

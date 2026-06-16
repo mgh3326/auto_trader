@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1] - 2026-06-16
+
+### Added (ROB-580 — Multi-window crypto order flow)
+- Multi-window analysis (50, 200, 500 ticks) derived from a single atomic fetch.
+- Disjoint trend consensus (recent 50 vs older 450 ticks) with `strengthening`, `weakening`, and `reversing` categorization.
+- Noise filtering with 0.10 net-flow deadband.
+- Confidence scoring based on trade density and "whale" trade dominance (>35% of volume).
+- Response metadata: `span_seconds`, `largest_trade_share`, `as_of`, and `default_window`.
+
 ## [0.2.0] - 2026-02-12
 ### Changed
 - **Breaking**: `get_open_orders` tool removed. Replaced by `get_order_history(status="pending")`.
