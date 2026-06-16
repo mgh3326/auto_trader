@@ -45,8 +45,12 @@ async def test_get_portfolio_allocation_handler_rolls_up_positions_cash_and_erro
             "errors": [{"source": "cash", "error": "partial"}],
         }
 
-    monkeypatch.setattr(portfolio_allocation, "_collect_portfolio_positions", fake_collect_positions)
-    monkeypatch.setattr(portfolio_allocation, "get_cash_balance_impl", fake_cash_balance)
+    monkeypatch.setattr(
+        portfolio_allocation, "_collect_portfolio_positions", fake_collect_positions
+    )
+    monkeypatch.setattr(
+        portfolio_allocation, "get_cash_balance_impl", fake_cash_balance
+    )
     monkeypatch.setattr(portfolio_allocation, "get_usd_krw_rate", lambda: 1400.0)
     monkeypatch.setattr(portfolio_allocation, "fetch_etf_all_cached", lambda: [])
 
@@ -73,7 +77,9 @@ async def test_get_portfolio_allocation_tool_is_registered(monkeypatch) -> None:
         assert kwargs["include_cash"] is True
         return {"ok": True}
 
-    monkeypatch.setattr(portfolio_allocation, "get_portfolio_allocation_impl", fake_impl)
+    monkeypatch.setattr(
+        portfolio_allocation, "get_portfolio_allocation_impl", fake_impl
+    )
     mcp = DummyMCP()
     portfolio_allocation.register_portfolio_allocation_tool(mcp)
 
@@ -90,7 +96,9 @@ async def test_get_portfolio_allocation_tool_passes_kis_mock(monkeypatch) -> Non
         calls.append(kwargs)
         return {"summary": {"total_value_krw": 0.0}}
 
-    monkeypatch.setattr(portfolio_allocation, "get_portfolio_allocation_impl", fake_impl)
+    monkeypatch.setattr(
+        portfolio_allocation, "get_portfolio_allocation_impl", fake_impl
+    )
     monkeypatch.setattr(portfolio_allocation, "validate_kis_mock_config", lambda: [])
     mcp = DummyMCP()
     portfolio_allocation.register_portfolio_allocation_tool(mcp)
@@ -109,8 +117,12 @@ async def test_get_portfolio_allocation_can_exclude_cash(monkeypatch) -> None:
     async def fail_cash_balance(**kwargs):
         raise AssertionError("cash balance must not be queried when include_cash=False")
 
-    monkeypatch.setattr(portfolio_allocation, "_collect_portfolio_positions", fake_collect_positions)
-    monkeypatch.setattr(portfolio_allocation, "get_cash_balance_impl", fail_cash_balance)
+    monkeypatch.setattr(
+        portfolio_allocation, "_collect_portfolio_positions", fake_collect_positions
+    )
+    monkeypatch.setattr(
+        portfolio_allocation, "get_cash_balance_impl", fail_cash_balance
+    )
     monkeypatch.setattr(portfolio_allocation, "get_usd_krw_rate", lambda: 1400.0)
     monkeypatch.setattr(portfolio_allocation, "fetch_etf_all_cached", lambda: [])
 
@@ -127,7 +139,9 @@ async def test_get_portfolio_allocation_can_exclude_cash(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_portfolio_allocation_krx_etf_failure_is_degraded(monkeypatch) -> None:
+async def test_get_portfolio_allocation_krx_etf_failure_is_degraded(
+    monkeypatch,
+) -> None:
     async def fake_collect_positions(**kwargs):
         return (
             [
@@ -150,7 +164,9 @@ async def test_get_portfolio_allocation_krx_etf_failure_is_degraded(monkeypatch)
     async def raise_krx():
         raise RuntimeError("KRX unavailable")
 
-    monkeypatch.setattr(portfolio_allocation, "_collect_portfolio_positions", fake_collect_positions)
+    monkeypatch.setattr(
+        portfolio_allocation, "_collect_portfolio_positions", fake_collect_positions
+    )
     monkeypatch.setattr(portfolio_allocation, "get_usd_krw_rate", lambda: 1400.0)
     monkeypatch.setattr(portfolio_allocation, "fetch_etf_all_cached", raise_krx)
 
@@ -166,4 +182,3 @@ async def test_get_portfolio_allocation_krx_etf_failure_is_degraded(monkeypatch)
     by_class = {row["asset_class"]: row for row in result["asset_classes"]}
     assert by_class["kr_equity"]["value_krw"] == pytest.approx(100000.0)
     assert result["lookthrough"] == []
-

@@ -133,4 +133,3 @@ async def test_get_portfolio_allocation_registered_in_default_surface() -> None:
     tools = build_tools()
 
     assert "get_portfolio_allocation" in tools
-

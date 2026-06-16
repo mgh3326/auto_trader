@@ -50,13 +50,16 @@ async def get_portfolio_allocation_impl(
     is_mock: bool = False,
 ) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
-    positions, position_errors, resolved_market, resolved_account = (
-        await _collect_portfolio_positions(
-            account=account,
-            market=market,
-            include_current_price=True,
-            is_mock=is_mock,
-        )
+    (
+        positions,
+        position_errors,
+        resolved_market,
+        resolved_account,
+    ) = await _collect_portfolio_positions(
+        account=account,
+        market=market,
+        include_current_price=True,
+        is_mock=is_mock,
     )
     errors.extend(position_errors)
 
