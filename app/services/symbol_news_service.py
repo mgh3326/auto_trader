@@ -225,6 +225,14 @@ async def _maybe_enqueue_judgment(market: str, symbol: str, new_pending: int) ->
         )
 
 
+def _visible_pending_count(stored: list[StoredSymbolNews]) -> int:
+    return sum(
+        1
+        for row in stored
+        if isinstance(row.relevance, dict) and row.relevance.get("status") == "pending"
+    )
+
+
 async def _persist_and_load(
     symbol: str,
     market: str,
@@ -268,7 +276,8 @@ async def _persist_and_load(
         )
         return None
     new_pending = inserted if isinstance(inserted, int) else 0
-    await _maybe_enqueue_judgment(market, symbol, new_pending)
+    visible_pending = _visible_pending_count(stored)
+    await _maybe_enqueue_judgment(market, symbol, max(new_pending, visible_pending))
     raw_by_url = {
         a.canonical_url: a.provider_metadata.get("source_item") for a in fetched
     }
