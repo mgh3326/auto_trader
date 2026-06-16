@@ -1230,7 +1230,7 @@ Behavior:
 Response shape:
 - `summary`: KRW total, invested value, cash value, valued/unvalued position counts
 - `asset_classes`: value, weight, direct/look-through split, target/drift fields, and optional weight status
-- `accounts`: account-level KRW roll-up with asset-class children
+- `accounts`: account-level KRW roll-up with asset-class children and `profit_loss_krw` (cash sub-accounts carry 0)
 - `lookthrough`: KR ETF rows whose effective exposure differs from surface exposure
 - `positions`: returned only when `include_positions=true`
 - `cash`: normalized cash rows when `include_cash=true`

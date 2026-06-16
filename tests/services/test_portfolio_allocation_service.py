@@ -120,6 +120,67 @@ def test_build_allocation_puts_non_us_foreign_etf_in_other_bucket() -> None:
     assert result["lookthrough"][0]["effective_asset_class"] == "other"
 
 
+def test_build_allocation_reports_per_account_profit_loss() -> None:
+    positions = [
+        {
+            "account": "kis",
+            "account_name": "기본 계좌",
+            "broker": "kis",
+            "instrument_type": "equity_us",
+            "market": "us",
+            "symbol": "AAPL",
+            "name": "Apple",
+            "evaluation_amount": 1000.0,
+            "profit_loss": 100.0,  # USD -> +140,000 KRW
+        },
+        {
+            "account": "kis",
+            "account_name": "기본 계좌",
+            "broker": "kis",
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": "005930",
+            "name": "삼성전자",
+            "evaluation_amount": 500000.0,
+            "profit_loss": 50000.0,  # +50,000 KRW
+        },
+        {
+            "account": "upbit",
+            "account_name": "기본 계좌",
+            "broker": "upbit",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "symbol": "KRW-BTC",
+            "name": "비트코인",
+            "evaluation_amount": 300000.0,
+            "profit_loss": -30000.0,
+        },
+    ]
+    result = build_portfolio_allocation(
+        positions=positions,
+        cash_accounts=[
+            {
+                "account": "kis_domestic",
+                "account_name": "기본 계좌",
+                "broker": "kis",
+                "currency": "KRW",
+                "balance": 100000.0,
+            }
+        ],
+        usd_krw=1400.0,
+        etf_rows=[],
+        include_cash=True,
+        include_positions=False,
+    )
+
+    by_account = {row["account"]: row for row in result["accounts"]}
+    # 140,000 (AAPL USD->KRW) + 50,000 (삼성전자) = 190,000
+    assert by_account["kis"]["profit_loss_krw"] == pytest.approx(190000.0)
+    assert by_account["upbit"]["profit_loss_krw"] == pytest.approx(-30000.0)
+    # cash-only account carries zero P&L
+    assert by_account["kis_domestic"]["profit_loss_krw"] == pytest.approx(0.0)
+
+
 def test_build_allocation_warns_and_skips_unvalued_positions() -> None:
     result = build_portfolio_allocation(
         positions=[

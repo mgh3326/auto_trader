@@ -192,11 +192,14 @@ def build_portfolio_allocation(
                 "broker": position.get("broker"),
                 "account_name": position.get("account_name"),
                 "value_krw": 0.0,
+                "profit_loss_krw": 0.0,
                 "asset_classes": defaultdict(float),
             },
         )
         account["value_krw"] += value_krw
         account["asset_classes"][effective_class] += value_krw
+        if profit_loss is not None:
+            account["profit_loss_krw"] += profit_loss
 
         if surface_class != effective_class:
             lookthrough.append(
@@ -237,6 +240,7 @@ def build_portfolio_allocation(
                     "broker": cash.get("broker"),
                     "account_name": cash.get("account_name"),
                     "value_krw": 0.0,
+                    "profit_loss_krw": 0.0,
                     "asset_classes": defaultdict(float),
                 },
             )
@@ -287,6 +291,7 @@ def build_portfolio_allocation(
                 "weight_pct": _round_pct(
                     (account_value / total_value) * 100 if total_value else 0.0
                 ),
+                "profit_loss_krw": _round_money(account.get("profit_loss_krw", 0.0)),
                 "asset_classes": [
                     {
                         "asset_class": key,
