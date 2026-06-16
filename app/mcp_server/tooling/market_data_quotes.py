@@ -1214,13 +1214,20 @@ async def _get_quote_impl(
 
     market_type, symbol = _resolve_market_type(symbol, market)
 
-    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+    if market_type == "equity_us":
+        quote = await _fetch_quote_equity_us(symbol)
+        from app.mcp_server.tooling.name_resolution import resolve_names
+        resolved = await resolve_names([symbol], market_type)
+        info = resolved.get(symbol) or {"name": symbol, "name_resolved": False}
+        quote["name"] = info["name"]
+        quote["name_resolved"] = info["name_resolved"]
+        return quote
+
+    source_map = {"crypto": "upbit", "equity_kr": "kis"}
     source = source_map[market_type]
 
     try:
-        if market_type == "equity_us":
-            quote = await _fetch_quote_equity_us(symbol)
-        elif market_type == "crypto":
+        if market_type == "crypto":
             quote = await _fetch_quote_crypto(symbol)
         else:
             # ROB-464: tag stale KRX regular-session data honestly. ROB-511 overlays
