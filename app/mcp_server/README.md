@@ -28,8 +28,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 - `get_news(symbol, market=None, limit=10)`
   - Fetch symbol-level recent news for decision diagnostics (`kr`: Naver Finance, `us`/`crypto`: Finnhub)
-  - KR: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
-  - `degraded: true` + `fetch_error` appear when the Naver fetch failed and the response was served from DB cache only.
+  - KR/US/crypto: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
+  - When `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=true`, visible `pending` rows in the canonical DB response enqueue `news_relevance.judge_pending`, including rows created during an earlier worker/webhook outage. Duplicate enqueue is acceptable because the worker re-queries pending rows.
+  - `degraded: true` + `fetch_error` appear when provider fetch failed and the response was served from DB cache only.
   - `pending` means "not yet judged" — treat as unverified recall, not confirmed evidence.
   - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
 
@@ -171,7 +172,15 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Results are capped (default 40) and paginated. Check `pagination` in payload.
   - Preset sweeps are capped at 5 presets. Analyst filters are capped at 200 merged rows before enrichment; narrow with preset, market cap, or explicit symbols first.
   - Minimum market-cap filters exclude rows with missing `marketCapValue` and report the excluded count in `warnings`.
+  - Crypto snapshot examples:
+    - `screen_stocks_snapshot(preset="crypto_high_volume", market="crypto", limit=40)`
+    - `screen_stocks_snapshot(preset="crypto_momentum", market="crypto", filters=[{"field":"trade_amount_24h","operator":"gte","value":10000000000}], limit=40)`
+  - Use `get_crypto_top_movers` for live Upbit top movers; use `screen_stocks_snapshot(..., market="crypto")` for persisted snapshot-backed filtering.
+- `get_top_stocks(market="kr", ranking_type="volume", limit=20)` - Cross-market rankings. Crypto supports `volume`, `gainers`, `losers`, and `relative_strength`.
+- `get_crypto_top_movers(ranking_type="relative_strength", limit=20)` - Crypto-only Upbit KRW discovery wrapper. Default ranking sorts non-BTC coins by 24h outperformance vs KRW-BTC.
+- `get_upbit_altseason(include_constituents=false, constituents_limit=50)` - Upbit altseason ratio and 24h breadth. With constituents enabled, `breadth.constituents` lists KRW alts beating BTC with 24h change, vs-BTC relative strength, volume, and traded value.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
+
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
   - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
@@ -460,8 +469,10 @@ Operator activation and the one-share live smoke are documented in
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
 - **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas. GET order-detail `403 non-json-response` failures are retried once after token reissue; unresolved failures are persisted as `requires_manual_review=true`. Mutation POSTs are not implicitly retried on that error.
 - **US FX PnL split**: Toss order detail does not provide fill-time FX. For US rows only, `toss_reconcile_orders(dry_run=False)` captures USD/KRW through `exchange_rate_service` at reconcile time. Buy rows persist `buy_fx_rate`; sell rows persist `sell_fx_rate`, FIFO-attributed `fx_pnl_krw`, `security_pnl_usd`, `security_pnl_krw`, and `total_pnl_krw`. Automatic values are labelled `fx_rate_source="reconcile_spot"` and `fx_pnl_accuracy="approximate"`. Legacy lots with no buy FX keep FX PnL fields null until an operator backfills exact values through `modify_journal_entry`.
+- **Fill Notifications (ROB-576)**: `toss_reconcile_orders(dry_run=False)` sends a Discord/Telegram fill notification only when `TOSS_FILL_NOTIFY_ENABLED=true`, the reconcile pass books a new fill delta, and the shared `TradeNotifier` has a KR/US webhook or Telegram fallback configured. Notifications reuse the existing fill card format and route by `market='kr'|'us'`; Toss fill enrichment is intentionally disabled (`enrichment=None`) until Toss account PnL/position enrichment exists. The optional paused TaskIQ task `toss_live.reconcile_periodic` calls `toss_reconcile_orders_impl(dry_run=False)` only when both `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true` and `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`. It has no in-repo schedule; operator automation must register/unpause the cadence externally.
 - **High-Value Orders**: KR orders with a computable notional value >= 100,000,000 KRW fail locally unless `confirm_high_value_order=True` is supplied.
 - **KR Stock Warnings**: KR order previews include active Toss warning rows. Confirmed non-dry-run KR orders call the same warnings guard before mutation and block active `LIQUIDATION_TRADING`; Toss warning lookup failures are fail-open and reported as `warnings_check_message`.
+- **Preview Market And Cost Context**: `toss_preview_order` is read-only but enriches the payload preview with Toss quote and cost context. It returns `current_price`, `current_price_currency`, `fill_distance` for off-market limit prices, `order_warnings` for marketability/fill-risk strings, `estimated_value`, `fee`, `fee_currency`, `fx_cost_full_conversion`, `fx_cost_full_conversion_currency`, and `estimated_costs`. The existing `warnings` field remains reserved for Toss stock-warning rows; string order warnings are not mixed into it. US `fx_cost_full_conversion` assumes the full order notional is converted KRW->USD and is labelled `fx_assumption="full_notional_krw_conversion"`; use `suggest_order_account` for cash-aware routing cost comparison.
 - **Sell Loss-Sell Guard**: For sell orders and sell reprices, holdings cost basis is validated. Sells block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. If the holding/cost basis cannot be resolved, the sell fails closed.
 - **Opposite Pending Orders**: Before placing a non-dry-run order, the tool queries all paginated `OPEN` order pages for the symbol and blocks the order if an opposite-side pending order already exists. Pagination anomalies fail closed.
 - **Modify Semantics**:
@@ -1203,6 +1214,36 @@ Market routing:
 - `market` can override routing: `crypto|upbit`, `kr|kis|krx|kospi|kosdaq`, `us|yahoo|nasdaq|nyse`
 - If `market` is omitted, routing is heuristic: KRW-/USDT- prefix -> crypto, 6-digit code -> KR equity, otherwise -> US equity
 - Crypto symbols must include `KRW-` or `USDT-` prefix
+
+### `get_portfolio_allocation` spec
+
+Parameters:
+- `account`: optional account filter matching `get_holdings` and `get_cash_balance` (`kis`, `upbit`, `toss`, `samsung_pension`, `isa`, `paper`, `paper:<name>`)
+- `market`: optional holdings market filter (`kr`, `us`, `crypto`); cash is still included when `include_cash=true` unless `account` excludes the cash account
+- `include_cash`: include cash balances in the allocation denominator, default `true`
+- `include_positions`: include per-position normalized rows, default `false`
+- `target_weights`: optional mapping from asset class to target percent; when omitted, no over/underweight flags are emitted
+- `drift_threshold_pct`: threshold for `overweight` / `underweight` labels when `target_weights` is provided, default `5.0`
+- `account_mode`: same routing selector as `get_holdings` (`db_simulated`, `kis_mock`, `kis_live`)
+
+Behavior:
+- Read-only only. The tool performs no order preview, order placement, mutation, reconciliation, or live approval action.
+- Converts USD holdings and USD cash to KRW using the same exchange-rate service used by portfolio cash tools.
+- Aggregates direct US equity as `us_equity`, KR equity as `kr_equity`, Upbit holdings as `crypto`, and cash as `cash`.
+- Looks through KR-listed ETFs when KRX ETF metadata is available. KR ETFs classified as `미국주식` by `app.services.krx.classify_etf_category()` are counted as effective `us_equity`, while their surface account remains KR/KIS/Toss.
+- Non-US foreign, commodity, bond, and unclear ETF categories are counted as `other` rather than Korean equity.
+- If KRX ETF metadata lookup fails, the tool records a degraded `krx_etf` error and keeps KR ETF positions in their surface `kr_equity` bucket.
+- Positions whose valuation is unavailable are excluded from the denominator and listed in `warnings` with `reason="position_value_unavailable"`.
+
+Response shape:
+- `summary`: KRW total, invested value, cash value, valued/unvalued position counts
+- `asset_classes`: value, weight, direct/look-through split, target/drift fields, and optional weight status
+- `accounts`: account-level KRW roll-up with asset-class children and `profit_loss_krw` (cash sub-accounts carry 0)
+- `lookthrough`: KR ETF rows whose effective exposure differs from surface exposure
+- `positions`: returned only when `include_positions=true`
+- `cash`: normalized cash rows when `include_cash=true`
+- `errors`: broker, cash, exchange-rate, or KRX ETF partial failures
+- `warnings`: non-fatal valuation omissions
 
 ### User Settings Tools
 

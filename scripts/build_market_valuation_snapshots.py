@@ -93,6 +93,9 @@ def _print_result(result) -> None:
         f"for {result.symbols_resolved} {result.market.upper()} symbols "
         f"(dry_run={not result.committed}, batches={result.batches}):"
     )
+    if result.market == "us" and result.symbols_resolved > 0:
+        coverage_pct = (result.snapshots_built / result.symbols_resolved) * 100
+        print(f"US Universe Coverage: {result.snapshots_built}/{result.symbols_resolved} ({coverage_pct:.2f}%)")
     print("idempotency:")
     for key in ("wouldInsert", "wouldUpdate", "duplicatePayloadKeys"):
         print(f"  {key}: {result.idempotency.get(key, 0)}")

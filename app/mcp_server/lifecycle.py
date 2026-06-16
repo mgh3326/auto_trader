@@ -18,12 +18,17 @@ from fastmcp.server.lifespan import lifespan as fastmcp_lifespan
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.core.config import settings
 from app.mcp_server.env_utils import (
     get_mcp_color,
     get_mcp_heartbeat_interval_s,
     get_mcp_heartbeat_path,
 )
 from app.mcp_server.heartbeat import heartbeat_loop
+from app.monitoring.trade_notifier.runtime import (
+    configure_trade_notifier_from_settings,
+    shutdown_trade_notifier,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -81,6 +86,11 @@ def build_server_lifespan(*, service: str = "auto-trader-mcp"):
             tool_count,
             time.monotonic() - STARTED_MONOTONIC,
         )
+        notifier_configured = False
+        if settings.toss_fill_notify_enabled:
+            notifier_configured = configure_trade_notifier_from_settings(
+                log_context="MCP trade notifier"
+            )
         # ROB-469 PR3: liveness heartbeat task (no-op when MCP_HEARTBEAT_PATH unset).
         heartbeat_task: asyncio.Task | None = None
         hb_path = get_mcp_heartbeat_path()
@@ -100,6 +110,8 @@ def build_server_lifespan(*, service: str = "auto-trader-mcp"):
                 heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat_task
+            if notifier_configured:
+                await shutdown_trade_notifier(log_context="MCP trade notifier")
             logger.info(
                 "mcp.lifecycle.shutdown service=%s uptime_s=%.1f",
                 service,
