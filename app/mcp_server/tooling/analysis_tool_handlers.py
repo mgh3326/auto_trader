@@ -99,6 +99,7 @@ async def get_top_stocks_impl(
         ("crypto", "volume"),
         ("crypto", "gainers"),
         ("crypto", "losers"),
+        ("crypto", "relative_strength"),
     }
 
     key = (market, ranking_type)
@@ -227,6 +228,35 @@ async def get_top_stocks_impl(
     if data_state is not None:
         response["data_state"] = data_state
     return response
+
+
+async def get_crypto_top_movers_impl(
+    ranking_type: str = "relative_strength",
+    limit: int = 20,
+) -> dict[str, Any]:
+    normalized = (ranking_type or "relative_strength").strip().lower()
+    aliases = {
+        "relative": "relative_strength",
+        "relative_strength_vs_btc": "relative_strength",
+        "rs": "relative_strength",
+        "value": "volume",
+        "trade_amount": "volume",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"relative_strength", "volume", "gainers", "losers"}:
+        return analysis_screening._error_payload(
+            source="validation",
+            message=(
+                "Unsupported crypto ranking_type: "
+                f"{ranking_type}; allowed: relative_strength, volume, gainers, losers"
+            ),
+            query=f"ranking_type={ranking_type}",
+        )
+    return await get_top_stocks_impl(
+        market="crypto",
+        ranking_type=normalized,
+        limit=limit,
+    )
 
 
 async def get_disclosures_impl(

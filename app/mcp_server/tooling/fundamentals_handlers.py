@@ -488,11 +488,19 @@ def _register_fundamentals_tools_impl(
             "vs market index) and 24h breadth (fraction of KRW-quoted alts beating "
             "BTC over 24h, derived from the official Upbit ticker). Higher ratio + "
             "higher breadth lean altseason. Read-only public data. Note: breadth is "
-            "24h only (multi-period breadth is a separate follow-up)."
+            "24h only (multi-period breadth is a separate follow-up). With constituents "
+            "enabled, breadth.constituents lists KRW alts beating BTC with 24h change, "
+            "vs-BTC relative strength, volume, and traded value."
         ),
     )
-    async def get_upbit_altseason() -> dict[str, Any]:
-        return await handle_get_upbit_altseason()
+    async def get_upbit_altseason(
+        include_constituents: bool = False,
+        constituents_limit: int = 50,
+    ) -> dict[str, Any]:
+        return await handle_get_upbit_altseason(
+            include_constituents=include_constituents,
+            constituents_limit=constituents_limit,
+        )
 
     @mcp.tool(
         name="get_support_resistance",

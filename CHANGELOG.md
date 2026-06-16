@@ -6,6 +6,15 @@
 - New read-only MCP tool `get_portfolio_allocation`: unified KRW-based asset-class weights (US/KR equity, crypto, cash) across KIS/Toss/Samsung/Upbit holdings and cash, with optional `target_weights` over/underweight drift flags and per-asset-class P&L.
 - KR-listed ETF look-through reclassifies US-index ETFs (e.g. TIGER/KODEX/SOL/RISE 미국S&P500·나스닥100) into effective US-equity exposure via KRX ETF metadata; fail-open to the surface label when metadata is unavailable. No order/mutation path.
 
+## [0.2.2] - 2026-06-16
+
+### Added (ROB-581 — Crypto Discovery Tools)
+- Expose Upbit altseason constituents list with relative strength calculations (vs. BTC).
+- Add crypto `relative_strength` ranking sorting and screening options.
+- Expose a dedicated `get_crypto_top_movers` MCP tool on FastMCP for real-time asset discovery.
+- Update `app/mcp_server/README.md` documentation.
+- Add comprehensive test coverage in `tests/test_upbit_index_service.py`, `tests/test_mcp_top_stocks.py`, and `tests/test_mcp_profiles.py`.
+
 ## [0.2.1] - 2026-06-16
 
 ### Added (ROB-580 — Multi-window crypto order flow)
