@@ -7,6 +7,7 @@ ADX, Stochastic RSI, OBV, Fibonacci).
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 from statistics import median
@@ -450,6 +451,9 @@ def _build_orderbook_walls(
 async def _build_orderbook_payload(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> dict[str, Any]:
+    from app.mcp_server.tooling.name_resolution import resolve_names
+    resolution_task = asyncio.create_task(resolve_names([snapshot.symbol], snapshot.instrument_type))
+
     pressure = _classify_orderbook_pressure(snapshot.bid_ask_ratio)
     spread, spread_pct = _calculate_orderbook_spread(snapshot)
     bid_walls, ask_walls = _build_orderbook_walls(snapshot)
@@ -498,8 +502,7 @@ async def _build_orderbook_payload(
     if snapshot.empty_reason is not None:
         payload["empty_reason"] = snapshot.empty_reason
 
-    from app.mcp_server.tooling.name_resolution import resolve_names
-    resolved = await resolve_names([snapshot.symbol], snapshot.instrument_type)
+    resolved = await resolution_task
     info = resolved.get(snapshot.symbol) or {"name": snapshot.symbol, "name_resolved": False}
     payload["name"] = info["name"]
     payload["name_resolved"] = info["name_resolved"]
@@ -1214,17 +1217,19 @@ async def _get_quote_impl(
 
     market_type, symbol = _resolve_market_type(symbol, market)
 
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+    source = source_map[market_type]
+
+    from app.mcp_server.tooling.name_resolution import resolve_names
+    resolution_task = asyncio.create_task(resolve_names([symbol], market_type))
+
     if market_type == "equity_us":
         quote = await _fetch_quote_equity_us(symbol)
-        from app.mcp_server.tooling.name_resolution import resolve_names
-        resolved = await resolve_names([symbol], market_type)
+        resolved = await resolution_task
         info = resolved.get(symbol) or {"name": symbol, "name_resolved": False}
         quote["name"] = info["name"]
         quote["name_resolved"] = info["name_resolved"]
         return quote
-
-    source_map = {"crypto": "upbit", "equity_kr": "kis"}
-    source = source_map[market_type]
 
     try:
         if market_type == "crypto":
@@ -1244,13 +1249,14 @@ async def _get_quote_impl(
                     quote["regular_session_data_state"] = data_state
                     quote["data_state"] = DATA_STATE_FRESH
 
-        from app.mcp_server.tooling.name_resolution import resolve_names
-        resolved = await resolve_names([symbol], market_type)
+        resolved = await resolution_task
         info = resolved.get(symbol) or {"name": symbol, "name_resolved": False}
         quote["name"] = info["name"]
         quote["name_resolved"] = info["name_resolved"]
         return quote
     except Exception as exc:
+        # Cancel the background task if the main fetch failed
+        resolution_task.cancel()
         return _error_payload_from_exception(
             source=source,
             exc=exc,
@@ -1436,6 +1442,9 @@ async def _get_execution_strength_impl(
     data = compute_execution_strength(
         raw, symbol=normalized, as_of=now_kst().isoformat()
     )
+    from app.mcp_server.tooling.name_resolution import resolve_names
+    resolution_task = asyncio.create_task(resolve_names([normalized], "equity_kr"))
+
     data_state = kr_market_data_state()
     if data.execution_strength_pct is None and data_state == DATA_STATE_FRESH:
         # 장중인데 필드가 비어 있으면 "fresh + 전부 null" 로 위장하지 않는다.
@@ -1454,8 +1463,7 @@ async def _get_execution_strength_impl(
         "instrument_type": "equity_kr",
     }
 
-    from app.mcp_server.tooling.name_resolution import resolve_names
-    resolved = await resolve_names([normalized], "equity_kr")
+    resolved = await resolution_task
     info = resolved.get(normalized) or {"name": normalized, "name_resolved": False}
     res["name"] = info["name"]
     res["name_resolved"] = info["name_resolved"]
