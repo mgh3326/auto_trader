@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5] - 2026-06-16
+
+### Added (ROB-585 — KIS batch order rate-limit handling)
+- Add order-specific rate-limit budgets (per TR_ID/path) to `kis_api_rate_limits` so concurrent batch orders are throttled by the existing process-global limiter (avoids EGW00215 원장 초당 거래건수 초과).
+- Add an order-specific retry budget for the KIS order path (global read retries unchanged) and surface `rate_limited` / `rate_limit_retries` in the order response envelope.
+- Disable `retry_request_errors` on all order-mutation calls so a timed-out order is never re-sent (no double-submit); rate-limit retry is gated on an explicit EGW00215 reject.
+
 ## [0.2.3] - 2026-06-16
 
 ### Added (ROB-582 — Cross-asset allocation roll-up)

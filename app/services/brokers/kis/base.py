@@ -383,6 +383,7 @@ class BaseKISClient:
         api_name: str = "unknown",
         tr_id: str | None = None,
         retry_request_errors: bool = True,
+        max_retries_override: int | None = None,
     ) -> dict[str, Any]:
         """Make HTTP request with rate limiting and 429 retry logic.
 
@@ -396,6 +397,7 @@ class BaseKISClient:
             api_name: Human-readable API name for logging
             tr_id: KIS TR_ID for per-API rate limiting
             retry_request_errors: whether to retry on httpx.RequestError (timeouts, etc)
+            max_retries_override: override max retries count (default uses settings)
 
         Returns:
             Parsed JSON response
@@ -415,6 +417,7 @@ class BaseKISClient:
             api_name=api_name,
             tr_id=tr_id,
             retry_request_errors=retry_request_errors,
+            max_retries_override=max_retries_override,
         )
         return data
 
@@ -430,6 +433,7 @@ class BaseKISClient:
         api_name: str = "unknown",
         tr_id: str | None = None,
         retry_request_errors: bool = True,
+        max_retries_override: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Like :meth:`_request_with_rate_limit` but also returns response headers.
 
@@ -449,9 +453,14 @@ class BaseKISClient:
 
         rate, period = self._get_rate_limit_for_api(api_key)
         limiter = await self._get_limiter(api_key, rate=rate, period=period)
-        max_retries = self._settings.api_rate_limit_retry_429_max
+        max_retries = (
+            max_retries_override
+            if max_retries_override is not None
+            else self._settings.api_rate_limit_retry_429_max
+        )
 
         last_error: Exception | None = None
+        rate_limit_retries_count = 0
 
         for attempt in range(max_retries + 1):
             await limiter.acquire(
@@ -477,6 +486,7 @@ class BaseKISClient:
                 status_code = _safe_status_code(response)
 
                 if status_code == 429:
+                    rate_limit_retries_count += 1
                     retry_after = _safe_parse_retry_after(
                         response.headers.get("Retry-After")
                     )
@@ -497,6 +507,7 @@ class BaseKISClient:
                 data, is_rate_limited = self._parse_kis_response(response, api_name)
 
                 if is_rate_limited and attempt < max_retries:
+                    rate_limit_retries_count += 1
                     wait_time = self._calculate_retry_delay(
                         attempt=attempt, retry_after=0
                     )
@@ -515,11 +526,14 @@ class BaseKISClient:
                     await asyncio.sleep(wait_time)
                     continue
 
+                data["rate_limited"] = rate_limit_retries_count > 0
+                data["rate_limit_retries"] = rate_limit_retries_count
                 return data, dict(response.headers)
 
             except httpx.HTTPStatusError as e:
                 last_error = e
                 if e.response.status_code == 429 and attempt < max_retries:
+                    rate_limit_retries_count += 1
                     wait_time = self._calculate_retry_delay(
                         attempt=attempt, retry_after=0
                     )

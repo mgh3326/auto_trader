@@ -722,7 +722,12 @@ class TestKISRequestWithRateLimit:
             tr_id="TEST123",
         )
 
-        assert result == {"rt_cd": "0", "output": []}
+        assert result == {
+            "rt_cd": "0",
+            "output": [],
+            "rate_limited": False,
+            "rate_limit_retries": 0,
+        }
         mock_get_limiter.assert_awaited_once()
         mock_client_class.assert_called_once_with(timeout=timeout_value)
 
@@ -813,6 +818,54 @@ class TestKISRequestWithRateLimit:
                 api_name="inquire_orderbook",
                 tr_id="FHKST01010200",
             )
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.kis.client.get_limiter")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
+    async def test_request_with_rate_limit_tracks_rate_limited_metrics_and_override(
+        self,
+        mock_client_class,
+        mock_get_limiter,
+    ):
+        from app.services.brokers.kis.client import KISClient
+
+        mock_limiter = AsyncMock()
+        mock_get_limiter.return_value = mock_limiter
+
+        # First response is 429, second is 200
+        mock_response_429 = MagicMock()
+        mock_response_429.status_code = 429
+        mock_response_429.headers = {"Retry-After": "0.01"}
+        mock_response_429.json.return_value = {}
+
+        mock_response_200 = MagicMock()
+        mock_response_200.status_code = 200
+        mock_response_200.headers = {}
+        mock_response_200.raise_for_status.return_value = None
+        mock_response_200.json.return_value = {"rt_cd": "0", "output": []}
+
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = [mock_response_429, mock_response_200]
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+
+        client = KISClient()
+        client._calculate_retry_delay = MagicMock(return_value=0.001)
+
+        result = await client._request_with_rate_limit(
+            "POST",
+            "https://example.com/uapi/domestic-stock/v1/trading/order-cash",
+            headers={"authorization": "Bearer token"},
+            timeout=5.0,
+            api_name="test_order",
+            tr_id="TTTC0012U",
+            max_retries_override=3,
+        )
+
+        assert result["rate_limited"] is True
+        assert result["rate_limit_retries"] == 1
+        assert result["rt_cd"] == "0"
+        assert mock_client.post.call_count == 2
 
 
 class TestKISInquireOrderbook:

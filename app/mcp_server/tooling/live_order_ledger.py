@@ -532,6 +532,9 @@ async def _record_live_order(
         if row is not None:
             inline_outcome = await _reconcile_one_live_row(row, dry_run=False)
             fill_recorded = inline_outcome.get("action") == "booked"
+    rate_limited = execution_result.get("rate_limited", False)
+    rate_limit_retries = execution_result.get("rate_limit_retries", 0)
+
     return {
         "success": True,
         "dry_run": False,
@@ -546,6 +549,8 @@ async def _record_live_order(
         "fill_recorded": fill_recorded,
         "journal_created": bool(inline_outcome and inline_outcome.get("journal_id")),
         "inline_reconcile": inline_outcome,
+        "rate_limited": rate_limited,
+        "rate_limit_retries": rate_limit_retries,
         "message": (
             "Live order accepted (pending fill); run live_reconcile_orders to book fill"
             if status == "accepted" and not fill_recorded

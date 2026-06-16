@@ -370,6 +370,9 @@ async def _record_kis_mock_order(
         correlation_id=correlation_id,
     )
 
+    rate_limited = execution_result.get("rate_limited", False)
+    rate_limit_retries = execution_result.get("rate_limit_retries", 0)
+
     return {
         "success": True,
         "dry_run": False,
@@ -384,6 +387,8 @@ async def _record_kis_mock_order(
         "ord_tmd": order_time,
         "krx_fwdg_ord_orgno": krx_orgno,
         "status": status,
+        "rate_limited": rate_limited,
+        "rate_limit_retries": rate_limit_retries,
         "response_code": rt_cd,
         "response_message": msg,
         "fill_recorded": False,
