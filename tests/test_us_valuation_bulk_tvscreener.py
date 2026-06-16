@@ -7,7 +7,6 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from app.services.market_valuation_snapshots import builder as builder_mod
 from app.services.market_valuation_snapshots import us_provider as provider_mod
 from app.services.market_valuation_snapshots.builder import (
     build_valuation_snapshots_bulk_for_us,
@@ -145,7 +144,9 @@ async def test_build_valuation_snapshots_bulk_for_us(monkeypatch, _patch_tvscree
 
 
 @pytest.mark.asyncio
-async def test_build_valuation_snapshots_for_market_routing(monkeypatch, _patch_tvscreener):
+async def test_build_valuation_snapshots_for_market_routing(
+    monkeypatch, _patch_tvscreener
+):
     service = _CapturingService(full_rows=10)
     monkeypatch.setattr(provider_mod, "TvScreenerService", lambda **kw: service)
 

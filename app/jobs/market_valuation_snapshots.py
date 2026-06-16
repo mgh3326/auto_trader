@@ -324,7 +324,9 @@ async def run_market_valuation_snapshot_build(
                 include_high_date=request.include_high_date,
             )
             payloads = list(result.payloads)
-            warnings.extend(f"batch {batches}: {warning}" for warning in result.warnings)
+            warnings.extend(
+                f"batch {batches}: {warning}" for warning in result.warnings
+            )
             total_built += len(payloads)
             distribution.update(p.snapshot_date.isoformat() for p in payloads)
             idempotency.update(await _classify_idempotency(payloads))

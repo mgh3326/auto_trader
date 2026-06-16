@@ -65,7 +65,9 @@ class TvScreenerUsValuationProvider:
                 )
 
         if not cols:
-            logger.warning("[US-Valuation] No US StockFields resolved; returning empty list")
+            logger.warning(
+                "[US-Valuation] No US StockFields resolved; returning empty list"
+            )
             return []
 
         service = (
