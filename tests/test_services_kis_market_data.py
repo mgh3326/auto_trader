@@ -868,7 +868,6 @@ class TestKISRequestWithRateLimit:
         assert mock_client.post.call_count == 2
 
 
-
 class TestKISInquireOrderbook:
     @pytest.mark.asyncio
     async def test_inquire_orderbook_returns_output1_payload(self):
