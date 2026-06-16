@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.3] - 2026-06-16
+
+### Added (ROB-582 — Cross-asset allocation roll-up)
+- New read-only MCP tool `get_portfolio_allocation`: unified KRW-based asset-class weights (US/KR equity, crypto, cash) across KIS/Toss/Samsung/Upbit holdings and cash, with optional `target_weights` over/underweight drift flags and per-asset-class P&L.
+- KR-listed ETF look-through reclassifies US-index ETFs (e.g. TIGER/KODEX/SOL/RISE 미국S&P500·나스닥100) into effective US-equity exposure via KRX ETF metadata; fail-open to the surface label when metadata is unavailable. No order/mutation path.
+
 ## [0.2.2] - 2026-06-16
 
 ### Added (ROB-581 — Crypto Discovery Tools)
