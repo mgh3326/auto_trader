@@ -801,6 +801,41 @@ class TestMCPTopStocks:
         assert result["rankings"][0]["relative_strength_vs_btc_24h"] == pytest.approx(0.02)
         assert result["rankings"][0]["relative_strength_pct_vs_btc_24h"] == pytest.approx(2.0)
 
+    async def test_get_crypto_top_movers_defaults_to_relative_strength(self, monkeypatch):
+        tools = build_tools()
+        assert "get_crypto_top_movers" in tools
+
+        async def mock_fetch_top_traded_coins():
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": "100000000",
+                    "signed_change_rate": "0.01",
+                    "acc_trade_volume_24h": "100",
+                    "acc_trade_price_24h": "10000000000",
+                },
+                {
+                    "market": "KRW-SOL",
+                    "trade_price": "220000",
+                    "signed_change_rate": "0.04",
+                    "acc_trade_volume_24h": "90",
+                    "acc_trade_price_24h": "9000000000",
+                },
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await tools["get_crypto_top_movers"](limit=10)
+
+        assert result["market"] == "crypto"
+        assert result["ranking_type"] == "relative_strength"
+        assert result["rankings"][0]["symbol"] == "KRW-SOL"
+
+
     async def test_crypto_ratio_to_percent_conversion(self, monkeypatch):
         tools = build_tools()
 
