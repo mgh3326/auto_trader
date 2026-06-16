@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.4] - 2026-06-16
+
+### Added (ROB-584 — Stock name resolution in MCP tools)
+- Add centralized symbol-to-name resolution helper in `app/mcp_server/tooling/name_resolution.py`.
+- Include `name` and `name_resolved` fields in `analyze_stock_batch` response to prevent agent guessing errors.
+- Enrich `get_quote`, `get_orderbook`, and `get_execution_strength` responses with stock/crypto names from universe DBs.
+- Implement robust fail-open logic (fallback to symbol if name not found) and performance optimizations using `asyncio.create_task` for parallel resolution.
+- Ensure consistent error handling across markets by restoring upstream exception propagation for US equity quotes while maintaining structured payloads for KR/Crypto.
+
 ## [0.2.3] - 2026-06-16
 
 ### Added (ROB-582 — Cross-asset allocation roll-up)
