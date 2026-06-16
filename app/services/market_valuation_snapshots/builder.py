@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from app.core.json_safe import sanitize_non_finite
 from app.services.market_quote_snapshots.builder import redact_sensitive_payload
 from app.services.market_valuation_snapshots.repository import (
     MarketValuationSnapshotUpsert,
@@ -180,6 +181,12 @@ async def build_valuation_snapshots_bulk_for_us(
         symbol = row.get("symbol", "").split(":")[-1]  # Strip exchange prefix
         if not symbol:
             continue
+        # ROB-590 bug A: tvscreener dividend_yield is a PERCENT (e.g. 0.36 = 0.36%),
+        # but market_valuation_snapshots stores a RATIO (parity with the KR ROB-444
+        # path and the Finnhub fallback). Divide by 100 so the high_yield_value gate
+        # (>= 0.03) and the displayed percent are correct.
+        _div = _to_decimal(row.get("dividends_yield"))
+        dividend_yield = (_div / Decimal("100")) if _div is not None else None
         payloads.append(
             MarketValuationSnapshotUpsert(
                 market="us",
@@ -189,12 +196,16 @@ async def build_valuation_snapshots_bulk_for_us(
                 per=_to_decimal(row.get("price_earnings_ttm")),
                 pbr=_to_decimal(row.get("price_book_ratio")),
                 roe=_to_decimal(row.get("return_on_equity")),
-                dividend_yield=_to_decimal(row.get("dividends_yield")),
+                dividend_yield=dividend_yield,
                 market_cap=_to_decimal(row.get("market_cap_basic")),
                 high_52w=_to_decimal(row.get("price_52_week_high")),
                 low_52w=_to_decimal(row.get("price_52_week_low")),
                 high_52w_date=_to_date(row.get("price_52_week_high_date")),
-                raw_payload=row,
+                # ROB-590 bug B: non-dividend / unprofitable stocks come back with
+                # NaN metrics; the default engine JSON serializer would emit invalid
+                # `NaN` tokens that Postgres jsonb rejects. Scrub non-finite floats
+                # (the provider already serialises the date as an ISO string).
+                raw_payload=sanitize_non_finite(row),
             )
         )
     return MarketValuationBuildResult(payloads=tuple(payloads))

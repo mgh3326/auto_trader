@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from decimal import Decimal
 from typing import Any
 
@@ -103,7 +104,9 @@ async def test_fetch_rows_full_universe_cap(monkeypatch, _patch_tvscreener):
     assert first_row["return_on_equity"] == 10.0
     assert first_row["price_52_week_high"] == 50.0
     assert first_row["price_52_week_low"] == 20.0
-    assert first_row["price_52_week_high_date"] == dt.date(2026, 5, 14)
+    # ROB-590: provider emits an ISO date STRING (JSON-safe boundary), not a
+    # dt.date object — so raw_payload stays Postgres-jsonb serializable.
+    assert first_row["price_52_week_high_date"] == "2026-05-14"
 
 
 @pytest.mark.asyncio
@@ -136,7 +139,9 @@ async def test_build_valuation_snapshots_bulk_for_us(monkeypatch, _patch_tvscree
     assert p.per == Decimal("15.5")
     assert p.pbr == Decimal("1.5")
     assert p.roe == Decimal("10.0")
-    assert p.dividend_yield == Decimal("2.5")
+    # ROB-590: tvscreener dividend_yield is a PERCENT (2.5 = 2.5%); the column
+    # stores a RATIO, so it must be divided by 100.
+    assert p.dividend_yield == Decimal("0.025")
     assert p.market_cap == Decimal("1000000")
     assert p.high_52w == Decimal("50.0")
     assert p.low_52w == Decimal("20.0")
@@ -172,3 +177,77 @@ async def test_build_valuation_snapshots_for_market_routing(
     assert len(result_filtered.payloads) == 2
     symbols_returned = {p.symbol for p in result_filtered.payloads}
     assert symbols_returned == {"SYM1", "SYM3"}
+
+
+def _fake_df_with_gaps() -> pd.DataFrame:
+    # Non-dividend / unprofitable stocks: tvscreener returns NaN for those metrics
+    # (e.g. live NVDA/GOOG dividend=NaN). raw_payload must stay strict-JSON because
+    # Postgres JSONB rejects NaN tokens.
+    return pd.DataFrame(
+        {
+            "symbol": ["NASDAQ:NODIV"],
+            "market_capitalization": [4.3e12],
+            "price_to_earnings_ratio_ttm": [float("nan")],
+            "price_to_book_mrq": [1.3],
+            "dividend_yield": [float("nan")],
+            "return_on_equity_ttm": [float("nan")],
+            "52_week_high": [55.97],
+            "52_week_low": [48.88],
+            "price_52_week_high_date": [1778765400],
+        }
+    )
+
+
+class _FixedDfService:
+    def __init__(self, df: pd.DataFrame) -> None:
+        self._df = df
+
+    async def query_stock_screener(
+        self, *, columns: Any, markets: Any, limit: int | None = None
+    ) -> pd.DataFrame:
+        return self._df
+
+
+@pytest.mark.asyncio
+async def test_bulk_raw_payload_is_strict_json_safe(monkeypatch, _patch_tvscreener):
+    # ROB-590 bug B: NaN metrics + a date object in raw_payload broke the JSONB
+    # commit (default engine serializer is json.dumps; Postgres rejects NaN). The
+    # bulk path must scrub non-finite floats and serialize the date as a string.
+    service = _FixedDfService(_fake_df_with_gaps())
+    monkeypatch.setattr(provider_mod, "TvScreenerService", lambda **kw: service)
+
+    result = await build_valuation_snapshots_bulk_for_us(
+        snapshot_date=dt.date(2026, 6, 16), limit=5
+    )
+
+    assert len(result.payloads) == 1
+    p = result.payloads[0]
+    # NaN metrics -> typed columns None (never NaN Decimals)
+    assert p.per is None
+    assert p.dividend_yield is None
+    assert p.roe is None
+    # strict-JSON invariant == what Postgres JSONB accepts: no NaN tokens, no
+    # non-native types (the date must already be a string).
+    json.dumps(p.raw_payload, allow_nan=False)
+    assert p.raw_payload["dividends_yield"] is None
+    assert p.raw_payload["price_52_week_high_date"] == "2026-05-14"
+    # typed date column still resolves to a real date
+    assert p.high_52w_date == dt.date(2026, 5, 14)
+
+
+@pytest.mark.asyncio
+async def test_bulk_dividend_yield_percent_converted_to_ratio(
+    monkeypatch, _patch_tvscreener
+):
+    # ROB-590 bug A: tvscreener dividend_yield is PERCENT (e.g. 0.36 = 0.36%); the
+    # market_valuation_snapshots column stores a RATIO (parity with ROB-444 / Finnhub).
+    df = _fake_df_with_gaps()
+    df["dividend_yield"] = [0.36]
+    service = _FixedDfService(df)
+    monkeypatch.setattr(provider_mod, "TvScreenerService", lambda **kw: service)
+
+    result = await build_valuation_snapshots_bulk_for_us(
+        snapshot_date=dt.date(2026, 6, 16), limit=5
+    )
+
+    assert result.payloads[0].dividend_yield == Decimal("0.0036")
