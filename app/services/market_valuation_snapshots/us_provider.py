@@ -90,6 +90,11 @@ class TvScreenerUsValuationProvider:
             if not symbol:
                 continue
 
+            # ROB-590: serialise the 52w-high date as an ISO STRING (not a dt.date)
+            # so the mapped row — which is stored verbatim as raw_payload — stays
+            # strict-JSON / Postgres-jsonb safe. _to_date in the builder parses it
+            # back for the typed column.
+            hi_date = _date_from_epoch_seconds(row_dict.get("price_52_week_high_date"))
             mapped_row = {
                 "symbol": symbol,
                 "price_earnings_ttm": row_dict.get("price_to_earnings_ratio_ttm")
@@ -108,9 +113,7 @@ class TvScreenerUsValuationProvider:
                 or row_dict.get("week_high_52"),
                 "price_52_week_low": row_dict.get("52_week_low")
                 or row_dict.get("week_low_52"),
-                "price_52_week_high_date": _date_from_epoch_seconds(
-                    row_dict.get("price_52_week_high_date")
-                ),
+                "price_52_week_high_date": hi_date.isoformat() if hi_date else None,
             }
             mapped_rows.append(mapped_row)
 
