@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -340,19 +340,20 @@ class InvestmentReportsRepository:
             )
         )
 
-    async def list_active_alerts(
+    async def list_alerts(
         self,
         *,
         market: str | None = None,
         symbol: str | None = None,
+        status: Literal["active", "triggered", "expired", "canceled"] | None = None,
         valid_at: datetime | None = None,
         include_expired_status_rows: bool = False,
-        limit: int = 100,
+        limit: int = 250,
     ) -> list[InvestmentWatchAlert]:
         capped_limit = max(1, min(int(limit), 250))
-        stmt = sa.select(InvestmentWatchAlert).where(
-            InvestmentWatchAlert.status == "active"
-        )
+        stmt = sa.select(InvestmentWatchAlert)
+        if status is not None:
+            stmt = stmt.where(InvestmentWatchAlert.status == status)
         if market is not None:
             stmt = stmt.where(InvestmentWatchAlert.market == market)
         if symbol is not None:
@@ -364,6 +365,24 @@ class InvestmentReportsRepository:
         )
         result = await self._session.scalars(stmt)
         return list(result.all())
+
+    async def list_active_alerts(
+        self,
+        *,
+        market: str | None = None,
+        symbol: str | None = None,
+        valid_at: datetime | None = None,
+        include_expired_status_rows: bool = False,
+        limit: int = 100,
+    ) -> list[InvestmentWatchAlert]:
+        return await self.list_alerts(
+            market=market,
+            symbol=symbol,
+            status="active",
+            valid_at=valid_at,
+            include_expired_status_rows=include_expired_status_rows,
+            limit=limit,
+        )
 
     async def list_alerts_for_source_reports(
         self, source_report_uuids: list[UUID], *, status: str | None = None
