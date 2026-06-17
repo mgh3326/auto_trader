@@ -394,82 +394,39 @@ async def test_get_cash_balance_kis_domestic_skips_zero_priority_orderables(
 
 
 @pytest.mark.asyncio
-async def test_get_cash_balance_kis_domestic_deducts_pending_buy_orders(monkeypatch):
-    tools = build_tools()
-
-    class MockKISClient:
-        async def inquire_integrated_margin(self):
-            return {
-                "dnca_tot_amt": "4300000.0",
-                "stck_cash_objt_amt": "4300000.0",
-                "stck_cash_ord_psbl_amt": "4300000.0",
-            }
-
-        async def inquire_korea_orders(self):
-            return [
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "250000", "nccs_qty": "1"},
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "800000", "nccs_qty": "1"},
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "2270000", "nccs_qty": "1"},
-                {"sll_buy_dvsn_cd": "01", "ord_unpr": "999999", "nccs_qty": "9"},
-            ]
-
-        async def inquire_overseas_margin(self):
-            return []
-
-    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-
-    result = await tools["get_cash_balance"](account="kis_domestic")
-
-    assert result["accounts"][0]["balance"] == pytest.approx(4300000.0)
-    assert result["accounts"][0]["orderable"] == pytest.approx(980000.0)
-
-
-@pytest.mark.asyncio
-async def test_get_cash_balance_kis_domestic_pending_lookup_failure_keeps_raw_orderable(
+async def test_get_cash_balance_kis_domestic_orderable_ignores_pending_buys_rob596(
     monkeypatch,
 ):
+    """ROB-596: 브로커 주문가능금액(stck_cash100_max_ord_psbl_amt)은 이미 접수된
+    미체결 매수를 netting한 실시간 값이다. 로컬에서 미체결 매수를 또 차감하면
+    double-count가 되어, 미정산 매도대금으로 settled < orderable 인 상황에서
+    회전매수를 못 하고 0으로 막힌다(현실 재현). orderable 은 브로커 값 그대로여야 한다."""
     tools = build_tools()
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
             return {
-                "dnca_tot_amt": "4300000.0",
-                "stck_cash_objt_amt": "4300000.0",
-                "stck_cash_ord_psbl_amt": "4300000.0",
+                "stck_cash_objt_amt": "348992.0",  # settled 예수금
+                # 미정산 D+2 매도대금 포함 주문가능 — 브로커가 이미 net 계산한 값
+                "stck_cash100_max_ord_psbl_amt": "2786548.0",
+                "stck_cash_ord_psbl_amt": "348992.0",
             }
 
         async def inquire_korea_orders(self):
-            raise RuntimeError("order inquiry failed")
-
-    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-
-    result = await tools["get_cash_balance"](account="kis_domestic")
-
-    assert result["accounts"][0]["orderable"] == pytest.approx(4300000.0)
-
-
-@pytest.mark.asyncio
-async def test_get_cash_balance_kis_domestic_clamps_orderable_at_zero(monkeypatch):
-    tools = build_tools()
-
-    class MockKISClient:
-        async def inquire_integrated_margin(self):
-            return {
-                "dnca_tot_amt": "1000000.0",
-                "stck_cash_objt_amt": "1000000.0",
-                "stck_cash_ord_psbl_amt": "1000000.0",
-            }
-
-        async def inquire_korea_orders(self):
+            # 한전 10@40,000 + 15@38,600 = 979,000 미체결 매수.
+            # 브로커는 이 주문을 받을 때 이미 주문가능에서 차감했다.
             return [
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "600000", "nccs_qty": "2"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "40000", "nccs_qty": "10"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "38600", "nccs_qty": "15"},
             ]
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_domestic")
 
-    assert result["accounts"][0]["orderable"] == pytest.approx(0.0)
+    assert result["accounts"][0]["balance"] == pytest.approx(348992.0)
+    # 미체결 매수를 추가 차감하지 않는다 (double-count 금지) — 브로커 주문가능 그대로.
+    assert result["accounts"][0]["orderable"] == pytest.approx(2786548.0)
 
 
 @pytest.mark.asyncio
@@ -675,9 +632,11 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_cash_balance_kis_overseas_avoids_duplicate_deduction_from_us_exchanges(
+async def test_get_cash_balance_kis_overseas_orderable_ignores_pending_buys_rob596(
     monkeypatch,
 ):
+    """ROB-596 (US): 해외 주문가능금액(frcr_gnrl_ord_psbl_amt)도 이미 net 이므로
+    미체결 매수를 추가 차감하지 않는다 (KR 과 동일 double-count 방지)."""
     tools = build_tools()
 
     class MockKISClient:
@@ -686,65 +645,22 @@ async def test_get_cash_balance_kis_overseas_avoids_duplicate_deduction_from_us_
                 {
                     "natn_name": "미국",
                     "crcy_cd": "USD",
-                    "frcr_dncl_amt1": "1000.0",
-                    "frcr_gnrl_ord_psbl_amt": "1000.0",
+                    "frcr_dncl_amt1": "5500.0",
+                    "frcr_gnrl_ord_psbl_amt": "5000.0",
                 }
             ]
 
         async def inquire_overseas_orders(self, exchange_code):
-            payload = {
-                "NASD": [
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
-                    {"sll_buy_dvsn_cd": "01", "ft_ord_unpr3": "999.0", "nccs_qty": "9"},
-                ],
-                # KIS NASD query is documented as a US-wide lookup, so these rows
-                # represent duplicates that must not be counted again.
-                "NYSE": [
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
-                ],
-                "AMEX": [
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
-                ],
-            }
-            return payload[exchange_code]
+            return [
+                {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "5"},
+            ]
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_overseas")
 
-    assert result["accounts"][0]["balance"] == pytest.approx(1000.0)
-    assert result["accounts"][0]["orderable"] == pytest.approx(700.0)
-
-
-@pytest.mark.asyncio
-async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_orderable(
-    monkeypatch,
-    caplog,
-):
-    tools = build_tools()
-
-    class MockKISClient:
-        async def inquire_overseas_margin(self):
-            return [
-                {
-                    "natn_name": "미국",
-                    "crcy_cd": "USD",
-                    "frcr_dncl_amt1": "1000.0",
-                    "frcr_gnrl_ord_psbl_amt": "1000.0",
-                }
-            ]
-
-        async def inquire_overseas_orders(self, exchange_code):
-            raise RuntimeError("NASD failed")
-
-    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-
-    with caplog.at_level("WARNING"):
-        result = await tools["get_cash_balance"](account="kis_overseas")
-
-    assert result["accounts"][0]["orderable"] == pytest.approx(1000.0)
-    assert "USD pending order deduction failed" in caplog.text
+    # 미체결 매수 500 USD 가 있어도 차감하지 않는다.
+    assert result["accounts"][0]["orderable"] == pytest.approx(5000.0)
 
 
 # ---------------------------------------------------------------------------

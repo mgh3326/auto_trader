@@ -47,50 +47,6 @@ async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> An
     return await method(*args, **kwargs)
 
 
-async def _get_kis_domestic_pending_buy_amount(
-    kis: KISClient,
-    *,
-    is_mock: bool = False,
-) -> float:
-    total = 0.0
-    open_orders = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
-    for order in open_orders:
-        if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
-            continue
-        price = to_float(order.get("ord_unpr"), default=0.0)
-        qty = to_float(
-            order.get("nccs_qty") or order.get("ord_qty"),
-            default=0.0,
-        )
-        total += price * qty
-    return total
-
-
-async def _get_kis_overseas_pending_buy_amount_usd(
-    kis: KISClient,
-    *,
-    is_mock: bool = False,
-) -> float:
-    total = 0.0
-    # KIS documents NASD as a US-wide open-order lookup. Querying NYSE/AMEX as
-    # well can double-count the same locked cash when orders are mirrored there.
-    open_orders = await _call_kis(
-        kis.inquire_overseas_orders,
-        "NASD",
-        is_mock=is_mock,
-    )
-    for order in open_orders:
-        if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
-            continue
-        price = to_float(order.get("ft_ord_unpr3"), default=0.0)
-        qty = to_float(
-            order.get("nccs_qty") or order.get("ft_ord_qty"),
-            default=0.0,
-        )
-        total += price * qty
-    return total
-
-
 def is_us_nation_name(value: Any) -> bool:
     normalized = str(value or "").strip().casefold()
     return normalized in {
@@ -269,31 +225,12 @@ async def get_cash_balance_impl(
                     )
                     dncl_amt = float(domestic_cash.get("balance", 0) or 0)
                     raw_orderable = float(domestic_cash.get("orderable", 0) or 0)
+                # ROB-596: 브로커 주문가능금액(stck_cash100_max_ord_psbl_amt)은 이미 접수된
+                # 미체결 매수를 netting한 실시간 값이다. 여기서 inquire_korea_orders 의
+                # 미체결 매수를 또 차감하면 double-count가 되어, 미정산 매도대금으로
+                # settled < orderable 인 상황에서 브로커가 받아줄 회전매수를 0으로 막는다.
+                # 브로커의 권위 있는 실시간 주문가능 값을 그대로 신뢰한다.
                 orderable = raw_orderable
-
-                try:
-                    pending_buy_amount = await _get_kis_domestic_pending_buy_amount(
-                        kis,
-                        is_mock=is_mock,
-                    )
-                    orderable = max(0.0, raw_orderable - pending_buy_amount)
-                except Exception as exc:
-                    msg = str(exc)
-                    is_mock_unsupported = is_mock and "mock" in msg.lower()
-                    logger.warning(
-                        "KR pending order deduction failed, using raw orderable: %s",
-                        msg,
-                    )
-                    if is_mock_unsupported:
-                        errors.append(
-                            {
-                                "source": "kis",
-                                "market": "kr",
-                                "error": "mock_unsupported: KIS domestic pending-orders "
-                                "inquiry is not available in mock mode",
-                                "mock_unsupported": True,
-                            }
-                        )
 
                 accounts.append(
                     {
@@ -341,19 +278,9 @@ async def get_cash_balance_impl(
                         default=0.0,
                     )
                     raw_orderable = extract_usd_orderable_from_row(usd_margin)
+                    # ROB-596: 해외 주문가능금액(frcr_gnrl_ord_psbl_amt)도 이미 net 이므로
+                    # 미체결 매수를 추가 차감하지 않는다 (KR 과 동일 double-count 방지).
                     orderable = raw_orderable
-
-                    try:
-                        pending_usd = await _get_kis_overseas_pending_buy_amount_usd(
-                            kis,
-                            is_mock=is_mock,
-                        )
-                        orderable = max(0.0, raw_orderable - pending_usd)
-                    except Exception as exc:
-                        logger.warning(
-                            "USD pending order deduction failed, using raw orderable: %s",
-                            exc,
-                        )
 
                     accounts.append(
                         {
