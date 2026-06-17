@@ -39,6 +39,9 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
         intent="buy_review",
         action_mode="notify_only",
         rationale="test rationale",
+        # Real watches carry a string[] checklist (ROB-599 prod 500 repro:
+        # the schema previously typed this list[dict] → ValidationError → 500).
+        trigger_checklist=["005930 현재가 조회 확인", "실주문 없음 확인"],
         valid_until=now + dt.timedelta(days=1),  # near_expiry will be True
         status="active",
     )
@@ -136,6 +139,8 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
     assert row1.current_price == Decimal("69800")
     assert row1.proximity_band == "hit"  # 69800 <= 70000 for price_below
     assert row1.last_event is None
+    # String checklist round-trips (ROB-599 regression guard).
+    assert row1.trigger_checklist == ["005930 현재가 조회 확인", "실주문 없음 확인"]
 
     # Check alert2 fields (us, AAPL)
     row2 = next(item for item in resp.items if item.symbol == "AAPL")
@@ -202,3 +207,59 @@ async def test_watch_panel_service_us_symbol_normalization(
         resp = await service.list_watches(market="us", symbol=route_symbol)
         assert resp.count == 1, route_symbol
         assert resp.items[0].symbol == "BRK.B"
+
+
+@pytest.mark.asyncio
+async def test_watch_panel_service_skips_unbuildable_row(
+    session: AsyncSession,  # noqa: F811
+    monkeypatch,
+) -> None:
+    """One alert that fails to project must not 500 the whole panel (ROB-599).
+
+    The good alert is still returned and the skipped count is surfaced in
+    warnings (honest degrade for a read endpoint).
+    """
+    now = dt.datetime(2026, 6, 17, 12, 0, tzinfo=dt.UTC)
+
+    def _alert(idem: str, symbol: str) -> InvestmentWatchAlert:
+        return InvestmentWatchAlert(
+            alert_uuid=uuid.uuid4(),
+            idempotency_key=idem,
+            source_report_uuid=uuid.uuid4(),
+            source_item_uuid=uuid.uuid4(),
+            market="us",
+            target_kind="asset",
+            symbol=symbol,
+            metric="price_above",
+            operator="above",
+            threshold=Decimal("100"),
+            threshold_key="100",
+            intent="sell_review",
+            action_mode="notify_only",
+            rationale="r",
+            valid_until=now + dt.timedelta(days=5),
+            status="active",
+        )
+
+    session.add(_alert("good", "AAA"))
+    session.add(_alert("bad", "BBB"))
+    await session.flush()
+
+    # Force the projection of the "BBB" alert to raise; the panel must survive.
+    from app.services.invest_view_model import watch_panel_service as mod
+
+    real_build = mod._build_watch_row
+
+    def _flaky(alert, **kwargs):
+        if alert.symbol == "BBB":
+            raise ValueError("boom")
+        return real_build(alert, **kwargs)
+
+    monkeypatch.setattr(mod, "_build_watch_row", _flaky)
+
+    service = WatchPanelService(db=session, clock=now)
+    resp = await service.list_watches(market="us", status="all")
+
+    assert resp.count == 1
+    assert resp.items[0].symbol == "AAA"
+    assert any("could not be displayed" in w for w in resp.warnings)
