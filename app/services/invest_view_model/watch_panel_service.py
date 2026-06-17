@@ -40,6 +40,87 @@ def _to_decimal(val: object) -> Decimal | None:
         return None
 
 
+def _build_watch_row(
+    alert: InvestmentWatchAlert,
+    *,
+    symbol_name: str | None,
+    snapshot: MarketQuoteSnapshot | None,
+    last_event: InvestmentWatchEvent | None,
+    now: dt.datetime,
+) -> WatchAlertRow:
+    """Project a single alert into a WatchAlertRow.
+
+    Raises on malformed alert data (caught + skipped by the caller so one bad
+    row never 500s the whole panel).
+    """
+    # Near expiry (active alerts whose valid_until is within 2 days).
+    near_expiry = alert.status == "active" and alert.valid_until - now <= dt.timedelta(
+        days=2
+    )
+
+    # Proximity for active price-metric alerts (price_above/price_below only).
+    current_price: Decimal | None = None
+    proximity_band: WatchProximityBand | None = None
+    if (
+        alert.status == "active"
+        and alert.metric in ("price_above", "price_below")
+        and snapshot is not None
+    ):
+        current_price = snapshot.price
+        try:
+            prox_res = compute_price_proximity(
+                market=alert.market,
+                target_kind=alert.target_kind,
+                symbol=alert.symbol,
+                condition_type=alert.metric,
+                threshold=float(alert.threshold),
+                current=float(snapshot.price),
+            )
+            proximity_band = prox_res.band
+        except Exception:
+            logger.warning(
+                "Failed to compute proximity for alert %s", alert.id, exc_info=True
+            )
+
+    # Latest trigger event for non-active alerts.
+    last_event_summary: WatchEventSummary | None = None
+    if alert.status != "active" and last_event is not None:
+        last_event_summary = WatchEventSummary(
+            event_uuid=last_event.event_uuid,
+            outcome=last_event.outcome,
+            current_value=_to_decimal(last_event.current_value),
+            created_at=last_event.created_at,
+        )
+
+    # Watch checklists are free-text strings; coerce defensively so a stray
+    # non-str scalar degrades to text rather than failing the whole row.
+    trigger_checklist = [str(item) for item in (alert.trigger_checklist or [])]
+
+    return WatchAlertRow(
+        alert_uuid=alert.alert_uuid,
+        source_report_uuid=alert.source_report_uuid,
+        market=alert.market,  # type: ignore[arg-type]
+        symbol=alert.symbol,
+        symbol_name=symbol_name,
+        target_kind=alert.target_kind,
+        metric=alert.metric,
+        operator=alert.operator,  # type: ignore[arg-type]
+        threshold=_to_decimal(alert.threshold),
+        threshold_high=_to_decimal(alert.threshold_high),
+        status=alert.status,  # type: ignore[arg-type]
+        valid_until=alert.valid_until,
+        intent=alert.intent,
+        action_mode=alert.action_mode,
+        rationale=alert.rationale,
+        trigger_checklist=trigger_checklist,
+        max_action=alert.max_action or {},
+        current_price=current_price,
+        proximity_band=proximity_band,
+        last_event=last_event_summary,
+        near_expiry=near_expiry,
+    )
+
+
 class WatchPanelService:
     def __init__(
         self,
@@ -174,89 +255,34 @@ class WatchPanelService:
             except Exception:
                 logger.exception("Failed to query investment watch events")
 
-        # 5. Build items
+        # 5. Build items. Per-row isolation: a single malformed alert (e.g. an
+        #    unexpected field shape) must NOT 500 the whole panel — skip it and
+        #    surface the count in warnings (honest degrade for a read endpoint).
         items: list[WatchAlertRow] = []
+        skipped = 0
         for alert in alerts:
-            symbol_name = symbol_names.get((alert.market, alert.symbol))
-
-            # Near expiry logic for active alerts
-            near_expiry = False
-            if alert.status == "active" and alert.valid_until - now <= dt.timedelta(
-                days=2
-            ):
-                near_expiry = True
-
-            # Proximity calculation for active price alerts
-            current_price: Decimal | None = None
-            proximity_band: WatchProximityBand | None = None
-            if alert.status == "active" and alert.metric in (
-                "price_above",
-                "price_below",
-            ):
-                snapshot = snapshots.get((alert.market, alert.symbol))
-                if snapshot is not None:
-                    current_price = snapshot.price
-                    try:
-                        prox_res = compute_price_proximity(
-                            market=alert.market,
-                            target_kind=alert.target_kind,
-                            symbol=alert.symbol,
-                            condition_type=alert.metric,
-                            threshold=float(alert.threshold),
-                            current=float(snapshot.price),
-                        )
-                        # We classification match: band literal
-                        proximity_band = prox_res.band
-                    except Exception:
-                        logger.warning(
-                            "Failed to compute proximity for alert %s",
-                            alert.id,
-                            exc_info=True,
-                        )
-
-            # Last event for triggered/expired/canceled alerts
-            last_event_summary: WatchEventSummary | None = None
-            if alert.status != "active":
-                event = last_events.get(alert.id)
-                if event is not None:
-                    last_event_summary = WatchEventSummary(
-                        event_uuid=event.event_uuid,
-                        outcome=event.outcome,
-                        current_value=_to_decimal(event.current_value),
-                        created_at=event.created_at,
+            try:
+                items.append(
+                    _build_watch_row(
+                        alert,
+                        symbol_name=symbol_names.get((alert.market, alert.symbol)),
+                        snapshot=snapshots.get((alert.market, alert.symbol)),
+                        last_event=last_events.get(alert.id),
+                        now=now,
                     )
-
-            # Build trigger_checklist & max_action defaults
-            trigger_checklist = alert.trigger_checklist or []
-            max_action = alert.max_action or {}
-
-            items.append(
-                WatchAlertRow(
-                    alert_uuid=alert.alert_uuid,
-                    source_report_uuid=alert.source_report_uuid,
-                    market=alert.market,  # type: ignore[arg-type]
-                    symbol=alert.symbol,
-                    symbol_name=symbol_name,
-                    target_kind=alert.target_kind,
-                    metric=alert.metric,
-                    operator=alert.operator,  # type: ignore[arg-type]
-                    threshold=_to_decimal(alert.threshold),
-                    threshold_high=_to_decimal(alert.threshold_high),
-                    status=alert.status,  # type: ignore[arg-type]
-                    valid_until=alert.valid_until,
-                    intent=alert.intent,
-                    action_mode=alert.action_mode,
-                    rationale=alert.rationale,
-                    trigger_checklist=trigger_checklist,
-                    max_action=max_action,
-                    current_price=current_price,
-                    proximity_band=proximity_band,
-                    last_event=last_event_summary,
-                    near_expiry=near_expiry,
                 )
-            )
+            except Exception:
+                logger.exception(
+                    "Failed to build watch row for alert %s; skipping",
+                    getattr(alert, "id", None),
+                )
+                skipped += 1
 
         warnings: list[str] = []
+        if skipped:
+            warnings.append(
+                f"{skipped} watch item(s) could not be displayed due to a data issue."
+            )
         if data_state == "degraded":
             warnings.append(
                 "Some active price watch items could not retrieve current prices from the database."

@@ -49,7 +49,9 @@ class WatchAlertRow(BaseModel):
     intent: str
     action_mode: str
     rationale: str
-    trigger_checklist: list[dict] = Field(default_factory=list)
+    # Watch checklists are free-text strings (CLAUDE.md contract: string[]);
+    # the alert table stores them as a JSON list of strings.
+    trigger_checklist: list[str] = Field(default_factory=list)
     max_action: dict = Field(default_factory=dict)
     # 근접도 (price metric만, 외 metric은 null)
     current_price: Decimal | None = None
