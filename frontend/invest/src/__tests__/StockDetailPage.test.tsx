@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { StockDetailPage } from "../pages/stock-detail/StockDetailPage";
 import * as stockApi from "../api/stockDetail";
+import * as watchApi from "../api/watches";
 import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import { mockRightRail } from "../test/mockRightRail";
 import type {
@@ -260,6 +261,16 @@ beforeEach(() => {
   vi.spyOn(stockApi, "fetchStockDetailOrders").mockResolvedValue(orders);
   vi.spyOn(stockApi, "fetchStockDetailNews").mockResolvedValue(news);
   vi.spyOn(stockApi, "fetchStockDetailResearchConsensus").mockResolvedValue(researchConsensus);
+  vi.spyOn(watchApi, "fetchWatches").mockResolvedValue({
+    market: "us",
+    status: "all",
+    count: 0,
+    data_state: "ok",
+    as_of: "2026-05-10T09:31:00Z",
+    items: [],
+    warnings: [],
+    empty_reason: null,
+  });
 });
 
 afterEach(() => {
@@ -383,6 +394,73 @@ test("keeps buy/sell controls disabled and shows explicit orderbook plus empty o
   expect(screen.getByTestId("stock-detail-trade-guardrail")).toHaveTextContent("read_only_mvp");
   expect(screen.getByTestId("stock-detail-orderbook")).toHaveTextContent("US 호가는 아직 지원하지 않습니다");
   expect(await screen.findByTestId("stock-detail-orders")).toHaveTextContent("체결 내역이 없습니다");
+});
+
+test("renders the upgraded fill table (buy/sell · price · notional) and the per-symbol watch card", async () => {
+  vi.mocked(stockApi.fetchStockDetailOrders).mockResolvedValue({
+    symbol: "QQQM",
+    market: "us",
+    items: [
+      { orderId: "o1", symbol: "QQQM", market: "us", side: "buy", quantity: 2, price: 200, filledAt: "2026-05-09T13:30:00Z", account: "kis", source: "reconciler" },
+      { orderId: "o2", symbol: "QQQM", market: "us", side: "sell", quantity: 3, price: 210, filledAt: "2026-05-10T13:30:00Z", account: "kis", source: "websocket" },
+    ],
+    nextCursor: null,
+    meta: { emptyState: null, warnings: [] },
+  });
+  vi.mocked(watchApi.fetchWatches).mockResolvedValue({
+    market: "us",
+    status: "all",
+    count: 1,
+    data_state: "ok",
+    as_of: "2026-05-10T09:31:00Z",
+    items: [
+      {
+        alert_uuid: "a1",
+        source_report_uuid: "r1",
+        market: "us",
+        symbol: "QQQM",
+        symbol_name: "Invesco NASDAQ 100 ETF",
+        target_kind: "asset",
+        metric: "price_above",
+        operator: "above",
+        threshold: "230",
+        threshold_high: null,
+        status: "active",
+        valid_until: "2026-05-20T00:00:00Z",
+        intent: "sell_review",
+        action_mode: "notify_only",
+        rationale: "목표가 근접 시 분할 매도 검토",
+        trigger_checklist: [],
+        max_action: {},
+        current_price: "211.34",
+        proximity_band: "within_1_pct",
+        last_event: null,
+        near_expiry: false,
+      },
+    ],
+    warnings: [],
+    empty_reason: null,
+  });
+
+  renderPage();
+
+  const ordersCard = within(await screen.findByTestId("stock-detail-orders"));
+  expect(ordersCard.getByText("일시")).toBeInTheDocument();
+  expect(ordersCard.getByText("구분")).toBeInTheDocument();
+  expect(ordersCard.getByText("총액")).toBeInTheDocument();
+  expect(ordersCard.getByText("매수")).toBeInTheDocument();
+  expect(ordersCard.getByText("매도")).toBeInTheDocument();
+  // notional = price × quantity, formatted for USD (buy 2×200, sell 3×210)
+  expect(ordersCard.getByText("$400.00")).toBeInTheDocument();
+  expect(ordersCard.getByText("$630.00")).toBeInTheDocument();
+  expect(ordersCard.getByText("보정")).toBeInTheDocument();
+  expect(ordersCard.getByText("실시간")).toBeInTheDocument();
+
+  const watchCard = within(await screen.findByTestId("stock-detail-watch"));
+  expect(watchCard.getByText("감시중")).toBeInTheDocument();
+  expect(watchCard.getByText(/가격 \$230.00 이상/)).toBeInTheDocument();
+  expect(watchCard.getByText("목표가 근접 시 분할 매도 검토")).toBeInTheDocument();
+  await waitFor(() => expect(watchApi.fetchWatches).toHaveBeenCalledWith("us", "all", "QQQM"));
 });
 
 test("omits external community clone and uses a local memo placeholder", async () => {

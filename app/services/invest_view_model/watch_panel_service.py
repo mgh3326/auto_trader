@@ -10,6 +10,7 @@ from typing import Literal
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_db_symbol
 from app.models.investment_reports import InvestmentWatchAlert, InvestmentWatchEvent
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.schemas.invest_watches import (
@@ -58,6 +59,7 @@ class WatchPanelService:
         *,
         market: Literal["all", "kr", "us", "crypto"] = "all",
         status: Literal["all", "active", "triggered", "expired", "canceled"] = "all",
+        symbol: str | None = None,
     ) -> WatchesResponse:
         repo = InvestmentReportsRepository(self._db)
         now = self._clock()
@@ -65,9 +67,20 @@ class WatchPanelService:
         # 1. Fetch alerts
         db_market = None if market == "all" else market
         db_status = None if status == "all" else status
+        # Per-symbol callers (stock detail page) pass the route symbol, which may
+        # arrive in a separator form (US BRK-B / BRK/B) different from the dot
+        # form (BRK.B) the alert table stores. Canonicalize per market exactly
+        # like the ROB-559 order-ledger endpoint (linked_orders.list_live_orders_
+        # for_symbol): US → to_db_symbol; KR/crypto matched raw (upper). Fails
+        # safe to an empty result on any residual mismatch.
+        db_symbol: str | None = None
+        if symbol:
+            sym = symbol.strip().upper()
+            db_symbol = to_db_symbol(sym) if market == "us" else sym
         alerts = await repo.list_alerts(
             market=db_market,
             status=db_status,
+            symbol=db_symbol,
             limit=250,
         )
 

@@ -12,15 +12,16 @@ from app.schemas.invest_watches import WatchesResponse
 
 class _StubWatchPanelService:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, str | None]] = []
 
     async def list_watches(
         self,
         *,
         market: str = "all",
         status: str = "all",
+        symbol: str | None = None,
     ) -> WatchesResponse:
-        self.calls.append((market, status))
+        self.calls.append((market, status, symbol))
         return WatchesResponse(
             market=market,  # type: ignore[arg-type]
             status=status,  # type: ignore[arg-type]
@@ -54,7 +55,7 @@ def test_watches_endpoint_defaults_to_all() -> None:
     assert response.status_code == 200
     assert response.json()["market"] == "all"
     assert response.json()["status"] == "all"
-    assert service.calls == [("all", "all")]
+    assert service.calls == [("all", "all", None)]
 
 
 @pytest.mark.unit
@@ -67,7 +68,18 @@ def test_watches_endpoint_accepts_filters() -> None:
     assert response.status_code == 200
     assert response.json()["market"] == "crypto"
     assert response.json()["status"] == "active"
-    assert service.calls == [("crypto", "active")]
+    assert service.calls == [("crypto", "active", None)]
+
+
+@pytest.mark.unit
+def test_watches_endpoint_forwards_symbol_filter() -> None:
+    service = _StubWatchPanelService()
+    client = _make_client(service)
+
+    response = client.get("/trading/api/invest/watches?market=kr&symbol=005930")
+
+    assert response.status_code == 200
+    assert service.calls == [("kr", "all", "005930")]
 
 
 @pytest.mark.unit
@@ -99,6 +111,7 @@ def test_watches_default_service_receives_db_dependency(monkeypatch) -> None:
             *,
             market: str = "all",
             status: str = "all",
+            symbol: str | None = None,
         ) -> WatchesResponse:
             return WatchesResponse(
                 market=market,  # type: ignore[arg-type]

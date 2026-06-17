@@ -5,11 +5,20 @@ import { fetchWatches } from "../../api/watches";
 import { Pill } from "../../ds";
 import { stockDetailPath } from "../../stockDetailPath";
 import type {
-  WatchAlertRow,
   WatchMarket,
   WatchStatus,
   WatchesResponse,
 } from "../../types/watches";
+import {
+  PROXIMITY_BAND_LABELS,
+  PROXIMITY_BAND_TONES,
+  WATCH_MARKET_LABEL as MARKET_LABEL,
+  WATCH_STATUS_LABELS,
+  WATCH_STATUS_TONES,
+  formatWatchCondition as formatCondition,
+  formatWatchDateTime as formatDateTime,
+  formatWatchMoney as formatMoney,
+} from "./watchPresentation";
 
 const MARKET_OPTIONS: { key: WatchMarket; label: string }[] = [
   { key: "all", label: "전체" },
@@ -25,76 +34,6 @@ const STATUS_OPTIONS: { key: WatchStatus; label: string }[] = [
   { key: "expired", label: "만료됨" },
   { key: "canceled", label: "취소됨" },
 ];
-
-const WATCH_STATUS_TONES: Record<string, "accent" | "warn" | "paper" | "loss"> = {
-  active: "accent",
-  triggered: "accent",
-  expired: "warn",
-  canceled: "warn",
-};
-
-const WATCH_STATUS_LABELS: Record<string, string> = {
-  active: "감시중",
-  triggered: "발화됨",
-  expired: "만료됨",
-  canceled: "취소됨",
-};
-
-const PROXIMITY_BAND_TONES: Record<string, "accent" | "warn" | "paper"> = {
-  hit: "accent",
-  within_0_5_pct: "warn",
-  within_1_pct: "paper",
-  outside: "paper",
-};
-
-const PROXIMITY_BAND_LABELS: Record<string, string> = {
-  hit: "도달",
-  within_0_5_pct: "0.5% 이내",
-  within_1_pct: "1.0% 이내",
-  outside: "대기",
-};
-
-const MARKET_LABEL: Record<string, string> = {
-  kr: "국내",
-  us: "미국",
-  crypto: "코인",
-};
-
-function formatMoney(value: string | number | null | undefined, market: string): string {
-  if (value == null || value === "") return "—";
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return "—";
-
-  if (market === "us") {
-    return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
-  }
-  if (market === "kr") return `₩${Math.round(n).toLocaleString("ko-KR")}`;
-  return `${n.toLocaleString("ko-KR", { maximumFractionDigits: 8 })}`;
-}
-
-function formatDateTime(value: string | null): string {
-  if (!value) return "—";
-  const dt = new Date(value);
-  if (Number.isNaN(dt.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Seoul",
-  }).format(dt);
-}
-
-function formatCondition(row: WatchAlertRow): string {
-  const op = row.operator === "above" ? "이상" : row.operator === "below" ? "이하" : "범위";
-  const metricName = row.metric === "price_above" || row.metric === "price_below" || row.metric === "price" ? "가격" : row.metric;
-
-  if (row.operator === "between" && row.threshold_high) {
-    return `${metricName} ${formatMoney(row.threshold, row.market)} ~ ${formatMoney(row.threshold_high, row.market)}`;
-  }
-  return `${metricName} ${formatMoney(row.threshold, row.market)} ${op}`;
-}
 
 export function WatchAlertsPanel({ compact = false }: { compact?: boolean }) {
   const [market, setMarket] = useState<WatchMarket>("all");

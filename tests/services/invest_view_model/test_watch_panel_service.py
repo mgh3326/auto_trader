@@ -154,3 +154,51 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
     resp_kr = await service.list_watches(market="kr", status="active")
     assert resp_kr.count == 1
     assert resp_kr.items[0].symbol == "005930"
+
+    # Per-symbol scope (ROB-592 stock detail page reuse)
+    resp_symbol = await service.list_watches(market="kr", symbol="005930")
+    assert resp_symbol.count == 1
+    assert resp_symbol.items[0].symbol == "005930"
+    # Proximity still enriched under the symbol scope (active price alert).
+    assert resp_symbol.items[0].proximity_band == "hit"
+
+    # Symbol that has no alert in this market returns empty (no crash).
+    resp_symbol_none = await service.list_watches(market="us", symbol="005930")
+    assert resp_symbol_none.count == 0
+
+
+@pytest.mark.asyncio
+async def test_watch_panel_service_us_symbol_normalization(
+    session: AsyncSession,  # noqa: F811
+) -> None:
+    """US separator forms (BRK-B / BRK/B) resolve to the dot form the alert stores."""
+    now = dt.datetime(2026, 6, 17, 12, 0, tzinfo=dt.UTC)
+
+    alert = InvestmentWatchAlert(
+        alert_uuid=uuid.uuid4(),
+        idempotency_key="key-brk",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="us",
+        target_kind="asset",
+        symbol="BRK.B",  # alert table stores the dot form
+        metric="price_above",
+        operator="above",
+        threshold=Decimal("500"),
+        threshold_key="500",
+        intent="sell_review",
+        action_mode="notify_only",
+        rationale="brk watch",
+        valid_until=now + dt.timedelta(days=5),
+        status="active",
+    )
+    session.add(alert)
+    await session.flush()
+
+    service = WatchPanelService(db=session, clock=now)
+
+    # Hyphen and slash separators both canonicalize to BRK.B and match.
+    for route_symbol in ("BRK-B", "brk-b", "BRK/B", "BRK.B"):
+        resp = await service.list_watches(market="us", symbol=route_symbol)
+        assert resp.count == 1, route_symbol
+        assert resp.items[0].symbol == "BRK.B"

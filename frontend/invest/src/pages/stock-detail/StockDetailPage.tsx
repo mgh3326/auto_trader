@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useParams } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Button, Card, Hairline, Krw, PL, Pill, Sparkline, Usd } from "../../ds";
@@ -10,11 +10,14 @@ import {
   fetchStockDetailOrders,
   fetchStockDetailResearchConsensus,
 } from "../../api/stockDetail";
+import { fetchWatches } from "../../api/watches";
 import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
 import { OrderLedgerCard } from "../../desktop/stock-detail/OrderLedgerCard";
+import { WatchCard } from "../../desktop/stock-detail/WatchCard";
 import { accountSourceMeta } from "../../desktop/AccountSourceMeta";
 import type { LinkedOrder } from "../../types/investmentReports";
 import type {
+  OrderSide,
   StockDetailCandlesResponse,
   StockDetailFxSensitivity,
   StockDetailMarket,
@@ -24,6 +27,7 @@ import type {
   StockDetailResponse,
   StockDetailHolding,
 } from "../../types/stockDetail";
+import type { WatchAlertRow } from "../../types/watches";
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return "−";
@@ -222,14 +226,100 @@ function OrderbookCard({ data }: { data: StockDetailResponse }) {
   );
 }
 
-function OrdersCard({ orders }: { orders: StockDetailOrdersResponse | undefined }) {
+const ORDER_SOURCE_LABELS: Record<string, string> = {
+  websocket: "실시간",
+  reconciler: "보정",
+  manual_import: "수동",
+};
+
+function fmtOrderMoney(value: number | null | undefined, market: StockDetailMarket): string {
+  if (value == null || !Number.isFinite(value)) return "−";
+  if (market === "us") {
+    return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+  }
+  // kr + crypto (Upbit pairs are KRW-quoted)
+  return `₩${Math.round(value).toLocaleString("ko-KR")}`;
+}
+
+function fmtOrderTime(value: string | null): string {
+  if (!value) return "−";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return value;
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Seoul",
+  }).format(dt);
+}
+
+function orderSideMeta(side: OrderSide): { label: string; tone: "gain" | "loss" | "paper" } {
+  if (side === "buy") return { label: "매수", tone: "gain" };
+  if (side === "sell") return { label: "매도", tone: "loss" };
+  return { label: String(side), tone: "paper" };
+}
+
+const ordersTh: CSSProperties = {
+  padding: "8px 12px",
+  borderTop: "1px solid var(--divider)",
+  borderBottom: "1px solid var(--divider)",
+  color: "var(--fg-3)",
+  fontSize: 11,
+  textAlign: "left",
+  whiteSpace: "nowrap",
+};
+
+const ordersTd: CSSProperties = {
+  padding: "10px 12px",
+  borderBottom: "1px solid var(--divider)",
+  fontSize: 13,
+  whiteSpace: "nowrap",
+};
+
+function OrdersCard({ orders, market }: { orders: StockDetailOrdersResponse | undefined; market: StockDetailMarket }) {
   const empty = orders?.meta.emptyState === "no_filled_orders" || orders?.items.length === 0;
   return (
     <Card data-testid="stock-detail-orders">
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>체결 내역</h2>
+      <h2 style={{ margin: "0 0 4px", fontSize: 16 }}>체결 내역</h2>
+      <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)" }}>매수 · 매도 체결 (일시 · 단가 · 총액)</p>
       {!orders ? <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p> : null}
       {orders && empty ? <p style={{ margin: 0, color: "var(--fg-3)" }}>체결 내역이 없습니다.</p> : null}
-      {orders && !empty ? <ul>{orders.items.map((o) => <li key={o.orderId ?? `${o.side}-${o.filledAt}`}>{o.side} {o.quantity}</li>)}</ul> : null}
+      {orders && !empty ? (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={ordersTh}>일시</th>
+                <th style={ordersTh}>구분</th>
+                <th style={{ ...ordersTh, textAlign: "right" }}>수량</th>
+                <th style={{ ...ordersTh, textAlign: "right" }}>단가</th>
+                <th style={{ ...ordersTh, textAlign: "right" }}>총액</th>
+                <th style={ordersTh}>출처</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.items.map((o, idx) => {
+                const side = orderSideMeta(o.side);
+                const notional = o.price != null ? o.price * o.quantity : null;
+                return (
+                  <tr key={o.orderId ?? `${o.side}-${o.filledAt}-${o.quantity}-${idx}`}>
+                    <td style={{ ...ordersTd, color: "var(--fg-2)", fontSize: 12 }}>{fmtOrderTime(o.filledAt)}</td>
+                    <td style={ordersTd}>
+                      <Pill tone={side.tone} size="sm">{side.label}</Pill>
+                    </td>
+                    <td style={{ ...ordersTd, textAlign: "right", fontFeatureSettings: '"tnum"' }}>{fmtQty(o.quantity)}</td>
+                    <td style={{ ...ordersTd, textAlign: "right", fontFeatureSettings: '"tnum"' }}>{fmtOrderMoney(o.price, market)}</td>
+                    <td style={{ ...ordersTd, textAlign: "right", fontWeight: 800, fontFeatureSettings: '"tnum"' }}>{fmtOrderMoney(notional, market)}</td>
+                    <td style={{ ...ordersTd, color: "var(--fg-3)", fontSize: 12 }}>{ORDER_SOURCE_LABELS[o.source ?? ""] ?? o.source ?? "−"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -409,6 +499,7 @@ export function StockDetailPage() {
   const [candles, setCandles] = useState<StockDetailCandlesResponse | undefined>();
   const [orders, setOrders] = useState<StockDetailOrdersResponse | undefined>();
   const [orderLedger, setOrderLedger] = useState<LinkedOrder[] | undefined>();
+  const [watches, setWatches] = useState<WatchAlertRow[] | undefined>();
   const [news, setNews] = useState<StockDetailNewsResponse | undefined>();
   const [researchConsensus, setResearchConsensus] = useState<StockDetailResearchConsensusResponse | undefined>();
   const [researchErr, setResearchErr] = useState<string | undefined>();
@@ -420,6 +511,7 @@ export function StockDetailPage() {
     setCandles(undefined);
     setOrders(undefined);
     setOrderLedger(undefined);
+    setWatches(undefined);
     setNews(undefined);
     setResearchConsensus(undefined);
     setResearchErr(undefined);
@@ -442,6 +534,9 @@ export function StockDetailPage() {
     fetchStockDetailOrderLedger({ market, symbol, days: 90 })
       .then((r) => !cancel && setOrderLedger(r))
       .catch(() => !cancel && setOrderLedger([]));
+    fetchWatches(market, "all", symbol)
+      .then((r) => !cancel && setWatches(r.items))
+      .catch(() => !cancel && setWatches([]));
     fetchStockDetailNews({ market, symbol, limit: 5 })
       .then((r) => !cancel && setNews(r))
       .catch(() => undefined);
@@ -489,9 +584,10 @@ export function StockDetailPage() {
               <ChartCard candles={candles} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <OrderbookCard data={data} />
-                <OrdersCard orders={orders} />
+                <OrdersCard orders={orders} market={market} />
               </div>
               <OrderLedgerCard orders={orderLedger} />
+              <WatchCard watches={watches} />
               <NewsCard news={news} />
               {data.market === "kr" && data.investorFlow ? (
                 <InvestorFlowCard data={data.investorFlow} />
