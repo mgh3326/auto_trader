@@ -15,6 +15,9 @@ from app.services.naver_finance.company import (
 from app.services.naver_finance.company import (
     fetch_financials as fetch_financials,
 )
+from app.services.naver_finance.consensus import (
+    fetch_analyst_consensus as fetch_analyst_consensus,
+)
 from app.services.naver_finance.investor import (
     _build_investment_opinions_from_company_list_soup as _build_investment_opinions_from_company_list_soup,
 )
@@ -145,4 +148,5 @@ __all__ = [
     "fetch_news",
     "fetch_sector_peers",
     "fetch_valuation",
+    "fetch_analyst_consensus",
 ]

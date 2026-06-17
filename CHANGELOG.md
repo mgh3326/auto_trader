@@ -11,6 +11,13 @@
 - Wire `watchAlerts` tab into desktop and mobile portfolio pages (`portfolioTabs.ts` union, `PORTFOLIO_TABS` array, and `parsePortfolioTab` string check).
 - Current price resolved from `market_quote_snapshots` table; data_state reflects snapshot availability (ok/degraded/unavailable).
 
+## [0.2.4] - 2026-06-16
+
+### Changed (ROB-589 — allocation/crypto discovery polish)
+- `get_portfolio_allocation`: add `by_currency` roll-up (KRW vs USD with `fx_conversion_needed`) and unify KIS domestic/overseas cash + holdings into a single `kis` account row.
+- `get_crypto_order_flow`: description now advertises multi-window + `consensus`; ticks are defensively sorted newest-first before windowing.
+- `get_upbit_altseason` constituents now include RS=0 (rate == BTC) rows to match the `get_top_stocks(relative_strength)` boundary; the `alts_beating_btc` ratio stays strict `>`.
+
 ## [0.2.3] - 2026-06-16
 
 ### Added (ROB-582 — Cross-asset allocation roll-up)

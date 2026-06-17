@@ -163,6 +163,28 @@ async def test_order_flow_window_derivation(monkeypatch):
     assert out["windows"]["500"]["net"] == pytest.approx(0.4)
 
 
+async def test_order_flow_defensive_sorting(monkeypatch):
+    """ROB-589: Ensure handler sorts newest-first even if source is shuffled."""
+
+    async def fake_trades(market="KRW-BTC", count=500):
+        # Shuffled input: 1000ms (oldest), 3000ms (newest), 2000ms (middle)
+        return [
+            _tick("ASK", 1.0, 1000),
+            _tick("BID", 1.0, 3000),
+            _tick("BID", 1.0, 2000),
+        ]
+
+    monkeypatch.setattr(mod, "fetch_recent_trades", fake_trades)
+    out = await mod.handle_get_crypto_order_flow("btc")
+
+    # If sorted correctly (3000, 2000, 1000):
+    # Whole set (3 trades): 2 BID, 1 ASK -> net = (2-1)/3 = 0.3333
+    # Span = (3000 - 1000) / 1000 = 2.0s
+    assert out["trade_count"] == 3
+    assert out["windows"]["50"]["net"] == pytest.approx(0.3333)
+    assert out["windows"]["50"]["span_seconds"] == pytest.approx(2.0)
+
+
 async def test_order_flow_requires_symbol():
     with pytest.raises(ValueError, match="symbol is required"):
         await mod.handle_get_crypto_order_flow("")

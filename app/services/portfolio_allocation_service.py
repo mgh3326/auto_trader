@@ -129,6 +129,13 @@ def _weight_status(
     return drift, "neutral"
 
 
+def _normalize_account_id(account_id: str, broker: str | None) -> str:
+    """Normalize broker-specific account sub-types to canonical IDs (ROB-589)."""
+    if str(broker or "").lower() == "kis":
+        return "kis"
+    return account_id
+
+
 def build_portfolio_allocation(
     *,
     positions: list[dict[str, Any]],
@@ -152,6 +159,9 @@ def build_portfolio_allocation(
             "cash_value_krw": 0.0,
             "profit_loss_krw": 0.0,
         }
+    )
+    currency_totals: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"value_krw": 0.0}
     )
     account_totals: dict[str, dict[str, Any]] = {}
     valued_position_count = 0
@@ -184,7 +194,14 @@ def build_portfolio_allocation(
         if profit_loss is not None:
             totals["profit_loss_krw"] += profit_loss
 
-        account_id = str(position.get("account") or "unknown")
+        # Currency rollup: equity_us is USD-based, others (KR/Crypto) are KRW-based.
+        currency = "USD" if position.get("instrument_type") == "equity_us" else "KRW"
+        currency_totals[currency]["value_krw"] += value_krw
+
+        # ROB-589: Normalize kis_domestic/overseas to 'kis' so they merge with positions.
+        raw_account_id = str(position.get("account") or "unknown")
+        account_id = _normalize_account_id(raw_account_id, position.get("broker"))
+
         account = account_totals.setdefault(
             account_id,
             {
@@ -219,6 +236,7 @@ def build_portfolio_allocation(
             row["surface_asset_class"] = surface_class
             row["effective_asset_class"] = effective_class
             row["value_krw"] = _round_money(value_krw)
+            row["account"] = account_id
             output_positions.append(row)
 
     cash_rows: list[dict[str, Any]] = []
@@ -232,7 +250,13 @@ def build_portfolio_allocation(
             totals = class_totals["cash"]
             totals["value_krw"] += value_krw
             totals["cash_value_krw"] += value_krw
-            account_id = str(cash.get("account") or "cash")
+
+            currency_totals[currency]["value_krw"] += value_krw
+
+            # ROB-589: Merge KIS cash wallets into canonical 'kis' account.
+            raw_account_id = str(cash.get("account") or "cash")
+            account_id = _normalize_account_id(raw_account_id, cash.get("broker"))
+
             account = account_totals.setdefault(
                 account_id,
                 {
@@ -246,10 +270,13 @@ def build_portfolio_allocation(
             )
             account["value_krw"] += value_krw
             account["asset_classes"]["cash"] += value_krw
-            cash_rows.append({**cash, "value_krw": _round_money(value_krw)})
+            cash_rows.append(
+                {**cash, "account": account_id, "value_krw": _round_money(value_krw)}
+            )
 
     total_value = sum(row["value_krw"] for row in class_totals.values())
     invested_value = total_value - class_totals["cash"]["value_krw"]
+
     asset_classes = []
     for asset_class, totals in sorted(class_totals.items()):
         value = totals["value_krw"]
@@ -278,6 +305,22 @@ def build_portfolio_allocation(
             }
         )
     asset_classes.sort(key=lambda row: row["value_krw"], reverse=True)
+
+    by_currency = []
+    for currency, totals in sorted(currency_totals.items()):
+        value = totals["value_krw"]
+        if value <= 0:
+            continue
+        weight = (value / total_value) * 100 if total_value else 0.0
+        by_currency.append(
+            {
+                "currency": currency,
+                "value_krw": _round_money(value),
+                "weight_pct": _round_pct(weight),
+                "fx_conversion_needed": currency == "USD",
+            }
+        )
+    by_currency.sort(key=lambda row: row["value_krw"], reverse=True)
 
     accounts = []
     for account in account_totals.values():
@@ -317,6 +360,7 @@ def build_portfolio_allocation(
             "unvalued_position_count": unvalued_position_count,
         },
         "asset_classes": asset_classes,
+        "by_currency": by_currency,
         "accounts": accounts,
         "lookthrough": lookthrough,
         "positions": output_positions,
