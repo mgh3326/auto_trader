@@ -34,5 +34,8 @@ async def list_watches(
     service: Annotated[WatchPanelService, Depends(get_watch_panel_service)],
     market: Annotated[Market, Query()] = "all",
     status: Annotated[Status, Query()] = "all",
+    symbol: Annotated[str | None, Query()] = None,
 ) -> WatchesResponse:
-    return await service.list_watches(market=market, status=status)
+    # `symbol` scopes the panel to a single instrument for the stock detail
+    # page (ROB-592). Omitted by the /invest/my watch tab (ROB-591).
+    return await service.list_watches(market=market, status=status, symbol=symbol)

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1] - 2026-06-17
+
+### Added (ROB-592 — stock detail per-symbol watch card + fill detail upgrade)
+- Per-symbol watch card on the stock detail page (`/invest/stocks/:market/:symbol`): new `WatchCard` reuses the ROB-591 watch read endpoint via a new optional `symbol` query param on `GET /trading/api/invest/watches` (no new endpoint). Backend canonicalizes US separator forms (`BRK-B`/`BRK/B` → `BRK.B`) like the ROB-559 order-ledger endpoint; KR/crypto matched raw.
+- Extract watch row presentation helpers into shared `components/my/watchPresentation.ts` (status/proximity pill tones + labels, money/date/condition formatters); `WatchAlertsPanel` and the new `WatchCard` both consume them (single source of truth).
+- Upgrade the stock detail 체결 내역 (`OrdersCard`) from a bare `side quantity` list to a full table (일시 · 구분(매수/매도) · 수량 · 단가 · 총액 · 출처) using the existing `/orders` data; currency inferred from market (KR/crypto → ₩, US → $), source labelled 실시간/보정/수동.
+
+### Changed (ROB-591 follow-up)
+- `WatchPanelService.list_watches` accepts an optional `symbol` filter (forwarded to `repository.list_alerts(symbol=...)`).
+
 ## [0.3.0] - 2026-06-17
 
 ### Added (ROB-591 — /invest/my watch tab + watch read endpoint)
