@@ -360,6 +360,9 @@ class Settings(BaseSettings):
     # explicitly enables it after a ToS/endpoint review. Aggregate counts only (never raw text).
     retail_sentiment_live_enabled: bool = False
 
+    # ROB-595: 비공식 토스 컨슈머 API (wts-info-api) 신호 — ToS 리뷰 전까지 비활성
+    toss_consumer_signals_enabled: bool = False
+
     # ROB-281 — Gates cron registration for KR/US screener snapshot scheduled refreshes.
     # When False, scheduled tasks remain defined as broker tasks (so operators can still
     # kick them manually via ``taskiq kick``) but no cron entries are registered. Pairs

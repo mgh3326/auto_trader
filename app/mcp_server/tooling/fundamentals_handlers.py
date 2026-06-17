@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.mcp_server.tooling.fundamentals._analyst_consensus import (
+    handle_get_analyst_consensus,
+)
 from app.mcp_server.tooling.fundamentals._cost_basis_distribution import (
     _DEFAULT_GET_COST_BASIS_DISTRIBUTION_IMPL,
 )
@@ -53,6 +56,10 @@ from app.mcp_server.tooling.fundamentals._support_resistance import (
 from app.mcp_server.tooling.fundamentals._support_resistance import (
     get_support_resistance_impl as _get_support_resistance_impl,
 )
+from app.mcp_server.tooling.fundamentals._toss_signals import (
+    handle_get_toss_ai_signal,
+    handle_get_toss_buy_balance,
+)
 from app.mcp_server.tooling.fundamentals._upbit_index import (
     handle_get_upbit_altseason,
     handle_get_upbit_index,
@@ -79,6 +86,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_investor_trends",
     "get_intraday_investor_flow",
     "get_investment_opinions",
+    "get_analyst_consensus",
     "get_valuation",
     "get_short_interest",
     "get_kimchi_premium",
@@ -90,6 +98,8 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_crypto_order_flow",
     "get_crypto_social",
     "get_retail_sentiment",
+    "get_toss_buy_balance",
+    "get_toss_ai_signal",
     "get_fx_rate",
     "get_market_index",
     "get_upbit_index",
@@ -274,6 +284,18 @@ def _register_fundamentals_tools_impl(
         )
 
     @mcp.tool(
+        name="get_analyst_consensus",
+        description=(
+            "Analyst consensus from Naver: recommendation mean (1-5 scale) and price target mean. "
+            "Distinct from get_investment_opinions (report-level)."
+        ),
+    )
+    async def get_analyst_consensus(
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await handle_get_analyst_consensus(symbol)
+
+    @mcp.tool(
         name="get_valuation",
         description=(
             "Get valuation metrics for a US or Korean stock. Crypto symbols are not "
@@ -432,6 +454,29 @@ def _register_fundamentals_tools_impl(
         window: str = "1d",
     ) -> dict[str, Any]:
         return await handle_get_retail_sentiment(symbol, market, window)
+
+    @mcp.tool(
+        name="get_toss_buy_balance",
+        description=(
+            "Toss orderbook balance rate (buyBalanceRate/sellBalanceRate) and foreigner holding ratio — "
+            "NOT user buy ratio. Live per-call, operator-gated."
+        ),
+    )
+    async def get_toss_buy_balance(
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await handle_get_toss_buy_balance(symbol)
+
+    @mcp.tool(
+        name="get_toss_ai_signal",
+        description=(
+            "Toss AI signal (direction + reasoning). Live per-call, operator-gated."
+        ),
+    )
+    async def get_toss_ai_signal(
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await handle_get_toss_ai_signal(symbol)
 
     @mcp.tool(
         name="get_fx_rate",
