@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0] - 2026-06-17
+
+### Added (ROB-591 — /invest/my watch tab + watch read endpoint)
+- New read-only endpoint `GET /trading/api/invest/watches` with `market` (all/kr/us/crypto) and `status` (all/active/triggered/expired/canceled) filters, backed by `InvestmentReportsRepository.list_alerts`.
+- Generalize `list_active_alerts` into `list_alerts` (new `status` param) with backward-compatible delegation from `list_active_alerts`; all existing callers unaffected (522 regression tests pass).
+- New `WatchPanelService` enriches rows with symbol names (fail-open), price proximity for `price_above`/`price_below` metrics via `compute_price_proximity`, latest trigger event lookup for non-active rows, and `near_expiry` flag (active alerts with `valid_until` ≤ 2 days).
+- New Pydantic schemas `WatchesResponse`, `WatchAlertRow`, `WatchEventSummary` with `ConfigDict(extra="forbid")` and Decimal field serializers matching invest schema conventions.
+- New frontend `WatchAlertsPanel` with market/status filters, proximity pill, status pill, near_expiry badge, and symbol links to stock detail page.
+- Wire `watchAlerts` tab into desktop and mobile portfolio pages (`portfolioTabs.ts` union, `PORTFOLIO_TABS` array, and `parsePortfolioTab` string check).
+- Current price resolved from `market_quote_snapshots` table; data_state reflects snapshot availability (ok/degraded/unavailable).
+
 ## [0.2.3] - 2026-06-16
 
 ### Added (ROB-582 — Cross-asset allocation roll-up)

@@ -1,6 +1,6 @@
 import { useSearchParams } from "react-router-dom";
 
-export type PortfolioTab = "holdings" | "signals" | "sellHistory" | "buyHistory" | "currentOrders";
+export type PortfolioTab = "holdings" | "signals" | "sellHistory" | "buyHistory" | "currentOrders" | "watchAlerts";
 
 export const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
   { key: "holdings", label: "보유 현황" },
@@ -8,10 +8,11 @@ export const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
   { key: "sellHistory", label: "매도 이력" },
   { key: "buyHistory", label: "매수 이력" },
   { key: "currentOrders", label: "현재 주문" },
+  { key: "watchAlerts", label: "감시" },
 ];
 
 function parsePortfolioTab(value: string | null): PortfolioTab {
-  return value === "signals" || value === "sellHistory" || value === "buyHistory" || value === "currentOrders"
+  return value === "signals" || value === "sellHistory" || value === "buyHistory" || value === "currentOrders" || value === "watchAlerts"
     ? value
     : "holdings";
 }

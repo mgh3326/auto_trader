@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.investment_reports import InvestmentWatchAlert, InvestmentWatchEvent
+from app.models.market_quote_snapshot import MarketQuoteSnapshot
+from app.services.invest_view_model.watch_panel_service import WatchPanelService
+from tests._investment_reports_helpers import session  # noqa: F401
+
+
+@pytest.mark.asyncio
+async def test_watch_panel_service_list_watches(session: AsyncSession) -> None:  # noqa: F811
+    # Delete from market_quote_snapshots (which is not in the reports helper cleanup)
+    # We do NOT commit; the rollback at teardown will restore previous state.
+    await session.execute(text("DELETE FROM market_quote_snapshots"))
+    await session.flush()
+
+    now = dt.datetime(2026, 6, 17, 12, 0, tzinfo=dt.UTC)
+
+    # 1. Insert alert
+    alert1 = InvestmentWatchAlert(
+        alert_uuid=uuid.uuid4(),
+        idempotency_key="key-1",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price_below",
+        operator="below",
+        threshold=Decimal("70000"),
+        threshold_key="70000",
+        intent="buy_review",
+        action_mode="notify_only",
+        rationale="test rationale",
+        valid_until=now + dt.timedelta(days=1),  # near_expiry will be True
+        status="active",
+    )
+    session.add(alert1)
+
+    alert2 = InvestmentWatchAlert(
+        alert_uuid=uuid.uuid4(),
+        idempotency_key="key-2",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="us",
+        target_kind="asset",
+        symbol="AAPL",
+        metric="price_above",
+        operator="above",
+        threshold=Decimal("200"),
+        threshold_key="200",
+        intent="sell_review",
+        action_mode="notify_only",
+        rationale="test rationale 2",
+        valid_until=now + dt.timedelta(days=5),  # near_expiry will be False
+        status="active",
+    )
+    session.add(alert2)
+
+    # Triggered alert with event
+    alert3 = InvestmentWatchAlert(
+        alert_uuid=uuid.uuid4(),
+        idempotency_key="key-3",
+        source_report_uuid=uuid.uuid4(),
+        source_item_uuid=uuid.uuid4(),
+        market="crypto",
+        target_kind="asset",
+        symbol="BTC",
+        metric="price_below",
+        operator="below",
+        threshold=Decimal("60000"),
+        threshold_key="60000",
+        intent="buy_review",
+        action_mode="notify_only",
+        rationale="test rationale 3",
+        valid_until=now - dt.timedelta(days=1),
+        status="triggered",
+    )
+    session.add(alert3)
+    await session.flush()
+    await session.refresh(alert3)
+
+    event = InvestmentWatchEvent(
+        event_uuid=uuid.uuid4(),
+        idempotency_key="event-key-1",
+        alert_id=alert3.id,
+        source_report_uuid=alert3.source_report_uuid,
+        source_item_uuid=alert3.source_item_uuid,
+        market="crypto",
+        target_kind="asset",
+        symbol="BTC",
+        metric="price_below",
+        operator="below",
+        threshold=Decimal("60000"),
+        threshold_key="60000",
+        intent="buy_review",
+        action_mode="notify_only",
+        current_value=Decimal("59000"),
+        outcome="notified",
+        correlation_id="corr-1",
+        kst_date="2026-06-17",
+        created_at=now,
+    )
+    session.add(event)
+
+    # 2. Insert quote snapshots
+    # Snapshot for 005930
+    snapshot1 = MarketQuoteSnapshot(
+        market="kr",
+        symbol="005930",
+        source="naver_finance",
+        snapshot_at=now - dt.timedelta(minutes=5),
+        price=Decimal("69800"),
+    )
+    session.add(snapshot1)
+    await session.flush()
+
+    service = WatchPanelService(db=session, clock=now)
+
+    # Test list all
+    resp = await service.list_watches(market="all", status="all")
+    assert resp.count == 3
+    assert resp.data_state == "degraded"  # AAPL has no snapshot price
+    assert len(resp.warnings) == 1
+
+    # Check alert1 fields (kr, 005930)
+    row1 = next(item for item in resp.items if item.symbol == "005930")
+    assert row1.near_expiry is True
+    assert row1.current_price == Decimal("69800")
+    assert row1.proximity_band == "hit"  # 69800 <= 70000 for price_below
+    assert row1.last_event is None
+
+    # Check alert2 fields (us, AAPL)
+    row2 = next(item for item in resp.items if item.symbol == "AAPL")
+    assert row2.near_expiry is False
+    assert row2.current_price is None
+    assert row2.proximity_band is None
+
+    # Check alert3 fields (crypto, BTC)
+    row3 = next(item for item in resp.items if item.symbol == "BTC")
+    assert row3.status == "triggered"
+    assert row3.last_event is not None
+    assert row3.last_event.outcome == "notified"
+    assert row3.last_event.current_value == Decimal("59000")
+
+    # Test filtering
+    resp_kr = await service.list_watches(market="kr", status="active")
+    assert resp_kr.count == 1
+    assert resp_kr.items[0].symbol == "005930"
