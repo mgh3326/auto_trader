@@ -98,18 +98,18 @@ timeout=10 if is_mock else 5,
 
 `portfolio_cash.get_cash_balance_impl`에서 source별 except가 잡힐 때마다 `unavailable_sources`를 누적해 `summary`에 노출하고, `get_available_capital_impl` summary로도 전파한다.
 
+**shape = `dict[str, str]` (`{account_key: reason}`)** — 코드베이스에 이미 존재하는 `unavailable_sources` 관용구(investment_reports snapshot row의 `{"naver":"확인 불가","toss":"soft_stale"}`)와 동일 형태를 따른다. account_key가 시장을 인코딩(`kis_domestic`/`kis_overseas`/`toss`/`upbit`).
+
 ```jsonc
 "summary": {
   "total_krw": 0.0, "total_usd": 0.0,
-  "unavailable_sources": [
-    {"account": "kis_domestic", "market": "kr", "reason": "ReadTimeout"}
-  ]
+  "unavailable_sources": { "kis_domestic": "ReadTimeout" }
 }
 ```
 
 - **`accounts[]`엔 placeholder row를 넣지 않는다.** 이유: `order_validation.py:498` `_live_kis_orderable`은 `accounts[]`에서 `kis_domestic` row를 찾고 **부재 시 `raise RuntimeError`**(loud)한다. placeholder row(`orderable: None`)를 넣으면 `None or 0.0 == 0.0`을 반환해 **live buy precheck가 실패를 silent 0으로 오인**하는 회귀가 생긴다. row를 넣지 않으면 raise-on-missing이 보존된다. `total_orderable_krw` 합산(`:375` `or 0.0`)도 영향 없음.
 - `errors[]`의 사유는 (a)로 이미 non-empty. `unavailable_sources`는 그것을 first-class·machine-readable로 승격 → 호출 에이전트가 "현금 0"과 "조회 실패"를 구분.
-- 적용 범위: `get_cash_balance_impl`의 toss/upbit/kis_kr/kis_us 모든 caught source 실패를 `unavailable_sources`에 반영(정직성, 추가 비용 미미). `summary`는 기존 키에 `unavailable_sources`만 additive 추가.
+- 적용 범위: `get_cash_balance_impl`의 toss/upbit/kis_kr/kis_us 모든 caught source 실패를 `unavailable_sources`에 반영(정직성, 추가 비용 미미). `summary`는 기존 키에 `unavailable_sources`만 additive 추가. 실패가 없으면 빈 dict `{}`.
 
 ---
 
@@ -119,11 +119,11 @@ timeout=10 if is_mock else 5,
 |---|---|
 | `describe_exception` 단위 | `ReadTimeout('')` → `"ReadTimeout"`; `RuntimeError("EGW00201 x")` → `"EGW00201 x"` |
 | `_place_order_impl` | 실행부가 `httpx.ReadTimeout('')` raise → `result["error"] == "ReadTimeout"` (not `""`) |
-| `get_cash_balance_impl` (mock) | kis read가 `ReadTimeout` → `errors[].error == "ReadTimeout"`, `summary.unavailable_sources`에 `kis_domestic`, `total_krw`에 kis 미포함, **`accounts[]`에 `kis_domestic` row 없음** |
+| `get_cash_balance_impl` (mock) | kis read가 `ReadTimeout` → `errors[].error == "ReadTimeout"`, `summary.unavailable_sources["kis_domestic"] == "ReadTimeout"`, `total_krw`에 kis 미포함, **`accounts[]`에 `kis_domestic` row 없음** |
 | `get_available_capital_impl` | `summary.unavailable_sources` 전파, `total_orderable_krw` 불변 |
 | 회귀가드 | `_live_kis_orderable`은 kis row 부재 시 여전히 `raise`(placeholder 없음 증명) |
 | 타임아웃 | `inquire_domestic_cash_balance(is_mock=True)` → request 레이어에 `timeout=10`; `is_mock=False` → `timeout=5` |
-| `base.py` | `last_error=ReadTimeout('')`일 때 `RateLimitExceededError` 메시지 non-empty |
+| `base.py` (`:544`) | RequestError 재시도 로그가 `describe_exception(e)` 적용으로 "ReadTimeout" 포함(caplog). 재시도 소진 시 ReadTimeout는 그대로 re-raise(`:554` bare raise)되고 빈 str은 **호출부 describe_exception**(Task 2/4)이 처리. `:557` RateLimitExceededError는 429-heuristic 소진 전용(`last_error`가 None일 수 있음)이라 방어적 guard만 적용, 별도 테스트 없음 |
 
 테스트는 DB/실네트워크 없이 모킹(`_request_with_rate_limit` / kis client 메서드 / httpx 예외 주입)으로 구성.
 
