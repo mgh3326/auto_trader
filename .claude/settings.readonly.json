@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "NotebookEdit",
+      "mcp__auto_trader_local__place_order",
+      "mcp__auto_trader_local__cancel_order",
+      "mcp__auto_trader_local__modify_order",
+      "mcp__auto_trader_local__kis_live_place_order",
+      "mcp__auto_trader_local__kis_live_cancel_order",
+      "mcp__auto_trader_local__kis_live_modify_order",
+      "mcp__auto_trader_local__kis_live_reconcile_orders",
+      "mcp__auto_trader_local__kis_mock_place_order",
+      "mcp__auto_trader_local__kis_mock_cancel_order",
+      "mcp__auto_trader_local__kis_mock_modify_order",
+      "mcp__auto_trader_local__toss_place_order",
+      "mcp__auto_trader_local__toss_modify_order",
+      "mcp__auto_trader_local__toss_cancel_order",
+      "mcp__auto_trader_local__toss_reconcile_orders",
+      "mcp__auto_trader_local__alpaca_paper_submit_order",
+      "mcp__auto_trader_local__alpaca_paper_cancel_order",
+      "mcp__auto_trader_local__kiwoom_mock_place_order",
+      "mcp__auto_trader_local__kiwoom_mock_cancel_order",
+      "mcp__auto_trader_local__kiwoom_mock_modify_order",
+      "mcp__auto_trader_local__live_reconcile_orders",
+      "mcp__auto_trader_local__investment_report_create",
+      "mcp__auto_trader_local__investment_report_add_items",
+      "mcp__auto_trader_local__investment_report_update",
+      "mcp__auto_trader_local__investment_report_decide_item",
+      "mcp__auto_trader_local__investment_report_activate_watch",
+      "mcp__auto_trader_local__investment_report_set_status"
+    ]
+  }
+}
