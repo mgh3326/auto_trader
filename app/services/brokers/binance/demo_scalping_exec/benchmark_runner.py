@@ -77,6 +77,15 @@ async def compute_and_store_daily_benchmark(
         logger.exception(
             "daily benchmark computation failed for %s %s", product, review_date
         )
+        await service.set_benchmark(
+            review_date=review_date,
+            product=product,
+            value=None,
+            now=now,
+            session_tag=session_tag,
+            account_scope=account_scope,
+            detail=None,
+        )
         return None
 
     await service.set_benchmark(

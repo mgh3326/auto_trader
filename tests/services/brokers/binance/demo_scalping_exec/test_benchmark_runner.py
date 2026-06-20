@@ -174,6 +174,20 @@ async def test_runner_returns_none_when_market_data_fails(db_session) -> None:
     )
     svc = ScalpingReviewService(db_session)
     await svc.build_draft(review_date=_DATE, product="usdm_futures", now=_NOW)
+
+    # Seed a non-NULL sentinel so we can prove stale values are reset to NULL.
+    await svc.set_benchmark(
+        review_date=_DATE,
+        product="usdm_futures",
+        value=Decimal("99"),
+        now=_NOW,
+        session_tag="",
+        account_scope="binance_demo",
+        detail=None,
+    )
+    pre = await svc._get_by_key(_DATE, "usdm_futures", "binance_demo", "")
+    assert pre.benchmark_return_bps == Decimal("99"), "sentinel not set"
+
     value = await compute_and_store_daily_benchmark(
         session=db_session,
         market_data=_BoomMD(),
@@ -183,4 +197,5 @@ async def test_runner_returns_none_when_market_data_fails(db_session) -> None:
     )
     assert value is None
     review = await svc._get_by_key(_DATE, "usdm_futures", "binance_demo", "")
+    # stale sentinel must be cleared to NULL — not merely left as-is
     assert review.benchmark_return_bps is None
