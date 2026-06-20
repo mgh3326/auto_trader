@@ -171,6 +171,14 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_kis_mock_order_tools(mcp)
         register_live_reconcile_tools(mcp)
         register_toss_live_order_tools(mcp)
+        # ROB-601: optionally surface kiwoom_mock_* in the operator DEFAULT
+        # session so analyze→approval→order can run through kiwoom mock without
+        # switching to the isolated KIWOOM profile (which drops every other
+        # broker's order surface). Gated by ``settings.kiwoom_mock_enabled`` so
+        # the tools are physically absent unless the operator opts in; each tool
+        # still fail-closes on missing credentials at call time.
+        if settings.kiwoom_mock_enabled:
+            orders_kiwoom_variants.register(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
