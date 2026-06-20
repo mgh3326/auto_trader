@@ -1239,6 +1239,48 @@ async def investment_report_generate_from_bundle_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_watch_events_list_recent (ROB-602 Task 3)
+# ---------------------------------------------------------------------------
+async def investment_watch_events_list_recent_impl(
+    market: str | None = None,
+    since_timestamp: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """최근 DELIVERED watch 트리거 이벤트 조회(운영자 poller/수동용, read-only).
+
+    delivery_status='delivered' 이벤트만, delivered_at>=since_timestamp, delivered_at 오름차순.
+    디듀프는 event_uuid. 브로커/주문/감시 mutation 없음.
+    """
+    parsed_since = None
+    if since_timestamp:
+        try:
+            parsed_since = datetime.fromisoformat(since_timestamp.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return {
+                "success": False,
+                "error": "invalid_timestamp",
+                "hint": "ISO8601, e.g. 2026-06-20T12:34:56Z",
+            }
+    capped = max(1, min(int(limit), 500))
+    async with AsyncSessionLocal() as db:
+        repo = InvestmentReportsRepository(db)
+        events = await repo.list_events_by_delivery_status(
+            delivery_status="delivered",
+            delivered_since=parsed_since,
+            market=market,
+            limit=capped,
+        )
+    return {
+        "success": True,
+        "count": len(events),
+        "events": [
+            InvestmentWatchEventResponse.model_validate(e).model_dump(mode="json", by_alias=True)
+            for e in events
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 def register_investment_report_tools(
@@ -1351,6 +1393,15 @@ def register_investment_report_tools(
             "No broker / order / watch mutation."
         ),
     )(investment_report_set_status_impl)
+    mcp.tool(
+        name="investment_watch_events_list_recent",
+        description=(
+            "최근 DELIVERED watch 트리거 이벤트 목록(운영자 poller/수동 조회용). "
+            "market 필터 + since_timestamp(ISO8601, delivered_at>=) + limit(1..500). "
+            "delivered만 노출(skipped/failed 제외). 디듀프=event_uuid. "
+            "Read-only. 브로커/주문/감시 mutation 없음."
+        ),
+    )(investment_watch_events_list_recent_impl)
 
 
 __all__ = [
@@ -1366,6 +1417,7 @@ __all__ = [
     "investment_report_list_impl",
     "investment_report_set_status_impl",
     "investment_report_update_impl",
+    "investment_watch_events_list_recent_impl",
     "investment_watch_recommend_impl",
     "register_investment_report_tools",
 ]
