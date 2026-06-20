@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from app.mcp_server.tooling import portfolio_cash
@@ -82,3 +83,37 @@ async def test_cash_balance_mock_orderable_is_raw_without_pending_deduction(
     accounts = {a["account"]: a for a in result["accounts"]}
     assert accounts["kis_domestic"]["orderable"] == pytest.approx(1000.0)
     fake_kis.inquire_korea_orders.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cash_balance_mock_kis_timeout_surfaces_reason_and_marks_unavailable(
+    monkeypatch,
+):
+    """ROB-600: a KIS read timeout must (1) surface 'ReadTimeout' (not ''),
+    (2) appear in summary.unavailable_sources, (3) NOT add a kis_domestic row,
+    (4) leave total_krw excluding KIS."""
+    fake_kis = MagicMock()
+    fake_kis.inquire_domestic_cash_balance = AsyncMock(side_effect=httpx.ReadTimeout(""))
+
+    monkeypatch.setattr(
+        portfolio_cash, "_create_kis_client", lambda *, is_mock: fake_kis
+    )
+    monkeypatch.setattr(
+        portfolio_cash.upbit_service,
+        "fetch_krw_cash_summary",
+        AsyncMock(return_value={"balance": 0.0, "orderable": 0.0}),
+    )
+
+    result = await portfolio_cash.get_cash_balance_impl(is_mock=True)
+
+    # (1) concrete reason, not empty
+    kis_kr_err = next(
+        e for e in result["errors"] if e["source"] == "kis" and e["market"] == "kr"
+    )
+    assert kis_kr_err["error"] == "ReadTimeout"
+    # (2) machine-readable unavailable flag
+    assert result["summary"]["unavailable_sources"]["kis_domestic"] == "ReadTimeout"
+    # (3) no placeholder row injected
+    assert "kis_domestic" not in {a["account"] for a in result["accounts"]}
+    # (4) KIS cash not silently summed as a number
+    assert result["summary"]["total_krw"] == pytest.approx(0.0)

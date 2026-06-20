@@ -26,6 +26,7 @@ from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
+from app.core.exceptions import describe_exception
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
@@ -117,12 +118,17 @@ async def get_cash_balance_impl(
         )
         return {
             "accounts": rows,
-            "summary": {"total_krw": total_krw, "total_usd": total_usd},
+            "summary": {
+                "total_krw": total_krw,
+                "total_usd": total_usd,
+                "unavailable_sources": {},
+            },
             "errors": errors,
         }
 
     accounts: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    unavailable_sources: dict[str, str] = {}
     total_krw = 0.0
     total_usd = 0.0
 
@@ -171,9 +177,11 @@ async def get_cash_balance_impl(
                     raise RuntimeError(
                         f"Toss cash balance query failed: {exc}"
                     ) from exc
+                reason = describe_exception(exc)
                 errors.append(
-                    {"source": "toss_api", "market": "cash", "error": str(exc)}
+                    {"source": "toss_api", "market": "cash", "error": reason}
                 )
+                unavailable_sources["toss"] = reason
 
     if account_filter is None or account_filter in ("upbit",):
         try:
@@ -193,7 +201,9 @@ async def get_cash_balance_impl(
             )
             total_krw += krw_balance
         except Exception as exc:
-            errors.append({"source": "upbit", "market": "crypto", "error": str(exc)})
+            reason = describe_exception(exc)
+            errors.append({"source": "upbit", "market": "crypto", "error": reason})
+            unavailable_sources["upbit"] = reason
 
     if account_filter is None or account_filter in (
         "kis",
@@ -249,17 +259,17 @@ async def get_cash_balance_impl(
                     raise RuntimeError(
                         f"KIS domestic cash balance query failed: {exc}"
                     ) from exc
-                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+                reason = describe_exception(exc)
+                errors.append({"source": "kis", "market": "kr", "error": reason})
+                unavailable_sources["kis_domestic"] = reason
 
         if account_filter is None or account_filter in ("kis", "kis_overseas"):
             if is_mock:
-                errors.append(
-                    {
-                        "source": "kis",
-                        "market": "us",
-                        "error": "mock_unsupported: KIS overseas margin is not available in mock mode",
-                    }
+                reason = (
+                    "mock_unsupported: KIS overseas margin is not available in mock mode"
                 )
+                errors.append({"source": "kis", "market": "us", "error": reason})
+                unavailable_sources["kis_overseas"] = reason
             else:
                 try:
                     overseas_margin_data = await _call_kis(
@@ -300,13 +310,16 @@ async def get_cash_balance_impl(
                         raise RuntimeError(
                             f"KIS overseas cash balance query failed: {exc}"
                         ) from exc
-                    errors.append({"source": "kis", "market": "us", "error": str(exc)})
+                    reason = describe_exception(exc)
+                    errors.append({"source": "kis", "market": "us", "error": reason})
+                    unavailable_sources["kis_overseas"] = reason
 
     return {
         "accounts": accounts,
         "summary": {
             "total_krw": total_krw,
             "total_usd": total_usd,
+            "unavailable_sources": unavailable_sources,
         },
         "errors": errors,
     }
