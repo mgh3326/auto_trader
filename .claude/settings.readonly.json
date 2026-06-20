@@ -31,7 +31,11 @@
       "mcp__auto_trader_local__investment_report_update",
       "mcp__auto_trader_local__investment_report_decide_item",
       "mcp__auto_trader_local__investment_report_activate_watch",
-      "mcp__auto_trader_local__investment_report_set_status"
+      "mcp__auto_trader_local__investment_report_set_status",
+      "mcp__auto_trader_local__investment_report_generate_from_bundle",
+      "mcp__auto_trader_local__investment_report_create_from_hermes_composition",
+      "mcp__auto_trader_local__investment_report_prepare_bundle",
+      "mcp__auto_trader_local__investment_stage_artifacts_ingest_from_hermes"
     ]
   }
 }

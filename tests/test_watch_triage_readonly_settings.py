@@ -20,6 +20,10 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "investment_report_create", "investment_report_add_items", "investment_report_update",
         "investment_report_decide_item", "investment_report_activate_watch",
         "investment_report_set_status",
+        "investment_report_generate_from_bundle",
+        "investment_report_create_from_hermes_composition",
+        "investment_report_prepare_bundle",
+        "investment_stage_artifacts_ingest_from_hermes",
     }
 )
 
@@ -65,4 +69,33 @@ def test_no_new_order_mutation_tool_escapes_known_set():
     assert not escaped, (
         f"새 주문 mutation 도구가 deny-list/KNOWN_MUTATION_TOOLS에 없음: {sorted(escaped)} "
         "→ .claude/settings.readonly.json deny + KNOWN_MUTATION_TOOLS 둘 다 갱신"
+    )
+
+
+# report/stage/watch 도구 분류 가드: 모든 investment_report*/investment_stage*/investment_watch* 도구가
+# 허용 읽기 또는 deny-list에 분류되어야 한다. 새 도구 추가 시 분류를 강제한다.
+ALLOWED_REPORT_READS = frozenset({
+    "investment_report_get",
+    "investment_report_list",
+    "investment_report_context_get",
+    "investment_report_delta_get",
+    "investment_report_get_hermes_context",
+    "investment_report_prepare_intraday_context",
+    "investment_watch_events_list_recent",
+    "investment_watch_recommend",
+})
+
+REPORT_STAGE_WATCH_RE = re.compile(
+    r'name\s*=\s*["\'](investment_report[a-z_]*|investment_stage[a-z_]*|investment_watch[a-z_]*)["\']'
+)
+
+
+def test_every_report_stage_watch_tool_is_allowed_read_or_denied():
+    found: set[str] = set()
+    for p in TOOLING.glob("*.py"):
+        found |= set(REPORT_STAGE_WATCH_RE.findall(p.read_text(encoding="utf-8")))
+    unclassified = found - ALLOWED_REPORT_READS - _denied_mcp_suffixes()
+    assert not unclassified, (
+        f"미분류 report/stage/watch 도구: {sorted(unclassified)} → "
+        "ALLOWED_REPORT_READS(읽기) 또는 .claude/settings.readonly.json deny(쓰기)로 분류하라"
     )
