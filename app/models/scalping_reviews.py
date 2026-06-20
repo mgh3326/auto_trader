@@ -122,6 +122,9 @@ class ScalpingDailyReview(Base):
     net_return_bps: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 4), nullable=True
     )
+    benchmark_return_bps: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
     avg_slippage_bps: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 4), nullable=True
     )

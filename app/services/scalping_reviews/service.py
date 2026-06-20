@@ -10,6 +10,7 @@ touches any broker / order / scheduler surface.
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -161,6 +162,40 @@ class ScalpingReviewService:
         review.avg_holding_seconds = rollup.avg_holding_seconds
         review.exit_reason_counts = rollup.exit_reason_counts
         review.source_payload = rollup.source_payload
+
+    async def set_benchmark(
+        self,
+        *,
+        review_date: dt.date,
+        product: str,
+        value: Decimal | None,
+        now: dt.datetime,
+        session_tag: str = "",
+        account_scope: str = SCALPING_REVIEW_ACCOUNT_SCOPE,
+        detail: dict[str, Any] | None = None,
+    ) -> ScalpingDailyReview | None:
+        """Store the daily buy&hold benchmark on an existing review row.
+
+        Separate from ``build_draft`` (rollup-only, never imports a market-data
+        client) so the market-data-aware ``benchmark_runner`` computes the value
+        out of band and persists it here. No-op on a missing row (``None``) or a
+        ``locked`` review (returned untouched). ``detail`` (per-symbol audit) is
+        merged under ``source_payload['benchmark']``."""
+        _require_demo_scope(account_scope)
+        review = await self._get_by_key(
+            review_date, product, account_scope, session_tag
+        )
+        if review is None or review.status == "locked":
+            return review
+        review.benchmark_return_bps = value
+        if detail is not None:
+            review.source_payload = {
+                **(review.source_payload or {}),
+                "benchmark": detail,
+            }
+        review.updated_at = now
+        await self._session.flush()
+        return review
 
     # ------------------------------------------------------------------
     # Reads
