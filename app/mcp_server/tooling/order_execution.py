@@ -13,6 +13,7 @@ from typing import Any, Literal
 from typing import cast as typing_cast
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.exceptions import describe_exception
 from app.mcp_server.caller_identity import get_caller_source
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.order_journal import (
@@ -24,7 +25,6 @@ from app.mcp_server.tooling.order_journal import (
     _save_order_fill,
     _validate_buy_journal_requirements,
 )
-from app.core.exceptions import describe_exception
 from app.mcp_server.tooling.order_validation import (
     DefensiveTrimContext,
     ScalpingExitContext,

@@ -3726,7 +3726,11 @@ async def test_get_cash_balance_toss_api_enabled_adds_krw_and_usd(monkeypatch):
             "formatted": "789.01 USD",
         },
     ]
-    assert result["summary"] == {"total_krw": 123456.0, "total_usd": 789.01}
+    assert result["summary"] == {
+        "total_krw": 123456.0,
+        "total_usd": 789.01,
+        "unavailable_sources": {},
+    }
     assert result["errors"] == []
 
 

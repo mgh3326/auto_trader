@@ -8,6 +8,7 @@ from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.core.exceptions import describe_exception
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.account_modes import toss_live_mutations_enabled
 from app.mcp_server.tooling.shared import (
@@ -26,7 +27,6 @@ from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
-from app.core.exceptions import describe_exception
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
@@ -178,9 +178,7 @@ async def get_cash_balance_impl(
                         f"Toss cash balance query failed: {exc}"
                     ) from exc
                 reason = describe_exception(exc)
-                errors.append(
-                    {"source": "toss_api", "market": "cash", "error": reason}
-                )
+                errors.append({"source": "toss_api", "market": "cash", "error": reason})
                 unavailable_sources["toss"] = reason
 
     if account_filter is None or account_filter in ("upbit",):
@@ -265,9 +263,7 @@ async def get_cash_balance_impl(
 
         if account_filter is None or account_filter in ("kis", "kis_overseas"):
             if is_mock:
-                reason = (
-                    "mock_unsupported: KIS overseas margin is not available in mock mode"
-                )
+                reason = "mock_unsupported: KIS overseas margin is not available in mock mode"
                 errors.append({"source": "kis", "market": "us", "error": reason})
                 unavailable_sources["kis_overseas"] = reason
             else:

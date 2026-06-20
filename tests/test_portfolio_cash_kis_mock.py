@@ -93,7 +93,9 @@ async def test_cash_balance_mock_kis_timeout_surfaces_reason_and_marks_unavailab
     (2) appear in summary.unavailable_sources, (3) NOT add a kis_domestic row,
     (4) leave total_krw excluding KIS."""
     fake_kis = MagicMock()
-    fake_kis.inquire_domestic_cash_balance = AsyncMock(side_effect=httpx.ReadTimeout(""))
+    fake_kis.inquire_domestic_cash_balance = AsyncMock(
+        side_effect=httpx.ReadTimeout("")
+    )
 
     monkeypatch.setattr(
         portfolio_cash, "_create_kis_client", lambda *, is_mock: fake_kis
@@ -124,7 +126,9 @@ async def test_available_capital_propagates_unavailable_sources(monkeypatch):
     """ROB-600: capital summary carries unavailable_sources so KIS failure is not
     mistaken for 0 orderable cash."""
     fake_kis = MagicMock()
-    fake_kis.inquire_domestic_cash_balance = AsyncMock(side_effect=httpx.ReadTimeout(""))
+    fake_kis.inquire_domestic_cash_balance = AsyncMock(
+        side_effect=httpx.ReadTimeout("")
+    )
 
     monkeypatch.setattr(
         portfolio_cash, "_create_kis_client", lambda *, is_mock: fake_kis
