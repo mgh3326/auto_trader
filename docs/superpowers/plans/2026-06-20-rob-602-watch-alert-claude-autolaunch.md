@@ -23,7 +23,8 @@
   Co-authored-by: Hermes Agent <hermes-agent@users.noreply.github.com>
   Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   ```
-- **테스트 실행**: `uv run pytest <path> -v`.
+- **테스트 실행**: `uv run pytest <path> -v`. DB는 공유 PostgreSQL(`test_db`, localhost:5432).
+- **DB 테스트 격리(필수)**: 신규 DB 테스트는 **반드시 전역 `session` fixture**(`tests/conftest.py:540` `pytest_plugins=["tests._investment_reports_helpers"]` 로 제공; `review.investment_watch_events` 포함 테이블군을 advisory-lock 직렬화 + per-test TRUNCATE 격리)를 쓴다. `AsyncSessionLocal()`을 테스트에서 직접 열고 commit하면 공유-DB가 오염되어 재실행 flake가 난다(ROB-460/559 함정). 패턴: `async def test_x(session: AsyncSession): ... await session.commit()`. CLI/MCP 핸들러는 내부에서 자체 `AsyncSessionLocal()`을 열므로(실경로), 테스트는 `session`으로 seed+commit 후 핸들러를 호출하면 같은 test_db에서 커밋된 행을 읽는다(기존 `tests/test_investment_reports_mcp.py` 패턴).
 
 **참고 spec**: `docs/superpowers/specs/2026-06-20-rob-602-watch-alert-claude-autolaunch-design.md`
 
@@ -32,6 +33,7 @@
 | 파일 | 책임 | Task |
 |---|---|---|
 | `app/services/investment_reports/repository.py` (수정) | `list_events_by_delivery_status` read 메서드 | 1 |
+| `tests/_watch_events_helpers.py` (생성) | 공유 테스트 헬퍼(`utc_at`, `mk_watch_event`) — test-importing-test 회피 | 1 |
 | `tests/services/investment_reports/test_watch_events_recent_repo.py` (생성) | 메서드 단위 테스트 | 1 |
 | `scripts/list_recent_watch_events.py` (생성) | 폴러용 read-only CLI(JSON stdout) | 2 |
 | `tests/scripts/test_list_recent_watch_events_cli.py` (생성) | CLI 테스트 | 2 |
@@ -51,6 +53,7 @@
 
 **Files:**
 - Modify: `app/services/investment_reports/repository.py` (기존 `list_events_for_source_reports` 바로 뒤, ~line 488)
+- Create: `tests/_watch_events_helpers.py` (공유 헬퍼)
 - Test: `tests/services/investment_reports/test_watch_events_recent_repo.py`
 
 **Interfaces:**
@@ -71,27 +74,43 @@
 
 `app/services/investment_reports/repository.py`에서 `list_events_for_source_reports`(~line 472)를 열어 (a) 세션 속성명(`self._session` 등), (b) `sa.select` 사용, (c) `await self._session.scalars(stmt)` 반환 패턴을 확인한다. `datetime`이 상단에 import되어 있는지 확인하고 없으면 `from datetime import datetime` 추가.
 
-- [ ] **Step 2: 실패 테스트 작성**
+- [ ] **Step 2: 공유 헬퍼 작성**
 
-`tests/services/investment_reports/test_watch_events_recent_repo.py`:
+`tests/_watch_events_helpers.py` — `session` fixture로 seed할 watch 이벤트 빌더(평범한 함수, fixture 아님):
 
 ```python
+"""ROB-602 watch-event 테스트 공유 헬퍼 (test-importing-test 회피)."""
+
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 
-import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
 from app.models.investment_reports import InvestmentWatchEvent
-from app.services.investment_reports.repository import InvestmentReportsRepository
 
-pytestmark = pytest.mark.asyncio
-
-
-def _utc(offset_min: int) -> datetime:
-    return datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc) + timedelta(minutes=offset_min)
+_BASE = datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc)
 
 
-async def _mk_event(db, *, symbol, market, delivery_status, delivered_at, kst_date="2026-06-20"):
+def utc_at(offset_min: int) -> datetime:
+    return _BASE + timedelta(minutes=offset_min)
+
+
+async def mk_watch_event(
+    session: AsyncSession,
+    *,
+    symbol: str,
+    market: str = "crypto",
+    delivery_status: str = "delivered",
+    delivered_at: datetime | None = None,
+    source_report_uuid=None,
+    kst_date: str = "2026-06-20",
+) -> InvestmentWatchEvent:
+    """review.investment_watch_events 한 행 생성. caller가 session.commit() 한다.
+
+    NOT NULL/CHECK 제약으로 insert가 실패하면 app/models/investment_reports.py 의
+    InvestmentWatchEvent 정의를 보고 누락 컬럼을 여기 추가한다(추측 금지, 모델 기준).
+    """
     ev = InvestmentWatchEvent(
         market=market,
         target_kind="asset",
@@ -104,53 +123,65 @@ async def _mk_event(db, *, symbol, market, delivery_status, delivered_at, kst_da
         action_mode="notify_only",
         outcome="notified",
         kst_date=kst_date,
-        correlation_id=f"corr-{symbol}-{delivered_at.isoformat()}",
-        idempotency_key=f"event:{symbol}:{kst_date}:{symbol}:price:below:100:{delivered_at.isoformat()}",
+        correlation_id=f"corr-{symbol}-{delivery_status}-{delivered_at}",
+        idempotency_key=f"event:{symbol}:{kst_date}:{symbol}:price:below:100",
+        source_report_uuid=source_report_uuid,
         delivery_status=delivery_status,
         delivered_at=delivered_at if delivery_status == "delivered" else None,
     )
-    db.add(ev)
-    await db.flush()
+    session.add(ev)
+    await session.flush()
     return ev
+```
+
+- [ ] **Step 3: 실패 테스트 작성**
+
+`tests/services/investment_reports/test_watch_events_recent_repo.py` — 전역 `session` fixture(TRUNCATE 격리) 사용:
+
+```python
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.investment_reports.repository import InvestmentReportsRepository
+from tests._watch_events_helpers import mk_watch_event, utc_at
+
+pytestmark = pytest.mark.asyncio
 
 
-async def test_returns_only_delivered_after_since_ordered_asc():
-    async with AsyncSessionLocal() as db:
-        await _mk_event(db, symbol="KRW-AAA", market="crypto", delivery_status="delivered", delivered_at=_utc(0))
-        e1 = await _mk_event(db, symbol="KRW-BBB", market="crypto", delivery_status="delivered", delivered_at=_utc(10))
-        e2 = await _mk_event(db, symbol="KRW-CCC", market="crypto", delivery_status="delivered", delivered_at=_utc(20))
-        await _mk_event(db, symbol="KRW-DDD", market="crypto", delivery_status="pending", delivered_at=_utc(15))
-        await db.commit()
+async def test_returns_only_delivered_after_since_ordered_asc(session: AsyncSession):
+    await mk_watch_event(session, symbol="KRW-AAA", delivered_at=utc_at(0))
+    e1 = await mk_watch_event(session, symbol="KRW-BBB", delivered_at=utc_at(10))
+    e2 = await mk_watch_event(session, symbol="KRW-CCC", delivered_at=utc_at(20))
+    await mk_watch_event(session, symbol="KRW-DDD", delivery_status="pending")
+    await session.commit()
 
-        repo = InvestmentReportsRepository(db)
-        rows = await repo.list_events_by_delivery_status(
-            delivery_status="delivered", delivered_since=_utc(5), market="crypto", limit=50
-        )
+    repo = InvestmentReportsRepository(session)
+    rows = await repo.list_events_by_delivery_status(
+        delivery_status="delivered", delivered_since=utc_at(5), market="crypto", limit=50
+    )
 
-    symbols = [r.symbol for r in rows]
-    assert symbols == ["KRW-BBB", "KRW-CCC"]  # delivered, >= since, asc, pending excluded
+    # TRUNCATE 격리라 정확 리스트 단언 안전: delivered + >=since + asc + pending 제외
+    assert [r.symbol for r in rows] == ["KRW-BBB", "KRW-CCC"]
     assert {r.event_uuid for r in rows} == {e1.event_uuid, e2.event_uuid}
 
 
-async def test_market_filter_and_limit_clamp():
-    async with AsyncSessionLocal() as db:
-        await _mk_event(db, symbol="005930", market="kr", delivery_status="delivered", delivered_at=_utc(0))
-        await _mk_event(db, symbol="KRW-EEE", market="crypto", delivery_status="delivered", delivered_at=_utc(0))
-        await db.commit()
-        repo = InvestmentReportsRepository(db)
-        kr = await repo.list_events_by_delivery_status(market="kr", limit=0)  # clamp -> >=1
+async def test_market_filter_and_limit_clamp(session: AsyncSession):
+    await mk_watch_event(session, symbol="005930", market="kr", delivered_at=utc_at(0))
+    await mk_watch_event(session, symbol="KRW-EEE", market="crypto", delivered_at=utc_at(0))
+    await session.commit()
+
+    repo = InvestmentReportsRepository(session)
+    kr = await repo.list_events_by_delivery_status(market="kr", limit=0)  # clamp -> >=1
+    assert [r.symbol for r in kr] == ["005930"]
     assert all(r.market == "kr" for r in kr)
-    assert len(kr) >= 1
 ```
 
-> 만약 레포에 표준 async DB fixture(예: `db_session`)가 있으면 `AsyncSessionLocal()` 대신 그것을 사용하도록 맞춘다. 기존 `tests/services/investment_reports/`의 형제 테스트를 먼저 확인.
-
-- [ ] **Step 3: 실패 확인**
+- [ ] **Step 4: 실패 확인**
 
 Run: `uv run pytest tests/services/investment_reports/test_watch_events_recent_repo.py -v`
 Expected: FAIL — `AttributeError: ... has no attribute 'list_events_by_delivery_status'`
 
-- [ ] **Step 4: 메서드 구현**
+- [ ] **Step 5: 메서드 구현**
 
 `repository.py`의 `list_events_for_source_reports` 바로 뒤에 추가(세션 속성명은 Step 1에서 확인한 실제 이름으로):
 
@@ -182,15 +213,15 @@ Expected: FAIL — `AttributeError: ... has no attribute 'list_events_by_deliver
         return list(result.all())
 ```
 
-- [ ] **Step 5: 통과 확인**
+- [ ] **Step 6: 통과 확인**
 
 Run: `uv run pytest tests/services/investment_reports/test_watch_events_recent_repo.py -v`
 Expected: PASS (2 passed)
 
-- [ ] **Step 6: 커밋**
+- [ ] **Step 7: 커밋**
 
 ```bash
-git add app/services/investment_reports/repository.py tests/services/investment_reports/test_watch_events_recent_repo.py
+git add app/services/investment_reports/repository.py tests/_watch_events_helpers.py tests/services/investment_reports/test_watch_events_recent_repo.py
 git commit -m "feat(ROB-602): list_events_by_delivery_status read 메서드 (delivered watch 이벤트 폴러용)
 
 Refs ROB-602.
@@ -215,24 +246,23 @@ bash 폴러가 새 fire를 알기 위해 JSON을 stdout으로 받는 read-only C
 
 - [ ] **Step 1: 실패 테스트 작성**
 
-`tests/scripts/test_list_recent_watch_events_cli.py`:
+`tests/scripts/test_list_recent_watch_events_cli.py` — `session` fixture로 seed, `collect()`는 자체 `AsyncSessionLocal()`로 같은 test_db 읽음:
 
 ```python
 import json
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
 from scripts.list_recent_watch_events import collect
-from tests.services.investment_reports.test_watch_events_recent_repo import _mk_event, _utc
+from tests._watch_events_helpers import mk_watch_event, utc_at
 
 pytestmark = pytest.mark.asyncio
 
 
-async def test_collect_returns_serializable_delivered_events():
-    async with AsyncSessionLocal() as db:
-        await _mk_event(db, symbol="KRW-XYZ", market="crypto", delivery_status="delivered", delivered_at=_utc(0))
-        await db.commit()
+async def test_collect_returns_serializable_delivered_events(session: AsyncSession):
+    await mk_watch_event(session, symbol="KRW-XYZ", delivered_at=utc_at(0))
+    await session.commit()
 
     out = await collect(market="crypto", since=None, limit=50)
     assert out["success"] is True
@@ -243,6 +273,8 @@ async def test_collect_returns_serializable_delivered_events():
     ev = next(e for e in out["events"] if e["symbol"] == "KRW-XYZ")
     assert set(ev) >= {"event_uuid", "symbol", "market", "source_report_uuid", "delivered_at"}
 ```
+
+> `tests/scripts/__init__.py`가 없으면 생성(빈 파일). `session` fixture는 전역 plugin이라 디렉토리 무관 사용 가능.
 
 - [ ] **Step 2: 실패 확인**
 
@@ -375,24 +407,23 @@ Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 2: 실패 테스트 작성**
 
-`tests/mcp_server/test_watch_events_list_recent_tool.py`:
+`tests/mcp_server/test_watch_events_list_recent_tool.py` — `session` fixture로 seed, 핸들러는 자체 `AsyncSessionLocal()`로 읽음:
 
 ```python
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.investment_reports_handlers import (
     investment_watch_events_list_recent_impl,
 )
-from tests.services.investment_reports.test_watch_events_recent_repo import _mk_event, _utc
+from tests._watch_events_helpers import mk_watch_event, utc_at
 
 pytestmark = pytest.mark.asyncio
 
 
-async def test_tool_returns_delivered_events_json():
-    async with AsyncSessionLocal() as db:
-        await _mk_event(db, symbol="KRW-TOOL", market="crypto", delivery_status="delivered", delivered_at=_utc(0))
-        await db.commit()
+async def test_tool_returns_delivered_events_json(session: AsyncSession):
+    await mk_watch_event(session, symbol="KRW-TOOL", delivered_at=utc_at(0))
+    await session.commit()
     out = await investment_watch_events_list_recent_impl(market="crypto", limit=50)
     assert out["success"] is True
     assert any(e["symbol"] == "KRW-TOOL" for e in out["events"])
@@ -403,6 +434,8 @@ async def test_tool_rejects_bad_timestamp():
     assert out["success"] is False
     assert out["error"] == "invalid_timestamp"
 ```
+
+> `tests/mcp_server/__init__.py`가 없으면 생성(빈 파일).
 
 - [ ] **Step 3: 실패 확인**
 
