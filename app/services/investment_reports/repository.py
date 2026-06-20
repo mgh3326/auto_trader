@@ -487,6 +487,32 @@ class InvestmentReportsRepository:
         result = await self._session.scalars(stmt)
         return list(result.all())
 
+    async def list_events_by_delivery_status(
+        self,
+        *,
+        delivery_status: str = "delivered",
+        delivered_since: datetime | None = None,
+        market: str | None = None,
+        limit: int = 50,
+    ) -> list[InvestmentWatchEvent]:
+        """List watch events by delivery status, newest-fire-last (asc).
+
+        Primary use: external poller discovering newly-DELIVERED watch fires.
+        Read-only; no mutation.
+        """
+        stmt = sa.select(InvestmentWatchEvent).where(
+            InvestmentWatchEvent.delivery_status == delivery_status
+        )
+        if delivered_since is not None:
+            stmt = stmt.where(InvestmentWatchEvent.delivered_at >= delivered_since)
+        if market is not None:
+            stmt = stmt.where(InvestmentWatchEvent.market == market)
+        stmt = stmt.order_by(InvestmentWatchEvent.delivered_at.asc()).limit(
+            max(1, min(int(limit), 500))
+        )
+        result = await self._session.scalars(stmt)
+        return list(result.all())
+
     async def list_decisions_for_items(
         self,
         item_ids: list[int],
