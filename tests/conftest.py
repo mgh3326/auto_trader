@@ -1298,6 +1298,14 @@ async def db_session():
                         "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live'))"
                     )
                 )
+                # B-1 (binance-phase1) — benchmark_return_bps on scalping_daily_reviews.
+                # create_all is no-op on the persistent test table, so add here.
+                await conn.execute(
+                    text(
+                        "ALTER TABLE scalping_daily_reviews "
+                        "ADD COLUMN IF NOT EXISTS benchmark_return_bps NUMERIC(12, 4)"
+                    )
+                )
         finally:
             # Release the advisory lock BEFORE yielding so the per-test body
             # runs unserialized. The DDL above is durable + idempotent, so
