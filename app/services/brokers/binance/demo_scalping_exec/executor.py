@@ -227,6 +227,27 @@ class DemoScalpingExecutor:
             return None
         return spot_avg_fill_price(cummulative_quote_qty=cq, executed_qty=eq)
 
+    def _round_trip_realized_pnl_usdt(
+        self, intent: OrderIntent, ref: Any, qty: Decimal
+    ) -> Decimal | None:
+        """Round-trip net PnL (USDT, signed; a loss is negative) for the durable
+        daily-loss-budget gate (``ledger_state._realized_loss_today``). ``None``
+        when either leg lacks a proven fill price — never fabricated. Independent
+        of the exit *reference* price (that only moves exit-slippage telemetry),
+        so this equals the analytics row's ``net_pnl_usdt``."""
+        entry_fill = self._open_fill_price
+        if entry_fill is None or self._close_fill_price is None:
+            return None
+        econ = build_round_trip_economics(
+            side=intent.side,
+            qty=qty,
+            entry_reference_price=intent.entry_reference_price or ref.price,
+            entry_fill_price=entry_fill,
+            fee_rate_bps=DEMO_SCALPING_FEE_RATE_BPS,
+            exit_fill_price=self._close_fill_price,
+        )
+        return econ.net_pnl_usdt
+
     async def _finalize_analytics(
         self,
         intent: OrderIntent,
@@ -914,9 +935,16 @@ class DemoScalpingExecutor:
                 extra_metadata_merge=_exit_metadata(exit_reason, monitor_error, "dust"),
             )
             if close_cid is not None and close_filled:
+                realized_pnl = self._round_trip_realized_pnl_usdt(intent, ref, qty)
                 await self.ledger.record_closed(client_order_id=close_cid, now=self.now)
                 await self.ledger.record_reconciled(
-                    client_order_id=close_cid, now=self.now
+                    client_order_id=close_cid,
+                    now=self.now,
+                    extra_metadata_merge=(
+                        {"realized_pnl_usdt": str(realized_pnl)}
+                        if realized_pnl is not None
+                        else None
+                    ),
                 )
             return ExecutionResult(
                 intent=intent,
@@ -1033,9 +1061,16 @@ class DemoScalpingExecutor:
                 extra_metadata_merge=_exit_metadata(exit_reason, monitor_error),
             )
             if close_cid is not None and close_filled:
+                realized_pnl = self._round_trip_realized_pnl_usdt(intent, ref, qty)
                 await self.ledger.record_closed(client_order_id=close_cid, now=self.now)
                 await self.ledger.record_reconciled(
-                    client_order_id=close_cid, now=self.now
+                    client_order_id=close_cid,
+                    now=self.now,
+                    extra_metadata_merge=(
+                        {"realized_pnl_usdt": str(realized_pnl)}
+                        if realized_pnl is not None
+                        else None
+                    ),
                 )
             return ExecutionResult(
                 intent=intent,
