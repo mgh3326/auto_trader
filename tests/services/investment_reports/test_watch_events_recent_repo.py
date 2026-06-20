@@ -16,7 +16,10 @@ async def test_returns_only_delivered_after_since_ordered_asc(session: AsyncSess
 
     repo = InvestmentReportsRepository(session)
     rows = await repo.list_events_by_delivery_status(
-        delivery_status="delivered", delivered_since=utc_at(5), market="crypto", limit=50
+        delivery_status="delivered",
+        delivered_since=utc_at(5),
+        market="crypto",
+        limit=50,
     )
 
     # TRUNCATE 격리라 정확 리스트 단언 안전: delivered + >=since + asc + pending 제외
@@ -26,7 +29,9 @@ async def test_returns_only_delivered_after_since_ordered_asc(session: AsyncSess
 
 async def test_market_filter_and_limit_clamp(session: AsyncSession):
     await mk_watch_event(session, symbol="005930", market="kr", delivered_at=utc_at(0))
-    await mk_watch_event(session, symbol="KRW-EEE", market="crypto", delivered_at=utc_at(0))
+    await mk_watch_event(
+        session, symbol="KRW-EEE", market="crypto", delivered_at=utc_at(0)
+    )
     await session.commit()
 
     repo = InvestmentReportsRepository(session)

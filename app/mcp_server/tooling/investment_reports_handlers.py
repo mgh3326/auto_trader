@@ -1254,7 +1254,9 @@ async def investment_watch_events_list_recent_impl(
     parsed_since = None
     if since_timestamp:
         try:
-            parsed_since = datetime.fromisoformat(since_timestamp.replace("Z", "+00:00"))
+            parsed_since = datetime.fromisoformat(
+                since_timestamp.replace("Z", "+00:00")
+            )
         except (ValueError, AttributeError):
             return {
                 "success": False,
@@ -1274,7 +1276,9 @@ async def investment_watch_events_list_recent_impl(
         "success": True,
         "count": len(events),
         "events": [
-            InvestmentWatchEventResponse.model_validate(e).model_dump(mode="json", by_alias=True)
+            InvestmentWatchEventResponse.model_validate(e).model_dump(
+                mode="json", by_alias=True
+            )
             for e in events
         ],
     }

@@ -9,16 +9,31 @@ TOOLING = REPO / "app" / "mcp_server" / "tooling"
 # spec §6 deny-list (논리 도구명). 새 mutation 도구가 생기면 여기 + JSON에 추가해야 테스트 통과.
 KNOWN_MUTATION_TOOLS = frozenset(
     {
-        "place_order", "cancel_order", "modify_order",
-        "kis_live_place_order", "kis_live_cancel_order", "kis_live_modify_order",
+        "place_order",
+        "cancel_order",
+        "modify_order",
+        "kis_live_place_order",
+        "kis_live_cancel_order",
+        "kis_live_modify_order",
         "kis_live_reconcile_orders",
-        "kis_mock_place_order", "kis_mock_cancel_order", "kis_mock_modify_order",
-        "toss_place_order", "toss_modify_order", "toss_cancel_order", "toss_reconcile_orders",
-        "alpaca_paper_submit_order", "alpaca_paper_cancel_order",
-        "kiwoom_mock_place_order", "kiwoom_mock_cancel_order", "kiwoom_mock_modify_order",
+        "kis_mock_place_order",
+        "kis_mock_cancel_order",
+        "kis_mock_modify_order",
+        "toss_place_order",
+        "toss_modify_order",
+        "toss_cancel_order",
+        "toss_reconcile_orders",
+        "alpaca_paper_submit_order",
+        "alpaca_paper_cancel_order",
+        "kiwoom_mock_place_order",
+        "kiwoom_mock_cancel_order",
+        "kiwoom_mock_modify_order",
         "live_reconcile_orders",
-        "investment_report_create", "investment_report_add_items", "investment_report_update",
-        "investment_report_decide_item", "investment_report_activate_watch",
+        "investment_report_create",
+        "investment_report_add_items",
+        "investment_report_update",
+        "investment_report_decide_item",
+        "investment_report_activate_watch",
         "investment_report_set_status",
         "investment_report_generate_from_bundle",
         "investment_report_create_from_hermes_composition",
@@ -74,16 +89,18 @@ def test_no_new_order_mutation_tool_escapes_known_set():
 
 # report/stage/watch 도구 분류 가드: 모든 investment_report*/investment_stage*/investment_watch* 도구가
 # 허용 읽기 또는 deny-list에 분류되어야 한다. 새 도구 추가 시 분류를 강제한다.
-ALLOWED_REPORT_READS = frozenset({
-    "investment_report_get",
-    "investment_report_list",
-    "investment_report_context_get",
-    "investment_report_delta_get",
-    "investment_report_get_hermes_context",
-    "investment_report_prepare_intraday_context",
-    "investment_watch_events_list_recent",
-    "investment_watch_recommend",
-})
+ALLOWED_REPORT_READS = frozenset(
+    {
+        "investment_report_get",
+        "investment_report_list",
+        "investment_report_context_get",
+        "investment_report_delta_get",
+        "investment_report_get_hermes_context",
+        "investment_report_prepare_intraday_context",
+        "investment_watch_events_list_recent",
+        "investment_watch_recommend",
+    }
+)
 
 REPORT_STAGE_WATCH_RE = re.compile(
     r'name\s*=\s*["\'](investment_report[a-z_]*|investment_stage[a-z_]*|investment_watch[a-z_]*)["\']'

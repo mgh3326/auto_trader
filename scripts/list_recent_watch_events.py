@@ -25,7 +25,9 @@ def _parse_since(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-async def collect(*, market: str | None, since: str | datetime | None, limit: int) -> dict:
+async def collect(
+    *, market: str | None, since: str | datetime | None, limit: int
+) -> dict:
     parsed = since if isinstance(since, datetime) else _parse_since(since)
     async with AsyncSessionLocal() as db:
         repo = InvestmentReportsRepository(db)
@@ -43,11 +45,15 @@ async def collect(*, market: str | None, since: str | datetime | None, limit: in
                 "event_uuid": str(e.event_uuid),
                 "symbol": e.symbol,
                 "market": e.market,
-                "source_report_uuid": str(e.source_report_uuid) if e.source_report_uuid else None,
+                "source_report_uuid": str(e.source_report_uuid)
+                if e.source_report_uuid
+                else None,
                 "metric": e.metric,
                 "operator": e.operator,
                 "threshold": str(e.threshold),
-                "current_value": str(e.current_value) if e.current_value is not None else None,
+                "current_value": str(e.current_value)
+                if e.current_value is not None
+                else None,
                 "delivered_at": e.delivered_at.isoformat() if e.delivered_at else None,
                 "kst_date": e.kst_date,
             }
@@ -57,13 +63,17 @@ async def collect(*, market: str | None, since: str | datetime | None, limit: in
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="최근 delivered watch 이벤트(read-only JSON)")
+    parser = argparse.ArgumentParser(
+        description="최근 delivered watch 이벤트(read-only JSON)"
+    )
     parser.add_argument("--market", default=None, help="kr|us|crypto (기본 전체)")
     parser.add_argument("--since", default=None, help="ISO8601, delivered_at >= since")
     parser.add_argument("--limit", type=int, default=50)
     args = parser.parse_args(argv)
     try:
-        out = asyncio.run(collect(market=args.market, since=args.since, limit=args.limit))
+        out = asyncio.run(
+            collect(market=args.market, since=args.since, limit=args.limit)
+        )
     except Exception as exc:
         json.dump({"success": False, "error": str(exc)}, sys.stdout)
         sys.stdout.write("\n")

@@ -20,9 +20,16 @@ async def test_collect_returns_serializable_delivered_events(session: AsyncSessi
     assert "KRW-XYZ" in blob
     ev = next(e for e in out["events"] if e["symbol"] == "KRW-XYZ")
     assert set(ev) == {
-        "event_uuid", "symbol", "market", "source_report_uuid",
-        "metric", "operator", "threshold", "current_value",
-        "delivered_at", "kst_date",
+        "event_uuid",
+        "symbol",
+        "market",
+        "source_report_uuid",
+        "metric",
+        "operator",
+        "threshold",
+        "current_value",
+        "delivered_at",
+        "kst_date",
     }
 
 
