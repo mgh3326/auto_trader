@@ -562,7 +562,10 @@ class AccountClient:
             self._parent._kis_url(constants.DOMESTIC_BALANCE_URL),
             headers=hdr,
             params=params,
-            timeout=5,
+            # ROB-600: mock VTS(openapivts) responds slowly near the 5s boundary →
+            # intermittent ReadTimeout. Mock read uses 10s (mirrors ROB-270); live
+            # host stays at 5s. No order-send timeout change (double-submit risk).
+            timeout=10 if is_mock else 5,
             api_name="inquire_domestic_cash_balance",
             tr_id=tr_id,
         )

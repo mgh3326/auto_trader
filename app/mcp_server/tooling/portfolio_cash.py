@@ -8,6 +8,7 @@ from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.core.exceptions import describe_exception
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.account_modes import toss_live_mutations_enabled
 from app.mcp_server.tooling.shared import (
@@ -117,12 +118,17 @@ async def get_cash_balance_impl(
         )
         return {
             "accounts": rows,
-            "summary": {"total_krw": total_krw, "total_usd": total_usd},
+            "summary": {
+                "total_krw": total_krw,
+                "total_usd": total_usd,
+                "unavailable_sources": {},
+            },
             "errors": errors,
         }
 
     accounts: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    unavailable_sources: dict[str, str] = {}
     total_krw = 0.0
     total_usd = 0.0
 
@@ -171,9 +177,9 @@ async def get_cash_balance_impl(
                     raise RuntimeError(
                         f"Toss cash balance query failed: {exc}"
                     ) from exc
-                errors.append(
-                    {"source": "toss_api", "market": "cash", "error": str(exc)}
-                )
+                reason = describe_exception(exc)
+                errors.append({"source": "toss_api", "market": "cash", "error": reason})
+                unavailable_sources["toss"] = reason
 
     if account_filter is None or account_filter in ("upbit",):
         try:
@@ -193,7 +199,9 @@ async def get_cash_balance_impl(
             )
             total_krw += krw_balance
         except Exception as exc:
-            errors.append({"source": "upbit", "market": "crypto", "error": str(exc)})
+            reason = describe_exception(exc)
+            errors.append({"source": "upbit", "market": "crypto", "error": reason})
+            unavailable_sources["upbit"] = reason
 
     if account_filter is None or account_filter in (
         "kis",
@@ -249,17 +257,15 @@ async def get_cash_balance_impl(
                     raise RuntimeError(
                         f"KIS domestic cash balance query failed: {exc}"
                     ) from exc
-                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+                reason = describe_exception(exc)
+                errors.append({"source": "kis", "market": "kr", "error": reason})
+                unavailable_sources["kis_domestic"] = reason
 
         if account_filter is None or account_filter in ("kis", "kis_overseas"):
             if is_mock:
-                errors.append(
-                    {
-                        "source": "kis",
-                        "market": "us",
-                        "error": "mock_unsupported: KIS overseas margin is not available in mock mode",
-                    }
-                )
+                reason = "mock_unsupported: KIS overseas margin is not available in mock mode"
+                errors.append({"source": "kis", "market": "us", "error": reason})
+                unavailable_sources["kis_overseas"] = reason
             else:
                 try:
                     overseas_margin_data = await _call_kis(
@@ -300,13 +306,16 @@ async def get_cash_balance_impl(
                         raise RuntimeError(
                             f"KIS overseas cash balance query failed: {exc}"
                         ) from exc
-                    errors.append({"source": "kis", "market": "us", "error": str(exc)})
+                    reason = describe_exception(exc)
+                    errors.append({"source": "kis", "market": "us", "error": reason})
+                    unavailable_sources["kis_overseas"] = reason
 
     return {
         "accounts": accounts,
         "summary": {
             "total_krw": total_krw,
             "total_usd": total_usd,
+            "unavailable_sources": unavailable_sources,
         },
         "errors": errors,
     }
@@ -438,6 +447,11 @@ async def get_available_capital_impl(
             "manual_cash_excluded_krw": manual_cash_excluded_krw,
             "exchange_rate_usd_krw": exchange_rate,
             "as_of": now_kst().isoformat(),
+            # ROB-600: propagate per-source lookup failures so a failed KIS read is
+            # not mistaken for 0 orderable cash.
+            "unavailable_sources": cash_result.get("summary", {}).get(
+                "unavailable_sources", {}
+            ),
         },
         "errors": errors,
     }

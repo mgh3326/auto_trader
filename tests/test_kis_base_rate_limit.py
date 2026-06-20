@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import logging
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from app.services.brokers.kis.base import BaseKISClient
@@ -101,3 +103,52 @@ class TestParseKisResponse:
 
         data, is_rate_limited = client._parse_kis_response(response, api_name="test")
         assert is_rate_limited is False
+
+
+class _FastRetrySettings:
+    kis_app_key = "key"
+    kis_app_secret = "secret"
+    kis_access_token = "token"
+    api_rate_limit_retry_429_max = 1
+    api_rate_limit_retry_429_base_delay = 0.0
+    kis_rate_limit_rate = 19
+    kis_rate_limit_period = 1.0
+
+
+class _FastRetryClient(BaseKISClient):
+    def __init__(self) -> None:  # type: ignore[override]
+        self._unmapped_rate_limit_keys_logged: set = set()
+        type(self)._shared_client_lock = None
+
+    @property  # type: ignore[override]
+    def _settings(self):  # type: ignore[override]
+        return _FastRetrySettings()
+
+
+@pytest.mark.asyncio
+async def test_request_error_retry_log_names_the_exception(monkeypatch, caplog):
+    """ROB-600: a ReadTimeout('') retry must log 'ReadTimeout', not a blank reason.
+    The exception itself re-raises (bare raise); the empty str() is handled at the
+    call sites via describe_exception."""
+    client = _FastRetryClient()
+    limiter = MagicMock()
+    limiter.acquire = AsyncMock()
+    monkeypatch.setattr(client, "_get_limiter", AsyncMock(return_value=limiter))
+    monkeypatch.setattr(client, "_ensure_client", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        client,
+        "_execute_http_request",
+        AsyncMock(side_effect=httpx.ReadTimeout("")),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(httpx.ReadTimeout):
+            await client._request_with_rate_limit_with_headers(
+                "GET",
+                "https://host/path",
+                headers={},
+                retry_request_errors=True,
+                api_name="inquire_domestic_cash_balance",
+            )
+
+    assert any("ReadTimeout" in r.getMessage() for r in caplog.records)

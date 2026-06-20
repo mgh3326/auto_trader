@@ -13,6 +13,7 @@ from typing import Any, Literal
 from typing import cast as typing_cast
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.exceptions import describe_exception
 from app.mcp_server.caller_identity import get_caller_source
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.order_journal import (
@@ -1125,7 +1126,7 @@ async def _place_order_impl(
             amount=0,
             reason=reason,
             dry_run=True,
-            error=str(exc),
+            error=describe_exception(exc),
             defensive_trim=defensive_trim_ctx is not None,
             approval_issue_id=(
                 defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
@@ -1135,7 +1136,7 @@ async def _place_order_impl(
             ),
             caller_source=get_caller_source() if defensive_trim_ctx else None,
         )
-        return _order_error(str(exc))
+        return _order_error(describe_exception(exc))
 
 
 __all__ = [

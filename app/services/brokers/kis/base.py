@@ -17,6 +17,7 @@ import httpx
 
 from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
+from app.core.exceptions import describe_exception
 from app.services.redis_token_manager import redis_token_manager
 
 
@@ -544,7 +545,7 @@ class BaseKISClient:
                         "[%s] Request error for %s: %s, attempt %d/%d, retrying in %.3fs",
                         "kis",
                         api_name,
-                        e,
+                        describe_exception(e),
                         attempt + 1,
                         max_retries + 1,
                         wait_time,
@@ -554,7 +555,8 @@ class BaseKISClient:
                 raise
 
         raise RateLimitExceededError(
-            f"KIS rate limit retries exhausted for {api_name}: {last_error}"
+            f"KIS rate limit retries exhausted for {api_name}: "
+            f"{describe_exception(last_error) if last_error is not None else 'rate limited'}"
         )
 
     def _get_rate_limit_for_api(self, api_key: str) -> tuple[int, float]:
