@@ -46,7 +46,7 @@ async def collect(*, market: str | None, since: str | datetime | None, limit: in
                 "source_report_uuid": str(e.source_report_uuid) if e.source_report_uuid else None,
                 "metric": e.metric,
                 "operator": e.operator,
-                "threshold": str(e.threshold) if e.threshold is not None else None,
+                "threshold": str(e.threshold),
                 "current_value": str(e.current_value) if e.current_value is not None else None,
                 "delivered_at": e.delivered_at.isoformat() if e.delivered_at else None,
                 "kst_date": e.kst_date,
@@ -62,7 +62,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--since", default=None, help="ISO8601, delivered_at >= since")
     parser.add_argument("--limit", type=int, default=50)
     args = parser.parse_args(argv)
-    out = asyncio.run(collect(market=args.market, since=args.since, limit=args.limit))
+    try:
+        out = asyncio.run(collect(market=args.market, since=args.since, limit=args.limit))
+    except Exception as exc:
+        json.dump({"success": False, "error": str(exc)}, sys.stdout)
+        sys.stdout.write("\n")
+        return 1
     json.dump(out, sys.stdout)
     sys.stdout.write("\n")
     return 0
