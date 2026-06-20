@@ -117,3 +117,56 @@ async def test_cash_balance_mock_kis_timeout_surfaces_reason_and_marks_unavailab
     assert "kis_domestic" not in {a["account"] for a in result["accounts"]}
     # (4) KIS cash not silently summed as a number
     assert result["summary"]["total_krw"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_available_capital_propagates_unavailable_sources(monkeypatch):
+    """ROB-600: capital summary carries unavailable_sources so KIS failure is not
+    mistaken for 0 orderable cash."""
+    fake_kis = MagicMock()
+    fake_kis.inquire_domestic_cash_balance = AsyncMock(side_effect=httpx.ReadTimeout(""))
+
+    monkeypatch.setattr(
+        portfolio_cash, "_create_kis_client", lambda *, is_mock: fake_kis
+    )
+    monkeypatch.setattr(
+        portfolio_cash.upbit_service,
+        "fetch_krw_cash_summary",
+        AsyncMock(return_value={"balance": 0.0, "orderable": 0.0}),
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", AsyncMock(return_value=None)
+    )
+
+    result = await portfolio_cash.get_available_capital_impl(
+        include_manual=False, is_mock=True
+    )
+
+    assert result["summary"]["unavailable_sources"]["kis_domestic"] == "ReadTimeout"
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_live_kis_orderable_raises_when_row_missing(monkeypatch):
+    """ROB-600 regression guard: with NO placeholder row added, the live precheck
+    source still RAISES on a missing kis row instead of silently reading 0."""
+    from app.mcp_server.tooling import order_validation
+
+    monkeypatch.setattr(
+        order_validation,
+        "get_cash_balance_impl",
+        AsyncMock(
+            return_value={
+                "accounts": [],
+                "summary": {
+                    "total_krw": 0.0,
+                    "total_usd": 0.0,
+                    "unavailable_sources": {"kis_domestic": "ReadTimeout"},
+                },
+                "errors": [{"source": "kis", "market": "kr", "error": "ReadTimeout"}],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="orderable not found"):
+        await order_validation._live_kis_orderable("kis_domestic")

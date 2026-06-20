@@ -451,6 +451,11 @@ async def get_available_capital_impl(
             "manual_cash_excluded_krw": manual_cash_excluded_krw,
             "exchange_rate_usd_krw": exchange_rate,
             "as_of": now_kst().isoformat(),
+            # ROB-600: propagate per-source lookup failures so a failed KIS read is
+            # not mistaken for 0 orderable cash.
+            "unavailable_sources": cash_result.get("summary", {}).get(
+                "unavailable_sources", {}
+            ),
         },
         "errors": errors,
     }
