@@ -85,6 +85,7 @@ def _serialize_review(review: ScalpingDailyReview) -> dict[str, Any]:
             "grossPnlUsdt": _num(review.gross_pnl_usdt),
             "netPnlUsdt": _num(review.net_pnl_usdt),
             "netReturnBps": _num(review.net_return_bps),
+            "benchmarkReturnBps": _num(review.benchmark_return_bps),
             "avgSlippageBps": _num(review.avg_slippage_bps),
             "avgSpreadBps": _num(review.avg_spread_bps),
             "avgMaeBps": _num(review.avg_mae_bps),
