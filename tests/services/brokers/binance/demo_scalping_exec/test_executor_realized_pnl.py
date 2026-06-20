@@ -10,11 +10,16 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
+from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 from app.services.brokers.binance.demo_scalping.contract import (
     MarketConditions,
     ScalpingRiskLimits,
+    evaluate_risk,
 )
+from app.services.brokers.binance.demo_scalping.ledger_state import load_ledger_snapshot
 from app.services.brokers.binance.demo_scalping.market_data import BookTicker
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec.analytics import (
@@ -151,17 +156,6 @@ class _FakeFutures:
 # Tests
 # ---------------------------------------------------------------------------
 
-from sqlalchemy import select
-
-from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
-from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
-from app.services.brokers.binance.demo_scalping.contract import (
-    MarketConditions,
-    ScalpingRiskLimits,
-    evaluate_risk,
-)
-from app.services.brokers.binance.demo_scalping.ledger_state import load_ledger_snapshot
-
 
 @pytest.mark.asyncio
 async def test_close_row_carries_realized_pnl_open_row_does_not(db_session) -> None:
@@ -182,9 +176,9 @@ async def test_close_row_carries_realized_pnl_open_row_does_not(db_session) -> N
     )
     assert result.status == "reconciled"
 
-    analytics = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
-        result.open_client_order_id
-    )
+    analytics = await ScalpTradeAnalyticsService(
+        db_session
+    ).get_by_open_client_order_id(result.open_client_order_id)
     close_row = await db_session.scalar(
         select(BinanceDemoOrderLedger).where(
             BinanceDemoOrderLedger.client_order_id == result.close_client_order_id
@@ -199,8 +193,7 @@ async def test_close_row_carries_realized_pnl_open_row_does_not(db_session) -> N
     assert close_row.extra_metadata is not None
     assert "realized_pnl_usdt" in close_row.extra_metadata
     assert (
-        Decimal(close_row.extra_metadata["realized_pnl_usdt"])
-        == analytics.net_pnl_usdt
+        Decimal(close_row.extra_metadata["realized_pnl_usdt"]) == analytics.net_pnl_usdt
     )
     # open row is NOT stamped — single-count for _realized_loss_today.
     assert "realized_pnl_usdt" not in (open_row.extra_metadata or {})
@@ -219,7 +212,9 @@ async def test_losing_round_trip_feeds_daily_loss_budget_gate(db_session) -> Non
         market_data=None,
         poll_delay_seconds=0.0,
     )
-    result = await ex.execute(_intent("RPNLLOSSUSDT"), confirm=True)  # immediate open+close
+    result = await ex.execute(
+        _intent("RPNLLOSSUSDT"), confirm=True
+    )  # immediate open+close
     assert result.status == "reconciled"
 
     snapshot = await load_ledger_snapshot(
