@@ -82,6 +82,7 @@ async def _run(args: argparse.Namespace) -> int:
                     else str(review.net_return_bps)
                 ),
                 "benchmark_return_bps": None if value is None else str(value),
+                "net_basis": "5bps_estimate_funding_zero",
             },
             ensure_ascii=False,
             sort_keys=True,
