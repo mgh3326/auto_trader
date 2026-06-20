@@ -97,10 +97,11 @@ class TestDefaultProfile:
         assert TOSS_LIVE_ORDER_TOOL_NAMES <= mcp.tools.keys()
 
     def test_does_not_register_split_profile_tools(self) -> None:
+        # US/DB paper surfaces are profile-isolated and never appear in DEFAULT.
+        # kiwoom_mock_* is flag-gated in DEFAULT (ROB-601) — its presence/absence
+        # is owned by ``TestKiwoomDefaultProfileGate``, not this assertion.
         mcp = _build_mcp(McpProfile.DEFAULT)
-        split_only = (
-            _US_PAPER_TOOL_NAMES | _DB_PAPER_TOOL_NAMES | KIWOOM_MOCK_TOOL_NAMES
-        )
+        split_only = _US_PAPER_TOOL_NAMES | _DB_PAPER_TOOL_NAMES
         assert split_only.isdisjoint(mcp.tools.keys())
 
 
@@ -190,6 +191,34 @@ class TestKiwoomProfile:
     def test_registers_kiwoom_mock_tools(self) -> None:
         mcp = _build_mcp(McpProfile.KIWOOM)
         assert KIWOOM_MOCK_TOOL_NAMES <= mcp.tools.keys()
+
+
+class TestKiwoomDefaultProfileGate:
+    """ROB-601: kiwoom_mock_* tools surface in the operator DEFAULT profile when
+    ``settings.kiwoom_mock_enabled`` is true, so analyze→approval→order can run
+    through kiwoom mock in the everyday session (the isolated KIWOOM profile
+    drops every other broker's order surface and cannot substitute it).
+
+    The flag defaults to ``False`` so the out-of-box DEFAULT surface is
+    unchanged (pinned by ``TestOrderSurfaceMatrix``); fail-closed runtime config
+    validation still blocks any tool call without real credentials.
+    """
+
+    def test_registers_kiwoom_mock_in_default_when_flag_enabled(
+        self, monkeypatch
+    ) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "kiwoom_mock_enabled", True)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_TOOL_NAMES <= mcp.tools.keys()
+
+    def test_omits_kiwoom_mock_in_default_when_flag_disabled(self, monkeypatch) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "kiwoom_mock_enabled", False)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
 
 _ALPACA_MUTATING = ALPACA_PAPER_MUTATING_TOOL_NAMES
