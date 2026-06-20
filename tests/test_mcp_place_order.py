@@ -2810,3 +2810,40 @@ def test_order_tool_descriptions_drop_daily_order_cap_advertising() -> None:
     for description in (generic_desc, kis_live_desc):
         assert "orders/day" not in description
         assert "Safety limit: max" not in description
+
+
+@pytest.mark.asyncio
+async def test_place_order_readtimeout_surfaces_class_name(monkeypatch):
+    """ROB-600: a ReadTimeout during execution must surface 'ReadTimeout', not ''."""
+    import httpx
+
+    from app.mcp_server.tooling import order_execution
+
+    recorded = AsyncMock()
+    monkeypatch.setattr(
+        order_execution,
+        "_resolve_market_type",
+        lambda symbol, market: ("equity_kr", "005930"),
+    )
+    monkeypatch.setattr(order_execution, "_record_order_history", recorded)
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(side_effect=httpx.ReadTimeout("")),
+    )
+
+    result = await order_execution._place_order_impl(
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        quantity=1,
+        price=370000.0,
+        dry_run=False,
+        is_mock=True,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "ReadTimeout"
+    assert result["source"] == "kis"
+    # :1128 — order-history record also gets the concrete reason, not ""
+    assert recorded.await_args.kwargs["error"] == "ReadTimeout"
