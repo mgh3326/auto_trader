@@ -43,7 +43,7 @@ def test_flow_does_not_attach_in_repo_schedule() -> None:
 
 
 def test_flow_not_registered_via_deployment_yaml() -> None:
-    project_root = _FLOW_PATH.parents[1]
+    project_root = _FLOW_PATH.parents[2]
     import pytest
 
     yaml_files = list(project_root.glob("**/*.yaml")) + list(
