@@ -125,6 +125,7 @@ async def binance_demo_scalping_submit_decision(
     the daily review can compare LLM vs the rule-based baseline. Symbols limited
     to XRPUSDT/DOGEUSDT/SOLUSDT; 1x; notional capped at 10 USDT by the executor."""
     sym = symbol.upper().strip()
+    side = side.upper().strip()
     if sym not in _ALLOWLIST:
         return {
             "status": "rejected",

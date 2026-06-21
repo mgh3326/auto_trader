@@ -69,6 +69,7 @@ async def test_confirm_executes_monitored_with_llm_tag() -> None:
             confirm=True,
         )
     assert result["status"] == "reconciled"
+    assert result["dry_run"] is False
     assert captured["session_tag"] == "llm"
     assert captured["signal_snapshot"]["rationale"] == "OI surge fade"
     assert captured["signal_snapshot"]["source"] == "llm"
