@@ -228,6 +228,8 @@ class Settings(BaseSettings):
     # ROB-321 PR4b: per-run order-mutation gate for the scalping daemon. Without
     # it the daemon dry-runs (preview only, no mock order, no ledger write).
     kis_mock_scalping_ws_confirm: bool = False
+    # Phase 2 — daily demo scalping review + buy&hold benchmark flow (default-off).
+    binance_demo_scalping_review_flow_enabled: bool = False
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)
