@@ -147,14 +147,22 @@ async def test_session_tag_and_signal_snapshot_recorded(db_session) -> None:
     client = _FakeFutures(open_px="100", close_px="100.40")
     md = _MD([100.0, 100.4])
     ex = DemoScalpingExecutor(
-        product="usdm_futures", client=client, session=db_session,
-        reference=_Ref(), now=_NOW, limits=_limits("LLMTAGUSDT"),
-        market_data=md, poll_delay_seconds=0.0,
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("LLMTAGUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
     )
     snap = {"source": "llm", "rationale": "funding flip + oversold"}
     result = await ex.execute_monitored(
-        _intent("LLMTAGUSDT"), confirm=True, max_poll_count=5,
-        session_tag="llm", signal_snapshot=snap,
+        _intent("LLMTAGUSDT"),
+        confirm=True,
+        max_poll_count=5,
+        session_tag="llm",
+        signal_snapshot=snap,
     )
     assert result.status == "reconciled"
     row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
@@ -170,11 +178,18 @@ async def test_session_tag_defaults_none_no_regression(db_session) -> None:
     client = _FakeFutures(open_px="100", close_px="100.40")
     md = _MD([100.0, 100.4])
     ex = DemoScalpingExecutor(
-        product="usdm_futures", client=client, session=db_session,
-        reference=_Ref(), now=_NOW, limits=_limits("NOTAGUSDT"),
-        market_data=md, poll_delay_seconds=0.0,
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("NOTAGUSDT"),
+        market_data=md,
+        poll_delay_seconds=0.0,
     )
-    result = await ex.execute_monitored(_intent("NOTAGUSDT"), confirm=True, max_poll_count=5)
+    result = await ex.execute_monitored(
+        _intent("NOTAGUSDT"), confirm=True, max_poll_count=5
+    )
     row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
         result.open_client_order_id
     )
@@ -187,14 +202,21 @@ async def test_session_tag_defaults_none_no_regression(db_session) -> None:
 async def test_execute_one_shot_records_session_tag(db_session) -> None:
     client = _FakeFutures(open_px="100", close_px="100.20")
     ex = DemoScalpingExecutor(
-        product="usdm_futures", client=client, session=db_session,
-        reference=_Ref(), now=_NOW, limits=_limits("ONESHOTTAGUSDT"),
-        market_data=None, poll_delay_seconds=0.0,
+        product="usdm_futures",
+        client=client,
+        session=db_session,
+        reference=_Ref(),
+        now=_NOW,
+        limits=_limits("ONESHOTTAGUSDT"),
+        market_data=None,
+        poll_delay_seconds=0.0,
     )
     snap = {"source": "llm", "rationale": "immediate one-shot"}
     result = await ex.execute(
-        _intent("ONESHOTTAGUSDT"), confirm=True,
-        session_tag="llm", signal_snapshot=snap,
+        _intent("ONESHOTTAGUSDT"),
+        confirm=True,
+        session_tag="llm",
+        signal_snapshot=snap,
     )
     assert result.status == "reconciled"
     row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(

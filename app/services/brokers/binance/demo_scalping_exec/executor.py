@@ -283,8 +283,13 @@ class DemoScalpingExecutor:
         try:
             if entry_fill is None:
                 await self._record_partial_analytics(
-                    intent, qty, instrument_id, result, tele,
-                    session_tag=session_tag, signal_snapshot=signal_snapshot,
+                    intent,
+                    qty,
+                    instrument_id,
+                    result,
+                    tele,
+                    session_tag=session_tag,
+                    signal_snapshot=signal_snapshot,
                 )
                 return
             econ = build_round_trip_economics(
@@ -404,8 +409,15 @@ class DemoScalpingExecutor:
         # No monitor path on an immediate run: only spread@fill (entry) is known.
         telemetry = _RunTelemetry(entry_spread_bps=self._entry_spread_bps)
         await self._finalize_analytics(
-            intent, ref, qty, notional, instrument_id, result, telemetry,
-            session_tag=session_tag, signal_snapshot=signal_snapshot,
+            intent,
+            ref,
+            qty,
+            notional,
+            instrument_id,
+            result,
+            telemetry,
+            session_tag=session_tag,
+            signal_snapshot=signal_snapshot,
         )
         return result
 
@@ -504,8 +516,15 @@ class DemoScalpingExecutor:
             exit_reference_price=outcome.exit_conservative,
         )
         await self._finalize_analytics(
-            intent, ref, qty, notional, instrument_id, result, telemetry,
-            session_tag=session_tag, signal_snapshot=signal_snapshot,
+            intent,
+            ref,
+            qty,
+            notional,
+            instrument_id,
+            result,
+            telemetry,
+            session_tag=session_tag,
+            signal_snapshot=signal_snapshot,
         )
         return result
 
