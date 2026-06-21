@@ -257,6 +257,8 @@ class DemoScalpingExecutor:
         instrument_id: int,
         result: ExecutionResult,
         telemetry: _RunTelemetry | None = None,
+        session_tag: str | None = None,
+        signal_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Best-effort: write one ``scalp_trade_analytics`` round-trip row.
 
@@ -281,7 +283,8 @@ class DemoScalpingExecutor:
         try:
             if entry_fill is None:
                 await self._record_partial_analytics(
-                    intent, qty, instrument_id, result, tele
+                    intent, qty, instrument_id, result, tele,
+                    session_tag=session_tag, signal_snapshot=signal_snapshot,
                 )
                 return
             econ = build_round_trip_economics(
@@ -319,6 +322,8 @@ class DemoScalpingExecutor:
                     net_return_bps=econ.net_return_bps,
                     holding_seconds=tele.holding_seconds,
                     exit_reason=result.exit_reason,
+                    session_tag=session_tag,
+                    signal_snapshot=signal_snapshot,
                     now=self.now,
                 )
         except Exception:  # noqa: BLE001 — analytics is best-effort, never fatal
@@ -335,6 +340,8 @@ class DemoScalpingExecutor:
         instrument_id: int,
         result: ExecutionResult,
         tele: _RunTelemetry,
+        session_tag: str | None = None,
+        signal_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Record a round-trip with no derivable entry fill price: the fill is
         proven (the run reached reconcile) but no avg price evidence exists, so
@@ -361,6 +368,8 @@ class DemoScalpingExecutor:
                 mfe_bps=tele.mfe_bps,
                 holding_seconds=tele.holding_seconds,
                 exit_reason=result.exit_reason,
+                session_tag=session_tag,
+                signal_snapshot=signal_snapshot,
                 now=self.now,
             )
 
@@ -370,6 +379,8 @@ class DemoScalpingExecutor:
         *,
         confirm: bool = False,
         market: MarketConditions | None = None,
+        session_tag: str | None = None,
+        signal_snapshot: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         """One-shot: open + immediate close-flat (no hold)."""
         prep = await self._preflight(intent, confirm, market)
@@ -393,7 +404,8 @@ class DemoScalpingExecutor:
         # No monitor path on an immediate run: only spread@fill (entry) is known.
         telemetry = _RunTelemetry(entry_spread_bps=self._entry_spread_bps)
         await self._finalize_analytics(
-            intent, ref, qty, notional, instrument_id, result, telemetry
+            intent, ref, qty, notional, instrument_id, result, telemetry,
+            session_tag=session_tag, signal_snapshot=signal_snapshot,
         )
         return result
 
@@ -408,6 +420,8 @@ class DemoScalpingExecutor:
         max_poll_count: int = 30,
         poll_interval_s: float | None = None,
         max_runtime_s: float = 300.0,
+        session_tag: str | None = None,
+        signal_snapshot: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         """Open, then poll the bookTicker within a bounded window and
         MARKET-close on a TP/SL cross — failsafe-close at window end. Always
@@ -490,7 +504,8 @@ class DemoScalpingExecutor:
             exit_reference_price=outcome.exit_conservative,
         )
         await self._finalize_analytics(
-            intent, ref, qty, notional, instrument_id, result, telemetry
+            intent, ref, qty, notional, instrument_id, result, telemetry,
+            session_tag=session_tag, signal_snapshot=signal_snapshot,
         )
         return result
 
