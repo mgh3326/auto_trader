@@ -94,6 +94,15 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # imports + the BINANCE_DEMO_SCALPING_* env-flag names.
         "app/jobs/binance_demo_scalping_runner.py",
         "app/tasks/binance_demo_scalping_tasks.py",
+        # Phase 2 — Demo scalping daily review + buy&hold benchmark automation.
+        # Orchestration only: the job rolls scalp_trade_analytics into the review
+        # draft and computes the benchmark via the in-package adapters; the flow
+        # is a thin Prefect wrapper; config holds the default-off env flag. No
+        # signed HTTP/WS — references "Binance" via imports + the
+        # BINANCE_DEMO_SCALPING_REVIEW_FLOW_ENABLED flag name only.
+        "app/jobs/binance_demo_scalping_review.py",
+        "app/flows/binance_demo_scalping_review_flow.py",
+        "app/core/config.py",
         # ROB-323 / ROB-325 — the operator Naver remote-debug audit's Chrome
         # CDP host allowlist. Contains NO Binance HTTP/WS/signed surface; it is
         # a strict 127.0.0.1:9222 allowlist and references "binance" only in a
