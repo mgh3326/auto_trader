@@ -103,6 +103,14 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/jobs/binance_demo_scalping_review.py",
         "app/flows/binance_demo_scalping_review_flow.py",
         "app/core/config.py",
+        # Phase 3 — LLM decision-injection MCP tool. Deterministic executor of an
+        # LLM-submitted decision (no signed HTTP itself; reuses futures_demo via
+        # execute_monitored). References "Binance" via imports + tool name only.
+        "app/mcp_server/tooling/binance_demo_scalping_handler.py",
+        # Phase 3 — registry.py conditionally imports the Phase 3 MCP handler
+        # under settings.binance_demo_scalping_enabled; references "Binance" only
+        # via the import path + settings flag name (no HTTP/WS surface).
+        "app/mcp_server/tooling/registry.py",
         # ROB-323 / ROB-325 — the operator Naver remote-debug audit's Chrome
         # CDP host allowlist. Contains NO Binance HTTP/WS/signed surface; it is
         # a strict 127.0.0.1:9222 allowlist and references "binance" only in a

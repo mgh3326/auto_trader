@@ -230,6 +230,8 @@ class Settings(BaseSettings):
     kis_mock_scalping_ws_confirm: bool = False
     # Phase 2 — daily demo scalping review + buy&hold benchmark flow (default-off).
     binance_demo_scalping_review_flow_enabled: bool = False
+    # Phase 3 — gate for the LLM decision-injection MCP tool (default-off).
+    binance_demo_scalping_enabled: bool = False
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)
