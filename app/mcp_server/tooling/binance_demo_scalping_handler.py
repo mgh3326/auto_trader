@@ -56,7 +56,8 @@ async def _execute_confirmed_round_trip(
     now: dt.datetime,
 ) -> Any:
     """Construct the demo executor and run one monitored round-trip. Real Demo
-    order — only reached on confirm=True. Mirrors scripts/binance_demo_scalping_execute."""
+    order — only reached on confirm=True. Mirrors the confirmed execution path in
+    scripts/binance_demo_scalping_execute.py."""
     from app.core.db import AsyncSessionLocal
     from app.services.brokers.binance.demo_scalping.market_data import (
         DemoScalpingMarketData,
