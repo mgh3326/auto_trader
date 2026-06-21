@@ -181,3 +181,25 @@ async def test_session_tag_defaults_none_no_regression(db_session) -> None:
     assert row is not None
     assert row.session_tag is None
     assert row.signal_snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_execute_one_shot_records_session_tag(db_session) -> None:
+    client = _FakeFutures(open_px="100", close_px="100.20")
+    ex = DemoScalpingExecutor(
+        product="usdm_futures", client=client, session=db_session,
+        reference=_Ref(), now=_NOW, limits=_limits("ONESHOTTAGUSDT"),
+        market_data=None, poll_delay_seconds=0.0,
+    )
+    snap = {"source": "llm", "rationale": "immediate one-shot"}
+    result = await ex.execute(
+        _intent("ONESHOTTAGUSDT"), confirm=True,
+        session_tag="llm", signal_snapshot=snap,
+    )
+    assert result.status == "reconciled"
+    row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
+        result.open_client_order_id
+    )
+    assert row is not None
+    assert row.session_tag == "llm"
+    assert row.signal_snapshot == snap
