@@ -341,26 +341,61 @@ async def test_set_benchmark_skips_locked_review(db_session) -> None:
 async def test_rollup_separates_by_session_tag(db_session) -> None:
     iid = await _instrument(db_session, "SEPXRPUSDT")
     # 규칙(NULL) 1건 + llm 2건, 같은 날/product
-    await _analytics(db_session, iid, tag="rule1", symbol="SEPXRPUSDT",
-                     entry_price=Decimal("100"), exit_price=Decimal("101"),
-                     entry_notional_usdt=Decimal("100"), net_pnl_usdt=Decimal("0.9"),
-                     gross_pnl_usdt=Decimal("1.0"), net_return_bps=Decimal("90"),
-                     exit_reason="take_profit")
+    await _analytics(
+        db_session,
+        iid,
+        tag="rule1",
+        symbol="SEPXRPUSDT",
+        entry_price=Decimal("100"),
+        exit_price=Decimal("101"),
+        entry_notional_usdt=Decimal("100"),
+        net_pnl_usdt=Decimal("0.9"),
+        gross_pnl_usdt=Decimal("1.0"),
+        net_return_bps=Decimal("90"),
+        exit_reason="take_profit",
+    )
     for i in range(2):
-        await _analytics(db_session, iid, tag=f"llm{i}", symbol="SEPXRPUSDT",
-                         session_tag="llm", entry_price=Decimal("100"),
-                         exit_price=Decimal("102"), entry_notional_usdt=Decimal("100"),
-                         net_pnl_usdt=Decimal("1.5"), gross_pnl_usdt=Decimal("1.6"),
-                         net_return_bps=Decimal("150"), exit_reason="take_profit")
+        await _analytics(
+            db_session,
+            iid,
+            tag=f"llm{i}",
+            symbol="SEPXRPUSDT",
+            session_tag="llm",
+            entry_price=Decimal("100"),
+            exit_price=Decimal("102"),
+            entry_notional_usdt=Decimal("100"),
+            net_pnl_usdt=Decimal("1.5"),
+            gross_pnl_usdt=Decimal("1.6"),
+            net_return_bps=Decimal("150"),
+            exit_reason="take_profit",
+        )
     svc = ScalpingReviewService(db_session)
-    rule_review = await svc.build_draft(review_date=_DATE, product="usdm_futures", now=_NOW, session_tag="")
-    llm_review = await svc.build_draft(review_date=_DATE, product="usdm_futures", now=_NOW, session_tag="llm")
+    rule_review = await svc.build_draft(
+        review_date=_DATE, product="usdm_futures", now=_NOW, session_tag=""
+    )
+    llm_review = await svc.build_draft(
+        review_date=_DATE, product="usdm_futures", now=_NOW, session_tag="llm"
+    )
     assert rule_review.trade_count == 1
     assert llm_review.trade_count == 2
     # list_analytics: None=전체(무회귀), 값=필터
     assert len(await svc.list_analytics(review_date=_DATE, product="usdm_futures")) == 3
-    assert len(await svc.list_analytics(review_date=_DATE, product="usdm_futures", session_tag="")) == 1
-    assert len(await svc.list_analytics(review_date=_DATE, product="usdm_futures", session_tag="llm")) == 2
+    assert (
+        len(
+            await svc.list_analytics(
+                review_date=_DATE, product="usdm_futures", session_tag=""
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            await svc.list_analytics(
+                review_date=_DATE, product="usdm_futures", session_tag="llm"
+            )
+        )
+        == 2
+    )
 
 
 @pytest.mark.asyncio
