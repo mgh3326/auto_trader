@@ -179,6 +179,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # still fail-closes on missing credentials at call time.
         if settings.kiwoom_mock_enabled:
             orders_kiwoom_variants.register(mcp)
+        if settings.binance_demo_scalping_enabled:
+            from app.mcp_server.tooling.binance_demo_scalping_handler import (
+                register_binance_demo_scalping_tools,
+            )
+
+            register_binance_demo_scalping_tools(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
