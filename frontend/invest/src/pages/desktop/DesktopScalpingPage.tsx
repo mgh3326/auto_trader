@@ -35,7 +35,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const SESSION_TAG_LABEL: Record<string, string> = { "": "규칙", llm: "LLM" };
-const sessionTagLabel = (tag: string): string => SESSION_TAG_LABEL[tag] ?? tag ?? "규칙";
+const sessionTagLabel = (tag: string): string => SESSION_TAG_LABEL[tag] ?? tag;
 
 const ACTION_STATUS_LABEL: Record<string, string> = {
   open: "열림",

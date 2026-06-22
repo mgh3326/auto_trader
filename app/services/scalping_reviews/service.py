@@ -238,7 +238,9 @@ class ScalpingReviewService:
         if product is not None:
             stmt = stmt.where(ScalpingDailyReview.product == product)
         stmt = stmt.order_by(
-            ScalpingDailyReview.review_date.desc(), ScalpingDailyReview.product
+            ScalpingDailyReview.review_date.desc(),
+            ScalpingDailyReview.product,
+            ScalpingDailyReview.session_tag,
         )
         return list((await self._session.scalars(stmt)).all())
 
