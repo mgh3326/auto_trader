@@ -142,6 +142,7 @@ async def test_enabled_builds_review_and_benchmark(db_session, monkeypatch) -> N
     [summary] = result["products"]
     assert summary == {
         "product": "usdm_futures",
+        "sessionTag": "",
         "tradeCount": 1,
         "netReturnBps": "90.0000",
         "benchmarkReturnBps": "100.00",  # (101/100-1)*10000 = Decimal('100.00')
@@ -187,3 +188,71 @@ async def test_product_failure_is_isolated(db_session, monkeypatch) -> None:
     assert result["status"] == "ran"
     assert [s["product"] for s in result["products"]] == ["usdm_futures"]
     assert [e["product"] for e in result["errors"]] == ["spot"]
+
+
+@pytest.mark.asyncio
+async def test_flow_builds_per_session_tag(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "binance_demo_scalping_review_flow_enabled", True)
+    iid = await _instrument(db_session, "XRPUSDT")
+    # 규칙(NULL) 1 + llm 1
+    await _analytics(
+        db_session,
+        iid,
+        tag="r",
+        symbol="XRPUSDT",
+        entry_price=Decimal("100"),
+        exit_price=Decimal("101"),
+        entry_notional_usdt=Decimal("100"),
+        net_pnl_usdt=Decimal("0.9"),
+        gross_pnl_usdt=Decimal("1.0"),
+        net_return_bps=Decimal("90"),
+        exit_reason="take_profit",
+    )
+    await _analytics(
+        db_session,
+        iid,
+        tag="l",
+        symbol="XRPUSDT",
+        session_tag="llm",
+        entry_price=Decimal("100"),
+        exit_price=Decimal("102"),
+        entry_notional_usdt=Decimal("100"),
+        net_pnl_usdt=Decimal("1.5"),
+        gross_pnl_usdt=Decimal("1.6"),
+        net_return_bps=Decimal("150"),
+        exit_reason="take_profit",
+    )
+    md = _FakeMD({"XRPUSDT": (100.0, 101.0)})
+    result = await run_demo_scalping_review_refresh(
+        session=db_session,
+        market_data=md,
+        review_date=_DATE,
+        products=("usdm_futures",),
+        now=_NOW,
+    )
+    assert result["status"] == "ran"
+    tags = {s["sessionTag"] for s in result["products"]}
+    assert tags == {"", "llm"}
+    svc = ScalpingReviewService(db_session)
+    rule = await svc._get_by_key(_DATE, "usdm_futures", "binance_demo", "")
+    llm = await svc._get_by_key(_DATE, "usdm_futures", "binance_demo", "llm")
+    assert rule.trade_count == 1 and llm.trade_count == 1
+    assert llm.benchmark_return_bps is not None  # benchmark per tag stored
+
+
+@pytest.mark.asyncio
+async def test_flow_empty_day_still_builds_rule_baseline(
+    db_session, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "binance_demo_scalping_review_flow_enabled", True)
+    md = _FakeMD({})
+    result = await run_demo_scalping_review_refresh(
+        session=db_session,
+        market_data=md,
+        review_date=_DATE,
+        products=("usdm_futures",),
+        now=_NOW,
+    )
+    assert [s["sessionTag"] for s in result["products"]] == [""]  # {""} always
+    svc = ScalpingReviewService(db_session)
+    assert await svc._get_by_key(_DATE, "usdm_futures", "binance_demo", "") is not None

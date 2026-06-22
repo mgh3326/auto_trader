@@ -13,7 +13,7 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.scalp_trade_analytics import ScalpTradeAnalytics
@@ -77,7 +77,7 @@ class ScalpingReviewService:
         refreshes the rollup metrics in place, preserves operator inputs, and
         leaves a ``locked`` review untouched."""
         _require_demo_scope(account_scope)
-        rollup = await self._rollup_for(review_date, product)
+        rollup = await self._rollup_for(review_date, product, session_tag=session_tag)
 
         existing = await self._get_by_key(
             review_date, product, account_scope, session_tag
@@ -121,29 +121,52 @@ class ScalpingReviewService:
         )
 
     async def list_analytics(
-        self, *, review_date: dt.date, product: str
+        self, *, review_date: dt.date, product: str, session_tag: str | None = None
     ) -> list[ScalpTradeAnalytics]:
         """Raw scalp_trade_analytics round-trip rows for a day/product, oldest
-        first. Read-only — the per-trade table renders these; the review UI
-        never edits them."""
+        first. ``session_tag=None`` returns all rows (the per-trade table);
+        a value filters to ``COALESCE(session_tag,'') == session_tag`` so the
+        per-tag review rolls up only its own trades. Read-only."""
         start = dt.datetime.combine(review_date, dt.time.min, tzinfo=dt.UTC)
         end = start + dt.timedelta(days=1)
-        return list(
-            (
-                await self._session.scalars(
-                    select(ScalpTradeAnalytics)
-                    .where(
-                        ScalpTradeAnalytics.product == product,
-                        ScalpTradeAnalytics.created_at >= start,
-                        ScalpTradeAnalytics.created_at < end,
-                    )
-                    .order_by(ScalpTradeAnalytics.created_at)
-                )
-            ).all()
+        stmt = select(ScalpTradeAnalytics).where(
+            ScalpTradeAnalytics.product == product,
+            ScalpTradeAnalytics.created_at >= start,
+            ScalpTradeAnalytics.created_at < end,
         )
+        if session_tag is not None:
+            stmt = stmt.where(
+                func.coalesce(ScalpTradeAnalytics.session_tag, "") == session_tag
+            )
+        stmt = stmt.order_by(ScalpTradeAnalytics.created_at)
+        return list((await self._session.scalars(stmt)).all())
 
-    async def _rollup_for(self, review_date: dt.date, product: str) -> RollupResult:
-        rows = await self.list_analytics(review_date=review_date, product=product)
+    async def list_session_tags(
+        self, *, review_date: dt.date, product: str
+    ) -> list[str]:
+        """Distinct ``COALESCE(session_tag,'')`` for that day/product, sorted.
+        Empty list when no analytics rows exist."""
+        start = dt.datetime.combine(review_date, dt.time.min, tzinfo=dt.UTC)
+        end = start + dt.timedelta(days=1)
+        tag_col = func.coalesce(ScalpTradeAnalytics.session_tag, "")
+        rows = await self._session.scalars(
+            select(tag_col)
+            .where(
+                ScalpTradeAnalytics.product == product,
+                ScalpTradeAnalytics.created_at >= start,
+                ScalpTradeAnalytics.created_at < end,
+            )
+            .distinct()
+            .order_by(tag_col)
+        )
+        return list(rows)
+
+    async def _rollup_for(
+        self, review_date: dt.date, product: str, session_tag: str = ""
+    ) -> RollupResult:
+        rows = await self.list_analytics(
+            review_date=review_date, product=product, session_tag=session_tag
+        )
         return build_rollup(rows)
 
     @staticmethod
@@ -215,7 +238,9 @@ class ScalpingReviewService:
         if product is not None:
             stmt = stmt.where(ScalpingDailyReview.product == product)
         stmt = stmt.order_by(
-            ScalpingDailyReview.review_date.desc(), ScalpingDailyReview.product
+            ScalpingDailyReview.review_date.desc(),
+            ScalpingDailyReview.product,
+            ScalpingDailyReview.session_tag,
         )
         return list((await self._session.scalars(stmt)).all())
 

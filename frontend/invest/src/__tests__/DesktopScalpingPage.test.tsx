@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -145,6 +145,21 @@ test("ready state renders summary, daily loop, trade table, and actions", async 
   // Action list with status.
   expect(screen.getByText("TP를 40bps로 확대")).toBeInTheDocument();
   expect(screen.getByText("적용됨")).toBeInTheDocument();
+});
+
+test("renders per-session_tag comparison strip with labels", async () => {
+  const ruleReview = { ...REVIEW, id: 1, sessionTag: "", metrics: { ...REVIEW.metrics, netReturnBps: "-10" } };
+  const llmReview = { ...REVIEW, id: 2, sessionTag: "llm", metrics: { ...REVIEW.metrics, netReturnBps: "150" } };
+  vi.spyOn(scalpingApi, "fetchScalpingReviews").mockResolvedValue({ items: [ruleReview, llmReview] });
+  vi.spyOn(scalpingApi, "fetchScalpingReview").mockResolvedValue({ review: ruleReview, actions: [ACTION] });
+  vi.spyOn(scalpingApi, "fetchScalpingTrades").mockResolvedValue({ items: [TRADE_OK] });
+
+  render(wrap(<ScalpingRoute />));
+
+  await waitFor(() => expect(screen.getByTestId("scalping-session-comparison")).toBeInTheDocument());
+  const strip = screen.getByTestId("scalping-session-comparison");
+  expect(within(strip).getByText("규칙")).toBeInTheDocument();
+  expect(within(strip).getByText("LLM")).toBeInTheDocument();
 });
 
 test("null telemetry renders n/a, never 0 or blank", async () => {

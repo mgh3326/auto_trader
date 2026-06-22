@@ -43,7 +43,9 @@ async def compute_and_store_daily_benchmark(
     stored value (``None`` when it cannot be computed). Never raises on a
     market-data failure — logs and stores ``None``."""
     service = ScalpingReviewService(session)
-    rows = await service.list_analytics(review_date=review_date, product=product)
+    rows = await service.list_analytics(
+        review_date=review_date, product=product, session_tag=session_tag
+    )
 
     notional_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     for row in rows:

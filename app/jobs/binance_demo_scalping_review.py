@@ -50,30 +50,61 @@ async def _refresh_with_session(
     errors: list[dict[str, str]] = []
     for product in products:
         try:
-            async with session.begin_nested():  # SAVEPOINT: isolate per product
-                review = await service.build_draft(
-                    review_date=review_date, product=product, now=now
+            tags = sorted(
+                {""}
+                | set(
+                    await service.list_session_tags(
+                        review_date=review_date, product=product
+                    )
                 )
-                benchmark = await compute_and_store_daily_benchmark(
-                    session=session,
-                    market_data=market_data,
-                    review_date=review_date,
-                    product=product,
-                    now=now,
-                )
-                summaries.append(
-                    {
-                        "product": product,
-                        "tradeCount": review.trade_count,
-                        "netReturnBps": _num(review.net_return_bps),
-                        "benchmarkReturnBps": _num(benchmark),
-                    }
-                )
-        except Exception as exc:  # noqa: BLE001 — isolate; savepoint rolled back
+            )
+        except Exception as exc:  # noqa: BLE001 — isolate product on enumeration failure
             logger.exception(
-                "demo scalping review refresh failed for product=%s", product
+                "demo scalping review tag enumeration failed for product=%s", product
             )
             errors.append({"product": product, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        for session_tag in tags:
+            try:
+                async with (
+                    session.begin_nested()
+                ):  # SAVEPOINT: isolate per (product, tag)
+                    review = await service.build_draft(
+                        review_date=review_date,
+                        product=product,
+                        now=now,
+                        session_tag=session_tag,
+                    )
+                    benchmark = await compute_and_store_daily_benchmark(
+                        session=session,
+                        market_data=market_data,
+                        review_date=review_date,
+                        product=product,
+                        now=now,
+                        session_tag=session_tag,
+                    )
+                    summaries.append(
+                        {
+                            "product": product,
+                            "sessionTag": session_tag,
+                            "tradeCount": review.trade_count,
+                            "netReturnBps": _num(review.net_return_bps),
+                            "benchmarkReturnBps": _num(benchmark),
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001 — isolate; savepoint rolled back
+                logger.exception(
+                    "demo scalping review refresh failed for product=%s tag=%s",
+                    product,
+                    session_tag,
+                )
+                errors.append(
+                    {
+                        "product": product,
+                        "sessionTag": session_tag,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
     return {
         "status": "ran",
         "reviewDate": review_date.isoformat(),
