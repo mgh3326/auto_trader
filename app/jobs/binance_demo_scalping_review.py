@@ -51,7 +51,8 @@ async def _refresh_with_session(
     for product in products:
         try:
             tags = sorted(
-                {""} | set(
+                {""}
+                | set(
                     await service.list_session_tags(
                         review_date=review_date, product=product
                     )
@@ -65,7 +66,9 @@ async def _refresh_with_session(
             continue
         for session_tag in tags:
             try:
-                async with session.begin_nested():  # SAVEPOINT: isolate per (product, tag)
+                async with (
+                    session.begin_nested()
+                ):  # SAVEPOINT: isolate per (product, tag)
                     review = await service.build_draft(
                         review_date=review_date,
                         product=product,
