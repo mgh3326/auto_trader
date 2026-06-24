@@ -113,6 +113,21 @@ function readinessResponse() {
   };
 }
 
+// CoverageRoute also fetches the benchmark-gap matrix (ROB-271). This test only
+// needs the KR action-readiness card, so an empty-but-well-formed matrix keeps
+// <BenchmarkGapSection> from crashing without asserting anything about it.
+function benchmarkGapResponse() {
+  return {
+    market: "kr",
+    asOf: "2026-05-14T09:00:00Z",
+    rows: [],
+    nextCandidates: [],
+    summary: { totalRows: 0, byStatus: {}, byPriority: {}, byProvider: {} },
+    sourcePolicy: [],
+    notes: [],
+  };
+}
+
 const fetchMock = vi.fn();
 beforeEach(() => {
   localStorage.clear();
@@ -120,6 +135,13 @@ beforeEach(() => {
   fetchMock.mockReset();
   fetchMock.mockImplementation((input: RequestInfo | URL) => {
     const url = String(input);
+    // CoverageRoute fires a third fetch to /invest/api/coverage/benchmark-gap
+    // (ROB-271). It must be matched BEFORE the generic /invest/api/coverage branch
+    // (more-specific prefix first) — otherwise it resolves to a rows-less coverage
+    // shape and <BenchmarkGapSection> crashes the whole page on `rows.filter`.
+    if (url.startsWith("/invest/api/coverage/benchmark-gap")) {
+      return Promise.resolve({ ok: true, json: async () => benchmarkGapResponse() });
+    }
     if (url.startsWith("/invest/api/coverage")) {
       return Promise.resolve({ ok: true, json: async () => coverageResponse() });
     }
