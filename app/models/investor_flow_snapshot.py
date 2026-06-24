@@ -10,6 +10,7 @@ from sqlalchemy import (
     Date,
     Index,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
     func,
@@ -65,6 +66,19 @@ class InvestorFlowSnapshot(Base):
     foreign_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     institution_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     individual_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    # ROB-586: Foreign ownership levels (not just net flows)
+    foreign_holding_shares: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    foreign_holding_rate: Mapped[float | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
+
+    # ROB-586: Discussion sentiment promotion (proxy via ranking)
+    discussion_sentiment_rank: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
 
     foreign_net_buy_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     foreign_net_sell_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)

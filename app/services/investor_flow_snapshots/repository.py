@@ -20,6 +20,9 @@ class InvestorFlowSnapshotUpsert(BaseModel):
     foreign_net: int | None = None
     institution_net: int | None = None
     individual_net: int | None = None
+    foreign_holding_shares: int | None = None
+    foreign_holding_rate: float | None = None
+    discussion_sentiment_rank: int | None = None
     foreign_net_buy_rank: int | None = None
     foreign_net_sell_rank: int | None = None
     institution_net_buy_rank: int | None = None

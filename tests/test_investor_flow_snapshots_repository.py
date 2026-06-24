@@ -24,6 +24,8 @@ async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
             foreign_net=1_200_000,
             institution_net=300_000,
             individual_net=-1_500_000,
+            foreign_holding_shares=50_000_000,
+            foreign_holding_rate=15.25,
             foreign_net_buy_rank=7,
             institution_net_buy_rank=12,
             foreign_consecutive_buy_days=3,
@@ -42,6 +44,8 @@ async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
     row = rows[0]
     assert row.symbol == "900191"
     assert row.foreign_net == 1_200_000
+    assert row.foreign_holding_shares == 50_000_000
+    assert float(row.foreign_holding_rate) == 15.25
     assert row.institution_net == 300_000
     assert row.individual_net == -1_500_000
     assert row.foreign_net_buy_rank == 7

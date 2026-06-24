@@ -265,6 +265,8 @@ def _daily_row_from_snapshot(row: Any) -> StockDetailInvestorFlowDailyRow:
         collectedAt=row.collected_at,
         source=row.source,
         foreignNet=row.foreign_net,
+        foreignHoldingShares=row.foreign_holding_shares,
+        foreignHoldingRate=_float_or_none(row.foreign_holding_rate),
         institutionNet=row.institution_net,
         individualNet=row.individual_net,
         doubleBuy=row.double_buy,
@@ -296,9 +298,31 @@ def _build_period_summary(
     volume_values = [row.volume for row in daily_rows if row.volume is not None]
     foreign_total = _sum_known(foreign_values)
     volume_total = sum(volume_values) if volume_values else None
+
+    # ROB-586: Calculate foreign holding changes (newest - oldest)
+    # daily_rows are usually newest-first (based on repo.recent_by_symbol)
+    foreign_holding_shares_change = None
+    foreign_holding_rate_change = None
+    if daily_rows and len(daily_rows) >= 2:
+        newest_row = daily_rows[0]
+        oldest_row = daily_rows[-1]
+        if (
+            newest_row.foreignHoldingShares is not None
+            and oldest_row.foreignHoldingShares is not None
+        ):
+            foreign_holding_shares_change = (
+                newest_row.foreignHoldingShares - oldest_row.foreignHoldingShares
+            )
+        if (
+            newest_row.foreignHoldingRate is not None
+            and oldest_row.foreignHoldingRate is not None
+        ):
+            foreign_holding_rate_change = round(
+                newest_row.foreignHoldingRate - oldest_row.foreignHoldingRate, 4
+            )
+
     unavailable = [
         "종가/등락률/거래량은 investor_flow_snapshots 저장소에 아직 없어 일별 표에서 준비중으로 표시됩니다.",
-        "외국인 보유주수/보유율은 investor_flow_snapshots 저장소에 아직 없어 변화율을 계산하지 않습니다.",
     ]
     return StockDetailInvestorFlowPeriodSummary(
         windowDays=len(daily_rows),
@@ -316,8 +340,8 @@ def _build_period_summary(
         foreignNetToVolumeRatio=(foreign_total / volume_total)
         if foreign_total is not None and volume_total
         else None,
-        foreignHoldingSharesChange=None,
-        foreignHoldingRateChange=None,
+        foreignHoldingSharesChange=foreign_holding_shares_change,
+        foreignHoldingRateChange=foreign_holding_rate_change,
         unavailableLabels=unavailable,
     )
 
@@ -362,7 +386,6 @@ def _build_buyer_decomposition(
 
 _INVESTOR_FLOW_UNAVAILABLE_LABELS = [
     "일별 종가/등락률/거래량: 저장소 미적재",
-    "외국인 보유주수/보유율: 저장소 미적재",
     "외국인 순매수/거래량 강도: 거래량 저장 전까지 계산 불가",
 ]
 
@@ -395,6 +418,12 @@ async def _default_investor_flow_provider(
         foreignNet=item.foreignNet,
         institutionNet=item.institutionNet,
         individualNet=item.individualNet,
+        foreignHoldingShares=item.foreignHoldingShares,
+        foreignHoldingRate=item.foreignHoldingRate,
+        discussionSentimentRank=item.discussionSentimentRank,
+        discussionSentimentOverheat=bool(
+            item.discussionSentimentRank and item.discussionSentimentRank <= 5
+        ),
         foreignNetBuyRank=item.foreignNetBuyRank,
         foreignNetSellRank=item.foreignNetSellRank,
         institutionNetBuyRank=item.institutionNetBuyRank,
