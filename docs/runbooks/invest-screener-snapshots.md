@@ -374,3 +374,56 @@ US 펀더멘털 프리셋 4종(`high_yield_value`/`undervalued_growth`/`profitab
 
 ### Freshness 확인 방법
 스크리너 응답의 `freshness.primary.snapshotDate` 가 직전 거래일인지, `dataState`가 `"fresh"` 인지, 펀더멘털 preset rows의 `priceLabel` 이 `"-"`가 아닌 실제 가격(close)으로 표시되는지 확인한다.
+
+## 12. KR investor-flow snapshots activation (ROB-575)
+
+### Overview
+`investor_flow_snapshots` backs `/invest/api/investor-flow`, `/invest/stocks/kr/{symbol}` investor-flow cards, and snapshot-backed report context. Code defaults stay paused by design:
+
+- `INVESTOR_FLOW_SCHEDULE_ENABLED=false` means the TaskIQ cron is not registered.
+- `INVESTOR_FLOW_SNAPSHOTS_COMMIT_ENABLED=false` means scheduled execution is dry-run only.
+
+### Manual dry-run
+
+```bash
+uv run python -m scripts.build_investor_flow_snapshots --market kr --all --days 20
+```
+
+Check that `snapshotsBuilt` is non-zero, warnings are bounded, and `snapshotDateDistribution` includes the previous KR trading session.
+
+### Manual backfill after approval
+
+```bash
+uv run python -m scripts.build_investor_flow_snapshots --market kr --all --days 20 --commit
+```
+
+### Scheduled activation after approval
+
+Set both env vars in the worker/scheduler runtime environment:
+
+```bash
+INVESTOR_FLOW_SCHEDULE_ENABLED=true
+INVESTOR_FLOW_SNAPSHOTS_COMMIT_ENABLED=true
+```
+
+The registered TaskIQ cron remains `30 8 * * 1-5` KST and is holiday-gated. It targets the previous KR trading session because Naver daily investor-flow rows finalize the next morning.
+
+### Verification
+
+```bash
+uv run python -m scripts.build_investor_flow_snapshots --market kr --all --days 20
+uv run pytest tests/test_investor_flow_service.py tests/test_investor_flow_snapshot_tasks.py tests/test_snapshot_schedulers_rob438.py -v
+```
+
+For a known KR symbol, confirm the investor-flow card no longer shows a stale banner on weekends or holidays when the latest stored snapshot equals the previous KR trading session.
+
+### Rollback
+
+Set both env vars back to false and restart the scheduler/worker runtime:
+
+```bash
+INVESTOR_FLOW_SCHEDULE_ENABLED=false
+INVESTOR_FLOW_SNAPSHOTS_COMMIT_ENABLED=false
+```
+
+This stops cron registration and DB writes. Existing rows remain read-only.

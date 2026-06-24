@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.db import get_db
 from app.routers.dependencies import get_authenticated_user
 from app.routers.invest_api import router as invest_api_router
+from app.services.invest_view_model import investor_flow_service as flow_service
 from app.services.invest_view_model.investor_flow_service import (
     build_investor_flow_cards,
 )
@@ -61,6 +62,71 @@ async def test_build_investor_flow_cards_marks_missing_symbol(db_session):
     assert response.items[0].symbol == missing_symbol
     assert response.items[0].dataState == "missing"
     assert response.items[0].source is None
+
+
+def test_resolve_investor_flow_as_of_defaults_to_previous_kr_session(monkeypatch):
+    calls: list[tuple[str, dt.date]] = []
+
+    def fake_previous_session(market: str, day: dt.date) -> dt.date | None:
+        calls.append((market, day))
+        return dt.date(2026, 6, 12)
+
+    monkeypatch.setattr(flow_service, "previous_trading_session", fake_previous_session)
+
+    now = dt.datetime(2026, 6, 15, 0, 5, tzinfo=dt.UTC)  # Mon 09:05 KST
+
+    assert flow_service._resolve_investor_flow_as_of(None, now=now) == dt.date(
+        2026, 6, 12
+    )
+    assert calls == [("kr", dt.date(2026, 6, 15))]
+
+
+def test_resolve_investor_flow_as_of_keeps_explicit_effective_date(monkeypatch):
+    def fail_if_called(market: str, day: dt.date) -> dt.date | None:
+        raise AssertionError(f"unexpected calendar lookup: {market} {day}")
+
+    monkeypatch.setattr(flow_service, "previous_trading_session", fail_if_called)
+
+    assert flow_service._resolve_investor_flow_as_of(dt.date(2026, 5, 11)) == dt.date(
+        2026, 5, 11
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_investor_flow_cards_uses_previous_kr_session_by_default(
+    db_session, monkeypatch
+):
+    repo = InvestorFlowSnapshotsRepository(db_session)
+    await repo.upsert(
+        InvestorFlowSnapshotUpsert(
+            market="kr",
+            symbol="900198",
+            snapshot_date=dt.date(2026, 6, 12),
+            foreign_net=10,
+            institution_net=20,
+            individual_net=-30,
+            source="naver_finance",
+            collected_at=dt.datetime(2026, 6, 12, 7, 0, tzinfo=dt.UTC),
+        )
+    )
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        flow_service,
+        "_resolve_investor_flow_as_of",
+        lambda as_of=None, *, now=None: dt.date(2026, 6, 12),
+    )
+
+    response = await flow_service.build_investor_flow_cards(
+        db=db_session,
+        symbols=["900198"],
+        market="kr",
+        max_stale_days=1,
+    )
+
+    assert response.asOf == dt.date(2026, 6, 12)
+    assert response.dataState == "fresh"
+    assert response.items[0].dataState == "fresh"
 
 
 @pytest.mark.asyncio
@@ -159,7 +225,7 @@ async def test_investor_flow_endpoint_returns_read_only_view_model(
         InvestorFlowSnapshotUpsert(
             market="kr",
             symbol="900196",
-            snapshot_date=dt.date.today(),
+            snapshot_date=flow_service._resolve_investor_flow_as_of(),
             foreign_net=10,
             institution_net=20,
             individual_net=-30,
