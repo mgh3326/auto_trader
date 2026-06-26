@@ -69,19 +69,24 @@
 
 규칙 (위에서부터 순서대로 평가):
 
+`now`로부터 모두 파생. `today = now.date()`, `max_slot_dt = combine(today, max(_SLOT_TIMES)=14:30, KST)`. 규칙은 위에서부터 순서대로 평가하고 첫 매치 반환:
+
 | # | 조건 | `confidence` | `today_available` | `as_of` | `as_of_date` | `is_prior_session` |
 |---|---|---|---|---|---|---|
-| 1 | 행 없음 | `null` | false | null | null | false |
-| 2 | 오늘이 세션일 아님 | `carry_over` | false | null | last_confirmed | true |
-| 3 | 세션일이나 장전(now < 09:00) | `carry_over` | false | null | last_confirmed | true |
-| 4 | `latest_slot_time`이 now보다 **미래** | `carry_over` | false | null | last_confirmed | true |
-| 5a | 미래 아님 **AND** `today_confirmed` | `inferred` | true | today-stamp | today | false |
-| 5b | 미래 아님, today 미확정, **fresh(라이브) AND `expected < 5`(즉 now < 14:30)** | `observed` | true | today-stamp | today | false |
-| 5c | 미래 아님, today 미확정, 그 외(14:30~마감 full-set, 마감후-미게시 포함) | **`provisional_unconfirmed`** (신규) | false | null | last_confirmed | false |
+| 1 | 행 없음(`latest_slot_time is None`) | `null` | false | null | null | false |
+| 2 | 오늘이 세션일 아님(`not is_kr_session_day(today)`) | `carry_over` | false | null | `previous_kr_session(today)` | true |
+| 3 | `latest_slot_time`이 now보다 **미래**(`slot_dt > now`) | `carry_over` | false | null | `previous_kr_session(today)` | true |
+| 4 | 미래 아님 **AND** `today_confirmed` | `inferred` | true | today-stamp | today | false |
+| 5 | 미래 아님, today 미확정, **`market_state == fresh` AND `now < max_slot_dt`(즉 now < 14:30)** | `observed` | true | today-stamp | today | false |
+| 6 | 미래 아님, today 미확정, 그 외(14:30~마감 full-set, 마감후-미게시 포함) | **`provisional_unconfirmed`** (신규) | false | null | **null** | false |
 
-**판별 근거**: 슬롯 위치는 14:30 전까지는 진성-today와 stale을 명확히 구분한다 — stale은 항상 직전세션 **full-set(`latest_slot=5`, 14:30)**인데, `now < 14:30`이면 `5`번 슬롯 시각(14:30) > now이므로 규칙 4가 "미래"로 먼저 잡는다. 따라서 `now < 14:30`인 라이브 구간(5b)에 도달한 데이터는 (미래 아님 ⇒ `latest_slot ≤ expected`이고 stale은 이미 규칙 4에서 걸렀으므로) **진성-today로 단정 가능**하다. 이때 KIS 게시 지연으로 `latest_slot < expected`여도(예: now 14:00인데 slot 4 미게시로 latest=3) 여전히 진성-today이므로 `latest_slot == expected` 같은 엄격 조건은 두지 않는다(지연 케이스 오분류 방지). 모든 슬롯이 경과 가능한 14:30 이후엔 진성/​stale full-set 구분 불가 → **`observed` 주장을 거부**(규칙 5c, 신규 `provisional_unconfirmed`)하여 fake observed 위험을 제거한다.
+> **규칙 3이 장전(now<09:00)을 흡수한다**: 비어있지 않은 행은 `latest_slot_time ≥ 09:30`이므로 now<09:00이면 항상 미래 → 규칙 3. 별도 "장전" 규칙은 dead라 두지 않는다.
 
-**`as_of` today-stamp 정의**: `as_of = datetime.combine(today, latest_slot_time, tzinfo=KST).isoformat()` (기존 `_classify_session` :116–120 동작과 동일). `today-stamp`인 규칙(5a/5b)만 비-null `as_of`를 가지며, carry_over/provisional_unconfirmed는 `as_of=null`(직전세션 날짜를 시각으로 위조하지 않음 — ROB-492 불변식 유지).
+**판별 근거**: 슬롯 위치는 14:30 전까지 진성-today와 stale을 명확히 구분한다 — stale은 항상 직전세션 **full-set(`latest_slot=5`, 14:30)**인데, `now < 14:30`이면 14:30 > now이므로 규칙 3이 "미래"로 먼저 잡는다. 따라서 `now < 14:30`인 라이브 구간(규칙 5)에 도달한 데이터는 stale이 이미 규칙 3에서 걸렀으므로 **진성-today로 단정 가능**하다. KIS 게시 지연으로 `latest_slot`이 현재 경과 슬롯보다 뒤처져도(예: now 14:00인데 slot 4 미게시로 latest=3) 여전히 진성-today이므로 `latest_slot == 경과슬롯` 같은 엄격 조건은 두지 않는다(지연 케이스 오분류 방지). 모든 슬롯이 경과 가능한 14:30 이후엔 진성/​stale full-set 구분 불가 → **`observed` 주장을 거부**(규칙 6, 신규 `provisional_unconfirmed`)하여 fake observed 위험을 제거한다.
+
+**`as_of` today-stamp 정의**: `as_of = datetime.combine(today, latest_slot_time, tzinfo=KST).isoformat()` (기존 `_classify_session` :116–120 동작과 동일). today-stamp인 규칙(4/5)만 비-null `as_of`를 가지며, carry_over/provisional_unconfirmed는 `as_of=null`(직전세션 날짜를 시각으로 위조하지 않음 — ROB-492 불변식 유지).
+
+**`as_of_date` semantics**: carry_over는 직전세션 DATE(`previous_kr_session(today)`)를 유지(ROB-492/542 계약·기존 테스트). provisional_unconfirmed는 날짜를 모르므로 `as_of_date=null`이고, 대신 항상-populated **`last_confirmed_session_date`**(top-level)가 floor를 제공: `today_confirmed`면 today, 아니면 네이버 최신 확정행 날짜, 네이버 미가용이면 `previous_kr_session(today)`.
 
 **결정성 보장**: 동일 `(now, rows, confirmed)` → 동일 출력. 라벨이 하루 동안 `carry_over → observed → provisional_unconfirmed`로 진행될 수는 있으나(실제 확증가능성 변화 반영), **거짓으로 today를 단정하지 않는다.** 안정적 판정은 `today_available` + 임베드된 확정 이력(둘 다 날짜/시간-안정)으로 한다.
 
