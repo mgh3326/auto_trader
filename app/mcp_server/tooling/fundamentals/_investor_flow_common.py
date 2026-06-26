@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp_server.tooling.fundamentals_sources_naver import (
+    _fetch_investor_trends_naver,
+)
+
 # Ownership-rate delta below this magnitude (pp) reads as flat, not up/down.
 _OWNERSHIP_FLAT_EPS = 0.01
 
@@ -55,3 +59,50 @@ def ownership_summary(
         "foreign_ownership_trend": ownership_trend(change),
         "foreign_ownership_rate_change": change,
     }
+
+
+async def build_confirmed_block(
+    symbol: str, days: int = 5
+) -> tuple[dict[str, Any], str | None]:
+    """Best-effort Naver 확정 일별 블록 + freshness 앵커.
+
+    Returns ``(block, last_confirmed_date)``. Naver 페치 예외를 흡수하여 intraday
+    도구 전체 실패를 막는다(열화: error 키 + 빈 history).
+    """
+    try:
+        fetched = await _fetch_investor_trends_naver(symbol, days)
+        rows = fetched.get("data") or []
+    except Exception as exc:  # noqa: BLE001 — best-effort degrade
+        return (
+            {
+                "source": "naver",
+                "error": str(exc),
+                "foreign_ownership_pct": None,
+                "foreign_ownership_trend": None,
+                "foreign_ownership_rate_change": None,
+                "history": [],
+                "days": 0,
+            },
+            None,
+        )
+
+    history = [
+        {
+            "date": row.get("date"),
+            "foreign_net": row.get("foreign_net"),
+            "institutional_net": row.get("institutional_net"),
+            "individual_net": derive_individual_net(
+                row.get("institutional_net"), row.get("foreign_net")
+            ),
+            "close": row.get("close"),
+        }
+        for row in rows
+    ]
+    block = {
+        "source": "naver",
+        **ownership_summary(rows),
+        "history": history,
+        "days": len(history),
+    }
+    last_confirmed_date = rows[0].get("date") if rows else None
+    return block, last_confirmed_date

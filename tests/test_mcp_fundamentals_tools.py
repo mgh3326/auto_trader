@@ -5135,6 +5135,65 @@ class TestInvestorFlowCommon:
             "foreign_ownership_rate_change": None,
         }
 
+    @pytest.mark.asyncio
+    async def test_build_confirmed_block_success(self, monkeypatch):
+        async def fake_fetch(symbol, days):
+            assert symbol == "005930" and days == 5
+            return {
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-06-24",
+                        "close": 340500,
+                        "institutional_net": 2969153,
+                        "foreign_net": -596340,
+                        "foreign_holding_rate": 47.41,
+                    },
+                    {
+                        "date": "2026-06-23",
+                        "close": 310000,
+                        "institutional_net": -4359775,
+                        "foreign_net": -2251501,
+                        "foreign_holding_rate": 47.83,
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(ifc, "_fetch_investor_trends_naver", fake_fetch)
+
+        block, last_confirmed = await ifc.build_confirmed_block("005930", days=5)
+
+        assert last_confirmed == "2026-06-24"
+        assert block["source"] == "naver"
+        assert block["foreign_ownership_pct"] == 47.41
+        assert block["foreign_ownership_trend"] == "down"
+        assert block["foreign_ownership_rate_change"] == -0.42
+        assert block["days"] == 2
+        assert block["history"][0] == {
+            "date": "2026-06-24",
+            "foreign_net": -596340,
+            "institutional_net": 2969153,
+            "individual_net": -2372813,
+            "close": 340500,
+        }
+        assert "error" not in block
+
+    @pytest.mark.asyncio
+    async def test_build_confirmed_block_degrades_on_fetch_error(self, monkeypatch):
+        async def boom(symbol, days):
+            raise RuntimeError("naver down")
+
+        monkeypatch.setattr(ifc, "_fetch_investor_trends_naver", boom)
+
+        block, last_confirmed = await ifc.build_confirmed_block("005930")
+
+        assert last_confirmed is None
+        assert block["source"] == "naver"
+        assert block["error"] == "naver down"
+        assert block["history"] == []
+        assert block["days"] == 0
+        assert block["foreign_ownership_pct"] is None
+
 
 @pytest.mark.asyncio
 class TestGetInvestorTrends:
