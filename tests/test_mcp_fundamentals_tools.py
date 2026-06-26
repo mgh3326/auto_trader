@@ -47,6 +47,9 @@ from app.mcp_server.tooling.fundamentals import _fx_rates as fundamentals_fx_rat
 from app.mcp_server.tooling.fundamentals import (
     _intraday_investor_flow as intraday_investor_flow,
 )
+from app.mcp_server.tooling.fundamentals import (
+    _investor_flow_common as ifc,
+)
 from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.services import market_data as market_data_service
 from app.services import naver_finance
@@ -5086,6 +5089,51 @@ def _make_daily_investor_data(days: int = 10) -> dict:
         "days": len(data),
         "data": data,
     }
+
+
+class TestInvestorFlowCommon:
+    """ROB-626: shared confirmed-daily investor-flow helpers.
+
+    Sync helpers below; async ``build_confirmed_block`` tests are added in
+    Task 2 and carry their own ``@pytest.mark.asyncio`` markers.
+    """
+
+    def test_derive_individual_net(self):
+        assert ifc.derive_individual_net(2969153, -596340) == -2372813
+        assert ifc.derive_individual_net(None, -596340) is None
+        assert ifc.derive_individual_net(100, None) is None
+
+    def test_holding_rate_change(self):
+        rows = [{"foreign_holding_rate": 47.41}, {"foreign_holding_rate": 47.83}]
+        assert ifc.holding_rate_change(rows) == -0.42
+        assert ifc.holding_rate_change([]) is None
+        assert (
+            ifc.holding_rate_change(
+                [{"foreign_holding_rate": None}, {"foreign_holding_rate": 47.0}]
+            )
+            is None
+        )
+
+    def test_ownership_trend(self):
+        assert ifc.ownership_trend(-0.42) == "down"
+        assert ifc.ownership_trend(0.42) == "up"
+        assert ifc.ownership_trend(0.0) == "flat"
+        assert ifc.ownership_trend(0.005) == "flat"
+        assert ifc.ownership_trend(None) is None
+
+    def test_ownership_summary(self):
+        rows = [{"foreign_holding_rate": 47.41}, {"foreign_holding_rate": 47.83}]
+        summary = ifc.ownership_summary(rows)
+        assert summary == {
+            "foreign_ownership_pct": 47.41,
+            "foreign_ownership_trend": "down",
+            "foreign_ownership_rate_change": -0.42,
+        }
+        assert ifc.ownership_summary([]) == {
+            "foreign_ownership_pct": None,
+            "foreign_ownership_trend": None,
+            "foreign_ownership_rate_change": None,
+        }
 
 
 @pytest.mark.asyncio
