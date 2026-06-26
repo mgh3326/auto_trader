@@ -320,14 +320,13 @@ async def test_place_order_insufficient_balance_upbit(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is True, (
-        f"Expected success=True with warning, got {result}"
-    )
+    # ROB-625: dry_run도 잔액부족을 차단(success=False)하되 프리뷰 본문은 유지한다.
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "Insufficient" in result["warning"]
-    assert "deposit" in result["warning"].lower()
-    assert "Upbit" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "Insufficient" in result["error"]
+    assert "deposit" in result["error"].lower()
+    assert "Upbit" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -378,11 +377,12 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is True
+    # ROB-625: dry_run도 잔액부족을 차단한다 (equity_kr breakdown은 US-우선이라 생략).
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "Insufficient" in result["warning"]
-    assert "KIS domestic account" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "Insufficient" in result["error"]
+    assert "KIS domestic account" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -481,13 +481,16 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is True
+    # ROB-625: dry_run도 잔액부족을 차단(success=False)하고, Phase 3 KIS 필드
+    # breakdown을 에러메시지에 노출한다.
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "Insufficient" in result["warning"]
-    assert "KIS overseas account" in result["warning"]
-    assert "deposit" in result["warning"].lower()
-    assert "100.00 USD < 500.00 USD" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "Insufficient" in result["error"]
+    assert "KIS overseas account" in result["error"]
+    assert "deposit" in result["error"].lower()
+    assert "100.00 USD < 500.00 USD" in result["error"]
+    assert "frcr_gnrl_ord_psbl_amt" in result["error"]
 
 
 # ----------------------------------------------------------------------
@@ -578,10 +581,11 @@ async def test_place_order_us_uses_frcr_gnrl_orderable_when_ord1_is_zero(monkeyp
         dry_run=True,
     )
 
-    assert result["success"] is True
+    # ROB-625: dry_run 잔액부족 차단. ord1=0이어도 frcr_gnrl_ord_psbl_amt로 판단.
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "100.00 USD < 500.00 USD" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "100.00 USD < 500.00 USD" in result["error"]
 
 
 @pytest.mark.asyncio

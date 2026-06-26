@@ -632,6 +632,23 @@ def _build_dry_run_response(
     return result
 
 
+def _build_dry_run_blocked_response(
+    dry_run_result: dict[str, Any],
+    balance_error: dict[str, Any],
+) -> dict[str, Any]:
+    """ROB-625 — dry_run 잔액부족 차단 응답.
+
+    live와 동일하게 success=False로 차단하되, 프리뷰 본문(estimated_value/fee 등)을
+    유지해 운영자가 입금액을 산정할 수 있게 한다. ``balance_error`` 가 success/error/
+    insufficient_balance(_detail) 차단 플래그를 덮어쓰도록 뒤에 병합한다.
+    """
+    return {
+        **dry_run_result,
+        **balance_error,
+        "dry_run": True,
+    }
+
+
 async def _execute_and_record(
     *,
     normalized_symbol: str,
@@ -1065,6 +1082,7 @@ async def _place_order_impl(
 
         # Balance pre-check for buy orders
         balance_warning: str | None = None
+        balance_error: dict[str, Any] | None = None
         if side_lower == "buy":
             balance_warning, balance_error = await _check_balance_and_warn(
                 market_type=market_type,
@@ -1075,8 +1093,14 @@ async def _place_order_impl(
                 order_error_fn=_order_error,
                 is_mock=is_mock,
             )
-            if balance_error is not None:
-                return balance_error
+
+        if balance_error is not None:
+            # ROB-625 — dry_run도 잔액부족을 차단하되 프리뷰 본문은 유지한다.
+            # (dry_run에서 balance_error가 set되는 경우는 잔액부족 분기뿐: mock 미지원/
+            #  조회불가 등은 (warning, None)으로 반환되어 balance_warning 경로로 빠진다.)
+            if dry_run:
+                return _build_dry_run_blocked_response(dry_run_result, balance_error)
+            return balance_error
 
         # Dry-run exit
         if dry_run:

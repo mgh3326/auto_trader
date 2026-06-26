@@ -400,6 +400,14 @@ official KIS mock, and KIS live account paths:
   Toss stock warnings before order submission; active `LIQUIDATION_TRADING`
   blocks non-dry-run buys before KIS POST, while lookup failures are fail-open
   and surfaced in the response metadata.
+- **Buy balance pre-check (ROB-625)**: For `side="buy"`, both `dry_run=True` and
+  `dry_run=False` apply the *same* orderable-cash pre-check against the shared
+  `get_cash_balance` source. Insufficient balance returns `success=false` with an
+  `insufficient_balance: true` flag and an `insufficient_balance_detail` block
+  (`balance`, `order_amount`, `currency`, `shortfall`, and — for US — a KIS field
+  `breakdown` exposing `frcr_dncl_amt1`/`frcr_gnrl_ord_psbl_amt`). On `dry_run=True`
+  the preview body (estimated value, fee) is still returned so the operator can
+  size a deposit. This closes the prior "dry_run passes → live rejects" gap.
 - `account_mode="toss_live"`: official Toss Securities live KR/US account. Uses Toss credentials, maps to `toss_live` routing, and fails closed when `TOSS_API_ENABLED=false` or credentials are missing. Actual Toss order mutation POSTs also require `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true`; keep this false until the accepted-order ledger and operator live-smoke hold are cleared.
 
 Do not use `account_type="paper"` for official KIS mock. It is always DB
@@ -1152,10 +1160,10 @@ Broker-specific contract:
   - `formatted`: formatted total KRW string (e.g. `"700,000 KRW"`)
 - **KIS domestic (`account="kis_domestic"`)**
   - `balance`: `stck_cash_objt_amt` (`intgr-margin`)
-  - `orderable`: domestic integrated-margin orderable minus pending KR buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
+  - `orderable`: domestic integrated-margin orderable (`stck_cash100_max_ord_psbl_amt`). ROB-596: this KIS field already nets accepted-but-unfilled buy orders in real time, so pending buys are **not** subtracted again (no double-count). It is the single source shared by `get_available_capital` and the `place_order` KRW buy pre-check.
 - **KIS overseas (`account="kis_overseas"`)**
   - `balance`: USD cash balance (`frcr_dncl_amt1` fallback `frcr_dncl_amt_2`)
-  - `orderable`: USD orderable cash minus pending US buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
+  - `orderable`: USD orderable cash (`frcr_gnrl_ord_psbl_amt`). ROB-596: this KIS field already nets accepted-but-unfilled buy orders in real time, so pending buys are **not** subtracted again (no double-count). It is the single source shared by `get_available_capital` and the `place_order` USD buy pre-check.
 - **Toss (`account="toss"`, only when `TOSS_API_ENABLED=true`)**
   - `balance`: Toss buying power for the row currency
   - `orderable`: `0.0`; Toss portfolio integration is read-only in ROB-532, while order mutation tools are delivered separately

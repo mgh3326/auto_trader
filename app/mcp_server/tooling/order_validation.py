@@ -486,17 +486,68 @@ async def _get_holdings_for_order(
 
 
 async def _live_kis_orderable(account_token: str) -> float:
-    """live KIS 예약-차감 orderable (단일 소스 = get_available_capital의 소스).
+    """live KIS 주문가능(orderable) — 단일 소스 = get_available_capital의 소스.
 
     ``account_token``: "kis_domestic" (KRW) | "kis_overseas" (USD).
-    ``get_cash_balance_impl``이 raw orderable에서 대기주문 예약을 차감(실패 시 raw
-    fallback)하므로 precheck가 get_available_capital과 동일 orderable을 본다.
+    ROB-596 이후 ``get_cash_balance_impl``은 브로커 주문가능 필드(이미 미체결 매수를
+    net한 실시간 값)를 추가 차감 없이 그대로 반환한다(double-count 방지). 따라서
+    precheck가 get_available_capital과 동일한 orderable을 본다.
     """
     result = await get_cash_balance_impl(account=account_token, is_mock=False)
     for acc in result.get("accounts", []):
         if acc.get("account") == account_token:
             return float(acc.get("orderable") or 0.0)
     raise RuntimeError(f"{account_token} orderable not found in cash balance")
+
+
+async def _live_kis_balance_breakdown(
+    market_type: str, orderable: float
+) -> dict[str, Any] | None:
+    """ROB-625 — 잔액부족 에러 진단용 KIS 필드 breakdown (read-only, graceful).
+
+    cash(현금)와 orderable(주문가능)이 어느 KIS 필드에서 왔는지, 둘 중 무엇이 주문을
+    막았는지 운영자가 에러메시지만으로 판별하게 한다. equity_us 우선 구현(ROB-625
+    재현 케이스). 조회 실패/미지원이면 ``None`` 을 반환해 잔액체크 자체는 절대 막지
+    않는다. 잔액부족 에러 경로에서만 1회 호출되므로 추가 조회 비용은 무시 가능.
+
+    ``orderable`` 은 차단 결정에 이미 쓰인 값을 그대로 받아 breakdown에 노출한다.
+    재조회 스냅샷에서 다시 읽지 않으므로, 한 에러 detail 안에서 결정값(balance)과
+    breakdown의 orderable이 race로 어긋나는 일이 없다.
+    """
+    if market_type != "equity_us":
+        return None
+    try:
+        result = await get_cash_balance_impl(account="kis_overseas", is_mock=False)
+    except Exception as exc:  # graceful: 진단 실패가 주문 가드를 깨면 안 됨
+        logger.warning("balance breakdown 조회 실패 (graceful degrade): %s", exc)
+        return None
+    for acc in result.get("accounts", []):
+        if acc.get("account") == "kis_overseas":
+            return {
+                # cash는 frcr_dncl_amt1 우선, 없으면 frcr_dncl_amt_2 폴백이라 값의
+                # 출처를 단정할 수 없으므로 라벨에 두 필드를 모두 명시한다.
+                "cash_balance": acc.get("balance"),
+                "cash_field": "frcr_dncl_amt1/frcr_dncl_amt_2",
+                "orderable": orderable,
+                "orderable_field": "frcr_gnrl_ord_psbl_amt",
+                "source": "kis_overseas.inquire_overseas_margin",
+            }
+    return None
+
+
+def _format_balance_breakdown_suffix(breakdown: dict[str, Any], currency: str) -> str:
+    """ROB-625 — KIS 필드 breakdown을 사람이 읽을 에러 접미사로 변환."""
+    value_fmt = "{:,.2f}" if currency == "USD" else "{:,.0f}"
+
+    def _fmt(value: Any) -> str:
+        return value_fmt.format(value) if isinstance(value, (int, float)) else "unknown"
+
+    return (
+        " KIS field breakdown: "
+        f"cash_balance({breakdown['cash_field']})={_fmt(breakdown.get('cash_balance'))}, "
+        f"orderable({breakdown['orderable_field']})={_fmt(breakdown.get('orderable'))}, "
+        f"source={breakdown['source']}."
+    )
 
 
 async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> float:
@@ -515,12 +566,14 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
                 is_mock=is_mock,
             )
             return float(cash_summary.get("stck_cash_ord_psbl_amt") or 0)
-        # ROB-419 — live: reservation-aware orderable (== get_available_capital),
-        # so pending-order cash reservations are not treated as spendable.
+        # ROB-419/596 — live: broker orderable via the single source
+        # (== get_available_capital). ROB-596 removed the extra pending-buy
+        # subtraction; the broker field is already net (no double-count).
         return await _live_kis_orderable("kis_domestic")
 
     if not is_mock:
-        # ROB-419 — live US: reservation-aware orderable via the single source.
+        # ROB-419/596 — live US: broker orderable via the single source
+        # (already net of pending buys; no extra subtraction).
         return await _live_kis_orderable("kis_overseas")
 
     # mock US: KIS 모의투자엔 해외 orderable-cash 서비스가 없음(OPSQ0002). ROB-417
@@ -1117,6 +1170,17 @@ async def _check_balance_and_warn(
         order_amount,
     )
 
+    # ROB-625 Phase 3 — 진단 가시성: 어떤 KIS 필드가 주문을 막았는지(cash vs orderable)
+    # 노출한다. equity_us 우선, graceful None. live 경로에서만 의미가 있으므로
+    # is_mock 이면 생략한다.
+    breakdown = None
+    if not is_mock:
+        breakdown = await _live_kis_balance_breakdown(market_type, balance)
+
+    currency = {"crypto": "KRW", "equity_kr": "KRW", "equity_us": "USD"}.get(
+        market_type, "USD"
+    )
+
     messages = {
         "crypto": (
             f"Insufficient KRW balance: {balance:,.0f} KRW < {order_amount:,.0f} KRW. "
@@ -1131,8 +1195,24 @@ async def _check_balance_and_warn(
             "Please deposit USD to your KIS overseas account, then retry."
         ),
     }
-    warning = messages.get(market_type, messages["equity_us"])
+    message = messages.get(market_type, messages["equity_us"])
+    if breakdown is not None:
+        message += _format_balance_breakdown_suffix(breakdown, currency)
 
-    if not dry_run:
-        return None, order_error_fn(warning)
-    return warning, None
+    # ROB-625 Phase 2 — dry_run도 live와 동일하게 잔액부족을 차단한다("dry_run 통과 →
+    # live 거부" 갭 제거). 차단 플래그 + 구조화된 detail을 첨부하고, 호출자
+    # (order_execution)가 dry_run이면 프리뷰 본문을 함께 유지해 운영자가 입금액을
+    # 산정할 수 있게 한다. (mock 미지원/조회불가 등 다른 dry_run 경고 경로는 위에서
+    # 이미 (warning, None)으로 반환되어 이 분기에 도달하지 않는다.)
+    error = order_error_fn(message)
+    error["insufficient_balance"] = True
+    detail: dict[str, Any] = {
+        "balance": balance,
+        "order_amount": order_amount,
+        "currency": currency,
+        "shortfall": max(0.0, order_amount - balance),
+    }
+    if breakdown is not None:
+        detail["breakdown"] = breakdown
+    error["insufficient_balance_detail"] = detail
+    return None, error
