@@ -5194,6 +5194,46 @@ class TestInvestorFlowCommon:
         assert block["days"] == 0
         assert block["foreign_ownership_pct"] is None
 
+    @pytest.mark.asyncio
+    async def test_build_confirmed_block_incomplete_ownership_rows(self, monkeypatch):
+        # Legacy/incomplete Naver rows (no foreign_holding_rate) → ownership pct
+        # degrades to None, but the net-buy history is still returned intact so a
+        # caller can tell "rows present, ownership unavailable" (non-empty history
+        # + null pct) from "no data" (empty history / days=0).
+        async def fake_fetch(symbol, days):
+            return {
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-06-24",
+                        "close": 340500,
+                        "institutional_net": 2969153,
+                        "foreign_net": -596340,
+                        "foreign_holding_rate": None,
+                    },
+                    {
+                        "date": "2026-06-23",
+                        "close": 310000,
+                        "institutional_net": -4359775,
+                        "foreign_net": -2251501,
+                        "foreign_holding_rate": None,
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(ifc, "_fetch_investor_trends_naver", fake_fetch)
+
+        block, last_confirmed = await ifc.build_confirmed_block("005930", days=5)
+
+        assert last_confirmed == "2026-06-24"
+        assert block["foreign_ownership_pct"] is None
+        assert block["foreign_ownership_trend"] is None
+        assert block["foreign_ownership_rate_change"] is None
+        # net-buy history is still present + individual_net still derived.
+        assert block["days"] == 2
+        assert block["history"][0]["individual_net"] == -2372813
+        assert block["history"][0]["foreign_net"] == -596340
+
 
 @pytest.mark.asyncio
 class TestGetInvestorTrends:
@@ -5706,6 +5746,11 @@ class TestGetIntradayInvestorFlow:
         assert result["as_of_date"] is None
         assert result["warning"] is None
         assert result["combined_net_qty"] == -70000
+        # Note path for provisional_unconfirmed is reachable end-to-end.
+        assert result["note"] == (
+            intraday_investor_flow._PROVISIONAL_NOTE
+            + intraday_investor_flow._UNCONFIRMED_NOTE
+        )
 
     async def test_returns_empty_success_when_kis_has_no_rows(self, monkeypatch):
         import datetime as _dt
