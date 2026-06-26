@@ -6,6 +6,9 @@ import datetime
 from typing import Any
 
 from app.core.timezone import KST, now_kst
+from app.mcp_server.tooling.fundamentals._investor_flow_common import (
+    build_confirmed_block,
+)
 from app.mcp_server.tooling.market_session import (
     DATA_STATE_FRESH,
     is_kr_session_day,
@@ -30,6 +33,13 @@ _SLOT_TIMES: dict[str, str] = {
     "5": "14:30",
 }
 
+# Latest publish slot (14:30). Past it, a stale full set is indistinguishable
+# from a fresh one, so we refuse to claim `observed`.
+_LAST_SLOT_TIME = max(
+    datetime.time(int(_h), int(_m))
+    for _h, _m in (t.split(":") for t in _SLOT_TIMES.values())
+)
+
 _PROVISIONAL_NOTE = (
     "KIS investor-trend-estimate is intraday provisional cumulative input, "
     "not a confirmed daily close figure."
@@ -40,10 +50,17 @@ _PRIOR_SESSION_NOTE = (
     "carries no date field), so as_of is null."
 )
 
+_UNCONFIRMED_NOTE = (
+    " Today's data could not be positively confirmed (rows may belong to the "
+    "current OR a prior session); as_of is null. See `confirmed` for the most "
+    "recent confirmed daily series."
+)
+
 # ROB-542: machine-readable confidence labels for the session attribution.
 CONFIDENCE_OBSERVED = "observed"
 CONFIDENCE_INFERRED = "inferred"
 CONFIDENCE_CARRY_OVER = "carry_over"
+CONFIDENCE_PROVISIONAL_UNCONFIRMED = "provisional_unconfirmed"
 
 _CARRY_OVER_WARNING_CODE = "prior_session_carry_over"
 _CARRY_OVER_WARNING_MESSAGE = (
@@ -86,52 +103,63 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _classify_session(
     slot_time: str | None,
-) -> tuple[str | None, str | None, str | None, bool]:
-    """Classify the latest KIS slot's session attribution.
+    *,
+    now: datetime.datetime,
+    market_state: str,
+    last_confirmed_date: str | None,
+) -> tuple[str | None, str | None, str | None, bool, bool]:
+    """Deterministic session attribution for the latest KIS slot.
 
-    The KIS payload carries no date field, and outside trading hours KIS keeps
-    serving the prior session's rows. Returns
-    ``(as_of_datetime_or_null, as_of_date, confidence, is_prior_session)``:
+    Returns ``(as_of, as_of_date, confidence, is_prior_session,
+    today_available)``. All time-dependent inputs are passed in (a single
+    captured ``now``, the resolved ``market_state``, and the Naver-confirmed
+    ``last_confirmed_date``), so the label is a pure function of its arguments —
+    identical inputs always yield identical output, and a stale prior-session
+    payload is never labeled ``observed``.
 
-    - ``observed`` — KRX regular session is live (``kr_market_data_state ==
-      "fresh"``) and the slot is not in the future on a session day. ``as_of``
-      is the today-stamped slot datetime; ``as_of_date`` is today.
-    - ``inferred`` — after the close on a session day (slot not in the future,
-      session day, but state not "fresh"). The same-date stamp is correct, but
-      flagged as inferred because the payload itself does not date the rows.
-    - ``carry_over`` — future slot or non-session day. The rows almost certainly
-      belong to a previous session, so ``as_of`` (the precise datetime) is
-      **null** and ``as_of_date`` is the previous XKRX session DATE only — never
-      a fabricated prior-day timestamp from the ``_SLOT_TIMES`` map (the spec
-      notes the real slot boundaries may vary). ``is_prior_session`` is True.
-
-    When ``slot_time`` is None (no rows) there is nothing to classify, so the
-    function returns ``(None, None, None, False)``.
+    Rules (first match wins):
+      1. no rows → all null.
+      2. not a session day → carry_over (prior-session leftover).
+      3. latest slot in the future (incl. pre-open) → carry_over.
+      4. not-future AND Naver already confirmed today → inferred.
+      5. not-future, today unconfirmed, market fresh AND now < 14:30 → observed.
+      6. otherwise (≥14:30 live full-set, or after-close unconfirmed) →
+         provisional_unconfirmed (refuse to claim today).
     """
     if slot_time is None:
-        return None, None, None, False
+        return None, None, None, False, False
 
-    now = now_kst()
+    today = now.date()
     hour, minute = (int(part) for part in slot_time.split(":", maxsplit=1))
-    dt = datetime.datetime.combine(
-        now.date(),
-        datetime.time(hour=hour, minute=minute),
-        tzinfo=KST,
+    slot_dt = datetime.datetime.combine(
+        today, datetime.time(hour=hour, minute=minute), tzinfo=KST
     )
 
-    slot_in_future = dt > now
-    session_day = is_kr_session_day(now.date())
+    # Rule 2: weekend/holiday → rows belong to the prior session.
+    if not is_kr_session_day(today):
+        prior = previous_kr_session(today)
+        return None, prior.isoformat(), CONFIDENCE_CARRY_OVER, True, False
 
-    if slot_in_future or not session_day:
-        # Carry-over: do not stamp a precise prior-day time. Date-only.
-        prior = previous_kr_session(now.date())
-        return None, prior.isoformat(), CONFIDENCE_CARRY_OVER, True
+    # Rule 3: future slot (a stale full set in the morning, or pre-open) cannot
+    # be today's data.
+    if slot_dt > now:
+        prior = previous_kr_session(today)
+        return None, prior.isoformat(), CONFIDENCE_CARRY_OVER, True, False
 
-    # Same session day, slot already elapsed → today's date is the honest stamp.
-    as_of_date = now.date().isoformat()
-    if kr_market_data_state() == DATA_STATE_FRESH:
-        return dt.isoformat(), as_of_date, CONFIDENCE_OBSERVED, False
-    return dt.isoformat(), as_of_date, CONFIDENCE_INFERRED, False
+    today_iso = today.isoformat()
+
+    # Rule 4: Naver already posted today's confirmed row → today, inferred.
+    if last_confirmed_date == today_iso:
+        return slot_dt.isoformat(), today_iso, CONFIDENCE_INFERRED, False, True
+
+    # Rule 5: live session before the last slot → a stale full set would have
+    # been caught as "future" above, so this is genuine-today.
+    max_slot_dt = datetime.datetime.combine(today, _LAST_SLOT_TIME, tzinfo=KST)
+    if market_state == DATA_STATE_FRESH and now < max_slot_dt:
+        return slot_dt.isoformat(), today_iso, CONFIDENCE_OBSERVED, False, True
+
+    # Rule 6: irreducibly ambiguous — refuse to claim today.
+    return None, None, CONFIDENCE_PROVISIONAL_UNCONFIRMED, False, False
 
 
 async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
@@ -145,6 +173,8 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
             "(6-digit codes like '005930')"
         )
 
+    now = now_kst()  # single capture, threaded through all time logic
+
     try:
         raw_rows = await KISClient().investor_trend_estimate(symbol)
     except Exception as exc:
@@ -155,11 +185,35 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
             instrument_type="equity_kr",
         )
 
+    # Best-effort confirmed-daily anchor + embed (Naver). Never fails the tool.
+    confirmed_block, last_confirmed_date = await build_confirmed_block(symbol, days=5)
+
+    market_state = kr_market_data_state(now)
+
     rows = [_normalize_row(row) for row in raw_rows]
     rows.sort(key=_slot_sort_key)
     latest = rows[-1] if rows else None
     latest_time = latest.get("as_of_time_kst") if latest is not None else None
-    as_of, as_of_date, confidence, is_prior_session = _classify_session(latest_time)
+    (
+        as_of,
+        as_of_date,
+        confidence,
+        is_prior_session,
+        today_available,
+    ) = _classify_session(
+        latest_time,
+        now=now,
+        market_state=market_state,
+        last_confirmed_date=last_confirmed_date,
+    )
+
+    # Always-populated floor: Naver-recent if available, else previous session.
+    if last_confirmed_date is not None:
+        last_confirmed_session_date = last_confirmed_date
+    elif latest_time is not None:
+        last_confirmed_session_date = previous_kr_session(now.date()).isoformat()
+    else:
+        last_confirmed_session_date = None
 
     warning = (
         {
@@ -174,6 +228,8 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
         note = "No KIS provisional investor-flow rows were returned."
     elif is_prior_session:
         note = _PROVISIONAL_NOTE + _PRIOR_SESSION_NOTE
+    elif confidence == CONFIDENCE_PROVISIONAL_UNCONFIRMED:
+        note = _PROVISIONAL_NOTE + _UNCONFIRMED_NOTE
     else:
         note = _PROVISIONAL_NOTE
 
@@ -182,12 +238,14 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
         "instrument_type": "equity_kr",
         "source": "kis",
         "data_state": DATA_STATE_INTRADAY_PROVISIONAL,
-        "market_session_state": kr_market_data_state(),
+        "market_session_state": market_state,
         "provisional": True,
         "as_of": as_of,
         "as_of_date": as_of_date,
         "confidence": confidence,
         "is_prior_session": is_prior_session,
+        "today_available": today_available,
+        "last_confirmed_session_date": last_confirmed_session_date,
         "warning": warning,
         "as_of_time_kst": latest_time,
         "foreign_net_qty": (
@@ -200,5 +258,6 @@ async def handle_get_intraday_investor_flow(symbol: str) -> dict[str, Any]:
             latest.get("combined_net_qty") if latest is not None else None
         ),
         "rows": rows,
+        "confirmed": confirmed_block,
         "note": note,
     }
