@@ -5320,6 +5320,49 @@ class TestGetInvestorTrends:
 
 
 @pytest.mark.asyncio
+class TestGetInvestorTrendsOwnershipFlag:
+    """ROB-626: daily period adds top-level ownership summary."""
+
+    async def test_daily_period_adds_ownership_summary(self, monkeypatch):
+        from app.mcp_server.tooling.fundamentals import _valuation as valuation_mod
+
+        async def fake_fetch(symbol, days):
+            return {
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-06-24",
+                        "close": 340500,
+                        "volume": 1,
+                        "institutional_net": 2969153,
+                        "foreign_net": -596340,
+                        "foreign_holding_rate": 47.41,
+                    },
+                    {
+                        "date": "2026-06-23",
+                        "close": 310000,
+                        "volume": 1,
+                        "institutional_net": -4359775,
+                        "foreign_net": -2251501,
+                        "foreign_holding_rate": 47.83,
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(valuation_mod, "_fetch_investor_trends_naver", fake_fetch)
+
+        tools = build_tools()
+        result = await tools["get_investor_trends"]("005930", 5, "day")
+
+        assert result["period"] == "day"
+        assert result["foreign_ownership_pct"] == 47.41
+        assert result["foreign_ownership_trend"] == "down"
+        assert result["foreign_ownership_rate_change"] == -0.42
+        # existing per-row data unchanged (individual_net still derived)
+        assert result["data"][0]["individual_net"] == -2372813
+
+
+@pytest.mark.asyncio
 class TestGetIntradayInvestorFlow:
     async def test_maps_latest_kis_intraday_estimate(self, monkeypatch):
         import datetime as _dt
