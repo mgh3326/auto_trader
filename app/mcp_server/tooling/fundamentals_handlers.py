@@ -39,7 +39,10 @@ from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
 from app.mcp_server.tooling.fundamentals._market_index import (
     handle_get_market_index,
 )
-from app.mcp_server.tooling.fundamentals._news import handle_get_news
+from app.mcp_server.tooling.fundamentals._news import (
+    _get_holdings_news_impl,
+    handle_get_news,
+)
 from app.mcp_server.tooling.fundamentals._profiles import (
     handle_get_company_profile,
     handle_get_crypto_profile,
@@ -78,6 +81,7 @@ if TYPE_CHECKING:
 # profile (ROB-503 restored them from the ROB-488 crypto-profile gate).
 FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_news",
+    "get_holdings_news",
     "get_company_profile",
     "get_crypto_profile",
     "get_financials",
@@ -132,8 +136,10 @@ def _register_fundamentals_tools_impl(
     @mcp.tool(
         name="get_news",
         description=(
-            "Get recent news for a stock or cryptocurrency. Supports US stocks "
-            "(Finnhub), Korean stocks (Naver Finance), and crypto (Finnhub)."
+            "Get recent catalyst news for ONE stock or cryptocurrency "
+            "(per-symbol headlines + relevance). Supports US stocks (Finnhub), "
+            "Korean stocks (Naver Finance), and crypto (Finnhub). For many "
+            "symbols / your current holdings in one call, use get_holdings_news."
         ),
     )
     async def get_news(
@@ -142,6 +148,29 @@ def _register_fundamentals_tools_impl(
         limit: int = 10,
     ) -> dict[str, Any]:
         return await handle_get_news(symbol, market, limit)
+
+    @mcp.tool(
+        name="get_holdings_news",
+        description=(
+            "Sweep recent catalyst headlines for a basket of symbols in ONE "
+            "call. Pass symbols=[...] (cross-market: KR 6-digit codes, US "
+            "tickers, KRW-/USDT- crypto) or OMIT symbols to sweep your CURRENT "
+            "holdings across all accounts (KIS/Toss/manual/Upbit). Each symbol "
+            "returns up to limit_per_symbol lean items "
+            "{title,url,source,published_at,relevance}. Symbols are capped at "
+            "30 (top-level degraded_reason notes the cap). A per-symbol fetch "
+            "failure is isolated to that row (status + degraded_reason) and "
+            "never aborts the sweep. Use get_news for one symbol's full envelope."
+        ),
+    )
+    async def get_holdings_news(
+        symbols: list[str] | None = None,
+        limit_per_symbol: int = 5,
+    ) -> dict[str, Any]:
+        return await _get_holdings_news_impl(
+            symbols=symbols,
+            limit_per_symbol=limit_per_symbol,
+        )
 
     @mcp.tool(
         name="get_company_profile",
