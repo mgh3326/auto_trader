@@ -150,9 +150,7 @@ async def get_top_stocks_impl(
                 )
                 source = "kis"
             elif resolved_ranking_type in _FOREIGN_RANKING_TYPES:
-                rank_sort = (
-                    "1" if resolved_ranking_type == "foreign_net_sell" else "0"
-                )
+                rank_sort = "1" if resolved_ranking_type == "foreign_net_sell" else "0"
                 data = await kis.foreign_buying_rank(
                     market="J", limit=fetch_limit, rank_sort=rank_sort
                 )
@@ -168,9 +166,7 @@ async def get_top_stocks_impl(
                         continue
 
                 if resolved_ranking_type in _FOREIGN_RANKING_TYPES:
-                    mapped = analysis_screening._map_kr_foreign_row(
-                        row, filtered_rank
-                    )
+                    mapped = analysis_screening._map_kr_foreign_row(row, filtered_rank)
                 else:
                     mapped = analysis_screening._map_kr_row(row, filtered_rank)
                 rankings.append(mapped)
