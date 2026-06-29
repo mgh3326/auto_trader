@@ -229,45 +229,68 @@ async def _get_market_news_impl(
     return _apply_size_cap(payload)
 
 
+def _prune_briefing_sections(payload: dict[str, Any], removed_id: Any) -> None:
+    # ROB-628 (F5): keep briefing_sections[*].article_ids consistent with news[]
+    # after a size-cap drop, so a section never references an id no longer present.
+    if removed_id is None:
+        return
+    for section in payload.get("briefing_sections") or []:
+        ids = section.get("article_ids")
+        if not ids or removed_id not in ids:
+            continue
+        idx = ids.index(removed_id)
+        ids.pop(idx)
+        relevance = section.get("relevance")
+        if isinstance(relevance, list) and idx < len(relevance):
+            relevance.pop(idx)
+        section["count"] = len(ids)
+
+
 def _apply_size_cap(payload: dict[str, Any]) -> dict[str, Any]:
-    # ROB-628: hard size cap. If the serialized response exceeds
-    # NEWS_RESPONSE_MAX_CHARS, drop excluded_news first (least decision-critical),
-    # then trailing news[] items, until under the cap. Never silently: set
-    # truncated_for_size, append to degraded_reason, and report counts.
-    if len(json.dumps(payload, default=str)) <= NEWS_RESPONSE_MAX_CHARS:
+    # ROB-628: hard size cap. Measure on the decoded (ensure_ascii=False) basis so
+    # the budget tracks the delivered/token size and Korean isn't over-measured as
+    # \\uXXXX (F2); this matches the sibling _enforce_market_issues_size_cap. Drop
+    # excluded_news first (least decision-critical), then trailing news[] items
+    # (pruning their briefing_sections refs, F5), until the FULLY-SIGNALED payload
+    # fits — the signaling metadata is attached before measuring so the cap can't be
+    # exceeded by it (F3). Never silently: set truncated_for_size, append to
+    # degraded_reason, and report counts.
+    def _measure() -> int:
+        return len(json.dumps(payload, ensure_ascii=False, default=str))
+
+    if _measure() <= NEWS_RESPONSE_MAX_CHARS:
         return payload
 
+    base_reason = payload.get("degraded_reason")
     dropped_excluded = len(payload["excluded_news"])
     payload["excluded_news"] = []
-
     dropped_news = 0
-    while (
-        len(json.dumps(payload, default=str)) > NEWS_RESPONSE_MAX_CHARS
-        and payload["news"]
-    ):
-        payload["news"].pop()
-        dropped_news += 1
 
-    payload["count"] = len(payload["news"])
-    payload["truncated_for_size"] = True
-    payload["size_truncation"] = {
-        "dropped_news": dropped_news,
-        "dropped_excluded": dropped_excluded,
-        "response_chars": len(json.dumps(payload, default=str)),
-        "max_chars": NEWS_RESPONSE_MAX_CHARS,
-    }
-    reason = (
-        f"response exceeded {NEWS_RESPONSE_MAX_CHARS} chars — dropped "
-        f"{dropped_excluded} excluded and {dropped_news} trailing news item(s) "
-        "to fit (use detail='headline_only' or a smaller limit for the full set)"
-    )
-    payload["degraded_reason"] = (
-        f"{payload['degraded_reason']}; {reason}"
-        if payload.get("degraded_reason")
-        else reason
-    )
-    if payload["status"] == "ok":
-        payload["status"] = "truncated_for_size"
+    def _attach() -> None:
+        payload["count"] = len(payload["news"])
+        payload["truncated_for_size"] = True
+        reason = (
+            f"response exceeded {NEWS_RESPONSE_MAX_CHARS} chars — dropped "
+            f"{dropped_excluded} excluded and {dropped_news} trailing news item(s) "
+            "to fit (use detail='headline_only' or a smaller limit for the full set)"
+        )
+        payload["degraded_reason"] = (
+            f"{base_reason}; {reason}" if base_reason else reason
+        )
+        payload["size_truncation"] = {
+            "dropped_news": dropped_news,
+            "dropped_excluded": dropped_excluded,
+            "max_chars": NEWS_RESPONSE_MAX_CHARS,
+        }
+        if payload.get("status") == "ok":
+            payload["status"] = "truncated_for_size"
+
+    _attach()
+    while _measure() > NEWS_RESPONSE_MAX_CHARS and payload["news"]:
+        removed = payload["news"].pop()
+        dropped_news += 1
+        _prune_briefing_sections(payload, removed.get("id"))
+        _attach()
     return payload
 
 
@@ -305,6 +328,22 @@ def _enforce_market_issues_size_cap(payload: dict[str, Any]) -> dict[str, Any]:
     items = payload.get("items") or []
     original_issue_count = len(items)
     original_article_count = sum(len(it.get("articles") or []) for it in items)
+    existing = payload.get("degraded_reason")
+
+    def _set_signaling(dropped_issues: int, dropped_articles: int) -> None:
+        payload["truncated_for_size"] = True
+        reason = (
+            f"response exceeded the {NEWS_RESPONSE_MAX_CHARS}-char size cap; trimmed "
+            f"{dropped_issues} issue(s) and {dropped_articles} member article(s) to "
+            "fit — re-query with a narrower market/window or detail='headline_only' "
+            "for the full set"
+        )
+        payload["degraded_reason"] = f"{existing}; {reason}" if existing else reason
+
+    # Attach worst-case-width signaling up front so the trim passes measure the
+    # FULLY-SIGNALED payload (F3): the actual dropped counts are <= the originals,
+    # so their rendered width is <= this — the final payload is guaranteed to fit.
+    _set_signaling(original_issue_count, original_article_count)
 
     # Pass 1: trim trailing member articles down to a single anchor article.
     for item in reversed(items):
@@ -331,15 +370,8 @@ def _enforce_market_issues_size_cap(payload: dict[str, Any]) -> dict[str, Any]:
     dropped_issues = original_issue_count - kept_issue_count
     dropped_articles = original_article_count - kept_article_count
 
-    payload["truncated_for_size"] = True
-    reason = (
-        f"response exceeded the {NEWS_RESPONSE_MAX_CHARS}-char size cap; trimmed "
-        f"{dropped_issues} issue(s) and {dropped_articles} member article(s) to "
-        "fit — re-query with a narrower market/window or detail='headline_only' "
-        "for the full set"
-    )
-    existing = payload.get("degraded_reason")
-    payload["degraded_reason"] = f"{existing}; {reason}" if existing else reason
+    # Replace worst-case signaling with the exact counts (width <= worst-case).
+    _set_signaling(dropped_issues, dropped_articles)
     return payload
 
 

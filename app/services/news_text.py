@@ -21,9 +21,7 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def truncate_text(
-    value: str | None, max_length: int | None = None
-) -> str | None:
+def truncate_text(value: str | None, max_length: int | None = None) -> str | None:
     """Strip HTML, collapse whitespace, and optionally ellipsis-truncate.
 
     Behaviour is ported 1:1 from ``news_radar_service._plain_text``:

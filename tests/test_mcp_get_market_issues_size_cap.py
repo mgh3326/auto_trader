@@ -124,14 +124,26 @@ def test_size_cap_helper_is_deterministic_and_counts():
 
     payload = _response(n_issues=12).model_dump(mode="json")
     original_issues = len(payload["items"])
+    original_articles = sum(len(it["articles"]) for it in payload["items"])
     capped = _enforce_market_issues_size_cap(payload)
 
     assert capped["truncated_for_size"] is True
     assert len(json.dumps(capped, ensure_ascii=False)) <= NEWS_RESPONSE_MAX_CHARS
-    assert len(capped["items"]) < original_issues
-    # Reason names both the dropped-issue and dropped-article counts.
-    assert "issue(s)" in capped["degraded_reason"]
-    assert "member article(s)" in capped["degraded_reason"]
+
+    kept_issues = len(capped["items"])
+    kept_articles = sum(len(it["articles"]) for it in capped["items"])
+    dropped_issues = original_issues - kept_issues
+    dropped_articles = original_articles - kept_articles
+    # Real trimming happened (no fabrication) — both issues and member articles.
+    assert kept_issues < original_issues
+    assert dropped_issues > 0
+    assert dropped_articles > 0
+    # The reason reports the EXACT counts (not just the words), proving the
+    # dropped_issues/dropped_articles arithmetic is accurate.
+    assert (
+        f"trimmed {dropped_issues} issue(s) and {dropped_articles} member article(s)"
+        in capped["degraded_reason"]
+    )
 
 
 @pytest.mark.unit

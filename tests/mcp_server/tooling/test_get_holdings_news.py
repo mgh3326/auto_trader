@@ -182,9 +182,10 @@ async def test_caps_symbols_at_max_with_degraded(monkeypatch) -> None:
     assert "degraded_reason" in out
     assert str(_news.HOLDINGS_NEWS_MAX_SYMBOLS) in out["degraded_reason"]
     # nothing fabricated/dropped silently: resolved is a prefix of requested
-    assert out["symbols_resolved"] == out["symbols_requested"][
-        : _news.HOLDINGS_NEWS_MAX_SYMBOLS
-    ]
+    assert (
+        out["symbols_resolved"]
+        == out["symbols_requested"][: _news.HOLDINGS_NEWS_MAX_SYMBOLS]
+    )
 
 
 @pytest.mark.unit
@@ -255,6 +256,102 @@ async def test_holdings_resolution_failure_is_fail_soft(monkeypatch) -> None:
     assert out["results"] == []
     assert out["symbols_resolved"] == []
     assert "holdings_resolution_failed" in out["degraded_reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_concurrency_capped_at_semaphore(monkeypatch) -> None:
+    import asyncio
+
+    in_flight = 0
+    peak = 0
+
+    async def fake_fetch(
+        symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0
+    ):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0.01)  # hold the slot so admitted coroutines overlap
+            return _ok_result(symbol, market)
+        finally:
+            in_flight -= 1
+
+    _patch_fetch(monkeypatch, fake_fetch)
+
+    symbols = [f"{i:06d}" for i in range(20)]
+    out = await _news._get_holdings_news_impl(symbols=symbols, limit_per_symbol=5)
+
+    assert out["count"] == 20
+    # the Semaphore admits at most HOLDINGS_NEWS_CONCURRENCY fetches at once
+    # (>1 proves it is genuinely concurrent, <=N proves the cap holds).
+    assert 1 < peak <= _news.HOLDINGS_NEWS_CONCURRENCY
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_holdings_partial_source_error_is_surfaced(monkeypatch) -> None:
+    async def fake_collect(**kwargs):
+        return (
+            [{"symbol": "005930", "market": "kr", "name": "삼성전자"}],
+            ["toss: timeout", "kis_us: 500"],  # two source errors
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_portfolio_positions", fake_collect
+    )
+
+    async def fake_fetch(
+        symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0
+    ):
+        return _ok_result(symbol, market)
+
+    _patch_fetch(monkeypatch, fake_fetch)
+
+    out = await _news._get_holdings_news_impl(symbols=None, limit_per_symbol=5)
+
+    assert out["count"] == 1
+    # a partial holdings-source failure is surfaced, not hidden (no-silent-drop)
+    assert "holdings resolution partial" in out["degraded_reason"]
+    assert "2 source error(s)" in out["degraded_reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_row_surfaces_unavailable_and_error_status(monkeypatch) -> None:
+    async def fake_fetch(
+        symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0
+    ):
+        if symbol == "005930":
+            # non-raising failure path: fetch_symbol_news returns status="unavailable"
+            return SymbolNewsFetchResult(
+                symbol,
+                market,
+                "naver",
+                "unavailable",
+                0,
+                0,
+                [],
+                error_code="naver_fetch_failed",
+            )
+        # status="error" with no error_code -> falls back to "news_unavailable"
+        return SymbolNewsFetchResult(symbol, market, "finnhub", "error", 0, 0, [])
+
+    _patch_fetch(monkeypatch, fake_fetch)
+
+    out = await _news._get_holdings_news_impl(
+        symbols=["005930", "AAPL"], limit_per_symbol=5
+    )
+
+    by_symbol = {r["symbol"]: r for r in out["results"]}
+    assert by_symbol["005930"]["status"] == "unavailable"
+    assert by_symbol["005930"]["degraded_reason"] == "naver_fetch_failed"
+    assert by_symbol["005930"]["news"] == []
+    assert by_symbol["AAPL"]["status"] == "error"
+    assert by_symbol["AAPL"]["degraded_reason"] == "news_unavailable"
 
 
 @pytest.mark.unit
