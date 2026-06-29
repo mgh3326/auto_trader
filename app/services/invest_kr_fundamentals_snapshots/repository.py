@@ -81,6 +81,44 @@ class InvestKrFundamentalsSnapshotsRepository:
         )
         return result.scalar_one_or_none()
 
+    async def market_cap_by_symbols(
+        self, symbols: list[str]
+    ) -> dict[str, Decimal]:
+        """ROB-629: latest-partition market_cap for the given KR symbols.
+
+        Single batched query keyed by the most recent ``snapshot_date`` that
+        has data for any of ``symbols`` (mirrors ``_rsi_by_symbol``'s
+        latest-date + ``symbol.in_()`` precedent). Only non-null market_cap
+        rows are returned — callers fall back / keep honest null otherwise.
+        """
+        if not symbols:
+            return {}
+        latest = (
+            await self._session.execute(
+                select(func.max(InvestKrFundamentalsSnapshot.snapshot_date)).where(
+                    InvestKrFundamentalsSnapshot.symbol.in_(symbols)
+                )
+            )
+        ).scalar_one_or_none()
+        if latest is None:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(
+                    InvestKrFundamentalsSnapshot.symbol,
+                    InvestKrFundamentalsSnapshot.market_cap,
+                ).where(
+                    InvestKrFundamentalsSnapshot.snapshot_date == latest,
+                    InvestKrFundamentalsSnapshot.symbol.in_(symbols),
+                )
+            )
+        ).all()
+        return {
+            row.symbol: row.market_cap
+            for row in rows
+            if row.market_cap is not None
+        }
+
     async def coverage(self, *, today: dt.date) -> KrFundamentalsCoverageCounts:
         latest = await self.latest_partition()
         if latest is None:

@@ -15,7 +15,7 @@ from typing import Any, Literal
 import httpx
 import yfinance as yf
 
-from app.mcp_server.tooling import analysis_screening
+from app.mcp_server.tooling import analysis_screening, foreigners_liquidity
 from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
@@ -86,6 +86,7 @@ async def get_top_stocks_impl(
     market: str = "kr",
     ranking_type: str = "volume",
     limit: int = 20,
+    include_illiquid: bool = False,
 ) -> dict[str, Any]:
     market = (market or "").strip().lower()
     ranking_type = (ranking_type or "").strip().lower()
@@ -249,6 +250,46 @@ async def get_top_stocks_impl(
                     ),
                 }
 
+    # ROB-629 B2: foreigners liquidity backfill + default-ON liquidity filter.
+    liquidity_filter_meta: dict[str, Any] | None = None
+    if market == "kr" and foreigners_liquidity.is_foreigners_ranking(ranking_type):
+        await foreigners_liquidity.backfill_foreigners_market_cap(rankings)
+        kept, excluded = foreigners_liquidity.filter_illiquid_foreigners(
+            rankings, include_illiquid=include_illiquid
+        )
+        liquidity_filter_meta = {
+            "include_illiquid": include_illiquid,
+            "min_foreign_net_amount_krw": (
+                foreigners_liquidity.MIN_FOREIGN_NET_AMOUNT_KRW
+            ),
+            "min_market_cap_krw": foreigners_liquidity.MIN_MARKET_CAP_KRW,
+            "excluded_count": excluded,
+        }
+        if not include_illiquid and rankings and not kept:
+            # Filter emptied a non-empty list (e.g. off-hours / all-junk).
+            # Honest degraded signal — never fabricate rows.
+            return {
+                "rankings": [],
+                "total_count": 0,
+                "market": market,
+                "ranking_type": ranking_type,
+                "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+                "source": source,
+                **({"data_state": data_state} if data_state is not None else {}),
+                "status": "degraded",
+                "degraded_reason": (
+                    f"all {excluded} foreign-flow row(s) fell below the liquidity "
+                    f"threshold (foreign_net_amount >= "
+                    f"{foreigners_liquidity.MIN_FOREIGN_NET_AMOUNT_KRW:.0f} KRW); "
+                    "pass include_illiquid=true to bypass, or retry during market "
+                    "hours when foreign net flow is non-trivial"
+                ),
+                "liquidity_filter": liquidity_filter_meta,
+            }
+        rankings = kept
+        for new_rank, row in enumerate(rankings, start=1):
+            row["rank"] = new_rank
+
     if len(rankings) == 0 and market == "kr" and ranking_type == "losers":
         return analysis_screening._error_payload(
             source="kis",
@@ -273,6 +314,8 @@ async def get_top_stocks_impl(
     }
     if data_state is not None:
         response["data_state"] = data_state
+    if liquidity_filter_meta is not None:
+        response["liquidity_filter"] = liquidity_filter_meta
     return response
 
 
