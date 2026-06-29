@@ -185,8 +185,19 @@ class TestKISRankingAPIParams:
 
         assert result[0]["stck_shrn_iscd"] == "035420"
 
-    async def test_foreign_buying_rank_api_params(self, monkeypatch):
-        """foreign_buying_rank가 올바른 URL, tr_id, 파라미터로 API 호출하는지 검증"""
+    @pytest.mark.parametrize(
+        "call_kwargs, expected_code",
+        [
+            ({}, "0"),  # default = 순매수 상위 (net buy)
+            ({"rank_sort": "0"}, "0"),  # explicit net buy
+            ({"rank_sort": "1"}, "1"),  # 순매도 상위 (net sell)
+        ],
+    )
+    async def test_foreign_buying_rank_api_params(
+        self, monkeypatch, call_kwargs, expected_code
+    ):
+        """foreign_buying_rank가 rank_sort에 따라 FID_RANK_SORT_CLS_CODE를
+        '0'(순매수)/'1'(순매도)로 토글하는지 검증 (ROB-629)."""
         captured_requests = []
 
         async def mock_get(self, url, headers, params, timeout):
@@ -202,9 +213,8 @@ class TestKISRankingAPIParams:
                         "hts_kor_isnm": "삼성전자",
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
-                        "acml_vol": "10000000",
-                        "hts_avls": "100000000000000",
-                        "acml_tr_pbmn": "800000000000000",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
                     }
                 ],
             }
@@ -220,7 +230,9 @@ class TestKISRankingAPIParams:
             mock_get_token,
         )
 
-        result = await KISClient().foreign_buying_rank(market="J", limit=5)
+        result = await KISClient().foreign_buying_rank(
+            market="J", limit=5, **call_kwargs
+        )
 
         assert len(captured_requests) == 1
         req = captured_requests[0]
@@ -235,7 +247,8 @@ class TestKISRankingAPIParams:
         assert req["params"]["FID_COND_SCR_DIV_CODE"] == "16449"
         assert req["params"]["FID_INPUT_ISCD"] == "0000"
         assert req["params"]["FID_DIV_CLS_CODE"] == "0"
-        assert req["params"]["FID_RANK_SORT_CLS_CODE"] == "0"
+        # ROB-629: parametrized rank_sort (was hardcoded "0").
+        assert req["params"]["FID_RANK_SORT_CLS_CODE"] == expected_code
         assert req["params"]["FID_ETC_CLS_CODE"] == "1"
 
         assert len(result) == 1

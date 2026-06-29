@@ -83,7 +83,14 @@ def register_analysis_tools(
         name="get_top_stocks",
         description=(
             "Get top stocks by ranking type across different markets (KR/US/Crypto). "
-            "KR: volume, market_cap, gainers, losers, foreigners "
+            "KR: volume, market_cap, gainers, losers, foreign_net_buy, "
+            "foreign_net_sell (foreigners = back-compat alias for foreign_net_buy). "
+            "Foreign rankings expose named foreign_net_qty / foreign_net_amount "
+            "fields (no longer stuffed into volume/trade_amount), backfill "
+            "market_cap from fundamentals snapshots with a market_cap_source "
+            "provenance tag, and apply a default-ON liquidity filter "
+            "(|foreign_net_amount| >= FOREIGNERS_MIN_NET_AMOUNT_KRW, default 1억 "
+            "KRW; pass include_illiquid=true to bypass). "
             "US: volume, market_cap, gainers, losers "
             "Crypto: volume, gainers, losers, relative_strength (vs BTC 24h)."
         ),
@@ -92,11 +99,13 @@ def register_analysis_tools(
         market: str = "kr",
         ranking_type: str = "volume",
         limit: int = 20,
+        include_illiquid: bool = False,
     ) -> dict[str, Any]:
         return await get_top_stocks_impl(
             market=market,
             ranking_type=ranking_type,
             limit=limit,
+            include_illiquid=include_illiquid,
         )
 
     @mcp.tool(

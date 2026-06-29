@@ -166,8 +166,11 @@ class DomesticMarketDataMixin(MarketDataBase):
         return negatives[:limit]
 
     async def foreign_buying_rank(
-        self, market: str = "J", limit: int = 30
+        self, market: str = "J", limit: int = 30, rank_sort: str = "0"
     ) -> list[dict]:
+        # FID_RANK_SORT_CLS_CODE: "0"=순매수 상위(net buy), "1"=순매도 상위(net sell).
+        # FID_ETC_CLS_CODE="1" pins the ranking to 외국인 (foreigners).
+        rank_sort_cls_code = "1" if str(rank_sort) == "1" else "0"
         js = await self._request_with_token_retry(
             tr_id=constants.FOREIGN_BUYING_RANK_TR,
             url=self._kis_url(constants.FOREIGN_BUYING_RANK_URL),
@@ -176,7 +179,7 @@ class DomesticMarketDataMixin(MarketDataBase):
                 "FID_COND_SCR_DIV_CODE": "16449",
                 "FID_INPUT_ISCD": "0000",
                 "FID_DIV_CLS_CODE": "0",
-                "FID_RANK_SORT_CLS_CODE": "0",
+                "FID_RANK_SORT_CLS_CODE": rank_sort_cls_code,
                 "FID_ETC_CLS_CODE": "1",
             },
             api_name="foreign_buying_rank",

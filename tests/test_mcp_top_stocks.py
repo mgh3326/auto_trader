@@ -32,6 +32,19 @@ def build_tools() -> dict[str, Callable[..., Any]]:
 
 @pytest.mark.asyncio
 class TestMCPTopStocks:
+    @pytest.fixture(autouse=True)
+    def _neutralize_foreigners_market_cap_fetch(self, monkeypatch):
+        # ROB-629 B2: the foreigners backfill block calls a DB reader
+        # (_fetch_market_cap_maps). Keep these routing/mapping tests hermetic and
+        # fast — only TestForeignersLiquidity exercises real caps.
+        async def _no_op_fetch(*args, **kwargs):
+            return {}, {}
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.foreigners_liquidity._fetch_market_cap_maps",
+            _no_op_fetch,
+        )
+
     async def test_get_top_stocks_us_uses_analysis_screening_rankings_alias(
         self, monkeypatch
     ):
@@ -222,20 +235,22 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "mksc_shrn_iscd": "900210",
                         "hts_kor_isnm": "KODEX 200",
                         "stck_prpr": "35000",
                         "prdy_ctrt": "1.0",
-                        "acml_vol": "20000000",
-                        "hts_avls": "5000000000000",
-                        "acml_tr_pbmn": "700000000000000",
+                        "frgn_ntby_qty": "20000000",
+                        "frgn_ntby_tr_pbmn": "700000000000",
                     }
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -243,6 +258,7 @@ class TestMCPTopStocks:
         assert len(result["rankings"]) == 1
         assert result["rankings"][0]["symbol"] == "900210"
         assert result["rankings"][0]["name"] == "KODEX 200"
+        assert result["source"] == "kis"
 
     async def test_kr_gainers_routing(self, monkeypatch):
         tools = build_tools()
@@ -328,20 +344,22 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
                         "hts_kor_isnm": "삼성전자",
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
-                        "acml_vol": "10000000",
-                        "hts_avls": "100000000000000",
-                        "acml_tr_pbmn": "800000000000000",
+                        "frgn_ntby_qty": "10000000",
+                        "frgn_ntby_tr_pbmn": "800000000000",
                     }
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -905,11 +923,14 @@ class TestMCPTopStocks:
         assert "Upbit API error" in result["error"]
 
     async def test_kr_foreigners_ranking_foreign_specific_fields(self, monkeypatch):
-        """foreigners 랭킹에서 외국인 전용 필드(frgn_ntby_qty, frgn_ntby_tr_pbmn) 사용 테스트"""
+        """ROB-629: foreigners ranking surfaces foreign net flow as NAMED fields
+        (foreign_net_qty / foreign_net_amount) and no longer stuffs them into the
+        generic volume / trade_amount slots. hts_avls is NOT fabricated — the real
+        KIS foreign ranking does not return it, so market_cap is honestly null."""
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -917,7 +938,6 @@ class TestMCPTopStocks:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "hts_avls": "100000000000000",
                         "frgn_ntby_tr_pbmn": "400000000000",
                     },
                     {
@@ -926,27 +946,83 @@ class TestMCPTopStocks:
                         "stck_prpr": "120000",
                         "prdy_ctrt": "1.5",
                         "frgn_ntby_qty": "3000000",
-                        "hts_avls": "50000000000000",
                         "frgn_ntby_tr_pbmn": "360000000000",
                     },
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
         assert result["ranking_type"] == "foreigners"
         assert len(result["rankings"]) == 2
 
-        assert result["rankings"][0]["symbol"] == "005930"
-        assert result["rankings"][0]["name"] == "삼성전자"
-        assert result["rankings"][0]["volume"] == 5000000
-        assert result["rankings"][0]["trade_amount"] == pytest.approx(400000000000.0)
+        first = result["rankings"][0]
+        assert first["symbol"] == "005930"
+        assert first["name"] == "삼성전자"
+        # Named foreign fields — the whole point of ROB-629.
+        assert first["foreign_net_qty"] == 5000000
+        assert first["foreign_net_amount"] == pytest.approx(400000000000.0)
+        # Generic slots are NO LONGER stuffed with the foreign values.
+        assert first["volume"] is None
+        assert first["trade_amount"] is None
+        # market_cap honestly null (hts_avls not returned by the foreign ranking).
+        assert first["market_cap"] is None
 
-        assert result["rankings"][1]["symbol"] == "005380"
-        assert result["rankings"][1]["name"] == "LG전자"
-        assert result["rankings"][1]["volume"] == 3000000
-        assert result["rankings"][1]["trade_amount"] == pytest.approx(360000000000.0)
+        second = result["rankings"][1]
+        assert second["symbol"] == "005380"
+        assert second["name"] == "LG전자"
+        assert second["foreign_net_qty"] == 3000000
+        assert second["foreign_net_amount"] == pytest.approx(360000000000.0)
+        assert second["volume"] is None
+        assert second["trade_amount"] is None
+
+    async def test_kr_foreign_net_buy_and_sell_split_dispatch(self, monkeypatch):
+        """ROB-629: foreign_net_buy passes FID rank_sort '0' (net buy),
+        foreign_net_sell passes '1' (net sell); 'foreigners' aliases
+        foreign_net_buy. Response echoes the caller's original ranking_type."""
+        tools = build_tools()
+
+        captured: list[str] = []
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                captured.append(rank_sort)
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        buy = await tools["get_top_stocks"](market="kr", ranking_type="foreign_net_buy")
+        assert buy["ranking_type"] == "foreign_net_buy"
+        assert len(buy["rankings"]) == 1
+
+        sell = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_sell"
+        )
+        assert sell["ranking_type"] == "foreign_net_sell"
+        assert len(sell["rankings"]) == 1
+
+        alias = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        assert alias["ranking_type"] == "foreigners"
+        assert len(alias["rankings"]) == 1
+
+        # net buy -> "0", net sell -> "1", foreigners alias -> "0".
+        assert captured == ["0", "1", "0"]
 
 
 @pytest.mark.asyncio
@@ -1303,3 +1379,200 @@ class TestMCPRegressionTests:
         assert result["rankings"][1]["change_rate"] == pytest.approx(
             -1.0
         )  # -0.01 * 100
+
+
+@pytest.mark.asyncio
+class TestForeignersLiquidity:
+    async def _patch_fetch(self, monkeypatch, snapshot_caps=None, shares=None):
+        from decimal import Decimal as _D
+
+        from app.mcp_server.tooling import foreigners_liquidity
+
+        async def fake_fetch(symbols, *, session_factory=None):
+            return (
+                {k: _D(str(v)) for k, v in (snapshot_caps or {}).items()},
+                {k: _D(str(v)) for k, v in (shares or {}).items()},
+            )
+
+        monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
+
+    async def test_backfill_wired_from_snapshot(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch, snapshot_caps={"005930": 4e14})
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        row = result["rankings"][0]
+        assert row["market_cap"] == 4e14
+        assert row["market_cap_source"] == "fundamentals_snapshot"
+        assert result["liquidity_filter"]["include_illiquid"] is False
+        assert result["liquidity_filter"]["excluded_count"] == 0
+
+    async def test_filter_excludes_junk_default_on(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)  # no caps -> null
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    },
+                    {
+                        "stck_shrn_iscd": "900111",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "300",
+                        "frgn_ntby_qty": "1000",
+                        "frgn_ntby_tr_pbmn": "300000",  # 30만 KRW — junk
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        assert [r["symbol"] for r in result["rankings"]] == ["005930"]
+        assert result["rankings"][0]["rank"] == 1
+        assert result["liquidity_filter"]["excluded_count"] == 1
+
+    async def test_include_illiquid_keeps_all(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900111",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "300",
+                        "frgn_ntby_tr_pbmn": "300000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreigners", include_illiquid=True
+        )
+        assert len(result["rankings"]) == 1
+        assert result["liquidity_filter"]["include_illiquid"] is True
+        assert result["liquidity_filter"]["excluded_count"] == 0
+
+    async def test_filter_empties_sets_degraded(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900111",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "300",
+                        "frgn_ntby_tr_pbmn": "300000",  # below threshold
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        assert result["rankings"] == []
+        assert result["total_count"] == 0
+        assert result["status"] == "degraded"
+        assert "liquidity threshold" in result["degraded_reason"]
+        assert result["liquidity_filter"]["excluded_count"] == 1
+
+    async def test_foreigners_offsession_fake_zero_flow_suppressed(self, monkeypatch):
+        """T1: off-session the KIS foreign-buying-rank returns fake-0 가집계 rows
+        (no real net flow). When data_state is NON-fresh and no row carries real
+        foreign flow, the guard suppresses the fake-0 rows and tags data_state —
+        never presenting 가집계 zeros as live foreign flow."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "0.00",
+                        "frgn_ntby_qty": "0",
+                        "frgn_ntby_tr_pbmn": "0",
+                    },
+                    {
+                        "stck_shrn_iscd": "000660",
+                        "hts_kor_isnm": "SK하이닉스",
+                        "stck_prpr": "180000",
+                        "prdy_ctrt": "0.00",
+                        "frgn_ntby_qty": "0",
+                        "frgn_ntby_tr_pbmn": "0",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        assert result["data_state"] == "premarket_unavailable"
+        assert result["rankings"] == []
+        assert result["total_count"] == 0
+        assert result.get("note")
+        # Suppressed BEFORE the liquidity filter ran — no liquidity meta attached.
+        assert "liquidity_filter" not in result
+
+    async def test_foreigners_offsession_real_flow_not_suppressed(self, monkeypatch):
+        """T1 positive counterpart: NON-fresh data_state but a row carries real
+        foreign net flow (has_real_flow=True) must NOT be suppressed — the guard
+        only drops the all-fake-0 case."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        # Real flow survives; data_state is still tagged honestly as non-fresh.
+        assert result["data_state"] == "premarket_unavailable"
+        assert len(result["rankings"]) == 1
+        assert result["rankings"][0]["symbol"] == "005930"
+        assert result["rankings"][0]["foreign_net_amount"] == pytest.approx(4e11)
+        assert "note" not in result
