@@ -1007,9 +1007,7 @@ class TestMCPTopStocks:
             analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
         )
 
-        buy = await tools["get_top_stocks"](
-            market="kr", ranking_type="foreign_net_buy"
-        )
+        buy = await tools["get_top_stocks"](market="kr", ranking_type="foreign_net_buy")
         assert buy["ranking_type"] == "foreign_net_buy"
         assert len(buy["rankings"]) == 1
 
@@ -1396,9 +1394,7 @@ class TestForeignersLiquidity:
                 {k: _D(str(v)) for k, v in (shares or {}).items()},
             )
 
-        monkeypatch.setattr(
-            foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch
-        )
+        monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
 
     async def test_backfill_wired_from_snapshot(self, monkeypatch):
         tools = build_tools()
@@ -1499,3 +1495,84 @@ class TestForeignersLiquidity:
         assert result["status"] == "degraded"
         assert "liquidity threshold" in result["degraded_reason"]
         assert result["liquidity_filter"]["excluded_count"] == 1
+
+    async def test_foreigners_offsession_fake_zero_flow_suppressed(self, monkeypatch):
+        """T1: off-session the KIS foreign-buying-rank returns fake-0 가집계 rows
+        (no real net flow). When data_state is NON-fresh and no row carries real
+        foreign flow, the guard suppresses the fake-0 rows and tags data_state —
+        never presenting 가집계 zeros as live foreign flow."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "0.00",
+                        "frgn_ntby_qty": "0",
+                        "frgn_ntby_tr_pbmn": "0",
+                    },
+                    {
+                        "stck_shrn_iscd": "000660",
+                        "hts_kor_isnm": "SK하이닉스",
+                        "stck_prpr": "180000",
+                        "prdy_ctrt": "0.00",
+                        "frgn_ntby_qty": "0",
+                        "frgn_ntby_tr_pbmn": "0",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        assert result["data_state"] == "premarket_unavailable"
+        assert result["rankings"] == []
+        assert result["total_count"] == 0
+        assert result.get("note")
+        # Suppressed BEFORE the liquidity filter ran — no liquidity meta attached.
+        assert "liquidity_filter" not in result
+
+    async def test_foreigners_offsession_real_flow_not_suppressed(self, monkeypatch):
+        """T1 positive counterpart: NON-fresh data_state but a row carries real
+        foreign net flow (has_real_flow=True) must NOT be suppressed — the guard
+        only drops the all-fake-0 case."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        # Real flow survives; data_state is still tagged honestly as non-fresh.
+        assert result["data_state"] == "premarket_unavailable"
+        assert len(result["rankings"]) == 1
+        assert result["rankings"][0]["symbol"] == "005930"
+        assert result["rankings"][0]["foreign_net_amount"] == pytest.approx(4e11)
+        assert "note" not in result
