@@ -271,6 +271,78 @@ def _apply_size_cap(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+async def _get_market_issues_impl(
+    market: str = "all",
+    window_hours: int = 24,
+    limit: int = 20,
+    detail: Literal["headline_only", "summary", "full"] = "summary",
+) -> dict[str, Any]:
+    from app.services.news_issue_clustering_service import build_market_issues
+
+    response = await build_market_issues(
+        market=market, window_hours=window_hours, limit=limit, detail=detail
+    )
+    payload = response.model_dump(mode="json")
+    return _enforce_market_issues_size_cap(payload)
+
+
+def _enforce_market_issues_size_cap(payload: dict[str, Any]) -> dict[str, Any]:
+    """Hard cap the serialized response at NEWS_RESPONSE_MAX_CHARS (ROB-628).
+
+    Trims in three deterministic passes — (1) collapse trailing issues to a
+    single anchor article, (2) drop whole trailing issues (always keep >=1),
+    (3) collapse the survivors' articles as a last resort — then flips
+    truncated_for_size and appends a counted degraded_reason. Never silently
+    drops or fabricates: every removal is reflected in the flag + reason.
+    """
+
+    def _encoded_len() -> int:
+        return len(json.dumps(payload, ensure_ascii=False))
+
+    if _encoded_len() <= NEWS_RESPONSE_MAX_CHARS:
+        return payload
+
+    items = payload.get("items") or []
+    original_issue_count = len(items)
+    original_article_count = sum(len(it.get("articles") or []) for it in items)
+
+    # Pass 1: trim trailing member articles down to a single anchor article.
+    for item in reversed(items):
+        if _encoded_len() <= NEWS_RESPONSE_MAX_CHARS:
+            break
+        arts = item.get("articles") or []
+        if len(arts) > 1:
+            item["articles"] = arts[:1]
+
+    # Pass 2: drop whole trailing issues (keep at least one) until under cap.
+    while len(items) > 1 and _encoded_len() > NEWS_RESPONSE_MAX_CHARS:
+        items.pop()
+
+    # Pass 3: last resort — collapse any remaining multi-article survivors.
+    if _encoded_len() > NEWS_RESPONSE_MAX_CHARS:
+        for item in items:
+            arts = item.get("articles") or []
+            if len(arts) > 1:
+                item["articles"] = arts[:1]
+
+    payload["items"] = items
+    kept_issue_count = len(items)
+    kept_article_count = sum(len(it.get("articles") or []) for it in items)
+    dropped_issues = original_issue_count - kept_issue_count
+    dropped_articles = original_article_count - kept_article_count
+
+    payload["truncated_for_size"] = True
+    reason = (
+        f"response exceeded the {NEWS_RESPONSE_MAX_CHARS}-char size cap; trimmed "
+        f"{dropped_issues} issue(s) and {dropped_articles} member article(s) to "
+        "fit — re-query with a narrower market/window or detail='headline_only' "
+        "for the full set"
+    )
+    existing = payload.get("degraded_reason")
+    payload["degraded_reason"] = f"{existing}; {reason}" if existing else reason
+    return payload
+
+
 def _register_news_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_market_news",
@@ -324,17 +396,20 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
             "never enter clustering, and thin clusters (single article AND single "
             "source, non-official feed) are withheld. status/degraded_reason/"
             "quality_gate report what the gate did; empty results are explicit "
-            "(no_meaningful_items), never filler."
+            "(no_meaningful_items), never filler. detail controls member-article "
+            "summary verbosity: 'headline_only' drops summaries, 'summary' "
+            "(default) truncates each to 240 chars, 'full' keeps them verbatim. "
+            "The response is hard-capped at 8000 chars; if exceeded, trailing "
+            "issues/articles are trimmed and truncated_for_size + degraded_reason "
+            "are set (never a silent drop)."
         ),
     )
     async def get_market_issues(
         market: str = "all",
         window_hours: int = 24,
         limit: int = 20,
+        detail: Literal["headline_only", "summary", "full"] = "summary",
     ) -> dict[str, Any]:
-        from app.services.news_issue_clustering_service import build_market_issues
-
-        response = await build_market_issues(
-            market=market, window_hours=window_hours, limit=limit
+        return await _get_market_issues_impl(
+            market=market, window_hours=window_hours, limit=limit, detail=detail
         )
-        return response.model_dump(mode="json")
