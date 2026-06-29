@@ -154,3 +154,134 @@ async def test_signal_scores_are_in_unit_interval(monkeypatch):
         assert 0.0 <= iss.signals.recency_score <= 1.0
         assert 0.0 <= iss.signals.source_diversity_score <= 1.0
         assert 0.0 <= iss.signals.mention_score <= 1.0
+
+
+_LONG_SUMMARY = (
+    "Amazon Web Services reported accelerating demand across cloud, AI, and "
+    "advertising segments, with management raising full-year guidance and "
+    "pointing to a record multi-year backlog that underpins the outlook. "
+) * 4  # comfortably exceeds NEWS_SUMMARY_MAX_CHARS (240)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detail_summary_truncates_member_article_summary(monkeypatch):
+    from app.services.news_text import NEWS_SUMMARY_MAX_CHARS
+
+    rows = [
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
+    ]
+    monkeypatch.setattr(
+        clustering, "_load_recent_articles", AsyncMock(return_value=rows)
+    )
+
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10, detail="summary"
+    )
+    summaries = [a.summary for iss in result.items for a in iss.articles]
+    assert summaries, "expected at least one clustered member article"
+    for s in summaries:
+        assert s is not None
+        assert len(s) <= NEWS_SUMMARY_MAX_CHARS
+        assert s.endswith("…")
+    assert result.truncated_for_size is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detail_headline_only_drops_member_summary(monkeypatch):
+    rows = [
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
+    ]
+    monkeypatch.setattr(
+        clustering, "_load_recent_articles", AsyncMock(return_value=rows)
+    )
+
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10, detail="headline_only"
+    )
+    summaries = [a.summary for iss in result.items for a in iss.articles]
+    assert summaries
+    assert all(s is None for s in summaries)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detail_full_keeps_member_summary_verbatim(monkeypatch):
+    rows = [
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
+    ]
+    monkeypatch.setattr(
+        clustering, "_load_recent_articles", AsyncMock(return_value=rows)
+    )
+
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10, detail="full"
+    )
+    summaries = [a.summary for iss in result.items for a in iss.articles]
+    assert summaries
+    assert all(s == _LONG_SUMMARY for s in summaries)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detail_defaults_to_summary_truncation(monkeypatch):
+    from app.services.news_text import NEWS_SUMMARY_MAX_CHARS
+
+    rows = [
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
+    ]
+    monkeypatch.setattr(
+        clustering, "_load_recent_articles", AsyncMock(return_value=rows)
+    )
+
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10
+    )  # no detail kwarg -> default "summary"
+    summaries = [a.summary for iss in result.items for a in iss.articles]
+    assert summaries
+    assert all(s is not None and len(s) <= NEWS_SUMMARY_MAX_CHARS for s in summaries)
