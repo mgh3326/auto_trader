@@ -169,10 +169,18 @@ async def test_detail_summary_truncates_member_article_summary(monkeypatch):
     from app.services.news_text import NEWS_SUMMARY_MAX_CHARS
 
     rows = [
-        _mk(id=1, title="Amazon raises guidance on AWS demand",
-            source="cnbc", summary=_LONG_SUMMARY),
-        _mk(id=2, title="AWS growth boosts Amazon outlook",
-            source="bloomberg", summary=_LONG_SUMMARY),
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
     ]
     monkeypatch.setattr(
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
@@ -194,10 +202,18 @@ async def test_detail_summary_truncates_member_article_summary(monkeypatch):
 @pytest.mark.asyncio
 async def test_detail_headline_only_drops_member_summary(monkeypatch):
     rows = [
-        _mk(id=1, title="Amazon raises guidance on AWS demand",
-            source="cnbc", summary=_LONG_SUMMARY),
-        _mk(id=2, title="AWS growth boosts Amazon outlook",
-            source="bloomberg", summary=_LONG_SUMMARY),
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
     ]
     monkeypatch.setattr(
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
@@ -215,10 +231,18 @@ async def test_detail_headline_only_drops_member_summary(monkeypatch):
 @pytest.mark.asyncio
 async def test_detail_full_keeps_member_summary_verbatim(monkeypatch):
     rows = [
-        _mk(id=1, title="Amazon raises guidance on AWS demand",
-            source="cnbc", summary=_LONG_SUMMARY),
-        _mk(id=2, title="AWS growth boosts Amazon outlook",
-            source="bloomberg", summary=_LONG_SUMMARY),
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
     ]
     monkeypatch.setattr(
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
@@ -238,10 +262,18 @@ async def test_detail_defaults_to_summary_truncation(monkeypatch):
     from app.services.news_text import NEWS_SUMMARY_MAX_CHARS
 
     rows = [
-        _mk(id=1, title="Amazon raises guidance on AWS demand",
-            source="cnbc", summary=_LONG_SUMMARY),
-        _mk(id=2, title="AWS growth boosts Amazon outlook",
-            source="bloomberg", summary=_LONG_SUMMARY),
+        _mk(
+            id=1,
+            title="Amazon raises guidance on AWS demand",
+            source="cnbc",
+            summary=_LONG_SUMMARY,
+        ),
+        _mk(
+            id=2,
+            title="AWS growth boosts Amazon outlook",
+            source="bloomberg",
+            summary=_LONG_SUMMARY,
+        ),
     ]
     monkeypatch.setattr(
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
@@ -252,6 +284,4 @@ async def test_detail_defaults_to_summary_truncation(monkeypatch):
     )  # no detail kwarg -> default "summary"
     summaries = [a.summary for iss in result.items for a in iss.articles]
     assert summaries
-    assert all(
-        s is not None and len(s) <= NEWS_SUMMARY_MAX_CHARS for s in summaries
-    )
+    assert all(s is not None and len(s) <= NEWS_SUMMARY_MAX_CHARS for s in summaries)
