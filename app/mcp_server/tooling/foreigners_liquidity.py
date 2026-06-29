@@ -26,14 +26,37 @@ from app.services.invest_kr_fundamentals_snapshots.repository import (
 
 logger = logging.getLogger(__name__)
 
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env override, falling back to ``default`` (logging a
+    warning) on missing/blank/non-numeric input.
+
+    These constants are read at IMPORT time, and this module is imported at the
+    top of ``analysis_tool_handlers``. A bare ``float(os.getenv(...))`` would
+    raise ``ValueError`` at import on a bad operator value, taking down ALL
+    get_top_stocks rankings — not just KR foreigners. Fail soft to the default
+    instead.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; falling back to default %s", name, raw, default)
+        return default
+
+
 # Operator-tunable. Foreign net-flow KRW magnitude below this == clear junk.
-MIN_FOREIGN_NET_AMOUNT_KRW: float = float(
-    os.getenv("FOREIGNERS_MIN_NET_AMOUNT_KRW", "100000000")  # 1억 KRW
+MIN_FOREIGN_NET_AMOUNT_KRW: float = _env_float(
+    "FOREIGNERS_MIN_NET_AMOUNT_KRW",
+    100000000.0,  # 1억 KRW
 )
 # Optional market-cap floor, applied ONLY where market_cap is known (never
 # excludes a row just because cap is null).
-MIN_MARKET_CAP_KRW: float = float(
-    os.getenv("FOREIGNERS_MIN_MARKET_CAP_KRW", "30000000000")  # 300억 KRW
+MIN_MARKET_CAP_KRW: float = _env_float(
+    "FOREIGNERS_MIN_MARKET_CAP_KRW",
+    30000000000.0,  # 300억 KRW
 )
 
 _FOREIGNERS_RANKING_TYPES: frozenset[str] = frozenset(
@@ -50,12 +73,16 @@ def _row_symbol(row: dict[str, Any]) -> str:
 
 
 def _abs_foreign_amount(row: dict[str, Any]) -> float | None:
-    """Magnitude of foreign net flow (KRW). Reads B1's ``foreign_net_amount``
-    with fallback to the current ``trade_amount`` key (same frgn_ntby_tr_pbmn)."""
-    raw = row.get("foreign_net_amount")
-    if raw is None:
-        raw = row.get("trade_amount")
-    val = _to_optional_float(raw)
+    """Magnitude of foreign net flow (KRW), read ONLY from B1's
+    ``foreign_net_amount`` (frgn_ntby_tr_pbmn).
+
+    F6: post-B1 ``_map_kr_foreign_row`` ALWAYS emits ``foreign_net_amount`` and a
+    DISTINCT ``trade_amount`` sourced from ``acml_tr_pbmn`` (whole-market
+    accumulated trade value — NOT foreign net flow). We deliberately do NOT fall
+    back to ``trade_amount``: judging foreign liquidity by whole-market volume
+    would be the wrong signal. No row in the shipped pipeline reaches this filter
+    without a ``foreign_net_amount`` key, so honest null (excluded) is correct."""
+    val = _to_optional_float(row.get("foreign_net_amount"))
     return abs(val) if val is not None else None
 
 
@@ -135,15 +162,11 @@ async def backfill_foreigners_market_cap(
     session_factory: Any = AsyncSessionLocal,
 ) -> None:
     """Bounded (top-N rows already clamped to <=50) batched market_cap backfill."""
-    symbols = list(
-        dict.fromkeys(s for r in rows if (s := _row_symbol(r)))
-    )
+    symbols = list(dict.fromkeys(s for r in rows if (s := _row_symbol(r))))
     snapshot_caps, shares_map = await _fetch_market_cap_maps(
         symbols, session_factory=session_factory
     )
-    apply_market_cap_backfill(
-        rows, snapshot_caps=snapshot_caps, shares_map=shares_map
-    )
+    apply_market_cap_backfill(rows, snapshot_caps=snapshot_caps, shares_map=shares_map)
 
 
 def filter_illiquid_foreigners(
