@@ -137,6 +137,41 @@ def _map_kr_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
     }
 
 
+def _map_kr_foreign_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
+    """Foreigners-ranking row mapper (ROB-629).
+
+    The foreign net-buy / net-sell ranking carries *foreign-investor net flow*,
+    not whole-market accumulated volume/value. Surface that as NAMED keys
+    (``foreign_net_qty`` from ``frgn_ntby_qty`` and ``foreign_net_amount`` from
+    ``frgn_ntby_tr_pbmn``) instead of stuffing them into the generic ``volume``
+    / ``trade_amount`` slots — the old ``_map_kr_row`` fallback silently
+    mislabeled foreign net flow as total market volume.
+
+    ``volume`` / ``trade_amount`` / ``market_cap`` stay honest: populated only
+    from ``acml_vol`` / ``acml_tr_pbmn`` / ``hts_avls`` when KIS returns them
+    (the foreign ranking typically omits them), else ``None`` — never
+    fabricated from the foreign fields.
+    """
+    symbol = _first_present(row, "stck_shrn_iscd", "mksc_shrn_iscd") or ""
+    name = row.get("hts_kor_isnm", "")
+    price = _to_optional_float(row.get("stck_prpr"))
+    change_rate = _normalize_change_rate_equity(row.get("prdy_ctrt"))
+    market_cap = _to_optional_float(_first_present(row, "hts_avls", "stck_avls"))
+
+    return {
+        "rank": rank,
+        "symbol": symbol,
+        "name": name,
+        "price": price,
+        "change_rate": round(change_rate, 2) if change_rate is not None else None,
+        "volume": _to_optional_int(row.get("acml_vol")),
+        "market_cap": market_cap,
+        "trade_amount": _to_optional_float(row.get("acml_tr_pbmn")),
+        "foreign_net_qty": _to_optional_int(row.get("frgn_ntby_qty")),
+        "foreign_net_amount": _to_optional_float(row.get("frgn_ntby_tr_pbmn")),
+    }
+
+
 def _map_us_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
     symbol = row.get("symbol", "")
     name = row.get("longName", "") or row.get("shortName", symbol)
@@ -370,6 +405,7 @@ async def _recommend_stocks_impl(
 __all__ = [
     "_error_payload",
     "_map_kr_row",
+    "_map_kr_foreign_row",
     "_map_us_row",
     "_map_crypto_row",
     "_get_us_rankings",

@@ -35,6 +35,11 @@ from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
 
+# ROB-629: the legacy "foreigners" ranking is split into directional foreign
+# net-flow rankings. "foreigners" is kept as a back-compat alias for
+# "foreign_net_buy".
+_FOREIGN_RANKING_TYPES = frozenset({"foreign_net_buy", "foreign_net_sell"})
+
 _CORRELATION_COMPANY_NAME_ERROR = (
     "get_correlation does not support company-name inputs because it has no "
     "market parameter. Use ticker/code inputs directly."
@@ -86,12 +91,22 @@ async def get_top_stocks_impl(
     ranking_type = (ranking_type or "").strip().lower()
     limit_clamped = max(1, min(limit, 50))
 
+    # ROB-629: "foreigners" is the back-compat alias for the net-buy ranking.
+    # Resolve the alias for dispatch + guard logic, but echo the caller's
+    # ORIGINAL ranking_type in the response so existing callers keep seeing
+    # "foreigners".
+    resolved_ranking_type = (
+        "foreign_net_buy" if ranking_type == "foreigners" else ranking_type
+    )
+
     supported_combinations = {
         ("kr", "volume"),
         ("kr", "market_cap"),
         ("kr", "gainers"),
         ("kr", "losers"),
         ("kr", "foreigners"),
+        ("kr", "foreign_net_buy"),
+        ("kr", "foreign_net_sell"),
         ("us", "volume"),
         ("us", "market_cap"),
         ("us", "gainers"),
@@ -133,8 +148,13 @@ async def get_top_stocks_impl(
                     market="J", direction=direction, limit=fetch_limit
                 )
                 source = "kis"
-            elif ranking_type == "foreigners":
-                data = await kis.foreign_buying_rank(market="J", limit=fetch_limit)
+            elif resolved_ranking_type in _FOREIGN_RANKING_TYPES:
+                rank_sort = (
+                    "1" if resolved_ranking_type == "foreign_net_sell" else "0"
+                )
+                data = await kis.foreign_buying_rank(
+                    market="J", limit=fetch_limit, rank_sort=rank_sort
+                )
                 source = "kis"
             else:
                 data = []
@@ -146,7 +166,12 @@ async def get_top_stocks_impl(
                     if change_rate is None or change_rate >= 0:
                         continue
 
-                mapped = analysis_screening._map_kr_row(row, filtered_rank)
+                if resolved_ranking_type in _FOREIGN_RANKING_TYPES:
+                    mapped = analysis_screening._map_kr_foreign_row(
+                        row, filtered_rank
+                    )
+                else:
+                    mapped = analysis_screening._map_kr_row(row, filtered_rank)
                 rankings.append(mapped)
                 filtered_rank += 1
                 if len(rankings) >= limit_clamped:
@@ -177,10 +202,10 @@ async def get_top_stocks_impl(
 
     kst_tz = datetime.timezone(datetime.timedelta(hours=9))
 
-    # ROB-464: outside the KRX regular session the gainers/losers rankings come
-    # back with every change rate at 0, alphabetically ordered — not a real
-    # ranking. Suppress that fake-0 garbage and tag the session instead of
-    # presenting it as live data.
+    # ROB-464 / ROB-629: outside the KRX regular session the directional KR
+    # rankings come back as fake-0 가집계 garbage — gainers/losers with every
+    # change rate at 0, and the foreign net-flow ranking with no real net flow.
+    # Suppress that and tag the session instead of presenting it as live data.
     data_state: str | None = None
     if market == "kr":
         data_state = kr_market_data_state()
@@ -200,6 +225,27 @@ async def get_top_stocks_impl(
                         "with all change rates at 0 (not a real ranking). Returning "
                         "no rows instead of fake-0 entries — retry during market "
                         "hours (09:00–15:30 KST)."
+                    ),
+                }
+        elif resolved_ranking_type in _FOREIGN_RANKING_TYPES:
+            has_real_flow = any(
+                r.get("foreign_net_qty") or r.get("foreign_net_amount")
+                for r in rankings
+            )
+            if data_state != DATA_STATE_FRESH and not has_real_flow:
+                return {
+                    "rankings": [],
+                    "total_count": 0,
+                    "market": market,
+                    "ranking_type": ranking_type,
+                    "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+                    "source": source,
+                    "data_state": data_state,
+                    "note": (
+                        "KRX is not in regular session; the foreign net-trade "
+                        "ranking comes back with no real net flow (가집계 fake-0). "
+                        "Returning no rows instead of fake-0 entries — retry "
+                        "during market hours (09:00–15:30 KST)."
                     ),
                 }
 

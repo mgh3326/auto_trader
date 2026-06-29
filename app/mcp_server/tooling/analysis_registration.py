@@ -83,7 +83,10 @@ def register_analysis_tools(
         name="get_top_stocks",
         description=(
             "Get top stocks by ranking type across different markets (KR/US/Crypto). "
-            "KR: volume, market_cap, gainers, losers, foreigners "
+            "KR: volume, market_cap, gainers, losers, foreign_net_buy, "
+            "foreign_net_sell (foreigners = back-compat alias for foreign_net_buy). "
+            "Foreign rankings expose named foreign_net_qty / foreign_net_amount "
+            "fields (no longer stuffed into volume/trade_amount). "
             "US: volume, market_cap, gainers, losers "
             "Crypto: volume, gainers, losers, relative_strength (vs BTC 24h)."
         ),

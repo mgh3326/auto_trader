@@ -222,20 +222,22 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "mksc_shrn_iscd": "900210",
                         "hts_kor_isnm": "KODEX 200",
                         "stck_prpr": "35000",
                         "prdy_ctrt": "1.0",
-                        "acml_vol": "20000000",
-                        "hts_avls": "5000000000000",
-                        "acml_tr_pbmn": "700000000000000",
+                        "frgn_ntby_qty": "20000000",
+                        "frgn_ntby_tr_pbmn": "700000000000",
                     }
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -243,6 +245,7 @@ class TestMCPTopStocks:
         assert len(result["rankings"]) == 1
         assert result["rankings"][0]["symbol"] == "900210"
         assert result["rankings"][0]["name"] == "KODEX 200"
+        assert result["source"] == "kis"
 
     async def test_kr_gainers_routing(self, monkeypatch):
         tools = build_tools()
@@ -328,20 +331,22 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
                         "hts_kor_isnm": "삼성전자",
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
-                        "acml_vol": "10000000",
-                        "hts_avls": "100000000000000",
-                        "acml_tr_pbmn": "800000000000000",
+                        "frgn_ntby_qty": "10000000",
+                        "frgn_ntby_tr_pbmn": "800000000000",
                     }
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -905,11 +910,14 @@ class TestMCPTopStocks:
         assert "Upbit API error" in result["error"]
 
     async def test_kr_foreigners_ranking_foreign_specific_fields(self, monkeypatch):
-        """foreigners 랭킹에서 외국인 전용 필드(frgn_ntby_qty, frgn_ntby_tr_pbmn) 사용 테스트"""
+        """ROB-629: foreigners ranking surfaces foreign net flow as NAMED fields
+        (foreign_net_qty / foreign_net_amount) and no longer stuffs them into the
+        generic volume / trade_amount slots. hts_avls is NOT fabricated — the real
+        KIS foreign ranking does not return it, so market_cap is honestly null."""
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -917,7 +925,6 @@ class TestMCPTopStocks:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "hts_avls": "100000000000000",
                         "frgn_ntby_tr_pbmn": "400000000000",
                     },
                     {
@@ -926,27 +933,85 @@ class TestMCPTopStocks:
                         "stck_prpr": "120000",
                         "prdy_ctrt": "1.5",
                         "frgn_ntby_qty": "3000000",
-                        "hts_avls": "50000000000000",
                         "frgn_ntby_tr_pbmn": "360000000000",
                     },
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
         assert result["ranking_type"] == "foreigners"
         assert len(result["rankings"]) == 2
 
-        assert result["rankings"][0]["symbol"] == "005930"
-        assert result["rankings"][0]["name"] == "삼성전자"
-        assert result["rankings"][0]["volume"] == 5000000
-        assert result["rankings"][0]["trade_amount"] == pytest.approx(400000000000.0)
+        first = result["rankings"][0]
+        assert first["symbol"] == "005930"
+        assert first["name"] == "삼성전자"
+        # Named foreign fields — the whole point of ROB-629.
+        assert first["foreign_net_qty"] == 5000000
+        assert first["foreign_net_amount"] == pytest.approx(400000000000.0)
+        # Generic slots are NO LONGER stuffed with the foreign values.
+        assert first["volume"] is None
+        assert first["trade_amount"] is None
+        # market_cap honestly null (hts_avls not returned by the foreign ranking).
+        assert first["market_cap"] is None
 
-        assert result["rankings"][1]["symbol"] == "005380"
-        assert result["rankings"][1]["name"] == "LG전자"
-        assert result["rankings"][1]["volume"] == 3000000
-        assert result["rankings"][1]["trade_amount"] == pytest.approx(360000000000.0)
+        second = result["rankings"][1]
+        assert second["symbol"] == "005380"
+        assert second["name"] == "LG전자"
+        assert second["foreign_net_qty"] == 3000000
+        assert second["foreign_net_amount"] == pytest.approx(360000000000.0)
+        assert second["volume"] is None
+        assert second["trade_amount"] is None
+
+    async def test_kr_foreign_net_buy_and_sell_split_dispatch(self, monkeypatch):
+        """ROB-629: foreign_net_buy passes FID rank_sort '0' (net buy),
+        foreign_net_sell passes '1' (net sell); 'foreigners' aliases
+        foreign_net_buy. Response echoes the caller's original ranking_type."""
+        tools = build_tools()
+
+        captured: list[str] = []
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                captured.append(rank_sort)
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        buy = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+        assert buy["ranking_type"] == "foreign_net_buy"
+        assert len(buy["rankings"]) == 1
+
+        sell = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_sell"
+        )
+        assert sell["ranking_type"] == "foreign_net_sell"
+        assert len(sell["rankings"]) == 1
+
+        alias = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        assert alias["ranking_type"] == "foreigners"
+        assert len(alias["rankings"]) == 1
+
+        # net buy -> "0", net sell -> "1", foreigners alias -> "0".
+        assert captured == ["0", "1", "0"]
 
 
 @pytest.mark.asyncio

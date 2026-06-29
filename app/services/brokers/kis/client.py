@@ -140,9 +140,9 @@ class KISClient(BaseKISClient):
         return await self._market_data.fluctuation_rank(market, direction, limit)
 
     async def foreign_buying_rank(
-        self, market: str = "J", limit: int = 30
+        self, market: str = "J", limit: int = 30, rank_sort: str = "0"
     ) -> list[dict[str, Any]]:
-        return await self._market_data.foreign_buying_rank(market, limit)
+        return await self._market_data.foreign_buying_rank(market, limit, rank_sort)
 
     async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         return await self._market_data.inquire_price(code, market)
