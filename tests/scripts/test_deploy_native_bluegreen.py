@@ -135,11 +135,189 @@ def test_bootstrap_color_invokes_launchctl(tmp_path: Path) -> None:
     assert "bootstrap" in log and "api-green" in log
 
 
+def test_bootstrap_color_retries_and_path_bootouts_on_eio(tmp_path: Path) -> None:
+    """launchctl bootstrap can return EIO ("5: Input/output error") right after a
+    label bootout while launchd finishes its asynchronous teardown / keeps a
+    stale plist-PATH registration around. bootstrap_color must boot out the
+    plist PATH too (not just the label) and retry the bootstrap, mirroring the
+    proven restart_single_active_services() path in scripts/deploy-native.sh.
+
+    Regression guard for the deploy abort observed in GitHub Actions run
+    28408243128 ("bootstrap api-blue failed" -> "Bootstrap failed: 5:
+    Input/output error"): a single transient EIO must not kill the deploy.
+    """
+    base = _setup_base(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    # launchctl stub: the FIRST `bootstrap` returns EIO (exit 5); later attempts
+    # succeed. Every invocation is still logged so we can assert the call shape.
+    (bin_dir / "launchctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "launchctl $*" >>"$LAUNCHCTL_LOG"\n'
+        'if [[ "$1" == "bootstrap" ]]; then\n'
+        '  cnt_file="$LAUNCHCTL_LOG.bootstrap_count"\n'
+        '  cnt=$(( $(cat "$cnt_file" 2>/dev/null || echo 0) + 1 ))\n'
+        '  echo "$cnt" >"$cnt_file"\n'
+        "  if (( cnt == 1 )); then\n"
+        '    echo "Bootstrap failed: 5: Input/output error" >&2\n'
+        "    exit 5\n"
+        "  fi\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    (bin_dir / "launchctl").chmod(0o755)
+    log = tmp_path / "launchctl.log"
+    log.write_text("")
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "AUTO_TRADER_BASE": str(base),
+        "LAUNCHCTL_LOG": str(log),
+        # Keep the retry backoff instant so the test stays fast.
+        "AUTO_TRADER_BOOTSTRAP_RETRY_SECONDS": "0",
+    }
+    script = f'set -Eeuo pipefail\nsource "{LIB}"\nbootstrap_color api green\n'
+    proc = subprocess.run(
+        ["bash", "-c", script], check=False, capture_output=True, text=True, env=env
+    )
+    log_text = log.read_text()
+    assert proc.returncode == 0, (
+        f"bootstrap_color must survive a transient EIO via retry; "
+        f"rc={proc.returncode} stderr={proc.stderr}\nlog:\n{log_text}"
+    )
+
+    target = f"{tmp_path}/Library/LaunchAgents/com.robinco.auto-trader.api-green.plist"
+    bootout_lines = [
+        line for line in log_text.splitlines() if line.startswith("launchctl bootout")
+    ]
+    # Must boot out the plist PATH (target), not just the label, to clear a
+    # stale plist-path registration that survives a label-only bootout.
+    assert any(target in line for line in bootout_lines), (
+        f"expected a path-level bootout of {target}; bootout lines:\n"
+        + "\n".join(bootout_lines)
+    )
+
+    bootstrap_lines = [
+        line for line in log_text.splitlines() if line.startswith("launchctl bootstrap")
+    ]
+    # Must retry the bootstrap (>=2 attempts) so a single EIO does not abort.
+    assert len(bootstrap_lines) >= 2, (
+        "expected bootstrap to be retried after EIO; bootstrap lines:\n"
+        + "\n".join(bootstrap_lines)
+    )
+
+
+def test_bootstrap_color_gives_up_after_bounded_attempts(tmp_path: Path) -> None:
+    """When bootstrap EIOs on every attempt, bootstrap_color must give up after a
+    BOUNDED number of attempts (no infinite loop) and return non-zero so the
+    blue/green flow rolls back instead of hanging the deploy.
+    """
+    base = _setup_base(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    # launchctl stub: every `bootstrap` returns EIO (exit 5); everything else ok.
+    (bin_dir / "launchctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "launchctl $*" >>"$LAUNCHCTL_LOG"\n'
+        '[[ "$1" == "bootstrap" ]] && exit 5\n'
+        "exit 0\n"
+    )
+    (bin_dir / "launchctl").chmod(0o755)
+    log = tmp_path / "launchctl.log"
+    log.write_text("")
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "AUTO_TRADER_BASE": str(base),
+        "LAUNCHCTL_LOG": str(log),
+        "AUTO_TRADER_BOOTSTRAP_ATTEMPTS": "3",
+        "AUTO_TRADER_BOOTSTRAP_RETRY_SECONDS": "0",
+    }
+    script = f'set -Eeuo pipefail\nsource "{LIB}"\nbootstrap_color api green\n'
+    proc = subprocess.run(
+        ["bash", "-c", script], check=False, capture_output=True, text=True, env=env
+    )
+    log_text = log.read_text()
+    assert proc.returncode != 0, (
+        f"bootstrap_color must fail when every bootstrap EIOs; log:\n{log_text}"
+    )
+    bootstrap_lines = [
+        line for line in log_text.splitlines() if line.startswith("launchctl bootstrap")
+    ]
+    # Exactly the configured attempt count — bounded, not infinite, not fewer.
+    assert len(bootstrap_lines) == 3, (
+        f"expected exactly 3 bootstrap attempts (bounded retry); got "
+        f"{len(bootstrap_lines)}:\n" + "\n".join(bootstrap_lines)
+    )
+    # Must NOT have enabled/kickstarted a job that never bootstrapped.
+    assert not any(
+        line.startswith("launchctl kickstart") for line in log_text.splitlines()
+    ), f"must not kickstart after exhausting bootstrap retries; log:\n{log_text}"
+
+
+def test_bootstrap_color_clamps_misconfigured_attempt_count(tmp_path: Path) -> None:
+    """A misconfigured AUTO_TRADER_BOOTSTRAP_ATTEMPTS (0 / non-numeric) must be
+    clamped back to the default so the retry loop still runs at least once.
+    Otherwise execution would fall through to enable/kickstart against a label
+    that was never bootstrapped.
+    """
+    base = _setup_base(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    # bootstrap always EIOs: with a working clamp the loop runs the default 5x
+    # then gives up; with a broken clamp the loop runs 0x and falls through.
+    (bin_dir / "launchctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "launchctl $*" >>"$LAUNCHCTL_LOG"\n'
+        '[[ "$1" == "bootstrap" ]] && exit 5\n'
+        "exit 0\n"
+    )
+    (bin_dir / "launchctl").chmod(0o755)
+    log = tmp_path / "launchctl.log"
+    log.write_text("")
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "AUTO_TRADER_BASE": str(base),
+        "LAUNCHCTL_LOG": str(log),
+        "AUTO_TRADER_BOOTSTRAP_ATTEMPTS": "0",  # misconfigured
+        "AUTO_TRADER_BOOTSTRAP_RETRY_SECONDS": "0",
+    }
+    script = f'set -Eeuo pipefail\nsource "{LIB}"\nbootstrap_color api green\n'
+    proc = subprocess.run(
+        ["bash", "-c", script], check=False, capture_output=True, text=True, env=env
+    )
+    log_text = log.read_text()
+    bootstrap_lines = [
+        line for line in log_text.splitlines() if line.startswith("launchctl bootstrap")
+    ]
+    # Clamped to the default of 5 attempts — never 0.
+    assert len(bootstrap_lines) == 5, (
+        f"expected attempt count clamped to default 5; got "
+        f"{len(bootstrap_lines)}:\n" + "\n".join(bootstrap_lines)
+    )
+    assert proc.returncode != 0
+    # Never kickstart a label that never bootstrapped.
+    assert not any(
+        line.startswith("launchctl kickstart") for line in log_text.splitlines()
+    ), f"must not kickstart when no bootstrap succeeded; log:\n{log_text}"
+
+
 def test_drain_color_bootouts(tmp_path: Path) -> None:
     base = _setup_base(tmp_path)
     proc = _run_bash("drain_color api blue", base, tmp_path)
     assert proc.returncode == 0, proc.stderr
-    assert "bootout" in proc.launchctl_log and "api-blue" in proc.launchctl_log  # type: ignore[attr-defined]
+    log = proc.launchctl_log  # type: ignore[attr-defined]
+    assert "bootout" in log and "api-blue" in log
+    # Must ALSO boot out by plist PATH so launchd does not accumulate stale
+    # plist-path registrations, which are the source of later bootstrap EIO
+    # (the leftover loaded inactive-color jobs seen on the host are evidence a
+    # label-only drain does not fully deregister).
+    target = f"{tmp_path}/Library/LaunchAgents/com.robinco.auto-trader.api-blue.plist"
+    assert any(
+        line.startswith("launchctl bootout") and target in line
+        for line in log.splitlines()
+    ), f"expected a path-level bootout of {target}; log:\n{log}"
 
 
 def test_probe_color_direct_passes(tmp_path: Path) -> None:
