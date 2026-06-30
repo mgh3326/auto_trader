@@ -109,6 +109,60 @@ For each row, verify the Toss broker UI/API order detail before booking a fill,
 closing the row, or resetting it for another reconcile attempt. Do not infer a
 cancel or fill from a missing/failed order-detail response.
 
+## Re-opening `'equity'` InstrumentType Anomalies (ROB-631)
+
+Before the ROB-631 fix, KR equity fills were booked with the invalid instrument
+type literal `"equity"`. `InstrumentType("equity")` raised
+`ValueError: 'equity' is not a valid InstrumentType` (valid members are
+`equity_kr`, `equity_us`, `crypto`, `forex`, `index`), so KR rows were parked as
+`status='anomaly'` / `requires_manual_review=true` instead of booked
+(e.g. ledger 139, 169 두산에너빌리티 034020).
+
+The fix changes the KR branch to `"equity_kr"`. New KR fills book normally, but
+**existing anomaly rows are not re-processed automatically**: `list_open` only
+selects `status IN ('accepted','pending','partial')`, and there is no
+service-level reset method. The anomaly path wrote no `filled_qty` / `trade_id`
+/ `journal_id`, so re-booking is safe and idempotent once the row is re-opened
+(`review.trades` insert is `ON CONFLICT DO NOTHING` on
+`uq_review_trades_account_order`; the buy journal is gated on `journal_id IS NULL`).
+
+Remediation (operator, one-off after deploying the fix):
+
+1. Identify the bug-caused rows — these carry the exact InstrumentType error and
+   nothing else. **Any other anomaly (e.g. 403/non-JSON) must be verified
+   against the Toss broker order detail first and must NOT be reset blindly.**
+
+   ```sql
+   SELECT id, market, symbol, broker_order_id, status, last_reconcile_error
+   FROM review.toss_live_order_ledger
+   WHERE status = 'anomaly'
+     AND requires_manual_review IS TRUE
+     AND last_reconcile_error->>'type' = 'ValueError'
+     AND last_reconcile_error->>'message' LIKE '%is not a valid InstrumentType%';
+   ```
+
+2. After confirming the rows above are exactly the bug-caused ones, re-open them
+   so reconcile can pick them up again:
+
+   ```sql
+   UPDATE review.toss_live_order_ledger
+   SET status = 'accepted',
+       requires_manual_review = FALSE,
+       manual_review_reason = NULL,
+       last_reconcile_error = NULL
+   WHERE id IN (139, 169);  -- replace with the ids confirmed in step 1
+   ```
+
+3. Re-run reconcile against the broker order detail to book the fills:
+
+   ```bash
+   toss_reconcile_orders(market="kr", symbol="034020", dry_run=True)
+   toss_reconcile_orders(market="kr", symbol="034020", dry_run=False)
+   ```
+
+4. Confirm the rows now show `status='filled'` (or `partial`) with non-null
+   `trade_id` / `journal_id`, and that `review.trades` + the buy journal exist.
+
 ## US FX PnL Split
 
 Toss `GET /orders/{orderId}` execution does not include fill-time FX fields. For

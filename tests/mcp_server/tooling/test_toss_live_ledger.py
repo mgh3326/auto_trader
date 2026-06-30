@@ -39,20 +39,22 @@ def _patch_session_factory(db_session):
         yield
 
 
-async def _accepted(db_session, *, side: str = "buy"):
+async def _accepted(db_session, *, side: str = "buy", market: str = "us"):
+    is_kr = market == "kr"
+    suffix = side if market == "us" else f"{market}-{side}"
     return await TossLiveOrderLedgerService(db_session).record_send(
         operation_kind="place",
-        market="us",
-        symbol="AAPL",
+        market=market,
+        symbol="034020" if is_kr else "AAPL",
         side=side,
         order_type="limit",
         time_in_force="DAY",
-        quantity=Decimal("2"),
-        price=Decimal("190"),
+        quantity=Decimal("3") if is_kr else Decimal("2"),
+        price=Decimal("85000") if is_kr else Decimal("190"),
         order_amount=None,
-        currency="USD",
-        client_order_id=f"cid-{side}",
-        broker_order_id=f"ord-{side}",
+        currency="KRW" if is_kr else "USD",
+        client_order_id=f"cid-{suffix}",
+        broker_order_id=f"ord-{suffix}",
         original_order_id=None,
         status="accepted",
         broker_status=None,
@@ -109,6 +111,116 @@ async def test_reconcile_filled_buy_books_once(db_session):
     assert m_fill.await_count == 1
     assert m_fill.await_args.kwargs["fee"] == 0.06
     assert m_journal.await_count == 1
+
+
+async def test_reconcile_filled_kr_buy_books_with_equity_kr_instrument_type(db_session):
+    """ROB-631: KR equity fills must book with InstrumentType.equity_kr.
+
+    The reconcile path previously hardcoded the invalid literal ``"equity"`` for
+    KR rows, which is not an ``InstrumentType`` member, so the buy-journal create
+    raised ``ValueError: 'equity' is not a valid InstrumentType`` and the row was
+    parked as anomaly/requires_manual_review instead of being booked.
+    """
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+    from app.models.trading import InstrumentType
+
+    row = await _accepted(db_session, side="buy", market="kr")
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("3"),
+        avg_price=Decimal("85000"),
+        commission=Decimal("100"),
+        tax=Decimal("50"),
+        fee_total=Decimal("150"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod, "_save_order_fill", new=AsyncMock(return_value=101)
+        ) as m_fill,
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ) as m_journal,
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["action"] == "booked"
+    # The instrument type fed to both the trade-fill insert and the buy journal
+    # must be a valid InstrumentType member for KR equities, not the bare "equity".
+    assert m_fill.await_args.kwargs["instrument_type"] == "equity_kr"
+    assert m_journal.await_args.kwargs["market_type"] == "equity_kr"
+    # Bind the contract to the real consequence: InstrumentType(...) must not raise.
+    assert (
+        InstrumentType(m_journal.await_args.kwargs["market_type"])
+        is InstrumentType.equity_kr
+    )
+
+
+async def test_reconcile_filled_kr_sell_books_with_equity_kr_instrument_type(
+    db_session,
+):
+    """ROB-631: KR sell fills also pass instrument type to _save_order_fill.
+
+    On the sell path the bad "equity" literal was swallowed by _save_order_fill's
+    try/except, silently dropping the trade row. The fill must carry "equity_kr".
+    """
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session, side="sell", market="kr")
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("3"),
+        avg_price=Decimal("90000"),
+        commission=Decimal("100"),
+        tax=Decimal("50"),
+        fee_total=Decimal("150"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+    close_result = {
+        "journals_closed": 1,
+        "journals_kept": 0,
+        "closed_ids": [77],
+        "total_pnl_pct": 5.0,
+        "realized_pnl_basis": "journal_entry",
+        "total_pnl_krw": 15000.0,
+    }
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(
+            mod, "_save_order_fill", new=AsyncMock(return_value=303)
+        ) as m_fill,
+        patch.object(
+            mod, "_close_journals_on_sell", new=AsyncMock(return_value=close_result)
+        ),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["action"] == "booked"
+    assert m_fill.await_args.kwargs["instrument_type"] == "equity_kr"
 
 
 async def test_reconcile_cancelled_partial_books_delta_and_terminal(db_session):
