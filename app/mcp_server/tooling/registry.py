@@ -98,6 +98,9 @@ from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.route_request_registration import (
+    register_route_request_tools,
+)
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
 )
@@ -109,9 +112,6 @@ from app.mcp_server.tooling.trade_retrospective_registration import (
 )
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
-)
-from app.mcp_server.tooling.route_request_registration import (
-    register_route_request_tools,
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (

@@ -36,13 +36,15 @@ def test_buckets_partition_and_are_disjoint():
 
 def test_build_route_plan_buy_shape_is_deterministic():
     plan_a = L.build_route_plan(
-        "buy_analysis", "kr",
+        "buy_analysis",
+        "kr",
         registered_tools=_ALL,
         verdict_thresholds=_fake_thresholds("kr", "buy"),
         policy_version=_VERSION,
     )
     plan_b = L.build_route_plan(
-        "buy_analysis", "kr",
+        "buy_analysis",
+        "kr",
         registered_tools=_ALL,
         verdict_thresholds=_fake_thresholds("kr", "buy"),
         policy_version=_VERSION,
@@ -63,7 +65,8 @@ def test_build_route_plan_buy_shape_is_deterministic():
 
 def test_blocked_actions_excludes_lanes_own_mutation_tools():
     plan = L.build_route_plan(
-        "buy_analysis", "kr",
+        "buy_analysis",
+        "kr",
         registered_tools=_ALL,
         verdict_thresholds=_fake_thresholds("kr", "buy"),
         policy_version=_VERSION,
@@ -78,7 +81,8 @@ def test_blocked_actions_excludes_lanes_own_mutation_tools():
 
 def test_market_brief_blocks_all_mutation_and_has_empty_thresholds():
     plan = L.build_route_plan(
-        "market_brief", "kr",
+        "market_brief",
+        "kr",
         registered_tools=_ALL,
         verdict_thresholds=_fake_thresholds("kr", "bootstrap", empty=True),
         policy_version=_VERSION,
@@ -92,7 +96,8 @@ def test_market_brief_blocks_all_mutation_and_has_empty_thresholds():
 def test_profile_intersection_drops_unregistered_tools():
     registered = _ALL - {"toss_place_order"}
     plan = L.build_route_plan(
-        "discovery", "kr",
+        "discovery",
+        "kr",
         registered_tools=registered,
         verdict_thresholds=_fake_thresholds("kr", "discovery"),
         policy_version=_VERSION,
@@ -105,7 +110,8 @@ def test_profile_intersection_drops_unregistered_tools():
 
 def test_hard_constraints_reference_policy_keys_not_numbers():
     plan = L.build_route_plan(
-        "buy_analysis", "kr",
+        "buy_analysis",
+        "kr",
         registered_tools=_ALL,
         verdict_thresholds=_fake_thresholds("kr", "buy"),
         policy_version=_VERSION,

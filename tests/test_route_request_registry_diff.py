@@ -111,4 +111,6 @@ def test_lane_tools_registered_in_default():
     default = _default_tools()
     for lane in LANE_SEQUENCES:
         missing = lane_tool_names(lane) - default
-        assert not missing, f"lane {lane!r} references unregistered tools: {sorted(missing)}"
+        assert not missing, (
+            f"lane {lane!r} references unregistered tools: {sorted(missing)}"
+        )

@@ -42,30 +42,72 @@ LANE_TO_POLICY_LANE: dict[str, str | None] = {
 # Ordered standard tool sequence per lane, ported from the playbook lanes: blocks.
 LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
     "bootstrap": [
-        {"tool": "get_operating_briefing", "purpose": "holdings, pending orders, latest report, session_context, analysis_artifacts"},
-        {"tool": "session_context_get_recent", "purpose": "yesterday's decision journal"},
-        {"tool": "analysis_artifact_list", "purpose": "reusable prior analysis (metadata)"},
-        {"tool": "analysis_artifact_get", "purpose": "on-demand body fetch for a specific artifact"},
+        {
+            "tool": "get_operating_briefing",
+            "purpose": "holdings, pending orders, latest report, session_context, analysis_artifacts",
+        },
+        {
+            "tool": "session_context_get_recent",
+            "purpose": "yesterday's decision journal",
+        },
+        {
+            "tool": "analysis_artifact_list",
+            "purpose": "reusable prior analysis (metadata)",
+        },
+        {
+            "tool": "analysis_artifact_get",
+            "purpose": "on-demand body fetch for a specific artifact",
+        },
         {"tool": "get_market_index", "purpose": "market regime"},
         {"tool": "get_fx_rate", "purpose": "FX"},
     ],
     "buy": [
-        {"tool": "get_operating_briefing", "purpose": "load prior-session decisions + positions"},
+        {
+            "tool": "get_operating_briefing",
+            "purpose": "load prior-session decisions + positions",
+        },
         {"tool": "get_market_index", "purpose": "market regime"},
         {"tool": "get_fx_rate", "purpose": "FX"},
-        {"tool": "analyze_stock_batch", "purpose": "RSI, honest consensus, support/resistance, per-account position (mode=quick, include_position, <=10)"},
-        {"tool": "get_intraday_investor_flow", "purpose": "foreign-flow gate (recovery_gate)"},
-        {"tool": "toss_place_order", "purpose": "execute buy — Toss preferred (fee-free); deep limit, no chasing"},
-        {"tool": "kis_live_place_order", "purpose": "spend down KIS deposit; dry_run preview -> live"},
+        {
+            "tool": "analyze_stock_batch",
+            "purpose": "RSI, honest consensus, support/resistance, per-account position (mode=quick, include_position, <=10)",
+        },
+        {
+            "tool": "get_intraday_investor_flow",
+            "purpose": "foreign-flow gate (recovery_gate)",
+        },
+        {
+            "tool": "toss_place_order",
+            "purpose": "execute buy — Toss preferred (fee-free); deep limit, no chasing",
+        },
+        {
+            "tool": "kis_live_place_order",
+            "purpose": "spend down KIS deposit; dry_run preview -> live",
+        },
     ],
     "sell": [
-        {"tool": "toss_get_positions", "purpose": "scan in-the-money / near-breakeven names"},
-        {"tool": "analyze_stock_batch", "purpose": "confirm distance to resistance, RSI, upside"},
-        {"tool": "toss_place_order", "purpose": "sell-into-strength split ladder just under resistance"},
-        {"tool": "sell_ladder_fill_preview", "purpose": "ROB-477 bottom-anchor rung, fill-safety"},
+        {
+            "tool": "toss_get_positions",
+            "purpose": "scan in-the-money / near-breakeven names",
+        },
+        {
+            "tool": "analyze_stock_batch",
+            "purpose": "confirm distance to resistance, RSI, upside",
+        },
+        {
+            "tool": "toss_place_order",
+            "purpose": "sell-into-strength split ladder just under resistance",
+        },
+        {
+            "tool": "sell_ladder_fill_preview",
+            "purpose": "ROB-477 bottom-anchor rung, fill-safety",
+        },
     ],
     "discovery": [
-        {"tool": "screen_stocks_snapshot", "purpose": "multi-source fan-out candidate pool"},
+        {
+            "tool": "screen_stocks_snapshot",
+            "purpose": "multi-source fan-out candidate pool",
+        },
         {"tool": "get_top_stocks", "purpose": "losers fan-out"},
         {"tool": "get_momentum_candidates", "purpose": "momentum fan-out"},
         {"tool": "screen_stocks", "purpose": "value/RSI screen fan-out"},
@@ -252,9 +294,7 @@ def build_route_plan(
         for i, step in enumerate(seq_steps, start=1)
     ]
     lane_own_mutation = lane_tool_names(lane) & MUTATION_TOOLS
-    allowed = (
-        (lane_tool_names(lane) | set(READ_ONLY_ADVISORY_TOOLS)) & registered_tools
-    )
+    allowed = (lane_tool_names(lane) | set(READ_ONLY_ADVISORY_TOOLS)) & registered_tools
     blocked = (MUTATION_TOOLS - lane_own_mutation) & registered_tools
     return {
         "success": True,
