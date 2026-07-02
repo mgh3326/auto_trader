@@ -185,6 +185,9 @@ class OverseasOrderClient:
             timeout=10,
             api_name="order_overseas_stock",
             tr_id=tr_id,
+            # ROB-645: never re-POST an order (see domestic order_korea_stock).
+            retry_request_errors=False,
+            max_retries_override=0,
         )
 
         if js.get("rt_cd") != "0":
@@ -489,6 +492,9 @@ class OverseasOrderClient:
             timeout=10,
             api_name="cancel_overseas_order",
             tr_id=tr_id,
+            # ROB-645: keep the no-double-submit policy uniform across mutations.
+            retry_request_errors=False,
+            max_retries_override=0,
         )
 
         if js.get("rt_cd") != "0":
@@ -767,6 +773,9 @@ class OverseasOrderClient:
             timeout=10,
             api_name="modify_overseas_order",
             tr_id=tr_id,
+            # ROB-645: a re-applied modify can double-mutate; do not re-POST.
+            retry_request_errors=False,
+            max_retries_override=0,
         )
 
         if js.get("rt_cd") != "0":

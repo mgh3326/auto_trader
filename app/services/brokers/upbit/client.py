@@ -100,6 +100,7 @@ async def _retry_with_backoff(
     url: str,
     max_retries: int | None = None,
     base_delay: float | None = None,
+    retry_request_errors: bool = True,
 ) -> Any:
     """Common retry-with-backoff loop for Upbit API requests.
 
@@ -114,6 +115,10 @@ async def _retry_with_backoff(
     max_retries / base_delay
         Override ``settings.api_rate_limit_retry_429_max`` /
         ``settings.api_rate_limit_retry_429_base_delay``.
+    retry_request_errors
+        Whether to retry on ``httpx.RequestError`` (timeouts/network). ROB-645:
+        order-creation POSTs pass ``False`` so a timed-out order is never re-sent
+        (429 rate-limit retries are unaffected and still apply).
     """
     if max_retries is None:
         max_retries = settings.api_rate_limit_retry_429_max
@@ -166,7 +171,7 @@ async def _retry_with_backoff(
                 continue
             raise
         except httpx.RequestError as e:
-            if attempt < max_retries:
+            if retry_request_errors and attempt < max_retries:
                 wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
                 logger.warning(
                     "[upbit] Request error: %s, attempt %d/%d, retrying in %.3fs (url=%s)",
@@ -878,7 +883,15 @@ async def _request_with_auth(
             else:
                 raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
-    return await _retry_with_backoff(limiter, send, url=url)
+    # ROB-645: order-creation POSTs (POST /v1/orders) must not retry RequestError —
+    # a timed-out order may have reached the broker, so a retry would double-submit.
+    # Reads (GET) and cancels (DELETE /order) keep the existing RequestError retry.
+    is_order_submission = method.upper() == "POST" and api_path.rstrip("/").endswith(
+        "/orders"
+    )
+    return await _retry_with_backoff(
+        limiter, send, url=url, retry_request_errors=not is_order_submission
+    )
 
 
 # Re-export order functions for backward compatibility using lazy loading to avoid circular imports.

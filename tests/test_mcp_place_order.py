@@ -156,6 +156,52 @@ async def test_place_order_sell_with_amount_error():
         )
 
 
+@pytest.mark.asyncio
+async def test_place_order_send_timeout_surfaces_outcome_unknown(monkeypatch):
+    """ROB-645: a live order whose send times out returns an explicit
+    outcome-unknown error pointing at the reconcile tool (never a blank error,
+    never a retry)."""
+    import httpx
+
+    tools = build_tools()
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 50000000.0}),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[{"currency": "KRW", "balance": "5000000", "locked": "0"}]
+        ),
+    )
+    # The order POST times out — outcome is unknown (may have reached the broker).
+    monkeypatch.setattr(
+        upbit_service,
+        "place_buy_order",
+        AsyncMock(side_effect=httpx.ReadTimeout("")),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        amount=100000.0,
+        price=49000000.0,
+        dry_run=False,
+        thesis="t",
+        strategy="s",
+    )
+
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert result["reconcile_tool"] == "live_reconcile_orders"
+    assert result["error"].strip()
+    assert "불확실" in result["error"]
+
+
 # ----------------------------------------------------------------------
 # Upbit order tests
 # ----------------------------------------------------------------------

@@ -152,3 +152,95 @@ async def test_request_error_retry_log_names_the_exception(monkeypatch, caplog):
             )
 
     assert any("ReadTimeout" in r.getMessage() for r in caplog.records)
+
+
+def _make_rate_limited_response():
+    """A 200 response whose KIS body signals '초과' (EGW00215-style throttle)."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {}
+    resp.json.return_value = {
+        "rt_cd": "1",
+        "msg_cd": "EGW00215",
+        "msg1": "초당 거래건수를 초과하였습니다.",
+    }
+    return resp
+
+
+class TestOrderPathNoDoubleSubmit:
+    """ROB-645: order-submission callsites pass max_retries_override=0 so a timed-out
+    or rate-limited order POST is sent exactly once (never re-POSTed)."""
+
+    def _order_client(self, monkeypatch):
+        client = _FastRetryClient()
+        limiter = MagicMock()
+        limiter.acquire = AsyncMock()
+        monkeypatch.setattr(client, "_get_limiter", AsyncMock(return_value=limiter))
+        monkeypatch.setattr(
+            client, "_ensure_client", AsyncMock(return_value=MagicMock())
+        )
+        return client
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_request_error_when_max_retries_zero(self, monkeypatch):
+        client = self._order_client(monkeypatch)
+        execute = AsyncMock(side_effect=httpx.ReadTimeout(""))
+        monkeypatch.setattr(client, "_execute_http_request", execute)
+
+        with pytest.raises(httpx.ReadTimeout):
+            await client._request_with_rate_limit_with_headers(
+                "POST",
+                "https://host/uapi/domestic-stock/v1/trading/order-cash",
+                headers={},
+                json_body={"PDNO": "005930"},
+                retry_request_errors=False,
+                max_retries_override=0,
+                api_name="order_korea_stock",
+            )
+
+        # Exactly one POST — no re-submission of a timed-out order.
+        assert execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_repost_on_rate_limit_heuristic_when_max_retries_zero(
+        self, monkeypatch
+    ):
+        client = self._order_client(monkeypatch)
+        execute = AsyncMock(return_value=_make_rate_limited_response())
+        monkeypatch.setattr(client, "_execute_http_request", execute)
+
+        data, _headers = await client._request_with_rate_limit_with_headers(
+            "POST",
+            "https://host/uapi/domestic-stock/v1/trading/order-cash",
+            headers={},
+            json_body={"PDNO": "005930"},
+            retry_request_errors=False,
+            max_retries_override=0,
+            api_name="order_korea_stock",
+        )
+
+        # EGW00215 '초과' is surfaced as the error body, not retried (no re-POST).
+        assert data["rt_cd"] == "1"
+        assert data["msg_cd"] == "EGW00215"
+        assert execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_read_path_still_retries_request_errors(self, monkeypatch):
+        """Regression: default read path keeps retrying transient RequestErrors."""
+        client = self._order_client(monkeypatch)
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.headers = {}
+        ok.json.return_value = {"rt_cd": "0", "output": []}
+        execute = AsyncMock(side_effect=[httpx.ReadTimeout(""), ok])
+        monkeypatch.setattr(client, "_execute_http_request", execute)
+
+        data, _headers = await client._request_with_rate_limit_with_headers(
+            "GET",
+            "https://host/uapi/domestic-stock/v1/quotations/inquire-price",
+            headers={},
+            api_name="inquire_price",
+        )
+
+        assert data["rt_cd"] == "0"
+        assert execute.await_count == 2  # retried once, then succeeded
