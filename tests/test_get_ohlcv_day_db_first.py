@@ -18,16 +18,63 @@ import datetime as dt
 from datetime import UTC, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import exchange_calendars as xcals
 import pandas as pd
 import pytest
 
+from app.core.timezone import KST
 from app.services.daily_candles.read_service import (
     cache_first_kr,
     cache_first_us,
     cache_is_fresh_equity,
+    write_back_kr,
+    write_back_us,
 )
 from app.services.daily_candles.repository import DailyCandleRow
 from app.services.market_data import service as market_data_service
+
+
+def _krx_latest_and_prev_session() -> tuple[dt.date, dt.date]:
+    """(latest XKRX session on-or-before today, the session before it)."""
+    cal = xcals.get_calendar("XKRX")
+    today = dt.datetime.now(tz=KST).date()
+    latest = cal.date_to_session(pd.Timestamp(today), direction="previous")
+    prev = cal.previous_session(latest)
+    return pd.Timestamp(latest).date(), pd.Timestamp(prev).date()
+
+
+def _xnys_latest_and_prev_session() -> tuple[dt.date, dt.date]:
+    cal = xcals.get_calendar("XNYS")
+    today = dt.datetime.now(tz=UTC).date()
+    latest = cal.date_to_session(pd.Timestamp(today), direction="previous")
+    prev = cal.previous_session(latest)
+    return pd.Timestamp(latest).date(), pd.Timestamp(prev).date()
+
+
+def _kst_at(day: dt.date, hour: int, minute: int = 0) -> dt.datetime:
+    return dt.datetime.combine(day, dt.time(hour, minute), tzinfo=KST)
+
+
+def _after_cutoff_now() -> dt.datetime:
+    """16:00 KST on the latest XKRX session — past the 15:35 cutoff."""
+    latest, _ = _krx_latest_and_prev_session()
+    return _kst_at(latest, 16, 0)
+
+
+class _FakeSession:
+    """Minimal async-session stand-in for write_back tests (no real DB)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
 
 
 def _make_row(
@@ -106,9 +153,7 @@ async def test_kr_day_db_hit_returns_db_rows_without_kis(monkeypatch):
     write_back_mock = AsyncMock(return_value=5)
     monkeypatch.setattr(market_data_service, "write_back_kr", write_back_mock)
 
-    candles = await market_data_service.get_ohlcv(
-        "005930", "kr", "day", count=5
-    )
+    candles = await market_data_service.get_ohlcv("005930", "kr", "day", count=5)
 
     assert len(candles) == 5
     assert all(c.source == "db" for c in candles)
@@ -129,9 +174,7 @@ async def test_us_day_db_hit_returns_db_rows_without_yahoo(monkeypatch):
     write_back_mock = AsyncMock(return_value=5)
     monkeypatch.setattr(market_data_service, "write_back_us", write_back_mock)
 
-    candles = await market_data_service.get_ohlcv(
-        "MSFT", "us", "day", count=5
-    )
+    candles = await market_data_service.get_ohlcv("MSFT", "us", "day", count=5)
 
     assert len(candles) == 5
     assert all(c.source == "db" for c in candles)
@@ -169,15 +212,11 @@ async def test_kr_day_db_miss_falls_back_to_kis_and_writes_back(monkeypatch):
     write_back_mock = AsyncMock(return_value=1)
     monkeypatch.setattr(market_data_service, "write_back_kr", write_back_mock)
 
-    candles = await market_data_service.get_ohlcv(
-        "005930", "kr", "day", count=5
-    )
+    candles = await market_data_service.get_ohlcv("005930", "kr", "day", count=5)
 
     assert len(candles) == 1
     assert candles[0].source == "kis"
-    write_back_mock.assert_awaited_once_with(
-        kis_frame, symbol="005930"
-    )
+    write_back_mock.assert_awaited_once_with(kis_frame, symbol="005930")
 
 
 @pytest.mark.asyncio
@@ -205,16 +244,12 @@ async def test_us_day_db_miss_falls_back_to_yahoo_and_writes_back(monkeypatch):
     write_back_mock = AsyncMock(return_value=1)
     monkeypatch.setattr(market_data_service, "write_back_us", write_back_mock)
 
-    candles = await market_data_service.get_ohlcv(
-        "MSFT", "us", "day", count=5
-    )
+    candles = await market_data_service.get_ohlcv("MSFT", "us", "day", count=5)
 
     assert len(candles) == 1
     assert candles[0].source == "yahoo"
     yahoo_mock.assert_awaited_once()
-    write_back_mock.assert_awaited_once_with(
-        yahoo_frame, symbol="MSFT", source="yahoo"
-    )
+    write_back_mock.assert_awaited_once_with(yahoo_frame, symbol="MSFT", source="yahoo")
 
 
 @pytest.mark.asyncio
@@ -247,15 +282,11 @@ async def test_us_day_db_miss_yahoo_failure_uses_toss_and_writes_back(monkeypatc
     write_back_mock = AsyncMock(return_value=1)
     monkeypatch.setattr(market_data_service, "write_back_us", write_back_mock)
 
-    candles = await market_data_service.get_ohlcv(
-        "MSFT", "us", "day", count=5
-    )
+    candles = await market_data_service.get_ohlcv("MSFT", "us", "day", count=5)
 
     assert candles[0].source == "toss"
     toss_mock.assert_awaited_once()
-    write_back_mock.assert_awaited_once_with(
-        toss_frame, symbol="MSFT", source="toss"
-    )
+    write_back_mock.assert_awaited_once_with(toss_frame, symbol="MSFT", source="toss")
 
 
 @pytest.mark.asyncio
@@ -284,13 +315,9 @@ async def test_kr_week_does_not_use_db_cache(monkeypatch):
             return kis_frame
 
     monkeypatch.setattr(market_data_service, "KISClient", lambda: _StubKIS())
-    monkeypatch.setattr(
-        market_data_service, "write_back_kr", AsyncMock(return_value=0)
-    )
+    monkeypatch.setattr(market_data_service, "write_back_kr", AsyncMock(return_value=0))
 
-    candles = await market_data_service.get_ohlcv(
-        "005930", "kr", "week", count=5
-    )
+    candles = await market_data_service.get_ohlcv("005930", "kr", "week", count=5)
 
     assert candles[0].source == "kis"
     cache_mock.assert_not_awaited()
@@ -320,13 +347,9 @@ async def test_us_week_does_not_use_db_cache(monkeypatch):
         "fetch_yahoo_ohlcv",
         AsyncMock(return_value=yahoo_frame),
     )
-    monkeypatch.setattr(
-        market_data_service, "write_back_us", AsyncMock(return_value=0)
-    )
+    monkeypatch.setattr(market_data_service, "write_back_us", AsyncMock(return_value=0))
 
-    candles = await market_data_service.get_ohlcv(
-        "MSFT", "us", "week", count=5
-    )
+    candles = await market_data_service.get_ohlcv("MSFT", "us", "week", count=5)
 
     assert candles[0].source == "yahoo"
     cache_mock.assert_not_awaited()
@@ -356,7 +379,9 @@ async def test_cache_first_kr_returns_frame_when_fresh():
             return_value=True,
         ),
     ):
-        result = await cache_first_kr("005930", count=5)
+        # now= after the 15:35 cutoff so the intraday live-passthrough gate
+        # does not fire and the DB path is actually exercised.
+        result = await cache_first_kr("005930", count=5, now=_after_cutoff_now())
 
     assert result is not None
     assert len(result) == 5
@@ -382,7 +407,7 @@ async def test_cache_first_kr_returns_none_when_stale():
             return_value=False,
         ),
     ):
-        result = await cache_first_kr("005930", count=5)
+        result = await cache_first_kr("005930", count=5, now=_after_cutoff_now())
 
     assert result is None
 
@@ -403,7 +428,7 @@ async def test_cache_first_kr_returns_none_when_insufficient_rows():
             return_value=True,
         ),
     ):
-        result = await cache_first_kr("005930", count=10)
+        result = await cache_first_kr("005930", count=10, now=_after_cutoff_now())
 
     assert result is None
 
@@ -415,7 +440,7 @@ async def test_cache_first_kr_returns_none_when_db_empty():
         "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
         new=AsyncMock(return_value=[]),
     ):
-        result = await cache_first_kr("005930", count=5)
+        result = await cache_first_kr("005930", count=5, now=_after_cutoff_now())
     assert result is None
 
 
@@ -544,3 +569,342 @@ def test_cache_is_fresh_equity_before_krx_close_previous_session():
         return_value=prev_session.date(),
     ):
         assert cache_is_fresh_equity(rows_stale, "XKRX") is False
+
+
+# ---------------------------------------------------------------------------
+# KR intraday live-passthrough gate (ROB-639 review fix #2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cache_first_kr_intraday_session_bypasses_db_even_when_fresh():
+    """11:00 KST on a KRX session day → None (live serves the forming bar),
+    even though the DB would be sufficient and fresh. Non-tautological: the
+    repository is patched to return fresh rows and must not even be hit."""
+    latest, _prev = _krx_latest_and_prev_session()
+    intraday_now = _kst_at(latest, 11, 0)
+    closed_utc = dt.datetime.combine(latest, dt.time(6, 31), tzinfo=UTC)
+    rows = [
+        _make_row("005930", "KRX", closed_utc - timedelta(days=i), 70000.0 + i)
+        for i in range(5)
+    ]
+
+    fetch_mock = AsyncMock(return_value=list(reversed(rows)))
+    with patch(
+        "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+        new=fetch_mock,
+    ):
+        result = await cache_first_kr("005930", count=5, now=intraday_now)
+
+    assert result is None
+    fetch_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cache_first_kr_after_cutoff_serves_db_covering_today():
+    """After 15:35 KST on a session day, a DB whose newest row covers today's
+    session is served (real freshness logic — latest_exchange_session is NOT
+    patched)."""
+    latest, _prev = _krx_latest_and_prev_session()
+    after_cutoff = _kst_at(latest, 16, 0)
+    # 06:31 UTC = 15:31 KST → timestamped on the latest session's date.
+    newest = dt.datetime.combine(latest, dt.time(6, 31), tzinfo=UTC)
+    rows = [
+        _make_row("005930", "KRX", newest - timedelta(days=i), 70000.0 + i)
+        for i in range(5)
+    ]
+
+    with patch(
+        "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+        new=AsyncMock(return_value=list(reversed(rows))),
+    ):
+        result = await cache_first_kr("005930", count=5, now=after_cutoff)
+
+    assert result is not None
+    assert len(result) == 5
+    assert result["date"].max() == latest
+
+
+@pytest.mark.asyncio
+async def test_cache_first_kr_after_cutoff_stale_db_returns_none():
+    """After 15:35 KST on a session day, a DB whose newest row only covers the
+    PREVIOUS session is stale → None (live path must refresh today's close)."""
+    latest, prev = _krx_latest_and_prev_session()
+    after_cutoff = _kst_at(latest, 16, 0)
+    newest = dt.datetime.combine(prev, dt.time(6, 31), tzinfo=UTC)
+    rows = [
+        _make_row("005930", "KRX", newest - timedelta(days=i), 70000.0 + i)
+        for i in range(5)
+    ]
+
+    with patch(
+        "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+        new=AsyncMock(return_value=list(reversed(rows))),
+    ):
+        result = await cache_first_kr("005930", count=5, now=after_cutoff)
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Fail-open on DB errors (ROB-639 review fix #1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cache_first_kr_returns_none_when_db_raises():
+    """Any DB exception must degrade to None (live fallback), never raise."""
+    with patch(
+        "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+        new=AsyncMock(side_effect=RuntimeError("db down")),
+    ):
+        result = await cache_first_kr("005930", count=5, now=_after_cutoff_now())
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_cache_first_us_returns_none_when_db_raises_after_lookup_failure():
+    """Poisoned-session regression (CI failure shape): the exchange lookup
+    fails AND the subsequent fetch raises (e.g. InFailedSQLTransactionError).
+    cache_first_us must swallow it and return None so live Yahoo serves."""
+    with (
+        patch(
+            "app.services.us_symbol_universe_service.get_us_exchange_by_symbol",
+            new=AsyncMock(side_effect=RuntimeError("relation does not exist")),
+        ),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+            new=AsyncMock(side_effect=RuntimeError("current transaction is aborted")),
+        ),
+    ):
+        result = await cache_first_us("ZZFAILOPEN", count=5)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_cache_first_us_rolls_back_session_after_lookup_failure():
+    """After a failed exchange lookup the session must be rolled back before
+    it is reused for fetch_recent (the aborted-transaction fix)."""
+    fake_session = _FakeSession()
+    rollback_mock = AsyncMock()
+    fake_session.rollback = rollback_mock  # type: ignore[method-assign]
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", new=lambda: fake_session),
+        patch(
+            "app.services.us_symbol_universe_service.get_us_exchange_by_symbol",
+            new=AsyncMock(side_effect=RuntimeError("lookup failed")),
+        ),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        result = await cache_first_us("ZZROLLBACK", count=5)
+
+    assert result is None
+    rollback_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Forming-bar write-back guard (ROB-639 review fix #3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_back_kr_drops_forming_bar_intraday():
+    """At 11:00 KST on session S, a frame holding [prev session, S] must only
+    persist the prev-session row — S's bar is still forming."""
+    latest, prev = _krx_latest_and_prev_session()
+    intraday_now = _kst_at(latest, 11, 0)
+    frame = pd.DataFrame(
+        [
+            {
+                "date": prev,
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            },
+            {
+                "date": latest,  # forming intraday bar
+                "open": 105.0,
+                "high": 108.0,
+                "low": 104.0,
+                "close": 107.0,
+                "volume": 500.0,
+                "value": 53500.0,
+            },
+        ]
+    )
+    upsert_mock = AsyncMock(return_value=1)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", new=lambda: _FakeSession()),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+            new=upsert_mock,
+        ),
+    ):
+        upserted = await write_back_kr(frame, symbol="ZZWBKR1", now=intraday_now)
+
+    assert upserted == 1
+    upsert_mock.assert_awaited_once()
+    persisted = upsert_mock.call_args.kwargs["rows"]
+    assert [r.time_utc.date() for r in persisted] == [prev]
+
+
+@pytest.mark.asyncio
+async def test_write_back_kr_all_forming_rows_writes_nothing():
+    """A frame containing only today's forming bar persists nothing."""
+    latest, _prev = _krx_latest_and_prev_session()
+    intraday_now = _kst_at(latest, 11, 0)
+    frame = pd.DataFrame(
+        [
+            {
+                "date": latest,
+                "open": 105.0,
+                "high": 108.0,
+                "low": 104.0,
+                "close": 107.0,
+                "volume": 500.0,
+                "value": 53500.0,
+            }
+        ]
+    )
+    upsert_mock = AsyncMock(return_value=1)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", new=lambda: _FakeSession()),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+            new=upsert_mock,
+        ),
+    ):
+        upserted = await write_back_kr(frame, symbol="ZZWBKR2", now=intraday_now)
+
+    assert upserted == 0
+    upsert_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_write_back_kr_after_cutoff_keeps_todays_bar():
+    """After 15:35 KST, today's bar is final and must be persisted."""
+    latest, prev = _krx_latest_and_prev_session()
+    after_cutoff = _kst_at(latest, 16, 0)
+    frame = pd.DataFrame(
+        [
+            {
+                "date": prev,
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            },
+            {
+                "date": latest,
+                "open": 105.0,
+                "high": 108.0,
+                "low": 104.0,
+                "close": 107.0,
+                "volume": 500.0,
+                "value": 53500.0,
+            },
+        ]
+    )
+    upsert_mock = AsyncMock(return_value=2)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", new=lambda: _FakeSession()),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+            new=upsert_mock,
+        ),
+    ):
+        upserted = await write_back_kr(frame, symbol="ZZWBKR3", now=after_cutoff)
+
+    assert upserted == 2
+    persisted = upsert_mock.call_args.kwargs["rows"]
+    assert sorted(r.time_utc.date() for r in persisted) == sorted([prev, latest])
+
+
+@pytest.mark.asyncio
+async def test_write_back_us_drops_forming_bar_and_preserves_adj_close():
+    """Mid-session US write-back drops the forming bar; a frame without an
+    adj_close column must not update adj_close (yahoo_fallback guard)."""
+    latest, prev = _xnys_latest_and_prev_session()
+    # 15:00 UTC is mid-session on any XNYS session day (incl. half days).
+    mid_session_now = dt.datetime.combine(latest, dt.time(15, 0), tzinfo=UTC)
+    frame = pd.DataFrame(
+        [
+            {
+                "date": prev,
+                "open": 150.0,
+                "high": 152.0,
+                "low": 148.0,
+                "close": 151.0,
+                "volume": 1000.0,
+                "value": 151000.0,
+            },
+            {
+                "date": latest,  # forming intraday bar
+                "open": 151.0,
+                "high": 153.0,
+                "low": 150.0,
+                "close": 152.0,
+                "volume": 500.0,
+                "value": 76000.0,
+            },
+        ]
+    )
+    upsert_mock = AsyncMock(return_value=1)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", new=lambda: _FakeSession()),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+            new=upsert_mock,
+        ),
+    ):
+        upserted = await write_back_us(
+            frame,
+            symbol="ZZWBUS1",
+            partition="NASD",
+            source="yahoo",
+            now=mid_session_now,
+        )
+
+    assert upserted == 1
+    upsert_mock.assert_awaited_once()
+    kwargs = upsert_mock.call_args.kwargs
+    assert [r.time_utc.date() for r in kwargs["rows"]] == [prev]
+    assert kwargs["update_adj_close"] is False
+
+
+def test_upsert_sql_excludes_adj_close_from_update_when_guarded():
+    """update_adj_close=False keeps adj_close in the INSERT column list but
+    out of the ON CONFLICT UPDATE SET."""
+    from app.services.daily_candles.repository import (
+        _TABLE_CONFIGS,
+        DailyCandlesRepository,
+        MarketKey,
+    )
+
+    cfg = _TABLE_CONFIGS[MarketKey.US]
+    guarded = str(
+        DailyCandlesRepository._build_market_upsert(
+            cfg, with_adj_close=True, update_adj_close=False
+        )
+    )
+    default = str(
+        DailyCandlesRepository._build_market_upsert(
+            cfg, with_adj_close=True, update_adj_close=True
+        )
+    )
+    assert "adj_close" in guarded  # still inserted
+    assert "adj_close=EXCLUDED.adj_close" not in guarded
+    assert "adj_close=EXCLUDED.adj_close" in default

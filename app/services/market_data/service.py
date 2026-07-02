@@ -635,9 +635,7 @@ async def get_ohlcv(
             # back to Yahoo → Toss on miss/stale. week/month stay live (v1).
             capped_count = min(count, 200)
             if resolved_period == "day":
-                db_frame = await cache_first_us(
-                    resolved_symbol, capped_count, end
-                )
+                db_frame = await cache_first_us(resolved_symbol, capped_count, end)
                 if db_frame is not None and not db_frame.empty:
                     return _to_candle_rows(
                         db_frame,
@@ -680,9 +678,7 @@ async def get_ohlcv(
             # ROB-639: day → DB-first read-through (kr_candles_1d). week/month
             # stay on the live path (v1 scope).
             if resolved_period == "day":
-                db_frame = await cache_first_kr(
-                    resolved_symbol, capped_count, end
-                )
+                db_frame = await cache_first_kr(resolved_symbol, capped_count, end)
                 if db_frame is not None and not db_frame.empty:
                     return _to_candle_rows(
                         db_frame,
