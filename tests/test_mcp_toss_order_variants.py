@@ -2391,6 +2391,80 @@ async def test_place_required_mode_without_hash_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_place_warn_mode_without_hash_passes_and_logs(monkeypatch, caplog):
+    import logging
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+    monkeypatch.setattr(otv.settings, "toss_approval_hash_mode", "warn", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger=otv.logger.name):
+        res = await otv.toss_place_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="10",
+            price="70000",
+            market="kr",
+            dry_run=True,
+            account_mode="toss_live",
+        )
+    assert res["success"] is True
+    assert any("without approval_hash" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_place_off_mode_ignores_mismatched_hash(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+
+    # Preview under any mode to mint a valid token bound to price=70000.
+    prev = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+
+    # off mode: verification is skipped entirely, so a token bound to a
+    # *different* order must NOT fail-close.
+    monkeypatch.setattr(otv.settings, "toss_approval_hash_mode", "off", raising=False)
+    res = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70100",  # differs from the previewed 70000
+        market="kr",
+        dry_run=True,
+        approval_hash=prev["approval_hash"],
+        account_mode="toss_live",
+    )
+    assert res["success"] is True
+    assert "error_code" not in res
+
+
+@pytest.mark.asyncio
 async def test_client_order_id_same_day_stable_next_day_new(monkeypatch):
     from datetime import datetime
 
