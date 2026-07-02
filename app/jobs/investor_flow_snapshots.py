@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 import sqlalchemy as sa
 
@@ -44,6 +45,12 @@ class InvestorFlowSnapshotSample:
     individual_net: int | None
     double_buy: bool
     double_sell: bool
+    # ROB-640 market fields so dry-run approval packets show the wired values.
+    close: Decimal | None = None
+    change_rate: Decimal | None = None  # percent, e.g. 1.5 for 1.5%
+    volume: int | None = None
+    foreign_holding_shares: int | None = None
+    foreign_holding_rate: Decimal | None = None  # percent 0-100
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,11 @@ def _sample(payload: InvestorFlowSnapshotUpsert) -> InvestorFlowSnapshotSample:
         individual_net=payload.individual_net,
         double_buy=_double_buy(payload),
         double_sell=_double_sell(payload),
+        close=payload.close,
+        change_rate=payload.change_rate,
+        volume=payload.volume,
+        foreign_holding_shares=payload.foreign_holding_shares,
+        foreign_holding_rate=payload.foreign_holding_rate,
     )
 
 
