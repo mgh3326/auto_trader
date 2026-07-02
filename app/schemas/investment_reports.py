@@ -1121,6 +1121,9 @@ class OperatingBriefingResponse(BaseModel):
     # ROB-637 — metadata-only recent analysis artifacts; defaulted so
     # pre-existing constructors of this shape keep validating.
     analysis_artifacts: dict[str, Any] = Field(default_factory=dict)
+    # ROB-646 — lightweight policy version pin ({version, content_hash}) so a
+    # session records which policy it ran under. Defaulted for back-compat.
+    policy_version: dict[str, Any] | None = None
 
 
 class InvestmentReportCreateResponse(BaseModel):

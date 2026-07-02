@@ -1,0 +1,118 @@
+# Trading policy — single authoritative source (ROB-646).
+# Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
+# (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
+# Repo is public; exposing these values is an accepted decision.
+version: "2026-07-02.1"
+captured_as_of: "2026-07-02"
+source: "ROB-643 playbook policy_keys (seed); this file is now authoritative"
+
+authority:
+  scope: judgment_thresholds_only
+  governs: "advisory judgment thresholds + the sector-cluster concentration cap"
+  does_not_govern:
+    - "loss_guard code guard (order_validation.py avg*1.01) — stays fail-closed in code"
+    - "ladder near-market guard (ladder_fill_safety.py 0.3%) — code"
+    - "RSI scoring bands (scoring.py) — code"
+    - "symbol_trade_settings — live per-symbol sizing (separate authority)"
+    - "sell_conditions — dormant/test-only (not authoritative)"
+    - "trade_profile — dead since ROB-488 (not revived)"
+
+# Raw-sector -> cluster grouping for the concentration cap. A member matches a
+# symbol's symbol_sectors label (name_kr / name_en / source_key) when the member
+# is a case-insensitive SUBSTRING of the label (one-directional: member ⊂ label),
+# so "반도체" matches "반도체와반도체장비" but "의료" does NOT invent a match against
+# "의료정밀". List members as specific labels, not broad umbrellas. Best-effort;
+# unmapped => fail-open.
+sector_clusters:
+  financials: ["금융", "은행", "증권", "보험", "Financial Services", "Banks", "Insurance"]
+  shipbuilding_defense: ["조선", "방산", "항공우주", "Aerospace & Defense"]
+  bio: ["제약", "바이오", "Biotechnology", "Drug Manufacturers"]
+  semis_memory: ["반도체", "메모리", "Semiconductors", "Semiconductor Equipment & Materials"]
+
+thresholds:
+  recovery_gate.min_conditions_met:
+    lanes: [buy]
+    value: 2
+    unit: count
+    of: 4
+    semantics: min recovery-gate conditions to deploy reserve (else support-conditional only)
+  portfolio.sector_cluster_cap_pct:
+    lanes: [buy, sell]
+    value: 10
+    unit: percent
+    semantics: over-concentration cap per sector cluster (~9-10%)
+  portfolio.max_symbols_per_theme:
+    lanes: [buy, discovery]
+    value: 1
+    unit: count
+    semantics: one symbol per theme
+  order.day_expiry_kst:
+    lanes: [buy, sell]
+    value: "20:00"
+    unit: kst_time
+    semantics: DAY order expiry; unfilled -> re-place next day
+  buy.deep_limit_pct_range:
+    lanes: [buy]
+    value: [-12, -3]
+    unit: percent
+    semantics: deep limit distance below current price (pull-back catch, no chasing)
+  buy.per_symbol_notional_krw_range:
+    lanes: [buy, discovery]
+    value: [200000, 400000]
+    unit: krw
+    semantics: per-symbol order sizing for new entries (policy threshold, not account balance)
+  sell.loss_guard_min_multiple:
+    lanes: [buy, sell]
+    value: 1.01
+    unit: multiple_of_avg_cost
+    semantics: minimum sell price as multiple of average cost (loss guard)
+  sell.breakeven_near_pct:
+    lanes: [sell]
+    value: 2
+    unit: percent
+    semantics: near-breakeven scan band (+/-)
+  sell.resistance_near_pct:
+    lanes: [sell]
+    value: 6
+    unit: percent
+    semantics: resistance-proximity threshold for PLACE vs WATCH
+  sell.rsi_place_min:
+    lanes: [sell]
+    value: 58
+    unit: rsi
+    semantics: RSI at/above which PLACE is favored
+  sell.upside_place_max_pct:
+    lanes: [sell]
+    value: 45
+    unit: percent
+    semantics: honest upside below which PLACE is favored
+  sell.watch_rsi_max:
+    lanes: [sell]
+    value: 52
+    unit: rsi
+    semantics: RSI below which WATCH (let-it-run) is allowed
+  sell.watch_upside_min_pct:
+    lanes: [sell]
+    value: 50
+    unit: percent
+    semantics: upside at/above which WATCH (let-it-run) is allowed
+  screen.rsi_max:
+    lanes: [discovery]
+    value: 45
+    unit: rsi
+    semantics: max RSI for a discovery candidate
+  screen.support_within_pct:
+    lanes: [discovery]
+    value: 8
+    unit: percent
+    semantics: strong support must be within this distance
+  screen.upside_min_pct:
+    lanes: [discovery]
+    value: 40
+    unit: percent
+    semantics: minimum honest upside for a candidate
+
+market_overrides:
+  kr: {}
+  us: {}
+  crypto: {}

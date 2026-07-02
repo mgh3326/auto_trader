@@ -40,6 +40,7 @@ from app.mcp_server.tooling.order_validation import (
     _resolve_scalping_exit_context,
     _validate_defensive_trim_preconditions,
     _validate_sell_side,
+    evaluate_sector_concentration,
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import (
@@ -1181,6 +1182,28 @@ async def _place_order_impl(
             if dry_run:
                 return _build_dry_run_blocked_response(dry_run_result, balance_error)
             return balance_error
+
+        if side_lower == "buy":
+            mkt_mapped = "kr"
+            if market_type == "equity_us":
+                mkt_mapped = "us"
+            elif market_type == "crypto":
+                mkt_mapped = "crypto"
+
+            cur_mapped = "KRW" if market_type != "equity_us" else "USD"
+
+            sector_conc = await evaluate_sector_concentration(
+                symbol=normalized_symbol,
+                market=mkt_mapped,
+                order_estimated_value=dry_run_result.get("estimated_value"),
+                order_currency=cur_mapped,
+                # ROB-646 Finding 1: whole-portfolio scope (no account/market
+                # filter) so KIS and Toss buy paths measure the same denominator.
+                account_ctx={"is_mock": is_mock},
+            )
+            dry_run_result["sector_concentration"] = sector_conc
+            if sector_conc.get("verdict") == "over" and not balance_warning:
+                balance_warning = sector_conc.get("warning")
 
         # Dry-run exit
         if dry_run:
