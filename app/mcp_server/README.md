@@ -1318,6 +1318,16 @@ Response shape:
 - `errors`: broker, cash, exchange-rate, or KRX ETF partial failures
 - `warnings`: non-fatal valuation omissions
 
+### `get_trading_policy` spec
+
+- `get_trading_policy(market, lane)`
+  - Query trading policy judgment thresholds.
+  - Read-only, single source `config/trading_policy.yaml`, operator-PR-edited (no write tool).
+  - Args `market ∈ {kr,us,crypto}` × `lane ∈ {buy,sell,discovery}`.
+  - An unknown key maps to `success=false, error=unknown_key`.
+  - **Version-stamping contract**: consumers cite `{version, content_hash}` (from `get_trading_policy` or the `policy_version` field of `get_operating_briefing`) in `report_item.evidence_snapshot`, `trade_retrospectives`, and forecast records so the judging criteria are recoverable.
+  - The buy-preview `sector_concentration` field is **fail-open** advisory (never blocks).
+
 ### User Settings Tools
 
 - `get_user_setting(key)` - Get a user setting value by key. Returns the JSON value or None if not found.

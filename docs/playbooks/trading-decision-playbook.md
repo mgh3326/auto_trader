@@ -259,6 +259,16 @@ Captured as-of **2026-07-02** from the 2026-06-19 → 2026-07-02 live sessions.
 Once ROB-646 `trading_policy.yaml` lands it is the single authoritative source;
 these values are the seed, not a second source of truth.
 
+> **Authority (ROB-646, landed):** `config/trading_policy.yaml` is now the
+> single authoritative source of these values; this block is the historical
+> seed. The policy governs **judgment thresholds + the sector-cluster
+> concentration cap only** — NOT the fail-closed code guards (loss guard,
+> ladder near-market, RSI scoring bands), NOT `symbol_trade_settings` (live
+> sizing), and it does not revive `trade_profile` (dead since ROB-488). Lane
+> `sell` = "profit_taking" (same lane, human alias). Read it via
+> `get_trading_policy(market, lane)`.
+
+
 ```yaml
 # playbook-machine-readable: policy_keys (ROB-646 initial-value capture)
 # authoritative_source_when_landed: ROB-646 trading_policy.yaml

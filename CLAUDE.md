@@ -705,7 +705,15 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 - URL: `http://localhost:8000/stock-latest/`
 - 기능: 종목별 최신 분석 결과 조회
 
+### Trading Policy YAML 단일 소스 (ROB-646)
 
+`config/trading_policy.yaml` = 매매 판단 임계값 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**
+
+- **스키마/로더**: `app/schemas/trading_policy.py`, `app/services/trading_policy_service.py`
+- **MCP 도구**: `get_trading_policy(market, lane)` — market×lane 임계값 + `{version, content_hash}` echo; 없는 키는 `success=false, error=unknown_key`
+- **버전 스탬핑 계약**: 판정 기록(evidence_snapshot·trade_retrospectives·forecast)은 `{version, content_hash}` 인용. `get_operating_briefing`가 run-start에 `policy_version` echo.
+- **강제 범위**: 섹터 클러스터 집중도 cap만 매수 프리뷰에서 코드 검사 (`sector_concentration` 필드, **fail-open** — 경고만, 차단 안 함). 나머지 임계값은 advisory.
+- **관할**: 판단 임계값 전용. fail-closed 코드 가드(손실매도/ladder/RSI 스코어링)·`symbol_trade_settings`(라이브 사이징)·`trade_profile`(dead)와 분리. migration 0.
 
 ## 문제 해결
 
