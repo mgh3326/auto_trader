@@ -27,6 +27,7 @@ from app.services.investment_reports.query_service import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.session_context import SessionContextService
+from app.services.trading_policy_service import policy_version_stamp
 
 
 def _normalize_watch_symbol(symbol: str | None, market: str | None) -> str | None:
@@ -371,6 +372,11 @@ async def get_operating_briefing_impl(
             {"source": "account_costs", "error": str(exc)}
         )
 
+    try:
+        policy_version = policy_version_stamp()
+    except Exception as exc:  # noqa: BLE001 — fail-open, briefing must still return
+        policy_version = {"error": str(exc)}
+
     response = {
         "success": True,
         "market": market,
@@ -424,6 +430,7 @@ async def get_operating_briefing_impl(
         "latest_report": latest_report,
         "session_context": session_context,
         "analysis_artifacts": analysis_artifacts,
+        "policy_version": policy_version,
     }
     return OperatingBriefingResponse.model_validate(response).model_dump(mode="json")
 
