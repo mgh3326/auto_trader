@@ -265,6 +265,8 @@ async def _place_order_variant(
     account_mode: str | None,
     account_type: str | None,
     report_item_uuid: str | None = None,
+    approval_hash: str | None = None,
+    rung: str | int | None = None,
 ) -> dict[str, Any]:  # NOSONAR - mirrors the public MCP order contract.
     routing, early_response = _prepare_variant_call(
         tool_name, pinned_mode, account_mode, account_type
@@ -311,6 +313,8 @@ async def _place_order_variant(
             approval_issue_id=approval_issue_id,
             is_mock=_is_mock_mode(pinned_mode),
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash,
+            rung=rung,
         ),
         routing,
     )
@@ -505,6 +509,8 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
         report_item_uuid: str | None = None,
+        approval_hash: str | None = None,
+        rung: str | int | None = None,
     ) -> dict[str, Any]:
         gate = _venue_tif_gate(
             "kis_live_place_order",
@@ -539,6 +545,8 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             account_mode=account_mode,
             account_type=account_type,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash,
+            rung=rung,
         )
 
     @mcp.tool(

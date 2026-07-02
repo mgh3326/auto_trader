@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from typing import cast as typing_cast
@@ -15,9 +16,12 @@ from typing import cast as typing_cast
 import httpx
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.config import settings
 from app.core.exceptions import describe_exception
+from app.core.timezone import KST, now_kst
 from app.mcp_server.caller_identity import get_caller_source
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
+from app.mcp_server.tooling import order_approval
 from app.mcp_server.tooling.order_journal import (
     _append_journal_warning,
     _close_journals_on_sell,
@@ -678,6 +682,8 @@ async def _execute_and_record(
     is_mock: bool = False,
     correlation_id: str | None = None,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash_digest: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
@@ -787,6 +793,8 @@ async def _execute_and_record(
             notes=notes,
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash_digest,
+            idempotency_key=idempotency_key,
         )
 
     # ROB-407: US/해외 live 주문도 accepted-only 기록; fill/journal/pnl은
@@ -831,6 +839,8 @@ async def _execute_and_record(
             ),
             dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash_digest,
+            idempotency_key=idempotency_key,
         )
 
     # ROB-407: crypto live 주문. 지정가 pending은 accepted-only(reconcile 위임),
@@ -889,6 +899,8 @@ async def _execute_and_record(
             ),
             dt_caller_source=get_caller_source() if defensive_trim_ctx else None,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash_digest,
+            idempotency_key=idempotency_key,
         )
 
     # Record phase: fills + journals
@@ -1032,6 +1044,8 @@ async def _place_order_impl(
     scalping_exit_reason: str | None = None,
     correlation_id: str | None = None,
     report_item_uuid: str | None = None,
+    approval_hash: str | None = None,
+    rung: str | int | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1205,9 +1219,66 @@ async def _place_order_impl(
             if sector_conc.get("verdict") == "over" and not balance_warning:
                 balance_warning = sector_conc.get("warning")
 
-        # Dry-run exit
+        # ROB-653 P6-B — bind previewed↔placed content with an approval hash.
+        # Canonical uses post-normalization wire values (tick-snap, amount→qty).
+        canonical = order_approval.build_order_canonical_payload(
+            market_type=market_type,
+            symbol=normalized_symbol,
+            side=side_lower,
+            order_type=order_type_lower,
+            quantity=None if order_quantity is None else str(order_quantity),
+            price=None if price is None else str(price),
+        )
+        now = now_kst()
+        salt_market = order_approval.salt_market_for(market_type)
+        idempotency_key = order_approval.derive_client_order_id(
+            canonical, market=salt_market, now=now, rung=rung
+        )
+
+        # Dry-run exit — the preview emits the approval token operators pass back.
         if dry_run:
-            return _build_dry_run_response(dry_run_result, balance_warning)
+            preview_resp = _build_dry_run_response(dry_run_result, balance_warning)
+            preview_resp["approval_hash"] = order_approval.encode_approval_token(
+                canonical, now=now
+            )
+            preview_resp["approval_expires_at"] = (
+                (now + timedelta(seconds=order_approval.APPROVAL_TTL_SECONDS))
+                .astimezone(KST)
+                .isoformat()
+            )
+            preview_resp["idempotency_key"] = idempotency_key
+            return preview_resp
+
+        # Live send — approval-hash gate (valid hash = confirm).
+        mode = getattr(settings, "order_approval_hash_mode", "optional")
+        if mode != "off":
+            if approval_hash is not None:
+                verdict = order_approval.verify_approval_token(
+                    approval_hash, canonical, now=now
+                )
+                if not verdict.ok:
+                    err = _order_error(verdict.message or "approval_hash invalid")
+                    err["error_code"] = verdict.error_code
+                    if verdict.diff is not None:
+                        err["diff"] = verdict.diff
+                    return err
+            elif mode == "required":
+                err = _order_error(
+                    "approval_hash is required (ORDER_APPROVAL_HASH_MODE=required). "
+                    "Re-run with dry_run=True and pass the returned approval_hash."
+                )
+                err["error_code"] = "approval_hash_required"
+                return err
+            elif mode == "warn":
+                logger.warning(
+                    "place_order without approval_hash (mode=warn) symbol=%s side=%s",
+                    normalized_symbol,
+                    side_lower,
+                )
+
+        approval_digest = (
+            order_approval.derive_approval_digest(canonical) if mode != "off" else None
+        )
 
         # Real execution
         return await _execute_and_record(
@@ -1235,6 +1306,8 @@ async def _place_order_impl(
             is_mock=is_mock,
             correlation_id=correlation_id,
             report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
+            approval_hash_digest=approval_digest,
+            idempotency_key=idempotency_key,
         )
     except Exception as exc:
         logger.exception(
