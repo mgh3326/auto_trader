@@ -89,6 +89,10 @@ class DummyMCP:
 
         return decorator
 
+    def list_tools(self):
+        """Mirror FastMCP.list_tools() — objects exposing a ``.name``."""
+        return [SimpleNamespace(name=name) for name in self.tools]
+
 
 class DummySessionManager:
     """Async context manager wrapper for an AsyncSession-like object."""

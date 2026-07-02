@@ -98,6 +98,9 @@ from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.route_request_registration import (
+    register_route_request_tools,
+)
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
 )
@@ -148,6 +151,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # ROB-646 — read-only policy thresholds + version stamp; always registered
     # so every profile can cite the stamp when recording a verdict.
     register_trading_policy_tools(mcp)
+    # ROB-649 — advisory lane router; always registered (read-only, no order
+    # surface). Intersects lane tool sequences with the live-registered surface.
+    register_route_request_tools(mcp)
     if snapshot_report_generator_enabled:
         register_investment_hermes_tools(mcp)
     # ROB-447: register_market_report_tools removed — its get_market_reports /

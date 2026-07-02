@@ -1328,6 +1328,27 @@ Response shape:
   - **Version-stamping contract**: consumers cite `{version, content_hash}` (from `get_trading_policy` or the `policy_version` field of `get_operating_briefing`) in `report_item.evidence_snapshot`, `trade_retrospectives`, and forecast records so the judging criteria are recoverable.
   - The buy-preview `sector_concentration` field is **fail-open** advisory (never blocks).
 
+### route_request — advisory lane router (ROB-649)
+
+`route_request(intent, market)` maps a coarse intent
+(`buy_analysis`/`profit_taking`/`discovery`/`market_brief`) to the standard tool
+sequence, advisory allowed/blocked tools, `get_trading_policy` thresholds +
+version stamp, and hard constraints for that lane. Deterministic; registered on
+every profile; read-only.
+
+**Divergence from tradingcodex:** the original has no route MCP tool — it
+injects lane guidance via a hook and maps lane→role→tool indirectly. auto_trader
+exposes a **direct lane→tool advisory** tool with **no enforcement**. Blocking
+middleware (mutation tools only, reads unrestricted, caller-header-keyed because
+MCP session state resets on reconnect — ROB-469) is a separate follow-up issue.
+
+Lane definitions come from the machine-readable `lanes:` blocks in
+`docs/playbooks/trading-decision-playbook.md`; `route_request_lanes.LANE_SEQUENCES`
+is kept in sync by `tests/test_route_request_registry_diff.py`. Every DEFAULT
+tool must be classified into `READ_ONLY_ADVISORY_TOOLS` or a mutation set or CI
+fails (silent-drift guard).
+
+
 ### User Settings Tools
 
 - `get_user_setting(key)` - Get a user setting value by key. Returns the JSON value or None if not found.
