@@ -105,6 +105,43 @@ async def test_upsert_is_idempotent_on_unique_key(db_session) -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_upsert_dedupes_duplicate_keys_in_single_call(db_session) -> None:
+    """Same conflict key twice in one payload must not crash Postgres.
+
+    Without pre-statement dedupe a multi-row INSERT ... ON CONFLICT raises
+    "ON CONFLICT DO UPDATE command cannot affect row a second time".
+    Last occurrence wins.
+    """
+    symbol = _unique_symbol()
+    await _cleanup(db_session, [symbol])
+
+    repo = AnalystConsensusSnapshotsRepository(db_session)
+    n = await repo.upsert(
+        [
+            _row(symbol=symbol, buy_count=10),
+            _row(symbol=symbol, buy_count=42),
+        ]
+    )
+    await db_session.commit()
+    assert n == 1
+
+    rows = (
+        (
+            await db_session.execute(
+                sa.select(AnalystConsensusSnapshot).where(
+                    AnalystConsensusSnapshot.symbol == symbol
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].buy_count == 42
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_coverage_counts_fresh_vs_stale(db_session) -> None:
     sym_a = _unique_symbol()
     sym_b = _unique_symbol()

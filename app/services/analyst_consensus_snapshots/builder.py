@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.services.analyst_consensus_snapshots.repository import (
     AnalystConsensusSnapshotUpsert,
@@ -20,6 +21,19 @@ _SOURCE_FOR_MARKET: dict[str, str] = {
     "kr": "naver_finance",
     "us": "yfinance",
 }
+
+# snapshot_date convention: the market-local calendar date (kr → Asia/Seoul,
+# us → America/New_York). A 00:30 KST run must record the KST date, not the
+# previous UTC date. Keep in sync with the AnalystConsensusSnapshot docstring.
+_MARKET_TZ: dict[str, dt.tzinfo] = {
+    "kr": ZoneInfo("Asia/Seoul"),
+    "us": ZoneInfo("America/New_York"),
+}
+
+# KR consensus stats reflect only the fetched opinion rows, so fetch up to the
+# handler cap (handle_get_investment_opinions clamps limit to 30) instead of
+# the default 10 which silently truncates well-covered symbols (ROB-641).
+OPINIONS_LIMIT = 30
 
 
 @dataclass(frozen=True)
@@ -89,7 +103,9 @@ async def default_consensus_fetcher(market: str, symbol: str) -> dict[str, Any]:
         handle_get_investment_opinions,
     )
 
-    payload = await handle_get_investment_opinions(symbol=symbol, market=market)
+    payload = await handle_get_investment_opinions(
+        symbol=symbol, market=market, limit=OPINIONS_LIMIT
+    )
     if payload.get("error"):
         raise ValueError(str(payload["error"]))
 
@@ -107,6 +123,7 @@ async def default_consensus_fetcher(market: str, symbol: str) -> dict[str, Any]:
         "source": source,
         "consensus": consensus,
         "opinions": opinions,
+        "opinions_limit": OPINIONS_LIMIT,
         "newest_opinion_date": newest,
     }
 
@@ -120,35 +137,63 @@ def _payload_from_consensus(
 ) -> AnalystConsensusSnapshotUpsert | None:
     consensus = data.get("consensus") or {}
 
-    # Skip if there is no meaningful data at all (all counts and prices null).
     total = _to_int(consensus.get("total_count"))
     current = _to_decimal(consensus.get("current_price"))
-    target_mean = _to_decimal(consensus.get("avg_target_price"))
-    if total is None and current is None and target_mean is None:
+    counts = (
+        _to_int(consensus.get("buy_count")),
+        _to_int(consensus.get("hold_count")),
+        _to_int(consensus.get("sell_count")),
+        _to_int(consensus.get("strong_buy_count")),
+        total,
+    )
+    targets = (
+        _to_decimal(consensus.get("avg_target_price")),
+        _to_decimal(consensus.get("median_target_price")),
+        _to_decimal(consensus.get("max_target_price")),
+        _to_decimal(consensus.get("min_target_price")),
+        _to_decimal(consensus.get("upside_pct")),
+    )
+    # Skip unless there is at least one real consensus count or target field.
+    # A row carrying only current_price is a quote, not a consensus snapshot.
+    if all(value is None for value in (*counts, *targets)):
         return None
+
+    # analyst_count: KR carries the normalizer's usable-target-price count
+    # (target_price_count, app/services/analyst_normalizer.py); US carries
+    # yfinance's numberOfAnalystOpinions. Fall back to total_count when absent.
+    analyst_count = _to_int(consensus.get("target_price_count"))
+    if analyst_count is None:
+        analyst_count = _to_int(consensus.get("number_of_analyst_opinions"))
+    if analyst_count is None:
+        analyst_count = total
+
+    raw_payload: dict[str, Any] = {
+        "consensus": consensus,
+        "opinion_count": len(data.get("opinions") or []),
+    }
+    opinions_limit = _to_int(data.get("opinions_limit"))
+    if opinions_limit is not None:
+        raw_payload["opinions_limit"] = opinions_limit
 
     return AnalystConsensusSnapshotUpsert(
         market=market,
         symbol=symbol.strip().upper(),
         source=data.get("source", _SOURCE_FOR_MARKET.get(market, market)),
         snapshot_date=snapshot_date,
-        buy_count=_to_int(consensus.get("buy_count")),
-        hold_count=_to_int(consensus.get("hold_count")),
-        sell_count=_to_int(consensus.get("sell_count")),
-        strong_buy_count=_to_int(consensus.get("strong_buy_count")),
+        buy_count=counts[0],
+        hold_count=counts[1],
+        sell_count=counts[2],
+        strong_buy_count=counts[3],
         total_count=total,
-        target_mean=target_mean,
-        target_median=_to_decimal(consensus.get("median_target_price")),
-        target_high=_to_decimal(consensus.get("max_target_price")),
-        target_low=_to_decimal(consensus.get("min_target_price")),
-        upside_pct=_to_decimal(consensus.get("upside_pct")),
-        analyst_count=total,
+        target_mean=targets[0],
+        target_median=targets[1],
+        target_high=targets[2],
+        target_low=targets[3],
+        upside_pct=targets[4],
+        analyst_count=analyst_count,
         newest_opinion_date=data.get("newest_opinion_date"),
         current_price=current,
-        raw_payload={
-            "consensus": consensus,
-            "opinion_count": len(data.get("opinions") or []),
-        },
+        raw_payload=raw_payload,
     )
 
 
@@ -162,8 +207,10 @@ async def build_consensus_snapshots(
 ) -> AnalystConsensusBuildResult:
     market_norm = market.strip().lower()
     fetch = fetcher or default_consensus_fetcher
-    snapshot_dt = (now or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
-    snapshot_date = snapshot_dt.date()
+    # snapshot_date is the market-local calendar date (kr → Asia/Seoul,
+    # us → America/New_York) so a KST-morning run never books the prior day.
+    snapshot_tz = _MARKET_TZ.get(market_norm, dt.UTC)
+    snapshot_date = (now or dt.datetime.now(dt.UTC)).astimezone(snapshot_tz).date()
     sem = asyncio.Semaphore(max(1, concurrency))
     symbols_list = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
     payloads: list[AnalystConsensusSnapshotUpsert | None] = [None] * len(symbols_list)

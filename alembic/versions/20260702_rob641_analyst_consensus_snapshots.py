@@ -6,8 +6,9 @@ Create Date: 2026-07-02
 
 New snapshot table for analyst consensus data (buy/hold/sell counts, target
 prices). Clones the market_quote_snapshots / market_valuation_snapshots pattern
-but lives in the ``review`` schema and keys on ``snapshot_date``.
-KR source: naver_finance. US source: yfinance.
+(``public`` schema, like all sibling snapshot tables) and keys on
+``snapshot_date`` (market-local calendar date: kr → Asia/Seoul,
+us → America/New_York). KR source: naver_finance. US source: yfinance.
 """
 
 from __future__ import annotations
@@ -76,19 +77,16 @@ def upgrade() -> None:
             "source",
             name="uq_analyst_consensus_snapshots_market_symbol_date_source",
         ),
-        schema="review",
     )
     op.create_index(
         "ix_analyst_consensus_snapshots_market_symbol_date",
         "analyst_consensus_snapshots",
         ["market", "symbol", sa.text("snapshot_date DESC")],
-        schema="review",
     )
     op.create_index(
         "ix_analyst_consensus_snapshots_market_date",
         "analyst_consensus_snapshots",
         ["market", sa.text("snapshot_date DESC")],
-        schema="review",
     )
 
 
@@ -96,11 +94,9 @@ def downgrade() -> None:
     op.drop_index(
         "ix_analyst_consensus_snapshots_market_date",
         table_name="analyst_consensus_snapshots",
-        schema="review",
     )
     op.drop_index(
         "ix_analyst_consensus_snapshots_market_symbol_date",
         table_name="analyst_consensus_snapshots",
-        schema="review",
     )
-    op.drop_table("analyst_consensus_snapshots", schema="review")
+    op.drop_table("analyst_consensus_snapshots")

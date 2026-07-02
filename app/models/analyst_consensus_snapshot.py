@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -22,6 +23,17 @@ from app.models.base import Base
 
 
 class AnalystConsensusSnapshot(Base):
+    """Daily analyst consensus snapshot (ROB-641).
+
+    Lives in the ``public`` schema alongside the other snapshot tables
+    (``market_quote_snapshots``, ``market_valuation_snapshots``, ...).
+
+    ``snapshot_date`` convention: the market-local calendar date at build
+    time — ``Asia/Seoul`` for ``kr`` rows, ``America/New_York`` for ``us``
+    rows. A 00:30 KST build therefore records the KST date for KR, not the
+    previous UTC date.
+    """
+
     __tablename__ = "analyst_consensus_snapshots"
     __table_args__ = (
         UniqueConstraint(
@@ -42,14 +54,13 @@ class AnalystConsensusSnapshot(Base):
             "ix_analyst_consensus_snapshots_market_symbol_date",
             "market",
             "symbol",
-            "snapshot_date",
+            text("snapshot_date DESC"),
         ),
         Index(
             "ix_analyst_consensus_snapshots_market_date",
             "market",
-            "snapshot_date",
+            text("snapshot_date DESC"),
         ),
-        {"schema": "review"},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

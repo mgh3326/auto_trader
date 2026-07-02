@@ -1,4 +1,5 @@
 from app.tasks import (
+    analyst_consensus_snapshot_tasks,
     crypto_pending_order_alert_tasks,
     daily_candles_tasks,
     daily_scan_tasks,
@@ -30,6 +31,7 @@ from app.tasks import (
 )
 
 TASKIQ_TASK_MODULES = (
+    analyst_consensus_snapshot_tasks,
     crypto_pending_order_alert_tasks,
     daily_candles_tasks,
     daily_scan_tasks,

@@ -11,22 +11,26 @@ from decimal import Decimal
 import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal
+from app.core.symbol import to_db_symbol
 from app.models.analyst_consensus_snapshot import AnalystConsensusSnapshot
 from app.services.analyst_consensus_snapshots.builder import build_consensus_snapshots
 from app.services.analyst_consensus_snapshots.repository import (
     AnalystConsensusSnapshotsRepository,
     AnalystConsensusSnapshotUpsert,
 )
+from app.services.candles_sync_common import build_symbol_union
 
 logger = logging.getLogger(__name__)
+
+_WATCH_ALERTS_LIMIT = 500
+_DEFAULT_USER_ID = 1
 
 
 @dataclass(frozen=True)
 class AnalystConsensusSnapshotBuildRequest:
     market: str = "kr"
     symbols: tuple[str, ...] = ()
-    limit: int | None = 20
-    all_symbols: bool = False
+    limit: int | None = None
     batch_size: int = 100
     concurrency: int = 4
     commit: bool = False
@@ -67,57 +71,108 @@ def _validate_market(market: str) -> str:
 
 
 def _normalize_symbol(symbol: str) -> str:
-    return symbol.strip().upper()
+    return to_db_symbol(symbol.strip().upper())
 
 
-async def resolve_symbols(market: str, override: list[str], limit: int) -> list[str]:
+def _normalize_kr_holding_symbol(value: object) -> str | None:
+    """KR holdings/watch symbol → 6-digit code (kr_candles_sync sibling)."""
+    text_value = str(value or "").strip().upper()
+    if not text_value:
+        return None
+    if len(text_value) < 6:
+        text_value = text_value.zfill(6)
+    if len(text_value) == 6 and text_value.isalnum():
+        return text_value
+    return None
+
+
+def _normalize_us_holding_symbol(value: object) -> str | None:
+    """US holdings/watch symbol → DB dot format (us_candles_sync sibling)."""
+    normalized = to_db_symbol(str(value or "").strip().upper())
+    return normalized or None
+
+
+async def _fetch_kis_holdings(market: str) -> list[object]:
+    """Live KIS holdings read (kr/us_candles_sync sibling pattern)."""
+    from app.services.brokers.kis.client import KISClient
+
+    kis = KISClient()
+    if market == "kr":
+        return list(await kis.fetch_my_stocks())
+    return list(await kis.fetch_my_us_stocks())
+
+
+async def _fetch_manual_holdings(market: str, user_id: int) -> list[object]:
+    from app.models.manual_holdings import MarketType
+    from app.services.manual_holdings_service import ManualHoldingsService
+
+    market_type = MarketType.KR if market == "kr" else MarketType.US
+    async with AsyncSessionLocal() as session:
+        return list(
+            await ManualHoldingsService(session).get_holdings_by_user(
+                user_id=user_id,
+                market_type=market_type,
+            )
+        )
+
+
+async def _fetch_active_watch_symbols(market: str) -> list[str]:
+    """Active asset-kind investment_watch_alerts symbols for the market."""
+    from app.services.investment_reports.repository import InvestmentReportsRepository
+
+    async with AsyncSessionLocal() as session:
+        alerts = await InvestmentReportsRepository(session).list_active_alerts(
+            market=market,
+            valid_at=dt.datetime.now(dt.UTC),
+            limit=_WATCH_ALERTS_LIMIT,
+        )
+    return [
+        alert.symbol
+        for alert in alerts
+        if getattr(alert, "target_kind", "asset") == "asset"
+    ]
+
+
+async def _resolve_holdings_and_watch_symbols(
+    market: str, *, user_id: int = _DEFAULT_USER_ID
+) -> set[str]:
+    """Default snapshot scope: holdings ∪ active watch (ROB-641).
+
+    Holdings = live KIS holdings ∪ manual holdings (candles-sync sibling
+    pattern); watch = active ``investment_watch_alerts`` asset symbols. The
+    alphabetical top-N universe scan (and the full-universe option) was
+    removed: consensus fetches are ~12 HTTP requests per symbol, so scope is
+    restricted to symbols the operator actually holds or watches.
+    """
+    normalize = (
+        _normalize_kr_holding_symbol if market == "kr" else _normalize_us_holding_symbol
+    )
+    holdings_field = "pdno" if market == "kr" else "ovrs_pdno"
+    kis_holdings = await _fetch_kis_holdings(market)
+    manual_holdings = await _fetch_manual_holdings(market, user_id)
+    symbols = build_symbol_union(
+        kis_holdings,
+        manual_holdings,
+        holdings_field=holdings_field,
+        normalize_fn=normalize,
+    )
+    for raw_symbol in await _fetch_active_watch_symbols(market):
+        normalized = normalize(raw_symbol)
+        if normalized is not None:
+            symbols.add(normalized)
+    return symbols
+
+
+async def resolve_symbols(
+    market: str, override: list[str], limit: int | None = None
+) -> list[str]:
     market_norm = _validate_market(market)
     if override:
         return [_normalize_symbol(symbol) for symbol in override if symbol.strip()]
-    async with AsyncSessionLocal() as session:
-        if market_norm == "kr":
-            from app.models.kr_symbol_universe import KRSymbolUniverse
-
-            stmt = (
-                sa.select(KRSymbolUniverse.symbol)
-                .where(KRSymbolUniverse.is_active.is_(True))
-                .order_by(KRSymbolUniverse.symbol)
-                .limit(limit)
-            )
-        else:
-            from app.models.us_symbol_universe import USSymbolUniverse
-
-            stmt = (
-                sa.select(USSymbolUniverse.symbol)
-                .where(USSymbolUniverse.is_active.is_(True))
-                .order_by(USSymbolUniverse.symbol)
-                .limit(limit)
-            )
-        result = await session.execute(stmt)
-        return [r[0] for r in result.all()]
-
-
-async def resolve_active_universe(market: str) -> list[str]:
-    market_norm = _validate_market(market)
-    async with AsyncSessionLocal() as session:
-        if market_norm == "kr":
-            from app.models.kr_symbol_universe import KRSymbolUniverse
-
-            stmt = (
-                sa.select(KRSymbolUniverse.symbol)
-                .where(KRSymbolUniverse.is_active.is_(True))
-                .order_by(KRSymbolUniverse.symbol)
-            )
-        else:
-            from app.models.us_symbol_universe import USSymbolUniverse
-
-            stmt = (
-                sa.select(USSymbolUniverse.symbol)
-                .where(USSymbolUniverse.is_active.is_(True))
-                .order_by(USSymbolUniverse.symbol)
-            )
-        result = await session.execute(stmt)
-        return [r[0] for r in result.all()]
+    symbols = sorted(await _resolve_holdings_and_watch_symbols(market_norm))
+    if limit is not None:
+        symbols = symbols[: max(0, limit)]
+    return symbols
 
 
 def _payload_key(
@@ -194,11 +249,7 @@ async def run_analyst_consensus_snapshot_build(
 ) -> AnalystConsensusSnapshotBuildResult:
     market = _validate_market(request.market)
     started_at = request.now or dt.datetime.now(dt.UTC)
-    symbols = await (
-        resolve_active_universe(market)
-        if request.all_symbols
-        else resolve_symbols(market, list(request.symbols), request.limit or 20)
-    )
+    symbols = await resolve_symbols(market, list(request.symbols), request.limit)
     if not symbols:
         finished_at = dt.datetime.now(dt.UTC)
         return AnalystConsensusSnapshotBuildResult(
@@ -216,9 +267,7 @@ async def run_analyst_consensus_snapshot_build(
             },
             warnings=("no symbols resolved",),
         )
-    effective_batch_size = max(
-        1, request.batch_size if request.all_symbols else len(symbols)
-    )
+    effective_batch_size = max(1, request.batch_size)
     idempotency = Counter(
         {"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0}
     )

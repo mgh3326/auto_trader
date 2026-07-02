@@ -20,19 +20,21 @@ from app.jobs.analyst_consensus_snapshots import (
 async def build_analyst_consensus_snapshots(
     market: Literal["kr", "us"] = "kr",
     symbols: list[str] | None = None,
-    limit: int | None = 20,
-    all_symbols: bool = False,
+    limit: int | None = None,
     batch_size: int = 100,
     concurrency: int = 4,
     commit: bool = False,
 ) -> dict[str, Any]:
-    """Build analyst_consensus_snapshots rows, dry-run by default."""
+    """Build analyst_consensus_snapshots rows, dry-run by default.
+
+    Default scope is holdings ∪ active watch symbols (no full-universe
+    option); pass ``symbols`` for an explicit override.
+    """
     result = await run_analyst_consensus_snapshot_build(
         AnalystConsensusSnapshotBuildRequest(
             market=market,
             symbols=tuple(symbols or ()),
             limit=limit,
-            all_symbols=all_symbols,
             batch_size=batch_size,
             concurrency=concurrency,
             commit=commit,

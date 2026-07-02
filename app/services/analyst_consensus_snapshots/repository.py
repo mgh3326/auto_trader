@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -12,6 +13,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.analyst_consensus_snapshot import AnalystConsensusSnapshot
+
+logger = logging.getLogger(__name__)
+
+_CONFLICT_KEY_FIELDS = ("market", "symbol", "snapshot_date", "source")
 
 
 class AnalystConsensusSnapshotUpsert(BaseModel):
@@ -53,6 +58,26 @@ def _normalize_payload(row: AnalystConsensusSnapshotUpsert) -> dict:
     return values
 
 
+def _dedupe_payload(payload: list[dict]) -> tuple[list[dict], int]:
+    """Collapse duplicate conflict keys, keeping the last occurrence.
+
+    A single multi-row ``VALUES`` upsert cannot reference the same ON CONFLICT
+    key twice (Postgres raises "command cannot affect row a second time"), so
+    duplicates must be removed before the statement is built. Last occurrence
+    wins (last-write-wins, matching the financial_fundamentals precedent);
+    surviving keys keep their first-seen position so output order is stable.
+    Returns ``(deduped_rows, dropped_count)``.
+    """
+    by_key: dict[tuple, dict] = {}
+    dropped = 0
+    for values in payload:
+        key = tuple(values[field] for field in _CONFLICT_KEY_FIELDS)
+        if key in by_key:
+            dropped += 1
+        by_key[key] = values
+    return list(by_key.values()), dropped
+
+
 class AnalystConsensusSnapshotsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -61,6 +86,13 @@ class AnalystConsensusSnapshotsRepository:
         payload = [_normalize_payload(row) for row in rows]
         if not payload:
             return 0
+        payload, dropped = _dedupe_payload(payload)
+        if dropped:
+            logger.info(
+                "analyst_consensus upsert collapsed %d duplicate conflict key(s) "
+                "(kept last occurrence)",
+                dropped,
+            )
         stmt = insert(AnalystConsensusSnapshot).values(payload)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_analyst_consensus_snapshots_market_symbol_date_source",

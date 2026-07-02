@@ -368,6 +368,14 @@ async def _fetch_investment_opinions_yfinance(
     if target_consensus is not None:
         consensus.update(target_consensus)
 
+    # ROB-641: surface Yahoo's analyst headcount so snapshot consumers can
+    # store a real analyst_count instead of duplicating total_count.
+    number_of_analyst_opinions = _normalize_yahoo_count(
+        (info or {}).get("numberOfAnalystOpinions")
+    )
+    if number_of_analyst_opinions is not None:
+        consensus["number_of_analyst_opinions"] = number_of_analyst_opinions
+
     result = {
         "instrument_type": "equity_us",
         "source": "yfinance",
