@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.4] - 2026-07-02
+
+### Added (ROB-650 — resolvable forecast ledger + deterministic resolve + Brier calibration)
+- New `review.trade_forecasts` table + `app/services/trade_journal/forecast_service.py` (repository is the only write surface): records a resolvable probabilistic claim (a buy thesis or a profit-taking WATCH→PLACE verdict) with `forecast_id` idempotency key, artifact/journal/report_item/correlation links, `forecast_target` JSONB, `probability` (+ optional range with a DB cross-column check), `review_date`, `status` (open/closed), resolution outputs (outcome/observed_value/brier_score/resolved_at), and a `policy_version` stamp. Composition stays a Claude session (LLM boundary); recording/resolution/scoring are fully deterministic.
+- `resolve_forecast` is idempotent (a closed forecast is never re-scored): `price_target` claims resolve deterministically against DB-first daily OHLCV (ROB-639), non-price claims require a manual outcome + evidence. Brier = `(probability - outcome)²`.
+- `build_forecast_calibration_aggregate` groups closed, scored forecasts by `created_by` / `session_label` / `model_label` / KST `day` → average Brier, hit-rate, and calibration_gap (avg_probability − hit_rate) — the objective metric behind an operator's "does another LLM reach the same result" comparison.
+- New read-only `DailyCandlesRepository.fetch_range` window query for deterministic resolution (KR/US/crypto).
+- New MCP tools `forecast_save`, `forecast_resolve` (dry_run-default), `get_forecasts`, `get_forecast_calibration`, registered always-on next to the trade retrospective tools.
+- Single alembic migration `20260702_rob650` also merges the two heads left on main by ROB-647 and ROB-648 (both branched from `20260702_rob641`) back into one head.
+- Follow-up (out of scope): scheduleless auto-resolve TaskIQ job (ROB-405/475 convention); `policy_version` reads a local constant until ROB-646 lands.
+
 ## [0.3.2] - 2026-07-02
 
 ### Fixed (ROB-645 — order POST timeout retry → live double-submit exposure removed)

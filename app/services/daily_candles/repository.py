@@ -281,6 +281,113 @@ class DailyCandlesRepository:
             return None
         return row.latest
 
+    async def fetch_range(
+        self,
+        *,
+        market: MarketKey,
+        symbol: str,
+        partition: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[DailyCandleRow]:
+        """Fetch daily candles with ``start <= time <= end`` (ascending).
+
+        Read-only window query used for deterministic forecast resolution
+        (ROB-650): unlike ``fetch_recent`` (latest-N), this returns exactly the
+        rows inside the resolution window regardless of how far in the past it
+        sits, so the same forecast resolves to the same outcome whenever it is
+        run.
+        """
+        if market == MarketKey.CRYPTO:
+            try:
+                iid = await self._resolve_instrument_id(
+                    symbol=symbol, partition=partition
+                )
+            except LookupError:
+                return []
+            sql = text(
+                """
+                SELECT time, :symbol AS symbol, :partition AS partition,
+                       open, high, low, close,
+                       NULL::numeric AS adj_close,
+                       base_volume AS volume, quote_volume AS value, source
+                FROM public.crypto_candles_1d
+                WHERE instrument_id = :iid AND time >= :start AND time <= :end
+                ORDER BY time ASC
+                """
+            )
+            result = await self._session.execute(
+                sql,
+                {
+                    "iid": iid,
+                    "symbol": symbol,
+                    "partition": partition,
+                    "start": start,
+                    "end": end,
+                },
+            )
+            out: list[DailyCandleRow] = []
+            for row in result.mappings().all():
+                out.append(
+                    DailyCandleRow(
+                        time_utc=row["time"],
+                        symbol=row["symbol"],
+                        partition=row["partition"],
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        adj_close=None,
+                        volume=float(row["volume"])
+                        if row["volume"] is not None
+                        else 0.0,
+                        value=float(row["value"]) if row["value"] is not None else 0.0,
+                        source=row["source"],
+                    )
+                )
+            return out
+
+        cfg = self._config(market)
+        adj_close_select = (
+            "adj_close, " if self._supports_adj_close(market) else "NULL AS adj_close, "
+        )
+        sql = text(
+            f"""
+            SELECT time, symbol, {cfg.partition_col} AS partition,
+                   open, high, low, close, {adj_close_select}volume, value, source
+            FROM public.{cfg.table_name}
+            WHERE symbol = :symbol AND {cfg.partition_col} = :partition
+              AND time >= :start AND time <= :end
+            ORDER BY time ASC
+            """
+        )
+        result = await self._session.execute(
+            sql,
+            {"symbol": symbol, "partition": partition, "start": start, "end": end},
+        )
+        out = []
+        for row in result.mappings().all():
+            out.append(
+                DailyCandleRow(
+                    time_utc=row["time"],
+                    symbol=row["symbol"],
+                    partition=row["partition"],
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    adj_close=(
+                        float(row["adj_close"])
+                        if row["adj_close"] is not None
+                        else None
+                    ),
+                    volume=float(row["volume"]),
+                    value=float(row["value"]),
+                    source=row["source"],
+                )
+            )
+        return out
+
     async def fetch_recent(
         self, *, market: MarketKey, symbol: str, partition: str, count: int
     ) -> list[DailyCandleRow]:

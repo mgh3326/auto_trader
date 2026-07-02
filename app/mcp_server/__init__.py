@@ -54,6 +54,11 @@ AVAILABLE_TOOL_NAMES = [
     "get_trade_retrospectives",
     "get_retrospective_aggregate",
     "trade_retrospective_pending",
+    # ROB-650: resolvable forecast ledger
+    "forecast_save",
+    "forecast_resolve",
+    "get_forecasts",
+    "get_forecast_calibration",
     # Crypto research tools
     "get_crypto_profile",
     "get_kimchi_premium",

@@ -57,6 +57,7 @@ from app.mcp_server.tooling.analysis_artifact_registration import (
     register_analysis_artifact_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_hermes_handlers import (
     register_investment_hermes_tools,
@@ -159,6 +160,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_trade_journal_tools(mcp)
     register_mock_loop_retro_tools(mcp)
     register_trade_retrospective_tools(mcp)
+    register_forecast_tools(mcp)
 
     # ROB-269 Phase 2 — investment-snapshot MCP surface. Gated by
     # ``settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED`` so the 3 read tools are

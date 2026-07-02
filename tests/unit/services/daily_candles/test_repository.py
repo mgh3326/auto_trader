@@ -60,3 +60,37 @@ class TestUpsertRows:
 
         assert result == 0
         session.execute.assert_not_awaited()
+
+
+class TestFetchRange:
+    @pytest.mark.asyncio
+    async def test_fetch_range_binds_window_and_partition(self):
+        session = MagicMock()
+        result = MagicMock()
+        result.mappings.return_value.all.return_value = []
+        session.execute = AsyncMock(return_value=result)
+        repo = DailyCandlesRepository(session=session)
+
+        start = datetime(2026, 6, 1, tzinfo=UTC)
+        end = datetime(2026, 6, 30, tzinfo=UTC)
+        rows = await repo.fetch_range(
+            market=MarketKey.KR,
+            symbol="005930",
+            partition="KRX",
+            start=start,
+            end=end,
+        )
+
+        assert rows == []
+        assert session.execute.await_count == 1
+        args, _ = session.execute.await_args
+        sql = str(args[0])
+        params = args[1]
+        assert "time >= :start AND time <= :end" in sql
+        assert "ORDER BY time ASC" in sql
+        assert params == {
+            "symbol": "005930",
+            "partition": "KRX",
+            "start": start,
+            "end": end,
+        }
