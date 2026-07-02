@@ -401,4 +401,3 @@ async def test_record_send_replay_keeps_original_approval_hash(db_session):
 
     assert replay.id == first.id
     assert replay.approval_hash == "p6a-original00000000"
-

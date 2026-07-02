@@ -2136,6 +2136,7 @@ async def test_preview_emits_approval_hash_and_deterministic_client_order_id(
     monkeypatch,
 ):
     from datetime import datetime
+
     from app.core.timezone import KST
 
     otv = _enable_toss_preview(monkeypatch)
@@ -2177,6 +2178,7 @@ async def test_preview_emits_approval_hash_and_deterministic_client_order_id(
 @pytest.mark.asyncio
 async def test_preview_rung_discriminator_changes_client_order_id(monkeypatch):
     from datetime import datetime
+
     from app.core.timezone import KST
 
     otv = _enable_toss_preview(monkeypatch)
@@ -2215,8 +2217,8 @@ async def test_preview_rung_discriminator_changes_client_order_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_place_dry_run_matching_hash_passes(monkeypatch):
     from datetime import datetime
+
     from app.core.timezone import KST
-    from app.mcp_server.tooling import orders_toss_variants as otv
 
     otv = _enable_toss_preview(monkeypatch)
     mock_client = MockTossClient(monkeypatch)
@@ -2254,8 +2256,8 @@ async def test_place_dry_run_matching_hash_passes(monkeypatch):
 @pytest.mark.asyncio
 async def test_place_mismatched_hash_fails_closed_with_diff(monkeypatch):
     from datetime import datetime
+
     from app.core.timezone import KST
-    from app.mcp_server.tooling import orders_toss_variants as otv
 
     otv = _enable_toss_preview(monkeypatch)
     mock_client = MockTossClient(monkeypatch)
@@ -2293,8 +2295,8 @@ async def test_place_mismatched_hash_fails_closed_with_diff(monkeypatch):
 @pytest.mark.asyncio
 async def test_place_expired_hash_requires_repreview(monkeypatch):
     from datetime import datetime, timedelta
+
     from app.core.timezone import KST
-    from app.mcp_server.tooling import orders_toss_variants as otv
 
     otv = _enable_toss_preview(monkeypatch)
     mock_client = MockTossClient(monkeypatch)
@@ -2332,8 +2334,8 @@ async def test_place_expired_hash_requires_repreview(monkeypatch):
 @pytest.mark.asyncio
 async def test_place_optional_mode_without_hash_passes(monkeypatch):
     from datetime import datetime
+
     from app.core.timezone import KST
-    from app.mcp_server.tooling import orders_toss_variants as otv
 
     otv = _enable_toss_preview(monkeypatch)
     mock_client = MockTossClient(monkeypatch)
@@ -2361,8 +2363,8 @@ async def test_place_optional_mode_without_hash_passes(monkeypatch):
 @pytest.mark.asyncio
 async def test_place_required_mode_without_hash_fails_closed(monkeypatch):
     from datetime import datetime
+
     from app.core.timezone import KST
-    from app.mcp_server.tooling import orders_toss_variants as otv
 
     otv = _enable_toss_preview(monkeypatch)
     mock_client = MockTossClient(monkeypatch)
@@ -2386,3 +2388,40 @@ async def test_place_required_mode_without_hash_fails_closed(monkeypatch):
     )
     assert res["success"] is False
     assert res["error_code"] == "approval_hash_required"
+
+
+@pytest.mark.asyncio
+async def test_client_order_id_same_day_stable_next_day_new(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    def _prev():
+        return otv.toss_preview_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="10",
+            price="70000",
+            market="kr",
+            account_mode="toss_live",
+        )
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+    day1_a = await _prev()
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 15, 0, tzinfo=KST))
+    day1_b = await _prev()
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 3, 10, 0, tzinfo=KST))
+    day2 = await _prev()
+
+    cid1a = day1_a["payload_preview"]["clientOrderId"]
+    cid1b = day1_b["payload_preview"]["clientOrderId"]
+    cid2 = day2["payload_preview"]["clientOrderId"]
+    assert cid1a == cid1b  # same trading day -> broker/ledger dedupe key
+    assert cid1a != cid2  # next trading day -> new order allowed

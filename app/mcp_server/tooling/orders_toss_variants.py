@@ -17,7 +17,14 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from app.core.config import settings, validate_toss_api_config
 from app.core.timezone import KST, now_kst
+from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
+from app.mcp_server.tooling.account_modes import (
+    ACCOUNT_MODE_TOSS_LIVE,
+    normalize_account_mode,
+)
+from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
 from app.mcp_server.tooling.toss_approval import (
     APPROVAL_TTL_SECONDS,
     build_canonical_payload,
@@ -26,14 +33,6 @@ from app.mcp_server.tooling.toss_approval import (
     encode_approval_token,
     verify_approval_token,
 )
-
-from app.core.config import settings, validate_toss_api_config
-from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
-from app.mcp_server.tooling.account_modes import (
-    ACCOUNT_MODE_TOSS_LIVE,
-    normalize_account_mode,
-)
-from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
 from app.mcp_server.tooling.toss_live_ledger import (
     record_toss_place_order,
     record_toss_replacement_order,
@@ -703,13 +702,11 @@ async def toss_preview_order(
         order_amount=order_amount_str,
     )
     now = now_kst()
-    client_order_id = derive_client_order_id(
-        canonical, market=mkt, now=now, rung=rung
-    )
+    client_order_id = derive_client_order_id(canonical, market=mkt, now=now, rung=rung)
     approval_hash = encode_approval_token(canonical, now=now)
     approval_expires_at = (
-        now + timedelta(seconds=APPROVAL_TTL_SECONDS)
-    ).astimezone(KST).isoformat()
+        (now + timedelta(seconds=APPROVAL_TTL_SECONDS)).astimezone(KST).isoformat()
+    )
 
     payload: dict[str, Any] = {
         "clientOrderId": client_order_id,

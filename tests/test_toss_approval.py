@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from app.core.timezone import KST
 from app.mcp_server.tooling.toss_approval import (
     APPROVAL_TTL_SECONDS,
@@ -21,16 +19,16 @@ _ET = ZoneInfo("America/New_York")
 
 
 def _canon(**overrides):
-    base = dict(
-        market="kr",
-        symbol="005930",
-        side="buy",
-        order_type="limit",
-        time_in_force="DAY",
-        quantity="10",
-        price="70000",
-        order_amount=None,
-    )
+    base = {
+        "market": "kr",
+        "symbol": "005930",
+        "side": "buy",
+        "order_type": "limit",
+        "time_in_force": "DAY",
+        "quantity": "10",
+        "price": "70000",
+        "order_amount": None,
+    }
     base.update(overrides)
     return build_canonical_payload(**base)
 
@@ -67,18 +65,18 @@ def test_trading_day_salt_kr_uses_kst_us_uses_et():
 def test_client_order_id_deterministic_same_day():
     now = datetime(2026, 7, 2, 10, 0, tzinfo=KST)
     canon = _canon()
-    assert derive_client_order_id(canon, market="kr", now=now) == derive_client_order_id(
+    assert derive_client_order_id(
         canon, market="kr", now=now
-    )
+    ) == derive_client_order_id(canon, market="kr", now=now)
 
 
 def test_client_order_id_changes_next_trading_day():
     canon = _canon()
     today = datetime(2026, 7, 2, 10, 0, tzinfo=KST)
     tomorrow = datetime(2026, 7, 3, 10, 0, tzinfo=KST)
-    assert derive_client_order_id(canon, market="kr", now=today) != derive_client_order_id(
-        canon, market="kr", now=tomorrow
-    )
+    assert derive_client_order_id(
+        canon, market="kr", now=today
+    ) != derive_client_order_id(canon, market="kr", now=tomorrow)
 
 
 def test_client_order_id_rung_discriminator_splits():
