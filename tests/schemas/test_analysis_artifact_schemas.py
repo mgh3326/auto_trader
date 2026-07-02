@@ -92,6 +92,9 @@ def test_read_serializes_payload_from_attributes() -> None:
         session_label = None
         correlation_id = None
         account_scope = None
+        content_hash = None
+        version = 1
+        readiness_label = None
         payload_size_bytes = 24
         is_stale = False
         created_by = "operator"
@@ -103,6 +106,43 @@ def test_read_serializes_payload_from_attributes() -> None:
     dumped = response.model_dump(mode="json")
     assert dumped["artifact_uuid"] == "55555555-5555-5555-5555-555555555555"
     assert dumped["symbols"] == ["KRW-BTC"]
+
+
+@pytest.mark.unit
+def test_save_accepts_valid_readiness_label_and_rejects_bad() -> None:
+    entry = AnalysisArtifactSave.model_validate(
+        {
+            "market": "kr",
+            "kind": "candidate_pool",
+            "title": "with readiness",
+            "as_of": "2026-07-02T00:00:00+00:00",
+            "readiness_label": "ready_for_order_review",
+        }
+    )
+    assert entry.readiness_label == "ready_for_order_review"
+
+    # Omitted -> None (advisory, optional).
+    entry_none = AnalysisArtifactSave.model_validate(
+        {
+            "market": "kr",
+            "kind": "candidate_pool",
+            "title": "no readiness",
+            "as_of": "2026-07-02T00:00:00+00:00",
+        }
+    )
+    assert entry_none.readiness_label is None
+
+    with pytest.raises(ValidationError) as exc_info:
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "kr",
+                "kind": "candidate_pool",
+                "title": "bad readiness",
+                "as_of": "2026-07-02T00:00:00+00:00",
+                "readiness_label": "go_live",
+            }
+        )
+    assert "readiness_label" in str(exc_info.value)
 
 
 @pytest.mark.unit

@@ -9,12 +9,14 @@ from app.mcp_server.tooling.trade_retrospective_tools import (
     get_retrospective_aggregate,
     get_trade_retrospectives,
     save_trade_retrospective,
+    trade_retrospective_pending,
 )
 
 TRADE_RETROSPECTIVE_TOOL_NAMES: set[str] = {
     "save_trade_retrospective",
     "get_trade_retrospectives",
     "get_retrospective_aggregate",
+    "trade_retrospective_pending",
 }
 
 
@@ -44,13 +46,29 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
     _ = mcp.tool(
         name="get_retrospective_aggregate",
         description=(
-            "Aggregate retrospectives by strategy_key or KST day over a KST date "
-            "window: win_rate_pct, avg_pnl_pct, absolute realized_pnl sum (per "
-            "currency), wins/misses. Only rows with fill evidence are counted "
-            "(excluded_no_fill_evidence reported). Read-only. Complements "
-            "get_mock_loop_retrospective (KST-day x watch-loop x percent)."
+            "Aggregate retrospectives by group_by in {strategy, day, trigger_type, "
+            "root_cause} over a KST date window: win_rate_pct, avg_pnl_pct, "
+            "absolute realized_pnl sum (per currency), wins/misses, plus "
+            "by_outcome/by_trigger_type/by_root_cause_class breakdowns per group. "
+            "PnL-oriented dims (strategy/day) count only fill-evidence rows "
+            "(excluded_no_fill_evidence reported); process dims "
+            "(trigger_type/root_cause) include no-evidence rows so "
+            "rejected/cancelled postmortems are analyzed too. Read-only. "
+            "Complements get_mock_loop_retrospective."
         ),
     )(get_retrospective_aggregate)
+    _ = mcp.tool(
+        name="trade_retrospective_pending",
+        description=(
+            "List lifecycle-terminal live orders across the 3 live ledgers "
+            "(kis_live KR, generic live US/crypto, toss_live) that still lack a "
+            "trade retrospective, over a KST trade_date window (default: last 14 "
+            "days). Each row carries a suggested_correlation_id to pass to "
+            "save_trade_retrospective so it is marked covered next scan. Optional "
+            "account_mode filter in {kis_live, upbit_live, toss_live}. Read-only "
+            "due-list — no broker/order mutation. (ROB-647)"
+        ),
+    )(trade_retrospective_pending)
 
 
 __all__ = ["TRADE_RETROSPECTIVE_TOOL_NAMES", "register_trade_retrospective_tools"]

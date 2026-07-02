@@ -82,6 +82,7 @@ async def test_save_list_get_round_trip(db_session: AsyncSession) -> None:
         market="kr",
         kind="profit_taking_verdicts",
         symbol=symbol,
+        include_stale=True,
         limit=10,
     )
 
@@ -158,10 +159,14 @@ async def test_symbol_normalization(db_session: AsyncSession) -> None:
     assert saved["symbols"] == ["BRK.B", "BRK.A", "AAPL"]
 
     # Dash input saved as dot-format must be findable by dot-format lookup.
-    list_response = await analysis_artifact_list(market="us", symbol="BRK.B")
+    list_response = await analysis_artifact_list(
+        market="us", symbol="BRK.B", include_stale=True
+    )
     assert list_response["count"] == 1
     # And a dash-format query normalizes to the same hit.
-    list_dash = await analysis_artifact_list(market="us", symbol="BRK-B")
+    list_dash = await analysis_artifact_list(
+        market="us", symbol="BRK-B", include_stale=True
+    )
     assert list_dash["count"] == 1
 
 
@@ -211,9 +216,94 @@ async def test_correlation_id_idempotent_upsert(db_session: AsyncSession) -> Non
     assert second["artifact"]["title"] == "v2"
 
     listed = await analysis_artifact_list(
-        market="kr", correlation_id=correlation_id, limit=10
+        market="kr", correlation_id=correlation_id, include_stale=True, limit=10
     )
     assert listed["count"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_unchanged_on_identical_payload(db_session: AsyncSession) -> None:
+    correlation_id = f"corr-{uuid4().hex[:12]}"
+    first = await analysis_artifact_save(
+        market="kr",
+        kind="profit_taking_verdicts",
+        title="v1",
+        payload={"rev": 1},
+        as_of="2026-07-02T02:00:00+00:00",
+        correlation_id=correlation_id,
+    )
+    assert first["action"] == "created"
+    assert first["artifact"]["version"] == 1
+    assert first["artifact"]["content_hash"]
+
+    # Same payload re-saved (later as_of) → unchanged + version preserved.
+    again = await analysis_artifact_save(
+        market="kr",
+        kind="profit_taking_verdicts",
+        title="v1-again",
+        payload={"rev": 1},
+        as_of="2026-07-02T05:00:00+00:00",
+        correlation_id=correlation_id,
+    )
+    assert again["action"] == "unchanged"
+    assert again["artifact"]["id"] == first["artifact"]["id"]
+    assert again["artifact"]["version"] == 1
+    assert again["artifact"]["content_hash"] == first["artifact"]["content_hash"]
+
+    # Changed payload → updated + version bump.
+    changed = await analysis_artifact_save(
+        market="kr",
+        kind="profit_taking_verdicts",
+        title="v2",
+        payload={"rev": 2},
+        as_of="2026-07-02T06:00:00+00:00",
+        correlation_id=correlation_id,
+    )
+    assert changed["action"] == "updated"
+    assert changed["artifact"]["version"] == 2
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_assigns_default_valid_until_when_omitted(
+    db_session: AsyncSession,
+) -> None:
+    response = await analysis_artifact_save(
+        market="kr",
+        kind="screening_ranking",
+        title="ttl default",
+        symbols=[f"TEST_{uuid4().hex[:8]}"],
+        as_of="2026-07-02T03:00:00+09:00",
+    )
+    assert response["success"] is True
+    # NULL=never-stale is solved: an omitted valid_until is server-assigned.
+    assert response["artifact"]["valid_until"] is not None
+    assert response["artifact"]["readiness_label"] is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_accepts_readiness_label(db_session: AsyncSession) -> None:
+    response = await analysis_artifact_save(
+        market="kr",
+        kind="candidate_pool",
+        title="graded",
+        as_of="2026-07-02T03:00:00+09:00",
+        readiness_label="ready_for_order_review",
+    )
+    assert response["success"] is True
+    assert response["artifact"]["readiness_label"] == "ready_for_order_review"
+
+    bad = await analysis_artifact_save(
+        market="kr",
+        kind="candidate_pool",
+        title="bad grade",
+        as_of="2026-07-02T03:00:00+09:00",
+        readiness_label="go_live",
+    )
+    assert bad["success"] is False
+    assert bad["error"] == "invalid_request"
 
 
 @pytest.mark.integration
@@ -227,6 +317,9 @@ async def test_list_is_metadata_only(db_session: AsyncSession) -> None:
         symbols=[symbol],
         payload={"big": "가나다" * 100},
         as_of="2026-07-02T02:00:00+00:00",
+        # Explicit far-future valid_until so is_stale stays False regardless of
+        # the run date (the omitted-TTL default would expire end of as_of day).
+        valid_until="2099-01-01T00:00:00+09:00",
     )
 
     response = await analysis_artifact_list(market="kr", symbol=symbol, limit=5)
@@ -236,6 +329,46 @@ async def test_list_is_metadata_only(db_session: AsyncSession) -> None:
     assert "payload" not in row
     assert row["payload_size_bytes"] > 0
     assert row["is_stale"] is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_analyze_stock_batch_surfaces_fresh_artifact_hint(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.mcp_server.tooling import analysis_tool_handlers as handlers
+
+    covered = "005930"
+    uncovered = "000660"
+    save_response = await analysis_artifact_save(
+        market="kr",
+        kind="screening_ranking",
+        title="fresh ranking",
+        symbols=[covered],
+        as_of="2026-07-02T02:00:00+00:00",
+        valid_until="2099-01-01T00:00:00+09:00",
+    )
+    assert save_response["success"] is True
+
+    def stub(sym, market, include_peers):
+        return {"symbol": sym, "market_type": "equity_kr", "source": "kis"}
+
+    monkeypatch.setattr(handlers.analysis_screening, "_analyze_stock_impl", stub)
+
+    result = await handlers.analyze_stock_batch_impl(
+        [covered, uncovered], market="kr", include_position=False
+    )
+
+    covered_row = result["results"][covered]
+    hint = covered_row["fresh_artifact_exists"]
+    assert hint["artifact_uuid"] == save_response["artifact"]["artifact_uuid"]
+    assert hint["kind"] == "screening_ranking"
+    # as_of is the same instant (compare parsed, format may differ across reads).
+    from dateutil.parser import parse
+
+    assert parse(hint["as_of"]) == parse(save_response["artifact"]["as_of"])
+    # A symbol with no fresh artifact carries no hint at all.
+    assert "fresh_artifact_exists" not in result["results"][uncovered]
 
 
 @pytest.mark.integration

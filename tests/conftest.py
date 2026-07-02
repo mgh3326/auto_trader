@@ -654,6 +654,39 @@ async def db_session():
                         "ON review.analysis_artifacts (correlation_id)"
                     )
                 )
+                # ROB-648 lifecycle fields — patched in for pre-existing tables
+                # (fresh DBs get them via create_all).
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS content_hash TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS readiness_label TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "DO $$ BEGIN "
+                        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                        "WHERE conname = 'ck_analysis_artifacts_readiness_label') "
+                        "THEN ALTER TABLE review.analysis_artifacts "
+                        "ADD CONSTRAINT ck_analysis_artifacts_readiness_label "
+                        "CHECK (readiness_label IS NULL OR readiness_label IN ("
+                        "'screen_grade','not_decision_ready',"
+                        "'ready_for_order_review','blocked')); "
+                        "END IF; END $$"
+                    )
+                )
                 # ROB-430 PR-② — week_high_52_date added to the (persistent) KR
                 # fundamentals snapshot table; create_all is a no-op on the existing
                 # table, so patch the column in here (mirrors the alembic migration).
@@ -1323,6 +1356,54 @@ async def db_session():
                         "ALTER TABLE review.trade_retrospectives "
                         "ADD CONSTRAINT ck_trade_retrospectives_account_mode "
                         "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live'))"
+                    )
+                )
+                # ROB-647 — postmortem structuring columns + CHECK constraints.
+                # create_all is no-op on the persistent test table; mirror the
+                # additive migration 20260702_rob647 here.
+                for col, ddl in (
+                    ("trigger_type", "TEXT"),
+                    ("root_cause_class", "TEXT"),
+                    ("intended_vs_happened", "JSONB"),
+                    ("next_actions", "JSONB"),
+                    ("guardrail_fired", "TEXT"),
+                    ("policy_version", "TEXT"),
+                ):
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.trade_retrospectives "
+                            f"ADD COLUMN IF NOT EXISTS {col} {ddl}"
+                        )
+                    )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "DROP CONSTRAINT IF EXISTS ck_trade_retrospectives_trigger_type"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "ADD CONSTRAINT ck_trade_retrospectives_trigger_type "
+                        "CHECK (trigger_type IS NULL OR trigger_type IN ("
+                        "'fill','partial_fill','rejected_order','cancelled','expired',"
+                        "'thesis_change','policy_violation','stale_evidence',"
+                        "'guardrail_block'))"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_trade_retrospectives_root_cause_class"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "ADD CONSTRAINT ck_trade_retrospectives_root_cause_class "
+                        "CHECK (root_cause_class IS NULL OR root_cause_class IN ("
+                        "'user_input','analysis','policy','execution','harness'))"
                     )
                 )
                 # B-1 (binance-phase1) — benchmark_return_bps on scalping_daily_reviews.

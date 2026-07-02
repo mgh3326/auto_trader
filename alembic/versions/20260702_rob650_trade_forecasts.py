@@ -15,7 +15,13 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20260702_rob650"
-down_revision: str | None = "20260702_rob641"
+# ROB-647 and ROB-648 both branched from 20260702_rob641, leaving two alembic
+# heads on main. This migration merges them (and adds trade_forecasts) so the
+# tree collapses back to a single head.
+down_revision: str | Sequence[str] | None = (
+    "20260702_rob647",
+    "20260702_rob648",
+)
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

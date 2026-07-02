@@ -222,7 +222,7 @@ wheels = [
 
 [[package]]
 name = "auto-trader"
-version = "0.2.7"
+version = "0.3.4"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

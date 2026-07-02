@@ -946,6 +946,23 @@ class TradeRetrospective(Base):
             "realized_pnl_source IN ('caller_supplied','derived_from_journal')",
             name="ck_trade_retrospectives_pnl_source",
         ),
+        # ROB-647 — postmortem structuring. trigger_type is deliberately
+        # separate from outcome (expired collapses to cancelled at the outcome
+        # layer; see kis_live_ledger.py). Kept in lock-step with
+        # app/schemas/trade_retrospective.py VALID_TRIGGER_TYPES.
+        CheckConstraint(
+            "trigger_type IS NULL OR trigger_type IN ("
+            "'fill','partial_fill','rejected_order','cancelled','expired',"
+            "'thesis_change','policy_violation','stale_evidence','guardrail_block'"
+            ")",
+            name="ck_trade_retrospectives_trigger_type",
+        ),
+        CheckConstraint(
+            "root_cause_class IS NULL OR root_cause_class IN ("
+            "'user_input','analysis','policy','execution','harness'"
+            ")",
+            name="ck_trade_retrospectives_root_cause_class",
+        ),
         Index("ix_trade_retrospectives_correlation_id", "correlation_id"),
         Index("ix_trade_retrospectives_journal_id", "journal_id"),
         Index("ix_trade_retrospectives_strategy_key", "strategy_key"),
@@ -1001,6 +1018,16 @@ class TradeRetrospective(Base):
     next_strategy: Mapped[str | None] = mapped_column(Text)
     evidence_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     created_by_profile: Mapped[str | None] = mapped_column(Text)
+
+    # ROB-647 — postmortem structuring (all additive nullable). JSONB fields are
+    # validated through app/schemas/trade_retrospective.py before write.
+    trigger_type: Mapped[str | None] = mapped_column(Text)
+    root_cause_class: Mapped[str | None] = mapped_column(Text)
+    intended_vs_happened: Mapped[dict | None] = mapped_column(JSONB)
+    next_actions: Mapped[list | None] = mapped_column(JSONB)
+    guardrail_fired: Mapped[str | None] = mapped_column(Text)
+    policy_version: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

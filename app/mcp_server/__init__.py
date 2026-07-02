@@ -53,6 +53,7 @@ AVAILABLE_TOOL_NAMES = [
     "save_trade_retrospective",
     "get_trade_retrospectives",
     "get_retrospective_aggregate",
+    "trade_retrospective_pending",
     # ROB-650: resolvable forecast ledger
     "forecast_save",
     "forecast_resolve",
