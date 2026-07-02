@@ -61,11 +61,32 @@ def test_market_brief_has_version_but_empty_thresholds():
     assert out["verdict_thresholds"]["thresholds"] == {}
 
 
-def test_deterministic_same_input_same_output():
+@pytest.mark.parametrize(
+    "intent", ["buy_analysis", "profit_taking", "discovery", "market_brief"]
+)
+@pytest.mark.parametrize("market", ["kr", "us", "crypto"])
+def test_deterministic_same_input_same_output(intent, market):
+    # ROB-659: exercise the double-call determinism assertion across all 4 intents
+    # (and all markets), not just discovery/kr.
     route = _route_tool()
-    a = asyncio.run(route(intent="discovery", market="kr"))
-    b = asyncio.run(route(intent="discovery", market="kr"))
+    a = asyncio.run(route(intent=intent, market=market))
+    b = asyncio.run(route(intent=intent, market=market))
     assert a == b
+
+
+def test_missing_intent_returns_deterministic_envelope():
+    # ROB-659: a missing arg returns success=false, not a schema crash.
+    route = _route_tool()
+    out = asyncio.run(route(market="kr"))
+    assert out["success"] is False
+    assert out["error"] == "missing_intent"
+
+
+def test_missing_market_returns_deterministic_envelope():
+    route = _route_tool()
+    out = asyncio.run(route(intent="buy_analysis"))
+    assert out["success"] is False
+    assert out["error"] == "missing_market"
 
 
 def test_profile_intersection_crypto_drops_toss_place_order():
@@ -94,6 +115,26 @@ def test_profile_intersection_crypto_drops_toss_place_order():
     assert "place_order" not in crypto_out["blocked_actions"]
     assert "place_order" in crypto_out["allowed_tools"]
     assert "place_order" in [s["tool"] for s in crypto_out["standard_tool_sequence"]]
+
+
+def test_executing_lane_surfaces_toss_preview_precursor():
+    # ROB-659: toss_preview_order mints the approval_hash that toss_place_order
+    # requires under TOSS_APPROVAL_HASH_MODE=required. An executing lane must NOT
+    # list its own preview precursor in blocked_actions (self-contradiction).
+    default_mcp = DummyMCP()
+    from app.mcp_server.tooling.registry import register_all_tools
+
+    register_all_tools(cast(Any, default_mcp), profile=McpProfile.DEFAULT)
+    route = default_mcp.tools["route_request"]
+    for intent in ("buy_analysis", "profit_taking", "discovery"):
+        out = asyncio.run(route(intent=intent, market="kr"))
+        assert "toss_preview_order" not in out["blocked_actions"], intent
+        assert "toss_preview_order" in out["allowed_tools"], intent
+
+    # Bootstrap has no place step, so its preview precursor stays blocked (unchanged).
+    brief = asyncio.run(route(intent="market_brief", market="kr"))
+    assert brief["lane"] == "bootstrap"
+    assert "toss_preview_order" in brief["blocked_actions"]
 
 
 class TestRouteRequestRegisteredEveryProfile:

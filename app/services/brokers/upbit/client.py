@@ -886,6 +886,13 @@ async def _request_with_auth(
     # ROB-645: order-creation POSTs (POST /v1/orders) must not retry RequestError —
     # a timed-out order may have reached the broker, so a retry would double-submit.
     # Reads (GET) and cancels (DELETE /order) keep the existing RequestError retry.
+    #
+    # ROB-659 constraint note: submission is detected purely by the trailing
+    # ``/orders`` path segment (method POST + api_path suffix). This holds because
+    # Upbit's only order-creation endpoint is POST /v1/orders (singular create is
+    # /v1/orders; cancels use DELETE /v1/order, no trailing "s"). If Upbit ever adds
+    # another POST whose path ends in "/orders" that is NOT an order submission, this
+    # suffix match would over-classify it — revisit this predicate then.
     is_order_submission = method.upper() == "POST" and api_path.rstrip("/").endswith(
         "/orders"
     )

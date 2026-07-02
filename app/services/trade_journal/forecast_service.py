@@ -29,12 +29,45 @@ from app.services.daily_candles.repository import (
     DailyCandlesRepository,
     MarketKey,
 )
+from app.services.trading_policy_service import policy_version_stamp
 
-# Fallback policy stamp. ROB-646 (get_trading_policy YAML single source) has not
-# landed on this branch; until it does, forecasts stamp this module constant so
-# scoring cohorts remain comparable. When a caller supplies ``policy_version``
-# (e.g. from a future get_trading_policy contract) that value wins.
+# Fail-open fallback policy stamp. ROB-659: the default now comes from the ROB-646
+# trading-policy YAML single source via ``_default_policy_version`` (below); this
+# literal is only used if that YAML is unreadable, so a forecast write never
+# crashes on a missing policy file. A caller-supplied ``policy_version`` still wins.
 POLICY_VERSION = "forecast.v1"
+
+# Crypto pairs are stored with a market-prefix separated by '-' (e.g. "KRW-BTC");
+# that dash is a real separator, unlike an equity ticker's ("BRK-B" -> "BRK.B").
+_CRYPTO_QUOTE_CURRENCIES = {"KRW", "BTC", "USDT", "USD"}
+
+
+def _default_policy_version() -> str:
+    """ROB-659: stamp the ROB-646 policy version, fail-open to the legacy literal."""
+    try:
+        return policy_version_stamp()["version"]
+    except Exception:
+        return POLICY_VERSION
+
+
+def _normalize_symbol_for_filter(
+    symbol: str, instrument_type: str | None = None
+) -> str:
+    """Normalize a *query* symbol to the stored DB form for filtering.
+
+    ROB-659: mirrors the write-side ``_normalize_symbol`` so a query like "BRK-B"
+    matches the stored "BRK.B". When ``instrument_type`` is known we reuse the exact
+    write-side normalization; without it we apply the dash/slash -> dot rewrite but
+    leave crypto pairs ("KRW-BTC") intact (their dash is a real market separator).
+    """
+    if instrument_type is not None:
+        return _normalize_symbol(symbol, instrument_type)
+    normalized = symbol.strip().upper()
+    quote, sep, _base = normalized.partition("-")
+    if sep and quote in _CRYPTO_QUOTE_CURRENCIES:
+        return normalized
+    return to_db_symbol(normalized)
+
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -330,7 +363,7 @@ async def save_forecast(
         "resolution_source": resolution_source,
         "session_label": session_label,
         "model_label": model_label,
-        "policy_version": policy_version or POLICY_VERSION,
+        "policy_version": policy_version or _default_policy_version(),
         "artifact_uuid": artifact_uuid,
         "journal_id": journal_id,
         "report_uuid": report_uuid,
@@ -381,7 +414,7 @@ async def list_forecasts(
     if status is not None:
         filters.append(TradeForecast.status == status)
     if symbol is not None:
-        filters.append(TradeForecast.symbol == symbol.strip().upper())
+        filters.append(TradeForecast.symbol == _normalize_symbol_for_filter(symbol))
     if created_by is not None:
         filters.append(TradeForecast.created_by == created_by)
     if correlation_id is not None:
@@ -621,7 +654,10 @@ async def build_forecast_calibration_aggregate(
     if created_by is not None:
         filters.append(TradeForecast.created_by == created_by)
     if symbol is not None:
-        filters.append(TradeForecast.symbol == symbol.strip().upper())
+        filters.append(
+            TradeForecast.symbol
+            == _normalize_symbol_for_filter(symbol, instrument_type)
+        )
     if instrument_type is not None:
         filters.append(TradeForecast.instrument_type == instrument_type)
     if days is not None:

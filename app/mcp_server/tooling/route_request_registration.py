@@ -51,12 +51,30 @@ async def _live_registered_names(mcp: Any) -> set[str]:
 
 
 def register_route_request_tools(mcp: FastMCP) -> None:
-    async def route_request(intent: str, market: str) -> dict[str, Any]:
+    async def route_request(
+        intent: str | None = None, market: str | None = None
+    ) -> dict[str, Any]:
+        # ROB-659: intent/market are optional in the schema so a MISSING arg
+        # returns a deterministic success=false envelope instead of a FastMCP
+        # input-schema error (which no operator flow can branch on). Present-but-
+        # invalid values keep the existing unknown_* envelopes.
+        if not intent:
+            return {
+                "success": False,
+                "error": "missing_intent",
+                "detail": f"intent is required; valid: {sorted(INTENT_TO_LANE)}",
+            }
         if intent not in INTENT_TO_LANE:
             return {
                 "success": False,
                 "error": "unknown_intent",
                 "detail": f"unknown intent {intent!r}; valid: {sorted(INTENT_TO_LANE)}",
+            }
+        if not market:
+            return {
+                "success": False,
+                "error": "missing_market",
+                "detail": f"market is required; valid: {sorted(VALID_MARKETS)}",
             }
         if market not in VALID_MARKETS:
             return {
@@ -106,7 +124,9 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             "live-registered tool surface (unregistered tools are dropped); for "
             "crypto/US the KR-centric place step is replaced by the generic "
             "place_order execution tool (market-aware, ROB-658). "
-            "Unknown intent/market returns success=false."
+            "Missing or unknown intent/market returns a deterministic "
+            "success=false envelope (error in {missing_intent, unknown_intent, "
+            "missing_market, unknown_market})."
         ),
     )(route_request)
 
