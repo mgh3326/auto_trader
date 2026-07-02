@@ -53,6 +53,9 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
 from app.mcp_server.tooling.alpaca_paper_preview import (
     register_alpaca_paper_preview_tools,
 )
+from app.mcp_server.tooling.analysis_artifact_registration import (
+    register_analysis_artifact_tools,
+)
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_hermes_handlers import (
@@ -136,6 +139,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         include_snapshot_generator=snapshot_report_generator_enabled,
     )
     register_session_context_tools(mcp)
+    register_analysis_artifact_tools(mcp)
     register_operating_briefing_tools(mcp)
     if snapshot_report_generator_enabled:
         register_investment_hermes_tools(mcp)

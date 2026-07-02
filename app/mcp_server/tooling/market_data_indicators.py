@@ -5,11 +5,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-from datetime import UTC, timedelta
-from functools import lru_cache
 from typing import Any, Literal
 
-import exchange_calendars as xcals
 import numpy as np
 import pandas as pd
 
@@ -130,72 +127,18 @@ async def _fetch_ohlcv_for_volume_profile(
 # Daily candle store helpers (cache-first read path)
 # ---------------------------------------------------------------------------
 
-_OHLCV_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
-
-
-@lru_cache(maxsize=4)
-def _get_calendar(exchange: str):
-    return xcals.get_calendar(exchange)
-
-
-def _latest_exchange_session(exchange: str) -> datetime.date | None:
-    """Return the most-recent past session date for the given exchange.
-
-    `exchange` accepts any calendar name supported by exchange_calendars
-    (e.g., 'XKRX', 'XNYS').
-    """
-    cal = _get_calendar(exchange)
-    now = datetime.datetime.now(datetime.UTC)
-    try:
-        session = cal.minute_to_past_session(pd.Timestamp(now), count=1)
-    except Exception:
-        return None
-    return pd.Timestamp(session).date()
-
-
-def _cache_is_fresh_equity(rows: list, exchange: str) -> bool:
-    """Cache is fresh if the newest row covers the latest closed exchange session."""
-    if not rows:
-        return False
-    latest_session = _latest_exchange_session(exchange)
-    if latest_session is None:
-        return False
-    latest_row = max(r.time_utc for r in rows)
-    return pd.Timestamp(latest_row).date() >= latest_session
-
-
-def _cache_is_fresh_crypto(rows: list) -> bool:
-    """Return True if the newest row's timestamp is within the last 24 hours."""
-    if not rows:
-        return False
-    newest = max(r.time_utc for r in rows)
-    if newest.tzinfo is None:
-        newest = newest.replace(tzinfo=UTC)
-    return datetime.datetime.now(UTC) - newest < timedelta(hours=24)
-
-
-def _rows_to_frame(rows: list) -> pd.DataFrame:
-    """Convert a list of DailyCandleRow to a DataFrame with standard OHLCV columns."""
-    if not rows:
-        return pd.DataFrame(columns=_OHLCV_COLUMNS)
-    records = []
-    for row in rows:
-        ts = row.time_utc
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-        records.append(
-            {
-                "date": ts.date(),
-                "open": row.open,
-                "high": row.high,
-                "low": row.low,
-                "close": row.close,
-                "volume": row.volume,
-                "value": row.value,
-            }
-        )
-    df = pd.DataFrame(records, columns=_OHLCV_COLUMNS)
-    return df.sort_values("date").reset_index(drop=True)
+# Re-exported under underscore aliases to preserve existing call sites. The
+# canonical implementations live in read_service so get_ohlcv and indicators
+# share one freshness rule. ROB-639.
+from app.services.daily_candles.read_service import (  # noqa: E402
+    cache_is_fresh_crypto as _cache_is_fresh_crypto,
+)
+from app.services.daily_candles.read_service import (  # noqa: E402
+    cache_is_fresh_equity as _cache_is_fresh_equity,
+)
+from app.services.daily_candles.read_service import (  # noqa: E402
+    rows_to_frame as _rows_to_frame,
+)
 
 
 async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:

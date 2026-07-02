@@ -241,6 +241,39 @@ returns recent entries newest first. `limit` is clamped to 1..100 and defaults
 to 20. New trading sessions should call this before comparing yesterday's plan
 with today's candidate tournament.
 
+### Analysis Artifact Tools
+
+`analysis_artifact_save(market, kind, title, symbols?, payload?, as_of?, valid_until?, created_by?, session_label?)`
+persists a structured analysis artifact for cross-session reuse. It is for the
+durable outputs of analysis runs — screening rankings, profit-taking verdicts,
+support/resistance maps, flow assessments, candidate pools, and session
+summaries — so a later session can reuse them instead of recomputing. Save is
+explicit only; `analyze_stock_batch` and other analysis runs do not auto-persist.
+
+Each artifact accepts:
+
+- `market` required: `kr`, `us`, or `crypto`.
+- `kind` required: `screening_ranking`, `profit_taking_verdicts`,
+  `support_resistance_map`, `flow_assessment`, `candidate_pool`,
+  `session_summary`.
+- `title` required short title.
+- `symbols` optional string list; defaults to empty.
+- `payload` optional JSON object; defaults to empty.
+- `as_of` optional ISO datetime; defaults to now (UTC).
+- `valid_until` optional ISO datetime; when in the past the artifact is stale
+  and excluded from `analysis_artifact_list` unless `include_stale=true`.
+- `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
+- `session_label` optional grouping label.
+
+`analysis_artifact_list(market?, kind?, symbol?, since?, include_stale?, limit)`
+returns matching artifacts newest `as_of` first. `symbol` does a containment
+match on the `symbols` array. `limit` is clamped to 1..100 and defaults to 20.
+Stale rows (`valid_until` in the past) are excluded unless `include_stale=true`.
+
+`analysis_artifact_get(artifact_id)` returns a single artifact including the
+full payload, by numeric `id` or `artifact_uuid` string. Missing ids return
+`success=false` with `error="not_found"`.
+
 ### Investment Report Tools
 
 - `investment_report_add_items(report_uuid, items, actor=None)` - Append new proposal items to an existing draft investment report. The item payload contract matches `investment_report_create`. Duplicate `client_item_key` rows are returned as existing items and are not rewritten. Non-draft reports return `error="not_draft"`. No broker, order, or watch mutation is performed.
