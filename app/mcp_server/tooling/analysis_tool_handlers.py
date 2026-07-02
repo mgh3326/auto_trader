@@ -15,6 +15,13 @@ from typing import Any, Literal
 import httpx
 import yfinance as yf
 
+from app.core import analyze_cache
+from app.core.analyze_cache import (
+    _kst_date_for_key,
+    _resolve_market_for_symbol,
+    get_cached_analyze_result,
+    set_cached_analyze_result,
+)
 from app.mcp_server.tooling import analysis_screening, foreigners_liquidity
 from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.market_data_indicators import (
@@ -568,15 +575,39 @@ async def _run_batch_analysis(
     async def _analyze_one(sym: str) -> dict[str, Any]:
         async with sem:
             try:
+                # ROB-638: Redis cache check (fail-open).
+                redis_client = await analyze_cache._get_redis_client()
+                cache_market = _resolve_market_for_symbol(sym, market)
+                kst_date = _kst_date_for_key()
+                cached = await get_cached_analyze_result(
+                    redis_client, cache_market, sym, kst_date
+                )
+                if cached is not None:
+                    cached["cache_hit"] = True
+                    return cached
+
                 result = analysis_screening._analyze_stock_impl(
                     sym, market, include_peers
                 )
                 if asyncio.iscoroutine(result):
-                    return await result
+                    result = await result
+
+                result["cache_hit"] = False
+                result["derived_as_of"] = datetime.datetime.now(
+                    datetime.UTC
+                ).isoformat()
+                await set_cached_analyze_result(
+                    redis_client, cache_market, sym, kst_date, result
+                )
                 return result
             except Exception as exc:
                 errors.append(f"{sym}: {str(exc)}")
-                return {"symbol": sym, "error": str(exc)}
+                return {
+                    "symbol": sym,
+                    "error": str(exc),
+                    "cache_hit": False,
+                    "derived_as_of": None,
+                }
 
     analyze_results = await asyncio.gather(
         *[_analyze_one(s) for s in normalized_symbols]
@@ -589,6 +620,8 @@ async def _run_batch_analysis(
             formatted_result = formatter(sym, result, position_index=position_index)
         else:
             formatted_result = formatter(sym, result)
+        formatted_result["cache_hit"] = result.get("cache_hit", False)
+        formatted_result["derived_as_of"] = result.get("derived_as_of")
         results[sym] = formatted_result
         if "error" not in result:
             success_count += 1
