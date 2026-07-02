@@ -235,6 +235,11 @@ async def build_investor_flow_snapshots(
             individual_net = _int_or_none(row.get("individual_net"))
             if individual_net is None:
                 individual_net = _derive_individual(foreign_net, institution_net)
+            close = row.get("close")
+            change_rate = row.get("change_pct")
+            volume = _int_or_none(row.get("volume"))
+            foreign_holding_shares = _int_or_none(row.get("foreign_holding_shares"))
+            foreign_holding_rate = row.get("foreign_holding_rate")
             built.append(
                 InvestorFlowSnapshotUpsert(
                     market="kr",
@@ -243,6 +248,11 @@ async def build_investor_flow_snapshots(
                     foreign_net=foreign_net,
                     institution_net=institution_net,
                     individual_net=individual_net,
+                    close=close,
+                    change_rate=change_rate,
+                    volume=volume,
+                    foreign_holding_shares=foreign_holding_shares,
+                    foreign_holding_rate=foreign_holding_rate,
                     source="naver_finance",
                     collected_at=collected_at,
                 )
