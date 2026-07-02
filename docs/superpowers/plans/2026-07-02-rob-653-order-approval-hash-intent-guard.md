@@ -1,6 +1,6 @@
 # ROB-653 P6-B — Shared `_place_order_impl` approval-hash + KIS intent guard — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Bind previewed→placed orders with a content approval-hash and add double-send protection to the shared kis_live/crypto order path, mirroring the merged Toss (ROB-651 P6-A) contract.
 
@@ -33,7 +33,7 @@
   - `salt_market_for(market_type: str) -> str` → `"us"` for `equity_us`, else `"kr"`.
   - Re-exports: `encode_approval_token`, `verify_approval_token`, `derive_approval_digest`, `derive_client_order_id`, `APPROVAL_TTL_SECONDS`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_order_approval.py
@@ -95,12 +95,12 @@ def test_idempotency_key_same_day_stable_next_day_differs():
     assert k1 != k2
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_order_approval.py -v`
 Expected: FAIL — `ModuleNotFoundError: app.mcp_server.tooling.order_approval`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # app/mcp_server/tooling/order_approval.py
@@ -167,12 +167,12 @@ def salt_market_for(market_type: str) -> str:
     return "us" if market_type == "equity_us" else "kr"
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/test_order_approval.py -v`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make format
@@ -194,7 +194,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `settings.order_approval_hash_mode: str` (default `"optional"`).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_order_approval_config.py
@@ -206,12 +206,12 @@ def test_order_approval_hash_mode_defaults_optional():
     assert settings.order_approval_hash_mode in {"off", "optional", "warn", "required"}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_order_approval_config.py -v`
 Expected: FAIL — `AttributeError: 'Settings' object has no attribute 'order_approval_hash_mode'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `app/core/config.py`, immediately after the `toss_approval_hash_mode` line:
 
@@ -228,12 +228,12 @@ In `env.example`, after the `TOSS_APPROVAL_HASH_MODE` line:
 ORDER_APPROVAL_HASH_MODE=optional
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/test_order_approval_config.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/core/config.py env.example tests/test_order_approval_config.py
@@ -259,7 +259,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
     `id, account_scope, idempotency_key, symbol, side, created_at`;
     `UNIQUE(account_scope, idempotency_key)` named `uq_order_send_intent_scope_key`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_rob653_order_intent_schema.py
@@ -287,12 +287,12 @@ def test_order_send_intent_table_and_unique():
     assert ("account_scope", "idempotency_key") in uniques
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_rob653_order_intent_schema.py -v`
 Expected: FAIL — `ImportError: cannot import name 'OrderSendIntent'`.
 
-- [ ] **Step 3a: Add model columns + new model in `app/models/review.py`**
+- [x] **Step 3a: Add model columns + new model in `app/models/review.py`**
 
 In `class KISLiveOrderLedger`, after the `report_item_uuid` column:
 
@@ -345,7 +345,7 @@ class OrderSendIntent(Base):
 (If `UniqueConstraint`/`func`/`TIMESTAMP` are not already imported at the top of
 `review.py`, add them to the existing sqlalchemy import block.)
 
-- [ ] **Step 3b: Write the migration**
+- [x] **Step 3b: Write the migration**
 
 ```python
 # alembic/versions/20260702_rob653_order_approval_intent.py
@@ -409,14 +409,14 @@ def downgrade() -> None:
         op.drop_column(table, "approval_hash", schema="review")
 ```
 
-- [ ] **Step 4: Run tests + verify single alembic head**
+- [x] **Step 4: Run tests + verify single alembic head**
 
 Run: `uv run pytest tests/test_rob653_order_intent_schema.py -v`
 Expected: PASS (2 tests).
 Run: `uv run alembic heads`
 Expected: a single head `20260702_rob653`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make format
@@ -441,7 +441,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   - `class OrderSendIntentService:` with
     `async def reserve(self, *, account_scope: str, idempotency_key: str, symbol: str | None = None, side: str | None = None) -> int` (returns row id; raises `DuplicateOrderIntent` on conflict).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/services/test_order_send_intent_service.py
@@ -481,12 +481,12 @@ async def test_reserve_allows_distinct_key(async_session):
 > against the test DB. If the repo's fixture name differs, use the established one
 > from `tests/conftest.py` (grep `async_session` / `db_session`).
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/services/test_order_send_intent_service.py -v`
 Expected: FAIL — `ModuleNotFoundError: app.services.order_send_intent_service`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # app/services/order_send_intent_service.py
@@ -543,12 +543,12 @@ class OrderSendIntentService:
         return rid
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/services/test_order_send_intent_service.py -v`
 Expected: PASS (2 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make format
@@ -572,7 +572,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Produces: both record functions accept `approval_hash: str | None = None`,
   `idempotency_key: str | None = None` and persist them.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_rob653_ledger_passthrough.py
@@ -624,12 +624,12 @@ async def test_live_order_record_persists_hash_and_key(async_session):
     assert row.idempotency_key == "p6a-crypto-key"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_rob653_ledger_passthrough.py -v`
 Expected: FAIL — `TypeError: ... unexpected keyword argument 'approval_hash'`.
 
-- [ ] **Step 3a: Thread through `kis_live_ledger.py`**
+- [x] **Step 3a: Thread through `kis_live_ledger.py`**
 
 Add params to `_save_kis_live_order_ledger` (the `pg_insert` helper): add
 `approval_hash: str | None = None, idempotency_key: str | None = None,` to its
@@ -649,7 +649,7 @@ Add the same two params to `_record_kis_live_order`'s signature (after
         idempotency_key=idempotency_key,
 ```
 
-- [ ] **Step 3b: Thread through `live_order_ledger.py`**
+- [x] **Step 3b: Thread through `live_order_ledger.py`**
 
 Add `approval_hash: str | None = None, idempotency_key: str | None = None,` to
 `_record_live_order`'s signature (after `report_item_uuid: uuid.UUID | None = None,`),
@@ -660,12 +660,12 @@ and add to the `LiveOrderLedger(...)` constructor after `report_item_uuid=report
             idempotency_key=idempotency_key,
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/test_rob653_ledger_passthrough.py -v`
 Expected: PASS (2 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make format
@@ -692,7 +692,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   - dry-run response gains `approval_hash`, `approval_expires_at`, `idempotency_key`.
   - `_execute_and_record(..., approval_hash_digest: str | None = None, idempotency_key: str | None = None)` forwarding both to `_record_kis_live_order` / `_record_live_order`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_rob653_place_order_hash_guard.py
@@ -756,12 +756,12 @@ async def test_mismatched_hash_fails_closed_with_diff(monkeypatch, _stub_pricing
 > mismatch test return at the guard, so no broker call happens. Keep `dry_run=True`
 > assertions independent of DB.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_rob653_place_order_hash_guard.py -v`
 Expected: FAIL — `approval_hash` not in dry-run result / unexpected kwarg `approval_hash`.
 
-- [ ] **Step 3a: Add params + guard in `_place_order_impl`**
+- [x] **Step 3a: Add params + guard in `_place_order_impl`**
 
 Add to the `_place_order_impl` signature (after `report_item_uuid: str | None = None,`):
 
@@ -885,7 +885,7 @@ through the `_execute_and_record(` call to:
 > Preserve the existing `balance_error` handling that sits before the dry-run exit —
 > only the `if dry_run:` block and the `_execute_and_record` call change.
 
-- [ ] **Step 3b: Thread params through `_execute_and_record`**
+- [x] **Step 3b: Thread params through `_execute_and_record`**
 
 Add to `_execute_and_record`'s signature (after `report_item_uuid: uuid.UUID | None = None,`):
 
@@ -909,7 +909,7 @@ after `report_item_uuid=report_item_uuid,`):
             idempotency_key=idempotency_key,
 ```
 
-- [ ] **Step 3c: Thread `approval_hash`/`rung` through the wrappers**
+- [x] **Step 3c: Thread `approval_hash`/`rung` through the wrappers**
 
 In `orders_kis_variants.py`: add `approval_hash: str | None = None,` and
 `rung: str | int | None = None,` to `kis_live_place_order`'s signature and to
@@ -938,14 +938,14 @@ In `orders_registration.py`: add `approval_hash: str | None = None,` and
                 rung=rung,
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_rob653_place_order_hash_guard.py -v`
 Expected: PASS (3 tests).
 Run: `uv run pytest tests/test_mcp_toss_order_variants.py tests/test_order_approval.py -v`
 Expected: PASS (no regression in the Toss path).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make format && make lint
@@ -969,7 +969,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   is inserted immediately before `_execute_order`; duplicate → `order_error_fn(...)` returned
   (no send). Uses `account_scope="kis_live"`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_rob653_kis_intent_guard.py
@@ -1010,12 +1010,12 @@ async def test_kis_duplicate_intent_blocks_second_send(monkeypatch, async_sessio
     assert sent["count"] == 0  # never sent
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_rob653_kis_intent_guard.py -v`
 Expected: FAIL — send happens (`sent["count"] == 1`) / no guard.
 
-- [ ] **Step 3: Wire the reservation in `_execute_and_record`**
+- [x] **Step 3: Wire the reservation in `_execute_and_record`**
 
 Add an import near the top of `order_execution.py`:
 
@@ -1060,12 +1060,12 @@ In `_execute_and_record`, immediately **before** the `try:` that calls `_execute
                 )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/test_rob653_kis_intent_guard.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make format
@@ -1090,7 +1090,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   - `place_buy_order(..., identifier: str | None = None)`, `place_sell_order(..., identifier: str | None = None)`, `place_market_buy_order(market, price, identifier=None)`, `place_market_sell_order(market, volume, identifier=None)` — use the passed identifier or fall back to uuid4.
   - `_execute_order(..., identifier: str | None = None)` and `_execute_crypto_order(..., identifier: str | None = None)` thread it to the upbit calls.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_rob653_upbit_identifier.py
@@ -1126,12 +1126,12 @@ async def test_place_buy_order_defaults_to_uuid_when_none(monkeypatch):
     assert ident and ident != "p6a-content"  # uuid4 fallback preserved
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_rob653_upbit_identifier.py -v`
 Expected: FAIL — `place_buy_order() got an unexpected keyword argument 'identifier'`.
 
-- [ ] **Step 3a: Add optional `identifier` in `upbit/orders.py`**
+- [x] **Step 3a: Add optional `identifier` in `upbit/orders.py`**
 
 For each of `place_sell_order`, `place_market_sell_order`, `place_buy_order`,
 `place_market_buy_order`: add `identifier: str | None = None` as the last param and
@@ -1144,7 +1144,7 @@ replace `"identifier": _new_order_identifier(),` with:
 (Update `place_market_buy_order` similarly — grep it in the same file; it follows the
 same body-dict pattern.)
 
-- [ ] **Step 3b: Thread `identifier` from `_execute_order`**
+- [x] **Step 3b: Thread `identifier` from `_execute_order`**
 
 In `order_execution.py`, add `identifier: str | None = None` to `_execute_order` and
 `_execute_crypto_order` signatures. In `_execute_order`, pass `identifier=identifier`
@@ -1172,14 +1172,14 @@ for crypto** (KIS ignores it; KIS uses the reservation table instead):
 > as `upbit_service`; its `place_*` functions re-export `app/services/brokers/upbit/orders.py`.
 > Confirm the call sites in `_execute_crypto_order` accept the new kwarg.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_rob653_upbit_identifier.py -v`
 Expected: PASS (2 tests).
 Run: `uv run pytest tests/ -k "upbit_order or upbit and order" -q`
 Expected: no regressions in existing Upbit order tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make format
@@ -1200,7 +1200,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Interfaces:** none (docs).
 
-- [ ] **Step 1: Write the runbook**
+- [x] **Step 1: Write the runbook**
 
 Create `docs/runbooks/order-approval-hash.md` covering: what the guard does; the
 `ORDER_APPROVAL_HASH_MODE` rollout stages (`off → optional → warn → required`) and how to
@@ -1210,7 +1210,7 @@ advance them; how an operator gets an `approval_hash` (run the order tool with
 allowed; recovery = inspect `review.order_send_intents`, never delete rows mid-session);
 and the explicit note that reconcile (ROB-395/407) is unchanged.
 
-- [ ] **Step 2: Add the CLAUDE.md section**
+- [x] **Step 2: Add the CLAUDE.md section**
 
 Add a section mirroring the existing ROB-651/Toss entries:
 
@@ -1234,7 +1234,7 @@ valid hash doubles as confirm.
 - **런북**: `docs/runbooks/order-approval-hash.md`
 ```
 
-- [ ] **Step 3: Run the full relevant suite + lint**
+- [x] **Step 3: Run the full relevant suite + lint**
 
 Run: `make format && make lint`
 Expected: clean.
@@ -1243,7 +1243,7 @@ Expected: all PASS.
 Run: `uv run pytest tests/test_mcp_toss_order_variants.py tests/ -k "place_order or live_order_ledger or kis_live" -q`
 Expected: no regressions (reconcile + existing order tests green).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/runbooks/order-approval-hash.md CLAUDE.md docs/superpowers/plans/2026-07-02-rob-653-order-approval-hash-intent-guard.md
