@@ -1,5 +1,6 @@
 # app/models/__init__.py
 from .analysis import StockAnalysisResult, StockInfo
+from .analyst_consensus_snapshot import AnalystConsensusSnapshot
 from .base import Base
 from .binance_demo_order_ledger import BinanceDemoOrderLedger
 from .crypto_candles import CryptoCandle1d, CryptoCandle1m
@@ -119,6 +120,7 @@ from .user_settings import UserSetting
 
 __all__ = [
     "Base",
+    "AnalystConsensusSnapshot",
     "BinanceDemoOrderLedger",
     "ScalpTradeAnalytics",
     "ScalpingDailyReview",
