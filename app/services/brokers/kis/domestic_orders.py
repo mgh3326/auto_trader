@@ -315,6 +315,11 @@ class DomesticOrderClient:
             timeout=10,
             api_name="order_korea_stock",
             tr_id=tr_id,
+            # ROB-645: never re-POST an order. retry_request_errors=False drops
+            # timeout/network retries; max_retries_override=0 drops EGW00215/'초과'
+            # and 429 re-POSTs (throttle is pre-send wait only).
+            retry_request_errors=False,
+            max_retries_override=0,
         )
 
         if js.get("rt_cd") != "0":
@@ -481,6 +486,10 @@ class DomesticOrderClient:
             timeout=10,
             api_name="cancel_korea_order",
             tr_id=tr_id,
+            # ROB-645: cancel is by order-number so a re-POST is relatively benign,
+            # but keep the no-double-submit policy uniform across order mutations.
+            retry_request_errors=False,
+            max_retries_override=0,
         )
 
         if js.get("rt_cd") != "0":
@@ -797,6 +806,10 @@ class DomesticOrderClient:
             timeout=10,
             api_name="modify_korea_order",
             tr_id=tr_id,
+            # ROB-645: a re-applied modify can double-mutate an already-modified
+            # order, so it must not be re-POSTed either.
+            retry_request_errors=False,
+            max_retries_override=0,
         )
 
         if js.get("rt_cd") != "0":

@@ -7,12 +7,24 @@ Market data functions remain in client.py.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
 
 import app.services.brokers.upbit.client as _client
 
 logger = logging.getLogger(__name__)
+
+
+def _new_order_identifier() -> str:
+    """ROB-645: unique client idempotency key for an Upbit order.
+
+    Upbit rejects a reused ``identifier`` for the account, so a resent/duplicate
+    order fails instead of double-executing, and the key doubles as a client-side
+    handle for order lookup/reconcile. A random uuid4 per order guarantees
+    uniqueness; content-based derivation is a later follow-up (ROB-653).
+    """
+    return str(uuid.uuid4())
 
 
 async def fetch_open_orders(market: str | None = None) -> list[dict[str, Any]]:
@@ -94,6 +106,7 @@ async def place_sell_order(market: str, volume: str, price: str) -> dict[str, An
         "volume": volume,
         "price": price,
         "ord_type": "limit",  # 지정가 주문
+        "identifier": _new_order_identifier(),
     }
 
     return await _client._request_with_auth("POST", url, body_params=body_params)
@@ -121,6 +134,7 @@ async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
         "side": "ask",  # 매도
         "volume": volume,
         "ord_type": "market",  # 시장가 주문 (즉시 체결)
+        "identifier": _new_order_identifier(),
     }
 
     return await _client._request_with_auth("POST", url, body_params=body_params)
@@ -156,6 +170,7 @@ async def place_buy_order(
         "market": market,
         "side": "bid",  # 매수
         "ord_type": ord_type,
+        "identifier": _new_order_identifier(),
     }
 
     if ord_type == "limit":

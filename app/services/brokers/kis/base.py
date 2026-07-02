@@ -384,6 +384,7 @@ class BaseKISClient:
         api_name: str = "unknown",
         tr_id: str | None = None,
         retry_request_errors: bool = True,
+        max_retries_override: int | None = None,
     ) -> dict[str, Any]:
         """Make HTTP request with rate limiting and 429 retry logic.
 
@@ -397,6 +398,9 @@ class BaseKISClient:
             api_name: Human-readable API name for logging
             tr_id: KIS TR_ID for per-API rate limiting
             retry_request_errors: whether to retry on httpx.RequestError (timeouts, etc)
+            max_retries_override: cap the retry count for this call. ROB-645 order
+                submission passes ``0`` so a timed-out or rate-limited (EGW00215)
+                order POST is sent exactly once and never re-POSTed.
 
         Returns:
             Parsed JSON response
@@ -416,6 +420,7 @@ class BaseKISClient:
             api_name=api_name,
             tr_id=tr_id,
             retry_request_errors=retry_request_errors,
+            max_retries_override=max_retries_override,
         )
         return data
 
@@ -431,6 +436,7 @@ class BaseKISClient:
         api_name: str = "unknown",
         tr_id: str | None = None,
         retry_request_errors: bool = True,
+        max_retries_override: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Like :meth:`_request_with_rate_limit` but also returns response headers.
 
@@ -450,7 +456,11 @@ class BaseKISClient:
 
         rate, period = self._get_rate_limit_for_api(api_key)
         limiter = await self._get_limiter(api_key, rate=rate, period=period)
-        max_retries = self._settings.api_rate_limit_retry_429_max
+        max_retries = (
+            max_retries_override
+            if max_retries_override is not None
+            else self._settings.api_rate_limit_retry_429_max
+        )
 
         last_error: Exception | None = None
 
