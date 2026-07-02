@@ -784,6 +784,58 @@ def _summarize_analysis_result(
     return summary
 
 
+async def _attach_fresh_artifact_hints(
+    results: dict[str, Any],
+    *,
+    market: str | None,
+) -> None:
+    """Annotate each successful per-symbol result with a fresh-artifact hint.
+
+    ROB-648 soft-gate: when a non-stale analysis_artifact already covers a
+    symbol, attach ``fresh_artifact_exists`` ({artifact_uuid, as_of, kind}) so
+    the caller can choose to reuse it. Purely advisory — never short-circuits
+    the analysis. Complementary to the ROB-638 fetch-layer cache (cross-call);
+    this surfaces cross-session persisted artifacts. Fail-open: any DB/lookup
+    error leaves results untouched.
+    """
+    symbols = [
+        sym
+        for sym, row in results.items()
+        if isinstance(row, dict) and "error" not in row
+    ]
+    if not symbols:
+        return
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.core.symbol import to_db_symbol
+        from app.services.analysis_artifact import AnalysisArtifactService
+
+        market_filter = market if market in {"kr", "us", "crypto"} else None
+        async with AsyncSessionLocal() as db:
+            service = AnalysisArtifactService(db)
+            rows = await service.fresh_artifacts_for_symbols(
+                symbols=symbols,
+                market=market_filter,  # type: ignore[arg-type]
+            )
+        # rows are newest-first; keep the first (most recent) hit per symbol.
+        by_symbol: dict[str, Any] = {}
+        for row in rows:
+            for artifact_symbol in row.symbols:
+                by_symbol.setdefault(artifact_symbol, row)
+        for sym, result in results.items():
+            if not isinstance(result, dict) or "error" in result:
+                continue
+            hit = by_symbol.get(to_db_symbol(str(sym).strip())) or by_symbol.get(sym)
+            if hit is not None:
+                result["fresh_artifact_exists"] = {
+                    "artifact_uuid": str(hit.artifact_uuid),
+                    "as_of": hit.as_of.isoformat(),
+                    "kind": hit.kind,
+                }
+    except Exception as exc:  # fail-open: hints are advisory-only
+        logger.debug("fresh_artifact_exists hint lookup skipped: %s", exc)
+
+
 async def analyze_stock_batch_impl(
     symbols: list[str | int],
     market: str | None = None,
@@ -832,7 +884,7 @@ async def analyze_stock_batch_impl(
         ) -> dict[str, Any]:
             return result
 
-    return await _run_batch_analysis(
+    response = await _run_batch_analysis(
         symbols,
         market=market,
         include_peers=include_peers,
@@ -840,6 +892,11 @@ async def analyze_stock_batch_impl(
         include_position=attach_position,
         refresh=refresh,
     )
+    # ROB-648: annotate each symbol that already has a fresh persisted artifact
+    # (soft reuse hint, fail-open). Only for the compact contract.
+    if quick:
+        await _attach_fresh_artifact_hints(response.get("results", {}), market=market)
+    return response
 
 
 async def analyze_portfolio_impl(

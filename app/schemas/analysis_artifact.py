@@ -20,6 +20,15 @@ AnalysisArtifactKindLiteral = Literal[
     "briefing",
 ]
 AnalysisArtifactCreatedByLiteral = Literal["claude", "operator", "system"]
+# ROB-648 reduced advisory readiness enum. tradingcodex-lane labels are
+# excluded; server-derived readiness gating is deferred (needs per-kind payload
+# schemas, P5+). Caller declares this; it is not a hard short-circuit gate.
+AnalysisArtifactReadinessLiteral = Literal[
+    "screen_grade",
+    "not_decision_ready",
+    "ready_for_order_review",
+    "blocked",
+]
 
 
 class AnalysisArtifactSave(BaseModel):
@@ -36,6 +45,9 @@ class AnalysisArtifactSave(BaseModel):
     session_label: str | None = None
     correlation_id: str | None = None
     account_scope: str | None = None
+    # Advisory only. content_hash/version are server-computed and intentionally
+    # NOT accepted from the caller.
+    readiness_label: AnalysisArtifactReadinessLiteral | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -158,6 +170,9 @@ class AnalysisArtifactMeta(BaseModel):
     session_label: str | None
     correlation_id: str | None
     account_scope: str | None
+    content_hash: str | None
+    version: int
+    readiness_label: AnalysisArtifactReadinessLiteral | None
     payload_size_bytes: int
     is_stale: bool
     created_by: AnalysisArtifactCreatedByLiteral
@@ -174,7 +189,9 @@ class AnalysisArtifactRead(AnalysisArtifactMeta):
 
 class AnalysisArtifactSaveResponse(BaseModel):
     success: Literal[True] = True
-    action: Literal["created", "updated"] = "created"
+    # 'unchanged' (ROB-648): a correlation_id re-save whose payload hashed
+    # identical to the stored row — no write, version preserved.
+    action: Literal["created", "updated", "unchanged"] = "created"
     artifact: AnalysisArtifactRead
 
 

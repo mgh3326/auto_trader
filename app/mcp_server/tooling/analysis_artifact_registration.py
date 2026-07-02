@@ -27,12 +27,21 @@ def register_analysis_artifact_tools(mcp: FastMCP) -> None:
         description=(
             "Persist a structured analysis artifact (screening ranking, "
             "profit-taking verdicts, support/resistance map, flow assessment, "
-            "candidate pool, or session summary) for cross-session reuse. "
-            "Explicit save only — analysis runs do not auto-persist. "
-            "Idempotent per correlation_id: re-saving the same correlation_id "
-            "updates the row in place (omit to append). Payload capped at "
-            "100KB (payload_too_large above that). Recent valid artifacts "
-            "are surfaced metadata-only in get_operating_briefing."
+            "candidate pool, session summary, or briefing) for cross-session "
+            "reuse. Explicit save only — analysis runs do not auto-persist. "
+            "Cross-session artifact store — complementary to, not a duplicate "
+            "of, the ROB-638 fetch-layer cache (which dedupes provider fetches "
+            "within a run). Idempotent per correlation_id: re-saving the same "
+            "correlation_id updates the row in place and bumps version "
+            "(action='updated'); an identical payload is a no-op "
+            "(action='unchanged', version preserved); omit correlation_id to "
+            "append. content_hash is server-computed over the payload. When "
+            "valid_until is omitted a per-kind default TTL is assigned so no "
+            "artifact is never-stale. Optional readiness_label is advisory "
+            "(screen_grade / not_decision_ready / ready_for_order_review / "
+            "blocked). Payload capped at 100KB (payload_too_large above that). "
+            "Recent valid artifacts are surfaced metadata-only in "
+            "get_operating_briefing."
         ),
     )(analysis_artifact_save)
     _ = mcp.tool(
