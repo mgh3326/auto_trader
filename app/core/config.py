@@ -246,6 +246,10 @@ class Settings(BaseSettings):
     toss_fill_notify_enabled: bool = False
     toss_approval_hash_mode: str = "optional"  # off | optional | warn | required
 
+    # ROB-653 P6-B — kis_live/crypto place-order approval-hash enforcement level.
+    # off | optional | warn | required. optional = no behavior change.
+    order_approval_hash_mode: str = "optional"
+
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)
     kis_ws_hts_id: str = ""  # HTS ID (WebSocket 인증용)
