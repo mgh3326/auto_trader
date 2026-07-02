@@ -11,6 +11,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Index,
+    Integer,
     Text,
     UniqueConstraint,
     text,
@@ -47,6 +48,13 @@ class AnalysisArtifact(Base):
         CheckConstraint(
             "created_by IN ('claude','operator','system')",
             name="created_by",
+        ),
+        CheckConstraint(
+            "readiness_label IS NULL OR readiness_label IN ("
+            "'screen_grade','not_decision_ready',"
+            "'ready_for_order_review','blocked'"
+            ")",
+            name="readiness_label",
         ),
         Index(
             "ix_analysis_artifacts_kind_market_as_of",
@@ -98,6 +106,18 @@ class AnalysisArtifact(Base):
     session_label: Mapped[str | None] = mapped_column(Text)
     correlation_id: Mapped[str | None] = mapped_column(Text)
     account_scope: Mapped[str | None] = mapped_column(Text)
+    # ROB-648 lifecycle fields. content_hash is server-computed over the
+    # canonical payload JSON (nullable + lazy backfill on next save). version is
+    # bumped in place on a correlation_id re-save whose payload content changed.
+    # readiness_label is a caller-declared advisory (reduced enum, see CHECK).
+    content_hash: Mapped[str | None] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    readiness_label: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(
         Text,
         nullable=False,

@@ -198,6 +198,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     for symbols outside the snapshot result path.
   - Default `quick=True` returns compact summary with: symbol, current_price,
     rsi_14, consensus, recommendation, supports (top 3), resistances (top 3).
+  - When a non-stale `analysis_artifact` already covers a symbol, that symbol's
+    compact summary also carries a `fresh_artifact_exists` hint
+    (`{artifact_uuid, as_of, kind}`) so you can choose to reuse the persisted
+    artifact via `analysis_artifact_get` instead of re-deriving. This is a soft
+    hint only — the analysis still runs and is returned.
 
 ### Snapshot-backed report generation
 
@@ -243,27 +248,45 @@ with today's candidate tournament.
 
 ### Analysis Artifact Tools
 
-`analysis_artifact_save(market, kind, title, symbols?, payload?, as_of?, valid_until?, created_by?, session_label?)`
+`analysis_artifact_save(market, kind, title, symbols?, payload?, as_of?, valid_until?, created_by?, session_label?, correlation_id?, account_scope?, readiness_label?)`
 persists a structured analysis artifact for cross-session reuse. It is for the
 durable outputs of analysis runs — screening rankings, profit-taking verdicts,
-support/resistance maps, flow assessments, candidate pools, and session
-summaries — so a later session can reuse them instead of recomputing. Save is
+support/resistance maps, flow assessments, candidate pools, session summaries,
+and briefings — so a later session can reuse them instead of recomputing. Save is
 explicit only; `analyze_stock_batch` and other analysis runs do not auto-persist.
+This is the cross-session artifact store; it is complementary to (not a duplicate
+of) the ROB-638 fetch-layer Redis cache, which dedupes slowly-changing provider
+fetches across calls within a run.
 
 Each artifact accepts:
 
 - `market` required: `kr`, `us`, or `crypto`.
 - `kind` required: `screening_ranking`, `profit_taking_verdicts`,
   `support_resistance_map`, `flow_assessment`, `candidate_pool`,
-  `session_summary`.
+  `session_summary`, `briefing`.
 - `title` required short title.
 - `symbols` optional string list; defaults to empty.
 - `payload` optional JSON object; defaults to empty.
 - `as_of` optional ISO datetime; defaults to now (UTC).
 - `valid_until` optional ISO datetime; when in the past the artifact is stale
-  and excluded from `analysis_artifact_list` unless `include_stale=true`.
+  and excluded from `analysis_artifact_list` unless `include_stale=true`. **When
+  omitted, the server assigns a per-kind default TTL** (price/screen kinds expire
+  at the end of the `as_of` KST day; `session_summary`/`briefing` at the end of
+  the next KST day) so an artifact is never never-stale.
 - `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
 - `session_label` optional grouping label.
+- `correlation_id` optional idempotency key. Re-saving the same `correlation_id`
+  updates the row in place (omit to append a new row).
+- `account_scope` optional grouping/filter label.
+- `readiness_label` optional advisory (caller-declared, not a gate):
+  `screen_grade`, `not_decision_ready`, `ready_for_order_review`, `blocked`.
+
+The response includes `action` and the saved artifact. `action` is `created`
+(new row), `updated` (correlation_id re-save whose payload changed — `version` is
+bumped in place), or `unchanged` (correlation_id re-save whose canonical payload
+hashed identical — no write, `version` preserved). Each artifact carries a
+server-computed `content_hash` (over the canonical payload JSON) and an integer
+`version`.
 
 `analysis_artifact_list(market?, kind?, symbol?, since?, include_stale?, limit)`
 returns matching artifacts newest `as_of` first. `symbol` does a containment

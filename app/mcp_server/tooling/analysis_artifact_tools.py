@@ -45,6 +45,7 @@ async def analysis_artifact_save(
     session_label: str | None = None,
     correlation_id: str | None = None,
     account_scope: str | None = None,
+    readiness_label: str | None = None,
 ) -> dict[str, Any]:
     """Persist a single analysis artifact for cross-session reuse."""
     size_bytes = len(
@@ -71,6 +72,7 @@ async def analysis_artifact_save(
                 "session_label": session_label,
                 "correlation_id": correlation_id,
                 "account_scope": account_scope,
+                "readiness_label": readiness_label,
             }
         )
     except ValidationError as exc:

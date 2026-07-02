@@ -2,20 +2,63 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.models.analysis_artifact import AnalysisArtifact
 from app.schemas.analysis_artifact import (
     AnalysisArtifactKindLiteral,
     AnalysisArtifactSave,
 )
 from app.schemas.investment_reports import MarketLiteral
+
+# Per-kind default freshness horizon in KST calendar days from as_of. Every kind
+# has a concrete horizon so an omitted valid_until never yields a never-stale
+# artifact (NULL=never-stale problem, ROB-648). Price/screen-derived kinds
+# expire at the end of the as_of trading day; session summaries and briefings
+# carry to the end of the next day so a morning-after review still sees them.
+_DEFAULT_TTL_DAYS_BY_KIND: dict[str, int] = {
+    "screening_ranking": 0,
+    "profit_taking_verdicts": 0,
+    "support_resistance_map": 0,
+    "flow_assessment": 0,
+    "candidate_pool": 0,
+    "session_summary": 1,
+    "briefing": 1,
+}
+_DEFAULT_TTL_DAYS_FALLBACK = 0
+
+
+def compute_content_hash(payload: dict[str, Any] | None) -> str:
+    """Canonical sha256 over the payload JSON.
+
+    Sorted keys + ``ensure_ascii=False`` make the digest stable across
+    re-serialization, so an identical payload hashes equal and drives the
+    ``action='unchanged'`` no-op (ROB-648; mirrors
+    ``symbol_report_ingest.content_hash``).
+    """
+    blob = json.dumps(payload or {}, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def default_valid_until(kind: str, as_of: datetime) -> datetime:
+    """Per-kind default ``valid_until`` when the caller omits it (ROB-648).
+
+    End-of-KST-day (23:59:59) of ``as_of`` plus the per-kind horizon. A lenient
+    proxy for '장마감' that sidesteps per-market close times and the
+    created-after-close edge (end-of-day is always >= a same-day ``as_of``).
+    """
+    as_of_kst = as_of.astimezone(KST) if as_of.tzinfo else as_of.replace(tzinfo=KST)
+    horizon = _DEFAULT_TTL_DAYS_BY_KIND.get(kind, _DEFAULT_TTL_DAYS_FALLBACK)
+    day = (as_of_kst + timedelta(days=horizon)).date()
+    return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=KST)
 
 
 class AnalysisArtifactService:
@@ -27,11 +70,24 @@ class AnalysisArtifactService:
     async def save(self, entry: AnalysisArtifactSave) -> tuple[AnalysisArtifact, str]:
         """Persist one artifact and return ``(row, action)``.
 
-        Without ``correlation_id`` every call appends a new row. With
-        ``correlation_id`` the call is idempotent: a retry (e.g. an MCP
-        timeout re-send) updates the existing row in place instead of
-        duplicating it (ROB-474 trade_retrospectives pattern).
+        Without ``correlation_id`` every call appends a new row (``created``).
+        With ``correlation_id`` the call is idempotent (ROB-474
+        trade_retrospectives pattern): the server hashes the canonical payload
+        and compares to the stored row —
+
+        * identical payload → no write, ``version`` preserved (``unchanged``);
+        * changed payload → in-place update with ``version`` bumped (``updated``);
+        * no prior row → insert at ``version`` 1 (``created``).
+
+        ``valid_until`` defaults to a per-kind TTL when omitted so no artifact is
+        ever never-stale, and ``content_hash`` is always server-computed (ROB-648).
         """
+        content_hash = compute_content_hash(entry.payload)
+        valid_until = (
+            entry.valid_until
+            if entry.valid_until is not None
+            else default_valid_until(entry.kind, entry.as_of)
+        )
         values: dict[str, Any] = {
             "market": entry.market,
             "kind": entry.kind,
@@ -39,11 +95,14 @@ class AnalysisArtifactService:
             "symbols": entry.symbols,
             "payload": entry.payload,
             "as_of": entry.as_of,
-            "valid_until": entry.valid_until,
+            "valid_until": valid_until,
             "created_by": entry.created_by,
             "session_label": entry.session_label,
             "correlation_id": entry.correlation_id,
             "account_scope": entry.account_scope,
+            "readiness_label": entry.readiness_label,
+            "content_hash": content_hash,
+            "version": 1,
         }
         if entry.correlation_id is None:
             row = AnalysisArtifact(**values)
@@ -52,11 +111,19 @@ class AnalysisArtifactService:
             await self._session.refresh(row)
             return row, "created"
 
-        existing_id = await self._session.scalar(
-            sa.select(AnalysisArtifact.id).where(
+        existing = await self._session.scalar(
+            sa.select(AnalysisArtifact).where(
                 AnalysisArtifact.correlation_id == entry.correlation_id
             )
         )
+        if existing is not None and existing.content_hash == content_hash:
+            # Identical canonical payload → no-op. version and content stay put
+            # (dedup: same content = reuse, not churn).
+            return existing, "unchanged"
+
+        # Changed content bumps in place; a legacy row with NULL content_hash
+        # (pre-migration) also lands here and gets its hash backfilled.
+        values["version"] = (existing.version + 1) if existing is not None else 1
         stmt = (
             pg_insert(AnalysisArtifact)
             .values(**values)
@@ -78,7 +145,7 @@ class AnalysisArtifactService:
             execution_options={"populate_existing": True},
         )
         row = result.one()
-        return row, "updated" if existing_id is not None else "created"
+        return row, "updated" if existing is not None else "created"
 
     async def list_artifacts(
         self,
@@ -126,6 +193,45 @@ class AnalysisArtifactService:
                 | (AnalysisArtifact.valid_until >= now)
             )
         result = await self._session.scalars(stmt.limit(capped_limit))
+        return list(result.all())
+
+    async def fresh_artifacts_for_symbols(
+        self,
+        *,
+        symbols: list[str],
+        market: MarketLiteral | None = None,
+        limit: int = 50,
+    ) -> list[AnalysisArtifact]:
+        """Non-stale artifacts overlapping any of ``symbols``, newest first.
+
+        Powers the ``analyze_stock_batch`` ``fresh_artifact_exists`` hint
+        (ROB-648) — a soft advisory, never a gate. Uses the Postgres ``&&``
+        array-overlap operator so one query covers the whole batch.
+        """
+        from app.core.symbol import to_db_symbol
+
+        normalized = sorted(
+            {to_db_symbol(s.strip()) for s in symbols if s and s.strip()}
+        )
+        if not normalized:
+            return []
+        now = now_kst()
+        stmt = (
+            sa.select(AnalysisArtifact)
+            .where(
+                AnalysisArtifact.symbols.op("&&")(
+                    sa.text(":fresh_symbols").bindparams(
+                        sa.bindparam("fresh_symbols", value=normalized),
+                    )
+                ),
+                (AnalysisArtifact.valid_until.is_(None))
+                | (AnalysisArtifact.valid_until >= now),
+            )
+            .order_by(AnalysisArtifact.as_of.desc(), AnalysisArtifact.id.desc())
+        )
+        if market is not None:
+            stmt = stmt.where(AnalysisArtifact.market == market)
+        result = await self._session.scalars(stmt.limit(max(1, min(int(limit), 100))))
         return list(result.all())
 
     async def get(

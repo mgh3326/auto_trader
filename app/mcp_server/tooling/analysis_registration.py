@@ -221,7 +221,11 @@ def register_analysis_tools(
             "recomputed fresh on every call. Each result carries cache_hit (whether "
             "cached provider data was served) and derived_as_of (ISO KST timestamp "
             "of when that provider data was fetched). refresh=True bypasses the "
-            "cache read and re-fetches provider data fresh (ROB-638)."
+            "cache read and re-fetches provider data fresh (ROB-638). When a "
+            "non-stale analysis_artifact already covers a symbol, that compact "
+            "summary also carries fresh_artifact_exists {artifact_uuid, as_of, "
+            "kind} — a soft reuse hint (fetch via analysis_artifact_get); the "
+            "analysis still runs (ROB-648)."
         ),
     )
     async def analyze_stock_batch(

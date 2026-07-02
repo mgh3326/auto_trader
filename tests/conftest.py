@@ -654,6 +654,39 @@ async def db_session():
                         "ON review.analysis_artifacts (correlation_id)"
                     )
                 )
+                # ROB-648 lifecycle fields — patched in for pre-existing tables
+                # (fresh DBs get them via create_all).
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS content_hash TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS readiness_label TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "DO $$ BEGIN "
+                        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                        "WHERE conname = 'ck_analysis_artifacts_readiness_label') "
+                        "THEN ALTER TABLE review.analysis_artifacts "
+                        "ADD CONSTRAINT ck_analysis_artifacts_readiness_label "
+                        "CHECK (readiness_label IS NULL OR readiness_label IN ("
+                        "'screen_grade','not_decision_ready',"
+                        "'ready_for_order_review','blocked')); "
+                        "END IF; END $$"
+                    )
+                )
                 # ROB-430 PR-② — week_high_52_date added to the (persistent) KR
                 # fundamentals snapshot table; create_all is a no-op on the existing
                 # table, so patch the column in here (mirrors the alembic migration).

@@ -25,6 +25,9 @@ def test_analysis_artifact_model_contract() -> None:
         "session_label",
         "correlation_id",
         "account_scope",
+        "content_hash",
+        "version",
+        "readiness_label",
         "created_by",
         "created_at",
     }
@@ -36,6 +39,7 @@ def test_analysis_artifact_model_contract() -> None:
     assert "ck_analysis_artifacts_market" in constraint_names
     assert "ck_analysis_artifacts_kind" in constraint_names
     assert "ck_analysis_artifacts_created_by" in constraint_names
+    assert "ck_analysis_artifacts_readiness_label" in constraint_names
 
     assert any(
         isinstance(constraint, UniqueConstraint)
