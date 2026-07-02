@@ -1,10 +1,18 @@
 # tests/test_rob653_ledger_passthrough.py
 import pytest
-from sqlalchemy import select
+import pytest_asyncio
+from sqlalchemy import delete, select
 
 from app.mcp_server.tooling.kis_live_ledger import _record_kis_live_order
 from app.mcp_server.tooling.live_order_ledger import _record_live_order
 from app.models.review import KISLiveOrderLedger, LiveOrderLedger
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_ledgers(db_session):
+    await db_session.execute(delete(KISLiveOrderLedger).where(KISLiveOrderLedger.order_no == "KISTEST653KR"))
+    await db_session.execute(delete(LiveOrderLedger).where(LiveOrderLedger.order_no == "UPBITTEST653"))
+    await db_session.commit()
 
 
 @pytest.mark.asyncio
