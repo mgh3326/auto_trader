@@ -45,6 +45,35 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 10,
         "period": 1.0,
     },
+    # ROB-585 (absorbed by ROB-645): order TRs throttled to 8/s so batch orders
+    # stay under the KIS ledger limit (EGW00215 '초당 거래건수 초과'). ROB-645
+    # removes all order re-POST retries, so this pre-send wait is the only guard
+    # against the rate limit — orders that still exceed it fail fast, never re-sent.
+    "TTTC0012U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "VTTC0012U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "TTTC0011U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "VTTC0011U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "TTTC0013U|/uapi/domestic-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTC0013U|/uapi/domestic-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "TTTT1002U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "VTTT1002U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "TTTT1006U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "VTTT1006U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "VTTT1001U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "TTTT1004U|/uapi/overseas-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTT1004U|/uapi/overseas-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
 }
 
 DEFAULT_UPBIT_API_RATE_LIMITS: ApiRateLimitMap = {

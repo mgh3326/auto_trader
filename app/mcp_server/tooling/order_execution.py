@@ -12,6 +12,8 @@ from decimal import Decimal
 from typing import Any, Literal
 from typing import cast as typing_cast
 
+import httpx
+
 import app.services.brokers.upbit.client as upbit_service
 from app.core.exceptions import describe_exception
 from app.mcp_server.caller_identity import get_caller_source
@@ -700,6 +702,18 @@ async def _execute_and_record(
             market_type=market_type,
             is_mock=is_mock,
         )
+    except httpx.RequestError as send_exc:
+        # ROB-645: the order POST itself timed out / failed with no broker response.
+        # Outcome is UNKNOWN (may have been accepted) — never re-send; reconcile.
+        logger.error(
+            "execute_order 실패(outcome unknown): stage=execute_order, "
+            "market_type=%s, symbol=%s, side=%s, error=%s",
+            market_type,
+            normalized_symbol,
+            side,
+            describe_exception(send_exc),
+        )
+        raise OrderSendOutcomeUnknown(send_exc) from send_exc
     except Exception as exec_exc:
         logger.error(
             "execute_order 실패: stage=execute_order, market_type=%s, "
@@ -923,6 +937,72 @@ def _build_order_error(
         "symbol": symbol,
         "instrument_type": market_type,
     }
+
+
+class OrderSendOutcomeUnknown(Exception):
+    """ROB-645 — an order POST failed with no definitive broker response
+    (timeout/network error), so we cannot tell whether the order was accepted.
+
+    Raised ONLY around the actual send (``_execute_order``); a RequestError during
+    a pre-send read (price/balance/preview) means the order was never submitted and
+    must NOT be treated as outcome-unknown. Wraps the original transport exception.
+    """
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(describe_exception(original))
+        self.original = original
+
+
+# ROB-645: reconcile tool to consult when an order's send outcome is unknown.
+# Only live paths have a reconcile tool (KR → kis_live_reconcile_orders,
+# US/crypto → live_reconcile_orders). Mock has none, so we never name a phantom.
+_LIVE_RECONCILE_TOOL_BY_MARKET = {
+    "equity_kr": "kis_live_reconcile_orders",
+    "equity_us": "live_reconcile_orders",
+    "crypto": "live_reconcile_orders",
+}
+
+
+def _reconcile_tool_for(*, market_type: str, is_mock: bool) -> str | None:
+    """Return the reconcile MCP tool that confirms whether an order was accepted."""
+    if is_mock:
+        return None
+    return _LIVE_RECONCILE_TOOL_BY_MARKET.get(market_type)
+
+
+def _augment_error_for_unknown_outcome(
+    base_error: dict[str, Any],
+    exc: BaseException,
+    *,
+    market_type: str,
+    is_mock: bool,
+) -> dict[str, Any]:
+    """ROB-645 — enrich an order error when the send outcome is UNKNOWN.
+
+    A timed-out / network-failed order POST may have reached the broker even
+    though no response came back. We no longer retry such sends (retry =
+    double-submit), so surface an explicit, non-blank error that tells the caller
+    to reconcile — never to re-send. Anything that is not a send-time
+    outcome-unknown failure (a definitive rejection, or a pre-send read timeout)
+    is left unchanged: no order was created.
+    """
+    if not isinstance(exc, OrderSendOutcomeUnknown):
+        return base_error
+
+    reconcile_tool = _reconcile_tool_for(market_type=market_type, is_mock=is_mock)
+    reason = describe_exception(exc.original)
+    if reconcile_tool:
+        confirm_hint = f"{reconcile_tool} 도구로 실제 접수 여부를 확인하세요."
+    else:
+        confirm_hint = "브로커에서 실제 주문 상태를 확인하세요."
+
+    enriched = dict(base_error)
+    enriched["outcome_unknown"] = True
+    enriched["reconcile_tool"] = reconcile_tool
+    enriched["error"] = (
+        f"주문 접수 여부 불확실 (전송 실패: {reason}). 재전송하지 말고 {confirm_hint}"
+    )
+    return enriched
 
 
 async def _place_order_impl(
@@ -1160,7 +1240,12 @@ async def _place_order_impl(
             ),
             caller_source=get_caller_source() if defensive_trim_ctx else None,
         )
-        return _order_error(describe_exception(exc))
+        # ROB-645: a timed-out order send has an unknown outcome — tell the caller
+        # to reconcile instead of re-sending (order retries are disabled).
+        base_error = _order_error(describe_exception(exc))
+        return _augment_error_for_unknown_outcome(
+            base_error, exc, market_type=market_type, is_mock=is_mock
+        )
 
 
 __all__ = [

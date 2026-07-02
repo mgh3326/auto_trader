@@ -54,6 +54,8 @@ class KISClientProtocol(Protocol):
         timeout: float = 5.0,
         api_name: str = "unknown",
         tr_id: str | None = None,
+        retry_request_errors: bool = True,
+        max_retries_override: int | None = None,
     ) -> dict[str, Any]:
         """Make HTTP request with rate limiting and retry logic."""
         ...
@@ -69,6 +71,8 @@ class KISClientProtocol(Protocol):
         timeout: float = 5.0,
         api_name: str = "unknown",
         tr_id: str | None = None,
+        retry_request_errors: bool = True,
+        max_retries_override: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Make HTTP request with rate limiting and return parsed data plus headers."""
         ...

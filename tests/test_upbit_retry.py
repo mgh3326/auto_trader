@@ -106,3 +106,71 @@ async def test_non_429_http_error_raises_immediately():
         )
 
     assert send_fn.await_count == 1  # no retry on 500
+
+
+@pytest.mark.asyncio
+async def test_no_retry_on_request_error_when_disabled():
+    """ROB-645: order POST must not retry RequestError (would double-submit)."""
+    from app.services.brokers.upbit.client import _retry_with_backoff
+
+    send_fn = AsyncMock(side_effect=httpx.RequestError("connection reset"))
+
+    with pytest.raises(httpx.RequestError):
+        await _retry_with_backoff(
+            _make_limiter(),
+            send_fn,
+            url="https://test/orders",
+            max_retries=3,
+            base_delay=0.01,
+            retry_request_errors=False,
+        )
+
+    assert send_fn.await_count == 1  # sent exactly once, never re-sent
+
+
+@pytest.mark.asyncio
+async def test_order_post_disables_request_error_retry(monkeypatch):
+    """ROB-645: _request_with_auth POST /orders threads retry_request_errors=False."""
+    from unittest.mock import MagicMock
+
+    from app.services.brokers.upbit import client
+
+    captured: dict = {}
+
+    async def fake_retry(limiter, send_fn, *, url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return {"uuid": "x"}
+
+    monkeypatch.setattr(client, "_retry_with_backoff", fake_retry)
+    monkeypatch.setattr(client, "get_limiter", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(client.jwt, "encode", lambda *a, **k: "tok")
+
+    await client._request_with_auth(
+        "POST", f"{client.UPBIT_REST}/orders", body_params={"market": "KRW-BTC"}
+    )
+
+    assert captured["retry_request_errors"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_request_keeps_request_error_retry(monkeypatch):
+    """ROB-645: read paths (GET) keep the existing RequestError retry."""
+    from unittest.mock import MagicMock
+
+    from app.services.brokers.upbit import client
+
+    captured: dict = {}
+
+    async def fake_retry(limiter, send_fn, *, url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(client, "_retry_with_backoff", fake_retry)
+    monkeypatch.setattr(client, "get_limiter", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(client.jwt, "encode", lambda *a, **k: "tok")
+
+    await client._request_with_auth("GET", f"{client.UPBIT_REST}/accounts")
+
+    assert captured.get("retry_request_errors", True) is True

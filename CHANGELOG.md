@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.2] - 2026-07-02
+
+### Fixed (ROB-645 — order POST timeout retry → live double-submit exposure removed)
+- KIS order-mutation callsites (domestic + overseas: order/cancel/modify) now pass `retry_request_errors=False` and `max_retries_override=0` to the shared transport, so a timed-out **or** rate-limited (EGW00215 '초과' / HTTP 429) order POST is sent exactly once and never re-POSTed. Read paths (quotes/balance/history) keep their existing RequestError and rate-limit retries.
+- Upbit order-creation POSTs (`POST /v1/orders`) are excluded from the `_retry_with_backoff` RequestError retry (a timed-out order may have reached the broker); GET reads and DELETE cancels keep retrying. Each Upbit order now carries a unique `identifier` client idempotency key (uuid4 per order) so a resent/duplicate order is rejected by the broker.
+- A timed-out/network-failed order send now surfaces an explicit, non-blank error (`outcome_unknown: true` + `reconcile_tool`) telling the caller to run `kis_live_reconcile_orders` (KR) / `live_reconcile_orders` (US·crypto) instead of re-sending — never a blank error, never an auto-retry.
+
+### Added (ROB-585 absorbed by ROB-645 — KIS batch order pre-send throttle)
+- Order TR_IDs (domestic/overseas order-cash + order-rvsecncl) throttled to 8/s in `DEFAULT_KIS_API_RATE_LIMITS`. With order re-POST retries removed, this pre-send wait is the sole guard against the KIS 초당 거래건수 limit; orders that still exceed it fail fast rather than being re-sent. Supersedes PR #1331 (its `max_retries_override=3` would have re-POSTed on EGW00215).
+
 ## [0.3.1] - 2026-06-17
 
 ### Added (ROB-592 — stock detail per-symbol watch card + fill detail upgrade)
