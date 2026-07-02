@@ -244,6 +244,7 @@ class Settings(BaseSettings):
     # ROB-576 — Toss fill notifications are inert until explicitly enabled by
     # the operator. Toss auto-reconcile gates live with the task flags below.
     toss_fill_notify_enabled: bool = False
+    toss_approval_hash_mode: str = "optional"  # off | optional | warn | required
 
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)

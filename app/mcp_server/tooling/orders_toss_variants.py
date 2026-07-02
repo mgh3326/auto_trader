@@ -823,6 +823,8 @@ async def _toss_place_order_impl(
     report_item_uuid: str | None = None,
     account_mode: str | None = None,
     account_type: str | None = None,
+    approval_hash: str | None = None,
+    rung: str | int | None = None,
     client_order_id_override: str | None = None,
 ) -> dict[str, Any]:
     if (guard := _entry_guard(account_mode, account_type)) is not None:
@@ -859,19 +861,39 @@ async def _toss_place_order_impl(
                 "adjusted_price": _stringify_decimal(price_dec),
             }
 
+    quantity_str = _stringify_decimal(quantity_dec)
+    price_str = _stringify_decimal(price_dec)
+    order_amount_str = _stringify_decimal(order_amount_dec)
+
+    canonical = build_canonical_payload(
+        market=mkt,
+        symbol=symbol,
+        side=side,
+        order_type=order_type,
+        time_in_force=time_in_force,
+        quantity=quantity_str,
+        price=price_str,
+        order_amount=order_amount_str,
+    )
+    now = now_kst()
+    client_order_id = client_order_id_override or derive_client_order_id(
+        canonical, market=mkt, now=now, rung=rung
+    )
+    ledger_approval_hash = derive_approval_digest(canonical)
+
     payload: dict[str, Any] = {
-        "clientOrderId": client_order_id_override or _new_client_order_id(),
+        "clientOrderId": client_order_id,
         "symbol": symbol,
         "side": side.upper(),
         "orderType": order_type.upper(),
         "timeInForce": time_in_force,
     }
-    if quantity_dec is not None:
-        payload["quantity"] = _stringify_decimal(quantity_dec)
-    if price_dec is not None:
-        payload["price"] = _stringify_decimal(price_dec)
-    if order_amount_dec is not None:
-        payload["orderAmount"] = _stringify_decimal(order_amount_dec)
+    if quantity_str is not None:
+        payload["quantity"] = quantity_str
+    if price_str is not None:
+        payload["price"] = price_str
+    if order_amount_str is not None:
+        payload["orderAmount"] = order_amount_str
     if confirm_high_value_order:
         payload["confirmHighValueOrder"] = True
 
@@ -891,6 +913,38 @@ async def _toss_place_order_impl(
         id_guard := _client_order_id_error(client_order_id_override, base_response)
     ) is not None:
         return id_guard
+    mode = getattr(settings, "toss_approval_hash_mode", "optional")
+    if mode != "off":
+        if approval_hash is not None:
+            result = verify_approval_token(approval_hash, canonical, now=now)
+            if not result.ok:
+                err = {
+                    "success": False,
+                    **base_response,
+                    "error": result.message,
+                    "error_code": result.error_code,
+                }
+                if result.diff is not None:
+                    err["diff"] = result.diff
+                return err
+        elif mode == "required":
+            return {
+                "success": False,
+                **base_response,
+                "error": (
+                    "toss_place_order requires approval_hash "
+                    "(TOSS_APPROVAL_HASH_MODE=required). Re-preview and pass "
+                    "approval_hash from toss_preview_order."
+                ),
+                "error_code": "approval_hash_required",
+            }
+        elif mode == "warn":
+            logger.warning(
+                "toss_place_order called without approval_hash "
+                "(mode=warn) symbol=%s side=%s",
+                symbol,
+                side,
+            )
 
     if dry_run:
         return {
@@ -986,6 +1040,7 @@ async def _toss_place_order_impl(
                 notes=notes,
                 indicators_snapshot=indicators_snapshot,
                 report_item_uuid=report_item_uuid,
+                approval_hash=ledger_approval_hash,
             )
             return {
                 "success": True,
@@ -1040,6 +1095,8 @@ async def toss_place_order(
     report_item_uuid: str | None = None,
     account_mode: str | None = None,
     account_type: str | None = None,
+    approval_hash: str | None = None,
+    rung: str | int | None = None,
 ) -> dict[str, Any]:
     return await _toss_place_order_impl(
         symbol=symbol,
@@ -1065,6 +1122,8 @@ async def toss_place_order(
         report_item_uuid=report_item_uuid,
         account_mode=account_mode,
         account_type=account_type,
+        approval_hash=approval_hash,
+        rung=rung,
         client_order_id_override=None,
     )
 
