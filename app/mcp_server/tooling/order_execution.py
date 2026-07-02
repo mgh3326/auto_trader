@@ -135,9 +135,12 @@ async def _execute_order(
     price: float | None,
     market_type: str,
     is_mock: bool = False,
+    identifier: str | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
-        return await _execute_crypto_order(symbol, side, order_type, quantity, price)
+        return await _execute_crypto_order(
+            symbol, side, order_type, quantity, price, identifier=identifier
+        )
     if market_type == "equity_kr":
         return await _execute_kr_order(
             symbol, side, order_type, quantity, price, is_mock=is_mock
@@ -151,15 +154,18 @@ async def _execute_crypto_order(
     order_type: str,
     quantity: float | None,
     price: float | None,
+    identifier: str | None = None,
 ) -> dict[str, Any]:
     if side == "buy":
         if order_type == "market":
             price_str = f"{price:.0f}" if price else "0"
-            return await upbit_service.place_market_buy_order(symbol, price_str)
+            return await upbit_service.place_market_buy_order(
+                symbol, price_str, identifier=identifier
+            )
         volume_str = f"{quantity:.8f}"
         adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
         return await upbit_service.place_buy_order(
-            symbol, adjusted_price, volume_str, "limit"
+            symbol, adjusted_price, volume_str, "limit", identifier=identifier
         )
 
     holdings = await _get_holdings_for_order(symbol, "crypto")
@@ -169,10 +175,14 @@ async def _execute_crypto_order(
     volume = holdings["quantity"] if quantity is None else quantity
     volume_str = f"{volume:.8f}"
     if order_type == "market":
-        return await upbit_service.place_market_sell_order(symbol, volume_str)
+        return await upbit_service.place_market_sell_order(
+            symbol, volume_str, identifier=identifier
+        )
 
     adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
-    return await upbit_service.place_sell_order(symbol, volume_str, f"{adjusted_price}")
+    return await upbit_service.place_sell_order(
+        symbol, volume_str, f"{adjusted_price}", identifier=identifier
+    )
 
 
 async def _execute_kr_order(
@@ -741,6 +751,7 @@ async def _execute_and_record(
             price=price,
             market_type=market_type,
             is_mock=is_mock,
+            identifier=idempotency_key if market_type == "crypto" else None,
         )
     except httpx.RequestError as send_exc:
         # ROB-645: the order POST itself timed out / failed with no broker response.
