@@ -156,9 +156,18 @@ async def compute_sector_cluster_weights(
 
     ROB-646 — reuses ``get_portfolio_allocation_impl(include_positions=True)`` for
     per-position KRW values + ``usd_krw``, joins each holding's sector label to
-    ``sector_cluster_for``, and groups by sector cluster. May raise on any data
-    gap; the orchestrator (``evaluate_sector_concentration``) fails open.
+    ``sector_cluster_for``, and groups by sector cluster.
+
+    The allocation impl does not currently populate ``sector`` / ``sector_name``
+    on position rows, so for any position missing a label we fall back to a
+    per-position universe→``symbol_sectors`` lookup via ``_lookup_symbol_sector_label``
+    (best-effort, fails open). Without this enrichment the cap silently maps 0
+    holdings in prod; with it, real cluster weights are aggregated.
+
+    May raise on any data gap; the orchestrator (``evaluate_sector_concentration``)
+    fails open.
     """
+    from app.core.db import AsyncSessionLocal
     from app.mcp_server.tooling.portfolio_allocation import (
         get_portfolio_allocation_impl,
     )
@@ -174,15 +183,20 @@ async def compute_sector_cluster_weights(
     positions = alloc.get("positions") or []
     clusters: dict[str, float] = {}
     total = 0.0
-    for pos in positions:
-        value_krw = pos.get("value_krw")
-        if value_krw is None:
-            continue
-        total += float(value_krw)
-        label = pos.get("sector") or pos.get("sector_name")
-        cluster = sector_cluster_for(label)
-        if cluster is not None:
-            clusters[cluster] = clusters.get(cluster, 0.0) + float(value_krw)
+    async with AsyncSessionLocal() as db:
+        for pos in positions:
+            value_krw = pos.get("value_krw")
+            if value_krw is None:
+                continue
+            total += float(value_krw)
+            label = pos.get("sector") or pos.get("sector_name")
+            if label is None and pos.get("symbol"):
+                label = await _lookup_symbol_sector_label(
+                    db, symbol=str(pos.get("symbol")), market=market
+                )
+            cluster = sector_cluster_for(label)
+            if cluster is not None:
+                clusters[cluster] = clusters.get(cluster, 0.0) + float(value_krw)
     return {"clusters": clusters, "total_krw": total, "usd_krw": usd_krw}
 
 
