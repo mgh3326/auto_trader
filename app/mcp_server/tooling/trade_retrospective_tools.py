@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -13,6 +14,7 @@ from app.core.timezone import now_kst
 from app.services.trade_journal.trade_retrospective_service import (
     RetrospectiveValidationError,
     build_retrospective_aggregate,
+    build_retrospective_pending,
     get_retrospectives,
     save_retrospective,
     serialize_retrospective,
@@ -56,10 +58,32 @@ async def save_trade_retrospective(
     total_pnl_krw: float | None = None,
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
+    trigger_type: str | None = None,
+    root_cause_class: str | None = None,
+    intended_vs_happened: dict | None = None,
+    next_actions: list | None = None,
+    guardrail_fired: str | None = None,
+    policy_version: str | None = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
         return {"success": False, "error": "symbol is required"}
+    # ROB-647 — forward postmortem fields only when the caller supplied them, so
+    # an idempotent re-save that omits them preserves prior values (the service
+    # distinguishes omitted from explicit-None via a sentinel).
+    postmortem: dict[str, Any] = {}
+    if trigger_type is not None:
+        postmortem["trigger_type"] = trigger_type
+    if root_cause_class is not None:
+        postmortem["root_cause_class"] = root_cause_class
+    if intended_vs_happened is not None:
+        postmortem["intended_vs_happened"] = intended_vs_happened
+    if next_actions is not None:
+        postmortem["next_actions"] = next_actions
+    if guardrail_fired is not None:
+        postmortem["guardrail_fired"] = guardrail_fired
+    if policy_version is not None:
+        postmortem["policy_version"] = policy_version
     try:
         async with _session_factory()() as db:
             action, row = await save_retrospective(
@@ -94,6 +118,7 @@ async def save_trade_retrospective(
                 total_pnl_krw=total_pnl_krw,
                 fx_rate_source=fx_rate_source,
                 fx_pnl_accuracy=fx_pnl_accuracy,
+                **postmortem,
             )
             await db.commit()
             await db.refresh(row)
@@ -167,3 +192,28 @@ async def get_retrospective_aggregate(
     except Exception as exc:  # noqa: BLE001
         logger.exception("get_retrospective_aggregate failed")
         return {"success": False, "error": f"get_retrospective_aggregate failed: {exc}"}
+
+
+async def trade_retrospective_pending(
+    kst_date_from: str | None = None,
+    kst_date_to: str | None = None,
+    account_mode: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    today = now_kst().date().isoformat()
+    date_to = kst_date_to or today
+    # Default lookback window: 14 KST days ending today.
+    date_from = kst_date_from or (now_kst().date() - timedelta(days=14)).isoformat()
+    try:
+        async with _session_factory()() as db:
+            result = await build_retrospective_pending(
+                db,
+                kst_date_from=date_from,
+                kst_date_to=date_to,
+                account_mode=account_mode,
+                limit=limit,
+            )
+        return {"success": True, **result}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("trade_retrospective_pending failed")
+        return {"success": False, "error": f"trade_retrospective_pending failed: {exc}"}

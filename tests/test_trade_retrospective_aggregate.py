@@ -209,3 +209,97 @@ async def test_aggregate_sums_fx_and_total_krw(db_session: AsyncSession):
     group = result["groups"][0]
     assert group["fx_pnl_krw_sum"] == pytest.approx(22772.0)
     assert group["total_pnl_krw_sum"] == pytest.approx(112963.4)
+
+
+# ---------------------------------------------------------------------------
+# ROB-647 — trigger_type / root_cause grouping dimensions
+# ---------------------------------------------------------------------------
+
+
+async def _seed_postmortem(
+    db,
+    *,
+    trigger_type,
+    root_cause_class,
+    account_mode="kis_live",
+    outcome="filled",
+):
+    await svc.save_retrospective(
+        db,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode=account_mode,
+        outcome=outcome,
+        trigger_type=trigger_type,
+        root_cause_class=root_cause_class,
+        next_actions=[{"action": "follow up"}],
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_aggregate_group_by_trigger_type(db_session: AsyncSession):
+    await _seed_postmortem(db_session, trigger_type="fill", root_cause_class="analysis")
+    await _seed_postmortem(
+        db_session, trigger_type="fill", root_cause_class="execution"
+    )
+    await _seed_postmortem(
+        db_session,
+        trigger_type="rejected_order",
+        root_cause_class="policy",
+        outcome="rejected",
+    )
+    result = await svc.build_retrospective_aggregate(
+        db_session, group_by="trigger_type"
+    )
+    assert result["group_by"] == "trigger_type"
+    groups = {g["group"]: g for g in result["groups"]}
+    assert groups["fill"]["sample_size"] == 2
+    assert groups["rejected_order"]["sample_size"] == 1
+    # per-group breakdown dimensions present
+    assert groups["fill"]["by_root_cause_class"] == {"analysis": 1, "execution": 1}
+
+
+@pytest.mark.asyncio
+async def test_aggregate_group_by_root_cause(db_session: AsyncSession):
+    await _seed_postmortem(db_session, trigger_type="fill", root_cause_class="analysis")
+    await _seed_postmortem(
+        db_session,
+        trigger_type="policy_violation",
+        root_cause_class="policy",
+        outcome="rejected",
+    )
+    result = await svc.build_retrospective_aggregate(db_session, group_by="root_cause")
+    groups = {g["group"]: g for g in result["groups"]}
+    assert set(groups) == {"analysis", "policy"}
+    assert groups["policy"]["by_trigger_type"] == {"policy_violation": 1}
+
+
+@pytest.mark.asyncio
+async def test_process_dims_include_no_fill_evidence_rows(db_session: AsyncSession):
+    # kiwoom_mock has no fill evidence — excluded from PnL dims, INCLUDED in
+    # process dims (rejected/cancelled postmortems must still be analyzed).
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kiwoom_mock",
+        outcome="rejected",
+        trigger_type="rejected_order",
+        root_cause_class="policy",
+        next_actions=[{"action": "review policy"}],
+    )
+    await db_session.commit()
+
+    by_strategy = await svc.build_retrospective_aggregate(
+        db_session, group_by="strategy"
+    )
+    assert by_strategy["excluded_no_fill_evidence"] == 1
+    assert by_strategy["groups"] == []
+
+    by_trigger = await svc.build_retrospective_aggregate(
+        db_session, group_by="trigger_type"
+    )
+    assert by_trigger["excluded_no_fill_evidence"] == 0
+    groups = {g["group"]: g for g in by_trigger["groups"]}
+    assert groups["rejected_order"]["sample_size"] == 1
