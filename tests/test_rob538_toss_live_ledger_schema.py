@@ -60,3 +60,10 @@ def test_toss_live_order_ledger_is_exported():
     import app.models as models
 
     assert hasattr(models, "TossLiveOrderLedger")
+
+
+def test_toss_live_order_ledger_has_approval_hash_column():
+    from app.models.review import TossLiveOrderLedger
+
+    col = TossLiveOrderLedger.__table__.columns["approval_hash"]
+    assert col.nullable is True

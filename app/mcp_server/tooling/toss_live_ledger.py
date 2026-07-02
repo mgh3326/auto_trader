@@ -76,6 +76,7 @@ async def record_toss_place_order(
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
     report_item_uuid: str | None,
+    approval_hash: str | None = None,
 ) -> dict[str, Any]:
     status = "accepted" if broker_order_id else "rejected"
     async with _order_session_factory()() as db:
@@ -108,6 +109,7 @@ async def record_toss_place_order(
             exit_reason=exit_reason,
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash,
         )
     return {
         "ledger_id": row.id,

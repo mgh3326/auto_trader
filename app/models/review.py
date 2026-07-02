@@ -533,6 +533,7 @@ class TossLiveOrderLedger(Base):
     exit_reason: Mapped[str | None] = mapped_column(Text)
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    approval_hash: Mapped[str | None] = mapped_column(Text)
 
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
