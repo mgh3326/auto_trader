@@ -7,15 +7,11 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import TradeForecast
-from app.services.daily_candles.repository import (
-    DailyCandleRow,
-    DailyCandlesRepository,
-    MarketKey,
-)
+from app.services.daily_candles.repository import DailyCandleRow
 from app.services.trade_journal import forecast_service as svc
 
 pytestmark = [
@@ -23,18 +19,12 @@ pytestmark = [
     pytest.mark.usefixtures("investment_reports_cleanup_lock"),
 ]
 
-_KR_TEST_SYMBOLS = ("998877", "997766")
-
 
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup(
     db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
 ):
     await db_session.execute(delete(TradeForecast))
-    await db_session.execute(
-        text("DELETE FROM public.kr_candles_1d WHERE symbol = ANY(:syms)"),
-        {"syms": list(_KR_TEST_SYMBOLS)},
-    )
     await db_session.commit()
 
 
@@ -46,11 +36,11 @@ def _price_target(direction: str = "at_or_above", target_price: float = 130.0) -
     }
 
 
-async def _seed_kr_candles(db: AsyncSession, symbol: str, highs: list[float]) -> None:
-    rows = [
+def _candles(highs: list[float]) -> list[DailyCandleRow]:
+    return [
         DailyCandleRow(
             time_utc=datetime(2026, 6, 2 + i, tzinfo=UTC),
-            symbol=symbol,
+            symbol="998877",
             partition="KRX",
             open=h - 5,
             high=h,
@@ -63,8 +53,6 @@ async def _seed_kr_candles(db: AsyncSession, symbol: str, highs: list[float]) ->
         )
         for i, h in enumerate(highs)
     ]
-    await DailyCandlesRepository(session=db).upsert_rows(market=MarketKey.KR, rows=rows)
-    await db.commit()
 
 
 # --------------------------------------------------------------------------- #
@@ -318,8 +306,15 @@ async def test_save_cannot_modify_closed(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_resolve_price_target_from_ohlcv(db_session: AsyncSession):
-    await _seed_kr_candles(db_session, "998877", highs=[120.0, 131.0, 125.0])
+async def test_resolve_price_target_from_ohlcv(db_session: AsyncSession, monkeypatch):
+    # The daily-candle store (kr_candles_1d) has no ORM model and is absent from
+    # the create_all test DB, so patch the deterministic reader with canned bars
+    # (the DB-read plumbing is covered by the repository unit test).
+    async def _fake_read(*_a, **_k):
+        return _candles([120.0, 131.0, 125.0])
+
+    monkeypatch.setattr(svc, "_read_window_candles", _fake_read)
+
     _, row = await svc.save_forecast(
         db_session,
         created_by="claude",
@@ -346,7 +341,14 @@ async def test_resolve_price_target_from_ohlcv(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_resolve_price_target_unresolved_no_data(db_session: AsyncSession):
+async def test_resolve_price_target_unresolved_no_data(
+    db_session: AsyncSession, monkeypatch
+):
+    async def _empty_read(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(svc, "_read_window_candles", _empty_read)
+
     _, row = await svc.save_forecast(
         db_session,
         created_by="claude",
