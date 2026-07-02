@@ -10,6 +10,8 @@ import pandas as pd
 import sentry_sdk
 import yfinance as yf
 
+from app.core import analyze_cache
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
@@ -254,24 +256,151 @@ def _collect_yfinance_snapshot(yf_ticker: Any) -> _YFinanceSnapshot:
     )
 
 
+# Task names whose results carry the fetch-cache envelope
+# ({"payload": ..., "cache_hit": bool, "fetched_at": iso}) — ROB-638.
+_FETCH_CACHE_TASK_NAMES = ("kr_snapshot", "us_yf_bundle", "profile")
+
+
+def _fetch_cache_envelope(
+    payload: dict[str, Any],
+    *,
+    cache_hit: bool,
+    fetched_at: str | None,
+) -> dict[str, Any]:
+    return {"payload": payload, "cache_hit": cache_hit, "fetched_at": fetched_at}
+
+
+async def _fetch_kr_snapshot_cached(
+    normalized_symbol: str, refresh: bool
+) -> dict[str, Any]:
+    """KR Naver snapshot (valuation/news/opinions) behind the fetch-layer cache.
+
+    ROB-638: only the slowly-changing provider fetch is cached — quote/RSI/S&R
+    and the recommendation are recomputed by the caller on EVERY call. Degraded
+    (empty) snapshots are never cached; a fetch exception propagates (and is
+    swallowed by ``_gather_task_results``) without touching the cache.
+    """
+    redis_client = await analyze_cache._get_redis_client()
+    if not refresh:
+        payload, fetched_at = await analyze_cache.get_cached_fetch_payload(
+            redis_client, analyze_cache.PROVIDER_NAVER, normalized_symbol
+        )
+        if payload is not None:
+            return _fetch_cache_envelope(payload, cache_hit=True, fetched_at=fetched_at)
+
+    snapshot = await _fetch_analysis_snapshot_naver(normalized_symbol, 5, 10)
+    fetched_at = now_kst().isoformat()
+    if isinstance(snapshot, dict) and snapshot:
+        # refresh=True still WRITES the fresh value — it only bypasses the read.
+        await analyze_cache.set_cached_fetch_payload(
+            redis_client,
+            analyze_cache.PROVIDER_NAVER,
+            normalized_symbol,
+            snapshot,
+            fetched_at=fetched_at,
+        )
+    return _fetch_cache_envelope(snapshot, cache_hit=False, fetched_at=fetched_at)
+
+
+async def _fetch_us_yf_bundle(
+    normalized_symbol: str,
+    yf_ticker: Any,
+    yf_session: Any,
+    loop: asyncio.AbstractEventLoop,
+    redis_client: Any,
+) -> dict[str, Any]:
+    """Fresh US yfinance snapshot → valuation + opinions bundle (cache MISS path).
+
+    The snapshot collection runs in the executor inside this task so it overlaps
+    the other provider fetches. The bundle is cached only when fully healthy:
+    a snapshot where every sub-fetch failed (all None) or a partial bundle
+    (valuation OR opinions raised) is returned fresh but never cached.
+    """
+    yf_snapshot = await loop.run_in_executor(
+        None, _collect_yfinance_snapshot, yf_ticker
+    )
+    bundle: dict[str, Any] = {}
+    part_errors = 0
+    try:
+        bundle["valuation"] = await _fetch_valuation_yfinance(
+            normalized_symbol, snapshot=yf_snapshot, session=yf_session
+        )
+    except Exception:
+        part_errors += 1
+    try:
+        bundle["opinions"] = await _fetch_investment_opinions_yfinance(
+            normalized_symbol, 10, snapshot=yf_snapshot, session=yf_session
+        )
+    except Exception:
+        part_errors += 1
+
+    fetched_at = now_kst().isoformat()
+    snapshot_degraded = (
+        yf_snapshot.info is None
+        and yf_snapshot.analyst_price_targets is None
+        and yf_snapshot.recommendations is None
+        and yf_snapshot.upgrades_downgrades is None
+    )
+    if not snapshot_degraded and part_errors == 0:
+        await analyze_cache.set_cached_fetch_payload(
+            redis_client,
+            analyze_cache.PROVIDER_YFINANCE,
+            normalized_symbol,
+            bundle,
+            fetched_at=fetched_at,
+        )
+    return _fetch_cache_envelope(bundle, cache_hit=False, fetched_at=fetched_at)
+
+
+async def _fetch_us_profile_cached(
+    normalized_symbol: str, refresh: bool, redis_client: Any
+) -> dict[str, Any]:
+    """US Finnhub company profile behind the fetch-layer cache.
+
+    ``_fetch_company_profile_finnhub`` raises on a missing profile, so a
+    degraded fetch propagates (swallowed by ``_gather_task_results``) and is
+    never cached.
+    """
+    if not refresh:
+        payload, fetched_at = await analyze_cache.get_cached_fetch_payload(
+            redis_client, analyze_cache.PROVIDER_FINNHUB_PROFILE, normalized_symbol
+        )
+        if payload is not None:
+            return _fetch_cache_envelope(payload, cache_hit=True, fetched_at=fetched_at)
+
+    profile = await _fetch_company_profile_finnhub(normalized_symbol)
+    fetched_at = now_kst().isoformat()
+    await analyze_cache.set_cached_fetch_payload(
+        redis_client,
+        analyze_cache.PROVIDER_FINNHUB_PROFILE,
+        normalized_symbol,
+        profile,
+        fetched_at=fetched_at,
+    )
+    return _fetch_cache_envelope(profile, cache_hit=False, fetched_at=fetched_at)
+
+
 async def _append_market_specific_tasks(
     named_tasks: list[tuple[str, asyncio.Task[Any]]],
     normalized_symbol: str,
     market_type: str,
     loop: asyncio.AbstractEventLoop,
+    refresh: bool = False,
 ) -> Any | None:
     if market_type == "equity_kr":
         named_tasks.append(
             (
                 "kr_snapshot",
                 asyncio.create_task(
-                    _fetch_analysis_snapshot_naver(normalized_symbol, 5, 10)
+                    _fetch_kr_snapshot_cached(normalized_symbol, refresh)
                 ),
             )
         )
         return None
 
     if market_type == "crypto":
+        # Crypto is NEVER cached (no analyst-consensus source) — this branch
+        # must not touch the cache client at all (asserted by tests).
         named_tasks.append(
             (
                 "news",
@@ -282,41 +411,51 @@ async def _append_market_specific_tasks(
         )
         return None
 
-    yf_session = build_yfinance_tracing_session()
-    yf_ticker = yf.Ticker(normalized_symbol, session=yf_session)
-    yf_snapshot = await loop.run_in_executor(
-        None, _collect_yfinance_snapshot, yf_ticker
-    )
+    redis_client = await analyze_cache._get_redis_client()
+    yf_session = None
+    bundle_envelope: dict[str, Any] | None = None
+    if not refresh:
+        payload, fetched_at = await analyze_cache.get_cached_fetch_payload(
+            redis_client, analyze_cache.PROVIDER_YFINANCE, normalized_symbol
+        )
+        if payload is not None:
+            bundle_envelope = _fetch_cache_envelope(
+                payload, cache_hit=True, fetched_at=fetched_at
+            )
+
+    if bundle_envelope is not None:
+        # Cache hit — no yfinance session/ticker is built at all.
+        async def _cached_bundle(
+            envelope: dict[str, Any] = bundle_envelope,
+        ) -> dict[str, Any]:
+            return envelope
+
+        named_tasks.append(("us_yf_bundle", asyncio.create_task(_cached_bundle())))
+    else:
+        yf_session = build_yfinance_tracing_session()
+        yf_ticker = yf.Ticker(normalized_symbol, session=yf_session)
+        named_tasks.append(
+            (
+                "us_yf_bundle",
+                asyncio.create_task(
+                    _fetch_us_yf_bundle(
+                        normalized_symbol, yf_ticker, yf_session, loop, redis_client
+                    )
+                ),
+            )
+        )
+
     named_tasks.extend(
         [
             (
-                "valuation",
-                asyncio.create_task(
-                    _fetch_valuation_yfinance(
-                        normalized_symbol,
-                        snapshot=yf_snapshot,
-                        session=yf_session,
-                    )
-                ),
-            ),
-            (
                 "profile",
-                asyncio.create_task(_fetch_company_profile_finnhub(normalized_symbol)),
+                asyncio.create_task(
+                    _fetch_us_profile_cached(normalized_symbol, refresh, redis_client)
+                ),
             ),
             (
                 "news",
                 asyncio.create_task(_fetch_news_finnhub(normalized_symbol, "us", 5)),
-            ),
-            (
-                "opinions",
-                asyncio.create_task(
-                    _fetch_investment_opinions_yfinance(
-                        normalized_symbol,
-                        10,
-                        snapshot=yf_snapshot,
-                        session=yf_session,
-                    )
-                ),
             ),
         ]
     )
@@ -428,9 +567,20 @@ def _recompute_intraday_support_resistance(
     sr["distance_basis"] = "live_quote"
 
 
+def _envelope_payload(task_results: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """Unwrap a fetch-cache envelope task result into its provider payload."""
+    envelope = task_results.get(name)
+    if not isinstance(envelope, dict):
+        return None
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
 def _apply_kr_results(analysis: dict[str, Any], task_results: dict[str, Any]) -> None:
-    kr_snapshot = task_results.get("kr_snapshot")
-    if not isinstance(kr_snapshot, dict):
+    kr_snapshot = _envelope_payload(task_results, "kr_snapshot")
+    if kr_snapshot is None:
         return
     for key in ("valuation", "news", "opinions"):
         if key in kr_snapshot:
@@ -438,9 +588,16 @@ def _apply_kr_results(analysis: dict[str, Any], task_results: dict[str, Any]) ->
 
 
 def _apply_us_results(analysis: dict[str, Any], task_results: dict[str, Any]) -> None:
-    for key in ("valuation", "profile", "news", "opinions"):
-        if key in task_results:
-            analysis[key] = task_results[key]
+    bundle = _envelope_payload(task_results, "us_yf_bundle")
+    if bundle is not None:
+        for key in ("valuation", "opinions"):
+            if key in bundle:
+                analysis[key] = bundle[key]
+    profile = _envelope_payload(task_results, "profile")
+    if profile:
+        analysis["profile"] = profile
+    if "news" in task_results:
+        analysis["news"] = task_results["news"]
 
 
 def _apply_market_specific_results(
@@ -456,6 +613,30 @@ def _apply_market_specific_results(
         return
     if "news" in task_results:
         analysis["news"] = task_results["news"]
+
+
+def _apply_fetch_cache_metadata(
+    analysis: dict[str, Any], task_results: dict[str, Any]
+) -> None:
+    """Attach the ROB-638 fetch-cache response contract keys.
+
+    ``cache_hit`` — True when the fetch-layer cache served ANY provider payload
+    for this symbol. ``derived_as_of`` — ISO-KST timestamp of when the (cached
+    or fresh) provider data was fetched; with multiple providers the OLDEST
+    fetch time is reported (most conservative freshness statement). Crypto and
+    fully-fresh runs report the current fetch time.
+    """
+    envelopes = [
+        envelope
+        for name in _FETCH_CACHE_TASK_NAMES
+        if isinstance((envelope := task_results.get(name)), dict)
+        and "payload" in envelope
+    ]
+    analysis["cache_hit"] = any(env.get("cache_hit") for env in envelopes)
+    fetched_ats = sorted(
+        str(env["fetched_at"]) for env in envelopes if env.get("fetched_at")
+    )
+    analysis["derived_as_of"] = fetched_ats[0] if fetched_ats else now_kst().isoformat()
 
 
 def _apply_sector_peers_result(
@@ -539,6 +720,7 @@ async def analyze_stock_impl(
     symbol: str,
     market: str | None = None,
     include_peers: bool = False,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
@@ -571,7 +753,7 @@ async def analyze_stock_impl(
     )
     _append_common_tasks(named_tasks, normalized_symbol, ohlcv_df, ohlcv_60d)
     yfinance_session_to_close = await _append_market_specific_tasks(
-        named_tasks, normalized_symbol, market_type, loop
+        named_tasks, normalized_symbol, market_type, loop, refresh=refresh
     )
     _append_sector_peers_task(
         named_tasks, normalized_symbol, market_type, include_peers
@@ -596,6 +778,8 @@ async def analyze_stock_impl(
         _recompute_intraday_support_resistance(analysis, market_type)
         _apply_market_specific_results(analysis, task_results, market_type)
         _apply_sector_peers_result(analysis, task_results, market_type, include_peers)
+        # ROB-638 — fetch-cache response contract (cache_hit / derived_as_of).
+        _apply_fetch_cache_metadata(analysis, task_results)
         analysis["errors"] = []
         _apply_recommendation(analysis, market_type)
 

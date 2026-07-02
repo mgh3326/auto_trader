@@ -525,6 +525,7 @@ async def _run_batch_analysis(
     include_peers: bool,
     formatter: Callable[..., dict[str, Any]],
     include_position: bool = False,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """Shared batch analysis executor for portfolio and stock batch analysis.
 
@@ -538,6 +539,8 @@ async def _run_batch_analysis(
         include_position: When True (ROB-541), make ONE batched holdings fetch
             for the whole batch and pass the in-memory position index to the
             formatter. Never fans out per symbol.
+        refresh: When True (ROB-638), bypass the fetch-layer provider cache
+            READ for every symbol (fresh values are still written back).
 
     Returns:
         Dict with 'results' (symbol -> formatted_result) and 'summary' keys
@@ -568,15 +571,30 @@ async def _run_batch_analysis(
     async def _analyze_one(sym: str) -> dict[str, Any]:
         async with sem:
             try:
-                result = analysis_screening._analyze_stock_impl(
-                    sym, market, include_peers
-                )
+                # ROB-638: caching happens at the FETCH layer inside the analyze
+                # pipeline (analysis_analyze.py) — never at the whole-response
+                # level, so quote/RSI/S&R/recommendation recompute every call.
+                # ``refresh`` is passed as a keyword ONLY when set so legacy
+                # 3-arg test stubs of _analyze_stock_impl keep working.
+                if refresh:
+                    result = analysis_screening._analyze_stock_impl(
+                        sym, market, include_peers, refresh=True
+                    )
+                else:
+                    result = analysis_screening._analyze_stock_impl(
+                        sym, market, include_peers
+                    )
                 if asyncio.iscoroutine(result):
-                    return await result
+                    result = await result
                 return result
             except Exception as exc:
                 errors.append(f"{sym}: {str(exc)}")
-                return {"symbol": sym, "error": str(exc)}
+                return {
+                    "symbol": sym,
+                    "error": str(exc),
+                    "cache_hit": False,
+                    "derived_as_of": None,
+                }
 
     analyze_results = await asyncio.gather(
         *[_analyze_one(s) for s in normalized_symbols]
@@ -589,6 +607,11 @@ async def _run_batch_analysis(
             formatted_result = formatter(sym, result, position_index=position_index)
         else:
             formatted_result = formatter(sym, result)
+        # ROB-638 additive contract: cache_hit = whether the fetch-layer cache
+        # served the provider data; derived_as_of = ISO-KST timestamp of when
+        # that provider data was fetched (populated by analysis_analyze).
+        formatted_result["cache_hit"] = result.get("cache_hit", False)
+        formatted_result["derived_as_of"] = result.get("derived_as_of")
         results[sym] = formatted_result
         if "error" not in result:
             success_count += 1
@@ -767,6 +790,7 @@ async def analyze_stock_batch_impl(
     include_peers: bool = False,
     quick: bool = True,
     include_position: bool = True,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """Analyze multiple symbols and return compact per-symbol summaries.
     Args:
@@ -777,6 +801,9 @@ async def analyze_stock_batch_impl(
         include_position: ROB-541 — when True (default) and quick=True, attach a
             per-account holdings 'position' array (or null) to each compact
             summary via a SINGLE batched holdings fetch.
+        refresh: ROB-638 — when True, bypass the fetch-layer provider cache
+            read (consensus/valuation/profile are re-fetched fresh and the
+            fresh values are written back to the cache).
     Returns:
         Dict with 'results' (symbol -> summary) and 'summary' keys
     """
@@ -811,6 +838,7 @@ async def analyze_stock_batch_impl(
         include_peers=include_peers,
         formatter=formatter,
         include_position=attach_position,
+        refresh=refresh,
     )
 
 

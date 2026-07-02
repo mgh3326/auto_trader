@@ -214,7 +214,14 @@ def register_analysis_tools(
             "avg_buy_price, pnl_pct, order_routable}, or null when not held. "
             "order_routable mirrors get_holdings: manual non-toss (samsung/수기) -> "
             "false, toss_api -> TOSS_LIVE_ORDER_MUTATIONS_ENABLED, kis/upbit -> true "
-            "(ROB-562); account_mode is a provenance label, NOT a routing selector."
+            "(ROB-562); account_mode is a provenance label, NOT a routing selector. "
+            "Slowly-changing provider data (KR naver valuation/opinions, US yfinance "
+            "valuation/opinions + finnhub profile) is served from an intraday "
+            "fetch-layer cache; price/RSI/support-resistance/recommendation are "
+            "recomputed fresh on every call. Each result carries cache_hit (whether "
+            "cached provider data was served) and derived_as_of (ISO KST timestamp "
+            "of when that provider data was fetched). refresh=True bypasses the "
+            "cache read and re-fetches provider data fresh (ROB-638)."
         ),
     )
     async def analyze_stock_batch(
@@ -223,6 +230,7 @@ def register_analysis_tools(
         include_peers: bool = False,
         quick: bool = True,
         include_position: bool = True,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         return await analyze_stock_batch_impl(
             symbols=symbols,
@@ -230,6 +238,7 @@ def register_analysis_tools(
             include_peers=include_peers,
             quick=quick,
             include_position=include_position,
+            refresh=refresh,
         )
 
     @mcp.tool(

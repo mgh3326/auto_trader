@@ -356,7 +356,17 @@ async def _analyze_stock_impl(
     symbol: str,
     market: str | None = None,
     include_peers: bool = False,
+    refresh: bool = False,
 ) -> dict[str, Any]:
+    # ROB-638: ``refresh`` is forwarded as a keyword ONLY when set so legacy
+    # 3-arg test stubs of analyze_stock_impl keep working.
+    if refresh:
+        return await analysis_analyze.analyze_stock_impl(
+            symbol=symbol,
+            market=market,
+            include_peers=include_peers,
+            refresh=True,
+        )
     return await analysis_analyze.analyze_stock_impl(
         symbol=symbol,
         market=market,
