@@ -1,7 +1,7 @@
 """add approval_hash to toss_live_order_ledger (ROB-651)
 
 Revision ID: 20260702_rob651
-Revises: 20260702_rob641
+Revises: 20260702_rob650
 Create Date: 2026-07-02
 
 Additive nullable column storing the content digest (``p6a-<16hex>``) of the
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260702_rob651"
-down_revision: str | Sequence[str] | None = "20260702_rob641"
+down_revision: str | Sequence[str] | None = "20260702_rob650"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
