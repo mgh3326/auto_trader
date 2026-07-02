@@ -107,6 +107,9 @@ from app.mcp_server.tooling.trade_journal_registration import (
 from app.mcp_server.tooling.trade_retrospective_registration import (
     register_trade_retrospective_tools,
 )
+from app.mcp_server.tooling.trading_policy_registration import (
+    register_trading_policy_tools,
+)
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
     register_user_settings_tools,
@@ -142,6 +145,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_session_context_tools(mcp)
     register_analysis_artifact_tools(mcp)
     register_operating_briefing_tools(mcp)
+    # ROB-646 — read-only policy thresholds + version stamp; always registered
+    # so every profile can cite the stamp when recording a verdict.
+    register_trading_policy_tools(mcp)
     if snapshot_report_generator_enabled:
         register_investment_hermes_tools(mcp)
     # ROB-447: register_market_report_tools removed — its get_market_reports /
