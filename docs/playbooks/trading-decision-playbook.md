@@ -32,6 +32,18 @@ for the procedure-contract vs. operator-instruction boundary.
   fails if any `tool:` no longer exists in the DEFAULT MCP profile — this keeps
   the playbook from drifting away from the live tool registry.
 
+> **Market-aware execution divergence (ROB-658).** The `lanes:` execution steps
+> below are **KR-centric** — they name `toss_place_order` / `kis_live_place_order`
+> because the captured baseline ran on KR equities. These are not static across
+> markets: for **crypto/US** those KR tools are unregistered, so `route_request`
+> replaces the KR place step with the generic **`place_order`** execution tool at
+> runtime (`MARKET_EXECUTION_TOOLS` in
+> `app/mcp_server/tooling/route_request_lanes.py`). The market→execution-tool
+> mapping is therefore intentionally **not** encoded as a per-market lane step in
+> the YAML (it would be one lane block per market); the `lanes:` blocks stay the
+> single source for the KR sequence, and the market substitution is a documented,
+> test-asserted (`tests/test_route_request.py`) runtime behavior — not drift.
+
 All tool names below are registered in the **DEFAULT** MCP profile.
 
 ---

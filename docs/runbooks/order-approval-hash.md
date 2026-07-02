@@ -64,3 +64,40 @@ The fields `approval_hash` (the digest) and `idempotency_key` are persisted on:
 - `review.live_order_ledger`
 
 Reconciliation routines are untouched and operate independently from the idempotency records.
+
+---
+
+## 6. `required`-Mode Cutover Checklist (ROB-659)
+
+`ORDER_APPROVAL_HASH_MODE` and `TOSS_APPROVAL_HASH_MODE` default to `optional`, so no
+caller is blocked today. Flipping either to `required` is a **rollout gate**: any live
+caller that does not hand back an `approval_hash` fail-closes with
+`error_code="approval_hash_required"`. Config load now rejects an out-of-enum value
+(e.g. a `requird` typo) fail-loud, so the mode can no longer silently degrade.
+
+### Scope of the fail-close
+The `required` fail-close is **scoped to LIVE orders** (`not is_mock`). Mock / automation
+callers are structurally exempt and are safe to leave as-is:
+
+| Caller | Path | is_mock | Exempt? |
+|---|---|---|---|
+| `place_order` / `kis_live_place_order` (MCP operator surface) | live | no | **must pass hash** |
+| `KisMockBroker.submit_buy` / `submit_exit_sell` (mock scalping) | mock | yes | exempt |
+| `watch_auto_execute._default_place_order_fn` (watch auto-execute loop) | mock | yes | exempt |
+| `kis_mock_place_order` / `kis_mock_market_open_pilot` (smoke/pilot) | mock | yes | exempt |
+| **`ScreenerService.place_order`** (`POST /api/screener/order`) | **live** | **no (no plumbing)** | **NOT exempt — blocks** |
+
+### Before flipping to `required`
+1. **Route through `warn` first.** Set `ORDER_APPROVAL_HASH_MODE=warn` (and
+   `TOSS_APPROVAL_HASH_MODE=warn`) for a soak window. `optional` is silent when a hash is
+   absent; `warn` logs every hash-less live send so you can find un-migrated callers
+   before they fail-close. Grep logs for `without approval_hash (mode=warn)`.
+2. **Decide the `ScreenerService` REST path.** `ScreenerService.place_order`
+   (`app/services/screener_service.py`) is a **live** `_place_order_impl` caller with **no
+   `approval_hash` plumbing** — under `required` it fail-closes entirely. Before cutover,
+   either (a) add preview→hash plumbing to that endpoint, (b) disable/guard the endpoint,
+   or (c) accept it as blocked. This is the primary remaining live gate.
+3. **Confirm mock automation is unaffected** — the mock scalping executor and watch
+   auto-execute loop pass `is_mock=True` and are exempt by the scoping above.
+4. Flip `ORDER_APPROVAL_HASH_MODE=required` (and `TOSS_APPROVAL_HASH_MODE=required`; Toss
+   is live-only with no mock path) once (1)–(3) are cleared.

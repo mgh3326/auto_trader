@@ -288,10 +288,12 @@ hashed identical — no write, `version` preserved). Each artifact carries a
 server-computed `content_hash` (over the canonical payload JSON) and an integer
 `version`.
 
-`analysis_artifact_list(market?, kind?, symbol?, since?, include_stale?, limit)`
+`analysis_artifact_list(market?, kind?, symbol?, since?, include_stale?, limit, correlation_id?, account_scope?)`
 returns matching artifacts newest `as_of` first. `symbol` does a containment
 match on the `symbols` array. `limit` is clamped to 1..100 and defaults to 20.
 Stale rows (`valid_until` in the past) are excluded unless `include_stale=true`.
+`correlation_id` and `account_scope` are optional exact-match filters (the same
+labels set on `analysis_artifact_save`).
 
 `analysis_artifact_get(artifact_id)` returns a single artifact including the
 full payload, by numeric `id` or `artifact_uuid` string. Missing ids return

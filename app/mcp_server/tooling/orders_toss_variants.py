@@ -1635,7 +1635,12 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "requires TOSS_API_ENABLED and Toss credentials. The response "
             "includes current_price, fill_distance/order_warnings for limit "
             "marketability, and estimated Toss fee/FX full-conversion costs "
-            "from account_costs."
+            "from account_costs. It also mints the approval binding for "
+            "toss_place_order: approval_hash (a self-contained token over the "
+            "tick-normalized order, 5-minute TTL), approval_expires_at, and a "
+            "content-based idempotency_key. Pass the optional rung (ladder level) "
+            "to keep sibling ladder orders on the same day distinct. Hand the "
+            "returned approval_hash (and matching rung) back to toss_place_order."
         ),
     )(toss_preview_order)
     mcp.tool(
@@ -1651,7 +1656,13 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "orders across all paginated OPEN pages and applies the live sell "
             "loss guard (sell price/current market proxy must be >= "
             "avg_purchase_price*1.01). Supports optional metadata (note, "
-            "reason, strategy, signal) for ledger recording."
+            "reason, strategy, signal) for ledger recording. Approval-hash "
+            "binding (TOSS_APPROVAL_HASH_MODE, default optional): pass the "
+            "approval_hash minted by toss_preview_order (with the same rung) so "
+            "the tool re-derives the canonical order and fail-closes on mismatch "
+            "or expiry. off = ignored; optional = verified only when supplied; "
+            "warn = same as optional but logs a hash-less live send; required = "
+            "a valid, unexpired approval_hash is mandatory."
         ),
     )(toss_place_order)
     mcp.tool(

@@ -118,7 +118,9 @@ async def test_save_stamps_policy_version_and_normalizes_symbol(
     await db_session.commit()
     assert action == "created"
     assert row.symbol == "BRK.B"
-    assert row.policy_version == svc.POLICY_VERSION
+    # ROB-659: default stamp now comes from the ROB-646 policy YAML, not the literal.
+    assert row.policy_version == svc._default_policy_version()
+    assert row.policy_version
     assert row.status == "open"
 
 
@@ -409,3 +411,52 @@ async def test_calibration_aggregate_groups_by_created_by(db_session: AsyncSessi
     assert groups["gpt"]["hit_rate"] == pytest.approx(1.0)
     # claude avg brier = ((0.8-1)^2 + (0.6-0)^2)/2 = (0.04 + 0.36)/2 = 0.20
     assert groups["claude"]["avg_brier_score"] == pytest.approx(0.20)
+
+
+# --------------------------------------------------------------------------- #
+# ROB-659: symbol-filter normalization + policy_version default
+# --------------------------------------------------------------------------- #
+def test_normalize_symbol_for_filter_equity_dash_to_dot():
+    # BRK-B (external form) must resolve to the stored BRK.B for filtering.
+    assert svc._normalize_symbol_for_filter("brk-b") == "BRK.B"
+    assert svc._normalize_symbol_for_filter("BRK/B") == "BRK.B"
+
+
+def test_normalize_symbol_for_filter_preserves_crypto_pair():
+    # Crypto pairs keep their market-separator dash (no dash->dot collapse).
+    assert svc._normalize_symbol_for_filter("KRW-BTC") == "KRW-BTC"
+    assert svc._normalize_symbol_for_filter("btc-eth") == "BTC-ETH"
+
+
+def test_normalize_symbol_for_filter_uses_instrument_type_when_known():
+    # With instrument_type it mirrors the write-side normalization exactly.
+    assert svc._normalize_symbol_for_filter("brk-b", "equity_us") == "BRK.B"
+    assert svc._normalize_symbol_for_filter("btc", "crypto") == "KRW-BTC"
+
+
+def test_default_policy_version_uses_policy_yaml():
+    # ROB-659: the default stamp comes from the ROB-646 policy YAML, not the
+    # stale "forecast.v1" literal.
+    assert svc._default_policy_version() == svc.policy_version_stamp()["version"]
+
+
+@pytest.mark.asyncio
+async def test_list_forecasts_symbol_filter_normalizes_equity_us(
+    db_session: AsyncSession,
+):
+    # Stored as BRK.B; a query using the external BRK-B form must still match.
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="claude",
+        symbol="brk-b",
+        instrument_type="equity_us",
+        forecast_target=_price_target(),
+        probability=0.6,
+        review_date="2026-07-15",
+    )
+    await db_session.commit()
+    assert row.symbol == "BRK.B"
+
+    matched = await svc.list_forecasts(db_session, symbol="BRK-B")
+    assert matched["summary"]["count"] == 1
+    assert matched["entries"][0]["symbol"] == "BRK.B"

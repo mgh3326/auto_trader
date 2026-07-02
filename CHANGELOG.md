@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.5] - 2026-07-03
+
+### Changed (ROB-659 — ROB-643~653 batch verification close-out; all minor, migration 0)
+- **approval-hash mode enum validation (fail-loud).** `TOSS_APPROVAL_HASH_MODE` and `ORDER_APPROVAL_HASH_MODE` are now validated at settings load against `{off, optional, warn, required}` (case/whitespace normalized). A typo like `requird` previously passed `mode != "off"` but matched no branch, silently degrading to optional-level behavior — it now raises at boot.
+- **`required`-mode gate scoped to LIVE (`not is_mock`).** The `ORDER_APPROVAL_HASH_MODE=required` fail-close in `_place_order_impl` now exempts mock/automation callers (mock scalping, watch auto-execute, `kis_mock_*`), so flipping `required` cannot break internal loops. New runbook §6 (`docs/runbooks/order-approval-hash.md`) documents the cutover checklist, including the still-unplumbed live `ScreenerService` REST path as the remaining gate; `warn`-mode soak recommended before `required`.
+- **MCP tool descriptions** for `toss_preview_order`/`toss_place_order` and `place_order`/`kis_live_place_order` now document the `approval_hash`/`rung`/TTL parameters and the mode contract, so operating sessions can discover the binding.
+- **`route_request` fixes:** an executing lane no longer lists its own dry-run/approval-minting precursor (`toss_preview_order`) in `blocked_actions` — a self-contradiction in `required` mode (the preview mints the hash `toss_place_order` requires). Missing `intent`/`market` now return a deterministic `success=false` envelope (`missing_intent`/`missing_market`) instead of a FastMCP schema error.
+- **Playbook ↔ ROB-658 sync:** the trading-decision playbook now documents the market-aware execution divergence (crypto/US route through the generic `place_order`, KR lanes stay the single source) instead of leaving it only in code/README.
+- **forecast ledger hardening (ROB-650):** `list_forecasts`/`get_forecast_calibration` symbol filters normalize via `to_db_symbol` so an external `BRK-B` query matches the stored `BRK.B` (crypto pairs like `KRW-BTC` preserved); the default `policy_version` now comes from the ROB-646 `policy_version_stamp()` (fail-open to the legacy literal) instead of the stale `forecast.v1`; new real-path integration test for `_read_window_candles` (dev-DB gated).
+- **docs/hygiene:** README `analysis_artifact_list` signature now lists `correlation_id`/`account_scope`; Upbit order-submission path-suffix detection has a constraint note; backfilled the missing 0.3.3 CHANGELOG entry (below).
+
 ## [0.3.4] - 2026-07-02
 
 ### Added (ROB-650 — resolvable forecast ledger + deterministic resolve + Brier calibration)
@@ -10,6 +21,16 @@
 - New MCP tools `forecast_save`, `forecast_resolve` (dry_run-default), `get_forecasts`, `get_forecast_calibration`, registered always-on next to the trade retrospective tools.
 - Single alembic migration `20260702_rob650` also merges the two heads left on main by ROB-647 and ROB-648 (both branched from `20260702_rob641`) back into one head.
 - Follow-up (out of scope): scheduleless auto-resolve TaskIQ job (ROB-405/475 convention); `policy_version` reads a local constant until ROB-646 lands.
+
+## [0.3.3] - 2026-07-02
+
+> Backfilled by ROB-659 — this entry was omitted when ROB-648 (PR #1362, squash `ed94078e`) merged.
+
+### Added (ROB-648 — analysis_artifacts lifecycle + fresh-artifact soft-gate)
+- Server-computed `content_hash` (SHA-256 over the canonical payload) on `analysis_artifact_save`: a `correlation_id` re-save whose payload hashes identical returns `action="unchanged"` with no write and the `version` preserved; a changed payload bumps `version` in place (`action="updated"`).
+- Reduced-surface advisory `readiness_label` enum and per-kind default TTL when `valid_until` is omitted (price/screen kinds expire at end of the `as_of` KST day; `session_summary`/`briefing` at end of the next KST day) so an artifact is never never-stale.
+- `analyze_stock_batch` surfaces a fail-open `fresh_artifact_exists` hint (&&-overlap) so a session can skip duplicate analysis.
+- Single alembic migration `20260702_rob648` (down_revision `20260702_rob641`).
 
 ## [0.3.2] - 2026-07-02
 

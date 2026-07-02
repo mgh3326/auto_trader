@@ -57,6 +57,52 @@ async def test_required_mode_blocks_without_hash(monkeypatch, _stub_pricing):
 
 
 @pytest.mark.asyncio
+async def test_required_mode_does_not_block_mock_path(monkeypatch, _stub_pricing):
+    # ROB-659: required-mode fail-close is scoped to LIVE (not is_mock). Mock
+    # scalping / automation callers that can't mint a hash must NOT be blocked,
+    # otherwise flipping ORDER_APPROVAL_HASH_MODE=required breaks internal loops.
+    monkeypatch.setattr(settings, "order_approval_hash_mode", "required")
+    sentinel = {"success": True, "sent": True}
+    monkeypatch.setattr(oe, "_execute_and_record", AsyncMock(return_value=sentinel))
+    res = await oe._place_order_impl(
+        symbol="005930",
+        side="buy",
+        market="KR",
+        order_type="limit",
+        quantity=10,
+        price=70000,
+        dry_run=False,
+        thesis="t",
+        strategy="t",
+        is_mock=True,
+    )
+    # Gate passed through to execution; no approval_hash_required rejection.
+    assert res is sentinel
+    assert res.get("error_code") != "approval_hash_required"
+
+
+@pytest.mark.asyncio
+async def test_required_mode_still_blocks_live_path(monkeypatch, _stub_pricing):
+    # The live counterpart of the mock exemption above stays fail-closed.
+    monkeypatch.setattr(settings, "order_approval_hash_mode", "required")
+    monkeypatch.setattr(oe, "_execute_and_record", AsyncMock(return_value={"x": 1}))
+    res = await oe._place_order_impl(
+        symbol="005930",
+        side="buy",
+        market="KR",
+        order_type="limit",
+        quantity=10,
+        price=70000,
+        dry_run=False,
+        thesis="t",
+        strategy="t",
+        is_mock=False,
+    )
+    assert res["success"] is False
+    assert res["error_code"] == "approval_hash_required"
+
+
+@pytest.mark.asyncio
 async def test_mismatched_hash_fails_closed_with_diff(monkeypatch, _stub_pricing):
     monkeypatch.setattr(settings, "order_approval_hash_mode", "required")
     preview = await oe._place_order_impl(

@@ -206,7 +206,14 @@ def register_order_tools(mcp: FastMCP) -> None:
             "ROB-164/ROB-166 defensive_trim requires ALL of: (a) side='sell', "
             "(b) order_type='limit', (c) valid approval_issue_id with approval issue "
             "status=done in Paperclip, and (d) middleware-extracted caller identity "
-            "matching Trader agent."
+            "matching Trader agent. "
+            "Approval-hash binding (ORDER_APPROVAL_HASH_MODE, default optional): the "
+            "dry_run=True preview mints approval_hash (self-contained token over the "
+            "normalized order, 5-minute TTL), approval_expires_at, and idempotency_key; "
+            "pass that approval_hash back (with the same rung ladder level) so live "
+            "send re-derives the canonical order and fail-closes on mismatch/expiry. "
+            "off=ignored; optional=verified only when supplied; warn=logs a hash-less "
+            "live send; required=mandatory for LIVE sends (mock/is_mock paths exempt)."
         ),
     )
     async def place_order(

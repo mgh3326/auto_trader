@@ -360,6 +360,25 @@ class Settings(BaseSettings):
     def parse_api_rate_limits(cls, v: Any) -> ApiRateLimitMap:
         return _parse_api_rate_limit_overrides(v)
 
+    @field_validator(
+        "toss_approval_hash_mode", "order_approval_hash_mode", mode="before"
+    )
+    @classmethod
+    def _validate_approval_hash_mode(cls, v: Any) -> str:
+        # ROB-659: fail-loud on an out-of-enum approval-hash mode. Without this,
+        # a typo (e.g. "requird") passes ``mode != "off"`` at the read sites but
+        # matches neither the "required" nor "warn" branch, silently degrading to
+        # optional-level behavior — a safety-adjacent footgun for P6 rollout.
+        # Case/whitespace are normalized so the exact-string comparisons downstream
+        # ("off"/"required"/"warn") can't be defeated by "Required" / " required ".
+        allowed = {"off", "optional", "warn", "required"}
+        normalized = v.strip().lower() if isinstance(v, str) else v
+        if normalized not in allowed:
+            raise ValueError(
+                f"approval hash mode must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return normalized
+
     def get_redis_url(self) -> str:
         """Redis 연결 URL 생성"""
         if self.redis_url:

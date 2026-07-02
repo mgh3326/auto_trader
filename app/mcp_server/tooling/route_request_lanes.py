@@ -181,6 +181,17 @@ _PLACE_ORDER_TOOLS: frozenset[str] = frozenset(
     {"place_order", "toss_place_order", "kis_live_place_order"}
 )
 
+# ROB-659: dry-run / approval-minting precursor tools. They send no broker
+# mutation, and under TOSS_APPROVAL_HASH_MODE=required an executing lane MUST call
+# toss_preview_order to mint the approval_hash that toss_place_order then demands.
+# toss_preview_order lives in the Toss order namespace (MUTATION_TOOLS) for registry
+# partitioning, so build_route_plan otherwise put it in blocked_actions even for the
+# lane that needs it — a self-contradiction in required mode. Executing lanes now
+# surface their preview precursor as allowed (never blocked). Bootstrap has no place
+# step, so it stays unchanged. (place_order/kis_live_place_order preview via their own
+# dry_run flag, so they need no separate entry here.)
+PREVIEW_TOOLS: frozenset[str] = frozenset({"toss_preview_order"})
+
 # Purpose text for the market execution step injected into the sequence when the
 # lane's KR-centric execution tools are absent from the live profile (crypto/US).
 _MARKET_EXEC_PURPOSE: dict[str, str] = {
@@ -347,10 +358,13 @@ def build_route_plan(
         for i, step in enumerate(seq_steps, start=1)
     ]
     lane_own_mutation = playbook_mutation | market_exec
+    # An executing lane surfaces its dry-run/approval-minting precursor (ROB-659)
+    # so the required-mode preview->place flow isn't blocked by its own advisory.
+    lane_preview = PREVIEW_TOOLS if lane_place_tools else frozenset()
     allowed = (
-        lane_tools | market_exec | set(READ_ONLY_ADVISORY_TOOLS)
+        lane_tools | market_exec | lane_preview | set(READ_ONLY_ADVISORY_TOOLS)
     ) & registered_tools
-    blocked = (MUTATION_TOOLS - lane_own_mutation) & registered_tools
+    blocked = (MUTATION_TOOLS - lane_own_mutation - lane_preview) & registered_tools
     return {
         "success": True,
         "intent": intent,
@@ -372,6 +386,7 @@ __all__ = [
     "LANE_SEQUENCES",
     "HARD_CONSTRAINTS",
     "MARKET_EXECUTION_TOOLS",
+    "PREVIEW_TOOLS",
     "MUTATION_TOOLS",
     "READ_ONLY_ADVISORY_TOOLS",
     "ALL_KNOWN_TOOLS",

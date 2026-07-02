@@ -1306,7 +1306,13 @@ async def _place_order_impl(
                     if verdict.diff is not None:
                         err["diff"] = verdict.diff
                     return err
-            elif mode == "required":
+            elif mode == "required" and not is_mock:
+                # ROB-659: required-mode fail-close is scoped to LIVE orders only.
+                # Mock scalping / watch auto-execute / kis_mock callers can't mint
+                # an approval_hash, so gating them would break internal automation
+                # loops when the operator flips ORDER_APPROVAL_HASH_MODE=required.
+                # The live ScreenerService REST path remains the rollout gate — see
+                # docs/runbooks/order-approval-hash.md §6 (required-mode cutover).
                 err = _order_error(
                     "approval_hash is required (ORDER_APPROVAL_HASH_MODE=required). "
                     "Re-run with dry_run=True and pass the returned approval_hash."
