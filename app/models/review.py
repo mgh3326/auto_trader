@@ -1010,3 +1010,113 @@ class TradeRetrospective(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# review.trade_forecasts — resolvable probabilistic forecasts (ROB-650)
+# ---------------------------------------------------------------------------
+class TradeForecast(Base):
+    """ROB-650 — resolvable prediction ledger with deterministic scoring.
+
+    A forecast records a probabilistic, resolvable claim made when composing a
+    buy thesis or a profit-taking (WATCH→PLACE) verdict — e.g. "P(005930 touches
+    129,600 support by 2026-07-15) = 0.65". Composition is a Claude session
+    (LLM boundary); the record/resolve/score logic here is fully deterministic.
+
+    ``forecast_id`` is the idempotency key (client-supplied to update while open,
+    or auto-generated). ``forecast_target`` is a structured JSONB claim; the
+    ``price_target`` kind resolves deterministically against loaded daily OHLCV
+    (ROB-639), non-price kinds resolve via an operator-supplied manual outcome
+    (evidence required). ``correlation_id`` aligns with trade_retrospectives
+    (ROB-647) so a postmortem can cite the forecast it graded.
+    """
+
+    __tablename__ = "trade_forecasts"
+    __table_args__ = (
+        UniqueConstraint("forecast_id", name="uq_trade_forecasts_forecast_id"),
+        CheckConstraint(
+            "status IN ('open','closed')",
+            name="ck_trade_forecasts_status",
+        ),
+        CheckConstraint(
+            "probability >= 0 AND probability <= 1",
+            name="ck_trade_forecasts_probability",
+        ),
+        CheckConstraint(
+            "(probability_range_low IS NULL AND probability_range_high IS NULL) OR "
+            "(probability_range_low IS NOT NULL "
+            "AND probability_range_high IS NOT NULL "
+            "AND probability_range_low <= probability_range_high "
+            "AND probability >= probability_range_low "
+            "AND probability <= probability_range_high)",
+            name="ck_trade_forecasts_probability_range",
+        ),
+        CheckConstraint(
+            "brier_score IS NULL OR (brier_score >= 0 AND brier_score <= 1)",
+            name="ck_trade_forecasts_brier_score",
+        ),
+        Index("ix_trade_forecasts_status_review_date", "status", "review_date"),
+        Index("ix_trade_forecasts_symbol", "symbol"),
+        Index("ix_trade_forecasts_created_by", "created_by"),
+        Index("ix_trade_forecasts_correlation_id", "correlation_id"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    forecast_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    # Loose reference links (no FK — a forecast is a durable learning record
+    # that outlives the artifact/journal/report it was born from).
+    artifact_uuid: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    report_uuid: Mapped[str | None] = mapped_column(Text)
+    report_item_uuid: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+
+    # Attribution (calibration groups by these labels).
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    session_label: Mapped[str | None] = mapped_column(Text)
+    model_label: Mapped[str | None] = mapped_column(Text)
+    policy_version: Mapped[str | None] = mapped_column(Text)
+
+    # The claim.
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[InstrumentType] = mapped_column(
+        Enum(InstrumentType, name="instrument_type", create_type=False),
+        nullable=False,
+    )
+    forecast_target: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    horizon: Mapped[str | None] = mapped_column(Text)
+    probability: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    probability_range_low: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    probability_range_high: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    evidence_ids: Mapped[list | None] = mapped_column(JSONB)
+    contrary_evidence: Mapped[str | None] = mapped_column(Text)
+    resolution_source: Mapped[str | None] = mapped_column(Text)
+    forecast_start_date: Mapped[date | None] = mapped_column(Date)
+    review_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'open'")
+    )
+
+    # Deterministic resolution outputs (populated at resolve time).
+    outcome: Mapped[bool | None] = mapped_column(Boolean)
+    observed_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    brier_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
+    resolution_detail: Mapped[dict | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
