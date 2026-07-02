@@ -81,7 +81,12 @@ async def cancel_orders(order_uuids: list[str]) -> list[dict[str, Any]]:
     return results
 
 
-async def place_sell_order(market: str, volume: str, price: str) -> dict[str, Any]:
+async def place_sell_order(
+    market: str,
+    volume: str,
+    price: str,
+    identifier: str | None = None,
+) -> dict[str, Any]:
     """지정가 매도 주문을 넣습니다.
 
     Parameters
@@ -92,6 +97,8 @@ async def place_sell_order(market: str, volume: str, price: str) -> dict[str, An
         매도할 수량 (문자열로 전달)
     price : str
         매도 가격 (문자열로 전달)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
@@ -106,13 +113,17 @@ async def place_sell_order(market: str, volume: str, price: str) -> dict[str, An
         "volume": volume,
         "price": price,
         "ord_type": "limit",  # 지정가 주문
-        "identifier": _new_order_identifier(),
+        "identifier": identifier or _new_order_identifier(),
     }
 
     return await _client._request_with_auth("POST", url, body_params=body_params)
 
 
-async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
+async def place_market_sell_order(
+    market: str,
+    volume: str,
+    identifier: str | None = None,
+) -> dict[str, Any]:
     """시장가 전량 매도 주문을 넣습니다.
 
     Parameters
@@ -121,6 +132,8 @@ async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
         마켓 코드 (예: "KRW-BTC")
     volume : str
         매도할 수량 (문자열로 전달, 보유 전량)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
@@ -134,7 +147,7 @@ async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
         "side": "ask",  # 매도
         "volume": volume,
         "ord_type": "market",  # 시장가 주문 (즉시 체결)
-        "identifier": _new_order_identifier(),
+        "identifier": identifier or _new_order_identifier(),
     }
 
     return await _client._request_with_auth("POST", url, body_params=body_params)
@@ -145,6 +158,7 @@ async def place_buy_order(
     price: str,
     volume: str | None = None,
     ord_type: str = "limit",
+    identifier: str | None = None,
 ) -> dict[str, Any]:
     """매수 주문을 넣습니다.
 
@@ -158,6 +172,8 @@ async def place_buy_order(
         매수할 수량 (지정가일 때 필요)
     ord_type : str, default "limit"
         주문 타입 ("limit": 지정가, "price": 시장가 매수)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
@@ -170,7 +186,7 @@ async def place_buy_order(
         "market": market,
         "side": "bid",  # 매수
         "ord_type": ord_type,
-        "identifier": _new_order_identifier(),
+        "identifier": identifier or _new_order_identifier(),
     }
 
     if ord_type == "limit":
@@ -188,7 +204,11 @@ async def place_buy_order(
     return await _client._request_with_auth("POST", url, body_params=body_params)
 
 
-async def place_market_buy_order(market: str, price: str) -> dict[str, Any]:
+async def place_market_buy_order(
+    market: str,
+    price: str,
+    identifier: str | None = None,
+) -> dict[str, Any]:
     """시장가 매수 주문을 넣습니다 (지정 금액만큼 매수).
 
     Parameters
@@ -197,13 +217,15 @@ async def place_market_buy_order(market: str, price: str) -> dict[str, Any]:
         마켓 코드 (예: "KRW-BTC")
     price : str
         매수할 금액 (문자열로 전달)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
     dict
         주문 결과 정보
     """
-    return await place_buy_order(market, price, ord_type="price")
+    return await place_buy_order(market, price, ord_type="price", identifier=identifier)
 
 
 def _format_upbit_time(value: datetime | str) -> str:

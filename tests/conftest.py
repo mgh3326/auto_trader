@@ -645,6 +645,20 @@ async def db_session():
                         "ADD COLUMN IF NOT EXISTS account_scope TEXT"
                     )
                 )
+                # ROB-653: Add approval_hash and idempotency_key to ledgers for test DB
+                for table in ["kis_live_order_ledger", "live_order_ledger"]:
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{table} "
+                            "ADD COLUMN IF NOT EXISTS approval_hash TEXT"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.{table} "
+                            "ADD COLUMN IF NOT EXISTS idempotency_key TEXT"
+                        )
+                    )
                 # correlation_id idempotent-upsert needs the unique index on
                 # pre-existing tables (fresh DBs get it via create_all).
                 await conn.execute(
