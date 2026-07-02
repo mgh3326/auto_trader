@@ -17,6 +17,12 @@ from app.services.brokers.upbit.client import fetch_multiple_current_prices
 from app.services.brokers.upbit.client import fetch_ohlcv as fetch_upbit_ohlcv
 from app.services.brokers.yahoo.client import fetch_fast_info
 from app.services.brokers.yahoo.client import fetch_ohlcv as fetch_yahoo_ohlcv
+from app.services.daily_candles.read_service import (
+    cache_first_kr,
+    cache_first_us,
+    write_back_kr,
+    write_back_us,
+)
 from app.services.domain_errors import (
     RateLimitError,
     SymbolNotFoundError,
@@ -625,8 +631,19 @@ async def get_ohlcv(
                     source="kis",
                     period=resolved_period,
                 )
-            # day/week/month use Yahoo Finance with Toss day-only fallback
+            # ROB-639: day → DB-first read-through (kr/us_candles_1d). Falls
+            # back to Yahoo → Toss on miss/stale. week/month stay live (v1).
             capped_count = min(count, 200)
+            if resolved_period == "day":
+                db_frame = await cache_first_us(resolved_symbol, capped_count, end)
+                if db_frame is not None and not db_frame.empty:
+                    return _to_candle_rows(
+                        db_frame,
+                        symbol=resolved_symbol,
+                        market=resolved_market,
+                        source="db",
+                        period=resolved_period,
+                    )
             try:
                 frame = await fetch_yahoo_ohlcv(
                     ticker=resolved_symbol,
@@ -644,6 +661,8 @@ async def get_ohlcv(
                     end_date=end,
                 )
                 source = "toss"
+            if resolved_period == "day":
+                await write_back_us(frame, symbol=resolved_symbol, source=source)
             return _to_candle_rows(
                 frame,
                 symbol=resolved_symbol,
@@ -655,13 +674,28 @@ async def get_ohlcv(
         kis = KISClient()
         if resolved_period in {"day", "week", "month"}:
             period_map = {"day": "D", "week": "W", "month": "M"}
+            capped_count = min(count, 200)
+            # ROB-639: day → DB-first read-through (kr_candles_1d). week/month
+            # stay on the live path (v1 scope).
+            if resolved_period == "day":
+                db_frame = await cache_first_kr(resolved_symbol, capped_count, end)
+                if db_frame is not None and not db_frame.empty:
+                    return _to_candle_rows(
+                        db_frame,
+                        symbol=resolved_symbol,
+                        market=resolved_market,
+                        source="db",
+                        period=resolved_period,
+                    )
             frame = await kis.inquire_daily_itemchartprice(
                 code=resolved_symbol,
                 market="J",
-                n=min(count, 200),
+                n=capped_count,
                 period=period_map[resolved_period],
                 end_date=(pd.Timestamp(end.date()) if end is not None else None),
             )
+            if resolved_period == "day":
+                await write_back_kr(frame, symbol=resolved_symbol)
             return _to_candle_rows(
                 frame,
                 symbol=resolved_symbol,

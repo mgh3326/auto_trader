@@ -304,7 +304,7 @@ async def _reconcile_one_toss_row(
 
     trade_id = await _save_order_fill(
         symbol=row.symbol,
-        instrument_type=("equity" if row.market == "kr" else "equity_us"),
+        instrument_type=("equity_kr" if row.market == "kr" else "equity_us"),
         side=row.side,
         price=float(avg_price),
         quantity=float(delta),
@@ -320,7 +320,7 @@ async def _reconcile_one_toss_row(
     if row.side == "buy" and row.journal_id is None:
         jr = await _create_trade_journal_for_buy(
             symbol=row.symbol,
-            market_type=("equity" if row.market == "kr" else "equity_us"),
+            market_type=("equity_kr" if row.market == "kr" else "equity_us"),
             preview={
                 "price": float(avg_price),
                 "quantity": float(broker_cum),

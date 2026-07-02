@@ -88,6 +88,17 @@ def test_budget_resolution_default_and_overrides() -> None:
 
 
 @pytest.mark.unit
+def test_reconcile_tools_share_elevated_budget() -> None:
+    # ROB-631: toss_reconcile_orders fans out a single-detail GET per open order
+    # and was being killed by the 45s default; it must get the same elevated budget
+    # as its KIS/live reconcile siblings.
+    mw = ToolTimeoutMiddleware(default_timeout_s=45.0)
+    assert mw._budget_for("kis_live_reconcile_orders") == 90.0
+    assert mw._budget_for("live_reconcile_orders") == 90.0
+    assert mw._budget_for("toss_reconcile_orders") == 90.0
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_tool_own_timeouterror_propagates_unwrapped() -> None:
     # A tool that raises its OWN TimeoutError BEFORE the budget elapses must NOT be

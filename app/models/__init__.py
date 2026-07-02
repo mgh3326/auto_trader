@@ -1,5 +1,6 @@
 # app/models/__init__.py
 from .analysis import StockAnalysisResult, StockInfo
+from .analysis_artifact import AnalysisArtifact
 from .analyst_consensus_snapshot import AnalystConsensusSnapshot
 from .base import Base
 from .binance_demo_order_ledger import BinanceDemoOrderLedger
@@ -120,6 +121,7 @@ from .user_settings import UserSetting
 
 __all__ = [
     "Base",
+    "AnalysisArtifact",
     "AnalystConsensusSnapshot",
     "BinanceDemoOrderLedger",
     "ScalpTradeAnalytics",

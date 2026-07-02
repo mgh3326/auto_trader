@@ -1118,6 +1118,9 @@ class OperatingBriefingResponse(BaseModel):
     active_watches: dict[str, Any]
     latest_report: dict[str, Any] | None
     session_context: dict[str, Any]
+    # ROB-637 — metadata-only recent analysis artifacts; defaulted so
+    # pre-existing constructors of this shape keep validating.
+    analysis_artifacts: dict[str, Any] = Field(default_factory=dict)
 
 
 class InvestmentReportCreateResponse(BaseModel):

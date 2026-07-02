@@ -62,9 +62,11 @@ ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
     # OHLCV + indicator compute; news fetch.
     "get_indicators": 75.0,
     "get_news": 75.0,
-    # Order reconcile fan-out over daily order history.
+    # Order reconcile fan-out over daily order history (KIS/live) or per-order
+    # detail GET per open ledger row (Toss, N+1 — ROB-631).
     "kis_live_reconcile_orders": 90.0,
     "live_reconcile_orders": 90.0,
+    "toss_reconcile_orders": 90.0,
 }
 
 

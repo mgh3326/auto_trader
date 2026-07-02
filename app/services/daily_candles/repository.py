@@ -78,8 +78,19 @@ class DailyCandlesRepository:
         return market == MarketKey.US
 
     async def upsert_rows(
-        self, *, market: MarketKey, rows: list[DailyCandleRow]
+        self,
+        *,
+        market: MarketKey,
+        rows: list[DailyCandleRow],
+        update_adj_close: bool = True,
     ) -> int:
+        """Upsert daily candle rows.
+
+        ``update_adj_close=False`` (US only) keeps ``adj_close`` out of the
+        ON CONFLICT UPDATE SET so a frame without adjusted closes (plain
+        Yahoo/Toss write-back) does not null existing ``yahoo_fallback``
+        values. New rows still insert ``adj_close`` (as NULL).
+        """
         if not rows:
             return 0
 
@@ -91,7 +102,9 @@ class DailyCandlesRepository:
 
         cfg = self._config(market)
         upsert_sql = self._build_market_upsert(
-            cfg, with_adj_close=self._supports_adj_close(market)
+            cfg,
+            with_adj_close=self._supports_adj_close(market),
+            update_adj_close=update_adj_close,
         )
         payload: list[dict[str, object]] = []
         for row in rows:
@@ -195,7 +208,7 @@ class DailyCandlesRepository:
 
     @staticmethod
     def _build_market_upsert(
-        cfg: SyncTableConfig, *, with_adj_close: bool
+        cfg: SyncTableConfig, *, with_adj_close: bool, update_adj_close: bool = True
     ) -> TextClause:
         cols = [
             "time",
@@ -213,9 +226,10 @@ class DailyCandlesRepository:
             cols.insert(7, "adj_close")
         placeholders = ", ".join(f":{c}" for c in cols)
         col_list = ", ".join(cols)
-        update_cols = [
-            c for c in cols if c not in {"time", "symbol", cfg.partition_col}
-        ]
+        excluded_from_update = {"time", "symbol", cfg.partition_col}
+        if with_adj_close and not update_adj_close:
+            excluded_from_update.add("adj_close")
+        update_cols = [c for c in cols if c not in excluded_from_update]
         update_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
         return text(
             f"""
