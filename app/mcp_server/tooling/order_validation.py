@@ -149,6 +149,131 @@ def evaluate_market_sell_loss_guard(
     return None
 
 
+async def compute_sector_cluster_weights(
+    *, market: str, account_ctx: dict[str, Any]
+) -> dict[str, Any]:
+    """Best-effort current portfolio weight by sector cluster (KRW).
+
+    ROB-646 — reuses ``get_portfolio_allocation_impl(include_positions=True)`` for
+    per-position KRW values + ``usd_krw``, joins each holding's sector label to
+    ``sector_cluster_for``, and groups by sector cluster. May raise on any data
+    gap; the orchestrator (``evaluate_sector_concentration``) fails open.
+    """
+    from app.mcp_server.tooling.portfolio_allocation import (
+        get_portfolio_allocation_impl,
+    )
+    from app.services.trading_policy_service import sector_cluster_for
+
+    alloc = await get_portfolio_allocation_impl(
+        account=account_ctx.get("account"),
+        market=account_ctx.get("market"),
+        include_positions=True,
+        is_mock=account_ctx.get("is_mock", False),
+    )
+    usd_krw = float(alloc.get("currency", {}).get("usd_krw") or 0.0)
+    positions = alloc.get("positions") or []
+    clusters: dict[str, float] = {}
+    total = 0.0
+    for pos in positions:
+        value_krw = pos.get("value_krw")
+        if value_krw is None:
+            continue
+        total += float(value_krw)
+        label = pos.get("sector") or pos.get("sector_name")
+        cluster = sector_cluster_for(label)
+        if cluster is not None:
+            clusters[cluster] = clusters.get(cluster, 0.0) + float(value_krw)
+    return {"clusters": clusters, "total_krw": total, "usd_krw": usd_krw}
+
+
+async def resolve_symbol_cluster(*, symbol: str, market: str) -> str | None:
+    """Resolve a symbol's sector cluster via the universe→symbol_sectors join.
+
+    ROB-646 — best-effort; returns ``None`` on unknown symbol or missing sector.
+    May raise on DB errors; the orchestrator fails open.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.trading_policy_service import sector_cluster_for
+
+    async with AsyncSessionLocal() as db:
+        label = await _lookup_symbol_sector_label(db, symbol=symbol, market=market)
+    return sector_cluster_for(label)
+
+
+async def evaluate_sector_concentration(
+    *,
+    symbol: str,
+    market: str,
+    order_estimated_value: float | None,
+    order_currency: str,
+    account_ctx: dict[str, Any],
+    _weights_provider: Any = compute_sector_cluster_weights,
+    _cluster_resolver: Any = resolve_symbol_cluster,
+) -> dict[str, Any]:
+    """ROB-646 — fail-open sector-cluster concentration check for buy previews.
+
+    Never raises, never blocks. ``verdict == "over"`` produces a soft ``warning``
+    field only — Task 5 wires this into the buy-preview path without flipping any
+    ``success`` flag. The broad ``except Exception`` catch-all is required by the
+    fail-open contract; do not narrow it.
+    """
+    try:
+        if market == "crypto":
+            return {
+                "verdict": "unknown",
+                "fail_open": True,
+                "reason": "crypto (no sectors)",
+            }
+        from app.services.trading_policy_service import get_policy_for
+
+        policy = get_policy_for(market, "buy")
+        cap = policy["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"]
+
+        cluster = await _cluster_resolver(symbol=symbol, market=market)
+        if cluster is None:
+            return {
+                "verdict": "unknown",
+                "fail_open": True,
+                "reason": f"no sector-cluster mapping for {symbol}",
+            }
+
+        weights = await _weights_provider(market=market, account_ctx=account_ctx)
+        total = float(weights.get("total_krw") or 0.0)
+        if total <= 0:
+            return {
+                "verdict": "unknown",
+                "fail_open": True,
+                "reason": "empty portfolio total",
+            }
+        current_value = float(weights.get("clusters", {}).get(cluster, 0.0))
+        current_pct = current_value / total * 100.0
+
+        order_krw = _order_value_to_krw(
+            order_estimated_value, order_currency, weights.get("usd_krw")
+        )
+        if order_krw is None:
+            projected_pct = current_pct
+        else:
+            projected_pct = (current_value + order_krw) / (total + order_krw) * 100.0
+
+        result: dict[str, Any] = {
+            "verdict": "over" if projected_pct > float(cap) else "within",
+            "cluster": cluster,
+            "cap_pct": cap,
+            "current_pct": round(current_pct, 2),
+            "projected_pct": round(projected_pct, 2),
+            "fail_open": False,
+        }
+        if result["verdict"] == "over":
+            result["warning"] = (
+                f"{cluster} projected {result['projected_pct']}% exceeds "
+                f"sector-cluster cap {cap}%"
+            )
+        return result
+    except Exception as exc:  # noqa: BLE001 — fail-open by contract
+        return {"verdict": "unknown", "fail_open": True, "reason": str(exc)}
+
+
 def _is_cached_approved(approval_issue_id: str) -> bool:
     expires_at = _defensive_trim_success_cache.get(approval_issue_id)
     if expires_at is None:
@@ -441,6 +566,59 @@ def _no_holdings_sell_message(symbol: str, market_type: str, is_mock: bool) -> s
             f"(e.g. toss/samsung) are reference-only and cannot be sold via this "
             f"channel — check get_holdings 'order_routable'/'account_mode'."
         )
+
+
+def _order_value_to_krw(
+    value: float | None, currency: str, usd_krw: Any
+) -> float | None:
+    """ROB-646 — convert an order's estimated value to KRW (best-effort).
+
+    Returns ``None`` when the value is ``None`` or the currency is unsupported /
+    FX rate unavailable. The caller (``evaluate_sector_concentration``) treats
+    ``None`` as "skip the order from the projection" (fail-open).
+    """
+    if value is None:
+        return None
+    cur = (currency or "").upper()
+    if cur in ("KRW", "₩", ""):
+        return float(value)
+    if cur in ("USD", "$"):
+        rate = float(usd_krw or 0.0)
+        return float(value) * rate if rate > 0 else None
+    return None
+
+
+async def _lookup_symbol_sector_label(
+    db: Any, *, symbol: str, market: str
+) -> str | None:
+    """ROB-646 — return a symbol's sector label via the universe→symbol_sectors join.
+
+    Best-effort read over existing tables. Returns ``None`` on unknown symbol,
+    unknown market, or missing sector. Migration 0 — reads only.
+    """
+    from sqlalchemy import select
+
+    from app.models.symbol_sectors import SymbolSector
+
+    if market == "kr":
+        from app.models.kr_symbol_universe import KRSymbolUniverse as Univ
+    elif market == "us":
+        from app.core.symbol import to_db_symbol
+        from app.models.us_symbol_universe import USSymbolUniverse as Univ
+
+        symbol = to_db_symbol(symbol)
+    else:
+        return None
+    stmt = (
+        select(SymbolSector.name_kr, SymbolSector.name_en)
+        .join(Univ, Univ.sector_id == SymbolSector.id)
+        .where(Univ.symbol == symbol)
+        .limit(1)
+    )
+    row = (await db.execute(stmt)).first()
+    if not row:
+        return None
+    return row[0] or row[1]
 
 
 async def _get_holdings_for_order(
