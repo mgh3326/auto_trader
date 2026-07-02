@@ -576,6 +576,9 @@ async def resolve_forecast(
     row.resolved_at = resolved_now
     row.status = "closed"
     await db.flush()
+    # Reload server-computed columns (updated_at onupdate) within the async
+    # context so serialize_forecast doesn't trigger a lazy sync refresh.
+    await db.refresh(row)
     return {
         "status": "resolved",
         "changed": True,
