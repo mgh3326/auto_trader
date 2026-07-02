@@ -24,6 +24,7 @@ from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
 )
+from app.mcp_server.tooling.order_validation import evaluate_sector_concentration
 from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
 from app.mcp_server.tooling.toss_approval import (
     APPROVAL_TTL_SECONDS,
@@ -773,6 +774,25 @@ async def toss_preview_order(
         order_amount=order_amount_dec,
     )
 
+    sector_conc = None
+    if side == "buy":
+        estimated_val_str = cost_context.get("estimated_value")
+        estimated_val = (
+            float(estimated_val_str) if estimated_val_str is not None else None
+        )
+        order_currency = cost_context.get("estimated_value_currency") or (
+            "KRW" if mkt == "kr" else "USD"
+        )
+        sector_conc = await evaluate_sector_concentration(
+            symbol=symbol,
+            market=mkt,
+            order_estimated_value=estimated_val,
+            order_currency=order_currency,
+            account_ctx={"account_mode": ACCOUNT_MODE_TOSS_LIVE},
+        )
+        if sector_conc and sector_conc.get("warning"):
+            order_warnings.append(sector_conc["warning"])
+
     response = {
         "success": True,
         "preview": True,
@@ -787,6 +807,7 @@ async def toss_preview_order(
         "warnings_check_message": warnings_check_msg,
         "approval_hash": approval_hash,
         "approval_expires_at": approval_expires_at,
+        "sector_concentration": sector_conc,
         **cost_context,
     }
     if price_context_message is not None:
@@ -944,11 +965,51 @@ async def _toss_place_order_impl(
             )
 
     if dry_run:
-        return {
+        sector_conc = None
+        order_warnings = []
+        if side == "buy":
+            effective_price = price_dec
+            if effective_price is None:
+                try:
+                    async with _client_context() as client:
+                        current_price_dec, _, _ = await _preview_price_context(
+                            client, symbol
+                        )
+                        effective_price = current_price_dec
+                except Exception:
+                    pass
+            cost_context = await _preview_cost_context(
+                market=mkt,
+                quantity=quantity_dec,
+                effective_price=effective_price,
+                order_amount=order_amount_dec,
+            )
+            estimated_val_str = cost_context.get("estimated_value")
+            estimated_val = (
+                float(estimated_val_str) if estimated_val_str is not None else None
+            )
+            order_currency = cost_context.get("estimated_value_currency") or (
+                "KRW" if mkt == "kr" else "USD"
+            )
+            sector_conc = await evaluate_sector_concentration(
+                symbol=symbol,
+                market=mkt,
+                order_estimated_value=estimated_val,
+                order_currency=order_currency,
+                account_ctx={"account_mode": ACCOUNT_MODE_TOSS_LIVE},
+            )
+            if sector_conc and sector_conc.get("warning"):
+                order_warnings.append(sector_conc["warning"])
+
+        dry_run_res = {
             "success": True,
             **base_response,
             "payload_preview": payload,
+            "sector_concentration": sector_conc,
         }
+        if order_warnings:
+            dry_run_res["order_warnings"] = order_warnings
+        return dry_run_res
 
     if not confirm:
         return {
