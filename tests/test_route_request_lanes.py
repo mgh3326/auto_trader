@@ -108,6 +108,93 @@ def test_profile_intersection_drops_unregistered_tools():
     assert "toss_place_order" not in plan["blocked_actions"]
 
 
+# --- ROB-658: market-aware execution tool mapping -----------------------------
+
+# crypto/US profiles register the generic place_order surface but not the
+# KR-centric toss/kis execution tools.
+_CRYPTO_MUTATION = {
+    "place_order",
+    "modify_order",
+    "cancel_order",
+    "buy_ladder_fill_preview",
+    "sell_ladder_fill_preview",
+    "get_order_history",
+    "live_reconcile_orders",
+    "kis_mock_reconciliation_run",
+}
+_CRYPTO_REGISTERED = set(L.READ_ONLY_ADVISORY_TOOLS) | _CRYPTO_MUTATION
+
+
+def test_crypto_buy_does_not_block_generic_place_order():
+    plan = L.build_route_plan(
+        "buy_analysis",
+        "crypto",
+        registered_tools=_CRYPTO_REGISTERED,
+        verdict_thresholds=_fake_thresholds("crypto", "buy"),
+        policy_version=_VERSION,
+    )
+    # the real crypto execution tool must not be advised as blocked (ROB-658)
+    assert "place_order" not in plan["blocked_actions"]
+    # ...and it is surfaced as an allowed tool + a concrete execution step
+    assert "place_order" in plan["allowed_tools"]
+    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
+    assert "place_order" in steps
+    # KR execution tools are unregistered on crypto -> dropped, never injected
+    assert "toss_place_order" not in steps
+    assert "kis_live_place_order" not in steps
+    # other generic mutations remain blocked (only place is the sanctioned step)
+    assert "modify_order" in plan["blocked_actions"]
+    assert "cancel_order" in plan["blocked_actions"]
+    # step numbers stay contiguous after injection
+    assert [s["step"] for s in plan["standard_tool_sequence"]] == list(
+        range(1, len(steps) + 1)
+    )
+
+
+def test_crypto_sell_and_discovery_surface_generic_place_order():
+    for intent in ("profit_taking", "discovery"):
+        plan = L.build_route_plan(
+            intent,
+            "crypto",
+            registered_tools=_CRYPTO_REGISTERED,
+            verdict_thresholds=_fake_thresholds("crypto", L.INTENT_TO_LANE[intent]),
+            policy_version=_VERSION,
+        )
+        assert "place_order" not in plan["blocked_actions"]
+        assert "place_order" in plan["allowed_tools"]
+        assert "place_order" in [s["tool"] for s in plan["standard_tool_sequence"]]
+
+
+def test_crypto_market_brief_still_blocks_all_mutation():
+    # bootstrap has no execution step -> even crypto's place_order stays blocked
+    plan = L.build_route_plan(
+        "market_brief",
+        "crypto",
+        registered_tools=_CRYPTO_REGISTERED,
+        verdict_thresholds=_fake_thresholds("crypto", "bootstrap", empty=True),
+        policy_version=_VERSION,
+    )
+    assert "place_order" in plan["blocked_actions"]
+    assert set(plan["blocked_actions"]) == (L.MUTATION_TOOLS & _CRYPTO_REGISTERED)
+
+
+def test_kr_buy_still_blocks_generic_place_order_no_regression():
+    # KR routes execution through toss/kis; the generic place_order stays blocked.
+    plan = L.build_route_plan(
+        "buy_analysis",
+        "kr",
+        registered_tools=_ALL,
+        verdict_thresholds=_fake_thresholds("kr", "buy"),
+        policy_version=_VERSION,
+    )
+    assert "place_order" in plan["blocked_actions"]
+    assert "place_order" not in plan["allowed_tools"]
+    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
+    assert "place_order" not in steps
+    # KR execution tools are still the sanctioned, non-blocked path
+    assert "toss_place_order" not in plan["blocked_actions"]
+
+
 def test_hard_constraints_reference_policy_keys_not_numbers():
     plan = L.build_route_plan(
         "buy_analysis",

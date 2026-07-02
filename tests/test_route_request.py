@@ -89,6 +89,11 @@ def test_profile_intersection_crypto_drops_toss_place_order():
         s["tool"] for s in crypto_out["standard_tool_sequence"]
     ]
     assert "toss_place_order" not in crypto_out["allowed_tools"]
+    # ROB-658: the crypto execution tool (generic place_order) must be surfaced,
+    # not misclassified as blocked, on the CRYPTO profile.
+    assert "place_order" not in crypto_out["blocked_actions"]
+    assert "place_order" in crypto_out["allowed_tools"]
+    assert "place_order" in [s["tool"] for s in crypto_out["standard_tool_sequence"]]
 
 
 class TestRouteRequestRegisteredEveryProfile:
