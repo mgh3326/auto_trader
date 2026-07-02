@@ -49,8 +49,10 @@ adds a KIS-specific local reserve-before-send guard because KIS has no broker id
 
 ### 3.1 Shared approval helper — `app/mcp_server/tooling/order_approval.py`
 
-New module that **re-imports the pure primitives** from `toss_approval` (no duplication,
-P6-A untouched) and adds one generic canonical builder:
+New module that **re-imports the pure primitives verbatim** from `toss_approval`
+(`encode/decode/verify_approval_token`, `derive_approval_digest`, `derive_client_order_id`,
+`trading_day_salt`, `APPROVAL_TTL_SECONDS`) — no duplication, P6-A untouched — and adds one
+generic canonical builder:
 
 ```python
 build_order_canonical_payload(
@@ -61,11 +63,14 @@ build_order_canonical_payload(
 
 - `market_type` ∈ {`equity_kr`, `equity_us`, `crypto`}; `symbol` is the normalized symbol.
 - `quantity`/`price` are stringified post-normalization wire values (or `None`) so preview
-  and place derive an identical digest.
-- Distinct digest/token/clientOrderId prefixes from Toss (`p6b` family) to avoid cross-broker
-  token confusion.
-
-The token TTL, digest, and idempotency-key derivation reuse the P6-A functions verbatim.
+  and place derive an identical digest. Buy `amount` is resolved to `quantity` **before**
+  hashing (per issue "amount→quantity" normalization), so `order_amount` is not in the
+  canonical.
+- The shared P6 token version (`p6a1`) and digest prefix (`p6a-`) are reused as-is. This is
+  safe: the generic canonical's key set (`market_type`/`order_type`/`quantity`/`price`)
+  differs structurally from Toss's (`orderType`/`timeInForce`/`orderAmount`), so a token
+  minted on one path fails the `verify_approval_token` canonical-equality check on the other
+  → fail-closed. No cross-broker token is interchangeable.
 
 ### 3.2 Hash guard in `_place_order_impl` (dry_run-as-preview)
 
