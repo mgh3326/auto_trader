@@ -13,9 +13,19 @@ import re
 import uuid
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
+
+from app.core.timezone import KST, now_kst
+from app.mcp_server.tooling.toss_approval import (
+    APPROVAL_TTL_SECONDS,
+    build_canonical_payload,
+    derive_approval_digest,
+    derive_client_order_id,
+    encode_approval_token,
+    verify_approval_token,
+)
 
 from app.core.config import settings, validate_toss_api_config
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
@@ -650,6 +660,7 @@ async def toss_preview_order(
     time_in_force: Literal["DAY", "CLS"] = "DAY",
     account_mode: str | None = None,
     account_type: str | None = None,
+    rung: str | int | None = None,
 ) -> dict[str, Any]:
     if (guard := _entry_guard(account_mode, account_type)) is not None:
         return guard
@@ -677,19 +688,42 @@ async def toss_preview_order(
                 "adjusted_price": _stringify_decimal(price_dec),
             }
 
+    quantity_str = _stringify_decimal(quantity_dec)
+    price_str = _stringify_decimal(price_dec)
+    order_amount_str = _stringify_decimal(order_amount_dec)
+
+    canonical = build_canonical_payload(
+        market=mkt,
+        symbol=symbol,
+        side=side,
+        order_type=order_type,
+        time_in_force=time_in_force,
+        quantity=quantity_str,
+        price=price_str,
+        order_amount=order_amount_str,
+    )
+    now = now_kst()
+    client_order_id = derive_client_order_id(
+        canonical, market=mkt, now=now, rung=rung
+    )
+    approval_hash = encode_approval_token(canonical, now=now)
+    approval_expires_at = (
+        now + timedelta(seconds=APPROVAL_TTL_SECONDS)
+    ).astimezone(KST).isoformat()
+
     payload: dict[str, Any] = {
-        "clientOrderId": _new_client_order_id(),
+        "clientOrderId": client_order_id,
         "symbol": symbol,
         "side": side.upper(),
         "orderType": order_type.upper(),
         "timeInForce": time_in_force,
     }
-    if quantity_dec is not None:
-        payload["quantity"] = _stringify_decimal(quantity_dec)
-    if price_dec is not None:
-        payload["price"] = _stringify_decimal(price_dec)
-    if order_amount_dec is not None:
-        payload["orderAmount"] = _stringify_decimal(order_amount_dec)
+    if quantity_str is not None:
+        payload["quantity"] = quantity_str
+    if price_str is not None:
+        payload["price"] = price_str
+    if order_amount_str is not None:
+        payload["orderAmount"] = order_amount_str
 
     warnings_list = []
     warnings_check_msg = None
@@ -754,6 +788,8 @@ async def toss_preview_order(
         "account_mode": ACCOUNT_MODE_TOSS_LIVE,
         "warnings": warnings_list,
         "warnings_check_message": warnings_check_msg,
+        "approval_hash": approval_hash,
+        "approval_expires_at": approval_expires_at,
         **cost_context,
     }
     if price_context_message is not None:

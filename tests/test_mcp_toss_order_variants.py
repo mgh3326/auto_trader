@@ -2129,3 +2129,84 @@ async def test_private_place_impl_rejects_whitespace_padded_client_order_id_over
     assert result["success"] is False
     assert "Unsafe client order id rejected" in result["error"]
     assert not mock_client.placed_payloads
+
+
+@pytest.mark.asyncio
+async def test_preview_emits_approval_hash_and_deterministic_client_order_id(
+    monkeypatch,
+):
+    from datetime import datetime
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    fixed = datetime(2026, 7, 2, 10, 0, tzinfo=KST)
+    monkeypatch.setattr(otv, "now_kst", lambda: fixed)
+
+    res1 = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    res2 = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    assert res1["success"] is True
+    assert res1["approval_hash"].startswith("p6a1.")
+    assert res1["approval_expires_at"]  # ISO string
+    cid = res1["payload_preview"]["clientOrderId"]
+    assert cid.startswith("tossp6-")
+    # deterministic: identical params + same trading day -> identical id + token payload
+    assert res2["payload_preview"]["clientOrderId"] == cid
+
+
+@pytest.mark.asyncio
+async def test_preview_rung_discriminator_changes_client_order_id(monkeypatch):
+    from datetime import datetime
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+
+    base = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    r2 = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        rung=2,
+        account_mode="toss_live",
+    )
+    assert (
+        base["payload_preview"]["clientOrderId"]
+        != r2["payload_preview"]["clientOrderId"]
+    )
