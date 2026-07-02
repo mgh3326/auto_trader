@@ -327,6 +327,10 @@ class KISLiveOrderLedger(Base):
     # AlpacaPaperOrderLedger.candidate_uuid). nullable: legacy/unlinked → NULL.
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
+    # ROB-653 P6-B — content approval-hash + local idempotency key (additive).
+    approval_hash: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+
     # reconcile outcomes
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
@@ -413,6 +417,10 @@ class LiveOrderLedger(Base):
     # KISLiveOrderLedger.report_item_uuid). send-time, immutable, no FK.
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
+    # ROB-653 P6-B — content approval-hash + local idempotency key (additive).
+    approval_hash: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+
     # ROB-164 defensive-trim approval audit, captured at send so the
     # evidence-gated journal close (reconcile) can still append the
     # defensive-trim note to the closed journal.
@@ -444,6 +452,35 @@ class LiveOrderLedger(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class OrderSendIntent(Base):
+    """ROB-653 P6-B — KIS pre-send reservation for local double-send protection.
+
+    KIS has no broker idempotency field, so a UNIQUE (account_scope,
+    idempotency_key) row is inserted immediately before the order POST. A
+    same-key insert the same trading day raises IntegrityError → fail-closed.
+    Never read by reconcile; purely a send-time guard.
+    """
+
+    __tablename__ = "order_send_intents"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_scope",
+            "idempotency_key",
+            name="uq_order_send_intent_scope_key",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
 
 
