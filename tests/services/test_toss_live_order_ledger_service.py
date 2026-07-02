@@ -369,3 +369,36 @@ async def test_update_reconcile_outcome_records_us_fx_fields(db_session):
     assert refreshed.fx_pnl_krw == Decimal("22772.00")
     assert refreshed.fx_rate_source == "reconcile_spot"
     assert refreshed.fx_pnl_accuracy == "approximate"
+
+
+# ROB-651 P6-A — record_send stores approval_hash on insert only;
+# a replay with the same client_order_id must keep the original hash.
+
+
+async def test_record_send_stores_approval_hash(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+
+    row = await svc.record_send(
+        **_place_kwargs(
+            client_order_id="cid-approval-hash",
+            broker_order_id="ord-approval-hash",
+        ),
+        approval_hash="p6a-abc123abc123abc1",
+    )
+
+    assert row.approval_hash == "p6a-abc123abc123abc1"
+
+
+async def test_record_send_replay_keeps_original_approval_hash(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+
+    common = _place_kwargs(
+        client_order_id="cid-approval-replay",
+        broker_order_id="ord-approval-replay",
+    )
+    first = await svc.record_send(**common, approval_hash="p6a-original00000000")
+    replay = await svc.record_send(**common, approval_hash="p6a-different0000000")
+
+    assert replay.id == first.id
+    assert replay.approval_hash == "p6a-original00000000"
+

@@ -94,6 +94,7 @@ class TossLiveOrderLedgerService:
         exit_reason: str | None = None,
         indicators_snapshot: dict[str, Any] | None = None,
         report_item_uuid: str | uuid.UUID | None = None,
+        approval_hash: str | None = None,
     ) -> TossLiveOrderLedger:
         # ROB-545 B2 — idempotent on client_order_id. A live POST retried with
         # the same clientOrderId (the smoke's idempotency check) must not raise a
@@ -147,6 +148,7 @@ class TossLiveOrderLedgerService:
             exit_reason=exit_reason,
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=parse_report_item_uuid(report_item_uuid),
+            approval_hash=approval_hash,
         )
         self._db.add(row)
         await self._db.flush()
