@@ -72,6 +72,8 @@ async def _save_live_order_ledger(
     dt_requester_agent_id: str | None = None,
     dt_caller_source: str | None = None,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> int:
     async with _order_session_factory()() as db:
         row = LiveOrderLedger(
@@ -108,6 +110,8 @@ async def _save_live_order_ledger(
             dt_requester_agent_id=dt_requester_agent_id,
             dt_caller_source=dt_caller_source,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash,
+            idempotency_key=idempotency_key,
         )
         db.add(row)
         # flush assigns the PK inside the transaction; read it before commit so
@@ -485,6 +489,8 @@ async def _record_live_order(
     dt_requester_agent_id: str | None = None,
     dt_caller_source: str | None = None,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
     qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
@@ -524,6 +530,8 @@ async def _record_live_order(
         dt_requester_agent_id=dt_requester_agent_id,
         dt_caller_source=dt_caller_source,
         report_item_uuid=report_item_uuid,
+        approval_hash=approval_hash,
+        idempotency_key=idempotency_key,
     )
     fill_recorded = False
     inline_outcome: dict[str, Any] | None = None

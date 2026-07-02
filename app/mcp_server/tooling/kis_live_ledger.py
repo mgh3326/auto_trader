@@ -110,6 +110,8 @@ async def _save_kis_live_order_ledger(
     indicators_snapshot: dict[str, Any] | None,
     fee: float = 0.0,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> int | None:
     """Insert one accepted/rejected live order row. Returns new id or None."""
     try:
@@ -147,6 +149,8 @@ async def _save_kis_live_order_ledger(
                     exit_reason=exit_reason,
                     indicators_snapshot=indicators_snapshot,
                     report_item_uuid=report_item_uuid,
+                    approval_hash=approval_hash,
+                    idempotency_key=idempotency_key,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_live_ledger_order_no")
             )
@@ -207,6 +211,8 @@ async def _record_kis_live_order(
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Record a live KR order as accepted/rejected. No fill/journal/pnl booked."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -253,6 +259,8 @@ async def _record_kis_live_order(
         exit_reason=exit_reason,
         indicators_snapshot=indicators_snapshot,
         report_item_uuid=report_item_uuid,
+        approval_hash=approval_hash,
+        idempotency_key=idempotency_key,
     )
 
     return {
