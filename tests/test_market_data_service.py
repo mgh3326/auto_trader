@@ -204,6 +204,12 @@ async def test_get_ohlcv_us_day_uses_yahoo(
     )
     fetch_mock = AsyncMock(return_value=frame)
     monkeypatch.setattr(market_data_service, "fetch_yahoo_ohlcv", fetch_mock)
+    # ROB-639: day is DB-first now — patch the DB seam so this test stays a
+    # pure Yahoo-path test and never touches the shared test DB.
+    monkeypatch.setattr(
+        market_data_service, "cache_first_us", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(market_data_service, "write_back_us", AsyncMock(return_value=0))
 
     candles = await market_data_service.get_ohlcv(
         symbol="AAPL",
@@ -1499,6 +1505,12 @@ async def test_get_ohlcv_us_day_uses_toss_when_yahoo_fails(monkeypatch):
     )
     toss_mock = AsyncMock(return_value=toss_df)
     monkeypatch.setattr(market_data_service, "fetch_daily_toss_frame", toss_mock)
+    # ROB-639: day is DB-first now — patch the DB seam so this test stays a
+    # pure Toss-fallback test and never touches the shared test DB.
+    monkeypatch.setattr(
+        market_data_service, "cache_first_us", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(market_data_service, "write_back_us", AsyncMock(return_value=0))
 
     candles = await market_data_service.get_ohlcv("AAPL", "us", "day", count=5)
 
