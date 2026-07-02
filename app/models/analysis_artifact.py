@@ -40,7 +40,7 @@ class AnalysisArtifact(Base):
             "kind IN ("
             "'screening_ranking','profit_taking_verdicts',"
             "'support_resistance_map','flow_assessment',"
-            "'candidate_pool','session_summary'"
+            "'candidate_pool','session_summary','briefing'"
             ")",
             name="kind",
         ),
@@ -59,10 +59,9 @@ class AnalysisArtifact(Base):
             "symbols",
             postgresql_using="gin",
         ),
-        Index(
-            "ix_analysis_artifacts_payload_gin",
-            "payload",
-            postgresql_using="gin",
+        UniqueConstraint(
+            "correlation_id",
+            name="uq_analysis_artifacts_correlation_id",
         ),
         {"schema": "review"},
     )
@@ -97,6 +96,8 @@ class AnalysisArtifact(Base):
         nullable=True,
     )
     session_label: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    account_scope: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(
         Text,
         nullable=False,
@@ -108,3 +109,21 @@ class AnalysisArtifact(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+    @property
+    def is_stale(self) -> bool:
+        if self.valid_until is None:
+            return False
+        from app.core.timezone import now_kst
+
+        return self.valid_until < now_kst()
+
+    @property
+    def payload_size_bytes(self) -> int:
+        import json
+
+        # ensure_ascii=False so Korean text measures at its real UTF-8 size
+        # instead of the ~6x escaped size (ROB-628 lesson).
+        return len(
+            json.dumps(self.payload, ensure_ascii=False, default=str).encode("utf-8")
+        )

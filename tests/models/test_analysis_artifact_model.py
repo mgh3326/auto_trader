@@ -23,6 +23,8 @@ def test_analysis_artifact_model_contract() -> None:
         "as_of",
         "valid_until",
         "session_label",
+        "correlation_id",
+        "account_scope",
         "created_by",
         "created_at",
     }
@@ -30,6 +32,7 @@ def test_analysis_artifact_model_contract() -> None:
     constraints = AnalysisArtifact.__table__.constraints
     constraint_names = {constraint.name for constraint in constraints}
     assert "uq_analysis_artifacts_artifact_uuid" in constraint_names
+    assert "uq_analysis_artifacts_correlation_id" in constraint_names
     assert "ck_analysis_artifacts_market" in constraint_names
     assert "ck_analysis_artifacts_kind" in constraint_names
     assert "ck_analysis_artifacts_created_by" in constraint_names
@@ -39,6 +42,11 @@ def test_analysis_artifact_model_contract() -> None:
         and constraint.name == "uq_analysis_artifacts_artifact_uuid"
         for constraint in constraints
     )
+    assert any(
+        isinstance(constraint, UniqueConstraint)
+        and constraint.name == "uq_analysis_artifacts_correlation_id"
+        for constraint in constraints
+    )
     assert any(isinstance(constraint, CheckConstraint) for constraint in constraints)
 
     indexes = AnalysisArtifact.__table__.indexes
@@ -46,17 +54,13 @@ def test_analysis_artifact_model_contract() -> None:
     assert {
         "ix_analysis_artifacts_kind_market_as_of",
         "ix_analysis_artifacts_symbols_gin",
-        "ix_analysis_artifacts_payload_gin",
     }.issubset(index_names)
+    # No GIN(payload) index by design — no payload-containment query exists;
+    # it would be pure write amplification (review finding).
+    assert "ix_analysis_artifacts_payload_gin" not in index_names
     assert any(
         isinstance(index, Index)
         and index.name == "ix_analysis_artifacts_symbols_gin"
-        and index.dialect_options["postgresql"]["using"] == "gin"
-        for index in indexes
-    )
-    assert any(
-        isinstance(index, Index)
-        and index.name == "ix_analysis_artifacts_payload_gin"
         and index.dialect_options["postgresql"]["using"] == "gin"
         for index in indexes
     )

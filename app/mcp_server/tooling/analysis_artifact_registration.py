@@ -28,17 +28,23 @@ def register_analysis_artifact_tools(mcp: FastMCP) -> None:
             "Persist a structured analysis artifact (screening ranking, "
             "profit-taking verdicts, support/resistance map, flow assessment, "
             "candidate pool, or session summary) for cross-session reuse. "
-            "Explicit save only — analysis runs do not auto-persist."
+            "Explicit save only — analysis runs do not auto-persist. "
+            "Idempotent per correlation_id: re-saving the same correlation_id "
+            "updates the row in place (omit to append). Payload capped at "
+            "100KB (payload_too_large above that). Recent valid artifacts "
+            "are surfaced metadata-only in get_operating_briefing."
         ),
     )(analysis_artifact_save)
     _ = mcp.tool(
         name="analysis_artifact_list",
         description=(
-            "List persisted analysis artifacts, newest as_of first. "
-            "Optional filters: market, kind, symbol (containment match on the "
-            "symbols array), since, include_stale, limit clamped to 1..100. "
-            "Stale rows (valid_until in the past) are excluded unless "
-            "include_stale=true."
+            "List persisted analysis artifacts, newest as_of first — "
+            "metadata only, no payload (payload_size_bytes hints the "
+            "analysis_artifact_get cost). Optional filters: market, kind, "
+            "symbol (containment match on the symbols array), since, "
+            "correlation_id, account_scope, include_stale, limit clamped to "
+            "1..100. Stale rows (valid_until in the past) are excluded unless "
+            "include_stale=true; each row carries is_stale."
         ),
     )(analysis_artifact_list)
     _ = mcp.tool(

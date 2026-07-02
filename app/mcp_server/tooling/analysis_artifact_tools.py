@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,11 +13,16 @@ from app.schemas.analysis_artifact import (
     AnalysisArtifactGetResponse,
     AnalysisArtifactListRequest,
     AnalysisArtifactListResponse,
+    AnalysisArtifactMeta,
     AnalysisArtifactRead,
     AnalysisArtifactSave,
     AnalysisArtifactSaveResponse,
 )
 from app.services.analysis_artifact import AnalysisArtifactService
+
+# Save-side payload cap (ROB-628 size discipline). Measured on real UTF-8
+# bytes (ensure_ascii=False) so Korean payloads are not ~6x over-counted.
+PAYLOAD_CAP_BYTES = 100 * 1024
 
 
 def _validation_error(exc: ValidationError) -> dict[str, Any]:
@@ -37,8 +43,20 @@ async def analysis_artifact_save(
     valid_until: str | None = None,
     created_by: str = "claude",
     session_label: str | None = None,
+    correlation_id: str | None = None,
+    account_scope: str | None = None,
 ) -> dict[str, Any]:
     """Persist a single analysis artifact for cross-session reuse."""
+    size_bytes = len(
+        json.dumps(payload or {}, ensure_ascii=False, default=str).encode("utf-8")
+    )
+    if size_bytes > PAYLOAD_CAP_BYTES:
+        return {
+            "success": False,
+            "error": "payload_too_large",
+            "size_bytes": size_bytes,
+            "cap_bytes": PAYLOAD_CAP_BYTES,
+        }
     try:
         entry = AnalysisArtifactSave.model_validate(
             {
@@ -51,6 +69,8 @@ async def analysis_artifact_save(
                 "valid_until": valid_until,
                 "created_by": created_by,
                 "session_label": session_label,
+                "correlation_id": correlation_id,
+                "account_scope": account_scope,
             }
         )
     except ValidationError as exc:
@@ -58,9 +78,10 @@ async def analysis_artifact_save(
 
     async with AsyncSessionLocal() as db:
         service = AnalysisArtifactService(db)
-        row = await service.save(entry)
+        row, action = await service.save(entry)
         await db.commit()
         response = AnalysisArtifactSaveResponse(
+            action=action,  # type: ignore[arg-type]
             artifact=AnalysisArtifactRead.model_validate(row),
         )
     return response.model_dump(mode="json")
@@ -73,6 +94,8 @@ async def analysis_artifact_list(
     since: str | None = None,
     include_stale: bool = False,
     limit: int = 20,
+    correlation_id: str | None = None,
+    account_scope: str | None = None,
 ) -> dict[str, Any]:
     """Return analysis artifacts matching filters, newest ``as_of`` first."""
     try:
@@ -84,6 +107,8 @@ async def analysis_artifact_list(
                 "since": since,
                 "include_stale": include_stale,
                 "limit": limit,
+                "correlation_id": correlation_id,
+                "account_scope": account_scope,
             }
         )
     except ValidationError as exc:
@@ -98,13 +123,15 @@ async def analysis_artifact_list(
             since=request.since,
             include_stale=request.include_stale,
             limit=request.limit,
+            correlation_id=request.correlation_id,
+            account_scope=request.account_scope,
         )
         response = AnalysisArtifactListResponse(
             count=len(rows),
             filters=request,
-            artifacts=[
-                AnalysisArtifactRead.model_validate(row) for row in rows
-            ],
+            # Metadata-only on purpose (token-lean): payload is served by
+            # analysis_artifact_get, never by list.
+            artifacts=[AnalysisArtifactMeta.model_validate(row) for row in rows],
         )
     return response.model_dump(mode="json")
 

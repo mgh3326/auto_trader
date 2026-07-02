@@ -181,11 +181,25 @@ async def test_get_operating_briefing_composes_all_sections(
             "entries": [{"title": "handoff", "entry_type": "next_action"}],
         }
 
+    async def fake_analysis_artifacts(db, *, market, limit=10):
+        assert market == "kr"
+        return {
+            "count": 1,
+            "artifacts": [
+                {
+                    "kind": "screening_ranking",
+                    "title": "오늘의 발굴 랭킹",
+                    "is_stale": False,
+                }
+            ],
+        }
+
     monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
     monkeypatch.setattr(ob, "_recent_session_context", fake_session_context)
+    monkeypatch.setattr(ob, "_recent_analysis_artifacts", fake_analysis_artifacts)
 
     result = await ob.get_operating_briefing_impl(
         market="kr",
@@ -201,6 +215,9 @@ async def test_get_operating_briefing_composes_all_sections(
     assert result["active_watches"]["count"] == 1
     assert result["latest_report"]["title"] == "latest plan"
     assert result["session_context"]["entries"][0]["title"] == "handoff"
+    assert result["analysis_artifacts"]["count"] == 1
+    assert result["analysis_artifacts"]["artifacts"][0]["kind"] == "screening_ranking"
+    assert result["staleness"]["analysis_artifacts"]["freshness_status"] == "db_read"
     assert result["staleness"]["pending_orders"]["freshness_status"] == "fresh"
 
 
@@ -290,6 +307,7 @@ async def test_get_operating_briefing_surfaces_per_account_routability(
         ("latest_report", "_latest_report_summary"),
         ("session_context", "_recent_session_context"),
         ("active_watches", "list_active_watches_impl"),
+        ("analysis_artifacts", "_recent_analysis_artifacts"),
     ],
 )
 async def test_get_operating_briefing_fail_opens_optional_sections(
@@ -340,6 +358,9 @@ async def test_get_operating_briefing_fail_opens_optional_sections(
             "active_watches": [{"symbol": "005930"}],
         }
 
+    async def ok_analysis_artifacts(db, *, market, limit=10):
+        return {"count": 1, "artifacts": [{"title": "recent ranking"}]}
+
     async def boom(*args, **kwargs):
         raise RuntimeError("section boom")
 
@@ -348,6 +369,7 @@ async def test_get_operating_briefing_fail_opens_optional_sections(
     monkeypatch.setattr(ob, "_latest_report_summary", ok_latest_report)
     monkeypatch.setattr(ob, "_recent_session_context", ok_session_context)
     monkeypatch.setattr(ob, "list_active_watches_impl", ok_active_watches)
+    monkeypatch.setattr(ob, "_recent_analysis_artifacts", ok_analysis_artifacts)
     monkeypatch.setattr(ob, patch_name, boom)
 
     result = await ob.get_operating_briefing_impl(
@@ -367,6 +389,14 @@ async def test_get_operating_briefing_fail_opens_optional_sections(
             "count": 0,
             "entries": [],
             "unavailable_reason": "session_context_failed:RuntimeError:section boom",
+        }
+    elif section_name == "analysis_artifacts":
+        assert result["analysis_artifacts"] == {
+            "count": 0,
+            "artifacts": [],
+            "unavailable_reason": (
+                "analysis_artifacts_failed:RuntimeError:section boom"
+            ),
         }
     else:
         assert result["active_watches"] == {

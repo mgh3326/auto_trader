@@ -17,6 +17,7 @@ AnalysisArtifactKindLiteral = Literal[
     "flow_assessment",
     "candidate_pool",
     "session_summary",
+    "briefing",
 ]
 AnalysisArtifactCreatedByLiteral = Literal["claude", "operator", "system"]
 
@@ -33,14 +34,47 @@ class AnalysisArtifactSave(BaseModel):
     valid_until: datetime | None = None
     created_by: AnalysisArtifactCreatedByLiteral = "claude"
     session_label: str | None = None
+    correlation_id: str | None = None
+    account_scope: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("as_of", "valid_until", mode="before")
+    @classmethod
+    def _coerce_datetime_to_kst(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                from dateutil.parser import parse
+
+                value = parse(value)
+            except Exception:
+                pass
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                from app.core.timezone import KST
+
+                value = value.replace(tzinfo=KST)
+        return value
+
+    @field_validator("payload", mode="after")
+    @classmethod
+    def _validate_payload_size(cls, value: dict[str, Any]) -> dict[str, Any]:
+        import json
+
+        # ensure_ascii=False: measure real UTF-8 bytes, not the ~6x escaped
+        # size for Korean text (ROB-628 lesson). 100 KB cap.
+        payload_json = json.dumps(value, ensure_ascii=False, default=str)
+        if len(payload_json.encode("utf-8")) > 100 * 1024:
+            raise ValueError("payload size must not exceed 100KB")
+        return value
 
     @field_validator("title", "session_label", mode="before")
     @classmethod
     def _strip_optional_text(cls, value: object) -> object:
         if isinstance(value, str):
-            return value.strip()
+            return value.strip() or None
         return value
 
     @field_validator("symbols", mode="before")
@@ -50,7 +84,11 @@ class AnalysisArtifactSave(BaseModel):
             return []
         if not isinstance(value, list):
             raise ValueError("symbols must be a list")
-        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        from app.core.symbol import to_db_symbol
+
+        cleaned = [
+            to_db_symbol(str(item).strip()) for item in value if str(item).strip()
+        ]
         return cleaned
 
 
@@ -63,14 +101,40 @@ class AnalysisArtifactListRequest(BaseModel):
     since: datetime | None = None
     include_stale: bool = False
     limit: int = Field(default=20, ge=1)
+    correlation_id: str | None = None
+    account_scope: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("since", mode="before")
+    @classmethod
+    def _coerce_since_to_kst(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                from dateutil.parser import parse
+
+                value = parse(value)
+            except Exception:
+                pass
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                from app.core.timezone import KST
+
+                value = value.replace(tzinfo=KST)
+        return value
 
     @field_validator("symbol", mode="before")
     @classmethod
     def _strip_symbol(cls, value: object) -> object:
         if isinstance(value, str):
-            return value.strip() or None
+            val = value.strip()
+            if val:
+                from app.core.symbol import to_db_symbol
+
+                return to_db_symbol(val)
+            return None
         return value
 
     @field_validator("limit", mode="before")
@@ -92,6 +156,10 @@ class AnalysisArtifactMeta(BaseModel):
     as_of: datetime
     valid_until: datetime | None
     session_label: str | None
+    correlation_id: str | None
+    account_scope: str | None
+    payload_size_bytes: int
+    is_stale: bool
     created_by: AnalysisArtifactCreatedByLiteral
     created_at: datetime
 
@@ -106,6 +174,7 @@ class AnalysisArtifactRead(AnalysisArtifactMeta):
 
 class AnalysisArtifactSaveResponse(BaseModel):
     success: Literal[True] = True
+    action: Literal["created", "updated"] = "created"
     artifact: AnalysisArtifactRead
 
 

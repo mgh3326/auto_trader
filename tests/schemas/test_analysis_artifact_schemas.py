@@ -90,6 +90,10 @@ def test_read_serializes_payload_from_attributes() -> None:
         as_of = datetime(2026, 7, 2, tzinfo=UTC)
         valid_until = None
         session_label = None
+        correlation_id = None
+        account_scope = None
+        payload_size_bytes = 24
+        is_stale = False
         created_by = "operator"
         created_at = datetime(2026, 7, 2, 1, 2, 3, tzinfo=UTC)
 
@@ -99,3 +103,19 @@ def test_read_serializes_payload_from_attributes() -> None:
     dumped = response.model_dump(mode="json")
     assert dumped["artifact_uuid"] == "55555555-5555-5555-5555-555555555555"
     assert dumped["symbols"] == ["KRW-BTC"]
+
+
+@pytest.mark.unit
+def test_save_rejects_payload_over_100kb() -> None:
+    large_payload = {"data": "x" * 105000}
+    with pytest.raises(ValidationError) as exc_info:
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "kr",
+                "kind": "candidate_pool",
+                "title": "too large",
+                "as_of": "2026-07-02T00:00:00+00:00",
+                "payload": large_payload,
+            }
+        )
+    assert "payload size must not exceed 100KB" in str(exc_info.value)

@@ -627,6 +627,27 @@ async def db_session():
                         "ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
                     )
                 )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS correlation_id TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.analysis_artifacts "
+                        "ADD COLUMN IF NOT EXISTS account_scope TEXT"
+                    )
+                )
+                # correlation_id idempotent-upsert needs the unique index on
+                # pre-existing tables (fresh DBs get it via create_all).
+                await conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS "
+                        "uq_analysis_artifacts_correlation_id "
+                        "ON review.analysis_artifacts (correlation_id)"
+                    )
+                )
                 # ROB-430 PR-② — week_high_52_date added to the (persistent) KR
                 # fundamentals snapshot table; create_all is a no-op on the existing
                 # table, so patch the column in here (mirrors the alembic migration).

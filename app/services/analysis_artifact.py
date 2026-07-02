@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
@@ -22,23 +24,61 @@ class AnalysisArtifactService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def save(self, entry: AnalysisArtifactSave) -> AnalysisArtifact:
-        """Insert a single artifact row and return the refreshed row."""
-        row = AnalysisArtifact(
-            market=entry.market,
-            kind=entry.kind,
-            title=entry.title,
-            symbols=entry.symbols,
-            payload=entry.payload,
-            as_of=entry.as_of,
-            valid_until=entry.valid_until,
-            created_by=entry.created_by,
-            session_label=entry.session_label,
+    async def save(self, entry: AnalysisArtifactSave) -> tuple[AnalysisArtifact, str]:
+        """Persist one artifact and return ``(row, action)``.
+
+        Without ``correlation_id`` every call appends a new row. With
+        ``correlation_id`` the call is idempotent: a retry (e.g. an MCP
+        timeout re-send) updates the existing row in place instead of
+        duplicating it (ROB-474 trade_retrospectives pattern).
+        """
+        values: dict[str, Any] = {
+            "market": entry.market,
+            "kind": entry.kind,
+            "title": entry.title,
+            "symbols": entry.symbols,
+            "payload": entry.payload,
+            "as_of": entry.as_of,
+            "valid_until": entry.valid_until,
+            "created_by": entry.created_by,
+            "session_label": entry.session_label,
+            "correlation_id": entry.correlation_id,
+            "account_scope": entry.account_scope,
+        }
+        if entry.correlation_id is None:
+            row = AnalysisArtifact(**values)
+            self._session.add(row)
+            await self._session.flush()
+            await self._session.refresh(row)
+            return row, "created"
+
+        existing_id = await self._session.scalar(
+            sa.select(AnalysisArtifact.id).where(
+                AnalysisArtifact.correlation_id == entry.correlation_id
+            )
         )
-        self._session.add(row)
-        await self._session.flush()
-        await self._session.refresh(row)
-        return row
+        stmt = (
+            pg_insert(AnalysisArtifact)
+            .values(**values)
+            .on_conflict_do_update(
+                # index_elements (not constraint=) so both a UNIQUE
+                # constraint (fresh create_all) and a plain unique index
+                # (patched-in on pre-existing DBs) satisfy the arbiter.
+                index_elements=[AnalysisArtifact.correlation_id],
+                set_={
+                    key: value
+                    for key, value in values.items()
+                    if key != "correlation_id"
+                },
+            )
+            .returning(AnalysisArtifact)
+        )
+        result = await self._session.scalars(
+            stmt,
+            execution_options={"populate_existing": True},
+        )
+        row = result.one()
+        return row, "updated" if existing_id is not None else "created"
 
     async def list_artifacts(
         self,
@@ -49,6 +89,8 @@ class AnalysisArtifactService:
         since: datetime | None = None,
         include_stale: bool = False,
         limit: int = 20,
+        correlation_id: str | None = None,
+        account_scope: str | None = None,
     ) -> list[AnalysisArtifact]:
         """Query artifacts with filters, newest ``as_of`` first."""
         capped_limit = max(1, min(int(limit), 100))
@@ -61,15 +103,22 @@ class AnalysisArtifactService:
         if kind is not None:
             stmt = stmt.where(AnalysisArtifact.kind == kind)
         if symbol:
+            from app.core.symbol import to_db_symbol
+
+            normalized_symbol = to_db_symbol(symbol.strip())
             stmt = stmt.where(
                 AnalysisArtifact.symbols.op("@>")(
                     sa.text(":symbol").bindparams(
-                        sa.bindparam("symbol", value=[symbol]),
+                        sa.bindparam("symbol", value=[normalized_symbol]),
                     )
                 )
             )
         if since is not None:
             stmt = stmt.where(AnalysisArtifact.as_of >= since)
+        if correlation_id is not None:
+            stmt = stmt.where(AnalysisArtifact.correlation_id == correlation_id)
+        if account_scope is not None:
+            stmt = stmt.where(AnalysisArtifact.account_scope == account_scope)
         if not include_stale:
             now = now_kst()
             stmt = stmt.where(
@@ -101,9 +150,7 @@ class AnalysisArtifactService:
                     AnalysisArtifact.artifact_uuid == parsed_uuid
                 )
         else:
-            stmt = sa.select(AnalysisArtifact).where(
-                AnalysisArtifact.id == artifact_id
-            )
+            stmt = sa.select(AnalysisArtifact).where(AnalysisArtifact.id == artifact_id)
         result = await self._session.scalars(stmt)
         return result.first()
 

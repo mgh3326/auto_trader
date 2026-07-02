@@ -56,6 +56,8 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column("session_label", sa.Text(), nullable=True),
+        sa.Column("correlation_id", sa.Text(), nullable=True),
+        sa.Column("account_scope", sa.Text(), nullable=True),
         sa.Column(
             "created_by",
             sa.Text(),
@@ -73,6 +75,10 @@ def upgrade() -> None:
             "artifact_uuid",
             name="uq_analysis_artifacts_artifact_uuid",
         ),
+        sa.UniqueConstraint(
+            "correlation_id",
+            name="uq_analysis_artifacts_correlation_id",
+        ),
         sa.CheckConstraint(
             "market IN ('kr','us','crypto')",
             name="ck_analysis_artifacts_market",
@@ -81,7 +87,7 @@ def upgrade() -> None:
             "kind IN ("
             "'screening_ranking','profit_taking_verdicts',"
             "'support_resistance_map','flow_assessment',"
-            "'candidate_pool','session_summary'"
+            "'candidate_pool','session_summary','briefing'"
             ")",
             name="ck_analysis_artifacts_kind",
         ),
@@ -105,22 +111,11 @@ def upgrade() -> None:
         schema="review",
         postgresql_using="gin",
     )
-    op.create_index(
-        "ix_analysis_artifacts_payload_gin",
-        "analysis_artifacts",
-        ["payload"],
-        unique=False,
-        schema="review",
-        postgresql_using="gin",
-    )
+    # NOTE: no GIN index on payload — no payload-containment query exists;
+    # a payload GIN would be pure write amplification (review finding).
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_analysis_artifacts_payload_gin",
-        table_name="analysis_artifacts",
-        schema="review",
-    )
     op.drop_index(
         "ix_analysis_artifacts_symbols_gin",
         table_name="analysis_artifacts",

@@ -16,16 +16,12 @@ from app.services.analysis_artifact import AnalysisArtifactService
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_analysis_artifacts(db_session: AsyncSession):
     await db_session.execute(
-        sa.text(
-            'TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE'
-        )
+        sa.text('TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE')
     )
     await db_session.commit()
     yield
     await db_session.execute(
-        sa.text(
-            'TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE'
-        )
+        sa.text('TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE')
     )
     await db_session.commit()
 
@@ -34,7 +30,7 @@ async def _clean_analysis_artifacts(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_save_list_get_round_trip(db_session: AsyncSession) -> None:
     service = AnalysisArtifactService(db_session)
-    symbol = f"TEST-{uuid4().hex[:8]}"
+    symbol = f"TEST_{uuid4().hex[:8]}"
     entry = AnalysisArtifactSave.model_validate(
         {
             "market": "kr",
@@ -47,7 +43,8 @@ async def test_save_list_get_round_trip(db_session: AsyncSession) -> None:
         }
     )
 
-    saved = await service.save(entry)
+    saved, action = await service.save(entry)
+    assert action == "created"
 
     listed = await service.list_artifacts(
         market="kr",
@@ -73,8 +70,8 @@ async def test_list_excludes_stale_unless_include_stale(
 ) -> None:
     service = AnalysisArtifactService(db_session)
     base = now_kst()
-    stale_symbol = f"TEST-{uuid4().hex[:8]}"
-    fresh_symbol = f"TEST-{uuid4().hex[:8]}"
+    stale_symbol = f"TEST_{uuid4().hex[:8]}"
+    fresh_symbol = f"TEST_{uuid4().hex[:8]}"
 
     await service.save(
         AnalysisArtifactSave.model_validate(
@@ -123,8 +120,8 @@ async def test_list_symbol_containment_and_since_filter(
     db_session: AsyncSession,
 ) -> None:
     service = AnalysisArtifactService(db_session)
-    shared_symbol = f"TEST-{uuid4().hex[:8]}"
-    other_symbol = f"TEST-{uuid4().hex[:8]}"
+    shared_symbol = f"TEST_{uuid4().hex[:8]}"
+    other_symbol = f"TEST_{uuid4().hex[:8]}"
     base = now_kst()
 
     await service.save(

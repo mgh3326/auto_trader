@@ -35,16 +35,12 @@ class FakeMCP:
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_analysis_artifacts(db_session: AsyncSession):
     await db_session.execute(
-        sa.text(
-            'TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE'
-        )
+        sa.text('TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE')
     )
     await db_session.commit()
     yield
     await db_session.execute(
-        sa.text(
-            'TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE'
-        )
+        sa.text('TRUNCATE TABLE review."analysis_artifacts" RESTART IDENTITY CASCADE')
     )
     await db_session.commit()
 
@@ -65,7 +61,7 @@ def test_analysis_artifact_tool_names_register() -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_save_list_get_round_trip(db_session: AsyncSession) -> None:
-    symbol = f"TEST-{uuid4().hex[:8]}"
+    symbol = f"TEST_{uuid4().hex[:8]}"
     save_response = await analysis_artifact_save(
         market="kr",
         kind="profit_taking_verdicts",
@@ -145,3 +141,123 @@ async def test_list_returns_empty_when_no_match(
     assert response["success"] is True
     assert response["count"] == 0
     assert response["artifacts"] == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_symbol_normalization(db_session: AsyncSession) -> None:
+    save_response = await analysis_artifact_save(
+        market="us",
+        kind="screening_ranking",
+        title="US normal",
+        symbols=["BRK-B", "BRK/A", "AAPL"],
+        as_of="2026-07-02T02:00:00+00:00",
+    )
+    assert save_response["success"] is True
+    saved = save_response["artifact"]
+    assert saved["symbols"] == ["BRK.B", "BRK.A", "AAPL"]
+
+    # Dash input saved as dot-format must be findable by dot-format lookup.
+    list_response = await analysis_artifact_list(market="us", symbol="BRK.B")
+    assert list_response["count"] == 1
+    # And a dash-format query normalizes to the same hit.
+    list_dash = await analysis_artifact_list(market="us", symbol="BRK-B")
+    assert list_dash["count"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_rejects_payload_too_large(db_session: AsyncSession) -> None:
+    response = await analysis_artifact_save(
+        market="kr",
+        kind="screening_ranking",
+        title="too big",
+        payload={"blob": "x" * (101 * 1024)},
+        as_of="2026-07-02T02:00:00+00:00",
+    )
+
+    assert response["success"] is False
+    assert response["error"] == "payload_too_large"
+    assert response["size_bytes"] > response["cap_bytes"] == 100 * 1024
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_correlation_id_idempotent_upsert(db_session: AsyncSession) -> None:
+    correlation_id = f"corr-{uuid4().hex[:12]}"
+    first = await analysis_artifact_save(
+        market="kr",
+        kind="profit_taking_verdicts",
+        title="v1",
+        payload={"rev": 1},
+        as_of="2026-07-02T02:00:00+00:00",
+        correlation_id=correlation_id,
+    )
+    assert first["success"] is True
+    assert first["action"] == "created"
+
+    second = await analysis_artifact_save(
+        market="kr",
+        kind="profit_taking_verdicts",
+        title="v2",
+        payload={"rev": 2},
+        as_of="2026-07-02T03:00:00+00:00",
+        correlation_id=correlation_id,
+    )
+    assert second["success"] is True
+    assert second["action"] == "updated"
+    assert second["artifact"]["id"] == first["artifact"]["id"]
+    assert second["artifact"]["payload"] == {"rev": 2}
+    assert second["artifact"]["title"] == "v2"
+
+    listed = await analysis_artifact_list(
+        market="kr", correlation_id=correlation_id, limit=10
+    )
+    assert listed["count"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_is_metadata_only(db_session: AsyncSession) -> None:
+    symbol = f"TEST_{uuid4().hex[:8]}"
+    await analysis_artifact_save(
+        market="kr",
+        kind="flow_assessment",
+        title="meta only",
+        symbols=[symbol],
+        payload={"big": "가나다" * 100},
+        as_of="2026-07-02T02:00:00+00:00",
+    )
+
+    response = await analysis_artifact_list(market="kr", symbol=symbol, limit=5)
+
+    assert response["count"] == 1
+    row = response["artifacts"][0]
+    assert "payload" not in row
+    assert row["payload_size_bytes"] > 0
+    assert row["is_stale"] is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_stale_artifact_flagged_and_filtered(db_session: AsyncSession) -> None:
+    symbol = f"TEST_{uuid4().hex[:8]}"
+    save_response = await analysis_artifact_save(
+        market="kr",
+        kind="support_resistance_map",
+        title="stale one",
+        symbols=[symbol],
+        as_of="2026-07-01T02:00:00+00:00",
+        valid_until="2026-07-01T06:35:00+09:00",
+    )
+    saved = save_response["artifact"]
+    assert saved["is_stale"] is True
+
+    default_list = await analysis_artifact_list(market="kr", symbol=symbol)
+    assert default_list["count"] == 0
+
+    with_stale = await analysis_artifact_list(
+        market="kr", symbol=symbol, include_stale=True
+    )
+    assert with_stale["count"] == 1
+    assert with_stale["artifacts"][0]["is_stale"] is True
