@@ -99,6 +99,12 @@ def _ensure_test_env() -> None:
     os.environ["SENTRY_DSN"] = ""
     os.environ["ENVIRONMENT"] = "test"
 
+    # ROB-638: hermetic guard — the analyze fetch-layer cache must NEVER touch a
+    # real Redis from tests (a `make test` run on an operator host would poison
+    # the live MCP cache with mock provider data). Force-disable; cache tests
+    # patch analyze_cache._get_redis_client with a fake explicitly.
+    os.environ["ANALYZE_FETCH_CACHE_ENABLED"] = "false"
+
 
 _ensure_test_env()
 

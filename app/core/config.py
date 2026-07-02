@@ -263,6 +263,12 @@ class Settings(BaseSettings):
     kis_ohlcv_cache_max_hours: int = 400 * 24
     kis_ohlcv_cache_lock_ttl_seconds: int = 10
 
+    # ROB-638: fetch-layer Redis cache for the slowly-changing analyze provider
+    # fetches (KR naver snapshot, US yfinance bundle, US finnhub profile).
+    # Default on in production; forced off in tests (tests/conftest.py) so no
+    # test can touch a real Redis unless it explicitly patches the cache client.
+    analyze_fetch_cache_enabled: bool = True
+
     # API Rate Limit Retry Settings (429 handling)
     api_rate_limit_retry_429_max: int = 2  # 429 에러 시 최대 재시도 횟수
     api_rate_limit_retry_429_base_delay: float = 0.2  # 지수 백오프 기본 대기 시간 (초)
