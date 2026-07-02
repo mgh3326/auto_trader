@@ -10,8 +10,12 @@ from app.models.review import KISLiveOrderLedger, LiveOrderLedger
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_ledgers(db_session):
-    await db_session.execute(delete(KISLiveOrderLedger).where(KISLiveOrderLedger.order_no == "KISTEST653KR"))
-    await db_session.execute(delete(LiveOrderLedger).where(LiveOrderLedger.order_no == "UPBITTEST653"))
+    await db_session.execute(
+        delete(KISLiveOrderLedger).where(KISLiveOrderLedger.order_no == "KISTEST653KR")
+    )
+    await db_session.execute(
+        delete(LiveOrderLedger).where(LiveOrderLedger.order_no == "UPBITTEST653")
+    )
     await db_session.commit()
 
 

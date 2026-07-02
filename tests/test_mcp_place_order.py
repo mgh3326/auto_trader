@@ -6,11 +6,12 @@ extracted from test_mcp_server_tools.py for better organization.
 """
 
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import delete
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
@@ -20,6 +21,7 @@ from app.mcp_server.tooling import (
     orders_kis_variants,
     orders_registration,
 )
+from app.models.review import OrderSendIntent
 from tests._mcp_tooling_support import (
     _patch_runtime_attr,
     build_tools,
@@ -39,6 +41,17 @@ async def _ensure_live_order_ledger_schema(db_session):
     """ROB-407: live US/crypto orders write to review.live_order_ledger directly.
     Depend on db_session so its create_all builds the table before any test in this
     module inserts (CI builds the test schema via create_all, not alembic)."""
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_order_send_intents(db_session):
+    """ROB-653: the KIS pre-send guard writes content+trading-day-keyed rows to
+    review.order_send_intents on every dry_run=False KIS/US order. Clear them
+    before each test so these tests stay idempotent across local re-runs (CI
+    starts from a fresh schema, but local DBs persist)."""
+    await db_session.execute(delete(OrderSendIntent))
+    await db_session.commit()
     yield
 
 
@@ -1187,7 +1200,7 @@ class TestPlaceOrderHighAmount:
         assert result["dry_run"] is False
         assert result["preview"]["quantity"] == pytest.approx(0.1, rel=1e-6)
         mock.place_buy_order.assert_awaited_once_with(
-            "KRW-BTC", 50000000.0, "0.10000000", "limit"
+            "KRW-BTC", 50000000.0, "0.10000000", "limit", identifier=ANY
         )
 
     @pytest.mark.asyncio
@@ -1269,7 +1282,7 @@ class TestPlaceOrderHighAmount:
         assert "Daily order limit" not in str(result.get("error", ""))
         assert "Daily order limit" not in str(result.get("message", ""))
         mock.place_buy_order.assert_awaited_once_with(
-            "KRW-BTC", 50000000.0, "0.10000000", "limit"
+            "KRW-BTC", 50000000.0, "0.10000000", "limit", identifier=ANY
         )
 
 
@@ -1886,7 +1899,7 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
         def adjust_price_to_upbit_unit(self, price):
             return price
 
-        async def place_sell_order(self, symbol, volume, price):
+        async def place_sell_order(self, symbol, volume, price, identifier=None):
             return {
                 "uuid": _unique_order_id("cd-sell-loss"),
                 "side": "ask",
@@ -1990,7 +2003,7 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
         def adjust_price_to_upbit_unit(self, price):
             return price
 
-        async def place_sell_order(self, symbol, volume, price):
+        async def place_sell_order(self, symbol, volume, price, identifier=None):
             return {
                 "uuid": _unique_order_id("cd-sell-profit"),
                 "side": "ask",
