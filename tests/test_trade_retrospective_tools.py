@@ -8,12 +8,14 @@ import pytest_asyncio
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.trade_retrospective_tools import (
     get_retrospective_aggregate,
     get_trade_retrospectives,
     save_trade_retrospective,
+    trade_retrospective_pending,
 )
-from app.models.review import TradeRetrospective
+from app.models.review import KISLiveOrderLedger, TradeRetrospective
 
 pytestmark = [
     pytest.mark.integration,
@@ -26,6 +28,7 @@ async def _cleanup(
     db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
 ):
     await db_session.execute(delete(TradeRetrospective))
+    await db_session.execute(delete(KISLiveOrderLedger))
     await db_session.commit()
 
 
@@ -145,6 +148,7 @@ def test_tool_names_set_complete():
         "save_trade_retrospective",
         "get_trade_retrospectives",
         "get_retrospective_aggregate",
+        "trade_retrospective_pending",
     }
 
 
@@ -155,6 +159,7 @@ def test_tools_in_available_surface():
         "save_trade_retrospective",
         "get_trade_retrospectives",
         "get_retrospective_aggregate",
+        "trade_retrospective_pending",
     ):
         assert name in AVAILABLE_TOOL_NAMES
 
@@ -180,4 +185,63 @@ def test_register_wires_three_tools():
         "save_trade_retrospective",
         "get_trade_retrospectives",
         "get_retrospective_aggregate",
+        "trade_retrospective_pending",
     }
+
+
+# ---------------------------------------------------------------------------
+# ROB-647 — postmortem forwarding + due-list tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_with_postmortem_envelope():
+    res = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        trigger_type="fill",
+        root_cause_class="analysis",
+        next_actions=[{"action": "scale in", "issue_id": "ROB-2"}],
+    )
+    assert res["success"] is True
+    assert res["data"]["trigger_type"] == "fill"
+    assert res["data"]["next_actions"][0]["issue_id"] == "ROB-2"
+
+
+@pytest.mark.asyncio
+async def test_save_trigger_without_next_actions_envelope():
+    res = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        trigger_type="fill",
+    )
+    assert res["success"] is False
+    assert "next_actions" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_pending_tool_envelope(db_session: AsyncSession):
+    db_session.add(
+        KISLiveOrderLedger(
+            trade_date=now_kst(),
+            symbol="005930",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            account_mode="kis_live",
+            broker="kis",
+            status="filled",
+            lifecycle_state="filled",
+            order_no="K-TOOL-1",
+        )
+    )
+    await db_session.commit()
+
+    res = await trade_retrospective_pending()
+    assert res["success"] is True
+    refs = {p["suggested_correlation_id"] for p in res["pending"]}
+    assert "kis_live:K-TOOL-1" in refs

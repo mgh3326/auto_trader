@@ -391,3 +391,174 @@ async def test_retrospective_derives_fx_fields_from_journal(
     assert row.total_pnl_krw == Decimal("112963.4000")
     assert row.fx_rate_source == "reconcile_spot"
     assert row.fx_pnl_accuracy == "approximate"
+
+
+# ---------------------------------------------------------------------------
+# ROB-647 — postmortem structuring
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_postmortem_fields_persist(db_session: AsyncSession):
+    action, row = await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="rejected",
+        trigger_type="rejected_order",
+        root_cause_class="execution",
+        guardrail_fired="loss_sell_guard",
+        policy_version="p5-v3",
+        intended_vs_happened={
+            "summary": "order bounced",
+            "deviations": [{"dimension": "price", "planned": 100, "actual": 0}],
+        },
+        next_actions=[{"action": "retry with limit", "issue_id": "ROB-1"}],
+    )
+    await db_session.commit()
+    assert action == "created"
+    assert row.trigger_type == "rejected_order"
+    assert row.root_cause_class == "execution"
+    assert row.guardrail_fired == "loss_sell_guard"
+    assert row.policy_version == "p5-v3"
+    assert row.intended_vs_happened["deviations"][0]["dimension"] == "price"
+    assert row.next_actions[0]["action"] == "retry with limit"
+    assert row.next_actions[0]["issue_id"] == "ROB-1"
+
+
+@pytest.mark.asyncio
+async def test_trigger_type_requires_next_actions(db_session: AsyncSession):
+    with pytest.raises(svc.RetrospectiveValidationError):
+        await svc.save_retrospective(
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            trigger_type="fill",
+        )
+
+
+@pytest.mark.asyncio
+async def test_trigger_type_rejects_empty_next_actions(db_session: AsyncSession):
+    with pytest.raises(svc.RetrospectiveValidationError):
+        await svc.save_retrospective(
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            trigger_type="fill",
+            next_actions=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_invalid_trigger_type_rejected(db_session: AsyncSession):
+    with pytest.raises(svc.RetrospectiveValidationError):
+        await svc.save_retrospective(
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            trigger_type="bogus",
+            next_actions=[{"action": "x"}],
+        )
+
+
+@pytest.mark.asyncio
+async def test_invalid_root_cause_class_rejected(db_session: AsyncSession):
+    with pytest.raises(svc.RetrospectiveValidationError):
+        await svc.save_retrospective(
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            root_cause_class="bogus",
+        )
+
+
+@pytest.mark.asyncio
+async def test_invalid_intended_vs_happened_rejected(db_session: AsyncSession):
+    with pytest.raises(svc.RetrospectiveValidationError):
+        await svc.save_retrospective(
+            db_session,
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            intended_vs_happened={"unknown_key": 1},
+        )
+
+
+@pytest.mark.asyncio
+async def test_next_actions_allowed_without_trigger_type(db_session: AsyncSession):
+    # Obligation is conditional: next_actions may exist with no trigger_type.
+    _, row = await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        next_actions=[{"action": "watch for pullback"}],
+    )
+    await db_session.commit()
+    assert row.trigger_type is None
+    assert row.next_actions[0]["action"] == "watch for pullback"
+
+
+@pytest.mark.asyncio
+async def test_upsert_preserves_omitted_postmortem_fields(db_session: AsyncSession):
+    # First: rich postmortem keyed by correlation_id.
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        correlation_id="cid-preserve",
+        trigger_type="fill",
+        root_cause_class="analysis",
+        next_actions=[{"action": "hold"}],
+    )
+    await db_session.commit()
+
+    # Second: idempotent re-save (e.g. lean outcome update) omitting postmortem.
+    action, row = await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        correlation_id="cid-preserve",
+        pnl_pct=2.0,
+    )
+    await db_session.commit()
+    assert action == "updated"
+    assert row.trigger_type == "fill"
+    assert row.root_cause_class == "analysis"
+    assert row.next_actions[0]["action"] == "hold"
+    assert float(row.pnl_pct) == 2.0
+
+
+@pytest.mark.asyncio
+async def test_serialize_includes_postmortem_fields(db_session: AsyncSession):
+    _, row = await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="cancelled",
+        trigger_type="expired",
+        next_actions=[{"action": "resubmit tomorrow"}],
+    )
+    await db_session.commit()
+    data = svc.serialize_retrospective(row)
+    assert data["trigger_type"] == "expired"
+    assert data["next_actions"][0]["action"] == "resubmit tomorrow"
+    assert "intended_vs_happened" in data
+    assert "guardrail_fired" in data
+    assert "policy_version" in data

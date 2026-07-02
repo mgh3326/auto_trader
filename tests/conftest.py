@@ -1325,6 +1325,54 @@ async def db_session():
                         "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live'))"
                     )
                 )
+                # ROB-647 — postmortem structuring columns + CHECK constraints.
+                # create_all is no-op on the persistent test table; mirror the
+                # additive migration 20260702_rob647 here.
+                for col, ddl in (
+                    ("trigger_type", "TEXT"),
+                    ("root_cause_class", "TEXT"),
+                    ("intended_vs_happened", "JSONB"),
+                    ("next_actions", "JSONB"),
+                    ("guardrail_fired", "TEXT"),
+                    ("policy_version", "TEXT"),
+                ):
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE review.trade_retrospectives "
+                            f"ADD COLUMN IF NOT EXISTS {col} {ddl}"
+                        )
+                    )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "DROP CONSTRAINT IF EXISTS ck_trade_retrospectives_trigger_type"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "ADD CONSTRAINT ck_trade_retrospectives_trigger_type "
+                        "CHECK (trigger_type IS NULL OR trigger_type IN ("
+                        "'fill','partial_fill','rejected_order','cancelled','expired',"
+                        "'thesis_change','policy_violation','stale_evidence',"
+                        "'guardrail_block'))"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_trade_retrospectives_root_cause_class"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE review.trade_retrospectives "
+                        "ADD CONSTRAINT ck_trade_retrospectives_root_cause_class "
+                        "CHECK (root_cause_class IS NULL OR root_cause_class IN ("
+                        "'user_input','analysis','policy','execution','harness'))"
+                    )
+                )
                 # B-1 (binance-phase1) — benchmark_return_bps on scalping_daily_reviews.
                 # create_all is no-op on the persistent test table, so add here.
                 await conn.execute(

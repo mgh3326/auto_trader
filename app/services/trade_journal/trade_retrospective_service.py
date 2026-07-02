@@ -12,13 +12,29 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
-from app.models.review import TradeRetrospective
+from app.models.review import (
+    KISLiveOrderLedger,
+    LiveOrderLedger,
+    TossLiveOrderLedger,
+    TradeRetrospective,
+)
 from app.models.trade_journal import TradeJournal
+from app.schemas.trade_retrospective import (
+    VALID_ROOT_CAUSE_CLASSES,
+    VALID_TRIGGER_TYPES,
+    IntendedVsHappened,
+    NextAction,
+)
+
+# Sentinel: distinguishes "caller did not provide this field" (preserve on
+# upsert) from "caller explicitly set None" (clear the field).
+_UNSET: Any = object()
 
 _VALID_ACCOUNT_MODES = {
     "kis_mock",
@@ -40,6 +56,41 @@ _KST = ZoneInfo("Asia/Seoul")
 
 class RetrospectiveValidationError(ValueError):
     """Raised when a retrospective payload violates a typed constraint."""
+
+
+def _coerce_intended_vs_happened(raw: Any) -> dict[str, Any]:
+    """Validate ``intended_vs_happened`` through the pydantic contract."""
+    if not isinstance(raw, dict):
+        raise RetrospectiveValidationError(
+            "intended_vs_happened must be an object (dict)"
+        )
+    try:
+        model = IntendedVsHappened.model_validate(raw)
+    except ValidationError as exc:
+        raise RetrospectiveValidationError(
+            f"invalid intended_vs_happened: {exc.errors(include_url=False)}"
+        ) from exc
+    return model.model_dump(exclude_none=True)
+
+
+def _coerce_next_actions(raw: Any) -> list[dict[str, Any]]:
+    """Validate ``next_actions`` (a list of NextAction objects)."""
+    if not isinstance(raw, list):
+        raise RetrospectiveValidationError("next_actions must be a list")
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise RetrospectiveValidationError(
+                f"next_actions[{i}] must be an object (dict)"
+            )
+        try:
+            model = NextAction.model_validate(item)
+        except ValidationError as exc:
+            raise RetrospectiveValidationError(
+                f"invalid next_actions[{i}]: {exc.errors(include_url=False)}"
+            ) from exc
+        out.append(model.model_dump(exclude_none=True))
+    return out
 
 
 def _normalize_symbol(symbol: str, instrument_type: str) -> str:
@@ -126,6 +177,12 @@ def serialize_retrospective(r: TradeRetrospective) -> dict[str, Any]:
         "next_strategy": r.next_strategy,
         "evidence_snapshot": r.evidence_snapshot,
         "created_by_profile": r.created_by_profile,
+        "trigger_type": r.trigger_type,
+        "root_cause_class": r.root_cause_class,
+        "intended_vs_happened": r.intended_vs_happened,
+        "next_actions": r.next_actions,
+        "guardrail_fired": r.guardrail_fired,
+        "policy_version": r.policy_version,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
@@ -223,6 +280,12 @@ async def save_retrospective(
     total_pnl_krw: float | None = None,
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
+    trigger_type: Any = _UNSET,
+    root_cause_class: Any = _UNSET,
+    intended_vs_happened: Any = _UNSET,
+    next_actions: Any = _UNSET,
+    guardrail_fired: Any = _UNSET,
+    policy_version: Any = _UNSET,
 ) -> tuple[str, TradeRetrospective]:
     if account_mode not in _VALID_ACCOUNT_MODES:
         raise RetrospectiveValidationError(f"invalid account_mode: {account_mode}")
@@ -237,6 +300,36 @@ async def save_retrospective(
         raise RetrospectiveValidationError(
             f"invalid realized_pnl_currency: {realized_pnl_currency}"
         )
+
+    # ROB-647 — postmortem fields. Each uses the _UNSET sentinel so an omitted
+    # field is preserved across idempotent correlation_id upserts, while an
+    # explicit None clears it.
+    trigger_set = trigger_type is not _UNSET and trigger_type is not None
+    if trigger_set and trigger_type not in VALID_TRIGGER_TYPES:
+        raise RetrospectiveValidationError(f"invalid trigger_type: {trigger_type}")
+    if (
+        root_cause_class is not _UNSET
+        and root_cause_class is not None
+        and root_cause_class not in VALID_ROOT_CAUSE_CLASSES
+    ):
+        raise RetrospectiveValidationError(
+            f"invalid root_cause_class: {root_cause_class}"
+        )
+
+    next_actions_value: Any = _UNSET
+    if next_actions is not _UNSET and next_actions is not None:
+        next_actions_value = _coerce_next_actions(next_actions)
+
+    # Conditional obligation: setting a trigger_type demands a non-empty
+    # next_actions list in the same call (backcompat: no obligation otherwise).
+    if trigger_set and (next_actions_value is _UNSET or not next_actions_value):
+        raise RetrospectiveValidationError(
+            "next_actions is required (non-empty list) when trigger_type is set"
+        )
+
+    intended_vs_happened_value: Any = _UNSET
+    if intended_vs_happened is not _UNSET and intended_vs_happened is not None:
+        intended_vs_happened_value = _coerce_intended_vs_happened(intended_vs_happened)
 
     # Note: kiwoom_mock is legacy special case; for US/crypto live, evidence
     # should be available.
@@ -323,6 +416,26 @@ async def save_retrospective(
         "fx_rate_source": fx_rate_source,
         "fx_pnl_accuracy": fx_pnl_accuracy,
     }
+
+    # ROB-647 — only include provided postmortem fields so an idempotent
+    # re-save that omits them does not clobber prior values (partial-update).
+    if trigger_type is not _UNSET:
+        payload["trigger_type"] = trigger_type
+    if root_cause_class is not _UNSET:
+        payload["root_cause_class"] = root_cause_class
+    if intended_vs_happened is not _UNSET:
+        payload["intended_vs_happened"] = (
+            None if intended_vs_happened_value is _UNSET else intended_vs_happened_value
+        )
+    if next_actions is not _UNSET:
+        payload["next_actions"] = (
+            None if next_actions_value is _UNSET else next_actions_value
+        )
+    if guardrail_fired is not _UNSET:
+        payload["guardrail_fired"] = guardrail_fired
+    if policy_version is not _UNSET:
+        payload["policy_version"] = policy_version
+
     repo = TradeRetrospectiveRepository(db)
     return await repo.upsert(payload)
 
@@ -403,8 +516,12 @@ async def build_retrospective_aggregate(
     strategy_key: str | None = None,
     group_by: str = "strategy",
 ) -> dict[str, Any]:
-    if group_by not in ("strategy", "day"):
+    if group_by not in ("strategy", "day", "trigger_type", "root_cause"):
         group_by = "strategy"
+    # Process dimensions (trigger_type/root_cause) are about *why* an order
+    # resolved, not PnL — so no-fill-evidence rows (e.g. rejected/cancelled)
+    # must be included, not excluded as they are for the PnL-oriented dims.
+    include_no_evidence = group_by in ("trigger_type", "root_cause")
     filters = []
     if account_mode is not None:
         filters.append(TradeRetrospective.account_mode == account_mode)
@@ -424,14 +541,17 @@ async def build_retrospective_aggregate(
     groups: dict[str, list[TradeRetrospective]] = {}
     excluded_no_evidence = 0
     for r in rows:
-        if not r.fill_evidence_available:
+        if not r.fill_evidence_available and not include_no_evidence:
             excluded_no_evidence += 1
             continue
-        key = (
-            (r.strategy_key or "no_strategy")
-            if group_by == "strategy"
-            else _kst_date_str(r.created_at)
-        )
+        if group_by == "strategy":
+            key = r.strategy_key or "no_strategy"
+        elif group_by == "day":
+            key = _kst_date_str(r.created_at)
+        elif group_by == "trigger_type":
+            key = r.trigger_type or "no_trigger_type"
+        else:  # root_cause
+            key = r.root_cause_class or "no_root_cause"
         groups.setdefault(key, []).append(r)
 
     out: list[dict[str, Any]] = []
@@ -452,8 +572,18 @@ async def build_retrospective_aggregate(
             float(it.total_pnl_krw) for it in items if it.total_pnl_krw is not None
         )
         by_outcome: dict[str, int] = {}
+        by_trigger_type: dict[str, int] = {}
+        by_root_cause_class: dict[str, int] = {}
         for it in items:
             by_outcome[it.outcome] = by_outcome.get(it.outcome, 0) + 1
+            if it.trigger_type:
+                by_trigger_type[it.trigger_type] = (
+                    by_trigger_type.get(it.trigger_type, 0) + 1
+                )
+            if it.root_cause_class:
+                by_root_cause_class[it.root_cause_class] = (
+                    by_root_cause_class.get(it.root_cause_class, 0) + 1
+                )
         out.append(
             {
                 "group": key,
@@ -466,6 +596,8 @@ async def build_retrospective_aggregate(
                 "fx_pnl_krw_sum": fx_pnl_krw_sum,
                 "total_pnl_krw_sum": total_pnl_krw_sum,
                 "by_outcome": by_outcome,
+                "by_trigger_type": by_trigger_type,
+                "by_root_cause_class": by_root_cause_class,
             }
         )
     out.sort(key=lambda g: -g["sample_size"])
@@ -473,4 +605,215 @@ async def build_retrospective_aggregate(
         "group_by": group_by,
         "groups": out,
         "excluded_no_fill_evidence": excluded_no_evidence,
+    }
+
+
+# ROB-647 — terminal (lifecycle-complete) statuses per live ledger. A terminal
+# order deserves a postmortem regardless of whether it filled: rejected /
+# cancelled / anomaly are as instructive as filled. Non-terminal states
+# (accepted / pending / partial / replaced) are omitted — they may still change.
+_KIS_LIVE_TERMINAL = frozenset({"filled", "cancelled", "rejected", "anomaly"})
+_GENERIC_LIVE_TERMINAL = frozenset({"filled", "cancelled", "rejected", "anomaly"})
+_TOSS_TERMINAL = frozenset(
+    {
+        "filled",
+        "cancelled",
+        "rejected",
+        "cancel_rejected",
+        "replace_rejected",
+        "anomaly",
+    }
+)
+# Bound per-ledger scan so a wide window cannot load unbounded rows.
+_PENDING_LEDGER_FETCH_CAP = 1000
+
+
+async def _covered_keys(db: AsyncSession) -> tuple[set[str], set[str]]:
+    """(correlation_ids, report_item_uuids) already carrying a retrospective."""
+    rows = (
+        await db.execute(
+            select(
+                TradeRetrospective.correlation_id,
+                TradeRetrospective.report_item_uuid,
+            )
+        )
+    ).all()
+    covered_cids = {str(cid) for cid, _ in rows if cid}
+    covered_uuids = {str(uid) for _, uid in rows if uid}
+    return covered_cids, covered_uuids
+
+
+def _pending_entry(
+    *,
+    ledger: str,
+    account_mode: str,
+    market: str,
+    instrument_type: str,
+    symbol: str,
+    side: str | None,
+    status: str,
+    order_ref: str | None,
+    report_item_uuid: Any,
+    trade_date: datetime | None,
+    row_id: int,
+) -> dict[str, Any]:
+    ref = order_ref or f"id:{row_id}"
+    return {
+        "ledger": ledger,
+        "ledger_row_id": row_id,
+        "account_mode": account_mode,
+        "market": market,
+        "instrument_type": instrument_type,
+        "symbol": symbol,
+        "side": side,
+        "status": status,
+        "order_ref": order_ref,
+        "report_item_uuid": str(report_item_uuid) if report_item_uuid else None,
+        "trade_date_kst": trade_date.astimezone(_KST).isoformat()
+        if trade_date
+        else None,
+        # The correlation_id a session should pass to save_trade_retrospective so
+        # the row is marked covered on the next pending scan.
+        "suggested_correlation_id": f"{ledger}:{ref}",
+    }
+
+
+def _is_covered(
+    entry: dict[str, Any], covered_cids: set[str], covered_uuids: set[str]
+) -> bool:
+    if entry["report_item_uuid"] and entry["report_item_uuid"] in covered_uuids:
+        return True
+    return entry["suggested_correlation_id"] in covered_cids
+
+
+async def build_retrospective_pending(
+    db: AsyncSession,
+    *,
+    kst_date_from: str,
+    kst_date_to: str,
+    account_mode: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """List terminal live-ledger orders (3 ledgers) lacking a retrospective.
+
+    Read-only. Scans review.{kis_live_order_ledger, live_order_ledger,
+    toss_live_order_ledger} for lifecycle-terminal rows in the KST trade_date
+    window, then subtracts rows already covered by a retrospective (matched on
+    report_item_uuid or the suggested correlation_id). Mirrors the ROB-120
+    coverage pattern (terminal-without-artifact).
+    """
+    window_start = _kst_day_start(kst_date_from)
+    window_end = _kst_day_end(kst_date_to)
+    covered_cids, covered_uuids = await _covered_keys(db)
+
+    pending: list[dict[str, Any]] = []
+    scanned = 0
+
+    # 1. KIS live (KR domestic)
+    if account_mode in (None, "kis_live"):
+        stmt = (
+            select(KISLiveOrderLedger)
+            .where(
+                KISLiveOrderLedger.status.in_(_KIS_LIVE_TERMINAL),
+                KISLiveOrderLedger.trade_date >= window_start,
+                KISLiveOrderLedger.trade_date <= window_end,
+            )
+            .order_by(KISLiveOrderLedger.trade_date.desc())
+            .limit(_PENDING_LEDGER_FETCH_CAP)
+        )
+        for row in (await db.execute(stmt)).scalars().all():
+            scanned += 1
+            entry = _pending_entry(
+                ledger="kis_live",
+                account_mode=row.account_mode,
+                market="kr",
+                instrument_type=row.instrument_type,
+                symbol=row.symbol,
+                side=row.side,
+                status=row.status,
+                order_ref=row.order_no,
+                report_item_uuid=row.report_item_uuid,
+                trade_date=row.trade_date,
+                row_id=row.id,
+            )
+            if not _is_covered(entry, covered_cids, covered_uuids):
+                pending.append(entry)
+
+    # 2. Generic live ledger (US KIS + crypto Upbit)
+    if account_mode in (None, "kis_live", "upbit_live"):
+        gfilters = [
+            LiveOrderLedger.status.in_(_GENERIC_LIVE_TERMINAL),
+            LiveOrderLedger.trade_date >= window_start,
+            LiveOrderLedger.trade_date <= window_end,
+        ]
+        if account_mode is not None:
+            gfilters.append(LiveOrderLedger.account_scope == account_mode)
+        stmt = (
+            select(LiveOrderLedger)
+            .where(*gfilters)
+            .order_by(LiveOrderLedger.trade_date.desc())
+            .limit(_PENDING_LEDGER_FETCH_CAP)
+        )
+        for row in (await db.execute(stmt)).scalars().all():
+            scanned += 1
+            instrument_type = "equity_us" if row.market == "us" else "crypto"
+            entry = _pending_entry(
+                ledger="live",
+                account_mode=row.account_scope,
+                market=row.market,
+                instrument_type=instrument_type,
+                symbol=row.symbol,
+                side=row.side,
+                status=row.status,
+                order_ref=row.order_no,
+                report_item_uuid=row.report_item_uuid,
+                trade_date=row.trade_date,
+                row_id=row.id,
+            )
+            if not _is_covered(entry, covered_cids, covered_uuids):
+                pending.append(entry)
+
+    # 3. Toss live ledger (place operations only; modify/cancel are follow-ups)
+    if account_mode in (None, "toss_live"):
+        stmt = (
+            select(TossLiveOrderLedger)
+            .where(
+                TossLiveOrderLedger.status.in_(_TOSS_TERMINAL),
+                TossLiveOrderLedger.operation_kind == "place",
+                TossLiveOrderLedger.trade_date >= window_start,
+                TossLiveOrderLedger.trade_date <= window_end,
+            )
+            .order_by(TossLiveOrderLedger.trade_date.desc())
+            .limit(_PENDING_LEDGER_FETCH_CAP)
+        )
+        for row in (await db.execute(stmt)).scalars().all():
+            scanned += 1
+            instrument_type = "equity_kr" if row.market == "kr" else "equity_us"
+            entry = _pending_entry(
+                ledger="toss_live",
+                account_mode=row.account_mode,
+                market=row.market,
+                instrument_type=instrument_type,
+                symbol=row.symbol,
+                side=row.side,
+                status=row.status,
+                order_ref=row.broker_order_id or row.client_order_id,
+                report_item_uuid=row.report_item_uuid,
+                trade_date=row.trade_date,
+                row_id=row.id,
+            )
+            if not _is_covered(entry, covered_cids, covered_uuids):
+                pending.append(entry)
+
+    pending.sort(key=lambda e: e["trade_date_kst"] or "", reverse=True)
+    total_pending = len(pending)
+    limited = pending[: max(0, limit)]
+    return {
+        "kst_date_from": kst_date_from,
+        "kst_date_to": kst_date_to,
+        "account_mode": account_mode,
+        "terminal_scanned": scanned,
+        "total_pending": total_pending,
+        "returned": len(limited),
+        "pending": limited,
     }
