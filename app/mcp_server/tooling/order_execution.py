@@ -1190,7 +1190,6 @@ async def _place_order_impl(
             elif market_type == "crypto":
                 mkt_mapped = "crypto"
 
-            acct_name = "upbit" if market_type == "crypto" else "kis"
             cur_mapped = "KRW" if market_type != "equity_us" else "USD"
 
             sector_conc = await evaluate_sector_concentration(
@@ -1198,11 +1197,9 @@ async def _place_order_impl(
                 market=mkt_mapped,
                 order_estimated_value=dry_run_result.get("estimated_value"),
                 order_currency=cur_mapped,
-                account_ctx={
-                    "account": acct_name,
-                    "market": mkt_mapped,
-                    "is_mock": is_mock,
-                },
+                # ROB-646 Finding 1: whole-portfolio scope (no account/market
+                # filter) so KIS and Toss buy paths measure the same denominator.
+                account_ctx={"is_mock": is_mock},
             )
             dry_run_result["sector_concentration"] = sector_conc
             if sector_conc.get("verdict") == "over" and not balance_warning:

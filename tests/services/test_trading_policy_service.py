@@ -67,3 +67,26 @@ def test_sector_cluster_for():
     assert svc.sector_cluster_for("Financial Services") == "financials"
     assert svc.sector_cluster_for("정체불명업종") is None
     assert svc.sector_cluster_for(None) is None
+
+
+def test_sector_cluster_for_no_cjk_substring_false_positive():
+    # ROB-646 Finding 3: "의료" must not spill into unrelated 업종 like
+    # "의료정밀" (medical *precision instruments*). Member "의료" removed +
+    # matcher is one-directional (member is a substring of the label, not the
+    # reverse), so "의료정밀" resolves to no cluster.
+    assert svc.sector_cluster_for("의료정밀") is None
+
+
+def test_sector_cluster_for_broad_healthcare_not_bio():
+    # ROB-646 Finding 3: a generic "Healthcare" sector (e.g. managed-care /
+    # health insurers) must not be bucketed as bio.
+    assert svc.sector_cluster_for("Healthcare") is None
+    assert svc.sector_cluster_for("Healthcare Plans") is None
+
+
+def test_sector_cluster_for_prefix_coverage_preserved():
+    # One-directional match still gives real KR coverage: the Naver 업종
+    # "반도체와반도체장비" contains the member "반도체".
+    assert svc.sector_cluster_for("반도체와반도체장비") == "semis_memory"
+    # yfinance em-dash variants still map (member is a substring of the label).
+    assert svc.sector_cluster_for("Drug Manufacturers—General") == "bio"

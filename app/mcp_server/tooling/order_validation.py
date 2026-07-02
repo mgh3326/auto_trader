@@ -173,6 +173,10 @@ async def compute_sector_cluster_weights(
     )
     from app.services.trading_policy_service import sector_cluster_for
 
+    # ROB-646 Finding 1: measure against the WHOLE portfolio consistently.
+    # Both call sites pass account_ctx with only ``is_mock`` (no account/market
+    # filter), so the denominator is the full cross-broker book for that
+    # mock/live scope — the KIS and Toss buy paths now agree.
     alloc = await get_portfolio_allocation_impl(
         account=account_ctx.get("account"),
         market=account_ctx.get("market"),
@@ -183,20 +187,39 @@ async def compute_sector_cluster_weights(
     positions = alloc.get("positions") or []
     clusters: dict[str, float] = {}
     total = 0.0
-    async with AsyncSessionLocal() as db:
-        for pos in positions:
-            value_krw = pos.get("value_krw")
-            if value_krw is None:
-                continue
-            total += float(value_krw)
-            label = pos.get("sector") or pos.get("sector_name")
-            if label is None and pos.get("symbol"):
-                label = await _lookup_symbol_sector_label(
-                    db, symbol=str(pos.get("symbol")), market=market
-                )
+    # Positions with no inline sector label need a universe lookup; defer them
+    # so a portfolio of already-labelled holdings never opens a DB session.
+    pending_lookups: list[tuple[str, str, float]] = []
+    for pos in positions:
+        value_krw = pos.get("value_krw")
+        if value_krw is None:
+            continue
+        value = float(value_krw)
+        total += value
+        label = pos.get("sector") or pos.get("sector_name")
+        if label is not None:
             cluster = sector_cluster_for(label)
             if cluster is not None:
-                clusters[cluster] = clusters.get(cluster, 0.0) + float(value_krw)
+                clusters[cluster] = clusters.get(cluster, 0.0) + value
+            continue
+        # ROB-646 Finding 1/5: resolve each holding via its OWN market, not the
+        # buy's market, so a US holding is looked up in the US universe.
+        pos_market = _position_market(pos) or (
+            market if market in ("kr", "us") else None
+        )
+        symbol_val = pos.get("symbol")
+        if pos_market and symbol_val:
+            pending_lookups.append((str(symbol_val), pos_market, value))
+
+    if pending_lookups:
+        async with AsyncSessionLocal() as db:
+            for symbol_val, pos_market, value in pending_lookups:
+                label = await _lookup_symbol_sector_label(
+                    db, symbol=symbol_val, market=pos_market
+                )
+                cluster = sector_cluster_for(label)
+                if cluster is not None:
+                    clusters[cluster] = clusters.get(cluster, 0.0) + value
     return {"clusters": clusters, "total_krw": total, "usd_krw": usd_krw}
 
 
@@ -599,6 +622,21 @@ def _order_value_to_krw(
     if cur in ("USD", "$"):
         rate = float(usd_krw or 0.0)
         return float(value) * rate if rate > 0 else None
+    return None
+
+
+def _position_market(pos: dict[str, Any]) -> str | None:
+    """ROB-646 — map a portfolio position's asset class to its sector-lookup market.
+
+    Returns ``kr`` / ``us`` for equities; ``None`` for crypto / cash / other
+    (which have no sector cluster). Uses ``effective_asset_class`` (falls back to
+    ``surface_asset_class``) from ``get_portfolio_allocation_impl``.
+    """
+    cls = pos.get("effective_asset_class") or pos.get("surface_asset_class")
+    if cls == "kr_equity":
+        return "kr"
+    if cls == "us_equity":
+        return "us"
     return None
 
 

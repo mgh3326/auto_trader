@@ -788,7 +788,8 @@ async def toss_preview_order(
             market=mkt,
             order_estimated_value=estimated_val,
             order_currency=order_currency,
-            account_ctx={"account_mode": ACCOUNT_MODE_TOSS_LIVE},
+            # ROB-646 Finding 1: whole live portfolio (Toss is live-only)
+            account_ctx={"is_mock": False},
         )
         if sector_conc and sector_conc.get("warning"):
             order_warnings.append(sector_conc["warning"])
@@ -996,7 +997,8 @@ async def _toss_place_order_impl(
                 market=mkt,
                 order_estimated_value=estimated_val,
                 order_currency=order_currency,
-                account_ctx={"account_mode": ACCOUNT_MODE_TOSS_LIVE},
+                # ROB-646 Finding 1: whole live portfolio (Toss is live-only)
+                account_ctx={"is_mock": False},
             )
             if sector_conc and sector_conc.get("warning"):
                 order_warnings.append(sector_conc["warning"])

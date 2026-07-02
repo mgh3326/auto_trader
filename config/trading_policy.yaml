@@ -17,13 +17,16 @@ authority:
     - "sell_conditions — dormant/test-only (not authoritative)"
     - "trade_profile — dead since ROB-488 (not revived)"
 
-# Raw-sector -> cluster grouping for the concentration cap. A symbol's
-# symbol_sectors label (name_kr / name_en / source_key) is matched
-# case-insensitively against these entries. Best-effort; unmapped => fail-open.
+# Raw-sector -> cluster grouping for the concentration cap. A member matches a
+# symbol's symbol_sectors label (name_kr / name_en / source_key) when the member
+# is a case-insensitive SUBSTRING of the label (one-directional: member ⊂ label),
+# so "반도체" matches "반도체와반도체장비" but "의료" does NOT invent a match against
+# "의료정밀". List members as specific labels, not broad umbrellas. Best-effort;
+# unmapped => fail-open.
 sector_clusters:
   financials: ["금융", "은행", "증권", "보험", "Financial Services", "Banks", "Insurance"]
   shipbuilding_defense: ["조선", "방산", "항공우주", "Aerospace & Defense"]
-  bio: ["제약", "바이오", "의료", "Biotechnology", "Drug Manufacturers", "Healthcare"]
+  bio: ["제약", "바이오", "Biotechnology", "Drug Manufacturers"]
   semis_memory: ["반도체", "메모리", "Semiconductors", "Semiconductor Equipment & Materials"]
 
 thresholds:

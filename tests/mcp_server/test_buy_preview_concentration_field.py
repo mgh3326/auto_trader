@@ -168,3 +168,59 @@ async def test_toss_buy_preview_includes_concentration(monkeypatch):
     assert res_place["success"] is True
     assert "sector_concentration" in res_place
     assert res_place["sector_concentration"]["verdict"] == "over"
+
+
+@pytest.mark.asyncio
+async def test_shared_buy_preview_uses_whole_portfolio_scope(monkeypatch):
+    # ROB-646 Finding 1: the KIS/crypto call site must pass a whole-portfolio
+    # account_ctx (only is_mock, no account/market filter) so its denominator
+    # matches the Toss path.
+    captured: dict = {}
+
+    async def _capture_conc(**kwargs):
+        captured.update(kwargs)
+        return {
+            "verdict": "within",
+            "cluster": "semis_memory",
+            "cap_pct": 10,
+            "current_pct": 1.0,
+            "projected_pct": 1.1,
+            "fail_open": False,
+        }
+
+    monkeypatch.setattr(
+        order_execution, "evaluate_sector_concentration", _capture_conc, raising=False
+    )
+    monkeypatch.setattr(
+        order_execution, "_fetch_current_price", AsyncMock(return_value=55000.0)
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(
+            return_value={
+                "price": 55000,
+                "quantity": 10,
+                "estimated_value": 550000.0,
+                "fee": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution, "_check_balance_and_warn", AsyncMock(return_value=(None, None))
+    )
+    monkeypatch.setattr(order_execution, "_record_order_history", AsyncMock())
+
+    await order_execution._place_order_impl(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=55000.0,
+        dry_run=True,
+        is_mock=True,
+    )
+
+    assert captured["account_ctx"] == {"is_mock": True}
+    assert "account" not in captured["account_ctx"]
+    assert "market" not in captured["account_ctx"]

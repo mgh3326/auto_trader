@@ -98,7 +98,11 @@ def sector_cluster_for(label: str | None) -> str | None:
     needle = label.strip().casefold()
     for cluster, members in doc.sector_clusters.items():
         for member in members:
-            m = member.casefold()
-            if m in needle or needle in m:
+            m = member.strip().casefold()
+            # ROB-646 Finding 3: one-directional (member is a substring of the
+            # label). The reverse direction (label ⊂ member) widened the surface
+            # and misclassified short labels; dropping it removes that class of
+            # false positive while preserving KR prefix coverage.
+            if m and m in needle:
                 return cluster
     return None
