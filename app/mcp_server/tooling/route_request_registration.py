@@ -103,7 +103,9 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             "output). ADVISORY ONLY — it does not block anything; it echoes "
             "get_trading_policy (ROB-646) with policy_version so a verdict can "
             "cite the criteria. standard_tool_sequence is intersected with the "
-            "live-registered tool surface (unregistered tools are dropped). "
+            "live-registered tool surface (unregistered tools are dropped); for "
+            "crypto/US the KR-centric place step is replaced by the generic "
+            "place_order execution tool (market-aware, ROB-658). "
             "Unknown intent/market returns success=false."
         ),
     )(route_request)

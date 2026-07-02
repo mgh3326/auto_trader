@@ -158,6 +158,37 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | KIWOOM_MOCK_TOOL_NAMES
 )
 
+# Market-aware execution mutation tools (ROB-658). The LANE_SEQUENCES above are
+# KR-centric (ported from the playbook, kept in sync by the registry-diff test),
+# so their execution steps hard-code toss/kis. On crypto/US profiles those tools
+# are unregistered, so without a market-aware supplement the generic place_order
+# — the real crypto/US execution surface — falls into blocked_actions and never
+# appears in the sequence/allowed list. KR needs no supplement (its execution
+# tools already live in LANE_SEQUENCES); US/crypto route execution through the
+# generic place_order, which the playbook lanes never list.
+MARKET_EXECUTION_TOOLS: dict[str, frozenset[str]] = {
+    "kr": frozenset(),
+    "us": frozenset({"place_order"}),
+    "crypto": frozenset({"place_order"}),
+}
+
+# Order-placement tools that mark a lane as "executing" (as opposed to a
+# fill-safety/preview or reconcile helper such as sell_ladder_fill_preview, which
+# is also mutation-classified but is not the actual place step). Used to decide
+# whether a lane warrants a market-aware execution step and whether that step's
+# KR-centric tools survived the profile intersection.
+_PLACE_ORDER_TOOLS: frozenset[str] = frozenset(
+    {"place_order", "toss_place_order", "kis_live_place_order"}
+)
+
+# Purpose text for the market execution step injected into the sequence when the
+# lane's KR-centric execution tools are absent from the live profile (crypto/US).
+_MARKET_EXEC_PURPOSE: dict[str, str] = {
+    "buy": "execute buy via generic place_order (crypto/US limit; dry_run preview -> live)",
+    "sell": "execute sell via generic place_order (crypto/US limit)",
+    "discovery": "execute buy on ranked winners via generic place_order (crypto/US limit)",
+}
+
 # Every non-mutation tool in the DEFAULT profile (computed 2026-07-02 as
 # DEFAULT-profile tools minus MUTATION_TOOLS) plus route_request itself. The
 # set-equality partition test (test_route_request_registry_diff.py) fails if a
@@ -286,15 +317,39 @@ def build_route_plan(
     """Assemble the deterministic route plan. Pure — no IO. Caller validates
     intent/market and resolves policy before calling."""
     lane = INTENT_TO_LANE[intent]
+    lane_tools = lane_tool_names(lane)
+    playbook_mutation = lane_tools & MUTATION_TOOLS
+    lane_place_tools = lane_tools & _PLACE_ORDER_TOOLS
+    # Executing lanes (buy/sell/discovery place orders) get a market-aware
+    # execution supplement; bootstrap has no place step, so it stays
+    # supplement-free and every mutation tool remains blocked. For KR the
+    # supplement is empty (its place tools already live in the sequence), so
+    # behaviour is identical to the KR-centric definition (no regression).
+    market_exec = (
+        MARKET_EXECUTION_TOOLS.get(market, frozenset())
+        if lane_place_tools
+        else frozenset()
+    )
+
     seq_steps = [
         step for step in LANE_SEQUENCES[lane] if step["tool"] in registered_tools
     ]
+    # If the lane places orders but none of its playbook place tools survived the
+    # profile intersection (crypto/US), surface the market's generic execution
+    # tool so the advisory shows + allows it instead of leaving the lane
+    # execution-less with place_order misclassified as blocked (ROB-658).
+    if lane_place_tools and not (lane_place_tools & registered_tools):
+        for tool in sorted(market_exec & registered_tools):
+            seq_steps.append({"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]})
+
     standard_tool_sequence = [
         {"step": i, "tool": step["tool"], "purpose": step["purpose"]}
         for i, step in enumerate(seq_steps, start=1)
     ]
-    lane_own_mutation = lane_tool_names(lane) & MUTATION_TOOLS
-    allowed = (lane_tool_names(lane) | set(READ_ONLY_ADVISORY_TOOLS)) & registered_tools
+    lane_own_mutation = playbook_mutation | market_exec
+    allowed = (
+        lane_tools | market_exec | set(READ_ONLY_ADVISORY_TOOLS)
+    ) & registered_tools
     blocked = (MUTATION_TOOLS - lane_own_mutation) & registered_tools
     return {
         "success": True,
@@ -316,6 +371,7 @@ __all__ = [
     "LANE_TO_POLICY_LANE",
     "LANE_SEQUENCES",
     "HARD_CONSTRAINTS",
+    "MARKET_EXECUTION_TOOLS",
     "MUTATION_TOOLS",
     "READ_ONLY_ADVISORY_TOOLS",
     "ALL_KNOWN_TOOLS",

@@ -1348,6 +1348,17 @@ is kept in sync by `tests/test_route_request_registry_diff.py`. Every DEFAULT
 tool must be classified into `READ_ONLY_ADVISORY_TOOLS` or a mutation set or CI
 fails (silent-drift guard).
 
+**Market-aware execution mapping (ROB-658):** the playbook lane sequences are
+KR-centric — their place steps hard-code `toss_place_order`/`kis_live_place_order`.
+On crypto/US profiles those tools are unregistered, so `route_request` substitutes
+the market's generic execution surface via `MARKET_EXECUTION_TOOLS`
+(`crypto`/`us` → `place_order`; `kr` → empty, already in the sequence). When a
+lane places orders but none of its KR place tools survive the profile
+intersection, the generic `place_order` is injected as the execution step and
+counted as the lane's own mutation — so it appears in `standard_tool_sequence` +
+`allowed_tools` instead of being misclassified into `blocked_actions`. KR output
+is unchanged.
+
 
 ### User Settings Tools
 
