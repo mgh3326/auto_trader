@@ -248,6 +248,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "python-multipart" },
+    { name = "pyyaml" },
     { name = "redis" },
     { name = "sentry-sdk", extra = ["fastapi"] },
     { name = "setuptools" },
@@ -273,6 +274,7 @@ dev = [
     { name = "ruff" },
     { name = "safety" },
     { name = "ty" },
+    { name = "types-pyyaml" },
 ]
 test = [
     { name = "aiosqlite" },
@@ -310,6 +312,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.10.1,<3.0.0" },
     { name = "pyjwt", specifier = ">=2.8.0,<3.0.0" },
     { name = "python-multipart", specifier = ">=0.0.6,<0.1.0" },
+    { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
     { name = "redis", specifier = ">=7.2.0,<8.0.0" },
     { name = "sentry-sdk", extras = ["fastapi"], specifier = ">=2.18.0,<3.0.0" },
     { name = "setuptools", specifier = ">=70.0.0" },
@@ -335,6 +338,7 @@ dev = [
     { name = "ruff", specifier = ">=0.14.10" },
     { name = "safety", specifier = ">=3.7.0,<3.8.0" },
     { name = "ty", specifier = ">=0.0.18,<0.1.0" },
+    { name = "types-pyyaml", specifier = ">=6.0.0" },
 ]
 test = [
     { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
@@ -3002,6 +3006,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613, upload-time = "2026-02-21T16:54:40.609Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085, upload-time = "2026-02-21T16:54:41.616Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b8/83/4a1afc3fbfcf5b8d46fc390cd95ed6b0dc9010a265f4e9f46314efffa37a/types_pyyaml-6.0.12.20260518.tar.gz", hash = "sha256:d917f83fb38462550338c1297faedd860b3ec83912b96b1e3d73255f7473e466", size = 17850, upload-time = "2026-05-18T06:01:58.675Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/a2/c01db32be2ae7d6a1689972f3c492b149ee4e164b12fdfd9f64b50888215/types_pyyaml-6.0.12.20260518-py3-none-any.whl", hash = "sha256:d2150f75a231c9fe9c7463bd29487d93e60bac90400287351384bc2284eba7cd", size = 20312, upload-time = "2026-05-18T06:01:57.368Z" },
 ]
 
 [[package]]
