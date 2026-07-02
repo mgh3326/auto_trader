@@ -237,6 +237,10 @@ async def build_investor_flow_snapshots(
                 individual_net = _derive_individual(foreign_net, institution_net)
             close = row.get("close")
             change_rate = row.get("change_pct")
+            if change_rate is not None:
+                # Naver fetcher returns change_pct as a fraction (e.g., 0.015 for 1.5%).
+                # Multiply by 100 to store as a percent (e.g., 1.5).
+                change_rate = change_rate * 100
             volume = _int_or_none(row.get("volume"))
             foreign_holding_shares = _int_or_none(row.get("foreign_holding_shares"))
             foreign_holding_rate = row.get("foreign_holding_rate")

@@ -29,6 +29,7 @@ class InvestorFlowSnapshotUpsert(BaseModel):
     double_sell: bool | None = None
     # ROB-575 market fields (wired in ROB-640):
     close: Decimal | None = None
+    # change_rate is stored as a percent (e.g. 1.5 for 1.5%)
     change_rate: Decimal | None = None
     volume: int | None = None
     foreign_holding_shares: int | None = None

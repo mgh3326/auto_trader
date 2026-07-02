@@ -20,8 +20,13 @@ from app.services.investor_flow_snapshots.repository import (
     _with_derived_flags,
 )
 
-_NEW_FIELDS = ("close", "change_rate", "volume", "foreign_holding_shares",
-               "foreign_holding_rate")
+_NEW_FIELDS = (
+    "close",
+    "change_rate",
+    "volume",
+    "foreign_holding_shares",
+    "foreign_holding_rate",
+)
 
 
 @pytest.mark.unit
@@ -81,7 +86,7 @@ async def test_builder_maps_naver_fields_to_upsert_payloads():
                 {
                     "date": "2026-07-01",
                     "close": 70000.0,
-                    "change_pct": 1.5,
+                    "change_pct": 0.015,
                     "volume": 12_345_678,
                     "institutional_net": 200,
                     "foreign_net": 300,
@@ -104,6 +109,59 @@ async def test_builder_maps_naver_fields_to_upsert_payloads():
     assert payload.volume == 12_345_678
     assert payload.foreign_holding_shares == 1_234_567
     assert payload.foreign_holding_rate == Decimal("8.5")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_builder_integration_with_html_fixture(monkeypatch: pytest.MonkeyPatch):
+    from bs4 import BeautifulSoup
+
+    sample_html = """
+    <html>
+    <body>
+    <table class="type2">
+        <tbody><tr><td></td></tr></tbody>
+    </table>
+    <table class="type2">
+        <tr>
+            <td>2026.07.01</td>
+            <td>75,000</td>
+            <td>▲500</td>
+            <td>+0.67%</td>
+            <td>10,000,000</td>
+            <td>1,000,000</td>
+            <td>-500,000</td>
+            <td>2,790,424,635</td>
+            <td>47.73%</td>
+        </tr>
+    </table>
+    </body>
+    </html>
+    """
+
+    async def mock_fetch_html(*args, **kwargs):
+        return BeautifulSoup(sample_html, "lxml")
+
+    monkeypatch.setattr(
+        "app.services.naver_finance.investor._fetch_html", mock_fetch_html
+    )
+
+    result = await build_investor_flow_snapshots(
+        symbols=["005930"],
+        days=1,
+    )
+
+    assert len(result.payloads) == 1
+    payload = result.payloads[0]
+    assert payload.snapshot_date == dt.date(2026, 7, 1)
+    assert payload.close == Decimal("75000")
+    # 0.0067 (fraction parsed from +0.67%) multiplied by 100 is 0.67
+    assert payload.change_rate == pytest.approx(Decimal("0.67"))
+    assert payload.volume == 10_000_000
+    assert payload.foreign_net == -500_000
+    assert payload.institution_net == 1_000_000
+    assert payload.foreign_holding_shares == 2_790_424_635
+    assert payload.foreign_holding_rate == pytest.approx(Decimal("47.73"))
 
 
 @pytest.mark.unit

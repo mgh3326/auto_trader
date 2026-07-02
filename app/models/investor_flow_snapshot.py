@@ -80,6 +80,7 @@ class InvestorFlowSnapshot(Base):
 
     # ROB-575 market fields (wired in ROB-640):
     close: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    # change_rate is stored as a percent (e.g. 1.5 for 1.5%)
     change_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     foreign_holding_shares: Mapped[int | None] = mapped_column(
