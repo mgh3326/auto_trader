@@ -55,6 +55,10 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services.brokers.kis import KISClient
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
+from app.services.order_send_intent_service import (
+    DuplicateOrderIntent,
+    OrderSendIntentService,
+)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
@@ -698,6 +702,35 @@ async def _execute_and_record(
         kis_mock_baseline_qty = await _fetch_kis_mock_baseline_qty(
             normalized_symbol=normalized_symbol, market_type=market_type
         )
+
+    # ROB-653 P6-B — KIS has no broker idempotency key; reserve a local intent
+    # row before the send. A same-key send the same trading day fails closed.
+    # Crypto/Upbit is excluded (it uses the broker-side content identifier).
+    if (
+        not is_mock
+        and idempotency_key is not None
+        and market_type in ("equity_kr", "equity_us")
+    ):
+        async with _order_session_factory()() as intent_db:
+            try:
+                await OrderSendIntentService(intent_db).reserve(
+                    account_scope="kis_live",
+                    idempotency_key=idempotency_key,
+                    symbol=normalized_symbol,
+                    side=side,
+                )
+            except DuplicateOrderIntent:
+                logger.warning(
+                    "KIS duplicate order intent blocked: symbol=%s side=%s key=%s",
+                    normalized_symbol,
+                    side,
+                    idempotency_key,
+                )
+                return order_error_fn(
+                    "동일 주문이 오늘 이미 전송되어 중복 전송을 차단했습니다 "
+                    "(duplicate order intent). 재전송하지 말고 reconcile로 접수 여부를 "
+                    "확인하세요. 익일 재배치는 허용됩니다."
+                )
 
     try:
         execution_result = await _execute_order(

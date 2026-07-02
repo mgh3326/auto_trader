@@ -1,11 +1,19 @@
 # tests/services/test_order_send_intent_service.py
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
-from app.models.review import OrderSendIntent  # noqa: F401 (ensures table registered)
+from app.models.review import OrderSendIntent
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_intents(db_session):
+    await db_session.execute(delete(OrderSendIntent))
+    await db_session.commit()
 
 
 @pytest.mark.asyncio
