@@ -12,6 +12,7 @@ from app.mcp_server.tooling.pending_orders_snapshot import (
 )
 from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
 from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
+from app.schemas.analysis_artifact import AnalysisArtifactMeta
 from app.schemas.investment_reports import (
     ActiveWatchesListResponse,
     InvestmentWatchAlertResponse,
@@ -19,6 +20,7 @@ from app.schemas.investment_reports import (
 )
 from app.schemas.session_context import SessionContextResponse
 from app.services.account_routing import compact_cost_profile
+from app.services.analysis_artifact import AnalysisArtifactService
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
     _advisory_draft_profiles,
@@ -235,6 +237,32 @@ async def _recent_session_context(
     }
 
 
+async def _recent_analysis_artifacts(
+    db: Any,
+    *,
+    market: str,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Metadata-only recent valid artifacts (ROB-637 briefing surfacing).
+
+    Payloads are intentionally excluded — a new session learns what analysis
+    already exists and fetches bodies via analysis_artifact_get on demand.
+    """
+    service = AnalysisArtifactService(db)
+    rows = await service.list_artifacts(
+        market=market,  # type: ignore[arg-type]
+        include_stale=False,
+        limit=max(1, min(int(limit), 20)),
+    )
+    return {
+        "count": len(rows),
+        "artifacts": [
+            AnalysisArtifactMeta.model_validate(row).model_dump(mode="json")
+            for row in rows
+        ],
+    }
+
+
 def _section_unavailable_reason(section: str, exc: Exception) -> str:
     return f"{section}_failed:{type(exc).__name__}:{exc}"
 
@@ -295,6 +323,26 @@ async def get_operating_briefing_impl(
                 "unavailable_reason": reason,
             }
 
+        try:
+            analysis_artifacts = await _recent_analysis_artifacts(
+                db,
+                market=market,
+            )
+            analysis_artifacts_staleness = {
+                "freshness_status": "db_read",
+            }
+        except Exception as exc:  # noqa: BLE001
+            reason = _section_unavailable_reason("analysis_artifacts", exc)
+            analysis_artifacts = {
+                "count": 0,
+                "artifacts": [],
+                "unavailable_reason": reason,
+            }
+            analysis_artifacts_staleness = {
+                "freshness_status": "unavailable",
+                "unavailable_reason": reason,
+            }
+
     try:
         active_watches = await list_active_watches_impl(market=market)
         active_watches_staleness = {
@@ -342,6 +390,7 @@ async def get_operating_briefing_impl(
             "active_watches": active_watches_staleness,
             "latest_report": latest_report_staleness,
             "session_context": session_context_staleness,
+            "analysis_artifacts": analysis_artifacts_staleness,
         },
         "holdings": {
             "filters": holdings.get("filters"),
@@ -374,6 +423,7 @@ async def get_operating_briefing_impl(
         },
         "latest_report": latest_report,
         "session_context": session_context,
+        "analysis_artifacts": analysis_artifacts,
     }
     return OperatingBriefingResponse.model_validate(response).model_dump(mode="json")
 
