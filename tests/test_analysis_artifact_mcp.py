@@ -327,7 +327,7 @@ async def test_list_is_metadata_only(db_session: AsyncSession) -> None:
     assert response["count"] == 1
     row = response["artifacts"][0]
     assert "payload" not in row
-    assert "payload_size_bytes" not in row   # ROB-667: size hint is detail-only now
+    assert "payload_size_bytes" not in row  # ROB-667: size hint is detail-only now
     assert row["is_stale"] is False
 
 

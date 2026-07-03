@@ -185,4 +185,3 @@ def test_next_actions_requires_authentication():
     r = client.get("/trading/api/invest/retrospectives/next-actions")
     assert r.status_code == 401
     assert r.json()["detail"] == "로그인이 필요합니다."
-
