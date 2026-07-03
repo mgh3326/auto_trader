@@ -245,6 +245,24 @@ def test_sell_lane_history_helpers_allowed_but_not_sequenced():
         assert tool not in steps, tool
 
 
+def test_buy_lane_history_helpers_allowed_but_not_sequenced():
+    # ROB-666: buy lane needs the order-status helpers to confirm a buy fill and
+    # to check KIS regular-session survival after 15:30 (ROB-657 rule). Symmetric
+    # to the sell-lane allowance (ROB-660): allowed, never in the ordered sequence.
+    plan = L.build_route_plan(
+        "buy_analysis",
+        "kr",
+        registered_tools=_ALL,
+        verdict_thresholds=_fake_thresholds("kr", "buy"),
+        policy_version=_VERSION,
+    )
+    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
+    for tool in ("kis_live_get_order_history", "toss_get_order_history"):
+        assert tool in plan["allowed_tools"], tool
+        assert tool not in plan["blocked_actions"], tool
+        assert tool not in steps, tool
+
+
 def test_sell_lane_routing_does_not_leak_into_buy_lane():
     buy = L.build_route_plan(
         "buy_analysis",
@@ -253,10 +271,10 @@ def test_sell_lane_routing_does_not_leak_into_buy_lane():
         verdict_thresholds=_fake_thresholds("kr", "buy"),
         policy_version=_VERSION,
     )
-    # sell-lane-only tools remain blocked in the buy lane (no cross-lane leak)
+    # sell-lane-only execution tools remain blocked in the buy lane (no cross-lane
+    # leak). The order-history helpers are now allowed in both lanes (ROB-666), so
+    # they are asserted separately in test_buy_lane_history_helpers_allowed_*.
     assert "toss_cancel_order" in buy["blocked_actions"]
-    assert "kis_live_get_order_history" in buy["blocked_actions"]
-    assert "toss_get_order_history" in buy["blocked_actions"]
 
 
 def test_sell_lane_new_kr_tools_dropped_when_unregistered_on_crypto():
