@@ -132,7 +132,9 @@ def _validate_history_inputs(
         if norm:
             market_types = [norm]
 
-    if not market_types and status in ("pending", "all"):
+    if not market_types and status in ("pending", "all", "expired"):
+        # ROB-665 item 3: expired (dead day orders) surface via the live
+        # KR/US inquiries just like pending, so scan all markets when unscoped.
         market_types = ["crypto", "equity_kr", "equity_us"]
 
     if not market_types and order_id:
@@ -187,7 +189,7 @@ async def _fetch_kr_orders(
     fetched: list[dict[str, Any]] = []
     kis = _create_kis_client(is_mock=is_mock)
 
-    if status in ("all", "pending"):
+    if status in ("all", "pending", "expired"):
         logger.debug("Fetching KR pending orders, symbol=%s", normalized_symbol)
         try:
             open_ops = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
@@ -213,7 +215,7 @@ async def _fetch_kr_orders(
             )
             fetched.extend(shadow_orders)
 
-    if status in ("all", "filled", "cancelled") and normalized_symbol:
+    if status in ("all", "filled", "cancelled", "expired") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
         hist_ops = await _call_kis(
@@ -239,7 +241,7 @@ async def _fetch_us_orders(
     fetched: list[dict[str, Any]] = []
     kis = _create_kis_client(is_mock=is_mock)
 
-    if status in ("all", "pending"):
+    if status in ("all", "pending", "expired"):
         target_exchanges = ["NASD", "NYSE", "AMEX"]
         if normalized_symbol:
             target_exchanges = [await get_us_exchange_by_symbol(normalized_symbol)]
@@ -281,7 +283,7 @@ async def _fetch_us_orders(
             )
             fetched.extend(shadow_orders)
 
-    if status in ("all", "filled", "cancelled") and normalized_symbol:
+    if status in ("all", "filled", "cancelled", "expired") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
         ex = await get_us_exchange_by_symbol(normalized_symbol)
@@ -354,6 +356,9 @@ def _filter_and_sort_orders(
                 continue
         elif status == "cancelled":
             if o_status != "cancelled":
+                continue
+        elif status == "expired":
+            if o_status != "expired":
                 continue
 
         if order_id and o.get("order_id") != order_id:
@@ -442,7 +447,7 @@ def _build_history_response(
 
 async def get_order_history_impl(
     symbol: str | None = None,
-    status: Literal["all", "pending", "filled", "cancelled"] = "all",
+    status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
     order_id: str | None = None,
     market: str | None = None,
     side: str | None = None,

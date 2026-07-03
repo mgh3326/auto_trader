@@ -23,6 +23,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.kis.live_order_expiry import row_has_cancel_evidence
 from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
@@ -114,12 +115,19 @@ def _build_temp_kr_order_id(
 
 
 def _map_kis_status(
-    ordered: int, filled: int, remaining: int, status_name: str | None
+    ordered: int,
+    filled: int,
+    remaining: int,
+    status_name: str | None,
+    *,
+    cancel_evidence: bool = False,
 ) -> str:
     normalized_name = str(status_name or "").strip()
 
-    # Explicit cancel evidence is authoritative at any point.
-    if normalized_name == "주문취소":
+    # Explicit cancel evidence is authoritative at any point. ROB-665: the real
+    # broker signal is cancel_evidence (cncl_yn / '취소' side name); the legacy
+    # `prcs_stat_name == "주문취소"` key does not exist on live responses.
+    if cancel_evidence or normalized_name == "주문취소":
         return "cancelled"
     # ROB-657: nothing filled and nothing left to modify/cancel
     # (정정취소가능수량 0) means the order is dead (EOD expiry / reject).
@@ -190,6 +198,7 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         filled,
         remaining,
         _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        cancel_evidence=row_has_cancel_evidence(order),
     )
     symbol = str(_get_kis_field(order, "pdno", "PDNO"))
     ordered_at = (
@@ -370,7 +379,14 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
     filled = int(
         float(_get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0)
     )
-    remaining = ordered - filled
+    # ROB-665 item 4: prefer the broker's 미체결수량 (nccs_qty) — a cancelled
+    # unfilled order reports nccs_qty=0, whereas synthesizing ordered-filled
+    # kept it pending+is_live. Fall back to ordered-filled when absent.
+    nccs_raw = _get_kis_field(order, "nccs_qty", "NCCS_QTY")
+    if nccs_raw is not None and str(nccs_raw).strip() != "":
+        remaining = int(float(nccs_raw))
+    else:
+        remaining = ordered - filled
 
     ordered_price = float(
         _get_kis_field(order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0) or 0
@@ -384,6 +400,7 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
         filled,
         remaining,
         _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        cancel_evidence=row_has_cancel_evidence(order),
     )
 
     return {

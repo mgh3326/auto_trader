@@ -119,6 +119,10 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Get order history for a symbol. Supports Upbit (crypto) and KIS "
             "(KR/US equities). Pending orders can be queried without a symbol, "
             "but filled/cancelled/all queries require symbol. "
+            "status='expired' returns dead day orders (KIS: nothing filled, "
+            "nothing left to modify/cancel — EOD expiry/reject, distinct from an "
+            "operator cancel which is status='cancelled'). Each order carries "
+            "is_live (true only for pending/partial). "
             "Set account_type='paper' to query the virtual paper-trading "
             "account's trade history instead; pass paper_account to target a "
             "named paper account (defaults to 'default'). "
@@ -128,7 +132,7 @@ def register_order_tools(mcp: FastMCP) -> None:
     )
     async def get_order_history(
         symbol: str | None = None,
-        status: Literal["all", "pending", "filled", "cancelled"] = "all",
+        status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
         order_id: str | None = None,
         market: str | None = None,
         side: str | None = None,

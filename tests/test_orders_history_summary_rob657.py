@@ -76,3 +76,32 @@ async def test_get_order_history_pending_excludes_dead_order() -> None:
     assert resp["orders"] == []
     assert resp["summary"]["pending"] == 0
     assert resp["summary"]["expired"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_order_history_expired_returns_only_dead_order() -> None:
+    # ROB-665 item 3: status="expired" is now a queryable value. It surfaces the
+    # dead rows the live inquiry still lists and excludes live pending ones.
+    live_row = {
+        "ord_dt": "20260702",
+        "ord_tmd": "100900",
+        "odno": "0013894001",
+        "sll_buy_dvsn_cd": "02",
+        "pdno": "000270",
+        "prdt_name": "기아",
+        "ord_qty": "8",
+        "ord_unpr": "129600",
+        "tot_ccld_qty": "0",
+        "rmn_qty": "8",
+    }
+    with _patch_kr([_KIA_DEAD_ROW, live_row]):
+        resp = await orders_history.get_order_history_impl(
+            symbol="000270", status="expired", market="kr", is_mock=False
+        )
+
+    orders = resp["orders"]
+    assert len(orders) == 1
+    assert orders[0]["order_id"] == "0013894000"
+    assert orders[0]["status"] == "expired"
+    assert orders[0]["is_live"] is False
