@@ -45,9 +45,7 @@ def _patch_kr(rows: list[dict]):
     client = AsyncMock()
     client.inquire_korea_orders = AsyncMock(return_value=rows)
     client.inquire_daily_order_domestic = AsyncMock(return_value=[])
-    return patch.object(
-        orders_history, "_create_kis_client", lambda *, is_mock: client
-    )
+    return patch.object(orders_history, "_create_kis_client", lambda *, is_mock: client)
 
 
 @pytest.mark.unit
