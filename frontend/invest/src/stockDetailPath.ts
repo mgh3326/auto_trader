@@ -17,7 +17,11 @@ function routeMarketParam(market: RouteMarket): StockDetailMarketParam {
 }
 
 function normalizeCryptoRouteSymbol(symbol: string): string {
-  const clean = symbol.trim().toUpperCase();
+  // Crypto DB symbols arrive dot-format (KRW.XRP; app/core/symbol.to_db_symbol).
+  // Fold "." → "-" so KRW.XRP joins the KRW- dash path instead of falling through
+  // to the bare-symbol branch (which would emit KRW-KRW.XRP). Dash/bare forms
+  // already normalized here are unaffected since they contain no ".".
+  const clean = symbol.trim().toUpperCase().replace(/\./g, "-");
   if (!clean) return clean;
   if (clean.startsWith("KRW-")) return clean;
   if (clean.endsWith("-KRW")) return `KRW-${clean.slice(0, -4)}`;
