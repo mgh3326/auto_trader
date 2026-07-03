@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.models.kr_symbol_universe import KRSymbolUniverse
+from app.services.nxt_preflight import NxtTradability
 from app.services.symbol_universe_common import has_any_rows, normalize_name, sync_hint
 
 logger = logging.getLogger(__name__)
@@ -379,6 +380,54 @@ async def is_nxt_eligible(
         await session.close()
 
 
+async def _get_nxt_tradability_impl(
+    db: AsyncSession,
+    symbols: list[str],
+) -> dict[str, NxtTradability]:
+    unique = sorted({s for s in symbols if s})
+    if not unique:
+        return {}
+    stmt = select(
+        KRSymbolUniverse.symbol,
+        KRSymbolUniverse.nxt_eligible,
+        KRSymbolUniverse.nxt_trading_suspended,
+        KRSymbolUniverse.toss_master_updated_at,
+        KRSymbolUniverse.updated_at,
+    ).where(
+        KRSymbolUniverse.symbol.in_(unique),
+        KRSymbolUniverse.is_active.is_(True),
+    )
+    rows = (await db.execute(stmt)).all()
+    return {
+        row.symbol: NxtTradability(
+            nxt_eligible=bool(row.nxt_eligible),
+            nxt_trading_suspended=row.nxt_trading_suspended,
+            asof=row.toss_master_updated_at or row.updated_at,
+        )
+        for row in rows
+    }
+
+
+async def get_kr_nxt_tradability(
+    symbols: list[str],
+    db: AsyncSession | None = None,
+) -> dict[str, NxtTradability]:
+    """Return {symbol: NxtTradability} for the given KR symbol codes.
+
+    Missing or inactive symbols are omitted. asof = toss_master_updated_at when
+    present else updated_at. KR-only; callers no-op for US/crypto.
+    """
+    if not symbols:
+        return {}
+    if db is not None:
+        return await _get_nxt_tradability_impl(db, symbols)
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
+        return await _get_nxt_tradability_impl(session, symbols)
+    finally:
+        await session.close()
+
+
 async def _search_kr_symbols_impl(
     db: AsyncSession,
     query: str,
@@ -424,6 +473,11 @@ async def _search_kr_symbols_impl(
             "instrument_type": "equity_kr",
             "exchange": row.exchange,
             "is_active": row.is_active,
+            **NxtTradability(
+                nxt_eligible=bool(row.nxt_eligible),
+                nxt_trading_suspended=row.nxt_trading_suspended,
+                asof=row.toss_master_updated_at or row.updated_at,
+            ).public_fields(),
         }
         for row in rows
     ]
@@ -508,6 +562,7 @@ __all__ = [
     "KRSymbolNameAmbiguousError",
     "build_kr_symbol_universe_snapshot",
     "get_kr_names_by_symbols",
+    "get_kr_nxt_tradability",
     "get_kr_symbol_by_name",
     "is_nxt_eligible",
     "search_kr_symbols",
