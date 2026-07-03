@@ -13,7 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
@@ -463,7 +463,10 @@ async def get_retrospectives(
     market: str | None = None,
     correlation_id: str | None = None,
     days: int | None = None,
+    trigger_type: str | None = None,
+    root_cause_class: str | None = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> dict[str, Any]:
     filters = []
     if symbol is not None:
@@ -476,15 +479,25 @@ async def get_retrospectives(
         filters.append(TradeRetrospective.market == market)
     if correlation_id is not None:
         filters.append(TradeRetrospective.correlation_id == correlation_id)
+    if trigger_type is not None:
+        filters.append(TradeRetrospective.trigger_type == trigger_type)
+    if root_cause_class is not None:
+        filters.append(TradeRetrospective.root_cause_class == root_cause_class)
     if days is not None:
         filters.append(
             TradeRetrospective.created_at >= now_kst() - timedelta(days=days)
         )
+    total = (
+        await db.execute(
+            select(func.count()).select_from(TradeRetrospective).where(*filters)
+        )
+    ).scalar_one()
     stmt = (
         select(TradeRetrospective)
         .where(*filters)
         .order_by(TradeRetrospective.created_at.desc())
         .limit(limit)
+        .offset(offset)
     )
     rows = (await db.execute(stmt)).scalars().all()
     by_outcome: dict[str, int] = {}
@@ -492,8 +505,69 @@ async def get_retrospectives(
         by_outcome[r.outcome] = by_outcome.get(r.outcome, 0) + 1
     return {
         "entries": [serialize_retrospective(r) for r in rows],
-        "summary": {"count": len(rows), "by_outcome": by_outcome},
+        "summary": {"count": len(rows), "by_outcome": by_outcome, "total": int(total)},
     }
+
+
+async def get_open_next_actions(
+    db: AsyncSession,
+    *,
+    market: str | None = None,
+    symbol: str | None = None,
+    statuses: frozenset[str] | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Flatten incomplete next_actions across recent retrospectives.
+
+    Bounded scan (``limit`` most-recent rows) — NOT full history; the
+    ``scan_limit`` echo makes that explicit to callers. ``statuses=None``
+    means "not done" (open/in_progress/unset all surface); a set narrows to
+    exact status values.
+    """
+    filters = []
+    if market is not None:
+        filters.append(TradeRetrospective.market == market)
+    if symbol is not None:
+        filters.append(TradeRetrospective.symbol == symbol.strip().upper())
+    stmt = (
+        select(TradeRetrospective)
+        .where(*filters)
+        .order_by(TradeRetrospective.created_at.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    def _incomplete(status: str | None) -> bool:
+        if statuses is None:
+            return status != "done"
+        return status in statuses
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        for action in r.next_actions or []:
+            if not isinstance(action, dict) or not action.get("action"):
+                continue
+            if not _incomplete(action.get("status")):
+                continue
+            items.append(
+                {
+                    "action": action.get("action"),
+                    "owner": action.get("owner"),
+                    "issue_id": action.get("issue_id"),
+                    "status": action.get("status"),
+                    "due_kst_date": action.get("due_kst_date"),
+                    "symbol": r.symbol,
+                    "market": r.market,
+                    "retro_id": r.id,
+                    "correlation_id": r.correlation_id,
+                    "trigger_type": r.trigger_type,
+                    "realized_pnl": float(r.realized_pnl)
+                    if r.realized_pnl is not None
+                    else None,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+            )
+    return {"items": items, "count": len(items), "scan_limit": limit}
 
 
 def _is_win(r: TradeRetrospective) -> bool:

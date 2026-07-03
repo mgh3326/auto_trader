@@ -12,6 +12,7 @@ import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
 import { BuyHistoryPanel } from "../../components/my/BuyHistoryPanel";
 import { CurrentOrdersPanel } from "../../components/my/CurrentOrdersPanel";
 import { WatchAlertsPanel } from "../../components/my/WatchAlertsPanel";
+import { RetrospectivesPanel } from "../../components/my/RetrospectivesPanel";
 import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
 import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
@@ -325,6 +326,10 @@ export function MobilePortfolioPage() {
           ) : activeTab === "watchAlerts" ? (
             <section style={{ padding: "0 16px" }}>
               <WatchAlertsPanel compact />
+            </section>
+          ) : activeTab === "retrospectives" ? (
+            <section style={{ padding: "0 16px" }}>
+              <RetrospectivesPanel compact />
             </section>
           ) : (
             <section style={{ padding: "0 16px" }}>
