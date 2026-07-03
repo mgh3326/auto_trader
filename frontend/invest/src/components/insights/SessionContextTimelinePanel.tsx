@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { fetchRecentSessionContext } from "../../api/sessionContext";
 import { Card, Pill } from "../../ds";
+import { stockDetailPath } from "../../stockDetailPath";
 import type { SessionContextEntry } from "../../types/sessionContext";
 
 type LoadState<T> =
@@ -62,38 +64,81 @@ export function SessionContextTimelinePanel() {
         )}
         {state.status === "ready" && state.data.length > 0 && (
           <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-            {state.data.map((e) => (
-              <li
-                key={e.entry_uuid}
-                style={{
-                  padding: "10px 0",
-                  borderBottom: "1px solid var(--divider, #8882)",
-                }}
-              >
-                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                  <Pill tone="paper" size="sm">
-                    {e.entry_type}
-                  </Pill>
-                  <Pill tone="paper" size="sm">
-                    {e.market}
-                  </Pill>
-                  {e.account_scope && (
-                    <Pill tone="paper" size="sm">
-                      {e.account_scope}
-                    </Pill>
-                  )}
-                  <span style={{ opacity: 0.6, fontSize: 12 }}>
-                    {e.kst_date} · {fmt(e.created_at)}
-                  </span>
-                </div>
-                <div style={{ fontWeight: 700, marginTop: 4 }}>{e.title}</div>
-                <div
-                  style={{ fontSize: 13, opacity: 0.85, whiteSpace: "pre-wrap" }}
+            {state.data.map((e) => {
+              const refs = e.refs as {
+                symbols?: unknown;
+                order_id?: unknown;
+                report_uuid?: unknown;
+              };
+              const refSymbols = Array.isArray(refs.symbols)
+                ? refs.symbols.filter((s): s is string => typeof s === "string")
+                : [];
+              const orderId = typeof refs.order_id === "string" ? refs.order_id : null;
+              const reportUuid = typeof refs.report_uuid === "string" ? refs.report_uuid : null;
+              const hasRefs = refSymbols.length > 0 || orderId != null || reportUuid != null;
+              return (
+                <li
+                  key={e.entry_uuid}
+                  style={{
+                    padding: "10px 0",
+                    borderBottom: "1px solid var(--divider, #8882)",
+                  }}
                 >
-                  {e.body}
-                </div>
-              </li>
-            ))}
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    <Pill tone="paper" size="sm">
+                      {e.entry_type}
+                    </Pill>
+                    <Pill tone="paper" size="sm">
+                      {e.market}
+                    </Pill>
+                    {e.account_scope && (
+                      <Pill tone="paper" size="sm">
+                        {e.account_scope}
+                      </Pill>
+                    )}
+                    <span style={{ opacity: 0.6, fontSize: 12 }}>
+                      {e.kst_date} · {fmt(e.created_at)}
+                    </span>
+                  </div>
+                  <div style={{ fontWeight: 700, marginTop: 4 }}>{e.title}</div>
+                  <div
+                    style={{ fontSize: 13, opacity: 0.85, whiteSpace: "pre-wrap" }}
+                  >
+                    {e.body}
+                  </div>
+                  {hasRefs && (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        marginTop: 6,
+                        fontSize: 11,
+                        color: "var(--fg-3)",
+                        alignItems: "center",
+                      }}
+                    >
+                      {refSymbols.map((sym) => {
+                        const href = stockDetailPath(e.market, sym);
+                        return href ? (
+                          <Link
+                            key={sym}
+                            to={href}
+                            style={{ color: "var(--link, #4a9)", textDecoration: "none", fontWeight: 700 }}
+                          >
+                            {sym}
+                          </Link>
+                        ) : (
+                          <span key={sym} style={{ fontWeight: 700 }}>{sym}</span>
+                        );
+                      })}
+                      {orderId && <span>주문 {orderId}</span>}
+                      {reportUuid && <span>리포트 {reportUuid.slice(0, 8)}</span>}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

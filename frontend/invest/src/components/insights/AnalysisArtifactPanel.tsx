@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { fetchArtifactDetail, fetchArtifacts } from "../../api/analysisArtifacts";
 import { Card, Pill } from "../../ds";
+import { stockDetailPath } from "../../stockDetailPath";
 import type { ArtifactMeta, ArtifactRead } from "../../types/analysisArtifacts";
 
 type LoadState<T> =
@@ -89,6 +91,7 @@ export function AnalysisArtifactPanel() {
                 <tr>
                   <th style={th}>종류</th>
                   <th style={th}>제목</th>
+                  <th style={th}>종목</th>
                   <th style={th}>시장</th>
                   <th style={th}>as_of</th>
                   <th style={th}>상태</th>
@@ -119,6 +122,24 @@ export function AnalysisArtifactPanel() {
                       >
                         {a.title}
                       </button>
+                    </td>
+                    <td style={td}>
+                      {a.symbols.length > 0 ? (
+                        <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                          {a.symbols.map((sym) => {
+                            const href = stockDetailPath(a.market, sym);
+                            return href ? (
+                              <Link key={sym} to={href} style={{ color: "var(--link, #4a9)", textDecoration: "none" }}>
+                                {sym}
+                              </Link>
+                            ) : (
+                              <span key={sym}>{sym}</span>
+                            );
+                          })}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--fg-3)" }}>—</span>
+                      )}
                     </td>
                     <td style={td}>{a.market}</td>
                     <td style={td}>{fmt(a.as_of)}</td>
