@@ -95,8 +95,16 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
             "purpose": "confirm distance to resistance, RSI, upside",
         },
         {
+            "tool": "toss_cancel_order",
+            "purpose": "clear same-symbol buy pending first (Toss two-sided constraint)",
+        },
+        {
             "tool": "toss_place_order",
-            "purpose": "sell-into-strength split ladder just under resistance",
+            "purpose": "sell-into-strength split ladder just under resistance (Toss holdings)",
+        },
+        {
+            "tool": "kis_live_place_order",
+            "purpose": "sell KIS holdings from the holding account; dry_run preview -> live",
         },
         {
             "tool": "sell_ladder_fill_preview",
@@ -191,6 +199,18 @@ _PLACE_ORDER_TOOLS: frozenset[str] = frozenset(
 # step, so it stays unchanged. (place_order/kis_live_place_order preview via their own
 # dry_run flag, so they need no separate entry here.)
 PREVIEW_TOOLS: frozenset[str] = frozenset({"toss_preview_order"})
+
+# ROB-660: per-lane allowed-only helper tools. The order-status tools
+# (kis_live_get_order_history / toss_get_order_history) are read-only in reality
+# but bucketed in MUTATION_TOOLS for registry partitioning, so build_route_plan
+# would otherwise block them even in the lane that needs them. The sell lane needs
+# them to confirm a cancel took effect and to check sell-order fill status. They
+# are un-blocked here (allowed) WITHOUT entering the ordered sequence (confirmation
+# helpers, not workflow steps) or the playbook YAML. Parallels MARKET_EXECUTION_TOOLS
+# (ROB-658) as an allowed supplement.
+LANE_EXTRA_ALLOWED: dict[str, frozenset[str]] = {
+    "sell": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
+}
 
 # Purpose text for the market execution step injected into the sequence when the
 # lane's KR-centric execution tools are absent from the live profile (crypto/US).
@@ -361,10 +381,19 @@ def build_route_plan(
     # An executing lane surfaces its dry-run/approval-minting precursor (ROB-659)
     # so the required-mode preview->place flow isn't blocked by its own advisory.
     lane_preview = PREVIEW_TOOLS if lane_place_tools else frozenset()
+    # ROB-660: allowed-only confirmation helpers (order-status tools) — un-blocked
+    # for the lane but never added to the ordered sequence.
+    lane_extra = LANE_EXTRA_ALLOWED.get(lane, frozenset())
     allowed = (
-        lane_tools | market_exec | lane_preview | set(READ_ONLY_ADVISORY_TOOLS)
+        lane_tools
+        | market_exec
+        | lane_preview
+        | lane_extra
+        | set(READ_ONLY_ADVISORY_TOOLS)
     ) & registered_tools
-    blocked = (MUTATION_TOOLS - lane_own_mutation - lane_preview) & registered_tools
+    blocked = (
+        MUTATION_TOOLS - lane_own_mutation - lane_preview - lane_extra
+    ) & registered_tools
     return {
         "success": True,
         "intent": intent,
@@ -387,6 +416,7 @@ __all__ = [
     "HARD_CONSTRAINTS",
     "MARKET_EXECUTION_TOOLS",
     "PREVIEW_TOOLS",
+    "LANE_EXTRA_ALLOWED",
     "MUTATION_TOOLS",
     "READ_ONLY_ADVISORY_TOOLS",
     "ALL_KNOWN_TOOLS",
