@@ -203,6 +203,59 @@ function formatConfidence(
   return typeof raw === "string" ? raw : null;
 }
 
+// ROB-690 — server-computed risk/reward, read from
+// evidenceSnapshot.trade_setup (migration-0 JSONB reserved key; see
+// app/services/investment_reports/risk_reward.py). Fail-closed writes omit
+// the key entirely, so its mere presence implies a valid computed setup —
+// but we still defensively re-validate shape/finiteness before rendering,
+// since evidenceSnapshot is untyped `Record<string, unknown>` on the wire.
+interface TradeSetupHeadlineView {
+  entry: string;
+  riskPct: string;
+  rewardPct: string;
+  rrRatio: string;
+}
+
+interface TradeSetupView {
+  direction: "long" | "short";
+  headline: TradeSetupHeadlineView;
+}
+
+function parseTradeSetup(
+  evidenceSnapshot: Record<string, unknown> | null | undefined,
+): TradeSetupView | null {
+  const raw = evidenceSnapshot?.trade_setup;
+  if (!raw || typeof raw !== "object") return null;
+  const setup = raw as Record<string, unknown>;
+
+  const direction = setup.direction;
+  if (direction !== "long" && direction !== "short") return null;
+
+  const headlineRaw = setup.headline;
+  if (!headlineRaw || typeof headlineRaw !== "object") return null;
+  const headline = headlineRaw as Record<string, unknown>;
+
+  const entry = headline.entry;
+  const riskPct = headline.risk_pct;
+  const rewardPct = headline.reward_pct;
+  const rrRatio = headline.rr_ratio;
+  if (
+    typeof entry !== "string" ||
+    typeof riskPct !== "string" ||
+    typeof rewardPct !== "string" ||
+    typeof rrRatio !== "string"
+  ) {
+    return null;
+  }
+  if (
+    ![entry, riskPct, rewardPct, rrRatio].every((v) => Number.isFinite(Number(v)))
+  ) {
+    return null;
+  }
+
+  return { direction, headline: { entry, riskPct, rewardPct, rrRatio } };
+}
+
 function ItemRow({
   item,
   decisions,
@@ -216,6 +269,7 @@ function ItemRow({
   const dimensionCitations = item.citedDimensionReportUuids?.length ?? 0;
   const hasChips =
     !!confidenceLabel || !!item.citedSymbolReportUuid || dimensionCitations > 0;
+  const tradeSetup = parseTradeSetup(item.evidenceSnapshot);
   return (
     <section
       id={`watch-item-${item.itemUuid}`}
@@ -273,6 +327,17 @@ function ItemRow({
       <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
         {item.rationale}
       </div>
+      {tradeSetup ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <Pill tone={tradeSetup.direction === "long" ? "gain" : "warn"} size="sm">
+            {tradeSetup.direction === "long" ? "롱" : "숏"}
+          </Pill>
+          <span style={{ fontSize: 12, color: "var(--fg-2)" }}>
+            손익비 R:R {tradeSetup.headline.rrRatio} · 리스크{" "}
+            {tradeSetup.headline.riskPct}% · 리워드 {tradeSetup.headline.rewardPct}%
+          </span>
+        </div>
+      ) : null}
       {item.linkedOrders && item.linkedOrders.length > 0 ? (
         <div style={{ display: "grid", gap: 6 }}>
           <div style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}>
