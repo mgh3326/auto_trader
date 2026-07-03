@@ -495,17 +495,32 @@ async def test_account_seq_guard_rejects_multiple_accounts() -> None:
 
 ## Task 4 — Diagnose + fix the real `TossBatchEvidenceSource.build` failure (Fix 3b, migration-0)
 
-> **DEFERRED (Step B — needs live Toss diagnosis):** Tasks 1–3 were implemented
-> (2026-07-04) in `/Users/mgh3326/work/auto_trader.rob-687` (branch `rob-687`).
-> Task 4 requires a real captured exception from a live/non-prod
-> `TossBatchEvidenceSource.build` failure — via the Sentry event Task 1's
-> `sentry_sdk.capture_exception` now emits, or a `batch_build_error` echo from an
-> actual `toss_reconcile_orders` run — which is out of scope for this
-> offline/unit-test-only implementation pass and is being handled separately
-> (live Toss access). Do NOT implement Task 4 speculatively; wait for the
-> captured exception before naming a root cause and writing the regression test.
+> **CLOSED — NO REPRO (Step B live diagnosis, 2026-07-04):** The premise that
+> `TossBatchEvidenceSource.build` fails every run was an **incorrect inference from
+> stale Sentry data**. A read-only live probe (GET-only: `/accounts`, `/orders`
+> OPEN/CLOSED, `build()`) against the prod Toss env confirmed `build()` **succeeds**
+> — both an empty-window build and a realistic 60-day window that paginated
+> multiple CLOSED pages into 276 orders (no cap, no exception; OAuth OK, exactly 1
+> account so the guard passes). Timeline evidence is decisive: all 7 Sentry
+> `toss_reconcile_orders` runs (the source of the `187 /accounts`) occurred
+> 2026-06-30 → 2026-07-03 00:20 KST — **before ROB-669 even existed** (its commit
+> is 2026-07-03 20:08 KST; deployed to production ~2026-07-04 06:30 KST). So the
+> N+1 was the **pre-ROB-669 per-row code**, which ROB-669's batch source already
+> fixes. There is no `build` failure to diagnose. Task 4 is dropped.
 
-Tasks 1–3 neutralize the *symptom* (the N+1 `/accounts`), but the batch source is still failing every run and reverting to per-row fanout — which also costs one extra `list_orders`/`get_order` fanout and defeats ROB-669's whole design. This task uses the observability from Task 1 to find WHY `build` fails, names the actual exception, reproduces it in a unit test, and fixes the underlying cause. **The root cause MUST be diagnosed, not assumed** (the Sentry `187 /accounts` count only proves that build fails, not why).
+**Re-scoped outcome:** Tasks 1–3 (this PR) are retained as **observability +
+defense-in-depth**, not as the fix for an active bug:
+- Task 1 (observability) is the lasting value — if `build` ever *does* fail in the
+  future (transient/network/disabled), it is now surfaced (`logger.exception` +
+  `sentry_sdk.capture_exception` + `batch_build_error` echo) instead of silently
+  reverting to the per-row `/accounts` N+1.
+- Tasks 2–3 (one shared client threaded into the per-row fallback) ensure that even
+  in that degraded path the `/accounts` call happens at most once, not per row.
+
+The active N+1 the ticket was opened for is already resolved by ROB-669 (deployed).
+The next real post-deploy `toss_reconcile_orders` run should show ≤1 `/accounts`;
+there have been no runs since deploy, so this is confirmed by the live `build()`
+probe rather than by a fresh Sentry sample.
 
 **Files:**
 - Modify `app/mcp_server/tooling/toss_live_evidence.py` and/or `app/services/brokers/toss/client.py` / `dto.py` — the fix, scoped to whatever the diagnosis names. (Anticipated to be a small, read-path-only change; migration-0.)
