@@ -435,6 +435,91 @@ async def list_forecasts(
     }
 
 
+def _forecast_scope_filters(
+    *,
+    status: str | None,
+    symbol: str | None,
+    created_by: str | None,
+    instrument_type: str | None,
+) -> list[Any]:
+    filters: list[Any] = []
+    if status is not None:
+        filters.append(TradeForecast.status == status)
+    if symbol is not None:
+        filters.append(
+            TradeForecast.symbol
+            == _normalize_symbol_for_filter(symbol, instrument_type)
+        )
+    if created_by is not None:
+        filters.append(TradeForecast.created_by == created_by)
+    if instrument_type is not None:
+        filters.append(TradeForecast.instrument_type == instrument_type)
+    return filters
+
+
+async def _run_forecast_listing(
+    db: AsyncSession, *, filters: list[Any], order_by: Any, limit: int
+) -> dict[str, Any]:
+    stmt = select(TradeForecast).where(*filters).order_by(order_by).limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+    by_status: dict[str, int] = {}
+    for r in rows:
+        by_status[r.status] = by_status.get(r.status, 0) + 1
+    return {
+        "entries": [serialize_forecast(r) for r in rows],
+        "summary": {"count": len(rows), "by_status": by_status},
+    }
+
+
+async def list_open_forecasts(
+    db: AsyncSession,
+    *,
+    symbol: str | None = None,
+    created_by: str | None = None,
+    instrument_type: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Open forecasts ordered by ``review_date`` ASC — the scoring-due queue (ROB-663).
+
+    Soonest (and overdue) review dates sort first so the web surface can show the
+    "채점 due 대기열". Ordering is done in SQL so ``limit`` selects the most imminent
+    rows rather than merely the most-recently-created ones.
+    """
+    filters = _forecast_scope_filters(
+        status="open",
+        symbol=symbol,
+        created_by=created_by,
+        instrument_type=instrument_type,
+    )
+    return await _run_forecast_listing(
+        db, filters=filters, order_by=TradeForecast.review_date.asc(), limit=limit
+    )
+
+
+async def list_closed_forecasts(
+    db: AsyncSession,
+    *,
+    symbol: str | None = None,
+    created_by: str | None = None,
+    instrument_type: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Closed/scored forecasts ordered by ``resolved_at`` DESC — recent scoring
+    history with ``outcome``/``brier_score`` populated (ROB-663)."""
+    filters = _forecast_scope_filters(
+        status="closed",
+        symbol=symbol,
+        created_by=created_by,
+        instrument_type=instrument_type,
+    )
+    return await _run_forecast_listing(
+        db,
+        filters=filters,
+        order_by=TradeForecast.resolved_at.desc().nulls_last(),
+        limit=limit,
+    )
+
+
 async def _read_window_candles(
     db: AsyncSession,
     *,
