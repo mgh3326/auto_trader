@@ -163,10 +163,14 @@ lanes:
      `sell.watch_upside_min_pct` (let it run).
    - **HOLD** = underwater (loss guard unmet) ∨ just bought ∨ averaging-down main
      leg.
-4. Execute: sell-into-strength **split ladder** just under resistance;
-   [ROB-477](https://linear.app/mgh3326/issue/ROB-477) requires a bottom-anchor
-   rung (`sell_ladder_fill_preview` checks fill-safety), preserve the core lot.
-   Trim over-concentrated sectors first when in the money.
+4. Execute from the **holding account**: Toss holdings via `toss_place_order`, KIS
+   holdings via `kis_live_place_order` (`dry_run` preview → live). Sell-into-strength
+   **split ladder** just under resistance;
+   [ROB-477](https://linear.app/mgh3326/issue/ROB-477) requires a bottom-anchor rung
+   (`sell_ladder_fill_preview` checks fill-safety), preserve the core lot. Trim
+   over-concentrated sectors first when in the money. If the name has a **pending buy
+   limit on Toss**, `toss_cancel_order` **first** — no two-sided (buy+sell) resting
+   orders on one symbol.
 5. WATCH items are recorded as conditional trigger text (e.g. "when in-the-money
    AND resistance reached, place at <price>"). Today this depends on session
    memory / journal — [ROB-637](https://linear.app/mgh3326/issue/ROB-637)
@@ -180,8 +184,10 @@ lanes:
     steps:
       - tool: toss_get_positions
       - tool: analyze_stock_batch
-      - tool: toss_place_order        # sell-into-strength split ladder
+      - tool: toss_cancel_order       # clear same-symbol buy pending (two-sided) before sell
+      - tool: toss_place_order        # sell-into-strength split ladder (Toss holdings)
         confirm: true
+      - tool: kis_live_place_order    # sell KIS holdings from holding account; dry_run preview -> live
       - tool: sell_ladder_fill_preview  # ROB-477 bottom-anchor rung, fill-safety
     verdicts: [PLACE, WATCH, HOLD]
     gates:
@@ -189,6 +195,12 @@ lanes:
       - tick_rule
       - toss_two_sided
 ```
+
+> **Allowed helpers (not sequenced, ROB-660).** `kis_live_get_order_history` /
+> `toss_get_order_history` are allowed in this lane for cancel/fill confirmation, but
+> they are read-only confirmation helpers rather than ordered steps, so they live in
+> `LANE_EXTRA_ALLOWED` (`app/mcp_server/tooling/route_request_lanes.py`) — not the
+> YAML sequence above.
 
 ---
 

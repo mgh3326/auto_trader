@@ -206,3 +206,85 @@ def test_hard_constraints_reference_policy_keys_not_numbers():
     joined = " ".join(plan["hard_constraints"])
     assert "sell.loss_guard_min_multiple" in joined
     assert "1.01" not in joined
+
+
+# --- ROB-660: sell lane account routing ---------------------------------------
+
+
+def test_sell_lane_surfaces_kis_place_and_toss_cancel_as_steps():
+    plan = L.build_route_plan(
+        "profit_taking",
+        "kr",
+        registered_tools=_ALL,
+        verdict_thresholds=_fake_thresholds("kr", "sell"),
+        policy_version=_VERSION,
+    )
+    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
+    for tool in ("toss_cancel_order", "kis_live_place_order"):
+        assert tool in steps, tool
+        assert tool in plan["allowed_tools"], tool
+        assert tool not in plan["blocked_actions"], tool
+    # step numbers stay contiguous 1..n after the two inserts
+    assert [s["step"] for s in plan["standard_tool_sequence"]] == list(
+        range(1, len(steps) + 1)
+    )
+
+
+def test_sell_lane_history_helpers_allowed_but_not_sequenced():
+    plan = L.build_route_plan(
+        "profit_taking",
+        "kr",
+        registered_tools=_ALL,
+        verdict_thresholds=_fake_thresholds("kr", "sell"),
+        policy_version=_VERSION,
+    )
+    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
+    for tool in ("kis_live_get_order_history", "toss_get_order_history"):
+        assert tool in plan["allowed_tools"], tool
+        assert tool not in plan["blocked_actions"], tool
+        assert tool not in steps, tool
+
+
+def test_sell_lane_routing_does_not_leak_into_buy_lane():
+    buy = L.build_route_plan(
+        "buy_analysis",
+        "kr",
+        registered_tools=_ALL,
+        verdict_thresholds=_fake_thresholds("kr", "buy"),
+        policy_version=_VERSION,
+    )
+    # sell-lane-only tools remain blocked in the buy lane (no cross-lane leak)
+    assert "toss_cancel_order" in buy["blocked_actions"]
+    assert "kis_live_get_order_history" in buy["blocked_actions"]
+    assert "toss_get_order_history" in buy["blocked_actions"]
+
+
+def test_sell_lane_new_kr_tools_dropped_when_unregistered_on_crypto():
+    plan = L.build_route_plan(
+        "profit_taking",
+        "crypto",
+        registered_tools=_CRYPTO_REGISTERED,
+        verdict_thresholds=_fake_thresholds("crypto", "sell"),
+        policy_version=_VERSION,
+    )
+    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
+    assert "toss_cancel_order" not in steps
+    assert "kis_live_place_order" not in steps
+    assert "toss_cancel_order" not in plan["allowed_tools"]
+    # ROB-658 generic execution injection still fires on crypto sell
+    assert "place_order" in steps
+    assert "place_order" not in plan["blocked_actions"]
+
+
+def test_sell_lane_hard_constraints_document_routing_and_cancel_first():
+    plan = L.build_route_plan(
+        "profit_taking",
+        "kr",
+        registered_tools=_ALL,
+        verdict_thresholds=_fake_thresholds("kr", "sell"),
+        policy_version=_VERSION,
+    )
+    joined = " ".join(plan["hard_constraints"])
+    assert "holding account" in joined
+    assert "kis_live_place_order" in joined
+    assert "toss_cancel_order" in joined
