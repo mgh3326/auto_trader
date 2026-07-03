@@ -222,3 +222,92 @@ async def test_rejected_order_without_order_no_uses_row_id(db_session: AsyncSess
     entry = result["pending"][0]
     assert entry["order_ref"] is None
     assert entry["suggested_correlation_id"].startswith("kis_live:id:")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_excluded_by_default(db_session: AsyncSession):
+    db_session.add_all(
+        [
+            _kis_row(order_no="K-FILL", status="filled"),
+            _kis_row(order_no="K-CANCEL", status="cancelled"),
+        ]
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_pending(
+        db_session, kst_date_from="2000-01-01", kst_date_to="2100-01-01"
+    )
+    refs = {p["suggested_correlation_id"] for p in result["pending"]}
+    assert refs == {"kis_live:K-FILL"}
+    assert result["total_pending"] == 1
+    assert result["include_cancelled"] is False
+    assert result["excluded_by_filter"] == {"cancelled": 1}
+
+
+@pytest.mark.asyncio
+async def test_include_cancelled_restores_cancel_rows(db_session: AsyncSession):
+    db_session.add_all(
+        [
+            _kis_row(order_no="K-FILL", status="filled"),
+            _kis_row(order_no="K-CANCEL", status="cancelled"),
+        ]
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_pending(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        include_cancelled=True,
+    )
+    refs = {p["suggested_correlation_id"] for p in result["pending"]}
+    assert refs == {"kis_live:K-FILL", "kis_live:K-CANCEL"}
+    assert result["total_pending"] == 2
+    assert result["include_cancelled"] is True
+    assert result["excluded_by_filter"] == {"cancelled": 0}
+
+
+@pytest.mark.asyncio
+async def test_anomaly_and_rejected_kept_by_default(db_session: AsyncSession):
+    db_session.add_all(
+        [
+            _kis_row(order_no="K-ANOM", status="anomaly"),
+            _kis_row(order_no="K-REJ", status="rejected"),
+        ]
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_pending(
+        db_session, kst_date_from="2000-01-01", kst_date_to="2100-01-01"
+    )
+    refs = {p["suggested_correlation_id"] for p in result["pending"]}
+    assert refs == {"kis_live:K-ANOM", "kis_live:K-REJ"}
+    assert result["excluded_by_filter"] == {"cancelled": 0}
+
+
+@pytest.mark.asyncio
+async def test_toss_cancel_family_excluded_by_default(db_session: AsyncSession):
+    db_session.add_all(
+        [
+            _toss_row(client_order_id="T-CR", status="cancel_rejected"),
+            _toss_row(client_order_id="T-RR", status="replace_rejected"),
+            _toss_row(client_order_id="T-FILL", broker_order_id="TB-FILL", status="filled"),
+        ]
+    )
+    await db_session.commit()
+
+    default = await svc.build_retrospective_pending(
+        db_session, kst_date_from="2000-01-01", kst_date_to="2100-01-01"
+    )
+    assert {p["ledger"] for p in default["pending"]} == {"toss_live"}
+    assert default["total_pending"] == 1  # only the filled row
+    assert default["excluded_by_filter"] == {"cancelled": 2}
+
+    opted_in = await svc.build_retrospective_pending(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        include_cancelled=True,
+    )
+    assert opted_in["total_pending"] == 3
+    assert opted_in["excluded_by_filter"] == {"cancelled": 0}

@@ -608,21 +608,31 @@ async def build_retrospective_aggregate(
     }
 
 
-# ROB-647 — terminal (lifecycle-complete) statuses per live ledger. A terminal
-# order deserves a postmortem regardless of whether it filled: rejected /
-# cancelled / anomaly are as instructive as filled. Non-terminal states
-# (accepted / pending / partial / replaced) are omitted — they may still change.
-_KIS_LIVE_TERMINAL = frozenset({"filled", "cancelled", "rejected", "anomaly"})
-_GENERIC_LIVE_TERMINAL = frozenset({"filled", "cancelled", "rejected", "anomaly"})
-_TOSS_TERMINAL = frozenset(
-    {
-        "filled",
-        "cancelled",
-        "rejected",
-        "cancel_rejected",
-        "replace_rejected",
-        "anomaly",
-    }
+# ROB-647/ROB-661 — terminal (lifecycle-complete) statuses per live ledger,
+# split into a DEFAULT group (always due for a retrospective: filled / rejected /
+# anomaly) and a CANCEL-family group (DAY expiry collapses to `cancelled`, plus
+# Toss cancel/replace rejections). Cancel-family is noise by default (grid
+# re-placement churn) and only surfaces when include_cancelled=True. Non-terminal
+# states (accepted / pending / partial / replaced) stay omitted — they may still
+# change.
+_KIS_LIVE_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
+_KIS_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
+_GENERIC_LIVE_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
+_GENERIC_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
+_TOSS_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
+_TOSS_CANCEL_TERMINAL = frozenset(
+    {"cancelled", "cancel_rejected", "replace_rejected"}
+)
+
+_KIS_LIVE_TERMINAL = _KIS_LIVE_DEFAULT_TERMINAL | _KIS_LIVE_CANCEL_TERMINAL
+_GENERIC_LIVE_TERMINAL = _GENERIC_LIVE_DEFAULT_TERMINAL | _GENERIC_LIVE_CANCEL_TERMINAL
+_TOSS_TERMINAL = _TOSS_DEFAULT_TERMINAL | _TOSS_CANCEL_TERMINAL
+
+# Statuses hidden from `pending` unless include_cancelled=True. Disjoint from the
+# DEFAULT statuses (note: `rejected` is DEFAULT; `cancel_rejected` /
+# `replace_rejected` are cancel-family).
+_CANCEL_FAMILY_STATUSES = (
+    _KIS_LIVE_CANCEL_TERMINAL | _GENERIC_LIVE_CANCEL_TERMINAL | _TOSS_CANCEL_TERMINAL
 )
 # Bound per-ledger scan so a wide window cannot load unbounded rows.
 _PENDING_LEDGER_FETCH_CAP = 1000
@@ -693,6 +703,7 @@ async def build_retrospective_pending(
     kst_date_to: str,
     account_mode: str | None = None,
     limit: int = 100,
+    include_cancelled: bool = False,
 ) -> dict[str, Any]:
     """List terminal live-ledger orders (3 ledgers) lacking a retrospective.
 
@@ -701,6 +712,10 @@ async def build_retrospective_pending(
     window, then subtracts rows already covered by a retrospective (matched on
     report_item_uuid or the suggested correlation_id). Mirrors the ROB-120
     coverage pattern (terminal-without-artifact).
+
+    Cancel-family rows (cancelled / cancel_rejected / replace_rejected) are
+    hidden unless include_cancelled=True; the hidden count is reported in
+    excluded_by_filter.
     """
     window_start = _kst_day_start(kst_date_from)
     window_end = _kst_day_end(kst_date_to)
@@ -805,6 +820,16 @@ async def build_retrospective_pending(
             if not _is_covered(entry, covered_cids, covered_uuids):
                 pending.append(entry)
 
+    excluded_cancelled = 0
+    if not include_cancelled:
+        kept: list[dict[str, Any]] = []
+        for entry in pending:
+            if entry["status"] in _CANCEL_FAMILY_STATUSES:
+                excluded_cancelled += 1
+            else:
+                kept.append(entry)
+        pending = kept
+
     pending.sort(key=lambda e: e["trade_date_kst"] or "", reverse=True)
     total_pending = len(pending)
     limited = pending[: max(0, limit)]
@@ -812,8 +837,10 @@ async def build_retrospective_pending(
         "kst_date_from": kst_date_from,
         "kst_date_to": kst_date_to,
         "account_mode": account_mode,
+        "include_cancelled": include_cancelled,
         "terminal_scanned": scanned,
         "total_pending": total_pending,
         "returned": len(limited),
+        "excluded_by_filter": {"cancelled": excluded_cancelled},
         "pending": limited,
     }
