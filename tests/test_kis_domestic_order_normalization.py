@@ -5,6 +5,7 @@ import pytest
 from app.mcp_server.tooling.orders_modify_cancel import (
     _map_kis_status,
     _normalize_kis_domestic_order,
+    _normalize_kis_overseas_order,
 )
 
 
@@ -184,3 +185,37 @@ def test_normalize_kis_domestic_order_live_pending_is_live() -> None:
 
     assert normalized["status"] == "pending"
     assert normalized["is_live"] is True
+
+
+@pytest.mark.unit
+def test_normalize_kis_overseas_order_reports_is_live() -> None:
+    live = _normalize_kis_overseas_order(
+        {
+            "odno": "0007654321",
+            "sll_buy_dvsn_cd": "02",
+            "pdno": "AAPL",
+            "ft_ord_qty": "10",
+            "ft_ccld_qty": "0",
+            "ft_ord_unpr3": "200.5",
+            "ord_dt": "20260401",
+            "ord_tmd": "223000",
+        }
+    )
+    assert live["status"] == "pending"
+    assert live["is_live"] is True
+    assert live["remaining_qty"] == 10
+
+    done = _normalize_kis_overseas_order(
+        {
+            "odno": "0007654322",
+            "sll_buy_dvsn_cd": "02",
+            "pdno": "AAPL",
+            "ft_ord_qty": "10",
+            "ft_ccld_qty": "10",
+            "ft_ccld_unpr3": "201.0",
+            "ord_dt": "20260401",
+            "ord_tmd": "223500",
+        }
+    )
+    assert done["status"] == "filled"
+    assert done["is_live"] is False
