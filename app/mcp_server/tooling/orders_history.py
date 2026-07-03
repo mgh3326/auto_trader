@@ -60,6 +60,7 @@ def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
     pending = sum(1 for o in orders if o.get("status") == "pending")
     partial = sum(1 for o in orders if o.get("status") == "partial")
     cancelled = sum(1 for o in orders if o.get("status") == "cancelled")
+    expired = sum(1 for o in orders if o.get("status") == "expired")
 
     return {
         "total_orders": total_orders,
@@ -67,6 +68,7 @@ def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
         "pending": pending,
         "partial": partial,
         "cancelled": cancelled,
+        "expired": expired,
     }
 
 
