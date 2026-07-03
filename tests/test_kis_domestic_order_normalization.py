@@ -10,26 +10,36 @@ from app.mcp_server.tooling.orders_modify_cancel import (
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("filled", "remaining", "status_name", "expected"),
+    ("ordered", "filled", "remaining", "status_name", "expected"),
     [
-        (10, 0, "체결", "filled"),
-        (0, 10, "접수", "pending"),
-        (5, 5, "체결", "partial"),
-        (0, 0, "주문취소", "cancelled"),
-        (10, 0, None, "filled"),
-        (10, 0, "", "filled"),
-        (5, 5, None, "partial"),
-        (0, 10, None, "pending"),
-        (0, 0, None, "pending"),
+        # Live / filled / partial — unchanged behavior.
+        (10, 10, 0, "체결", "filled"),
+        (10, 0, 10, "접수", "pending"),
+        (10, 5, 5, "체결", "partial"),
+        (10, 10, 0, None, "filled"),
+        (10, 10, 0, "", "filled"),
+        (10, 5, 5, None, "partial"),
+        (10, 0, 10, None, "pending"),
+        # Explicit cancel evidence wins even with 0/0.
+        (8, 0, 0, "주문취소", "cancelled"),
+        # ROB-657: dead order (nothing filled, nothing left) → expired,
+        # regardless of a stale/absent status name.
+        (8, 0, 0, None, "expired"),
+        (8, 0, 0, "", "expired"),
+        (8, 0, 0, "접수", "expired"),
+        (8, 0, 0, "미체결", "expired"),
+        # Degenerate empty row → no order to expire.
+        (0, 0, 0, None, "pending"),
     ],
 )
 def test_map_kis_status_handles_named_and_unnamed_statuses(
+    ordered: int,
     filled: int,
     remaining: int,
     status_name: str | None,
     expected: str,
 ) -> None:
-    assert _map_kis_status(filled, remaining, status_name) == expected
+    assert _map_kis_status(ordered, filled, remaining, status_name) == expected
 
 
 def _build_domestic_order(**overrides: str) -> dict[str, str]:

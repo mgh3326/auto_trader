@@ -113,13 +113,22 @@ def _build_temp_kr_order_id(
     return f"TEMP_KR_{digest}"
 
 
-def _map_kis_status(filled: int, remaining: int, status_name: str | None) -> str:
+def _map_kis_status(
+    ordered: int, filled: int, remaining: int, status_name: str | None
+) -> str:
     normalized_name = str(status_name or "").strip()
 
-    if normalized_name in ("접수", "주문접수"):
-        return "pending"
+    # Explicit cancel evidence is authoritative at any point.
     if normalized_name == "주문취소":
         return "cancelled"
+    # ROB-657: nothing filled and nothing left to modify/cancel
+    # (정정취소가능수량 0) means the order is dead (EOD expiry / reject).
+    # KIS ledger truth is "alive iff rmn_qty > 0", so this wins over a
+    # stale '접수' status name that TTTC8036R may still carry.
+    if ordered > 0 and filled == 0 and remaining <= 0:
+        return "expired"
+    if normalized_name in ("접수", "주문접수"):
+        return "pending"
     if normalized_name == "체결":
         if filled > 0 and remaining > 0:
             return "partial"
