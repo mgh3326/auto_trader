@@ -4,13 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 
-AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 수집하고 Google Gemini AI를 활용하여 투자 분석을 제공합니다.
+AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 수집하고 out-of-process AI 에이전트(MCP consumer / Hermes)를 통해 투자 분석을 제공합니다.
 
 **주요 특징:**
 - 다중 시장 지원: 국내주식(KIS), 해외주식(KIS/Yahoo Finance), 암호화폐(Upbit)
 - 다중 시간대 분석: 일봉 200개 + 분봉(60분/5분/1분)
-- AI 분석: Google Gemini API를 통한 구조화된 JSON 분석
-- Redis 기반 API 키별 모델 제한 시스템
+- AI 분석: out-of-process MCP/Hermes 에이전트가 담당 (런타임은 in-process LLM provider 미탑재 — ROB-501 가드)
 
 ## 개발 환경 설정
 
@@ -88,27 +87,6 @@ python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 ```
 
 ## 아키텍처
-
-### 분석 시스템 아키텍처
-
-**핵심 설계 원칙: 공통 로직 분리 + 서비스별 특화**
-
-```
-app/analysis/
-├── analyzer.py              # 핵심 Analyzer 클래스 (공통 로직)
-│   ├── Analyzer             # 프롬프트 생성, AI 호출, DB 저장, 재시도 로직
-│   └── DataProcessor        # 데이터 전처리 유틸리티
-└── service_analyzers.py     # 서비스별 분석기 (상속)
-    ├── UpbitAnalyzer        # 암호화폐 (분봉 지원)
-    ├── YahooAnalyzer        # 미국 주식 (분봉 미지원)
-    └── KISAnalyzer          # 국내/해외 주식 (분봉 지원)
-```
-
-**각 서비스 분석기는:**
-- `Analyzer`를 상속하여 공통 기능 재사용
-- 데이터 수집 로직만 서비스별로 구현 (`_collect_*_data` 메서드)
-- 보유 자산 정보가 있으면 `position_info`로 전달
-- 분봉 데이터가 있으면 `minute_candles`로 전달
 
 ### Runtime LLM ownership boundary
 
@@ -423,9 +401,9 @@ app/core/symbol.py              # 심볼 변환 유틸리티
 ```
 
 **적용된 파일:**
-- `app/services/kis.py` - KIS API 호출 시 자동 변환
-- `app/services/yahoo.py` - Yahoo Finance 호출 시 자동 변환
-- `app/tasks/kis.py` - 심볼 비교 시 정규화
+- `app/services/brokers/kis/` - KIS API 호출 시 자동 변환
+- `app/services/brokers/yahoo/client.py` - Yahoo Finance 호출 시 자동 변환
+- `app/jobs/` - 심볼 비교 시 정규화 (주요 브로커/job 호출부에 배선)
 - `app/services/kis_holdings_service.py` - 보유주식 조회 시 정규화
 - `app/services/kis_trading_service.py` - 매도 주문 시 정규화
 
@@ -451,16 +429,17 @@ uv run pytest tests/test_symbol_conversion.py -v
 ### API 서비스 클라이언트
 
 ```
+app/services/brokers/
+├── upbit/       # Upbit API (암호화폐) — client.py, orders.py, public_trades.py
+├── yahoo/       # Yahoo Finance API — client.py
+├── kis/         # 한국투자증권 API — client.py, account.py, domestic/overseas_orders.py, market_data 등 (파일 분할)
+└── toss/ · kiwoom/ · alpaca/ · binance/   # 기타 브로커
 app/services/
-├── upbit.py                 # Upbit API (암호화폐)
-├── yahoo.py                 # Yahoo Finance API
-├── kis.py                   # 한국투자증권 API (30,000+ 라인)
 ├── upbit_websocket.py       # Upbit 실시간 시세
 └── redis_token_manager.py   # Redis 기반 토큰 관리
 ```
 
 **주의사항:**
-- `kis.py`는 매우 큰 파일(30,000+ 라인)이므로 읽을 때 offset/limit 사용
 - KIS 분봉 API는 `time_unit` 파라미터가 제대로 작동하지 않는 알려진 이슈 있음
 - Upbit은 실시간 WebSocket과 REST API 모두 지원
 
@@ -553,49 +532,7 @@ git branch -D <branch-name>
 
 ## 주요 워크플로우
 
-### 1. 새로운 서비스 분석기 추가
-
-```python
-# app/analysis/service_analyzers.py에 추가
-class NewServiceAnalyzer(Analyzer):
-    """새로운 서비스 분석기"""
-
-    async def _collect_data(self, symbol: str):
-        """데이터 수집 로직 구현"""
-        # 1. 일봉/현재가/기본정보 수집
-        df_historical = await new_service.fetch_ohlcv(symbol)
-        df_current = await new_service.fetch_price(symbol)
-        fundamental_info = await new_service.fetch_fundamental_info(symbol)
-
-        # 2. 분봉 수집 (있는 경우)
-        minute_candles = await new_service.fetch_minute_candles(symbol)
-
-        # 3. 데이터 병합
-        df_merged = DataProcessor.merge_historical_and_current(
-            df_historical, df_current
-        )
-
-        return df_merged, fundamental_info, minute_candles
-
-    async def analyze_symbols(self, symbols: List[str]):
-        """심볼 분석"""
-        for symbol in symbols:
-            df, info, candles = await self._collect_data(symbol)
-
-            # 공통 Analyzer의 analyze_and_save 사용
-            result, model = await self.analyze_and_save(
-                df=df,
-                symbol=symbol,
-                name=symbol,
-                instrument_type="new_type",
-                currency="$",
-                unit_shares="주",
-                fundamental_info=info,
-                minute_candles=candles,
-            )
-```
-
-### 2. 데이터베이스 모델 변경
+### 1. 데이터베이스 모델 변경
 
 ```bash
 # 1. app/models/에서 모델 수정
@@ -611,40 +548,6 @@ uv run alembic downgrade -1
 ```
 
 **중요:** Alembic은 async 엔진 사용 - `alembic/env.py` 참고
-
-### 3. JSON 분석 결과 사용
-
-```python
-from app.analysis.service_analyzers import UpbitAnalyzer
-
-analyzer = UpbitAnalyzer()
-
-# JSON 형식으로 분석 (StockAnalysisResult 테이블에 저장)
-result, model = await analyzer.analyze_coins_json(["비트코인"])
-
-if hasattr(result, 'decision'):
-    # 구조화된 JSON 응답
-    print(f"결정: {result.decision}")  # buy/hold/sell
-    print(f"신뢰도: {result.confidence}%")  # 0-100
-    print(f"근거: {result.reasons}")  # 최대 3개
-    print(f"매수 범위: {result.price_analysis.appropriate_buy_range}")
-else:
-    # fallback 텍스트 응답 (PromptResult 테이블에 저장)
-    print(f"텍스트 응답: {result}")
-```
-
-### 4. Redis 모델 제한 관리
-
-```bash
-# Redis 연결 확인
-docker compose exec redis redis-cli ping
-
-# 제한 키 조회
-docker compose exec redis redis-cli --scan --pattern "model_rate_limit:*"
-
-# 특정 제한 키 TTL 확인
-docker compose exec redis redis-cli ttl "model_rate_limit:<model>:<masked_api_key>"
-```
 
 ## 환경 변수
 
@@ -721,15 +624,6 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 
 ## 웹 대시보드
 
-### JSON 분석 대시보드
-- URL: `http://localhost:8000/analysis-json/`
-- 기능: 필터링, 페이지네이션, 상세 모달
-- 통계: 투자 결정 분포, 평균 신뢰도
-
-### 최신 종목 정보 대시보드
-- URL: `http://localhost:8000/stock-latest/`
-- 기능: 종목별 최신 분석 결과 조회
-
 ### Trading Policy YAML 단일 소스 (ROB-646)
 
 `config/trading_policy.yaml` = 매매 판단 임계값 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**
@@ -769,8 +663,8 @@ uv run alembic history
 
 프로젝트 루트의 다음 문서들을 참고하세요:
 
-- `docs/archive/JSON_ANALYSIS_README.md` - JSON 분석 시스템 상세 가이드
-- `docs/archive/ANALYSIS_REFACTOR_README.md` - 분석 시스템 아키텍처 및 Redis 모델 제한
+- `docs/archive/JSON_ANALYSIS_README.md` — (아카이브·과거) 삭제된 Gemini analyzer 시절 JSON 분석 문서, 현행 아님
+- `docs/archive/ANALYSIS_REFACTOR_README.md` — (아카이브·과거) 삭제된 analyzer/Redis 모델제한 시절 문서, 현행 아님
 - `STOCK_INFO_GUIDE.md` - 데이터베이스 정규화 구조 및 SQL 쿼리 패턴
 - `UPBIT_WEBSOCKET_README.md` - Upbit WebSocket 실시간 시세
 - `DEPLOYMENT.md` - 배포 가이드
