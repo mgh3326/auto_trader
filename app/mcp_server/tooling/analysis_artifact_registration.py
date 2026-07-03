@@ -48,8 +48,7 @@ def register_analysis_artifact_tools(mcp: FastMCP) -> None:
         name="analysis_artifact_list",
         description=(
             "List persisted analysis artifacts, newest as_of first — "
-            "metadata only, no payload (payload_size_bytes hints the "
-            "analysis_artifact_get cost). Optional filters: market, kind, "
+            "metadata only, no payload. Optional filters: market, kind, "
             "symbol (containment match on the symbols array), since, "
             "correlation_id, account_scope, include_stale, limit clamped to "
             "1..100. Stale rows (valid_until in the past) are excluded unless "

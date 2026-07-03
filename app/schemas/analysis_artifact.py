@@ -174,7 +174,6 @@ class AnalysisArtifactMeta(BaseModel):
     content_hash: str | None
     version: int
     readiness_label: AnalysisArtifactReadinessLiteral | None
-    payload_size_bytes: int
     is_stale: bool
     created_by: AnalysisArtifactCreatedByLiteral
     created_at: datetime
@@ -186,6 +185,7 @@ class AnalysisArtifactRead(AnalysisArtifactMeta):
     """Full artifact including the payload."""
 
     payload: dict[str, Any]
+    payload_size_bytes: int
 
 
 class AnalysisArtifactSaveResponse(BaseModel):

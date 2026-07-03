@@ -10,6 +10,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.core.timezone import KST, now_kst
 from app.models.analysis_artifact import AnalysisArtifact
@@ -163,9 +164,13 @@ class AnalysisArtifactService:
     ) -> list[AnalysisArtifact]:
         """Query artifacts with filters, newest ``as_of`` first."""
         capped_limit = max(1, min(int(limit), 100))
-        stmt = sa.select(AnalysisArtifact).order_by(
-            AnalysisArtifact.as_of.desc(),
-            AnalysisArtifact.id.desc(),
+        stmt = (
+            sa.select(AnalysisArtifact)
+            .options(defer(AnalysisArtifact.payload))
+            .order_by(
+                AnalysisArtifact.as_of.desc(),
+                AnalysisArtifact.id.desc(),
+            )
         )
         if market is not None:
             stmt = stmt.where(AnalysisArtifact.market == market)
@@ -222,6 +227,7 @@ class AnalysisArtifactService:
         now = now_kst()
         stmt = (
             sa.select(AnalysisArtifact)
+            .options(defer(AnalysisArtifact.payload))
             .where(
                 AnalysisArtifact.symbols.op("&&")(
                     sa.text(":fresh_symbols").bindparams(

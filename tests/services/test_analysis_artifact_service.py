@@ -59,6 +59,15 @@ async def test_save_list_get_round_trip(db_session: AsyncSession) -> None:
     )
     assert [row.id for row in listed] == [saved.id]
 
+    import sqlalchemy as sa
+
+    service._session.expunge_all()
+    listed = await service.list_artifacts(
+        market="kr", kind="candidate_pool", symbol=symbol, include_stale=True, limit=10
+    )
+    assert [row.id for row in listed] == [saved.id]
+    assert "payload" in sa.inspect(listed[0]).unloaded
+
     fetched = await service.get(saved.id)
     assert fetched is not None
     assert fetched.payload == {"ranked": [symbol, "005930"]}
