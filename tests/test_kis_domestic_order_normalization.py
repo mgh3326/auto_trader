@@ -188,6 +188,112 @@ def test_normalize_kis_domestic_order_live_pending_is_live() -> None:
 
 
 @pytest.mark.unit
+def test_map_kis_status_cancel_evidence_wins_over_death_rule() -> None:
+    # ROB-665 item 1: real cancel evidence (cncl_yn truthy / cancel-confirm row)
+    # must label an unfilled dead order `cancelled`, not `expired`.
+    assert _map_kis_status(8, 0, 0, None, cancel_evidence=True) == "cancelled"
+    # Without cancel evidence the ROB-657 death rule still applies (ungated).
+    assert _map_kis_status(8, 0, 0, None, cancel_evidence=False) == "expired"
+
+
+@pytest.mark.unit
+def test_normalize_kis_domestic_order_operator_cancel_is_cancelled_not_expired() -> (
+    None
+):
+    # ROB-665 item 1 repro: operator cancelled an unfilled KR order. The real
+    # broker cancel evidence is `cncl_yn` (prcs_stat_name does not exist on the
+    # live TTTC8001R response), so it must resolve to `cancelled`.
+    normalized = _normalize_kis_domestic_order(
+        _build_domestic_order(
+            pdno="000270",
+            ord_qty="8",
+            tot_ccld_qty="0",
+            rmn_qty="0",
+            cncl_yn="Y",
+        )
+    )
+    assert normalized["status"] == "cancelled"
+    assert normalized["is_live"] is False
+
+
+@pytest.mark.unit
+def test_normalize_kis_domestic_order_cancel_confirm_row_is_cancelled() -> None:
+    # A cancel-confirm row carries a '취소' token in sll_buy_dvsn_cd_name
+    # (e.g. '매수취소') — treat it as cancel evidence, not EOD expiry.
+    normalized = _normalize_kis_domestic_order(
+        _build_domestic_order(
+            pdno="000270",
+            ord_qty="8",
+            tot_ccld_qty="0",
+            rmn_qty="0",
+            sll_buy_dvsn_cd_name="매수취소",
+        )
+    )
+    assert normalized["status"] == "cancelled"
+    assert normalized["is_live"] is False
+
+
+@pytest.mark.unit
+def test_normalize_kis_overseas_order_uses_nccs_qty_for_remaining() -> None:
+    # ROB-665 item 4: cancelled unfilled US order — nccs_qty=0 is the broker
+    # truth; synthesizing remaining=ordered-filled kept it pending+is_live.
+    order = _normalize_kis_overseas_order(
+        {
+            "odno": "0007654323",
+            "sll_buy_dvsn_cd": "02",
+            "pdno": "AAPL",
+            "ft_ord_qty": "10",
+            "ft_ccld_qty": "0",
+            "nccs_qty": "0",
+            "ord_dt": "20260401",
+            "ord_tmd": "223000",
+        }
+    )
+    assert order["remaining_qty"] == 0
+    assert order["status"] == "expired"
+    assert order["is_live"] is False
+
+
+@pytest.mark.unit
+def test_normalize_kis_overseas_order_cancel_evidence_is_cancelled() -> None:
+    # ROB-665 item 4: a cancelled US order carries rvse_cncl_dvsn_name '취소'.
+    order = _normalize_kis_overseas_order(
+        {
+            "odno": "0007654324",
+            "sll_buy_dvsn_cd": "02",
+            "pdno": "AAPL",
+            "ft_ord_qty": "10",
+            "ft_ccld_qty": "0",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn_name": "취소",
+            "ord_dt": "20260401",
+            "ord_tmd": "223000",
+        }
+    )
+    assert order["status"] == "cancelled"
+    assert order["is_live"] is False
+
+
+@pytest.mark.unit
+def test_normalize_kis_overseas_order_nccs_qty_absent_falls_back() -> None:
+    # When nccs_qty is absent (some history TRs), fall back to ordered-filled.
+    order = _normalize_kis_overseas_order(
+        {
+            "odno": "0007654325",
+            "sll_buy_dvsn_cd": "02",
+            "pdno": "AAPL",
+            "ft_ord_qty": "10",
+            "ft_ccld_qty": "4",
+            "ord_dt": "20260401",
+            "ord_tmd": "223000",
+        }
+    )
+    assert order["remaining_qty"] == 6
+    assert order["status"] == "partial"
+    assert order["is_live"] is True
+
+
+@pytest.mark.unit
 def test_normalize_kis_overseas_order_reports_is_live() -> None:
     live = _normalize_kis_overseas_order(
         {

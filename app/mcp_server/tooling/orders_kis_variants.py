@@ -388,7 +388,7 @@ async def _get_order_history_variant(
     tool_name: str,
     pinned_mode: str,
     symbol: str | None,
-    status: Literal["all", "pending", "filled", "cancelled"],
+    status: Literal["all", "pending", "filled", "cancelled", "expired"],
     order_id: str | None,
     market: str | None,
     side: str | None,
@@ -621,13 +621,17 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         description=(
             "Get order history on KIS live (real-money) account. "
             "is_mock is hard-pinned to False. "
+            "status='expired' returns dead day orders (nothing filled, nothing "
+            "left to modify/cancel — EOD expiry/reject), distinct from an "
+            "operator cancel (status='cancelled'). Each order carries is_live "
+            "(true only for pending/partial). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
     )
     async def kis_live_get_order_history(
         symbol: str | None = None,
-        status: Literal["all", "pending", "filled", "cancelled"] = "all",
+        status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
         order_id: str | None = None,
         market: str | None = None,
         side: str | None = None,
@@ -873,6 +877,10 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         description=(
             "Get order history on KIS official mock (paper) account. "
             "is_mock is hard-pinned to True. Fails closed if KIS mock config is missing. "
+            "status='expired' returns dead day orders (nothing filled, nothing "
+            "left to modify/cancel), distinct from an operator cancel "
+            "(status='cancelled'). Each order carries is_live (true only for "
+            "pending/partial). "
             "Note: some KR order history endpoints (e.g. TTTC8036R) are unsupported "
             "in KIS mock and return mock_unsupported-tagged errors. "
             "account_mode='kis_mock' is accepted but redundant; "
@@ -881,7 +889,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
     )
     async def kis_mock_get_order_history(
         symbol: str | None = None,
-        status: Literal["all", "pending", "filled", "cancelled"] = "all",
+        status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
         order_id: str | None = None,
         market: str | None = None,
         side: str | None = None,
