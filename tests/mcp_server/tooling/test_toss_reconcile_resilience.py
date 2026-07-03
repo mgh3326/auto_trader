@@ -116,3 +116,74 @@ async def test_404_order_not_found_still_marks_anomaly(db_session):
     refreshed = await db_session.get(TossLiveOrderLedger, row.id)
     assert refreshed.status == "anomaly"
     assert refreshed.requires_manual_review is True
+
+
+async def test_impl_uses_batch_source_and_echoes_window(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session)
+
+    fake_source = AsyncMock()
+    fake_source.evidence_for = AsyncMock(
+        return_value=TossFillEvidence(
+            verdict="pending",
+            local_status="pending",
+            broker_status="PENDING",
+            filled_qty=Decimal("0"),
+            avg_price=None,
+            commission=None,
+            tax=None,
+            fee_total=Decimal("0"),
+            settlement_date=None,
+            raw_order={"status": "PENDING"},
+            reason="pending",
+        )
+    )
+    fake_source.aclose = AsyncMock()
+    fake_source.single_fetch_count = 0
+    fake_source.closed_pages_capped = False
+    fake_source.window_from = "2026-07-01"
+    fake_source.window_to = "2026-07-03"
+
+    with patch.object(
+        mod.TossBatchEvidenceSource, "build", new=AsyncMock(return_value=fake_source)
+    ):
+        out = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    assert out["success"] is True
+    assert out["counts"] == {"pending": 1}
+    # evidence came from the batch source, not a per-row adapter
+    fake_source.evidence_for.assert_awaited_once()
+    fake_source.aclose.assert_awaited_once()
+    assert out["window"]["from"] == "2026-07-01"
+    assert out["window"]["closed_pages_capped"] is False
+
+
+async def test_impl_batch_build_failure_falls_back_per_row(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    await _accepted(db_session)
+
+    pending = TossFillEvidence(
+        verdict="pending", local_status="pending", broker_status="PENDING",
+        filled_qty=Decimal("0"), avg_price=None, commission=None, tax=None,
+        fee_total=Decimal("0"), settlement_date=None,
+        raw_order={"status": "PENDING"}, reason="pending",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=pending)
+
+    with (
+        patch.object(
+            mod.TossBatchEvidenceSource,
+            "build",
+            new=AsyncMock(side_effect=RuntimeError("toss disabled in test")),
+        ),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+    ):
+        out = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    assert out["counts"] == {"pending": 1}  # per-row fallback still reconciles

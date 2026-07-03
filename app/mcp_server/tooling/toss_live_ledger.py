@@ -15,7 +15,7 @@ from app.mcp_server.tooling.order_journal import (
     _link_journal_to_fill,
     _save_order_fill,
 )
-from app.mcp_server.tooling.toss_live_evidence import TossEvidenceAdapter
+from app.mcp_server.tooling.toss_live_evidence import TossBatchEvidenceSource, TossEvidenceAdapter
 from app.models.review import TossLiveOrderLedger
 from app.monitoring.trade_notifier import get_trade_notifier
 import httpx
@@ -208,7 +208,10 @@ async def _notify_toss_fill(
 
 
 async def _reconcile_one_toss_row(
-    row: TossLiveOrderLedger, *, dry_run: bool
+    row: TossLiveOrderLedger,
+    *,
+    dry_run: bool,
+    evidence_source: Any | None = None,
 ) -> dict[str, Any]:
     base = {
         "ledger_id": row.id,
@@ -218,7 +221,10 @@ async def _reconcile_one_toss_row(
         "symbol": row.symbol,
         "operation_kind": row.operation_kind,
     }
-    evidence = await TossEvidenceAdapter().fetch_evidence(row)
+    if evidence_source is not None:
+        evidence = await evidence_source.evidence_for(row)
+    else:
+        evidence = await TossEvidenceAdapter().fetch_evidence(row)
     base["verdict"] = evidence.verdict
     base["broker_status"] = evidence.broker_status
     base["local_status"] = evidence.local_status
@@ -552,19 +558,54 @@ async def toss_reconcile_orders_impl(
 
     reconciled: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
-    for row in rows:
-        try:
-            outcome = await _reconcile_one_toss_row(row, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001 — classified in the handler
-            outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)
-        reconciled.append(outcome)
-        verdict = str(outcome.get("verdict", "anomaly"))
-        counts[verdict] = counts.get(verdict, 0) + 1
 
-    return {
+    evidence_source = None
+    if rows:
+        try:
+            evidence_source = await TossBatchEvidenceSource.build(
+                rows=rows, symbol=symbol
+            )
+        except Exception as exc:  # noqa: BLE001 — batch is an optimization
+            # Any batch-build failure (disabled/network/transient) degrades to the
+            # per-row single-fetch path; per-row R1 classification still applies.
+            logger.warning(
+                "toss reconcile batch evidence build failed; per-row fallback: %s",
+                exc,
+            )
+            evidence_source = None
+
+    try:
+        for row in rows:
+            try:
+                outcome = await _reconcile_one_toss_row(
+                    row, dry_run=dry_run, evidence_source=evidence_source
+                )
+            except Exception as exc:  # noqa: BLE001 — classified in the handler
+                outcome = await _handle_reconcile_row_error(
+                    row, exc, dry_run=dry_run
+                )
+            reconciled.append(outcome)
+            verdict = str(outcome.get("verdict", "anomaly"))
+            counts[verdict] = counts.get(verdict, 0) + 1
+    finally:
+        if evidence_source is not None:
+            await evidence_source.aclose()
+
+    result: dict[str, Any] = {
         "success": True,
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
-        "message": f"Reconciled {len(reconciled)} Toss live order(s) (dry_run={dry_run}): {counts}",
+        "message": (
+            f"Reconciled {len(reconciled)} Toss live order(s) "
+            f"(dry_run={dry_run}): {counts}"
+        ),
     }
+    if evidence_source is not None:
+        result["window"] = {
+            "from": evidence_source.window_from,
+            "to": evidence_source.window_to,
+            "closed_pages_capped": evidence_source.closed_pages_capped,
+            "single_fetch_fallbacks": evidence_source.single_fetch_count,
+        }
+    return result

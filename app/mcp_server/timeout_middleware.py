@@ -62,8 +62,10 @@ ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
     # OHLCV + indicator compute; news fetch.
     "get_indicators": 75.0,
     "get_news": 75.0,
-    # Order reconcile fan-out over daily order history (KIS/live) or per-order
-    # detail GET per open ledger row (Toss, N+1 — ROB-631).
+    # Order reconcile fan-out over daily order history (KIS/live). Toss reconcile
+    # is now batched (GET /orders?status=OPEN + windowed CLOSED pagination, ROB-669
+    # absorbing ROB-632) so a KR pass is 2-4 list calls, well under budget; the 90s
+    # budget stays as headroom for large windows + single-fetch fallbacks.
     "kis_live_reconcile_orders": 90.0,
     "live_reconcile_orders": 90.0,
     "toss_reconcile_orders": 90.0,
