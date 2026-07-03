@@ -108,7 +108,9 @@ function SessionRow({ entry }: { entry: SessionContextEntry }) {
   );
 }
 
-export function SessionContextTimelinePanel() {
+export function SessionContextTimelinePanel({
+  onEmptyChange,
+}: { onEmptyChange?: (isEmpty: boolean) => void } = {}) {
   const [state, setState] = useState<LoadState<SessionContextEntry[]>>({
     status: "loading",
   });
@@ -131,6 +133,12 @@ export function SessionContextTimelinePanel() {
     };
   }, []);
 
+  // Report emptiness to the page (ROB-677 banner): empty only when ready + no rows.
+  useEffect(() => {
+    if (!onEmptyChange) return;
+    onEmptyChange(state.status === "ready" && state.data.length === 0);
+  }, [state, onEmptyChange]);
+
   return (
     <Card data-testid="session-context-timeline-panel">
       <section style={{ display: "grid", gap: 12 }}>
@@ -151,8 +159,8 @@ export function SessionContextTimelinePanel() {
           </div>
         )}
         {state.status === "ready" && state.data.length === 0 && (
-          <div style={{ padding: 12, color: "var(--fg-3)", fontSize: 13 }}>
-            최근 세션 컨텍스트 없음
+          <div style={{ padding: 12, color: "var(--fg-3)", fontSize: 13, lineHeight: 1.6 }}>
+            최근 세션 컨텍스트 없음 — 운영 세션이 결정·계획·핸드오프 메모를 남기면 여기에 타임라인으로 쌓입니다.
           </div>
         )}
         {state.status === "ready" && state.data.length > 0 && (

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
 import { MarketParityStrip } from "../../components/home/MarketParityStrip";
@@ -29,19 +29,55 @@ function SectionStatus({ children }: { children: ReactNode }) {
   );
 }
 
-function DecisionCard() {
+function PageHeader() {
   return (
-    <Card>
-      <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ fontSize: 12, color: "var(--fg-3)", fontWeight: 800 }}>ROB-253 decision</div>
-        <h1 style={{ margin: 0, fontSize: 28, letterSpacing: "-0.05em" }}>인사이트</h1>
-        <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 14, lineHeight: 1.6 }}>
-          홈에는 compact 요약만 남기고, 괴리·패리티처럼 해석 주의가 필요한 read-only 관찰 카드는
-          /invest/insights에서 모아 봅니다. 종목별 리서치 컨센서스는 symbol context가 필요하므로
-          개별 종목 상세 화면에 유지합니다.
-        </p>
-      </div>
-    </Card>
+    <div style={{ display: "grid", gap: 8 }}>
+      <h1 style={{ margin: 0, fontSize: 28, letterSpacing: "-0.05em" }}>인사이트</h1>
+      <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 14, lineHeight: 1.6 }}>
+        괴리·패리티 같은 시장 관찰과 예측 판단 품질·세션 기록을 한곳에서 봅니다. 모두 읽기 전용 관찰 자료입니다.
+      </p>
+    </div>
+  );
+}
+
+// Lightweight section label — deliberately smaller/muted than the panels' own
+// h2 titles so grouping reads as a divider, not a competing heading.
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section style={{ display: "grid", gap: 12 }}>
+      <h2
+        style={{
+          margin: 0,
+          fontSize: 13,
+          fontWeight: 800,
+          color: "var(--fg-3)",
+          letterSpacing: "0.04em",
+        }}
+      >
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function AccumulatingBanner() {
+  return (
+    <div
+      role="status"
+      style={{
+        padding: "12px 14px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 12,
+        color: "var(--fg-2)",
+        fontSize: 13,
+        lineHeight: 1.6,
+      }}
+    >
+      판단 품질·핸드오프 데이터는 아직 축적 중입니다 — 예측 채점(forecast_resolve)·분석 아티팩트·세션
+      메모가 쌓이면 아래 카드가 채워집니다.
+    </div>
   );
 }
 
@@ -78,26 +114,42 @@ export function DesktopInsightsPage() {
   const marketParity = useMarketParity();
   const disparity = useCommonPreferredDisparity();
 
+  // Emptiness is owned by each panel (self-fetch); they report up via
+  // onEmptyChange so the page can show one accumulating banner instead of a
+  // stack of empty boxes. null = not-yet-resolved.
+  const [forecastEmpty, setForecastEmpty] = useState<boolean | null>(null);
+  const [artifactEmpty, setArtifactEmpty] = useState<boolean | null>(null);
+  const [sessionEmpty, setSessionEmpty] = useState<boolean | null>(null);
+  const allDataEmpty =
+    forecastEmpty === true && artifactEmpty === true && sessionEmpty === true;
+
   return (
     <DesktopShell
       center={
-        <div style={{ padding: 24, display: "grid", gap: 16 }}>
-          <ReadOnlyGuardrailNote />
-          <DecisionCard />
+        <div style={{ padding: 24, display: "grid", gap: 20 }}>
+          <PageHeader />
+          {allDataEmpty && <AccumulatingBanner />}
 
-          <Card>
-            <MarketParityStrip state={marketParity.state} reload={marketParity.reload} />
-          </Card>
+          <Section title="시장 관찰">
+            <Card>
+              <MarketParityStrip state={marketParity.state} reload={marketParity.reload} />
+            </Card>
+            {disparity.status === "loading" && <SectionStatus>보통주/우선주 괴리 데이터를 불러오는 중…</SectionStatus>}
+            {disparity.status === "error" && <SectionStatus>보통주/우선주 괴리 데이터를 일시적으로 불러오지 못했습니다.</SectionStatus>}
+            {disparity.status === "ready" && <CommonPreferredDisparityCardView data={disparity.data} />}
+          </Section>
 
-          {disparity.status === "loading" && <SectionStatus>보통주/우선주 괴리 데이터를 불러오는 중…</SectionStatus>}
-          {disparity.status === "error" && <SectionStatus>보통주/우선주 괴리 데이터를 일시적으로 불러오지 못했습니다.</SectionStatus>}
-          {disparity.status === "ready" && <CommonPreferredDisparityCardView data={disparity.data} />}
+          <Section title="판단 품질">
+            <ForecastCalibrationPanel onEmptyChange={setForecastEmpty} />
+          </Section>
 
-          <ForecastCalibrationPanel />
-          <AnalysisArtifactPanel />
-          <SessionContextTimelinePanel />
+          <Section title="세션 기록">
+            <AnalysisArtifactPanel onEmptyChange={setArtifactEmpty} />
+            <SessionContextTimelinePanel onEmptyChange={setSessionEmpty} />
+          </Section>
 
           <RelatedScreensCard />
+          <ReadOnlyGuardrailNote />
         </div>
       }
     />

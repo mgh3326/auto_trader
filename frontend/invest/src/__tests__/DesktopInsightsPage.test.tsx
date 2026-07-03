@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { DesktopInsightsPage } from "../pages/desktop/DesktopInsightsPage";
 import { useCommonPreferredDisparity } from "../hooks/useCommonPreferredDisparity";
@@ -106,15 +106,46 @@ beforeEach(() => {
   vi.mocked(useCommonPreferredDisparity).mockReturnValue(disparityReady);
 });
 
+afterEach(() => vi.unstubAllGlobals());
+
 test("renders the dedicated read-only insights scaffold", () => {
   render(wrap(<DesktopInsightsPage />));
 
   expect(screen.getByRole("heading", { name: "인사이트" })).toBeInTheDocument();
-  expect(screen.getByText(/ROB-253 decision/)).toBeInTheDocument();
+  // ROB-677: the dev-facing "ROB-253 decision" eyebrow is gone from production UI
+  expect(screen.queryByText(/ROB-253/)).not.toBeInTheDocument();
+  // ROB-677: cards grouped into labelled sections
+  expect(screen.getByRole("heading", { name: "시장 관찰" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "판단 품질" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "세션 기록" })).toBeInTheDocument();
   expect(screen.getByText(/주문·매매·watch mutation API를 호출하지 않습니다/)).toBeInTheDocument();
   expect(screen.getByText("KOSPI ETF parity")).toBeInTheDocument();
   expect(screen.getByText("삼성전자 / 삼성전자우")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "시장 대시보드" })).toHaveAttribute("href", "/invest/market");
+});
+
+test("shows the accumulating banner when all three data panels are empty (ROB-677)", async () => {
+  const fetchMock = vi.fn(async (url: string) => {
+    const u = String(url);
+    let body: unknown = {};
+    if (u.includes("/calibration")) {
+      body = { group_by: "created_by", created_by: null, symbol: null, instrument_type: null, days: null, count: 0, groups: [], as_of: "2026-07-03T00:00:00Z" };
+    } else if (u.includes("/forecasts/open") || u.includes("/forecasts/closed")) {
+      body = { kind: "open", symbol: null, created_by: null, instrument_type: null, count: 0, items: [], as_of: "2026-07-03T00:00:00Z" };
+    } else if (u.includes("/artifacts")) {
+      body = { success: true, count: 0, filters: {}, artifacts: [] };
+    } else if (u.includes("/session-context")) {
+      body = { success: true, count: 0, filters: {}, entries: [] };
+    }
+    return { ok: true, status: 200, json: async () => body };
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+  render(wrap(<DesktopInsightsPage />));
+
+  expect(
+    await screen.findByText(/판단 품질·핸드오프 데이터는 아직 축적 중입니다/),
+  ).toBeInTheDocument();
 });
 
 test("renders loading and error states for independent insight widgets", () => {

@@ -62,7 +62,9 @@ function fmt(ts: string): string {
   return ts.replace("T", " ").slice(0, 16);
 }
 
-export function AnalysisArtifactPanel() {
+export function AnalysisArtifactPanel({
+  onEmptyChange,
+}: { onEmptyChange?: (isEmpty: boolean) => void } = {}) {
   const [state, setState] = useState<LoadState<ArtifactMeta[]>>({
     status: "loading",
   });
@@ -96,6 +98,12 @@ export function AnalysisArtifactPanel() {
       cancelled = true;
     };
   }, [market, kind, readiness]);
+
+  // Report emptiness to the page (ROB-677 banner): empty only when ready + no rows.
+  useEffect(() => {
+    if (!onEmptyChange) return;
+    onEmptyChange(state.status === "ready" && state.data.length === 0);
+  }, [state, onEmptyChange]);
 
   async function openDetail(id: number) {
     setDetail(null);
@@ -163,8 +171,8 @@ export function AnalysisArtifactPanel() {
           </div>
         )}
         {state.status === "ready" && state.data.length === 0 && (
-          <div style={{ padding: 12, color: "var(--fg-3)", fontSize: 13 }}>
-            저장된 분석 아티팩트가 없습니다.
+          <div style={{ padding: 12, color: "var(--fg-3)", fontSize: 13, lineHeight: 1.6 }}>
+            저장된 분석 아티팩트가 없습니다 — 분석 세션이 스크리닝·판정·브리핑을 기록하면 쌓입니다(필터를 넓혀보세요).
           </div>
         )}
         {state.status === "ready" && state.data.length > 0 && (
