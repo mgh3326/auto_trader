@@ -41,6 +41,31 @@ _KST = datetime.timezone(datetime.timedelta(hours=9))
 # NXT(대체거래소) 세션 마감 — SOR day order는 이 시각까지 살아있을 수 있다.
 NXT_CLOSE_KST = datetime.time(hour=20, minute=0)
 
+# --- ROB-671: offline accept-session × side day-order expiry ----------------
+# stdlib-only KST wall-clock windows (no calendar): a same-day accept timestamp
+# is classified into a trading window so expected_expiry/expiry_reason can vary
+# by session × side without any broker/DB/network dependency in the send path.
+_PREMARKET_OPEN = datetime.time(hour=8, minute=0)
+_PREMARKET_CLOSE = datetime.time(hour=8, minute=50)
+_REGULAR_OPEN = datetime.time(hour=9, minute=0)
+_REGULAR_CLOSE = datetime.time(hour=15, minute=30)
+_NXT_AFTER_OPEN = datetime.time(hour=16, minute=0)
+# _NXT_AFTER_CLOSE == NXT_CLOSE_KST (20:00)
+
+SESSION_PREMARKET = "premarket"
+SESSION_REGULAR = "regular"
+SESSION_NXT_AFTER = "nxt_after"
+SESSION_OFF = "off"
+
+# Categorical expiry_reason vocabulary (never a fabricated timestamp/fill).
+REASON_NXT_CARRY = (
+    "nxt_carry"  # premarket/nxt_after/regular-sell → 20:00 (SOR NXT carry)
+)
+REASON_REGULAR_BUY_CONSERVATIVE = "regular_buy_conservative_20_00"
+REASON_REGULAR_BUY_UNSETTLED_1530 = "regular_buy_unsettled_15_30"  # gated downgrade
+REASON_UNKNOWN_SESSION = "unknown_session"  # off-window accept → conservative 20:00
+
+
 _ORDER_NO_KEYS = ("odno", "ord_no")
 _ORIGIN_ORDER_NO_KEYS = ("orgn_odno", "orgn_ord_no")
 _SIDE_NAME_KEYS = ("sll_buy_dvsn_cd_name", "sll_buy_dvsn_name")
@@ -64,6 +89,92 @@ def nxt_session_closed(*, order_date: datetime.date, now: datetime.datetime) -> 
         now = now.replace(tzinfo=_KST)
     close = datetime.datetime.combine(order_date, NXT_CLOSE_KST, tzinfo=_KST)
     return now.astimezone(_KST) >= close
+
+
+def classify_kr_accept_session(accepted_at: datetime.datetime) -> str:
+    """Classify a KST accept timestamp into a KR trading window (stdlib-only).
+
+    Windows (KST, close exclusive): premarket 08:00–08:50, regular 09:00–15:30,
+    nxt_after 16:00–20:00; anything else (incl. the 15:30–16:00 gap) → ``off``.
+    Naive timestamps are assumed KST (app/core/timezone convention).
+    """
+    if accepted_at.tzinfo is None:
+        accepted_at = accepted_at.replace(tzinfo=_KST)
+    t = accepted_at.astimezone(_KST).time()
+    if _PREMARKET_OPEN <= t < _PREMARKET_CLOSE:
+        return SESSION_PREMARKET
+    if _REGULAR_OPEN <= t < _REGULAR_CLOSE:
+        return SESSION_REGULAR
+    if _NXT_AFTER_OPEN <= t < NXT_CLOSE_KST:
+        return SESSION_NXT_AFTER
+    return SESSION_OFF
+
+
+def kr_day_order_expiry(
+    *,
+    accepted_at: datetime.datetime,
+    side: str,
+    accept_session: str | None = None,
+    unsettled_regular_buy_downgrade: bool = False,
+) -> tuple[str | None, str]:
+    """Return ``(expiry_iso, expiry_reason)`` for a KR day order by session × side.
+
+    Conservative default (ROB-671): a regular-session BUY resolves to 20:00 KST
+    (today's behavior) with ``REASON_REGULAR_BUY_CONSERVATIVE`` — the 15:30 death
+    observed on regular-session buys may be a D+2 unsettled-cash cancel rather
+    than pure session expiry, so it is NOT applied by default. Set
+    ``unsettled_regular_buy_downgrade=True`` (operator flag) only once a live
+    measurement confirms the cause. Regular-session SELLs, premarket, and
+    nxt_after all carry to the NXT close (20:00). Returns ``(None, reason)`` only
+    if the timestamp cannot be localized.
+    """
+    if accepted_at.tzinfo is None:
+        local = accepted_at.replace(tzinfo=_KST)
+    else:
+        local = accepted_at.astimezone(_KST)
+    session = accept_session or classify_kr_accept_session(local)
+    normalized_side = (side or "").strip().lower()
+
+    def _iso(t: datetime.time) -> str:
+        return local.replace(
+            hour=t.hour, minute=t.minute, second=0, microsecond=0
+        ).isoformat()
+
+    if session == SESSION_REGULAR and normalized_side == "buy":
+        if unsettled_regular_buy_downgrade:
+            return _iso(_REGULAR_CLOSE), REASON_REGULAR_BUY_UNSETTLED_1530
+        return _iso(NXT_CLOSE_KST), REASON_REGULAR_BUY_CONSERVATIVE
+    if session == SESSION_OFF:
+        # Accepted outside any known window → keep 20:00 but flag the uncertainty.
+        return _iso(NXT_CLOSE_KST), REASON_UNKNOWN_SESSION
+    # premarket / nxt_after / regular-sell → confident NXT carry to 20:00.
+    return _iso(NXT_CLOSE_KST), REASON_NXT_CARRY
+
+
+def parse_kis_ordered_at(ordered_at: str | None) -> datetime.datetime | None:
+    """Parse a KIS ``'YYYYMMDD HHMMSS'`` (KST) string to a tz-aware datetime.
+
+    Tolerates a short HHMM time (right-padded to HHMMSS). Returns None on any
+    malformed input — the caller then omits the derived reason.
+    """
+    if not ordered_at:
+        return None
+    parts = ordered_at.strip().split()
+    if len(parts) < 2:
+        return None
+    ord_dt, ord_tmd = parts[0], parts[1]
+    if len(ord_dt) < 8 or not ord_dt[:8].isdigit():
+        return None
+    tmd = "".join(ch for ch in ord_tmd if ch.isdigit())
+    if len(tmd) < 4:
+        return None
+    tmd = (tmd + "000000")[:6]
+    try:
+        return datetime.datetime.strptime(ord_dt[:8] + tmd, "%Y%m%d%H%M%S").replace(
+            tzinfo=_KST
+        )
+    except ValueError:
+        return None
 
 
 def _lower_keys(row: dict[str, Any]) -> dict[str, Any]:
