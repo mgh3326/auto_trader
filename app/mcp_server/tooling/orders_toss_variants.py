@@ -43,6 +43,15 @@ from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.dto import TossWarningInfo
 from app.services.brokers.toss.errors import TossApiResponseError
 from app.services.brokers.toss.warnings_guard import check_warnings_guard
+from app.services.brokers.toss.market_calendar import get_kr_toss_session_from_toss
+from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
+from app.services.nxt_preflight import (
+    ROUTE_VIA_KIS,
+    RETRY_AT_REGULAR,
+    NxtPreflightVerdict,
+    NxtTradability,
+    evaluate_nxt_preflight,
+)
 from app.services.exchange_rate_service import get_usd_krw_rate_details
 
 logger = logging.getLogger(__name__)
@@ -594,9 +603,12 @@ async def _opposite_pending_error(
         }
 
 
+_MARKET_NOT_SUPPORTED_CODE = "market-not-supported-for-stock"
+
+
 def _toss_error_response(exc: Exception, base: dict[str, Any]) -> dict[str, Any]:
     if isinstance(exc, TossApiResponseError):
-        return {
+        payload = {
             "success": False,
             **base,
             "error": str(exc),
@@ -606,6 +618,14 @@ def _toss_error_response(exc: Exception, base: dict[str, Any]) -> dict[str, Any]
             "message": exc.envelope.message,
             "data": exc.envelope.data,
         }
+        if exc.envelope.code == _MARKET_NOT_SUPPORTED_CODE:
+            payload["error_code"] = "nxt_session_not_tradable"
+            payload["alternatives"] = [RETRY_AT_REGULAR, ROUTE_VIA_KIS]
+            payload["hint"] = (
+                "Symbol is not tradable in the current NXT session. Retry during "
+                "the KRX regular session, or route via KIS SOR."
+            )
+        return payload
     return {
         "success": False,
         **base,
@@ -647,6 +667,32 @@ def _client_order_id_error(
             "error": f"Unsafe client order id rejected: {client_order_id!r}",
         }
     return None
+
+
+async def _nxt_preflight_context(
+    symbol: str,
+    market: Literal["kr", "us"],
+    *,
+    now: datetime | None = None,
+) -> tuple[NxtPreflightVerdict, NxtTradability] | None:
+    """KR-only session-aware NXT preflight. None when market != 'kr' or mode off.
+
+    Fail-open: get_kr_toss_session_from_toss returns None when the Toss calendar
+    is unavailable -> evaluate_nxt_preflight yields an advisory (non-blocking)
+    verdict.
+    """
+    if market != "kr":
+        return None
+    mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
+    if mode == "off":
+        return None
+    moment = now or now_kst()
+    session = await get_kr_toss_session_from_toss(moment)
+    tradability = (await get_kr_nxt_tradability([symbol])).get(symbol) or NxtTradability(
+        nxt_eligible=False, nxt_trading_suspended=None, asof=None
+    )
+    verdict = evaluate_nxt_preflight(session, tradability)
+    return verdict, tradability
 
 
 async def toss_preview_order(
@@ -766,6 +812,14 @@ async def toss_preview_order(
     )
     order_warnings.extend(fill_warnings)
 
+    nxt_preflight_payload: dict[str, Any] | None = None
+    preflight = await _nxt_preflight_context(symbol, mkt)
+    if preflight is not None:
+        verdict, _ = preflight
+        nxt_preflight_payload = verdict.to_dict()
+        if verdict.block:
+            order_warnings.append("nxt_session_not_tradable")
+
     effective_price = price_dec if price_dec is not None else current_price_dec
     cost_context = await _preview_cost_context(
         market=mkt,
@@ -809,6 +863,7 @@ async def toss_preview_order(
         "approval_hash": approval_hash,
         "approval_expires_at": approval_expires_at,
         "sector_concentration": sector_conc,
+        "nxt_preflight": nxt_preflight_payload,
         **cost_context,
     }
     if price_context_message is not None:
@@ -1068,6 +1123,34 @@ async def _toss_place_order_impl(
                 )
             ) is not None:
                 return sell_guard
+
+        # Guard: NXT session preflight. Required mode fail-closes before POST;
+        # warn/optional log but proceed (fail-open on unknown session).
+        preflight = await _nxt_preflight_context(symbol, mkt)
+        if preflight is not None:
+            verdict, _ = preflight
+            if verdict.block:
+                mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
+                if mode == "required":
+                    return {
+                        "success": False,
+                        **base_response,
+                        "error": (
+                            f"NXT session {verdict.session!r} does not support "
+                            f"{symbol} ({verdict.reason}); order not sent."
+                        ),
+                        "error_code": "nxt_session_not_tradable",
+                        "session": verdict.session,
+                        "alternatives": list(verdict.alternatives),
+                    }
+                logger.warning(
+                    "NXT preflight advisory (mode=%s): symbol=%s session=%s "
+                    "reason=%s — proceeding with live send",
+                    mode,
+                    symbol,
+                    verdict.session,
+                    verdict.reason,
+                )
 
         res = None
         try:
