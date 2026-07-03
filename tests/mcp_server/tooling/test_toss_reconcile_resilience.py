@@ -75,7 +75,9 @@ def _toss_err(code: str, status: int):
     "exc",
     [
         TossRateLimitError(
-            TossErrorEnvelope(request_id="r", code="rate-limit-exceeded", message="x", data=None),
+            TossErrorEnvelope(
+                request_id="r", code="rate-limit-exceeded", message="x", data=None
+            ),
             status_code=429,
         ),
         _toss_err("internal-error", 500),
@@ -101,7 +103,9 @@ async def test_transient_error_leaves_row_retryable_not_anomaly(db_session, exc)
     assert refreshed.status == "accepted"  # still selected by list_open next pass
     assert refreshed.requires_manual_review is False
     assert refreshed.manual_review_reason is None
-    assert refreshed.last_reconcile_error is not None  # error recorded for observability
+    assert (
+        refreshed.last_reconcile_error is not None
+    )  # error recorded for observability
 
 
 async def test_404_order_not_found_still_marks_anomaly(db_session):
@@ -122,7 +126,7 @@ async def test_impl_uses_batch_source_and_echoes_window(db_session):
     from app.mcp_server.tooling import toss_live_ledger as mod
     from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
 
-    row = await _accepted(db_session)
+    await _accepted(db_session)
 
     fake_source = AsyncMock()
     fake_source.evidence_for = AsyncMock(
@@ -167,10 +171,17 @@ async def test_impl_batch_build_failure_falls_back_per_row(db_session):
     await _accepted(db_session)
 
     pending = TossFillEvidence(
-        verdict="pending", local_status="pending", broker_status="PENDING",
-        filled_qty=Decimal("0"), avg_price=None, commission=None, tax=None,
-        fee_total=Decimal("0"), settlement_date=None,
-        raw_order={"status": "PENDING"}, reason="pending",
+        verdict="pending",
+        local_status="pending",
+        broker_status="PENDING",
+        filled_qty=Decimal("0"),
+        avg_price=None,
+        commission=None,
+        tax=None,
+        fee_total=Decimal("0"),
+        settlement_date=None,
+        raw_order={"status": "PENDING"},
+        reason="pending",
     )
 
     class _Adapter:
@@ -187,3 +198,56 @@ async def test_impl_batch_build_failure_falls_back_per_row(db_session):
         out = await mod.toss_reconcile_orders_impl(dry_run=False)
 
     assert out["counts"] == {"pending": 1}  # per-row fallback still reconciles
+
+
+async def test_impl_reopen_anomalies_runs_before_list(db_session):
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.models.review import TossLiveOrderLedger
+
+    bug = TossLiveOrderLedger(
+        trade_date=datetime(2026, 7, 1, tzinfo=UTC),
+        broker="toss",
+        account_mode="toss_live",
+        operation_kind="place",
+        market="kr",
+        symbol="034020",
+        side="buy",
+        order_type="limit",
+        client_order_id="cid-bug",
+        broker_order_id="ord-bug",
+        status="anomaly",
+        requires_manual_review=True,
+        manual_review_reason="x",
+        last_reconcile_error={
+            "type": "ValueError",
+            "message": "'equity' is not a valid InstrumentType",
+        },
+    )
+    db_session.add(bug)
+    await db_session.commit()
+    await db_session.refresh(bug)
+
+    with (
+        patch.object(
+            mod,
+            "TossBatchEvidenceSource",
+            **{"build": AsyncMock(side_effect=RuntimeError("no network"))},
+        ),
+        patch.object(
+            mod,
+            "_reconcile_one_toss_row",
+            new=AsyncMock(
+                return_value={"verdict": "pending", "action": "noop_pending"}
+            ),
+        ),
+    ):
+        # Self-healing: NO reopen_anomalies param — recovery runs on every pass.
+        out = await mod.toss_reconcile_orders_impl(market="kr", dry_run=False)
+
+    assert out["reopened"]["reopened"] == 1
+    # reopen flipped the bug row to 'accepted' and it was folded into the
+    # work-list, so it was reconciled this same pass (verdict pending here).
+    reopened = await db_session.get(TossLiveOrderLedger, bug.id)
+    assert reopened.status in {"accepted", "pending"}

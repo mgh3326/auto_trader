@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
-import logging
 from zoneinfo import ZoneInfo
 
 from app.services.brokers.toss import TossReadClient
@@ -214,7 +214,11 @@ class TossBatchEvidenceSource:
         owns_client = client is None
         client = client or TossReadClient.from_settings()
         oldest = min(
-            (getattr(r, "trade_date", None) for r in rows if getattr(r, "trade_date", None)),
+            (
+                getattr(r, "trade_date", None)
+                for r in rows
+                if getattr(r, "trade_date", None)
+            ),
             default=None,
         )
         window_from = _kst_date_str(oldest)

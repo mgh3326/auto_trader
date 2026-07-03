@@ -5,6 +5,8 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+import httpx
+
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
@@ -15,10 +17,12 @@ from app.mcp_server.tooling.order_journal import (
     _link_journal_to_fill,
     _save_order_fill,
 )
-from app.mcp_server.tooling.toss_live_evidence import TossBatchEvidenceSource, TossEvidenceAdapter
+from app.mcp_server.tooling.toss_live_evidence import (
+    TossBatchEvidenceSource,
+    TossEvidenceAdapter,
+)
 from app.models.review import TossLiveOrderLedger
 from app.monitoring.trade_notifier import get_trade_notifier
-import httpx
 from app.services.brokers.toss.errors import TossApiResponseError, TossRateLimitError
 from app.services.fill_notification import (
     is_fill_notifiable,
@@ -548,13 +552,31 @@ async def toss_reconcile_orders_impl(
     dry_run: bool = True,
     limit: int = 100,
 ) -> dict[str, Any]:
+    # Self-healing reopen + list_open run in ONE session block so both the
+    # recoverable-anomaly rows and the open rows are live-session ORM objects that
+    # detach together at block exit (matching the existing detached-row loop).
     async with _order_session_factory()() as db:
-        rows = await TossLiveOrderLedgerService(db).list_open(
+        service = TossLiveOrderLedgerService(db)
+        reopen_report = await service.reopen_anomalies_for_reconcile(
+            dry_run=dry_run, market=market, symbol=symbol, limit=limit
+        )
+        reopened_rows = reopen_report.pop("rows")  # ORM rows, not echoed
+        open_rows = await service.list_open(
             symbol=symbol,
             order_id=order_id,
             market=market,
             limit=limit,
         )
+        # Work-list = list_open rows + reopened rows, deduped by ledger id
+        # (a non-dry-run reopened row is now 'accepted' and may also be in
+        # open_rows). Touch attributes here while the session is still open.
+        seen: set[int] = set()
+        rows: list[TossLiveOrderLedger] = []
+        for row in [*open_rows, *reopened_rows]:
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            rows.append(row)
 
     reconciled: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
@@ -581,9 +603,7 @@ async def toss_reconcile_orders_impl(
                     row, dry_run=dry_run, evidence_source=evidence_source
                 )
             except Exception as exc:  # noqa: BLE001 — classified in the handler
-                outcome = await _handle_reconcile_row_error(
-                    row, exc, dry_run=dry_run
-                )
+                outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)
             reconciled.append(outcome)
             verdict = str(outcome.get("verdict", "anomaly"))
             counts[verdict] = counts.get(verdict, 0) + 1
@@ -596,6 +616,7 @@ async def toss_reconcile_orders_impl(
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
+        "reopened": reopen_report,  # {dry_run, reopened, candidates}
         "message": (
             f"Reconciled {len(reconciled)} Toss live order(s) "
             f"(dry_run={dry_run}): {counts}"

@@ -46,13 +46,19 @@ class _FakeClient:
         self._open = open_orders
         self._closed_pages = list(closed_pages)
         self.list_calls: list[dict] = []
-        self.get_order = AsyncMock(
-            return_value=_order("older", "FILLED", "3", "85000")
-        )
+        self.get_order = AsyncMock(return_value=_order("older", "FILLED", "3", "85000"))
         self.aclose = AsyncMock()
 
-    async def list_orders(self, *, status, symbol=None, from_date=None,
-                          to_date=None, cursor=None, limit=None):
+    async def list_orders(
+        self,
+        *,
+        status,
+        symbol=None,
+        from_date=None,
+        to_date=None,
+        cursor=None,
+        limit=None,
+    ):
         self.list_calls.append(
             {"status": status, "from": from_date, "to": to_date, "cursor": cursor}
         )
@@ -91,9 +97,7 @@ async def test_build_maps_open_and_closed_without_per_row_get_order():
 async def test_row_outside_window_falls_back_to_single_get_order():
     client = _FakeClient(
         open_orders=[],
-        closed_pages=[
-            TossOrdersPage(orders=[], next_cursor=None, has_next=False)
-        ],
+        closed_pages=[TossOrdersPage(orders=[], next_cursor=None, has_next=False)],
     )
     source = await TossBatchEvidenceSource.build(rows=[_row("open-1")], client=client)
     ev = await source.evidence_for(_row("older"))
@@ -109,8 +113,11 @@ async def test_closed_pagination_is_capped_and_flagged(monkeypatch):
     monkeypatch.setattr(ev_mod, "_TOSS_CLOSED_PAGE_CAP", 2)
     # 3 pages available, each says has_next -> cap stops at 2
     pages = [
-        TossOrdersPage(orders=[_order(f"c{i}", "FILLED", "3", "85000")],
-                       next_cursor=f"cur{i}", has_next=True)
+        TossOrdersPage(
+            orders=[_order(f"c{i}", "FILLED", "3", "85000")],
+            next_cursor=f"cur{i}",
+            has_next=True,
+        )
         for i in range(3)
     ]
     client = _FakeClient(open_orders=[], closed_pages=pages)

@@ -34,7 +34,9 @@ def _register() -> str:
 def test_description_enumerates_root_cause_class_values():
     desc = _register()
     for value in VALID_ROOT_CAUSE_CLASSES:
-        assert value in desc, f"root_cause_class value {value!r} missing from description"
+        assert value in desc, (
+            f"root_cause_class value {value!r} missing from description"
+        )
 
 
 def test_description_enumerates_trigger_type_values():
