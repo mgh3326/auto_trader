@@ -109,6 +109,12 @@ For each row, verify the Toss broker UI/API order detail before booking a fill,
 closing the row, or resetting it for another reconcile attempt. Do not infer a
 cancel or fill from a missing/failed order-detail response.
 
+## Transient vs Anomaly (ROB-669)
+
+To prevent transient network or broker outages from locking rows permanently, `toss_reconcile_orders` distinguishes between transient failures and anomalies:
+- **Transient Failures**: Timeout, transport errors, HTTP 429/5xx, or specific transient error codes (`rate-limit-exceeded`, `internal-error`, `maintenance`, `expired-token`, etc.). The row status is left unchanged (remains retryable/open), and the error payload is stored in `last_reconcile_error` for observability.
+- **Anomalies**: Broker-confirmed contradictions (e.g. 404 order-not-found, 403 access failure, or idempotency conflict). The row is marked with `status='anomaly'` and `requires_manual_review=true` to park it.
+
 ## Re-opening `'equity'` InstrumentType Anomalies (ROB-631)
 
 Before the ROB-631 fix, KR equity fills were booked with the invalid instrument
@@ -119,49 +125,48 @@ type literal `"equity"`. `InstrumentType("equity")` raised
 (e.g. ledger 139, 169 두산에너빌리티 034020).
 
 The fix changes the KR branch to `"equity_kr"`. New KR fills book normally, but
-**existing anomaly rows are not re-processed automatically**: `list_open` only
-selects `status IN ('accepted','pending','partial')`, and there is no
-service-level reset method. The anomaly path wrote no `filled_qty` / `trade_id`
-/ `journal_id`, so re-booking is safe and idempotent once the row is re-opened
-(`review.trades` insert is `ON CONFLICT DO NOTHING` on
-`uq_review_trades_account_order`; the buy journal is gated on `journal_id IS NULL`).
+existing anomaly rows are not re-processed automatically.
 
-Remediation (operator, one-off after deploying the fix):
+Remediation (operator, one-off after deploying the fix) — use the existing
+reconcile tool; recovery is self-healing, no special flag. The reconcile pass only
+reopens no-fill anomaly rows (filled_qty NULL/0 AND trade_id NULL) whose
+last_reconcile_error is the pre-ROB-631 InstrumentType signature or a transient
+(rate-limit/5xx/token/network) signature. It never reopens 403/404/duplicate
+contradictions.
 
-1. Identify the bug-caused rows — these carry the exact InstrumentType error and
-   nothing else. **Any other anomaly (e.g. 403/non-JSON) must be verified
-   against the Toss broker order detail first and must NOT be reset blindly.**
-
-   ```sql
-   SELECT id, market, symbol, broker_order_id, status, last_reconcile_error
-   FROM review.toss_live_order_ledger
-   WHERE status = 'anomaly'
-     AND requires_manual_review IS TRUE
-     AND last_reconcile_error->>'type' = 'ValueError'
-     AND last_reconcile_error->>'message' LIKE '%is not a valid InstrumentType%';
-   ```
-
-2. After confirming the rows above are exactly the bug-caused ones, re-open them
-   so reconcile can pick them up again:
-
-   ```sql
-   UPDATE review.toss_live_order_ledger
-   SET status = 'accepted',
-       requires_manual_review = FALSE,
-       manual_review_reason = NULL,
-       last_reconcile_error = NULL
-   WHERE id IN (139, 169);  -- replace with the ids confirmed in step 1
-   ```
-
-3. Re-run reconcile against the broker order detail to book the fills:
+1. Preview which rows would reopen (no mutation):
 
    ```bash
-   toss_reconcile_orders(market="kr", symbol="034020", dry_run=True)
-   toss_reconcile_orders(market="kr", symbol="034020", dry_run=False)
+   toss_reconcile_orders(market="kr", dry_run=True)
    ```
 
-4. Confirm the rows now show `status='filled'` (or `partial`) with non-null
-   `trade_id` / `journal_id`, and that `review.trades` + the buy journal exist.
+   Inspect the `reopened.candidates` list and confirm each is a bug/transient row.
+
+2. Apply: run the same pass without dry_run — qualifying rows are reopened AND
+   reconciled together:
+
+   ```bash
+   toss_reconcile_orders(market="kr", dry_run=False)
+   ```
+
+3. Confirm the rows now show `status='filled'` (or `partial`) with non-null
+   `trade_id` / `journal_id`.
+
+> **Operator note — anomalies that are NOT auto-reopened.** Anomaly rows whose
+> `last_reconcile_error` does NOT match the auto-reopen signatures (e.g. a genuine
+> 403 access failure, a 404 order-not-found, a duplicate/idempotency contradiction,
+> or any row that already carries fill evidence) are **intentionally left as
+> `anomaly`** and never appear in `reopened.candidates`. These still require manual
+> review: verify each against the Toss broker order detail before taking any action.
+
+Audit Query (to list all anomalies for manual review):
+
+```sql
+SELECT id, market, symbol, broker_order_id, status, last_reconcile_error
+FROM review.toss_live_order_ledger
+WHERE status = 'anomaly'
+  AND requires_manual_review IS TRUE;
+```
 
 ## US FX PnL Split
 

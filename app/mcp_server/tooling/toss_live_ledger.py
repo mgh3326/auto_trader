@@ -5,6 +5,8 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+import httpx
+
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
@@ -15,10 +17,13 @@ from app.mcp_server.tooling.order_journal import (
     _link_journal_to_fill,
     _save_order_fill,
 )
-from app.mcp_server.tooling.toss_live_evidence import TossEvidenceAdapter
+from app.mcp_server.tooling.toss_live_evidence import (
+    TossBatchEvidenceSource,
+    TossEvidenceAdapter,
+)
 from app.models.review import TossLiveOrderLedger
 from app.monitoring.trade_notifier import get_trade_notifier
-from app.services.brokers.toss.errors import TossApiResponseError
+from app.services.brokers.toss.errors import TossApiResponseError, TossRateLimitError
 from app.services.fill_notification import (
     is_fill_notifiable,
     normalize_toss_fill,
@@ -207,7 +212,10 @@ async def _notify_toss_fill(
 
 
 async def _reconcile_one_toss_row(
-    row: TossLiveOrderLedger, *, dry_run: bool
+    row: TossLiveOrderLedger,
+    *,
+    dry_run: bool,
+    evidence_source: Any | None = None,
 ) -> dict[str, Any]:
     base = {
         "ledger_id": row.id,
@@ -217,7 +225,10 @@ async def _reconcile_one_toss_row(
         "symbol": row.symbol,
         "operation_kind": row.operation_kind,
     }
-    evidence = await TossEvidenceAdapter().fetch_evidence(row)
+    if evidence_source is not None:
+        evidence = await evidence_source.evidence_for(row)
+    else:
+        evidence = await TossEvidenceAdapter().fetch_evidence(row)
     base["verdict"] = evidence.verdict
     base["broker_status"] = evidence.broker_status
     base["local_status"] = evidence.local_status
@@ -441,6 +452,98 @@ async def _reconcile_one_toss_row(
     return base
 
 
+# ROB-669 — transient reconcile failures (could-not-verify-right-now) must NOT
+# become permanent anomalies. Reserve anomaly for broker-confirmed contradiction.
+_TRANSIENT_TOSS_CODES = frozenset(
+    {
+        "rate-limit-exceeded",
+        "edge-rate-limit-exceeded",
+        "internal-error",
+        "maintenance",
+        "expired-token",
+        "invalid-token",
+    }
+)
+_TRANSIENT_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_transient_reconcile_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
+        return True
+    if isinstance(exc, TossRateLimitError):
+        return True
+    if isinstance(exc, TossApiResponseError):
+        if exc.status_code in _TRANSIENT_HTTP_STATUSES:
+            return True
+        return exc.envelope.code in _TRANSIENT_TOSS_CODES
+    # 404 order-not-found, 403/non-JSON, idempotency conflict, and any
+    # unclassifiable code fault fall through to anomaly (surface it, recoverable
+    # via reopen_anomalies once fixed) — never silently retried forever.
+    return False
+
+
+def _transient_outcome(
+    row: TossLiveOrderLedger, exc: Exception, error_details: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "ledger_id": row.id,
+        "order_id": row.broker_order_id,
+        "client_order_id": row.client_order_id,
+        "market": row.market,
+        "symbol": row.symbol,
+        "operation_kind": row.operation_kind,
+        "verdict": "deferred",
+        "action": "deferred_transient_retryable",
+        "retryable": True,
+        "error": str(exc) or exc.__class__.__name__,
+        "error_details": error_details,
+    }
+
+
+async def _handle_reconcile_row_error(
+    row: TossLiveOrderLedger, exc: Exception, *, dry_run: bool
+) -> dict[str, Any]:
+    error_details = _reconcile_error_payload(exc)
+    if _is_transient_reconcile_error(exc):
+        logger.warning(
+            "toss reconcile transient (left retryable) order_id=%s: %s",
+            row.broker_order_id,
+            exc,
+        )
+        if not dry_run:
+            async with _order_session_factory()() as db:
+                await TossLiveOrderLedgerService(db).record_transient_reconcile_error(
+                    ledger_id=row.id, error=error_details
+                )
+        return _transient_outcome(row, exc, error_details)
+
+    logger.warning(
+        "toss reconcile anomaly (broker-confirmed) order_id=%s: %s",
+        row.broker_order_id,
+        exc,
+    )
+    reason = _manual_review_reason(row, exc)
+    if not dry_run:
+        async with _order_session_factory()() as db:
+            await TossLiveOrderLedgerService(db).mark_manual_review(
+                ledger_id=row.id, reason=reason, error=error_details
+            )
+    return {
+        "ledger_id": row.id,
+        "order_id": row.broker_order_id,
+        "client_order_id": row.client_order_id,
+        "market": row.market,
+        "symbol": row.symbol,
+        "operation_kind": row.operation_kind,
+        "verdict": "anomaly",
+        "action": "requires_manual_review",
+        "requires_manual_review": True,
+        "manual_review_reason": reason,
+        "error": str(exc) or exc.__class__.__name__,
+        "error_details": error_details,
+    }
+
+
 async def toss_reconcile_orders_impl(
     *,
     symbol: str | None = None,
@@ -449,54 +552,81 @@ async def toss_reconcile_orders_impl(
     dry_run: bool = True,
     limit: int = 100,
 ) -> dict[str, Any]:
+    # Self-healing reopen + list_open run in ONE session block so both the
+    # recoverable-anomaly rows and the open rows are live-session ORM objects that
+    # detach together at block exit (matching the existing detached-row loop).
     async with _order_session_factory()() as db:
-        rows = await TossLiveOrderLedgerService(db).list_open(
+        service = TossLiveOrderLedgerService(db)
+        reopen_report = await service.reopen_anomalies_for_reconcile(
+            dry_run=dry_run, market=market, symbol=symbol, limit=limit
+        )
+        reopened_rows = reopen_report.pop("rows")  # ORM rows, not echoed
+        open_rows = await service.list_open(
             symbol=symbol,
             order_id=order_id,
             market=market,
             limit=limit,
         )
+        # Work-list = list_open rows + reopened rows, deduped by ledger id
+        # (a non-dry-run reopened row is now 'accepted' and may also be in
+        # open_rows). Touch attributes here while the session is still open.
+        seen: set[int] = set()
+        rows: list[TossLiveOrderLedger] = []
+        for row in [*open_rows, *reopened_rows]:
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            rows.append(row)
 
     reconciled: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
-    for row in rows:
-        try:
-            outcome = await _reconcile_one_toss_row(row, dry_run=dry_run)
-        except Exception as exc:
-            logger.warning(
-                "toss reconcile failed order_id=%s: %s", row.broker_order_id, exc
-            )
-            error_details = _reconcile_error_payload(exc)
-            reason = _manual_review_reason(row, exc)
-            if not dry_run:
-                async with _order_session_factory()() as db:
-                    await TossLiveOrderLedgerService(db).mark_manual_review(
-                        ledger_id=row.id,
-                        reason=reason,
-                        error=error_details,
-                    )
-            outcome = {
-                "ledger_id": row.id,
-                "order_id": row.broker_order_id,
-                "client_order_id": row.client_order_id,
-                "market": row.market,
-                "symbol": row.symbol,
-                "operation_kind": row.operation_kind,
-                "verdict": "anomaly",
-                "action": "requires_manual_review",
-                "requires_manual_review": True,
-                "manual_review_reason": reason,
-                "error": str(exc) or exc.__class__.__name__,
-                "error_details": error_details,
-            }
-        reconciled.append(outcome)
-        verdict = str(outcome.get("verdict", "anomaly"))
-        counts[verdict] = counts.get(verdict, 0) + 1
 
-    return {
+    evidence_source = None
+    if rows:
+        try:
+            evidence_source = await TossBatchEvidenceSource.build(
+                rows=rows, symbol=symbol
+            )
+        except Exception as exc:  # noqa: BLE001 — batch is an optimization
+            # Any batch-build failure (disabled/network/transient) degrades to the
+            # per-row single-fetch path; per-row R1 classification still applies.
+            logger.warning(
+                "toss reconcile batch evidence build failed; per-row fallback: %s",
+                exc,
+            )
+            evidence_source = None
+
+    try:
+        for row in rows:
+            try:
+                outcome = await _reconcile_one_toss_row(
+                    row, dry_run=dry_run, evidence_source=evidence_source
+                )
+            except Exception as exc:  # noqa: BLE001 — classified in the handler
+                outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)
+            reconciled.append(outcome)
+            verdict = str(outcome.get("verdict", "anomaly"))
+            counts[verdict] = counts.get(verdict, 0) + 1
+    finally:
+        if evidence_source is not None:
+            await evidence_source.aclose()
+
+    result: dict[str, Any] = {
         "success": True,
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
-        "message": f"Reconciled {len(reconciled)} Toss live order(s) (dry_run={dry_run}): {counts}",
+        "reopened": reopen_report,  # {dry_run, reopened, candidates}
+        "message": (
+            f"Reconciled {len(reconciled)} Toss live order(s) "
+            f"(dry_run={dry_run}): {counts}"
+        ),
     }
+    if evidence_source is not None:
+        result["window"] = {
+            "from": evidence_source.window_from,
+            "to": evidence_source.window_to,
+            "closed_pages_capped": evidence_source.closed_pages_capped,
+            "single_fetch_fallbacks": evidence_source.single_fetch_count,
+        }
+    return result

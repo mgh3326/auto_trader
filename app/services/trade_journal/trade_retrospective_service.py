@@ -306,14 +306,18 @@ async def save_retrospective(
     # explicit None clears it.
     trigger_set = trigger_type is not _UNSET and trigger_type is not None
     if trigger_set and trigger_type not in VALID_TRIGGER_TYPES:
-        raise RetrospectiveValidationError(f"invalid trigger_type: {trigger_type}")
+        raise RetrospectiveValidationError(
+            f"invalid trigger_type: {trigger_type} "
+            f"(allowed: {sorted(VALID_TRIGGER_TYPES)})"
+        )
     if (
         root_cause_class is not _UNSET
         and root_cause_class is not None
         and root_cause_class not in VALID_ROOT_CAUSE_CLASSES
     ):
         raise RetrospectiveValidationError(
-            f"invalid root_cause_class: {root_cause_class}"
+            f"invalid root_cause_class: {root_cause_class} "
+            f"(allowed: {sorted(VALID_ROOT_CAUSE_CLASSES)})"
         )
 
     next_actions_value: Any = _UNSET

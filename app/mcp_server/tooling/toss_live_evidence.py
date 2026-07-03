@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.services.brokers.toss import TossReadClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -156,3 +160,124 @@ class TossEvidenceAdapter:
             return classify_toss_order_evidence(order)
         finally:
             await client.aclose()
+
+
+_KST = ZoneInfo("Asia/Seoul")
+# Bound CLOSED pagination so a huge order history cannot blow the time budget.
+_TOSS_CLOSED_PAGE_CAP = 20
+
+
+def _kst_date_str(dt: datetime | None) -> str:
+    ref = dt or datetime.now(_KST)
+    return ref.astimezone(_KST).date().isoformat()
+
+
+class TossBatchEvidenceSource:
+    """ROB-669 (absorbs ROB-632) — batched broker evidence for reconcile.
+
+    Replaces the per-row ``get_order`` N+1 (fresh client + OAuth + account-seq
+    resolve + rate-limit wait per open ledger row) with a bounded set of list
+    calls: one ``GET /orders?status=OPEN`` (all open orders in a single call —
+    Toss ignores cursor/limit for OPEN) plus windowed ``GET /orders?status=CLOSED``
+    cursor pagination from the oldest open ledger row's KST date to today. List
+    rows carry the same execution fields the single-order classifier consumes, so
+    ``classify_toss_order_evidence`` is reused unchanged. Rows older than the
+    window fall back to a single ``get_order`` (never dropped).
+    """
+
+    def __init__(
+        self,
+        client: TossReadClient,
+        *,
+        order_map: dict[str, Any],
+        window_from: str,
+        window_to: str,
+        closed_pages_capped: bool,
+        owns_client: bool,
+    ) -> None:
+        self._client = client
+        self._order_map = order_map
+        self.window_from = window_from
+        self.window_to = window_to
+        self.closed_pages_capped = closed_pages_capped
+        self._owns_client = owns_client
+        self.single_fetch_count = 0
+
+    @classmethod
+    async def build(
+        cls,
+        *,
+        rows: list[Any],
+        symbol: str | None = None,
+        client: TossReadClient | None = None,
+    ) -> TossBatchEvidenceSource:
+        owns_client = client is None
+        client = client or TossReadClient.from_settings()
+        oldest = min(
+            (
+                getattr(r, "trade_date", None)
+                for r in rows
+                if getattr(r, "trade_date", None)
+            ),
+            default=None,
+        )
+        window_from = _kst_date_str(oldest)
+        window_to = _kst_date_str(None)
+
+        order_map: dict[str, Any] = {}
+        # 1) OPEN — one call returns all open orders.
+        open_page = await client.list_orders(status="OPEN", symbol=symbol)
+        for order in open_page.orders:
+            order_map[str(order.order_id)] = order
+
+        # 2) CLOSED — windowed cursor pagination, capped.
+        cursor: str | None = None
+        pages = 0
+        capped = False
+        while True:
+            page = await client.list_orders(
+                status="CLOSED",
+                symbol=symbol,
+                from_date=window_from,
+                to_date=window_to,
+                cursor=cursor,
+                limit=100,
+            )
+            for order in page.orders:
+                order_map[str(order.order_id)] = order  # CLOSED wins over OPEN
+            pages += 1
+            if not page.has_next or not page.next_cursor:
+                break
+            if pages >= _TOSS_CLOSED_PAGE_CAP:
+                capped = True
+                logger.warning(
+                    "toss reconcile CLOSED pagination capped at %d pages "
+                    "(window %s..%s); older rows use single-order fallback",
+                    _TOSS_CLOSED_PAGE_CAP,
+                    window_from,
+                    window_to,
+                )
+                break
+            cursor = page.next_cursor
+
+        return cls(
+            client,
+            order_map=order_map,
+            window_from=window_from,
+            window_to=window_to,
+            closed_pages_capped=capped,
+            owns_client=owns_client,
+        )
+
+    async def evidence_for(self, row: Any) -> TossFillEvidence:
+        order = self._order_map.get(str(row.broker_order_id))
+        if order is not None:
+            return classify_toss_order_evidence(order)
+        # Older than the window (or a pre-window replacement original): single fetch.
+        self.single_fetch_count += 1
+        order = await self._client.get_order(str(row.broker_order_id))
+        return classify_toss_order_evidence(order)
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()

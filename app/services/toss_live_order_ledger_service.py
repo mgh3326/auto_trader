@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import TossLiveOrderLedger
@@ -300,3 +300,132 @@ class TossLiveOrderLedgerService:
         row.last_reconcile_error = error
         row.reconciled_at = datetime.now(UTC)
         await self._db.commit()
+
+    async def record_transient_reconcile_error(
+        self,
+        *,
+        ledger_id: int,
+        error: dict[str, Any],
+    ) -> None:
+        """ROB-669 — a transient reconcile failure (rate-limit/5xx/token/network).
+
+        Record the error for observability WITHOUT closing the row: status,
+        requires_manual_review, manual_review_reason, and reconciled_at are left
+        untouched so ``list_open`` re-selects the row and the next pass retries.
+        This is the opposite of ``mark_manual_review`` (broker-confirmed anomaly).
+        """
+        row = await self._db.get(TossLiveOrderLedger, ledger_id)
+        if row is None:
+            return
+        row.last_reconcile_error = error
+        await self._db.commit()
+
+    async def reopen_anomalies_for_reconcile(
+        self,
+        *,
+        dry_run: bool = True,
+        market: str | None = None,
+        symbol: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """ROB-669 R2 — reopen recoverable anomaly rows for another reconcile.
+
+        Guards (all required): status='anomaly', requires_manual_review, NO fill
+        evidence (filled_qty NULL/0 AND trade_id NULL), and a reopenable
+        last_reconcile_error signature. Reopened rows go back to 'accepted' so the
+        next reconcile pass re-selects them via list_open; re-booking is idempotent
+        (review.trades ON CONFLICT DO NOTHING; buy journal gated on journal_id IS
+        NULL). Never reopens 403/404/idempotency-conflict anomalies.
+        """
+        stmt = select(TossLiveOrderLedger).where(
+            TossLiveOrderLedger.status == "anomaly",
+            TossLiveOrderLedger.requires_manual_review.is_(True),
+            TossLiveOrderLedger.trade_id.is_(None),
+            or_(
+                TossLiveOrderLedger.filled_qty.is_(None),
+                TossLiveOrderLedger.filled_qty == 0,
+            ),
+        )
+        if market:
+            stmt = stmt.where(TossLiveOrderLedger.market == market)
+        if symbol:
+            stmt = stmt.where(TossLiveOrderLedger.symbol == symbol)
+        stmt = stmt.order_by(TossLiveOrderLedger.created_at.asc()).limit(limit)
+        rows = list((await self._db.execute(stmt)).scalars().all())
+
+        candidates = [
+            r for r in rows if _anomaly_error_is_reopenable(r.last_reconcile_error)
+        ]
+        reopened = 0
+        candidate_meta = [
+            {
+                "ledger_id": r.id,
+                "symbol": r.symbol,
+                "market": r.market,
+                "broker_order_id": r.broker_order_id,
+                "error_type": (r.last_reconcile_error or {}).get("type"),
+                "error_message": (r.last_reconcile_error or {}).get("message"),
+            }
+            for r in candidates
+        ]  # snapshot BEFORE mutation so the echo still shows the original error
+        if not dry_run and candidates:
+            for r in candidates:
+                r.status = "accepted"
+                r.requires_manual_review = False
+                r.manual_review_reason = None
+                r.last_reconcile_error = None
+                reopened += 1
+            await self._db.commit()
+            # Re-load so the caller can still read attributes when it merges these
+            # rows into the reconcile work-list within the same session block.
+            for r in candidates:
+                await self._db.refresh(r)
+
+        return {
+            "dry_run": dry_run,
+            "reopened": reopened,
+            "rows": candidates,  # ORM rows folded into the reconcile work-list
+            "candidates": candidate_meta,
+        }
+
+
+# ROB-669 — anomaly rows are only auto-reopenable when the recorded error is a
+# known-safe signature: the pre-ROB-631 invalid-InstrumentType code fault, or a
+# transient (rate-limit / 5xx / token / network) failure. 403/404/idempotency
+# contradictions are NEVER auto-reopened (operator must verify broker detail).
+_REOPENABLE_TRANSIENT_CODES = frozenset(
+    {
+        "rate-limit-exceeded",
+        "edge-rate-limit-exceeded",
+        "internal-error",
+        "maintenance",
+        "expired-token",
+        "invalid-token",
+    }
+)
+_REOPENABLE_TRANSIENT_HTTP = frozenset({429, 500, 502, 503, 504})
+_REOPENABLE_TRANSIENT_TYPES = frozenset(
+    {
+        "ReadTimeout",
+        "ConnectTimeout",
+        "TimeoutException",
+        "ConnectError",
+        "TransportError",
+        "TossRateLimitError",
+    }
+)
+
+
+def _anomaly_error_is_reopenable(err: dict[str, Any] | None) -> bool:
+    if not err:
+        return False
+    message = str(err.get("message") or "")
+    if "is not a valid InstrumentType" in message:
+        return True
+    code = str(err.get("code") or "")
+    if code in _REOPENABLE_TRANSIENT_CODES:
+        return True
+    status = err.get("status_code")
+    if isinstance(status, int) and status in _REOPENABLE_TRANSIENT_HTTP:
+        return True
+    return str(err.get("type") or "") in _REOPENABLE_TRANSIENT_TYPES
