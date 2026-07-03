@@ -2,7 +2,9 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
 import { MarketParityStrip } from "../../components/home/MarketParityStrip";
+import { AnalysisArtifactPanel } from "../../components/insights/AnalysisArtifactPanel";
 import { ForecastCalibrationPanel } from "../../components/insights/ForecastCalibrationPanel";
+import { SessionContextTimelinePanel } from "../../components/insights/SessionContextTimelinePanel";
 import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
@@ -92,6 +94,8 @@ export function DesktopInsightsPage() {
           {disparity.status === "ready" && <CommonPreferredDisparityCardView data={disparity.data} />}
 
           <ForecastCalibrationPanel />
+          <AnalysisArtifactPanel />
+          <SessionContextTimelinePanel />
 
           <RelatedScreensCard />
         </div>

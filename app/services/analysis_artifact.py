@@ -15,6 +15,7 @@ from app.core.timezone import KST, now_kst
 from app.models.analysis_artifact import AnalysisArtifact
 from app.schemas.analysis_artifact import (
     AnalysisArtifactKindLiteral,
+    AnalysisArtifactReadinessLiteral,
     AnalysisArtifactSave,
 )
 from app.schemas.investment_reports import MarketLiteral
@@ -158,6 +159,7 @@ class AnalysisArtifactService:
         limit: int = 20,
         correlation_id: str | None = None,
         account_scope: str | None = None,
+        readiness_label: AnalysisArtifactReadinessLiteral | None = None,
     ) -> list[AnalysisArtifact]:
         """Query artifacts with filters, newest ``as_of`` first."""
         capped_limit = max(1, min(int(limit), 100))
@@ -186,6 +188,8 @@ class AnalysisArtifactService:
             stmt = stmt.where(AnalysisArtifact.correlation_id == correlation_id)
         if account_scope is not None:
             stmt = stmt.where(AnalysisArtifact.account_scope == account_scope)
+        if readiness_label is not None:
+            stmt = stmt.where(AnalysisArtifact.readiness_label == readiness_label)
         if not include_stale:
             now = now_kst()
             stmt = stmt.where(

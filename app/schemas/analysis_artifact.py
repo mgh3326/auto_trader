@@ -115,6 +115,7 @@ class AnalysisArtifactListRequest(BaseModel):
     limit: int = Field(default=20, ge=1)
     correlation_id: str | None = None
     account_scope: str | None = None
+    readiness_label: AnalysisArtifactReadinessLiteral | None = None
 
     model_config = ConfigDict(extra="forbid")
 
