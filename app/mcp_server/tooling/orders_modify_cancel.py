@@ -186,6 +186,7 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     )
 
     status = _map_kis_status(
+        ordered,
         filled,
         remaining,
         _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
@@ -219,6 +220,7 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         "symbol": symbol,
         "side": side,
         "status": status,
+        "is_live": status in ("pending", "partial"),
         "ordered_qty": ordered,
         "filled_qty": filled,
         "remaining_qty": remaining,

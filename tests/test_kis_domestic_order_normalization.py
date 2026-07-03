@@ -151,3 +151,36 @@ def test_normalize_kis_domestic_order_keeps_output_pending_status() -> None:
     assert normalized["status"] == "pending"
     assert normalized["filled_qty"] == 0
     assert normalized["remaining_qty"] == 10
+
+
+@pytest.mark.unit
+def test_normalize_kis_domestic_order_dead_order_is_expired_not_live() -> None:
+    # ROB-657 repro: 기아 000270, 8 ordered, 0 filled, 0 remaining.
+    normalized = _normalize_kis_domestic_order(
+        _build_domestic_order(
+            pdno="000270",
+            ord_qty="8",
+            tot_ccld_qty="0",
+            rmn_qty="0",
+        )
+    )
+
+    assert normalized["status"] == "expired"
+    assert normalized["is_live"] is False
+    assert normalized["ordered_qty"] == 8
+    assert normalized["filled_qty"] == 0
+    assert normalized["remaining_qty"] == 0
+
+
+@pytest.mark.unit
+def test_normalize_kis_domestic_order_live_pending_is_live() -> None:
+    normalized = _normalize_kis_domestic_order(
+        _build_domestic_order(
+            ord_qty="10",
+            tot_ccld_qty="0",
+            rmn_qty="10",
+        )
+    )
+
+    assert normalized["status"] == "pending"
+    assert normalized["is_live"] is True
