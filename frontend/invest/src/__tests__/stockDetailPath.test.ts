@@ -24,3 +24,16 @@ test("stock detail path supports lowercase route market keys", () => {
   expect(stockDetailPath("us", "BRK-B")).toBe("/stocks/us/BRK-B");
   expect(stockDetailPath("crypto", "BTC")).toBe("/stocks/crypto/KRW-BTC");
 });
+
+test("stock detail path normalizes dot-format crypto symbols (KRW.XRP → KRW-XRP)", () => {
+  expect(stockDetailPath("crypto", "KRW.XRP")).toBe("/stocks/crypto/KRW-XRP");
+  expect(stockDetailPath("CRYPTO", "KRW.ETH")).toBe("/stocks/crypto/KRW-ETH");
+  expect(stockDetailPath("crypto", "krw.sol")).toBe("/stocks/crypto/KRW-SOL");
+  expect(stockDetailRouteSymbol("crypto", "KRW.XRP")).toBe("KRW-XRP");
+});
+
+test("stock detail path leaves already-valid crypto dash/bare forms unchanged", () => {
+  // retro / next-action symbols arrive dash-form; must not regress.
+  expect(stockDetailPath("crypto", "KRW-JUP")).toBe("/stocks/crypto/KRW-JUP");
+  expect(stockDetailPath("crypto", "XRP")).toBe("/stocks/crypto/KRW-XRP");
+});
