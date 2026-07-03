@@ -1,9 +1,11 @@
 // /invest/insights (mobile) — read-only market insight cards.
 // Mirrors DesktopInsightsPage.tsx's panel set, section order, and page-local
-// coordination state (ROB-681). DesktopInsightsPage.tsx itself is not edited
-// here — ROB-682 owns that file — so the small non-exported helpers and the
+// coordination state (ROB-681). The small non-exported helpers and the
 // empty/crosslink coordination state below are duplicated rather than shared
-// (see docs/plans/ROB-681-mobile-insights-viewport-dispatch.md).
+// (see docs/plans/ROB-681-mobile-insights-viewport-dispatch.md); ROB-682
+// re-keyed the crosslink state on both this file and DesktopInsightsPage.tsx
+// in lockstep (symbol key instead of correlation_id) to keep the duplicate
+// copies from drifting apart.
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
@@ -130,14 +132,18 @@ export function MobileInsightsPage() {
   const allDataEmpty =
     forecastEmpty === true && artifactEmpty === true && sessionEmpty === true;
 
-  // Crosslink closed forecasts ↔ retrospectives by correlation_id (ROB-678):
-  // only the intersection (ids present on both sides) gets anchors + links.
-  const [closedForecastIds, setClosedForecastIds] = useState<string[]>([]);
-  const [retroIds, setRetroIds] = useState<string[]>([]);
-  const linkedCorrelationIds = useMemo(() => {
-    const retro = new Set(retroIds);
-    return new Set(closedForecastIds.filter((id) => retro.has(id)));
-  }, [closedForecastIds, retroIds]);
+  // Crosslink closed forecasts ↔ retrospectives by normalized symbol key
+  // (ROB-682): only the intersection (keys present on both sides) gets
+  // anchors + links. Re-keyed from correlation_id (ROB-678), which was
+  // structurally dead — the forecast/retro id namespaces never overlap.
+  // Mirrors DesktopInsightsPage.tsx's coordination state 1:1 (see file-header
+  // note on why this is duplicated rather than shared).
+  const [closedForecastKeys, setClosedForecastKeys] = useState<string[]>([]);
+  const [retroKeys, setRetroKeys] = useState<string[]>([]);
+  const linkedSymbolKeys = useMemo(() => {
+    const retro = new Set(retroKeys);
+    return new Set(closedForecastKeys.filter((key) => retro.has(key)));
+  }, [closedForecastKeys, retroKeys]);
 
   return (
     <MobileShell title="인사이트">
@@ -167,8 +173,8 @@ export function MobileInsightsPage() {
           <Section title="판단 품질">
             <ForecastCalibrationPanel
               onEmptyChange={setForecastEmpty}
-              onClosedCorrelationIds={setClosedForecastIds}
-              linkedCorrelationIds={linkedCorrelationIds}
+              onClosedSymbolKeys={setClosedForecastKeys}
+              linkedSymbolKeys={linkedSymbolKeys}
             />
           </Section>
         </div>
@@ -177,8 +183,8 @@ export function MobileInsightsPage() {
           <Section title="학습·회고">
             <RetrospectivesPanel
               compact
-              onCorrelationIds={setRetroIds}
-              linkedCorrelationIds={linkedCorrelationIds}
+              onSymbolKeys={setRetroKeys}
+              linkedSymbolKeys={linkedSymbolKeys}
             />
           </Section>
         </div>

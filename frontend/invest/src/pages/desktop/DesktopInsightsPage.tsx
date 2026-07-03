@@ -124,14 +124,16 @@ export function DesktopInsightsPage() {
   const allDataEmpty =
     forecastEmpty === true && artifactEmpty === true && sessionEmpty === true;
 
-  // Crosslink closed forecasts ↔ retrospectives by correlation_id (ROB-678):
-  // only the intersection (ids present on both sides) gets anchors + links.
-  const [closedForecastIds, setClosedForecastIds] = useState<string[]>([]);
-  const [retroIds, setRetroIds] = useState<string[]>([]);
-  const linkedCorrelationIds = useMemo(() => {
-    const retro = new Set(retroIds);
-    return new Set(closedForecastIds.filter((id) => retro.has(id)));
-  }, [closedForecastIds, retroIds]);
+  // Crosslink closed forecasts ↔ retrospectives by normalized symbol key
+  // (ROB-682): only the intersection (keys present on both sides) gets
+  // anchors + links. Re-keyed from correlation_id (ROB-678), which was
+  // structurally dead — the forecast/retro id namespaces never overlap.
+  const [closedForecastKeys, setClosedForecastKeys] = useState<string[]>([]);
+  const [retroKeys, setRetroKeys] = useState<string[]>([]);
+  const linkedSymbolKeys = useMemo(() => {
+    const retro = new Set(retroKeys);
+    return new Set(closedForecastKeys.filter((key) => retro.has(key)));
+  }, [closedForecastKeys, retroKeys]);
 
   return (
     <DesktopShell
@@ -152,15 +154,15 @@ export function DesktopInsightsPage() {
           <Section title="판단 품질">
             <ForecastCalibrationPanel
               onEmptyChange={setForecastEmpty}
-              onClosedCorrelationIds={setClosedForecastIds}
-              linkedCorrelationIds={linkedCorrelationIds}
+              onClosedSymbolKeys={setClosedForecastKeys}
+              linkedSymbolKeys={linkedSymbolKeys}
             />
           </Section>
 
           <Section title="학습·회고">
             <RetrospectivesPanel
-              onCorrelationIds={setRetroIds}
-              linkedCorrelationIds={linkedCorrelationIds}
+              onSymbolKeys={setRetroKeys}
+              linkedSymbolKeys={linkedSymbolKeys}
             />
           </Section>
 

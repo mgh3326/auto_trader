@@ -154,10 +154,13 @@ test("calibration table sorts client-side on header click (ROB-675)", async () =
   expect(bodyGroups()).toEqual(["alpha", "beta"]);
 });
 
-test("closed forecast crosslinks to its retrospective when linked (ROB-678)", async () => {
+test("closed forecast crosslinks to its retrospective by symbol key (ROB-682)", async () => {
+  // correlation_id is deliberately unrelated thesis-style text — the
+  // crosslink no longer keys on it (ROB-678's exact-id scheme was
+  // structurally dead since forecast/retro correlation_ids never overlap).
   const closedLinked: ForecastListResponse = {
     ...closed,
-    items: [{ ...closed.items[0]!, correlation_id: "corr-1" }],
+    items: [{ ...closed.items[0]!, correlation_id: "aapl-thesis-0704" }],
   };
   const fetchMock = vi.fn((url: string) => {
     const u = String(url);
@@ -168,11 +171,11 @@ test("closed forecast crosslinks to its retrospective when linked (ROB-678)", as
 
   render(
     <MemoryRouter>
-      <ForecastCalibrationPanel linkedCorrelationIds={new Set(["corr-1"])} />
+      <ForecastCalibrationPanel linkedSymbolKeys={new Set(["us:AAPL"])} />
     </MemoryRouter>,
   );
 
   const link = await screen.findByRole("link", { name: /회고/ });
-  expect(link).toHaveAttribute("href", "#retro-corr-1");
-  expect(document.getElementById("forecast-corr-1")).not.toBeNull();
+  expect(link).toHaveAttribute("href", "#retro-us-AAPL");
+  expect(document.getElementById("forecast-us-AAPL")).not.toBeNull();
 });
