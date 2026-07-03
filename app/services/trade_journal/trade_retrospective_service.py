@@ -620,9 +620,7 @@ _KIS_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
 _GENERIC_LIVE_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
 _GENERIC_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
 _TOSS_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
-_TOSS_CANCEL_TERMINAL = frozenset(
-    {"cancelled", "cancel_rejected", "replace_rejected"}
-)
+_TOSS_CANCEL_TERMINAL = frozenset({"cancelled", "cancel_rejected", "replace_rejected"})
 
 _KIS_LIVE_TERMINAL = _KIS_LIVE_DEFAULT_TERMINAL | _KIS_LIVE_CANCEL_TERMINAL
 _GENERIC_LIVE_TERMINAL = _GENERIC_LIVE_DEFAULT_TERMINAL | _GENERIC_LIVE_CANCEL_TERMINAL

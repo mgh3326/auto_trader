@@ -291,7 +291,9 @@ async def test_toss_cancel_family_excluded_by_default(db_session: AsyncSession):
         [
             _toss_row(client_order_id="T-CR", status="cancel_rejected"),
             _toss_row(client_order_id="T-RR", status="replace_rejected"),
-            _toss_row(client_order_id="T-FILL", broker_order_id="TB-FILL", status="filled"),
+            _toss_row(
+                client_order_id="T-FILL", broker_order_id="TB-FILL", status="filled"
+            ),
         ]
     )
     await db_session.commit()
