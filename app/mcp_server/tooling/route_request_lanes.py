@@ -202,15 +202,20 @@ _PLACE_ORDER_TOOLS: frozenset[str] = frozenset(
 # dry_run flag, so they need no separate entry here.)
 PREVIEW_TOOLS: frozenset[str] = frozenset({"toss_preview_order"})
 
-# ROB-660: per-lane allowed-only helper tools. The order-status tools
+# ROB-660 / ROB-666: per-lane allowed-only helper tools. The order-status tools
 # (kis_live_get_order_history / toss_get_order_history) are read-only in reality
 # but bucketed in MUTATION_TOOLS for registry partitioning, so build_route_plan
 # would otherwise block them even in the lane that needs them. The sell lane needs
-# them to confirm a cancel took effect and to check sell-order fill status. They
-# are un-blocked here (allowed) WITHOUT entering the ordered sequence (confirmation
-# helpers, not workflow steps) or the playbook YAML. Parallels MARKET_EXECUTION_TOOLS
-# (ROB-658) as an allowed supplement.
+# them to confirm a cancel took effect and to check sell-order fill status
+# (ROB-660); the buy lane needs them to confirm a buy fill and to check KIS
+# regular-session survival after the 15:30 expiry (ROB-657 rule) so it can
+# re-place (ROB-666). They are un-blocked here (allowed) WITHOUT entering the
+# ordered sequence (confirmation helpers, not workflow steps) or the playbook YAML.
+# Parallels MARKET_EXECUTION_TOOLS (ROB-658) as an allowed supplement. A minimal
+# per-lane allowance (not a MUTATION_TOOLS -> READ_ONLY reclassification) keeps
+# discovery/bootstrap unchanged.
 LANE_EXTRA_ALLOWED: dict[str, frozenset[str]] = {
+    "buy": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
     "sell": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
 }
 
