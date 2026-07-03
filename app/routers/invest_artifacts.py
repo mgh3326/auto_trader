@@ -91,4 +91,6 @@ async def get_artifact(
     row = await svc.get(artifact_id)
     if row is None:
         raise HTTPException(status_code=404, detail="artifact not found")
-    return AnalysisArtifactGetResponse(artifact=AnalysisArtifactRead.model_validate(row))
+    return AnalysisArtifactGetResponse(
+        artifact=AnalysisArtifactRead.model_validate(row)
+    )
