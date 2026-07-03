@@ -551,7 +551,9 @@ class TossApiHomeReader:
                 op="invest.home.toss_api.phase",
                 name="invest.home.toss_api.snapshot",
             ) as span:
-                snapshot = await fetch_toss_portfolio_snapshot()
+                snapshot = await fetch_toss_portfolio_snapshot(
+                    need_sellable=mutations_enabled
+                )
                 span.set_data("position_count", len(snapshot.positions))
                 span.set_data("error_count", len(snapshot.errors))
             holdings: list[Holding] = []

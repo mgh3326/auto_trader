@@ -130,6 +130,7 @@ async def fetch_toss_cash_snapshot(
 
 async def fetch_toss_portfolio_snapshot(
     *,
+    need_sellable: bool = True,
     client: TossPortfolioClient | None = None,
 ) -> TossPortfolioSnapshot:
     created_client = client is None
@@ -145,29 +146,38 @@ async def fetch_toss_portfolio_snapshot(
 
         errors: list[dict[str, Any]] = []
 
-        with sentry_sdk.start_span(
-            op="invest.home.toss_api.phase",
-            name="invest.home.toss_api.sellable_quantity",
-        ) as span:
-            span.set_data("position_count", len(holdings.items))
-            sellable_results = await asyncio.gather(
-                *[
-                    active_client.sellable_quantity(symbol=item.symbol)
-                    for item in holdings.items
-                ],
-                return_exceptions=True,
+        if need_sellable:
+            with sentry_sdk.start_span(
+                op="invest.home.toss_api.phase",
+                name="invest.home.toss_api.sellable_quantity",
+            ) as span:
+                span.set_data("position_count", len(holdings.items))
+                sellable_results = await asyncio.gather(
+                    *[
+                        active_client.sellable_quantity(symbol=item.symbol)
+                        for item in holdings.items
+                    ],
+                    return_exceptions=True,
+                )
+                span.set_data(
+                    "error_count",
+                    sum(
+                        1
+                        for result in sellable_results
+                        if isinstance(result, BaseException)
+                    ),
+                )
+            paired: list[tuple[Any, Any]] = list(
+                zip(holdings.items, sellable_results, strict=True)
             )
-            span.set_data(
-                "error_count",
-                sum(
-                    1
-                    for result in sellable_results
-                    if isinstance(result, BaseException)
-                ),
-            )
+        else:
+            # ROB-685: caller does not consume sellable_quantity — skip the
+            # per-holding GET /sellable-quantity (ORDER_INFO, 6 TPS) fanout that
+            # otherwise serializes to ~6/sec and dominates wall time.
+            paired = [(item, None) for item in holdings.items]
 
         positions: list[TossPortfolioPosition] = []
-        for item, sellable_result in zip(holdings.items, sellable_results, strict=True):
+        for item, sellable_result in paired:
             sellable_quantity: Decimal | None = None
             if isinstance(sellable_result, BaseException):
                 errors.append(
@@ -178,7 +188,7 @@ async def fetch_toss_portfolio_snapshot(
                         "error": str(sellable_result),
                     }
                 )
-            else:
+            elif sellable_result is not None:
                 sellable_quantity = sellable_result.sellable_quantity
 
             instrument_type = _instrument_type_for_market_country(item.market_country)
