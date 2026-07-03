@@ -129,3 +129,39 @@ async def handle_get_market_index(
             indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
 
     return {"indices": indices}
+
+
+async def handle_get_market_index_current_only(symbol: str) -> dict[str, Any]:
+    """ROB-689: current-quote-only index fetch (drops the unused history page).
+
+    market-parity's get_index_quote reads only the current row, but the shared
+    handle_get_market_index also fetches a full history page per call. This sibling
+    returns the same current-row shape ({"indices": [row]}) WITHOUT the history
+    fetch. _fetch_index_kr_current (basic + 1-row price page) is kept intact so the
+    'open' field is present and _tag_kr_index_data_state can still apply the ROB-464
+    freshness override. The shared handle_get_market_index is intentionally NOT
+    modified (its other callers consume the history).
+    """
+    sym = (symbol or "").strip().upper()
+    meta = _INDEX_META.get(sym)
+    if meta is None:
+        raise ValueError(
+            f"Unknown index symbol '{sym}'. Supported: {', '.join(sorted(_INDEX_META))}"
+        )
+    try:
+        if meta["source"] == "naver":
+            current_data = await _fetch_index_kr_current(
+                meta["naver_code"], meta["name"]
+            )
+            return {"indices": [_tag_kr_index_data_state(current_data)]}
+        if meta["source"] == "coingecko":
+            current_data = await _fetch_index_crypto_current(
+                meta["cg_metric"], meta["name"], sym
+            )
+            return {"indices": [current_data]}
+        current_data = await _fetch_index_us_current(
+            meta["yf_ticker"], meta["name"], sym
+        )
+        return {"indices": [current_data]}
+    except Exception as exc:
+        return _error_payload(source=meta["source"], message=str(exc), symbol=sym)
