@@ -328,3 +328,35 @@ Paste this into the Linear issue or PR after the smoke. Do not include secrets.
 - MCP restart/tool visibility:
 - Follow-ups:
 ```
+
+## ROB-668 NXT preflight
+
+- **Read exposure (KR only):** `get_quote`, `search_symbol`, `analyze_stock_batch`
+  each carry `nxt_tradable` (bool), `nxt_tradable_source` (`kr_symbol_universe`),
+  `nxt_tradable_asof` (ISO, `toss_master_updated_at` else `updated_at`), and
+  `nxt_tradable_stale` (bool). US/crypto payloads carry none of these.
+- **Staleness:** the flag is refreshed by the operator sync
+  (`scripts/sync_kr_symbol_universe.py`). `nxt_tradable_stale=true` means asof is
+  missing or older than 2 days (`NXT_FLAG_STALE_AFTER`); re-run the sync before
+  trusting eligibility during an NXT window.
+- **Rollout gate `TOSS_NXT_PREFLIGHT_MODE ∈ {off, optional, warn, required}`**
+  (default `warn`):
+  - `off` — no preflight anywhere.
+  - `optional`/`warn` — `toss_preview_order` appends `nxt_session_not_tradable`
+    to `order_warnings` and returns a structured `nxt_preflight`; `toss_place_order`
+    logs but does NOT block (`warn` logs a live-send advisory).
+  - `required` — `toss_place_order` fail-closes with
+    `{success:false, error_code:"nxt_session_not_tradable", session, alternatives}`
+    before `client.place_order`.
+- **Fail-open:** when the Toss market calendar is unavailable
+  (`TOSS_API_ENABLED` off or fetch failure), `get_kr_toss_session_from_toss`
+  returns `None`, the verdict is advisory (`block=false, advisory=true`), and
+  KR trading is never frozen.
+- **Alternatives** on a block: `retry_at_regular` (KRX regular session) and
+  `route_via_kis` (KIS domestic order sets `EXCG_ID_DVSN_CD='SOR'` for
+  NXT-eligible symbols; see `app/services/brokers/kis/domestic_orders.py`).
+- **Belt-and-suspenders:** any preflight miss still surfaces the broker 422
+  `market-not-supported-for-stock` as a typed
+  `error_code:"nxt_session_not_tradable"` with the same alternatives.
+- `route_request` is intentionally NOT session-aware (deterministic contract
+  preserved).

@@ -256,6 +256,11 @@ class Settings(BaseSettings):
     # off | optional | warn | required. optional = no behavior change.
     order_approval_hash_mode: str = "optional"
 
+    # ROB-668 — session-aware NXT order preflight rollout level.
+    # off | optional | warn | required. Default warn-first: preview always warns,
+    # place blocks a live send only when set to 'required'.
+    toss_nxt_preflight_mode: str = "warn"
+
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)
     kis_ws_hts_id: str = ""  # HTS ID (WebSocket 인증용)
@@ -367,7 +372,10 @@ class Settings(BaseSettings):
         return _parse_api_rate_limit_overrides(v)
 
     @field_validator(
-        "toss_approval_hash_mode", "order_approval_hash_mode", mode="before"
+        "toss_approval_hash_mode",
+        "order_approval_hash_mode",
+        "toss_nxt_preflight_mode",
+        mode="before",
     )
     @classmethod
     def _validate_approval_hash_mode(cls, v: Any) -> str:

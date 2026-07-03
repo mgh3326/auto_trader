@@ -47,6 +47,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
+from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
 from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
 from app.services.symbol_analysis.freshness import compute_is_stale
 
@@ -109,6 +110,12 @@ async def _resolve_kr_quote(
     두 경로 모두 price_as_of + is_stale_price 를 정직하게 태그한다."""
     trading_date = datetime.now(_KST).date()
 
+    async def _annotate(quote: dict[str, Any]) -> dict[str, Any]:
+        tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
+        if tradability is not None:
+            quote.update(tradability.public_fields())
+        return quote
+
     live = await _fetch_kr_live_quote(symbol)
     if live is not None:
         as_of_raw = live.get("price_as_of")
@@ -116,7 +123,7 @@ async def _resolve_kr_quote(
         live["is_stale_price"] = compute_is_stale(
             "price", as_of_dt, trading_date=trading_date
         )
-        return live
+        return await _annotate(live)
 
     fallback = _build_kr_quote_from_ohlcv(symbol, ohlcv_df)
     if fallback is None:
@@ -127,7 +134,7 @@ async def _resolve_kr_quote(
     fallback["is_stale_price"] = compute_is_stale(
         "price", as_of_dt, trading_date=trading_date
     )
-    return fallback
+    return await _annotate(fallback)
 
 
 async def _get_indicators_impl(
