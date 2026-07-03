@@ -1520,7 +1520,7 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1584,7 +1584,7 @@ async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1632,7 +1632,7 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1673,6 +1673,38 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
     assert result.accounts[0].valueKrw == pytest.approx(645.18 * 1300.0)
     assert result.accounts[0].costBasisKrw == pytest.approx(600.0 * 1300.0)
     assert result.accounts[0].pnlKrw == pytest.approx(45.18 * 1300.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutations,expected_need", [(False, False), (True, True)])
+async def test_toss_api_home_reader_gates_sellable_fetch_on_mutations(
+    monkeypatch, mutations, expected_need
+):
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    captured: dict[str, bool] = {}
+
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+        captured["need_sellable"] = need_sellable
+        return TossPortfolioSnapshot(
+            positions=[], cash_krw=Decimal("1"), cash_usd=Decimal("1")
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(
+        _cfg, "toss_live_order_mutations_enabled", mutations, raising=False
+    )
+
+    await readers.TossApiHomeReader().fetch(user_id=1)
+
+    # ROB-685: mutations off (default) => reader discards sellable anyway => skip fetch.
+    assert captured["need_sellable"] is expected_need
 
 
 @pytest.mark.asyncio

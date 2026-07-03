@@ -130,6 +130,33 @@ async def test_fetch_toss_portfolio_snapshot_maps_kr_market() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_toss_portfolio_snapshot_skips_sellable_when_not_needed() -> None:
+    client = _FakeTossClient()
+
+    snapshot = await fetch_toss_portfolio_snapshot(client=client, need_sellable=False)
+
+    # ROB-685: the ORDER_INFO N+1 fanout is skipped entirely.
+    assert client.sellable_calls == []
+    assert len(snapshot.positions) == 1
+    assert snapshot.positions[0].sellable_quantity is None
+    # Holdings + cash still resolve normally.
+    assert snapshot.positions[0].symbol == "BRK.B"
+    assert snapshot.cash_krw == Decimal("123456")
+    assert snapshot.errors == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_toss_portfolio_snapshot_default_still_fetches_sellable() -> None:
+    client = _FakeTossClient()
+
+    snapshot = await fetch_toss_portfolio_snapshot(client=client)
+
+    # Default is unchanged: sellable is fetched and mapped.
+    assert client.sellable_calls == ["BRK.B"]
+    assert snapshot.positions[0].sellable_quantity == Decimal("1.25")
+
+
+@pytest.mark.asyncio
 async def test_fetch_toss_cash_snapshot_does_not_fetch_holdings_or_sellable() -> None:
     class Client(_FakeTossClient):
         async def holdings(self) -> TossHoldings:

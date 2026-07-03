@@ -547,6 +547,8 @@ def _toss_api_position_to_mcp(position: TossPortfolioPosition) -> dict[str, Any]
 
 async def _collect_toss_api_positions(
     market_filter: str | None,
+    *,
+    need_sellable: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     if not bool(getattr(settings, "toss_api_enabled", False)):
         return [], [], False
@@ -554,7 +556,7 @@ async def _collect_toss_api_positions(
         return [], [], False
 
     try:
-        snapshot = await fetch_toss_portfolio_snapshot()
+        snapshot = await fetch_toss_portfolio_snapshot(need_sellable=need_sellable)
     except Exception as exc:
         return (
             [],
@@ -786,6 +788,7 @@ async def _collect_portfolio_positions(
     account_name: str | None = None,
     user_id: int = _MCP_USER_ID,
     is_mock: bool = False,
+    need_sellable: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     # Short-circuit to paper handler when the caller asked for a paper account.
     from app.mcp_server.tooling.paper_portfolio_handler import (
@@ -873,7 +876,9 @@ async def _collect_portfolio_positions(
             toss_api_positions,
             toss_api_errors,
             toss_api_succeeded,
-        ) = await _collect_toss_api_positions(market_filter)
+        ) = await _collect_toss_api_positions(
+            market_filter, need_sellable=need_sellable
+        )
         positions.extend(toss_api_positions)
         errors.extend(toss_api_errors)
 
