@@ -169,8 +169,8 @@ function CalibrationTable({ rows }: { rows: CalibrationGroupRow[] }) {
 
   if (rows.length === 0) {
     return (
-      <div style={{ padding: 16, color: "var(--fg-3)", fontSize: 13, textAlign: "center" }}>
-        채점 완료된 예측이 아직 없습니다.
+      <div style={{ padding: 16, color: "var(--fg-3)", fontSize: 13, textAlign: "center", lineHeight: 1.6 }}>
+        채점 완료된 예측이 아직 없습니다 — forecast_resolve 실행 후 review_date가 지난 closed 예측에서 채워집니다.
       </div>
     );
   }
@@ -332,7 +332,9 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-export function ForecastCalibrationPanel() {
+export function ForecastCalibrationPanel({
+  onEmptyChange,
+}: { onEmptyChange?: (isEmpty: boolean) => void } = {}) {
   const [groupBy, setGroupBy] = useState<ForecastGroupBy>("created_by");
   const [days, setDays] = useState<number | "all">(90);
   const [calib, setCalib] = useState<LoadState<CalibrationGroupRow[]>>({ status: "loading" });
@@ -364,6 +366,14 @@ export function ForecastCalibrationPanel() {
       });
     return () => { cancelled = true; };
   }, []);
+
+  // Report emptiness to the page (ROB-677 banner): empty only when all three
+  // sub-fetches are ready AND empty; loading/error counts as not-empty.
+  useEffect(() => {
+    if (!onEmptyChange) return;
+    const flags = [calib, open, closed].map((s) => (s.status === "ready" ? s.data.length === 0 : null));
+    onEmptyChange(flags.every((f) => f === true));
+  }, [calib, open, closed, onEmptyChange]);
 
   return (
     <Card>
