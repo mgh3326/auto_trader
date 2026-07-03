@@ -216,3 +216,58 @@ def test_error_response_maps_market_not_supported():
     assert out["error_code"] == "nxt_session_not_tradable"
     assert "route_via_kis" in out["alternatives"]
     assert "hint" in out
+
+
+@pytest.mark.asyncio
+async def test_preflight_context_fail_open_when_tradability_raises(monkeypatch):
+    """A DB error (e.g. missing kr_symbol_universe table) must never break an
+    order — the advisory preflight fails open to None."""
+    monkeypatch.setattr(otv.settings, "toss_nxt_preflight_mode", "warn", raising=False)
+
+    async def _fake_session(_moment):
+        return "nxt_premarket"
+
+    async def _boom(symbols, db=None):
+        raise RuntimeError('relation "kr_symbol_universe" does not exist')
+
+    monkeypatch.setattr(otv, "get_kr_toss_session_from_toss", _fake_session)
+    monkeypatch.setattr(otv, "get_kr_nxt_tradability", _boom)
+    assert await otv._nxt_preflight_context("005930", "kr") is None
+
+
+@pytest.mark.asyncio
+async def test_suggest_order_account_fail_open_when_tradability_raises(monkeypatch):
+    """suggest_order_account_impl must succeed (advisory omitted) when the NXT
+    tradability lookup raises — routing is never blocked by the advisory."""
+    from app.mcp_server.tooling import account_routing_tools as art
+
+    async def _fake_resolve_price(symbol, market, price):
+        return 70000.0, "test"
+
+    async def _fake_capital(*, include_manual=False):
+        return {}
+
+    async def _fake_holdings(*, market, include_current_price, minimum_value):
+        return []
+
+    async def _fake_user_setting(_key):
+        return {}
+
+    async def _boom(symbols, db=None):
+        raise RuntimeError('relation "kr_symbol_universe" does not exist')
+
+    monkeypatch.setattr(art, "_resolve_price", _fake_resolve_price)
+    monkeypatch.setattr(art, "get_available_capital_impl", _fake_capital)
+    monkeypatch.setattr(art, "_get_holdings_impl", _fake_holdings)
+    monkeypatch.setattr(art, "get_user_setting", _fake_user_setting)
+    monkeypatch.setattr(
+        art, "suggest_account_from_snapshot", lambda _inp: {"account_mode": "toss_live"}
+    )
+    monkeypatch.setattr(art, "get_kr_nxt_tradability", _boom)
+
+    result = await art.suggest_order_account_impl(
+        symbol="005930", market="kr", side="buy", quantity=1
+    )
+    assert result["account_mode"] == "toss_live"
+    assert "nxt_preflight" not in result
+    assert "nxt_tradable" not in result

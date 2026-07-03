@@ -687,10 +687,20 @@ async def _nxt_preflight_context(
     if mode == "off":
         return None
     moment = now or now_kst()
-    session = await get_kr_toss_session_from_toss(moment)
-    tradability = (await get_kr_nxt_tradability([symbol])).get(
-        symbol
-    ) or NxtTradability(nxt_eligible=False, nxt_trading_suspended=None, asof=None)
+    # Fail-open: a DB/calendar hiccup (or a missing kr_symbol_universe table) must
+    # never break an order preview/place. Any error -> no advisory preflight.
+    try:
+        session = await get_kr_toss_session_from_toss(moment)
+        tradability = (await get_kr_nxt_tradability([symbol])).get(
+            symbol
+        ) or NxtTradability(nxt_eligible=False, nxt_trading_suspended=None, asof=None)
+    except Exception as exc:  # noqa: BLE001 - advisory preflight must never block an order
+        logger.warning(
+            "NXT preflight context unavailable for %s, skipping (fail-open): %s",
+            symbol,
+            exc,
+        )
+        return None
     verdict = evaluate_nxt_preflight(session, tradability)
     return verdict, tradability
 

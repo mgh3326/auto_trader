@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from app.core.timezone import now_kst
@@ -18,6 +19,8 @@ from app.services.brokers.toss.market_calendar import get_kr_toss_session_from_t
 from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
 from app.services.nxt_preflight import evaluate_nxt_preflight
+
+logger = logging.getLogger(__name__)
 
 
 async def _resolve_price(
@@ -92,13 +95,23 @@ async def suggest_order_account_impl(
     )
     result["price_source"] = price_source
     if normalized_market == "kr":
-        tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
-        if tradability is not None:
-            result.update(tradability.public_fields())
-            session = await get_kr_toss_session_from_toss(now_kst())
-            result["nxt_preflight"] = evaluate_nxt_preflight(
-                session, tradability
-            ).to_dict()
+        # Advisory-only NXT context. Fail-open: a DB/calendar hiccup (or a missing
+        # kr_symbol_universe table) must never break account routing, per the
+        # ROB-668 fail-open invariant.
+        try:
+            tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
+            if tradability is not None:
+                result.update(tradability.public_fields())
+                session = await get_kr_toss_session_from_toss(now_kst())
+                result["nxt_preflight"] = evaluate_nxt_preflight(
+                    session, tradability
+                ).to_dict()
+        except Exception as exc:  # noqa: BLE001 - advisory must never block routing
+            logger.warning(
+                "NXT advisory unavailable for %s, skipping (fail-open): %s",
+                symbol,
+                exc,
+            )
     return result
 
 
