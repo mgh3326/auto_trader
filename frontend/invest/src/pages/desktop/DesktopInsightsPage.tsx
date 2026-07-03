@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
 import { MarketParityStrip } from "../../components/home/MarketParityStrip";
+import { ForecastCalibrationPanel } from "../../components/insights/ForecastCalibrationPanel";
 import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
@@ -89,6 +90,8 @@ export function DesktopInsightsPage() {
           {disparity.status === "loading" && <SectionStatus>보통주/우선주 괴리 데이터를 불러오는 중…</SectionStatus>}
           {disparity.status === "error" && <SectionStatus>보통주/우선주 괴리 데이터를 일시적으로 불러오지 못했습니다.</SectionStatus>}
           {disparity.status === "ready" && <CommonPreferredDisparityCardView data={disparity.data} />}
+
+          <ForecastCalibrationPanel />
 
           <RelatedScreensCard />
         </div>
