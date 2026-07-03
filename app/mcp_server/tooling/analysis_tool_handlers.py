@@ -775,6 +775,15 @@ def _summarize_analysis_result(
         "supports": (sr.get("supports") or [])[:3],  # NOSONAR
         "resistances": (sr.get("resistances") or [])[:3],  # NOSONAR
     }
+    for _nxt_key in (
+        "nxt_tradable",
+        "nxt_tradable_source",
+        "nxt_tradable_asof",
+        "nxt_tradable_stale",
+    ):
+        if _nxt_key in quote:
+            summary[_nxt_key] = quote[_nxt_key]
+
     if position_index is not None:
         summary["position"] = _lookup_position_for_symbol(
             symbol=symbol,
