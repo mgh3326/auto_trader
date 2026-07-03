@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 import { ForecastCalibrationPanel } from "../components/insights/ForecastCalibrationPanel";
@@ -74,4 +74,37 @@ test("renders calibration table, due queue and recent scored results", async () 
   // ROB-673: closed forecast surfaces target + realized observed value
   expect(screen.getByText(/목표 ≤ \$180\.00/)).toBeInTheDocument();
   expect(screen.getByText(/실현 \$175\.50/)).toBeInTheDocument();
+});
+
+test("days control refetches calibration with the selected window (ROB-674)", async () => {
+  const calls: string[] = [];
+  const fetchMock = vi.fn((url: string) => {
+    const u = String(url);
+    calls.push(u);
+    const body = u.includes("/calibration") ? calib : u.includes("/open") ? open : closed;
+    return Promise.resolve({ ok: true, json: async () => body });
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+  render(
+    <MemoryRouter>
+      <ForecastCalibrationPanel />
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(screen.getByText("hermes")).toBeInTheDocument());
+
+  // default window is 90일
+  expect(calls.some((u) => u.includes("/calibration") && u.includes("days=90"))).toBe(true);
+
+  // 30일 → refetch with days=30
+  fireEvent.click(screen.getByRole("button", { name: "30일" }));
+  await waitFor(() =>
+    expect(calls.some((u) => u.includes("/calibration") && u.includes("days=30"))).toBe(true),
+  );
+
+  // 전체 → omit days param entirely
+  fireEvent.click(screen.getByRole("button", { name: "전체" }));
+  await waitFor(() =>
+    expect(calls.some((u) => u.includes("/calibration") && !u.includes("days="))).toBe(true),
+  );
 });

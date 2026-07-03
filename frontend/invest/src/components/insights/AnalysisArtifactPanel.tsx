@@ -4,7 +4,12 @@ import { Link } from "react-router-dom";
 import { fetchArtifactDetail, fetchArtifacts } from "../../api/analysisArtifacts";
 import { Card, Pill } from "../../ds";
 import { stockDetailPath } from "../../stockDetailPath";
-import type { ArtifactMeta, ArtifactRead } from "../../types/analysisArtifacts";
+import type {
+  ArtifactKind,
+  ArtifactMeta,
+  ArtifactRead,
+  ArtifactReadiness,
+} from "../../types/analysisArtifacts";
 
 type LoadState<T> =
   | { status: "loading" }
@@ -20,6 +25,39 @@ const th: React.CSSProperties = {
 };
 const td: React.CSSProperties = { padding: "6px 8px", fontSize: 13 };
 
+const selectStyle: React.CSSProperties = {
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: "4px 8px",
+  fontSize: 12,
+  background: "var(--surface-2)",
+  color: "var(--fg-1)",
+  fontFamily: "inherit",
+};
+
+const MARKET_OPTIONS: { key: "kr" | "us" | "crypto"; label: string }[] = [
+  { key: "kr", label: "국내" },
+  { key: "us", label: "미국" },
+  { key: "crypto", label: "코인" },
+];
+
+const KIND_OPTIONS: { key: ArtifactKind; label: string }[] = [
+  { key: "screening_ranking", label: "스크리닝 랭킹" },
+  { key: "profit_taking_verdicts", label: "익절 판정" },
+  { key: "support_resistance_map", label: "지지/저항" },
+  { key: "flow_assessment", label: "수급 평가" },
+  { key: "candidate_pool", label: "후보 풀" },
+  { key: "session_summary", label: "세션 요약" },
+  { key: "briefing", label: "브리핑" },
+];
+
+const READINESS_OPTIONS: { key: ArtifactReadiness; label: string }[] = [
+  { key: "screen_grade", label: "스크리닝 등급" },
+  { key: "not_decision_ready", label: "미결정" },
+  { key: "ready_for_order_review", label: "주문검토 가능" },
+  { key: "blocked", label: "차단" },
+];
+
 function fmt(ts: string): string {
   return ts.replace("T", " ").slice(0, 16);
 }
@@ -30,10 +68,20 @@ export function AnalysisArtifactPanel() {
   });
   const [detail, setDetail] = useState<ArtifactRead | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [market, setMarket] = useState<"kr" | "us" | "crypto" | "">("");
+  const [kind, setKind] = useState<ArtifactKind | "">("");
+  const [readiness, setReadiness] = useState<ArtifactReadiness | "">("");
 
   useEffect(() => {
     let cancelled = false;
-    fetchArtifacts({ includeStale: true, limit: 20 })
+    setState({ status: "loading" });
+    fetchArtifacts({
+      includeStale: true,
+      limit: 20,
+      market: market || undefined,
+      kind: kind || undefined,
+      readinessLabel: readiness || undefined,
+    })
       .then((res) => {
         if (!cancelled) setState({ status: "ready", data: res.artifacts });
       })
@@ -47,7 +95,7 @@ export function AnalysisArtifactPanel() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [market, kind, readiness]);
 
   async function openDetail(id: number) {
     setDetail(null);
@@ -68,6 +116,41 @@ export function AnalysisArtifactPanel() {
           <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--fg-3)" }}>
             review.analysis_artifacts에서 가장 최근 결정 자료 — 시장/종류/준비상태 필터와 신선도 배지로 활용.
           </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <select
+            aria-label="시장 필터"
+            value={market}
+            onChange={(e) => setMarket(e.target.value as "kr" | "us" | "crypto" | "")}
+            style={selectStyle}
+          >
+            <option value="">전체 시장</option>
+            {MARKET_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>{o.label}</option>
+            ))}
+          </select>
+          <select
+            aria-label="종류 필터"
+            value={kind}
+            onChange={(e) => setKind(e.target.value as ArtifactKind | "")}
+            style={selectStyle}
+          >
+            <option value="">전체 종류</option>
+            {KIND_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>{o.label}</option>
+            ))}
+          </select>
+          <select
+            aria-label="준비상태 필터"
+            value={readiness}
+            onChange={(e) => setReadiness(e.target.value as ArtifactReadiness | "")}
+            style={selectStyle}
+          >
+            <option value="">전체 준비상태</option>
+            {READINESS_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>{o.label}</option>
+            ))}
+          </select>
         </div>
         {state.status === "loading" && (
           <div style={{ padding: 12, color: "var(--fg-3)", fontSize: 13 }}>

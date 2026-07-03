@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AnalysisArtifactPanel } from "../components/insights/AnalysisArtifactPanel";
@@ -66,5 +66,34 @@ describe("AnalysisArtifactPanel", () => {
     // ROB-673: 종목 column links each symbol to its stock detail page
     const symLink = screen.getByRole("link", { name: "005930" });
     expect(symLink).toHaveAttribute("href", "/stocks/kr/005930");
+  });
+
+  it("refetches with the corresponding query param when a filter changes (ROB-674)", async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      calls.push(u);
+      const body = u.includes("/artifacts/") && !u.endsWith("/3")
+        ? listBody
+        : { success: true, artifact: { ...listBody.artifacts[0], payload: { k: "v" } } };
+      return { ok: true, status: 200, json: async () => body };
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    render(
+      <MemoryRouter>
+        <AnalysisArtifactPanel />
+      </MemoryRouter>,
+    );
+    await waitFor(() => screen.getByText("KR 스크리닝"));
+
+    fireEvent.change(screen.getByLabelText("시장 필터"), { target: { value: "us" } });
+    await waitFor(() => expect(calls.some((u) => u.includes("market=us"))).toBe(true));
+
+    fireEvent.change(screen.getByLabelText("종류 필터"), { target: { value: "briefing" } });
+    await waitFor(() => expect(calls.some((u) => u.includes("kind=briefing"))).toBe(true));
+
+    fireEvent.change(screen.getByLabelText("준비상태 필터"), { target: { value: "blocked" } });
+    await waitFor(() => expect(calls.some((u) => u.includes("readiness_label=blocked"))).toBe(true));
   });
 });
