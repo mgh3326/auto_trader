@@ -33,7 +33,15 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
             "ROB-460). realized_pnl is caller-supplied, or derived from journal_id "
             "when entry/exit/qty are present. ROB-568: accepts US FX PnL fields "
             "(buy_fx_rate, sell_fx_rate, security_pnl_usd, security_pnl_krw, "
-            "fx_pnl_krw, total_pnl_krw, fx_rate_source, fx_pnl_accuracy)."
+            "fx_pnl_krw, total_pnl_krw, fx_rate_source, fx_pnl_accuracy). "
+            "Postmortem taxonomy (ROB-647): root_cause_class in {user_input, "
+            "analysis, policy, execution, harness} (NOT process_error/etc.); "
+            "trigger_type in {fill, partial_fill, rejected_order, cancelled, "
+            "expired, thesis_change, policy_violation, stale_evidence, "
+            "guardrail_block}. When trigger_type is set, a non-empty next_actions "
+            "list is required in the same call (each next_action needs a non-empty "
+            "action; optional owner/issue_id/status/due_kst_date, status in "
+            "{open, in_progress, done})."
         ),
     )(save_trade_retrospective)
     _ = mcp.tool(
