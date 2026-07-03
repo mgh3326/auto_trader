@@ -62,10 +62,22 @@ async def _add(
 async def test_get_retrospectives_filters_by_trigger_and_root_cause(
     db_session: AsyncSession,
 ):
-    await _add(db_session, symbol="005930", market="kr", trigger_type="fill",
-               root_cause_class="analysis", correlation_id="a")
-    await _add(db_session, symbol="000660", market="kr", trigger_type="rejected_order",
-               root_cause_class="execution", correlation_id="b")
+    await _add(
+        db_session,
+        symbol="005930",
+        market="kr",
+        trigger_type="fill",
+        root_cause_class="analysis",
+        correlation_id="a",
+    )
+    await _add(
+        db_session,
+        symbol="000660",
+        market="kr",
+        trigger_type="rejected_order",
+        root_cause_class="execution",
+        correlation_id="b",
+    )
 
     res = await svc.get_retrospectives(db_session, trigger_type="fill")
     assert [e["symbol"] for e in res["entries"]] == ["005930"]
@@ -95,8 +107,12 @@ async def test_get_open_next_actions_flattens_and_hides_done(
     db_session: AsyncSession,
 ):
     await _add(
-        db_session, symbol="005930", market="kr", trigger_type="fill",
-        realized_pnl=Decimal("1000"), correlation_id="na",
+        db_session,
+        symbol="005930",
+        market="kr",
+        trigger_type="fill",
+        realized_pnl=Decimal("1000"),
+        correlation_id="na",
         next_actions=[
             {"action": "재진입 룰 재검토", "status": "open"},
             {"action": "완료된 액션", "status": "done"},
@@ -123,10 +139,20 @@ async def test_get_open_next_actions_flattens_and_hides_done(
 async def test_get_open_next_actions_scopes_by_symbol_and_status(
     db_session: AsyncSession,
 ):
-    await _add(db_session, symbol="005930", market="kr", correlation_id="s1",
-               next_actions=[{"action": "A", "status": "in_progress"}])
-    await _add(db_session, symbol="000660", market="kr", correlation_id="s2",
-               next_actions=[{"action": "B", "status": "open"}])
+    await _add(
+        db_session,
+        symbol="005930",
+        market="kr",
+        correlation_id="s1",
+        next_actions=[{"action": "A", "status": "in_progress"}],
+    )
+    await _add(
+        db_session,
+        symbol="000660",
+        market="kr",
+        correlation_id="s2",
+        next_actions=[{"action": "B", "status": "open"}],
+    )
 
     res = await svc.get_open_next_actions(db_session, symbol="005930")
     assert [i["action"] for i in res["items"]] == ["A"]

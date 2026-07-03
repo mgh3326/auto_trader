@@ -52,8 +52,13 @@ async def list_retrospectives(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RetrospectivesResponse:
     if trigger_type is not None and trigger_type not in VALID_TRIGGER_TYPES:
-        raise HTTPException(status_code=422, detail=f"invalid trigger_type: {trigger_type}")
-    if root_cause_class is not None and root_cause_class not in VALID_ROOT_CAUSE_CLASSES:
+        raise HTTPException(
+            status_code=422, detail=f"invalid trigger_type: {trigger_type}"
+        )
+    if (
+        root_cause_class is not None
+        and root_cause_class not in VALID_ROOT_CAUSE_CLASSES
+    ):
         raise HTTPException(
             status_code=422, detail=f"invalid root_cause_class: {root_cause_class}"
         )
@@ -90,9 +95,7 @@ async def list_open_next_actions(
     status: Annotated[str | None, Query()] = None,
 ) -> NextActionsResponse:
     statuses = (
-        frozenset(s.strip() for s in status.split(",") if s.strip())
-        if status
-        else None
+        frozenset(s.strip() for s in status.split(",") if s.strip()) if status else None
     )
     db_symbol = _normalize_symbol(symbol, market)
     result = await retro_svc.get_open_next_actions(

@@ -22,8 +22,12 @@ def _make_client(monkeypatch, *, list_result=None, na_result=None):
         calls["na"] = kwargs
         return na_result or {"items": [], "count": 0, "scan_limit": 200}
 
-    monkeypatch.setattr(invest_retrospectives.retro_svc, "get_retrospectives", _fake_list)
-    monkeypatch.setattr(invest_retrospectives.retro_svc, "get_open_next_actions", _fake_na)
+    monkeypatch.setattr(
+        invest_retrospectives.retro_svc, "get_retrospectives", _fake_list
+    )
+    monkeypatch.setattr(
+        invest_retrospectives.retro_svc, "get_open_next_actions", _fake_na
+    )
 
     app = FastAPI()
     app.include_router(invest_retrospectives.router)
@@ -70,18 +74,34 @@ def test_list_normalizes_us_symbol(monkeypatch):
 @pytest.mark.unit
 def test_list_rejects_invalid_enums(monkeypatch):
     client, _ = _make_client(monkeypatch)
-    assert client.get("/trading/api/invest/retrospectives?trigger_type=bogus").status_code == 422
-    assert client.get("/trading/api/invest/retrospectives?root_cause_class=bogus").status_code == 422
-    assert client.get("/trading/api/invest/retrospectives?market=paper").status_code == 422
+    assert (
+        client.get("/trading/api/invest/retrospectives?trigger_type=bogus").status_code
+        == 422
+    )
+    assert (
+        client.get(
+            "/trading/api/invest/retrospectives?root_cause_class=bogus"
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get("/trading/api/invest/retrospectives?market=paper").status_code == 422
+    )
 
 
 @pytest.mark.unit
 def test_list_maps_entries_to_items(monkeypatch):
     entry = {
-        "id": 1, "correlation_id": "c", "symbol": "005930", "market": "kr",
-        "instrument_type": "equity_kr", "trigger_type": "fill",
-        "realized_pnl": 1000.0, "next_actions": [{"action": "x"}],
-        "created_at": "2026-07-01T00:00:00+00:00", "outcome": "win",
+        "id": 1,
+        "correlation_id": "c",
+        "symbol": "005930",
+        "market": "kr",
+        "instrument_type": "equity_kr",
+        "trigger_type": "fill",
+        "realized_pnl": 1000.0,
+        "next_actions": [{"action": "x"}],
+        "created_at": "2026-07-01T00:00:00+00:00",
+        "outcome": "win",
         "extra_ignored_field": "dropped",
     }
     client, _ = _make_client(
@@ -99,16 +119,26 @@ def test_list_maps_entries_to_items(monkeypatch):
 @pytest.mark.unit
 def test_next_actions_endpoint(monkeypatch):
     item = {
-        "action": "재검토", "status": "open", "symbol": "005930", "market": "kr",
-        "retro_id": 1, "correlation_id": "c", "trigger_type": "fill",
-        "realized_pnl": None, "created_at": "2026-07-01T00:00:00+00:00",
-        "owner": None, "issue_id": None, "due_kst_date": None,
+        "action": "재검토",
+        "status": "open",
+        "symbol": "005930",
+        "market": "kr",
+        "retro_id": 1,
+        "correlation_id": "c",
+        "trigger_type": "fill",
+        "realized_pnl": None,
+        "created_at": "2026-07-01T00:00:00+00:00",
+        "owner": None,
+        "issue_id": None,
+        "due_kst_date": None,
     }
     client, calls = _make_client(
         monkeypatch,
         na_result={"items": [item], "count": 1, "scan_limit": 200},
     )
-    r = client.get("/trading/api/invest/retrospectives/next-actions?market=kr&symbol=005930")
+    r = client.get(
+        "/trading/api/invest/retrospectives/next-actions?market=kr&symbol=005930"
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["count"] == 1
@@ -121,6 +151,8 @@ def test_next_actions_endpoint(monkeypatch):
 @pytest.mark.unit
 def test_next_actions_status_csv_narrows(monkeypatch):
     client, calls = _make_client(monkeypatch)
-    r = client.get("/trading/api/invest/retrospectives/next-actions?status=open,in_progress")
+    r = client.get(
+        "/trading/api/invest/retrospectives/next-actions?status=open,in_progress"
+    )
     assert r.status_code == 200
     assert calls["na"]["statuses"] == frozenset({"open", "in_progress"})
