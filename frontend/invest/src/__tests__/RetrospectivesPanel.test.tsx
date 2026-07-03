@@ -48,22 +48,29 @@ test("renders pinned next-action checklist and retrospective row", async () => {
   expect(screen.getByText(/분할 매수가 유효했다/)).toBeInTheDocument();
 });
 
-test("retrospective crosslinks to its forecast when linked (ROB-678)", async () => {
+test("retrospective crosslinks to its forecast by symbol key (ROB-682)", async () => {
+  // correlation_id is deliberately exec-style text ("toss_live:x") — the
+  // crosslink no longer keys on it (ROB-678's exact-id scheme was
+  // structurally dead since forecast/retro correlation_ids never overlap).
+  const listExec: RetrospectivesResponse = {
+    ...list,
+    items: [{ ...list.items[0]!, correlation_id: "toss_live:x" }],
+  };
   const fetchMock = vi.fn((url: string) =>
     Promise.resolve({
       ok: true,
-      json: async () => (String(url).includes("next-actions") ? na : list),
+      json: async () => (String(url).includes("next-actions") ? na : listExec),
     }),
   );
   vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
   render(
     <MemoryRouter>
-      <RetrospectivesPanel linkedCorrelationIds={new Set(["c"])} />
+      <RetrospectivesPanel linkedSymbolKeys={new Set(["kr:005930"])} />
     </MemoryRouter>,
   );
 
   const link = await screen.findByRole("link", { name: "예측↑" });
-  expect(link).toHaveAttribute("href", "#forecast-c");
-  expect(document.getElementById("retro-c")).not.toBeNull();
+  expect(link).toHaveAttribute("href", "#forecast-kr-005930");
+  expect(document.getElementById("retro-kr-005930")).not.toBeNull();
 });
