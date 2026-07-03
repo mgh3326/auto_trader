@@ -59,7 +59,10 @@ from app.services.kr_hourly_candles_read_service import (
     read_kr_hourly_candles_1h,
     read_kr_intraday_candles,
 )
-from app.services.kr_symbol_universe_service import search_kr_symbols
+from app.services.kr_symbol_universe_service import (
+    get_kr_nxt_tradability,
+    search_kr_symbols,
+)
 from app.services.market_data.constants import (
     CRYPTO_MINUTE_OHLCV_PERIODS,
     CRYPTO_MINUTE_PUBLIC_ROW_KEYS,
@@ -1221,6 +1224,9 @@ async def _get_quote_impl(
         # previous_close used for gap calculations.
         data_state = kr_market_data_state()
         quote = await _fetch_quote_equity_kr(symbol)
+        tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
+        if tradability is not None:
+            quote.update(tradability.public_fields())
         session = await _nxt_quote_session(data_state)
         if session is not None:
             overlay = await _fetch_nxt_quote_overlay(symbol, session=session)

@@ -1097,3 +1097,50 @@ async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
     )
     assert captured["symbol"] == "AAPL"
     assert captured["session"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_quote_kr_exposes_nxt_tradable(monkeypatch):
+    import datetime as dt
+
+    from app.mcp_server.tooling import market_data_quotes
+    from app.services.nxt_preflight import NxtTradability
+
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    async def fake_tradability(symbols, db=None):
+        return {
+            symbols[0]: NxtTradability(
+                nxt_eligible=True,
+                nxt_trading_suspended=False,
+                asof=dt.datetime(2026, 7, 3, 6, 0, tzinfo=dt.timezone.utc),
+            )
+        }
+
+    monkeypatch.setattr(
+        market_data_quotes, "get_kr_nxt_tradability", fake_tradability
+    )
+
+    result = await tools["get_quote"]("005930")
+    assert result["nxt_tradable"] is True
+    assert result["nxt_tradable_source"] == "kr_symbol_universe"
+    assert result["nxt_tradable_asof"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_has_no_nxt_fields(monkeypatch):
+    tools = build_tools()
+
+    async def fake_fast_info(_symbol):
+        return {"close": 100.0, "previous_close": 99.0}
+
+    monkeypatch.setattr(yahoo_service, "fetch_fast_info", fake_fast_info)
+    result = await tools["get_quote"]("AAPL", "us")
+    assert "nxt_tradable" not in result
