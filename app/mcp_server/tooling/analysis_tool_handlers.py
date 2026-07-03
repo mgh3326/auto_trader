@@ -660,6 +660,7 @@ async def _build_batch_position_index(
             account=None,
             market=market,
             include_current_price=False,
+            need_sellable=False,
         )
     except Exception as exc:
         detail = str(exc).strip() or exc.__class__.__name__

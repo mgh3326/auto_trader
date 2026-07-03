@@ -122,3 +122,31 @@ async def test_adapter_fetches_single_order_detail():
     assert evidence.verdict == "filled"
     client.get_order.assert_awaited_once_with("ord-1")
     client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_adapter_reuses_injected_client_without_closing():
+    from app.mcp_server.tooling import toss_live_evidence as ev
+
+    class _Row:
+        broker_order_id = "ord-9"
+
+    injected = SimpleNamespace(
+        get_order=AsyncMock(
+            return_value=_order(
+                "FILLED",
+                {"filledQuantity": Decimal("1"), "averageFilledPrice": Decimal("10")},
+            )
+        ),
+        aclose=AsyncMock(),
+    )
+
+    # from_settings must NOT be called when a client is injected.
+    with patch.object(
+        ev.TossReadClient, "from_settings", side_effect=AssertionError("newed a client")
+    ):
+        evidence = await ev.TossEvidenceAdapter(client=injected).fetch_evidence(_Row())
+
+    assert evidence.verdict == "filled"
+    injected.get_order.assert_awaited_once_with("ord-9")
+    injected.aclose.assert_not_awaited()  # caller owns the shared client

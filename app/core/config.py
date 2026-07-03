@@ -314,6 +314,17 @@ class Settings(BaseSettings):
     # test can touch a real Redis unless it explicitly patches the cache client.
     analyze_fetch_cache_enabled: bool = True
 
+    # ROB-688: bound the get_sector_peers KR peer fanout so the concurrent burst
+    # to m.stock.naver.com stops tripping Naver server-side throttling.
+    naver_peer_fetch_concurrency: int = 5
+    naver_peer_fetch_timeout_seconds: float = 5.0
+
+    # ROB-688: short-TTL fail-open Redis cache for the get_sector_peers KR
+    # /basic+/integration bundle and the sector page. Intraday staleness of
+    # current_price/change_pct up to the TTL is acceptable for a comparison tool.
+    naver_peer_cache_enabled: bool = True
+    naver_peer_cache_ttl_seconds: int = 600
+
     # API Rate Limit Retry Settings (429 handling)
     api_rate_limit_retry_429_max: int = 2  # 429 에러 시 최대 재시도 횟수
     api_rate_limit_retry_429_base_delay: float = 0.2  # 지수 백오프 기본 대기 시간 (초)

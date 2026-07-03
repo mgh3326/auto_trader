@@ -15,7 +15,9 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from app.mcp_server.tooling.fundamentals._crypto import handle_get_kimchi_premium
-from app.mcp_server.tooling.fundamentals._market_index import handle_get_market_index
+from app.mcp_server.tooling.fundamentals._market_index import (
+    handle_get_market_index_current_only,
+)
 from app.schemas.invest_market_parity import (
     InvestMarketParityCard,
     InvestMarketParityResponse,
@@ -76,7 +78,7 @@ class DefaultMarketParityProvider:
     """
 
     async def get_index_quote(self, symbol: str) -> ParityQuote | None:
-        payload = await handle_get_market_index(symbol=symbol, period="day", count=1)
+        payload = await handle_get_market_index_current_only(symbol)
         row = _first_index_row(payload, symbol)
         if row is None:
             return None
@@ -524,26 +526,12 @@ async def build_market_parity(
     warnings: list[str] = []
     cards: list[InvestMarketParityCard] = []
 
-    index_card, index_warnings = await _build_index_card(
-        provider,
-        IndexParityConfig(
-            id="ewy-kospi-implied-parity",
-            title="EWY implied KOSPI parity",
-            base_symbol="KOSPI",
-            proxy_symbol="EWY",
-        ),
+    index_config = IndexParityConfig(
+        id="ewy-kospi-implied-parity",
+        title="EWY implied KOSPI parity",
+        base_symbol="KOSPI",
+        proxy_symbol="EWY",
     )
-    cards.append(index_card)
-    warnings.extend(index_warnings)
-
-    stablecoin_card, stablecoin_warnings = await _build_stablecoin_card(provider)
-    cards.append(stablecoin_card)
-    warnings.extend(stablecoin_warnings)
-
-    kimchi_card, kimchi_warnings = await _build_kimchi_card(provider)
-    cards.append(kimchi_card)
-    warnings.extend(kimchi_warnings)
-
     synthetic_configs = [
         SyntheticParityConfig(
             base_symbol="005930",
@@ -558,8 +546,30 @@ async def build_market_parity(
             title="SK hynix synthetic parity",
         ),
     ][: max(limit, 0)]
-    for config in synthetic_configs:
-        card, card_warnings = await _build_synthetic_card(provider, config)
+
+    # ROB-689: the four card builders are independent; gather them so the two
+    # network-bound cards (index=KOSPI/naver, kimchi=upbit+binance+er-api) overlap
+    # instead of summing. Order of cards + warnings is preserved exactly (gather
+    # returns results positionally), so the response is byte-identical to serial.
+    (
+        (index_card, index_warnings),
+        (stablecoin_card, stablecoin_warnings),
+        (kimchi_card, kimchi_warnings),
+        *synthetic_results,
+    ) = await asyncio.gather(
+        _build_index_card(provider, index_config),
+        _build_stablecoin_card(provider),
+        _build_kimchi_card(provider),
+        *(_build_synthetic_card(provider, config) for config in synthetic_configs),
+    )
+
+    cards.append(index_card)
+    warnings.extend(index_warnings)
+    cards.append(stablecoin_card)
+    warnings.extend(stablecoin_warnings)
+    cards.append(kimchi_card)
+    warnings.extend(kimchi_warnings)
+    for card, card_warnings in synthetic_results:
         cards.append(card)
         warnings.extend(card_warnings)
 

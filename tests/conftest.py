@@ -105,6 +105,10 @@ def _ensure_test_env() -> None:
     # patch analyze_cache._get_redis_client with a fake explicitly.
     os.environ["ANALYZE_FETCH_CACHE_ENABLED"] = "false"
 
+    # ROB-688: same hermetic guard for the sector-peers cache — never touch a
+    # real Redis from tests; cache tests inject a fake client explicitly.
+    os.environ["NAVER_PEER_CACHE_ENABLED"] = "false"
+
 
 _ensure_test_env()
 

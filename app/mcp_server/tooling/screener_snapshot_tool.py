@@ -12,6 +12,7 @@ return their default snapshot results (and say so), expanding as more presets ge
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any, Literal, cast
 
@@ -161,14 +162,6 @@ def _holding_market_filter(market: str) -> str | None:
     if normalized == "us":
         return "equity_us"
     return None
-
-
-def _consensus_count(row: dict[str, Any], key: str) -> int:
-    try:
-        value = (row.get("analysisContext") or {}).get("consensus", {}).get(key)
-        return int(value or 0)
-    except (TypeError, ValueError, AttributeError):
-        return 0
 
 
 def _filter_min_market_cap_with_warning(
@@ -450,8 +443,16 @@ async def screen_stocks_snapshot_impl(
     eff_limit = max(1, min(int(limit), _MAX_RESULT_LIMIT))
     eff_offset = max(0, int(offset))
 
-    # ROB-515: if analyst filtering is requested, we must enrich BEFORE pagination
-    # so we can filter on the enriched buyCount across the whole set.
+    # ROB-686: per-call memo shared by both the counts resolver and the page
+    # enrichment provider so a symbol resolved once (cache/live) is never
+    # re-fetched within the same tool call.
+    memo: dict[str, Any] = {}
+
+    # ROB-686: min_analyst_* now resolves consensus COUNTS once via the KR
+    # Redis cache-aside (bounded by _MAX_ANALYST_ENRICHMENT_ROWS), filters,
+    # paginates, and only THEN full-enriches the returned page — replacing the
+    # old ROB-515 behavior of live-enriching the entire matched set (up to 200
+    # rows) before pagination.
     if min_analyst_count is not None or min_analyst_buy_count is not None:
         if len(all_results) > _MAX_ANALYST_ENRICHMENT_ROWS:
             return {
@@ -472,28 +473,53 @@ async def screen_stocks_snapshot_impl(
                 },
             }
 
+        from app.core import analyze_cache
+        from app.services.invest_view_model import analyst_consensus_cache
+
+        redis_client = await analyze_cache._get_redis_client()
+        matched_symbols = [
+            str(r.get("symbol") or "").strip() for r in all_results if r.get("symbol")
+        ]
+        counts = await analyst_consensus_cache.resolve_consensus_counts(
+            symbols=matched_symbols,
+            market=market,
+            redis_client=redis_client,
+            memo=memo,
+        )
+
+        def _passes(row: dict[str, Any]) -> bool:
+            c = counts.get(str(row.get("symbol") or "").strip())
+            if c is None:
+                return False
+            if min_analyst_count is not None and (c.get("totalCount") or 0) < int(
+                min_analyst_count
+            ):
+                return False
+            if min_analyst_buy_count is not None and (c.get("buyCount") or 0) < int(
+                min_analyst_buy_count
+            ):
+                return False
+            return True
+
+        all_results = [r for r in all_results if _passes(r)]
+        total_available = len(all_results)
+        page = all_results[eff_offset : eff_offset + eff_limit]
+
         from app.services.invest_view_model.screener_analysis_enrichment import (
             enrich_snapshot_page,
         )
 
         enrichment = await enrich_snapshot_page(
-            rows=all_results,
+            rows=page,
             market=market,
             session_factory=_session_factory(),
+            opinion_provider=functools.partial(
+                analyst_consensus_cache.cached_opinion_provider,
+                redis_client=redis_client,
+                memo=memo,
+            ),
         )
-        all_results = enrichment["results"]
-        if min_analyst_count is not None:
-            min_total = int(min_analyst_count)
-            all_results = [
-                r for r in all_results if _consensus_count(r, "totalCount") >= min_total
-            ]
-        if min_analyst_buy_count is not None:
-            min_buy = int(min_analyst_buy_count)
-            all_results = [
-                r for r in all_results if _consensus_count(r, "buyCount") >= min_buy
-            ]
-        total_available = len(all_results)
-        page = all_results[eff_offset : eff_offset + eff_limit]
+        page = enrichment["results"]
         payload["analysisEnrichment"] = enrichment["summary"]
     else:
         page = all_results[eff_offset : eff_offset + eff_limit]
@@ -510,14 +536,22 @@ async def screen_stocks_snapshot_impl(
     }
 
     if min_analyst_count is None and min_analyst_buy_count is None:
+        from app.core import analyze_cache
+        from app.services.invest_view_model import analyst_consensus_cache
         from app.services.invest_view_model.screener_analysis_enrichment import (
             enrich_snapshot_page,
         )
 
+        redis_client = await analyze_cache._get_redis_client()
         enrichment = await enrich_snapshot_page(
             rows=page,
             market=market,
             session_factory=_session_factory(),
+            opinion_provider=functools.partial(
+                analyst_consensus_cache.cached_opinion_provider,
+                redis_client=redis_client,
+                memo=memo,
+            ),
         )
         payload["results"] = enrichment["results"]
         payload["analysisEnrichment"] = enrichment["summary"]
