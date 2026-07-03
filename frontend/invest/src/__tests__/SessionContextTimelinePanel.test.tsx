@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 const body = {
   success: true as const,
-  count: 1,
+  count: 2,
   filters: {
     market: null,
     account_scope: null,
@@ -28,6 +28,19 @@ const body = {
       created_by: "claude",
       session_label: null,
       created_at: "2026-07-03T09:00:00+00:00",
+    },
+    {
+      entry_uuid: "e-2",
+      kst_date: "2026-07-02",
+      market: "us",
+      account_scope: null,
+      entry_type: "decision",
+      title: "AAPL 관망 결정",
+      body: "실적 발표 전까지 대기",
+      refs: {},
+      created_by: "claude",
+      session_label: null,
+      created_at: "2026-07-02T22:00:00+00:00",
     },
   ],
 };
@@ -57,5 +70,14 @@ describe("SessionContextTimelinePanel", () => {
     const symLink = screen.getByRole("link", { name: "005930" });
     expect(symLink).toHaveAttribute("href", "/stocks/kr/005930");
     expect(screen.getByText(/주문 ORD-1/)).toBeInTheDocument();
+
+    // ROB-676: entry_type → Pill tone mapping (decision=gain, handoff_note=paper)
+    expect(screen.getByText("decision")).toHaveAttribute("data-tone", "gain");
+    expect(screen.getByText("handoff_note")).toHaveAttribute("data-tone", "paper");
+
+    // ROB-676: rows grouped under per-kst_date headers (newest date first)
+    expect(screen.getByText("2026-07-03")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-02")).toBeInTheDocument();
+    expect(screen.getByText("AAPL 관망 결정")).toBeInTheDocument();
   });
 });
