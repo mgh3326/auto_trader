@@ -122,6 +122,9 @@ test("renders the dedicated read-only insights scaffold", () => {
   expect(screen.getByText("KOSPI ETF parity")).toBeInTheDocument();
   expect(screen.getByText("삼성전자 / 삼성전자우")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "시장 대시보드" })).toHaveAttribute("href", "/invest/market");
+  // ROB-678: retrospectives panel mounted under a 학습·회고 section
+  expect(screen.getByRole("heading", { name: "학습·회고" })).toBeInTheDocument();
+  expect(screen.getByTestId("retrospectives-panel")).toBeInTheDocument();
 });
 
 test("shows the accumulating banner when all three data panels are empty (ROB-677)", async () => {
@@ -136,6 +139,10 @@ test("shows the accumulating banner when all three data panels are empty (ROB-67
       body = { success: true, count: 0, filters: {}, artifacts: [] };
     } else if (u.includes("/session-context")) {
       body = { success: true, count: 0, filters: {}, entries: [] };
+    } else if (u.includes("next-actions")) {
+      body = { market: "all", symbol: null, count: 0, scan_limit: 200, items: [] };
+    } else if (u.includes("retrospectives")) {
+      body = { market: "all", trigger_type: null, root_cause_class: null, symbol: null, count: 0, total: 0, items: [], as_of: "2026-07-03T00:00:00Z" };
     }
     return { ok: true, status: 200, json: async () => body };
   });

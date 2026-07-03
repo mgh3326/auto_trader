@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
 import { MarketParityStrip } from "../../components/home/MarketParityStrip";
 import { AnalysisArtifactPanel } from "../../components/insights/AnalysisArtifactPanel";
 import { ForecastCalibrationPanel } from "../../components/insights/ForecastCalibrationPanel";
 import { SessionContextTimelinePanel } from "../../components/insights/SessionContextTimelinePanel";
+import { RetrospectivesPanel } from "../../components/my/RetrospectivesPanel";
 import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
@@ -123,6 +124,15 @@ export function DesktopInsightsPage() {
   const allDataEmpty =
     forecastEmpty === true && artifactEmpty === true && sessionEmpty === true;
 
+  // Crosslink closed forecasts ↔ retrospectives by correlation_id (ROB-678):
+  // only the intersection (ids present on both sides) gets anchors + links.
+  const [closedForecastIds, setClosedForecastIds] = useState<string[]>([]);
+  const [retroIds, setRetroIds] = useState<string[]>([]);
+  const linkedCorrelationIds = useMemo(() => {
+    const retro = new Set(retroIds);
+    return new Set(closedForecastIds.filter((id) => retro.has(id)));
+  }, [closedForecastIds, retroIds]);
+
   return (
     <DesktopShell
       center={
@@ -140,7 +150,18 @@ export function DesktopInsightsPage() {
           </Section>
 
           <Section title="판단 품질">
-            <ForecastCalibrationPanel onEmptyChange={setForecastEmpty} />
+            <ForecastCalibrationPanel
+              onEmptyChange={setForecastEmpty}
+              onClosedCorrelationIds={setClosedForecastIds}
+              linkedCorrelationIds={linkedCorrelationIds}
+            />
+          </Section>
+
+          <Section title="학습·회고">
+            <RetrospectivesPanel
+              onCorrelationIds={setRetroIds}
+              linkedCorrelationIds={linkedCorrelationIds}
+            />
           </Section>
 
           <Section title="세션 기록">

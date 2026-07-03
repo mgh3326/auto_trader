@@ -70,7 +70,15 @@ function NextActionChecklist({ items }: { items: NextActionRow[] }) {
   );
 }
 
-export function RetrospectivesPanel({ compact = false }: { compact?: boolean }) {
+export function RetrospectivesPanel({
+  compact = false,
+  onCorrelationIds,
+  linkedCorrelationIds,
+}: {
+  compact?: boolean;
+  onCorrelationIds?: (ids: string[]) => void;
+  linkedCorrelationIds?: ReadonlySet<string>;
+}) {
   const [market, setMarket] = useState<RetroMarket>("all");
   const [triggerType, setTriggerType] = useState<string>("");
   const [nextActions, setNextActions] = useState<NextActionRow[]>([]);
@@ -100,6 +108,16 @@ export function RetrospectivesPanel({ compact = false }: { compact?: boolean }) 
       .catch(() => { if (!cancelled) setNextActions([]); });
     return () => { cancelled = true; };
   }, [market]);
+
+  // Report retrospective correlation_ids so a host page can crosslink them to
+  // matching closed forecasts (ROB-678). No-op off /insights (prop undefined).
+  useEffect(() => {
+    if (!onCorrelationIds) return;
+    if (state.status !== "ready") return;
+    onCorrelationIds(
+      state.items.map((r) => r.correlation_id).filter((c): c is string => c != null),
+    );
+  }, [state, onCorrelationIds]);
 
   const rows = useMemo(() => (state.status === "ready" ? state.items : []), [state]);
 
@@ -164,8 +182,9 @@ export function RetrospectivesPanel({ compact = false }: { compact?: boolean }) 
             <tbody>
               {rows.map((row) => {
                 const href = row.market ? stockDetailPath(row.market as "kr" | "us" | "crypto", row.symbol) : null;
+                const linked = row.correlation_id != null && (linkedCorrelationIds?.has(row.correlation_id) ?? false);
                 return (
-                  <tr key={row.id}>
+                  <tr key={row.id} id={linked ? `retro-${row.correlation_id}` : undefined}>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, fontWeight: 700 }}>
                       {href ? <Link to={href} style={{ color: "inherit", textDecoration: "none" }}>{row.symbol}</Link> : row.symbol}
                     </td>
@@ -180,6 +199,14 @@ export function RetrospectivesPanel({ compact = false }: { compact?: boolean }) 
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-2)", maxWidth: 320 }}>
                       {row.lesson ?? row.result_summary ?? "—"}
+                      {linked && (
+                        <a
+                          href={`#forecast-${row.correlation_id}`}
+                          style={{ marginLeft: 8, color: "var(--link, #4a9)", textDecoration: "none", whiteSpace: "nowrap" }}
+                        >
+                          예측↑
+                        </a>
+                      )}
                     </td>
                   </tr>
                 );

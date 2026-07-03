@@ -279,7 +279,13 @@ function OpenList({ rows }: { rows: ForecastRow[] }) {
   );
 }
 
-function ClosedList({ rows }: { rows: ForecastRow[] }) {
+function ClosedList({
+  rows,
+  linkedCorrelationIds,
+}: {
+  rows: ForecastRow[];
+  linkedCorrelationIds?: ReadonlySet<string>;
+}) {
   if (rows.length === 0) {
     return (
       <div style={{ padding: 16, color: "var(--fg-3)", fontSize: 13, textAlign: "center" }}>
@@ -292,9 +298,11 @@ function ClosedList({ rows }: { rows: ForecastRow[] }) {
       {rows.map((r) => {
         const target = formatForecastTarget(r);
         const market = r.instrument_type ? INSTRUMENT_MARKET[r.instrument_type] : undefined;
+        const linked = r.correlation_id != null && (linkedCorrelationIds?.has(r.correlation_id) ?? false);
         return (
           <div
             key={r.id}
+            id={linked ? `forecast-${r.correlation_id}` : undefined}
             style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "2px 0", flexWrap: "wrap" }}
           >
             <Pill tone={r.outcome ? "gain" : "loss"} size="sm">{r.outcome ? "적중" : "빗나감"}</Pill>
@@ -307,6 +315,14 @@ function ClosedList({ rows }: { rows: ForecastRow[] }) {
             <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· Brier {num(r.brier_score)}</span>
             {r.resolved_at && (
               <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {r.resolved_at.slice(0, 10)}</span>
+            )}
+            {linked && (
+              <a
+                href={`#retro-${r.correlation_id}`}
+                style={{ color: "var(--link, #4a9)", textDecoration: "none", fontSize: 11 }}
+              >
+                · 회고↓
+              </a>
             )}
           </div>
         );
@@ -334,7 +350,13 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 
 export function ForecastCalibrationPanel({
   onEmptyChange,
-}: { onEmptyChange?: (isEmpty: boolean) => void } = {}) {
+  onClosedCorrelationIds,
+  linkedCorrelationIds,
+}: {
+  onEmptyChange?: (isEmpty: boolean) => void;
+  onClosedCorrelationIds?: (ids: string[]) => void;
+  linkedCorrelationIds?: ReadonlySet<string>;
+} = {}) {
   const [groupBy, setGroupBy] = useState<ForecastGroupBy>("created_by");
   const [days, setDays] = useState<number | "all">(90);
   const [calib, setCalib] = useState<LoadState<CalibrationGroupRow[]>>({ status: "loading" });
@@ -374,6 +396,16 @@ export function ForecastCalibrationPanel({
     const flags = [calib, open, closed].map((s) => (s.status === "ready" ? s.data.length === 0 : null));
     onEmptyChange(flags.every((f) => f === true));
   }, [calib, open, closed, onEmptyChange]);
+
+  // Report closed-forecast correlation_ids so the page can crosslink them to
+  // matching retrospectives (ROB-678).
+  useEffect(() => {
+    if (!onClosedCorrelationIds) return;
+    if (closed.status !== "ready") return;
+    onClosedCorrelationIds(
+      closed.data.map((r) => r.correlation_id).filter((c): c is string => c != null),
+    );
+  }, [closed, onClosedCorrelationIds]);
 
   return (
     <Card>
@@ -438,7 +470,7 @@ export function ForecastCalibrationPanel({
         <Section title="최근 채점 결과" hint="가장 최근에 해소된 예측.">
           {closed.status === "loading" && <div style={{ padding: 16, color: "var(--fg-3)", fontSize: 13, textAlign: "center" }}>불러오는 중…</div>}
           {closed.status === "error" && <div role="alert" style={{ padding: 12, color: "var(--danger)", fontSize: 13 }}>채점 결과를 불러오지 못했습니다. {closed.message}</div>}
-          {closed.status === "ready" && <ClosedList rows={closed.data} />}
+          {closed.status === "ready" && <ClosedList rows={closed.data} linkedCorrelationIds={linkedCorrelationIds} />}
         </Section>
       </section>
     </Card>

@@ -153,3 +153,26 @@ test("calibration table sorts client-side on header click (ROB-675)", async () =
   fireEvent.click(screen.getByRole("columnheader", { name: /적중률/ }));
   expect(bodyGroups()).toEqual(["alpha", "beta"]);
 });
+
+test("closed forecast crosslinks to its retrospective when linked (ROB-678)", async () => {
+  const closedLinked: ForecastListResponse = {
+    ...closed,
+    items: [{ ...closed.items[0]!, correlation_id: "corr-1" }],
+  };
+  const fetchMock = vi.fn((url: string) => {
+    const u = String(url);
+    const b = u.includes("/calibration") ? calib : u.includes("/open") ? open : closedLinked;
+    return Promise.resolve({ ok: true, json: async () => b });
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+  render(
+    <MemoryRouter>
+      <ForecastCalibrationPanel linkedCorrelationIds={new Set(["corr-1"])} />
+    </MemoryRouter>,
+  );
+
+  const link = await screen.findByRole("link", { name: /회고/ });
+  expect(link).toHaveAttribute("href", "#retro-corr-1");
+  expect(document.getElementById("forecast-corr-1")).not.toBeNull();
+});

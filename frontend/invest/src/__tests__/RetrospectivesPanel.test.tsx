@@ -47,3 +47,23 @@ test("renders pinned next-action checklist and retrospective row", async () => {
   await waitFor(() => expect(screen.getByText("재진입 룰 재검토")).toBeInTheDocument());
   expect(screen.getByText(/분할 매수가 유효했다/)).toBeInTheDocument();
 });
+
+test("retrospective crosslinks to its forecast when linked (ROB-678)", async () => {
+  const fetchMock = vi.fn((url: string) =>
+    Promise.resolve({
+      ok: true,
+      json: async () => (String(url).includes("next-actions") ? na : list),
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+  render(
+    <MemoryRouter>
+      <RetrospectivesPanel linkedCorrelationIds={new Set(["c"])} />
+    </MemoryRouter>,
+  );
+
+  const link = await screen.findByRole("link", { name: "예측↑" });
+  expect(link).toHaveAttribute("href", "#forecast-c");
+  expect(document.getElementById("retro-c")).not.toBeNull();
+});
