@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
@@ -713,6 +714,25 @@ def _group_key(r: TradeForecast, group_by: str) -> str:
     return value if value else "unlabeled"
 
 
+async def _fetch_calibration_rows(
+    db: AsyncSession, *, filters: list
+) -> list[TradeForecast]:
+    """Fetch closed+scored forecasts for calibration with the unused JSONB
+    payload columns deferred. Calibration needs ALL matching rows (no LIMIT);
+    it only reads brier_score/outcome/probability + the grouping attribute, so
+    forecast_target / evidence_ids / resolution_detail are pure load waste."""
+    result = await db.execute(
+        select(TradeForecast)
+        .where(*filters)
+        .options(
+            defer(TradeForecast.forecast_target),
+            defer(TradeForecast.evidence_ids),
+            defer(TradeForecast.resolution_detail),
+        )
+    )
+    return list(result.scalars().all())
+
+
 async def build_forecast_calibration_aggregate(
     db: AsyncSession,
     *,
@@ -748,7 +768,7 @@ async def build_forecast_calibration_aggregate(
     if days is not None:
         filters.append(TradeForecast.resolved_at >= now_kst() - timedelta(days=days))
 
-    rows = (await db.execute(select(TradeForecast).where(*filters))).scalars().all()
+    rows = await _fetch_calibration_rows(db, filters=filters)
 
     groups: dict[str, list[TradeForecast]] = {}
     for r in rows:
