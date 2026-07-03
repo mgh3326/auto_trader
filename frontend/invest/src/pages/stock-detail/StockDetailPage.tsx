@@ -11,9 +11,11 @@ import {
   fetchStockDetailResearchConsensus,
 } from "../../api/stockDetail";
 import { fetchWatches } from "../../api/watches";
+import { fetchRetrospectives } from "../../api/retrospectives";
 import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
 import { OrderLedgerCard } from "../../desktop/stock-detail/OrderLedgerCard";
 import { WatchCard } from "../../desktop/stock-detail/WatchCard";
+import { RetrospectiveCard } from "../../desktop/stock-detail/RetrospectiveCard";
 import { accountSourceMeta } from "../../desktop/AccountSourceMeta";
 import type { LinkedOrder } from "../../types/investmentReports";
 import type {
@@ -28,6 +30,7 @@ import type {
   StockDetailHolding,
 } from "../../types/stockDetail";
 import type { WatchAlertRow } from "../../types/watches";
+import type { RetrospectiveRow } from "../../types/retrospectives";
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return "−";
@@ -500,6 +503,7 @@ export function StockDetailPage() {
   const [orders, setOrders] = useState<StockDetailOrdersResponse | undefined>();
   const [orderLedger, setOrderLedger] = useState<LinkedOrder[] | undefined>();
   const [watches, setWatches] = useState<WatchAlertRow[] | undefined>();
+  const [retrospectives, setRetrospectives] = useState<RetrospectiveRow[] | undefined>();
   const [news, setNews] = useState<StockDetailNewsResponse | undefined>();
   const [researchConsensus, setResearchConsensus] = useState<StockDetailResearchConsensusResponse | undefined>();
   const [researchErr, setResearchErr] = useState<string | undefined>();
@@ -512,6 +516,7 @@ export function StockDetailPage() {
     setOrders(undefined);
     setOrderLedger(undefined);
     setWatches(undefined);
+    setRetrospectives(undefined);
     setNews(undefined);
     setResearchConsensus(undefined);
     setResearchErr(undefined);
@@ -537,6 +542,9 @@ export function StockDetailPage() {
     fetchWatches(market, "all", symbol)
       .then((r) => !cancel && setWatches(r.items))
       .catch(() => !cancel && setWatches([]));
+    fetchRetrospectives({ market, symbol, limit: 20 })
+      .then((r) => !cancel && setRetrospectives(r.items))
+      .catch(() => !cancel && setRetrospectives([]));
     fetchStockDetailNews({ market, symbol, limit: 5 })
       .then((r) => !cancel && setNews(r))
       .catch(() => undefined);
@@ -588,6 +596,7 @@ export function StockDetailPage() {
               </div>
               <OrderLedgerCard orders={orderLedger} />
               <WatchCard watches={watches} />
+              <RetrospectiveCard retrospectives={retrospectives} />
               <NewsCard news={news} />
               {data.market === "kr" && data.investorFlow ? (
                 <InvestorFlowCard data={data.investorFlow} />
