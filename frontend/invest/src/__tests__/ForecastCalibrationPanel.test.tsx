@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 import { ForecastCalibrationPanel } from "../components/insights/ForecastCalibrationPanel";
@@ -74,6 +74,10 @@ test("renders calibration table, due queue and recent scored results", async () 
   // ROB-673: closed forecast surfaces target + realized observed value
   expect(screen.getByText(/목표 ≤ \$180\.00/)).toBeInTheDocument();
   expect(screen.getByText(/실현 \$175\.50/)).toBeInTheDocument();
+
+  // ROB-675: sample_size=4 (<5) trips the small-sample guard + surfaces misses
+  expect(screen.getByText(/소표본/)).toBeInTheDocument();
+  expect(screen.getByText(/실패 1/)).toBeInTheDocument();
 });
 
 test("days control refetches calibration with the selected window (ROB-674)", async () => {
@@ -107,4 +111,45 @@ test("days control refetches calibration with the selected window (ROB-674)", as
   await waitFor(() =>
     expect(calls.some((u) => u.includes("/calibration") && !u.includes("days="))).toBe(true),
   );
+});
+
+test("calibration table sorts client-side on header click (ROB-675)", async () => {
+  const multi: CalibrationResponse = {
+    ...calib,
+    count: 2,
+    groups: [
+      { group: "alpha", sample_size: 10, hits: 6, misses: 4, hit_rate: 0.6, avg_brier_score: 0.2, avg_probability: 0.7, calibration_gap: 0.1 },
+      { group: "beta", sample_size: 8, hits: 7, misses: 1, hit_rate: 0.875, avg_brier_score: 0.1, avg_probability: 0.8, calibration_gap: -0.075 },
+    ],
+  };
+  const fetchMock = vi.fn((url: string) => {
+    const u = String(url);
+    const b = u.includes("/calibration") ? multi : u.includes("/open") ? open : closed;
+    return Promise.resolve({ ok: true, json: async () => b });
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+  render(
+    <MemoryRouter>
+      <ForecastCalibrationPanel />
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(screen.getByText("alpha")).toBeInTheDocument());
+
+  const bodyGroups = () =>
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell")[0]?.textContent ?? "");
+
+  // default preserves server order
+  expect(bodyGroups()).toEqual(["alpha", "beta"]);
+
+  // 적중률 desc: beta (0.875) before alpha (0.6)
+  fireEvent.click(screen.getByRole("columnheader", { name: /적중률/ }));
+  expect(bodyGroups()).toEqual(["beta", "alpha"]);
+
+  // toggle → asc: alpha before beta
+  fireEvent.click(screen.getByRole("columnheader", { name: /적중률/ }));
+  expect(bodyGroups()).toEqual(["alpha", "beta"]);
 });
