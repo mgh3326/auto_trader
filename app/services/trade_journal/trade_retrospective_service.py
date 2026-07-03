@@ -545,7 +545,7 @@ async def get_open_next_actions(
     items: list[dict[str, Any]] = []
     for r in rows:
         for action in r.next_actions or []:
-            if not isinstance(action, dict):
+            if not isinstance(action, dict) or not action.get("action"):
                 continue
             if not _incomplete(action.get("status")):
                 continue
