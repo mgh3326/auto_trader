@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -13,9 +14,8 @@ from app.services.account_routing import (
     AccountRoutingInput,
     suggest_account_from_snapshot,
 )
-from app.services.exchange_rate_service import get_usd_krw_rate
-from app.core.timezone import now_kst
 from app.services.brokers.toss.market_calendar import get_kr_toss_session_from_toss
+from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
 from app.services.nxt_preflight import evaluate_nxt_preflight
 

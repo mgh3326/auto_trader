@@ -32,8 +32,10 @@ class NxtTradability:
         if self.asof is None:
             return True
         current = now or dt.datetime.now(_KST)
-        asof = self.asof if self.asof.tzinfo is not None else self.asof.replace(
-            tzinfo=_KST
+        asof = (
+            self.asof
+            if self.asof.tzinfo is not None
+            else self.asof.replace(tzinfo=_KST)
         )
         return (current - asof) > NXT_FLAG_STALE_AFTER
 
@@ -41,7 +43,9 @@ class NxtTradability:
         return {
             "nxt_tradable": self.nxt_tradable,
             "nxt_tradable_source": self.source,
-            "nxt_tradable_asof": self.asof.isoformat() if self.asof is not None else None,
+            "nxt_tradable_asof": self.asof.isoformat()
+            if self.asof is not None
+            else None,
             "nxt_tradable_stale": self.is_stale(now=now),
         }
 

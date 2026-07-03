@@ -47,8 +47,8 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
-from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
 from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
+from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
 from app.services.symbol_analysis.freshness import compute_is_stale
 
 logger = logging.getLogger(__name__)

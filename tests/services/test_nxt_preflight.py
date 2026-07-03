@@ -5,8 +5,8 @@ import datetime as dt
 import pytest
 
 from app.services.nxt_preflight import (
-    ROUTE_VIA_KIS,
     RETRY_AT_REGULAR,
+    ROUTE_VIA_KIS,
     NxtTradability,
     evaluate_nxt_preflight,
 )

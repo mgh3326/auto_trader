@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import datetime as dt
-
 import pytest
 
 from app.mcp_server.tooling import orders_toss_variants as otv
@@ -11,9 +9,7 @@ from app.services.nxt_preflight import NxtTradability
 
 @pytest.fixture
 def _toss_enabled(monkeypatch):
-    monkeypatch.setattr(
-        otv, "validate_toss_api_config", lambda: [], raising=True
-    )
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [], raising=True)
 
 
 @pytest.mark.asyncio

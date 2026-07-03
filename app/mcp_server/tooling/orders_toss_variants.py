@@ -42,17 +42,17 @@ from app.services.account_routing import build_cost_profiles
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.dto import TossWarningInfo
 from app.services.brokers.toss.errors import TossApiResponseError
-from app.services.brokers.toss.warnings_guard import check_warnings_guard
 from app.services.brokers.toss.market_calendar import get_kr_toss_session_from_toss
+from app.services.brokers.toss.warnings_guard import check_warnings_guard
+from app.services.exchange_rate_service import get_usd_krw_rate_details
 from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
 from app.services.nxt_preflight import (
-    ROUTE_VIA_KIS,
     RETRY_AT_REGULAR,
+    ROUTE_VIA_KIS,
     NxtPreflightVerdict,
     NxtTradability,
     evaluate_nxt_preflight,
 )
-from app.services.exchange_rate_service import get_usd_krw_rate_details
 
 logger = logging.getLogger(__name__)
 
@@ -688,9 +688,9 @@ async def _nxt_preflight_context(
         return None
     moment = now or now_kst()
     session = await get_kr_toss_session_from_toss(moment)
-    tradability = (await get_kr_nxt_tradability([symbol])).get(symbol) or NxtTradability(
-        nxt_eligible=False, nxt_trading_suspended=None, asof=None
-    )
+    tradability = (await get_kr_nxt_tradability([symbol])).get(
+        symbol
+    ) or NxtTradability(nxt_eligible=False, nxt_trading_suspended=None, asof=None)
     verdict = evaluate_nxt_preflight(session, tradability)
     return verdict, tradability
 
