@@ -8,6 +8,7 @@ import {
 } from "../../api/forecasts";
 import { Card, Pill } from "../../ds";
 import { stockDetailPath } from "../../stockDetailPath";
+import { formatWatchMoney } from "../my/watchPresentation";
 import type {
   CalibrationGroupRow,
   ForecastGroupBy,
@@ -41,6 +42,31 @@ function SymbolCell({ row }: { row: ForecastRow }) {
   ) : (
     <>{row.symbol}</>
   );
+}
+
+const DIRECTION_GLYPH: Record<string, string> = {
+  at_or_above: "≥",
+  at_or_below: "≤",
+};
+
+// forecast_target arrives as an untyped dict (Record<string, unknown>). Narrow
+// it and render "≥ ₩80,000"-style text for price_target kinds; fall back to the
+// raw kind label for other kinds, or null when absent.
+function formatForecastTarget(row: ForecastRow): string | null {
+  const t = row.forecast_target;
+  if (!t || typeof t !== "object") return null;
+  const kind = typeof t.kind === "string" ? t.kind : null;
+  if (!kind) return null;
+  if (kind === "price_target") {
+    const direction = typeof t.direction === "string" ? t.direction : null;
+    const price = typeof t.target_price === "number" ? t.target_price : null;
+    const market = row.instrument_type ? INSTRUMENT_MARKET[row.instrument_type] : undefined;
+    const glyph = direction ? DIRECTION_GLYPH[direction] ?? "" : "";
+    const priceText = price != null ? formatWatchMoney(price, market ?? "") : "";
+    const text = `${glyph}${glyph && priceText ? " " : ""}${priceText}`.trim();
+    return text || kind;
+  }
+  return kind;
 }
 
 function pct(x: number | null): string {
@@ -132,17 +158,22 @@ function OpenList({ rows }: { rows: ForecastRow[] }) {
   }
   return (
     <div style={{ display: "grid", gap: 6 }}>
-      {rows.map((r) => (
-        <div
-          key={r.id}
-          style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "2px 0" }}
-        >
-          <span style={{ color: "var(--fg-3)", fontSize: 11, minWidth: 84 }}>{r.review_date ?? "—"}</span>
-          <span style={{ fontWeight: 700 }}><SymbolCell row={r} /></span>
-          <Pill tone="paper" size="sm">확신 {pct(r.probability)}</Pill>
-          {r.created_by && <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {r.created_by}</span>}
-        </div>
-      ))}
+      {rows.map((r) => {
+        const target = formatForecastTarget(r);
+        return (
+          <div
+            key={r.id}
+            style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "2px 0", flexWrap: "wrap" }}
+          >
+            <span style={{ color: "var(--fg-3)", fontSize: 11, minWidth: 84 }}>{r.review_date ?? "—"}</span>
+            <span style={{ fontWeight: 700 }}><SymbolCell row={r} /></span>
+            <Pill tone="paper" size="sm">확신 {pct(r.probability)}</Pill>
+            {target && <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· 목표 {target}</span>}
+            {r.horizon && <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {r.horizon}</span>}
+            {r.created_by && <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {r.created_by}</span>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -157,20 +188,28 @@ function ClosedList({ rows }: { rows: ForecastRow[] }) {
   }
   return (
     <div style={{ display: "grid", gap: 6 }}>
-      {rows.map((r) => (
-        <div
-          key={r.id}
-          style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "2px 0" }}
-        >
-          <Pill tone={r.outcome ? "gain" : "loss"} size="sm">{r.outcome ? "적중" : "빗나감"}</Pill>
-          <span style={{ fontWeight: 700 }}><SymbolCell row={r} /></span>
-          <span style={{ color: "var(--fg-3)", fontSize: 11 }}>확신 {pct(r.probability)}</span>
-          <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· Brier {num(r.brier_score)}</span>
-          {r.resolved_at && (
-            <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {r.resolved_at.slice(0, 10)}</span>
-          )}
-        </div>
-      ))}
+      {rows.map((r) => {
+        const target = formatForecastTarget(r);
+        const market = r.instrument_type ? INSTRUMENT_MARKET[r.instrument_type] : undefined;
+        return (
+          <div
+            key={r.id}
+            style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "2px 0", flexWrap: "wrap" }}
+          >
+            <Pill tone={r.outcome ? "gain" : "loss"} size="sm">{r.outcome ? "적중" : "빗나감"}</Pill>
+            <span style={{ fontWeight: 700 }}><SymbolCell row={r} /></span>
+            <span style={{ color: "var(--fg-3)", fontSize: 11 }}>확신 {pct(r.probability)}</span>
+            {target && <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· 목표 {target}</span>}
+            {r.observed_value != null && (
+              <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· 실현 {formatWatchMoney(r.observed_value, market ?? "")}</span>
+            )}
+            <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· Brier {num(r.brier_score)}</span>
+            {r.resolved_at && (
+              <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {r.resolved_at.slice(0, 10)}</span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

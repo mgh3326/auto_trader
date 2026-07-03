@@ -62,5 +62,9 @@ describe("AnalysisArtifactPanel", () => {
     expect(screen.getByTestId("analysis-artifact-panel")).toBeTruthy();
     expect(screen.getByText(/stale/i)).toBeTruthy();
     expect(screen.getByText(/v2/)).toBeTruthy();
+
+    // ROB-673: 종목 column links each symbol to its stock detail page
+    const symLink = screen.getByRole("link", { name: "005930" });
+    expect(symLink).toHaveAttribute("href", "/stocks/kr/005930");
   });
 });

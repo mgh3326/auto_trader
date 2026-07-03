@@ -19,7 +19,9 @@ const open: ForecastListResponse = {
   items: [{
     id: 1, forecast_id: "f1", correlation_id: null, created_by: "claude",
     session_label: null, model_label: null, symbol: "005930",
-    instrument_type: "equity_kr", forecast_target: null, horizon: null,
+    instrument_type: "equity_kr",
+    forecast_target: { kind: "price_target", direction: "at_or_above", target_price: 80000 },
+    horizon: "D+5",
     probability: 0.6, probability_range_low: null, probability_range_high: null,
     resolution_source: null, review_date: "2026-07-10", status: "open",
     outcome: null, observed_value: null, resolved_at: null, brier_score: null,
@@ -32,10 +34,12 @@ const closed: ForecastListResponse = {
   items: [{
     id: 2, forecast_id: "f2", correlation_id: null, created_by: "claude",
     session_label: null, model_label: null, symbol: "AAPL",
-    instrument_type: "equity_us", forecast_target: null, horizon: null,
+    instrument_type: "equity_us",
+    forecast_target: { kind: "price_target", direction: "at_or_below", target_price: 180 },
+    horizon: null,
     probability: 0.7, probability_range_low: null, probability_range_high: null,
     resolution_source: null, review_date: "2026-06-20", status: "closed",
-    outcome: true, observed_value: null, resolved_at: "2026-06-21T00:00:00Z",
+    outcome: true, observed_value: 175.5, resolved_at: "2026-06-21T00:00:00Z",
     brier_score: 0.09, created_at: "2026-06-10T00:00:00Z",
   }],
 };
@@ -63,4 +67,11 @@ test("renders calibration table, due queue and recent scored results", async () 
   // recent scored result: outcome badge + symbol
   expect(screen.getByText("적중")).toBeInTheDocument();
   expect(screen.getByText("AAPL")).toBeInTheDocument();
+
+  // ROB-673: open forecast surfaces its target + horizon
+  expect(screen.getByText(/목표 ≥ ₩80,000/)).toBeInTheDocument();
+  expect(screen.getByText(/D\+5/)).toBeInTheDocument();
+  // ROB-673: closed forecast surfaces target + realized observed value
+  expect(screen.getByText(/목표 ≤ \$180\.00/)).toBeInTheDocument();
+  expect(screen.getByText(/실현 \$175\.50/)).toBeInTheDocument();
 });
