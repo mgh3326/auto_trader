@@ -10,6 +10,7 @@ const LINKS: { to: string; label: string; end?: boolean }[] = [
   { to: "/calendar", label: "캘린더" },
   { to: "/market", label: "시장" },
   { to: "/coverage", label: "커버리지" },
+  { to: "/insights", label: "인사이트" },
   { to: "/screener", label: "골라보기" },
   { to: "/scalping", label: "스캘핑 일지" },
 ];
