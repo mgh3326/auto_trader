@@ -156,3 +156,32 @@ def test_next_actions_status_csv_narrows(monkeypatch):
     )
     assert r.status_code == 200
     assert calls["na"]["statuses"] == frozenset({"open", "in_progress"})
+
+
+def _make_unauth_client():
+    """Client with the real get_authenticated_user (no override) -> 401 path."""
+    from app.core.db import get_db
+    from app.routers import invest_retrospectives
+
+    app = FastAPI()
+    app.include_router(invest_retrospectives.router)
+    # Only stub get_db; leave get_authenticated_user real so the cookieless
+    # request resolves to HTTP 401 (state.user absent, no session cookie).
+    app.dependency_overrides[get_db] = lambda: "db"
+    return TestClient(app)
+
+
+@pytest.mark.unit
+def test_list_requires_authentication():
+    client = _make_unauth_client()
+    r = client.get("/trading/api/invest/retrospectives")
+    assert r.status_code == 401
+    assert r.json()["detail"] == "로그인이 필요합니다."
+
+
+@pytest.mark.unit
+def test_next_actions_requires_authentication():
+    client = _make_unauth_client()
+    r = client.get("/trading/api/invest/retrospectives/next-actions")
+    assert r.status_code == 401
+    assert r.json()["detail"] == "로그인이 필요합니다."

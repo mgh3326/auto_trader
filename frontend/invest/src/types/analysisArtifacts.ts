@@ -33,13 +33,15 @@ export interface ArtifactMeta {
   content_hash: string | null;
   version: number;
   readiness_label: ArtifactReadiness | null;
-  payload_size_bytes: number;
   is_stale: boolean;
   created_by: ArtifactCreatedBy;
   created_at: string;
 }
 
 export interface ArtifactRead extends ArtifactMeta {
+  // Detail-only (ROB-667): the list response omits payload_size_bytes so the
+  // list query can defer the JSONB payload; only the detail endpoint carries it.
+  payload_size_bytes: number;
   payload: Record<string, unknown>;
 }
 

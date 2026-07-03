@@ -93,7 +93,6 @@ export function AnalysisArtifactPanel() {
                   <th style={th}>as_of</th>
                   <th style={th}>상태</th>
                   <th style={th}>ver</th>
-                  <th style={th}>payload</th>
                 </tr>
               </thead>
               <tbody>
@@ -142,7 +141,6 @@ export function AnalysisArtifactPanel() {
                       </span>
                     </td>
                     <td style={td}>v{a.version}</td>
-                    <td style={td}>{a.payload_size_bytes}B</td>
                   </tr>
                 ))}
               </tbody>

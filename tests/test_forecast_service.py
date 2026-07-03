@@ -375,6 +375,50 @@ async def test_resolve_price_target_unresolved_no_data(
 # calibration aggregate
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
+async def test_calibration_rows_defer_unused_jsonb(db_session: AsyncSession):
+    """ROB-667: the calibration fetch must not hydrate the 3 unused JSONB
+    columns (forecast_target / evidence_ids / resolution_detail)."""
+    import sqlalchemy as sa
+
+    async def _make(created_by: str, prob: float, outcome: bool) -> None:
+        _, row = await svc.save_forecast(
+            db_session,
+            created_by=created_by,
+            symbol="005930",
+            instrument_type="equity_kr",
+            forecast_target={"kind": "thesis_holds"},
+            probability=prob,
+            review_date="2026-07-15",
+        )
+        await db_session.commit()
+        await svc.resolve_forecast(
+            db_session,
+            forecast_id=str(row.forecast_id),
+            persist=True,
+            manual_outcome=outcome,
+            manual_evidence=["e"],
+        )
+        await db_session.commit()
+
+    await _make("sessionA", 0.7, True)
+
+    # Drop the identity map so the next query re-materializes with defer applied.
+    db_session.expunge_all()
+
+    filters = [
+        TradeForecast.status == "closed",
+        TradeForecast.brier_score.isnot(None),
+    ]
+    rows = await svc._fetch_calibration_rows(db_session, filters=filters)
+
+    assert rows, "expected at least one closed+scored forecast"
+    unloaded = sa.inspect(rows[0]).unloaded
+    assert "forecast_target" in unloaded
+    assert "evidence_ids" in unloaded
+    assert "resolution_detail" in unloaded
+
+
+@pytest.mark.asyncio
 async def test_calibration_aggregate_groups_by_created_by(db_session: AsyncSession):
     async def _make(created_by: str, prob: float, outcome: bool) -> None:
         _, row = await svc.save_forecast(

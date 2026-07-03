@@ -13,7 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
@@ -524,11 +524,38 @@ async def get_open_next_actions(
     means "not done" (open/in_progress/unset all surface); a set narrows to
     exact status values.
     """
-    filters = []
+    filters: list = []
     if market is not None:
         filters.append(TradeRetrospective.market == market)
     if symbol is not None:
         filters.append(TradeRetrospective.symbol == symbol.strip().upper())
+
+    # ROB-667: pre-select (in SQL) only retrospectives that have at least one
+    # actionable, non-done next_action, so the recency bound below caps the
+    # RELEVANT set instead of silently dropping open actions behind newer
+    # done-only rows. jsonb_typeof guard avoids errors on legacy non-array rows.
+    if statuses is None:
+        status_clause = "COALESCE(elem->>'status','') <> 'done'"
+        bind: dict = {}
+    else:
+        status_clause = "elem->>'status' = ANY(:na_statuses)"
+        bind = {"na_statuses": list(statuses)}
+
+    has_open_action = text(
+        f"""
+        jsonb_typeof(trade_retrospectives.next_actions) = 'array'
+        AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(trade_retrospectives.next_actions) AS elem
+            WHERE elem ? 'action'
+              AND {status_clause}
+        )
+        """
+    )
+    if bind:
+        has_open_action = has_open_action.bindparams(**bind)
+    filters.append(has_open_action)
+
     stmt = (
         select(TradeRetrospective)
         .where(*filters)

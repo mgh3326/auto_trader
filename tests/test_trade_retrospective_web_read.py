@@ -39,6 +39,7 @@ async def _add(
     realized_pnl: Decimal | None = None,
     next_actions: list | None = None,
     correlation_id: str,
+    created_at: datetime | None = None,
 ) -> TradeRetrospective:
     row = TradeRetrospective(
         symbol=symbol,
@@ -51,7 +52,7 @@ async def _add(
         realized_pnl=realized_pnl,
         next_actions=next_actions,
         correlation_id=correlation_id,
-        created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        created_at=created_at or datetime(2026, 7, 1, tzinfo=UTC),
     )
     db.add(row)
     await db.commit()
@@ -159,3 +160,35 @@ async def test_get_open_next_actions_scopes_by_symbol_and_status(
 
     res2 = await svc.get_open_next_actions(db_session, statuses=frozenset({"open"}))
     assert [i["action"] for i in res2["items"]] == ["B"]
+
+
+@pytest.mark.asyncio
+async def test_open_next_action_survives_recency_bound(db_session: AsyncSession):
+    """ROB-667: an open next_action on an OLD retrospective must still surface
+    even when >200 newer done-only retrospectives exist (completeness)."""
+    # Oldest row: has an OPEN action; must survive.
+    await _add(
+        db_session,
+        symbol="005930",
+        market="kr",
+        next_actions=[{"action": "재진입 검토", "status": "open"}],
+        correlation_id="old_open",
+        created_at=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    # 220 newer rows, all done-only (noise that would evict the old open one
+    # under a plain recency bound).
+    for i in range(220):
+        await _add(
+            db_session,
+            symbol="000660",
+            market="kr",
+            next_actions=[{"action": f"noise {i}", "status": "done"}],
+            correlation_id=f"noise_{i}",
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+        )
+    await db_session.commit()
+
+    result = await svc.get_open_next_actions(db_session, market="kr")
+
+    actions = [it["action"] for it in result["items"]]
+    assert "재진입 검토" in actions

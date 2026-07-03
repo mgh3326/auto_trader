@@ -34,7 +34,6 @@ const listBody = {
       content_hash: "abc123def456",
       version: 2,
       readiness_label: "ready_for_order_review",
-      payload_size_bytes: 128,
       is_stale: true,
       created_by: "claude",
       created_at: "2026-07-03T00:00:00+00:00",
