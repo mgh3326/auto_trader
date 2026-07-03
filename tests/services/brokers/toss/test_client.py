@@ -122,6 +122,90 @@ async def test_holdings_auto_resolves_single_account_header() -> None:
 
 
 @pytest.mark.asyncio
+async def test_account_seq_resolved_once_then_cached_across_calls() -> None:
+    accounts_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal accounts_hits
+        if request.url.path == "/api/v1/accounts":
+            accounts_hits += 1
+            return httpx.Response(
+                200,
+                json=_json([{"accountNo": "1", "accountSeq": 7, "accountType": "B"}]),
+                request=request,
+            )
+        # `/api/v1/orders/{id}` (single-order detail) is parsed by `parse_order`,
+        # which requires a FULL flat order row (orderId/symbol/side/orderType/
+        # timeInForce/status/quantity/currency/orderedAt). Returning the list shape
+        # `{"orders": []}` here would raise KeyError('orderId') inside parse_order
+        # (parse_order delegates to parse_orders([raw])) — so branch on the path and
+        # return a valid single-order body. The `/api/v1/orders` LIST path still
+        # returns the `{"orders": []}` page shape parse_orders expects.
+        if request.url.path.startswith("/api/v1/orders/"):
+            return httpx.Response(
+                200,
+                json=_json(
+                    {
+                        "orderId": "ord-1",
+                        "symbol": "034020",
+                        "side": "BUY",
+                        "orderType": "LIMIT",
+                        "timeInForce": "DAY",
+                        "status": "PENDING",
+                        "quantity": "3",
+                        "currency": "KRW",
+                        "orderedAt": "2026-07-01T00:00:00Z",
+                    }
+                ),
+                request=request,
+            )
+        return httpx.Response(200, json=_json({"orders": []}), request=request)
+
+    # account_seq=None → resolution goes through /accounts; the instance caches it.
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=None,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await client.list_orders(status="OPEN")
+        await client.list_orders(status="CLOSED")
+        await client.get_order("ord-1")
+    finally:
+        await client.aclose()
+
+    assert accounts_hits == 1  # ROB-687: one /accounts for the whole client lifetime
+
+
+@pytest.mark.asyncio
+async def test_account_seq_guard_rejects_multiple_accounts() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/accounts":
+            return httpx.Response(
+                200,
+                json=_json(
+                    [
+                        {"accountNo": "1", "accountSeq": 7, "accountType": "B"},
+                        {"accountNo": "2", "accountSeq": 8, "accountType": "B"},
+                    ]
+                ),
+                request=request,
+            )
+        return httpx.Response(200, json=_json({"orders": []}), request=request)
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=None,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ValueError, match="exactly one account"):
+            await client.list_orders(status="OPEN")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_prices_rejects_more_than_200_symbols() -> None:
     client = TossReadClient(
         token_manager=_TokenManager(),
