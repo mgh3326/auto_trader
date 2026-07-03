@@ -245,3 +245,36 @@ async def test_pending_tool_envelope(db_session: AsyncSession):
     assert res["success"] is True
     refs = {p["suggested_correlation_id"] for p in res["pending"]}
     assert "kis_live:K-TOOL-1" in refs
+
+
+@pytest.mark.asyncio
+async def test_pending_tool_include_cancelled_passthrough(db_session: AsyncSession):
+    db_session.add_all(
+        [
+            KISLiveOrderLedger(
+                trade_date=now_kst(),
+                symbol="005930",
+                instrument_type="equity_kr",
+                side="buy",
+                order_type="limit",
+                account_mode="kis_live",
+                broker="kis",
+                status="cancelled",
+                lifecycle_state="cancelled",
+                order_no="K-TOOL-CANCEL",
+            )
+        ]
+    )
+    await db_session.commit()
+
+    default = await trade_retrospective_pending()
+    assert default["success"] is True
+    assert default["include_cancelled"] is False
+    default_refs = {p["suggested_correlation_id"] for p in default["pending"]}
+    assert "kis_live:K-TOOL-CANCEL" not in default_refs
+    assert default["excluded_by_filter"]["cancelled"] >= 1
+
+    opted = await trade_retrospective_pending(include_cancelled=True)
+    assert opted["include_cancelled"] is True
+    opted_refs = {p["suggested_correlation_id"] for p in opted["pending"]}
+    assert "kis_live:K-TOOL-CANCEL" in opted_refs

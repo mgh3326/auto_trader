@@ -199,6 +199,7 @@ async def trade_retrospective_pending(
     kst_date_to: str | None = None,
     account_mode: str | None = None,
     limit: int = 100,
+    include_cancelled: bool = False,
 ) -> dict[str, Any]:
     today = now_kst().date().isoformat()
     date_to = kst_date_to or today
@@ -212,6 +213,7 @@ async def trade_retrospective_pending(
                 kst_date_to=date_to,
                 account_mode=account_mode,
                 limit=limit,
+                include_cancelled=include_cancelled,
             )
         return {"success": True, **result}
     except Exception as exc:  # noqa: BLE001
