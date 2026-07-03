@@ -193,6 +193,30 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
 - **런북**: `docs/runbooks/kis-live-order-reconcile.md`
 - **스코프**: KR live only; US/crypto live unchanged (follow-up)
 
+### KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
+
+`kis_live_place_order` 응답의 `expected_expiry`/`expiry_reason` 및
+`kis_live_get_order_history` 행의 `expiry_reason` 은 **접수 세션 × 매매구분**으로
+결정된다. 순수 offline 분류기(`app/services/brokers/kis/live_order_expiry.py` —
+stdlib only, 브로커/DB/네트워크/캘린더 import 없음, 주문 hot path 무네트워크 보장):
+
+- 세션 창(KST, 마감 배타): premarket 08:00–08:50 / regular 09:00–15:30 /
+  nxt_after 16:00–20:00 / 그 외 off.
+- **정규장 SELL 은 NXT 로 연장**되어 20:00 KST 까지 유효(SOR 현금매도 NXT carry).
+  → "내 매도주문이 죽었나?" 오판 금지. reason=`nxt_carry`.
+- 정규장 BUY 는 **보수적 기본값 20:00 KST** (오늘 동작 유지), reason=
+  `regular_buy_conservative_20_00`. ROB-657 이 관측한 정규장 매수 15:30 사멸은
+  세션 만료가 아니라 **D+2 미결제(현금) 취소**(ROB-625 KRW variant)일 수 있어
+  **원인 미확정**. 공격적 `15:30` 다운그레이드(reason=`regular_buy_unsettled_15_30`)
+  는 구현되어 있으나 `KIS_REGULAR_BUY_UNSETTLED_EXPIRY_1530=true` (기본 off)
+  게이트 뒤에 있으며, **라이브 측정으로 원인 확정 후에만** 활성화한다.
+- premarket/nxt_after → 20:00(`nxt_carry`). off 창 접수 → 20:00(`unknown_session`).
+- US(해외) 주문 history 행의 `expiry_reason` 은 `us_day_order` placeholder(NXT 없음).
+
+reconcile 종료 분류(`classify_day_order_expiry`)는 변경 없음 — 여전히
+evidence-first / fail-closed.
+
+
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 ...
 시장가 crypto 주문의 경우 전송 즉시 inline으로 Reconcile을 자동 수행하여 체결 장부를 확정합니다.

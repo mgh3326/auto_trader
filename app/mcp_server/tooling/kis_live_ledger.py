@@ -17,6 +17,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.order_journal import (
@@ -29,7 +30,10 @@ from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISLiveOrderLedger
 from app.services.brokers.kis.live_order_expiry import (
+    SESSION_REGULAR,
     classify_day_order_expiry,
+    classify_kr_accept_session,
+    kr_day_order_expiry,
     nxt_session_closed,
 )
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
@@ -167,19 +171,44 @@ async def _save_kis_live_order_ledger(
 _BROKER_EXCHANGE_KEYS = ("EXCG_ID_DVSN_CD", "excg_id_dvsn_cd", "exg_id_dvsn_cd")
 
 
-def _expected_day_order_expiry(now: datetime.datetime) -> str | None:
-    """Day-order expiry = NXT close 20:00 KST of the send date (ISO 8601), or None.
+def _expected_day_order_expiry(
+    now: datetime.datetime,
+    *,
+    side: str,
+    accept_session: str | None = None,
+    unsettled_regular_buy_downgrade: bool = False,
+) -> tuple[str | None, str]:
+    """(ISO expiry, categorical reason) for a KR day order by accept-session × side.
 
-    ROB-487: SOR day orders stay alive in the NXT session until 20:00 KST. The
-    old KRX 15:30 stamp gave a 15:31 NXT-session order an expected_expiry that
-    was already in the past at send time.
+    ROB-671: delegates to the stdlib-only classifier. Regular-session BUY stays
+    20:00 KST by conservative default (the historical 15:30 death may be a D+2
+    unsettled-cash cancel, not session expiry); the downgrade is gated by
+    ``settings.kis_regular_buy_unsettled_expiry_1530``. Regular SELL / premarket /
+    nxt_after carry to the NXT close (20:00).
     """
     try:
-        local = now.astimezone(KST)
-        close = local.replace(hour=20, minute=0, second=0, microsecond=0)
-        return close.isoformat()
+        return kr_day_order_expiry(
+            accepted_at=now.astimezone(KST),
+            side=side,
+            accept_session=accept_session,
+            unsettled_regular_buy_downgrade=unsettled_regular_buy_downgrade,
+        )
     except (ValueError, OverflowError):
-        return None
+        return None, "unknown_session"
+
+
+def _build_kr_routing_note(*, side: str, accept_session: str) -> str:
+    """Dynamic SOR routing note that warns about session × side death risk."""
+    base = "SOR auto-route (KRX; NXT-eligible)"
+    normalized_side = (side or "").strip().lower()
+    if accept_session == SESSION_REGULAR and normalized_side == "buy":
+        return (
+            f"{base}. 정규장 매수: 미수/미결제(현금 미결제) 자금이면 15:30 소멸 위험 — "
+            "체결/생존 여부는 remaining_qty(잔량)로 확인하세요."
+        )
+    if normalized_side == "sell":
+        return f"{base}. NXT carry: SOR 현금매도는 NXT 마감(20:00 KST)까지 유효합니다."
+    return f"{base}. NXT-eligible: 20:00 KST까지 유효합니다."
 
 
 def _extract_broker_exchange(execution_result: dict[str, Any]) -> str | None:
@@ -215,7 +244,17 @@ async def _record_kis_live_order(
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Record a live KR order as accepted/rejected. No fill/journal/pnl booked."""
+    now = now_kst()
+    accept_session = classify_kr_accept_session(now)
+    expiry_iso, expiry_reason = _expected_day_order_expiry(
+        now,
+        side=side,
+        accept_session=accept_session,
+        unsettled_regular_buy_downgrade=settings.kis_regular_buy_unsettled_expiry_1530,
+    )
+
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
+
     qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
     amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
     currency = "KRW" if market_type != "equity_us" else "USD"
@@ -283,9 +322,10 @@ async def _record_kis_live_order(
         "order_validity": "day",
         "routing": {
             "requested_venue": "auto",
-            "note": "SOR auto-route (KRX; NXT-eligible)",
+            "note": _build_kr_routing_note(side=side, accept_session=accept_session),
         },
-        "expected_expiry": _expected_day_order_expiry(now_kst()),
+        "expected_expiry": expiry_iso,
+        "expiry_reason": expiry_reason,
         "broker_exchange": _extract_broker_exchange(execution_result),
         "message": (
             "KIS live order accepted (pending fill); run kis_live_reconcile_orders "

@@ -291,6 +291,29 @@ def test_normalize_kis_kr_order_adds_expected_day_expiry_from_placed_at() -> Non
 
     assert out["placed_at"] == "2026-06-11T09:30:00+09:00"
     assert out["expected_expiry"] == "2026-06-11T20:00:00+09:00"
+    assert out["expiry_reason"] == "regular_buy_conservative_20_00"
+
+
+def test_normalize_kis_kr_sell_order_reason_is_nxt_carry() -> None:
+    from app.services.action_report.snapshot_backed.collectors.pending_orders import (
+        _normalize_kis_order,
+    )
+
+    row = {
+        "ord_no": "0011001101",
+        "pdno": "005930",
+        "sll_buy_dvsn_cd": "01",  # sell
+        "ord_unpr": "70000",
+        "ord_qty": "3",
+        "nccs_qty": "3",
+        "ord_dt": "20260611",
+        "ord_tmd": "093000",
+    }
+
+    out = _normalize_kis_order(row, market="kr")
+
+    assert out["expected_expiry"] == "2026-06-11T20:00:00+09:00"
+    assert out["expiry_reason"] == "nxt_carry"
 
 
 def test_normalize_kis_us_order_keeps_expected_expiry_unknown() -> None:
@@ -312,3 +335,4 @@ def test_normalize_kis_us_order_keeps_expected_expiry_unknown() -> None:
     out = _normalize_kis_order(row, market="us")
 
     assert out["expected_expiry"] is None
+    assert out["expiry_reason"] is None

@@ -216,6 +216,12 @@ class Settings(BaseSettings):
     kis_mock_access_token: str | None = None
     kis_mock_scalping_enabled: bool = False
 
+    # ROB-671: gate the aggressive "unsettled regular-session buy → 15:30 death"
+    # expiry downgrade. Default off — a regular-session BUY keeps expected_expiry
+    # at 20:00 KST (conservative). Flip to true ONLY after a live measurement
+    # confirms the 15:30 death is session expiry (not a D+2 unsettled-cash cancel).
+    kis_regular_buy_unsettled_expiry_1530: bool = False
+
     # ROB-471: US get_quote 가격 소스 선택. True → KIS 해외 현재가(HHDFS00000300)
     # primary + Yahoo fast_info fallback. False → Yahoo primary(레거시).
     # 라이브 파싱 이상 시 operator가 US_QUOTE_KIS_PRIMARY=false 로 즉시 롤백.

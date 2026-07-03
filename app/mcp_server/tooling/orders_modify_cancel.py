@@ -23,7 +23,11 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.services.brokers.kis.client import KISClient
-from app.services.brokers.kis.live_order_expiry import row_has_cancel_evidence
+from app.services.brokers.kis.live_order_expiry import (
+    kr_day_order_expiry,
+    parse_kis_ordered_at,
+    row_has_cancel_evidence,
+)
 from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
@@ -151,6 +155,21 @@ def _map_kis_status(
     return "pending"
 
 
+_US_DAY_ORDER_REASON = "us_day_order"
+
+
+def _kr_history_expiry_reason(*, ordered_at: str, side: str) -> str | None:
+    """Categorical session×side expiry reason for a KR order-history row.
+
+    Read-path classification only (no 15:30 downgrade — that is a live send-path
+    decision). Returns None when ``ordered_at`` cannot be parsed.
+    """
+    accepted_at = parse_kis_ordered_at(ordered_at)
+    if accepted_at is None:
+        return None
+    return kr_day_order_expiry(accepted_at=accepted_at, side=side)[1]
+
+
 def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     side_code = _get_kis_field(order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
     side = "buy" if side_code == "02" else "sell"
@@ -237,6 +256,7 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         "filled_avg_price": filled_price,
         "ordered_at": ordered_at,
         "filled_at": "",
+        "expiry_reason": _kr_history_expiry_reason(ordered_at=ordered_at, side=side),
         "currency": "KRW",
     }
 
@@ -419,6 +439,7 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
             f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
         ),
         "filled_at": "",
+        "expiry_reason": _US_DAY_ORDER_REASON,
         "currency": "USD",
     }
 
