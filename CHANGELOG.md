@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added (ROB-660 — sell lane account-routing: KIS sell + Toss cancel + order-history helpers; migration 0)
+- **Sell lane now routes to the holding account.** The read-only advisory sequence for `route_request(profit_taking)` gains two ordered steps: `kis_live_place_order` (sell KIS holdings from the holding account, `dry_run` preview → live) and `toss_cancel_order` (clear a same-symbol Toss buy-pending limit **before** the sell, honoring the Toss two-sided constraint). Previously the sell lane only emitted `toss_place_order`, so a session holding the name at KIS had no advisory path to sell it. `route_request` stays a read-only advisory router — no enforcement is added; the MCP tools themselves gate live orders.
+- **Allowed-only order-history helpers.** New `LANE_EXTRA_ALLOWED` constant surfaces `kis_live_get_order_history` / `toss_get_order_history` in the sell lane as read-only confirmation helpers (cancel-took-effect, fill status) — allowed but **not** sequenced and **not** added to the playbook YAML. This parallels ROB-658's `MARKET_EXECUTION_TOOLS` allowed-supplement pattern and un-blocks tools that `build_route_plan` would otherwise reject because they're bucketed in `MUTATION_TOOLS` for registry partitioning despite being read-only in reality.
+- **Self-documenting hard constraints.** Two new `HARD_CONSTRAINTS["sell"]` lines spell out holding-account routing (Toss holdings → `toss_place_order`, KIS holdings → `kis_live_place_order`) and cancel-first-before-sell, so an operating session sees the two-sided rule next to the sequence that encodes it.
+- **Code ↔ playbook YAML kept atomic.** The trading-decision playbook's sell-lane YAML + prose are updated in the same change; the `test_lane_sequences_match_playbook` invariant and 5 new sell-lane tests (sequence insert + contiguity, allowed-but-not-sequenced helpers, no cross-lane leak into buy, crypto profile drops KR-only tools while ROB-658 generic `place_order` injection still fires, hard-constraint text) all pass. Buy / discovery / bootstrap lanes are untouched.
+
 ## [0.3.5] - 2026-07-03
 
 ### Changed (ROB-659 — ROB-643~653 batch verification close-out; all minor, migration 0)
