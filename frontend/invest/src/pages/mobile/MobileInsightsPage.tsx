@@ -1,3 +1,11 @@
+// /invest/insights (mobile) — read-only market insight cards.
+// Mirrors DesktopInsightsPage.tsx's panel set, section order, and page-local
+// coordination state (ROB-681). The small non-exported helpers and the
+// empty/crosslink coordination state below are duplicated rather than shared
+// (see docs/plans/ROB-681-mobile-insights-viewport-dispatch.md); ROB-682
+// re-keyed the crosslink state on both this file and DesktopInsightsPage.tsx
+// in lockstep (symbol key instead of correlation_id) to keep the duplicate
+// copies from drifting apart.
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
@@ -7,7 +15,7 @@ import { ForecastCalibrationPanel } from "../../components/insights/ForecastCali
 import { SessionContextTimelinePanel } from "../../components/insights/SessionContextTimelinePanel";
 import { RetrospectivesPanel } from "../../components/my/RetrospectivesPanel";
 import { PageSafetyNote } from "../../components/PageSafetyNote";
-import { DesktopShell } from "../../desktop/DesktopShell";
+import { MobileShell } from "../../mobile/MobileShell";
 import { Card } from "../../ds";
 import { useCommonPreferredDisparity } from "../../hooks/useCommonPreferredDisparity";
 import { useMarketParity } from "../../hooks/useMarketParity";
@@ -32,9 +40,9 @@ function SectionStatus({ children }: { children: ReactNode }) {
 
 function PageHeader() {
   return (
-    <div style={{ display: "grid", gap: 8 }}>
-      <h1 style={{ margin: 0, fontSize: 28, letterSpacing: "-0.05em" }}>인사이트</h1>
-      <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 14, lineHeight: 1.6 }}>
+    <div style={{ display: "grid", gap: 6 }}>
+      <h1 style={{ margin: 0, fontSize: 22, letterSpacing: "-0.03em" }}>인사이트</h1>
+      <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.6 }}>
         괴리·패리티 같은 시장 관찰과 예측 판단 품질·세션 기록을 한곳에서 봅니다. 모두 읽기 전용 관찰 자료입니다.
       </p>
     </div>
@@ -45,11 +53,11 @@ function PageHeader() {
 // h2 titles so grouping reads as a divider, not a competing heading.
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section style={{ display: "grid", gap: 12 }}>
+    <section style={{ display: "grid", gap: 10 }}>
       <h2
         style={{
           margin: 0,
-          fontSize: 13,
+          fontSize: 12,
           fontWeight: 800,
           color: "var(--fg-3)",
           letterSpacing: "0.04em",
@@ -111,7 +119,7 @@ function RelatedScreensCard() {
   );
 }
 
-export function DesktopInsightsPage() {
+export function MobileInsightsPage() {
   const marketParity = useMarketParity();
   const disparity = useCommonPreferredDisparity();
 
@@ -128,6 +136,8 @@ export function DesktopInsightsPage() {
   // (ROB-682): only the intersection (keys present on both sides) gets
   // anchors + links. Re-keyed from correlation_id (ROB-678), which was
   // structurally dead — the forecast/retro id namespaces never overlap.
+  // Mirrors DesktopInsightsPage.tsx's coordination state 1:1 (see file-header
+  // note on why this is duplicated rather than shared).
   const [closedForecastKeys, setClosedForecastKeys] = useState<string[]>([]);
   const [retroKeys, setRetroKeys] = useState<string[]>([]);
   const linkedSymbolKeys = useMemo(() => {
@@ -136,12 +146,19 @@ export function DesktopInsightsPage() {
   }, [closedForecastKeys, retroKeys]);
 
   return (
-    <DesktopShell
-      center={
-        <div style={{ padding: 24, display: "grid", gap: 20 }}>
+    <MobileShell title="인사이트">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "14px 0 16px" }}>
+        <div style={{ padding: "0 16px" }}>
           <PageHeader />
-          {allDataEmpty && <AccumulatingBanner />}
+        </div>
 
+        {allDataEmpty && (
+          <div style={{ padding: "0 16px" }}>
+            <AccumulatingBanner />
+          </div>
+        )}
+
+        <div style={{ padding: "0 16px" }}>
           <Section title="시장 관찰">
             <Card>
               <MarketParityStrip state={marketParity.state} reload={marketParity.reload} />
@@ -150,7 +167,9 @@ export function DesktopInsightsPage() {
             {disparity.status === "error" && <SectionStatus>보통주/우선주 괴리 데이터를 일시적으로 불러오지 못했습니다.</SectionStatus>}
             {disparity.status === "ready" && <CommonPreferredDisparityCardView data={disparity.data} />}
           </Section>
+        </div>
 
+        <div style={{ padding: "0 16px" }}>
           <Section title="판단 품질">
             <ForecastCalibrationPanel
               onEmptyChange={setForecastEmpty}
@@ -158,23 +177,33 @@ export function DesktopInsightsPage() {
               linkedSymbolKeys={linkedSymbolKeys}
             />
           </Section>
+        </div>
 
+        <div style={{ padding: "0 16px" }}>
           <Section title="학습·회고">
             <RetrospectivesPanel
+              compact
               onSymbolKeys={setRetroKeys}
               linkedSymbolKeys={linkedSymbolKeys}
             />
           </Section>
+        </div>
 
+        <div style={{ padding: "0 16px" }}>
           <Section title="세션 기록">
             <AnalysisArtifactPanel onEmptyChange={setArtifactEmpty} />
             <SessionContextTimelinePanel onEmptyChange={setSessionEmpty} />
           </Section>
+        </div>
 
+        <div style={{ padding: "0 16px" }}>
           <RelatedScreensCard />
+        </div>
+
+        <div style={{ padding: "0 16px" }}>
           <ReadOnlyGuardrailNote />
         </div>
-      }
-    />
+      </div>
+    </MobileShell>
   );
 }

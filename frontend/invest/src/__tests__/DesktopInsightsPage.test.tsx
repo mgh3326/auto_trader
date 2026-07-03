@@ -179,3 +179,79 @@ test("renders an empty market parity state without hiding the page", () => {
   expect(screen.getByText("승인된 패리티 카드가 없습니다.")).toBeInTheDocument();
   expect(screen.getByText("삼성전자 / 삼성전자우")).toBeInTheDocument();
 });
+
+// Builds a full-page fetch mock (calibration/open/closed/artifacts/
+// session-context/next-actions/retrospectives) with one closed forecast
+// (symbol AAPL, thesis-style correlation_id) and one retrospective whose
+// symbol is the given `retroSymbol` (exec-style correlation_id). The two
+// correlation_ids are always disjoint — under ROB-678's exact-id scheme the
+// crosslink would never render regardless of symbol overlap.
+function buildCrosslinkFetchMock(retroSymbol: string) {
+  return vi.fn(async (url: string) => {
+    const u = String(url);
+    let body: unknown = {};
+    if (u.includes("/calibration")) {
+      body = { group_by: "created_by", created_by: null, symbol: null, instrument_type: null, days: null, count: 0, groups: [], as_of: "2026-07-03T00:00:00Z" };
+    } else if (u.includes("/forecasts/open")) {
+      body = { kind: "open", symbol: null, created_by: null, instrument_type: null, count: 0, items: [], as_of: "2026-07-03T00:00:00Z" };
+    } else if (u.includes("/forecasts/closed")) {
+      body = {
+        kind: "closed", symbol: null, created_by: null, instrument_type: null, count: 1, as_of: "2026-07-03T00:00:00Z",
+        items: [{
+          id: 1, forecast_id: "f1", correlation_id: "aapl-thesis", created_by: "claude",
+          session_label: null, model_label: null, symbol: "AAPL", instrument_type: "equity_us",
+          forecast_target: null, horizon: null, probability: 0.7, probability_range_low: null,
+          probability_range_high: null, resolution_source: null, review_date: "2026-06-20",
+          status: "closed", outcome: true, observed_value: 175.5, resolved_at: "2026-06-21T00:00:00Z",
+          brier_score: 0.09, created_at: "2026-06-10T00:00:00Z",
+        }],
+      };
+    } else if (u.includes("/artifacts")) {
+      body = { success: true, count: 0, filters: {}, artifacts: [] };
+    } else if (u.includes("/session-context")) {
+      body = { success: true, count: 0, filters: {}, entries: [] };
+    } else if (u.includes("next-actions")) {
+      body = { market: "all", symbol: null, count: 0, scan_limit: 200, items: [] };
+    } else if (u.includes("retrospectives")) {
+      body = {
+        market: "all", trigger_type: null, root_cause_class: null, symbol: null, count: 1, total: 1, as_of: "2026-07-03T00:00:00Z",
+        items: [{
+          id: 1, correlation_id: "toss_live:uuid", symbol: retroSymbol, market: "us",
+          instrument_type: "equity_us", side: "sell", trigger_type: "fill", root_cause_class: null,
+          outcome: "win", realized_pnl: 100, realized_pnl_currency: "USD", pnl_pct: 1.2,
+          result_summary: null, lesson: `${retroSymbol} 매도 회고`, next_strategy: null,
+          intended_vs_happened: null, next_actions: null, guardrail_fired: null,
+          policy_version: null, created_at: "2026-07-01T00:00:00Z",
+        }],
+      };
+    }
+    return { ok: true, status: 200, json: async () => body };
+  });
+}
+
+test("crosslinks closed forecast <-> retrospective by symbol key, not correlation_id (ROB-682)", async () => {
+  vi.stubGlobal("fetch", buildCrosslinkFetchMock("AAPL") as unknown as typeof fetch);
+
+  render(wrap(<DesktopInsightsPage />));
+
+  // correlation_ids ("aapl-thesis" vs "toss_live:uuid") are disjoint — under
+  // ROB-678's exact-correlation_id scheme this crosslink would be dead.
+  const forecastLink = await screen.findByRole("link", { name: /회고/ });
+  expect(forecastLink).toHaveAttribute("href", "#retro-us-AAPL");
+  expect(document.getElementById("forecast-us-AAPL")).not.toBeNull();
+
+  const retroLink = await screen.findByRole("link", { name: "예측↑" });
+  expect(retroLink).toHaveAttribute("href", "#forecast-us-AAPL");
+  expect(document.getElementById("retro-us-AAPL")).not.toBeNull();
+});
+
+test("does not crosslink when symbols differ across axes (ROB-682)", async () => {
+  vi.stubGlobal("fetch", buildCrosslinkFetchMock("TSLA") as unknown as typeof fetch);
+
+  render(wrap(<DesktopInsightsPage />));
+
+  await screen.findByText("AAPL");
+  await screen.findByText(/TSLA 매도 회고/);
+  expect(screen.queryByRole("link", { name: /회고/ })).toBeNull();
+  expect(screen.queryByRole("link", { name: "예측↑" })).toBeNull();
+});
