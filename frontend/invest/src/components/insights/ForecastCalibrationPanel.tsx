@@ -22,6 +22,14 @@ const GROUP_BY_OPTIONS: { key: ForecastGroupBy; label: string }[] = [
   { key: "day", label: "일자" },
 ];
 
+// "전체" = omit the days param entirely (the backend has no all-time sentinel;
+// days is Query(ge=1)), so the calibration aggregate spans the full history.
+const DAYS_OPTIONS: { key: number | "all"; label: string }[] = [
+  { key: 30, label: "30일" },
+  { key: 90, label: "90일" },
+  { key: "all", label: "전체" },
+];
+
 const INSTRUMENT_MARKET: Record<string, "kr" | "us" | "crypto"> = {
   equity_kr: "kr",
   equity_us: "us",
@@ -233,6 +241,7 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 
 export function ForecastCalibrationPanel() {
   const [groupBy, setGroupBy] = useState<ForecastGroupBy>("created_by");
+  const [days, setDays] = useState<number | "all">(90);
   const [calib, setCalib] = useState<LoadState<CalibrationGroupRow[]>>({ status: "loading" });
   const [open, setOpen] = useState<LoadState<ForecastRow[]>>({ status: "loading" });
   const [closed, setClosed] = useState<LoadState<ForecastRow[]>>({ status: "loading" });
@@ -240,13 +249,13 @@ export function ForecastCalibrationPanel() {
   useEffect(() => {
     let cancelled = false;
     setCalib({ status: "loading" });
-    fetchForecastCalibration({ groupBy })
+    fetchForecastCalibration({ groupBy, days: days === "all" ? undefined : days })
       .then((d) => { if (!cancelled) setCalib({ status: "ready", data: d.groups }); })
       .catch((e: unknown) => {
         if (!cancelled) setCalib({ status: "error", message: e instanceof Error ? e.message : String(e) });
       });
     return () => { cancelled = true; };
-  }, [groupBy]);
+  }, [groupBy, days]);
 
   useEffect(() => {
     let cancelled = false;
@@ -273,22 +282,41 @@ export function ForecastCalibrationPanel() {
               어떤 모델·세션의 판단을 얼마나 믿을 수 있는지 — resolvable 예측의 Brier·적중률·보정오차.
             </p>
           </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {GROUP_BY_OPTIONS.map((o) => (
-              <button
-                key={o.key}
-                type="button"
-                onClick={() => setGroupBy(o.key)}
-                style={{
-                  border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 11,
-                  fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                  background: groupBy === o.key ? "var(--fg)" : "var(--surface-2)",
-                  color: groupBy === o.key ? "var(--bg)" : "var(--fg-2)",
-                }}
-              >
-                {o.label}
-              </button>
-            ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {GROUP_BY_OPTIONS.map((o) => (
+                <button
+                  key={o.key}
+                  type="button"
+                  onClick={() => setGroupBy(o.key)}
+                  style={{
+                    border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 11,
+                    fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                    background: groupBy === o.key ? "var(--fg)" : "var(--surface-2)",
+                    color: groupBy === o.key ? "var(--bg)" : "var(--fg-2)",
+                  }}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {DAYS_OPTIONS.map((o) => (
+                <button
+                  key={String(o.key)}
+                  type="button"
+                  onClick={() => setDays(o.key)}
+                  style={{
+                    border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 11,
+                    fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                    background: days === o.key ? "var(--fg)" : "var(--surface-2)",
+                    color: days === o.key ? "var(--bg)" : "var(--fg-2)",
+                  }}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
