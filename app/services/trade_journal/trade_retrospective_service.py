@@ -13,8 +13,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
@@ -469,6 +470,10 @@ async def get_retrospectives(
     days: int | None = None,
     trigger_type: str | None = None,
     root_cause_class: str | None = None,
+    outcome_filter: str | None = None,
+    symbol_search: str | None = None,
+    kst_date_from: str | None = None,
+    kst_date_to: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -487,6 +492,29 @@ async def get_retrospectives(
         filters.append(TradeRetrospective.trigger_type == trigger_type)
     if root_cause_class is not None:
         filters.append(TradeRetrospective.root_cause_class == root_cause_class)
+    if symbol_search is not None and symbol_search.strip():
+        filters.append(
+            TradeRetrospective.symbol.ilike(_prefix_like(symbol_search), escape="\\")
+        )
+    # kst_date_from/to reuse the same `_kst_day_start`/`_kst_day_end` KST
+    # calendar-day helpers as build_retrospective_aggregate (§ plan 3.3/4) —
+    # do not reimplement the day-boundary math here.
+    if kst_date_from is not None:
+        filters.append(TradeRetrospective.created_at >= _kst_day_start(kst_date_from))
+    if kst_date_to is not None:
+        filters.append(TradeRetrospective.created_at <= _kst_day_end(kst_date_to))
+    if outcome_filter is not None:
+        if outcome_filter == "win":
+            filters.append(_sql_is_win())
+        elif outcome_filter == "loss":
+            filters.append(_sql_is_loss())
+        elif outcome_filter == "decided":
+            filters.append(_sql_is_decided())
+        else:
+            raise RetrospectiveValidationError(
+                f"invalid outcome_filter: {outcome_filter} "
+                f"(allowed: {sorted(VALID_OUTCOME_FILTERS)})"
+            )
     if days is not None:
         filters.append(
             TradeRetrospective.created_at >= now_kst() - timedelta(days=days)
@@ -609,6 +637,76 @@ def _is_win(r: TradeRetrospective) -> bool:
 
 def _is_decided(r: TradeRetrospective) -> bool:
     return r.realized_pnl is not None or r.pnl_pct is not None
+
+
+# ROB-691 — SQL-side mirrors of `_is_win`/`_is_decided` above, used by
+# get_retrospectives' `outcome_filter` query param. MUST be kept in lock-step
+# with the Python predicates (same tie=0-is-a-loss rule, same pnl_pct
+# fallback-only-when-realized_pnl-is-NULL semantics); see the parallel
+# equivalence test in tests/test_trade_retrospective_aggregate.py
+# (test_outcome_filter_matches_python_predicate) that guards against drift.
+VALID_OUTCOME_FILTERS: frozenset[str] = frozenset({"win", "loss", "decided"})
+
+
+def _sql_is_decided() -> ColumnElement[bool]:
+    """SQL predicate mirroring `_is_decided` — keep in lock-step."""
+    return or_(
+        TradeRetrospective.realized_pnl.isnot(None),
+        TradeRetrospective.pnl_pct.isnot(None),
+    )
+
+
+def _sql_is_win() -> ColumnElement[bool]:
+    """SQL predicate mirroring `_is_win` — keep in lock-step.
+
+    `_is_win`: if realized_pnl is not None -> realized_pnl > 0 (strict; a tie
+    at 0 is NOT a win); else -> pnl_pct is not None and pnl_pct > 0.
+    """
+    return or_(
+        TradeRetrospective.realized_pnl > 0,
+        and_(
+            TradeRetrospective.realized_pnl.is_(None),
+            TradeRetrospective.pnl_pct > 0,
+        ),
+    )
+
+
+def _sql_is_loss() -> ColumnElement[bool]:
+    """SQL predicate = decided AND NOT win, spelled out explicitly (rather
+    than `and_(_sql_is_decided(), not_(_sql_is_win()))`) to avoid SQL's
+    three-valued NULL logic silently mis-classifying NULL columns as "unknown"
+    instead of following the Python if/else short-circuit. Keep in lock-step
+    with `_is_win`/`_is_decided`.
+    """
+    return or_(
+        and_(
+            TradeRetrospective.realized_pnl.isnot(None),
+            TradeRetrospective.realized_pnl <= 0,
+        ),
+        and_(
+            TradeRetrospective.realized_pnl.is_(None),
+            TradeRetrospective.pnl_pct.isnot(None),
+            TradeRetrospective.pnl_pct <= 0,
+        ),
+    )
+
+
+def _prefix_like(raw: str) -> str:
+    """Prefix-match token for `Column.ilike(..., escape="\\\\")`.
+
+    Symbols are stored upper-cased (see `_normalize_symbol`), so the search
+    token is upper-cased too. `%`/`_` are LIKE wildcards — escape them so a
+    literal search token (e.g. a symbol containing `_`) does not accidentally
+    widen the match.
+    """
+    escaped = (
+        raw.strip()
+        .upper()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"{escaped}%"
 
 
 async def build_retrospective_aggregate(

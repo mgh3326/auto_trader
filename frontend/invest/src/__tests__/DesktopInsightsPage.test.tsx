@@ -131,7 +131,15 @@ test("shows the accumulating banner when all three data panels are empty (ROB-67
   const fetchMock = vi.fn(async (url: string) => {
     const u = String(url);
     let body: unknown = {};
-    if (u.includes("/calibration")) {
+    // ROB-691: /scoreboard must be checked before the generic "retrospectives"
+    // substring match below, since its URL also contains "retrospectives".
+    if (u.includes("/scoreboard")) {
+      body = {
+        group_by: "strategy", market: "all", kst_date_from: null, kst_date_to: null,
+        count: 0, groups: [], as_of: "2026-07-03T00:00:00Z",
+        totals: { sample_size: 0, wins: 0, misses: 0, decided: 0, win_rate_pct: null, realized_pnl_sum: {}, fx_pnl_krw_sum: 0, total_pnl_krw_sum: 0, excluded_no_fill_evidence: 0 },
+      };
+    } else if (u.includes("/calibration")) {
       body = { group_by: "created_by", created_by: null, symbol: null, instrument_type: null, days: null, count: 0, groups: [], as_of: "2026-07-03T00:00:00Z" };
     } else if (u.includes("/forecasts/open") || u.includes("/forecasts/closed")) {
       body = { kind: "open", symbol: null, created_by: null, instrument_type: null, count: 0, items: [], as_of: "2026-07-03T00:00:00Z" };
@@ -190,7 +198,15 @@ function buildCrosslinkFetchMock(retroSymbol: string) {
   return vi.fn(async (url: string) => {
     const u = String(url);
     let body: unknown = {};
-    if (u.includes("/calibration")) {
+    // ROB-691: /scoreboard must be checked before the generic "retrospectives"
+    // substring match below, since its URL also contains "retrospectives".
+    if (u.includes("/scoreboard")) {
+      body = {
+        group_by: "strategy", market: "all", kst_date_from: null, kst_date_to: null,
+        count: 0, groups: [], as_of: "2026-07-03T00:00:00Z",
+        totals: { sample_size: 0, wins: 0, misses: 0, decided: 0, win_rate_pct: null, realized_pnl_sum: {}, fx_pnl_krw_sum: 0, total_pnl_krw_sum: 0, excluded_no_fill_evidence: 0 },
+      };
+    } else if (u.includes("/calibration")) {
       body = { group_by: "created_by", created_by: null, symbol: null, instrument_type: null, days: null, count: 0, groups: [], as_of: "2026-07-03T00:00:00Z" };
     } else if (u.includes("/forecasts/open")) {
       body = { kind: "open", symbol: null, created_by: null, instrument_type: null, count: 0, items: [], as_of: "2026-07-03T00:00:00Z" };

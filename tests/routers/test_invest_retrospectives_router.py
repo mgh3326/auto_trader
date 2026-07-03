@@ -7,7 +7,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def _make_client(monkeypatch, *, list_result=None, na_result=None):
+def _make_client(
+    monkeypatch, *, list_result=None, na_result=None, aggregate_result=None
+):
     from app.core.db import get_db
     from app.routers import invest_retrospectives
     from app.routers.dependencies import get_authenticated_user
@@ -22,11 +24,24 @@ def _make_client(monkeypatch, *, list_result=None, na_result=None):
         calls["na"] = kwargs
         return na_result or {"items": [], "count": 0, "scan_limit": 200}
 
+    async def _fake_aggregate(db, **kwargs):
+        calls["aggregate"] = kwargs
+        return aggregate_result or {
+            "group_by": kwargs.get("group_by", "strategy"),
+            "groups": [],
+            "excluded_no_fill_evidence": 0,
+        }
+
     monkeypatch.setattr(
         invest_retrospectives.retro_svc, "get_retrospectives", _fake_list
     )
     monkeypatch.setattr(
         invest_retrospectives.retro_svc, "get_open_next_actions", _fake_na
+    )
+    monkeypatch.setattr(
+        invest_retrospectives.retro_svc,
+        "build_retrospective_aggregate",
+        _fake_aggregate,
     )
 
     app = FastAPI()
@@ -156,6 +171,164 @@ def test_next_actions_status_csv_narrows(monkeypatch):
     )
     assert r.status_code == 200
     assert calls["na"]["statuses"] == frozenset({"open", "in_progress"})
+
+
+@pytest.mark.unit
+def test_list_forwards_new_filters(monkeypatch):
+    client, calls = _make_client(monkeypatch)
+    r = client.get(
+        "/trading/api/invest/retrospectives"
+        "?outcome_filter=win&q=005&kst_date_from=2026-07-01&kst_date_to=2026-07-04"
+    )
+    assert r.status_code == 200
+    assert calls["list"]["outcome_filter"] == "win"
+    assert calls["list"]["symbol_search"] == "005"
+    assert calls["list"]["kst_date_from"] == "2026-07-01"
+    assert calls["list"]["kst_date_to"] == "2026-07-04"
+    body = r.json()
+    assert body["outcome_filter"] == "win"
+    assert body["q"] == "005"
+    assert body["kst_date_from"] == "2026-07-01"
+    assert body["kst_date_to"] == "2026-07-04"
+
+
+@pytest.mark.unit
+def test_list_rejects_invalid_outcome_filter(monkeypatch):
+    client, _ = _make_client(monkeypatch)
+    r = client.get("/trading/api/invest/retrospectives?outcome_filter=bogus")
+    assert r.status_code == 422
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("param", ["kst_date_from", "kst_date_to"])
+def test_list_rejects_invalid_date_format(monkeypatch, param):
+    client, _ = _make_client(monkeypatch)
+    r = client.get(f"/trading/api/invest/retrospectives?{param}=2026/07/04")
+    assert r.status_code == 422
+
+
+@pytest.mark.unit
+def test_scoreboard_defaults_and_totals_rollup(monkeypatch):
+    groups = [
+        {
+            "group": "A",
+            "sample_size": 5,
+            "wins": 3,
+            "misses": 2,
+            "win_rate_pct": 60.0,
+            "avg_pnl_pct": 1.2,
+            "realized_pnl_sum": {"KRW": 100.0, "USD": 5.0},
+            "fx_pnl_krw_sum": 10.0,
+            "total_pnl_krw_sum": 110.0,
+            "by_outcome": {"filled": 5},
+            "by_trigger_type": {},
+            "by_root_cause_class": {},
+        },
+        {
+            "group": "B",
+            "sample_size": 2,
+            "wins": 1,
+            "misses": 1,
+            "win_rate_pct": 50.0,
+            "avg_pnl_pct": -0.5,
+            "realized_pnl_sum": {"KRW": 50.0},
+            "fx_pnl_krw_sum": 0.0,
+            "total_pnl_krw_sum": 50.0,
+            "by_outcome": {"filled": 2},
+            "by_trigger_type": {},
+            "by_root_cause_class": {},
+        },
+    ]
+    client, calls = _make_client(
+        monkeypatch,
+        aggregate_result={
+            "group_by": "strategy",
+            "groups": groups,
+            "excluded_no_fill_evidence": 3,
+        },
+    )
+    r = client.get("/trading/api/invest/retrospectives/scoreboard")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["group_by"] == "strategy"
+    assert body["market"] == "all"
+    assert calls["aggregate"]["market"] is None  # market="all" -> None
+    assert calls["aggregate"]["group_by"] == "strategy"
+    assert len(body["groups"]) == 2
+
+    totals = body["totals"]
+    assert totals["sample_size"] == 7
+    assert totals["wins"] == 4
+    assert totals["misses"] == 3
+    assert totals["decided"] == 7
+    assert totals["win_rate_pct"] == pytest.approx(4 / 7 * 100.0)
+    assert totals["realized_pnl_sum"] == {"KRW": 150.0, "USD": 5.0}
+    assert totals["fx_pnl_krw_sum"] == pytest.approx(10.0)
+    assert totals["total_pnl_krw_sum"] == pytest.approx(160.0)
+    assert totals["excluded_no_fill_evidence"] == 3
+
+
+@pytest.mark.unit
+def test_scoreboard_empty_groups_totals_are_zero_and_null_win_rate(monkeypatch):
+    client, _ = _make_client(monkeypatch)
+    r = client.get("/trading/api/invest/retrospectives/scoreboard")
+    assert r.status_code == 200
+    totals = r.json()["totals"]
+    assert totals["sample_size"] == 0
+    assert totals["decided"] == 0
+    assert totals["win_rate_pct"] is None
+    assert totals["realized_pnl_sum"] == {}
+
+
+@pytest.mark.unit
+def test_scoreboard_forwards_group_by_and_filters(monkeypatch):
+    client, calls = _make_client(monkeypatch)
+    r = client.get(
+        "/trading/api/invest/retrospectives/scoreboard"
+        "?group_by=day&market=kr&account_mode=kis_live&strategy_key=A"
+        "&kst_date_from=2026-07-01&kst_date_to=2026-07-04"
+    )
+    assert r.status_code == 200
+    assert calls["aggregate"]["group_by"] == "day"
+    assert calls["aggregate"]["market"] == "kr"
+    assert calls["aggregate"]["account_mode"] == "kis_live"
+    assert calls["aggregate"]["strategy_key"] == "A"
+    assert calls["aggregate"]["kst_date_from"] == "2026-07-01"
+    assert calls["aggregate"]["kst_date_to"] == "2026-07-04"
+    body = r.json()
+    assert body["market"] == "kr"
+    assert body["kst_date_from"] == "2026-07-01"
+    assert body["kst_date_to"] == "2026-07-04"
+
+
+@pytest.mark.unit
+def test_scoreboard_rejects_invalid_group_by(monkeypatch):
+    client, _ = _make_client(monkeypatch)
+    r = client.get("/trading/api/invest/retrospectives/scoreboard?group_by=bogus")
+    assert r.status_code == 422
+
+
+@pytest.mark.unit
+def test_scoreboard_rejects_invalid_market(monkeypatch):
+    client, _ = _make_client(monkeypatch)
+    r = client.get("/trading/api/invest/retrospectives/scoreboard?market=paper")
+    assert r.status_code == 422
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("param", ["kst_date_from", "kst_date_to"])
+def test_scoreboard_rejects_invalid_date_format(monkeypatch, param):
+    client, _ = _make_client(monkeypatch)
+    r = client.get(f"/trading/api/invest/retrospectives/scoreboard?{param}=07-04-2026")
+    assert r.status_code == 422
+
+
+@pytest.mark.unit
+def test_scoreboard_requires_authentication():
+    client = _make_unauth_client()
+    r = client.get("/trading/api/invest/retrospectives/scoreboard")
+    assert r.status_code == 401
+    assert r.json()["detail"] == "로그인이 필요합니다."
 
 
 def _make_unauth_client():

@@ -41,9 +41,63 @@ class RetrospectivesResponse(BaseModel):
     trigger_type: str | None = None
     root_cause_class: str | None = None
     symbol: str | None = None
+    # ROB-691 — trade-history filters (echoed so the client can confirm what
+    # was actually applied).
+    outcome_filter: str | None = None
+    q: str | None = None
+    kst_date_from: str | None = None
+    kst_date_to: str | None = None
     count: int = Field(ge=0)
     total: int = Field(ge=0)
     items: list[RetrospectiveRow]
+    as_of: datetime
+
+
+# ROB-691 — judgment scoreboard (win-rate / realized-PnL / win-loss), mirroring
+# build_retrospective_aggregate's group dict field-for-field (extra="ignore":
+# the service returns a superset the aggregate already computes; we keep a
+# stable subset here).
+class ScoreboardGroupRow(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    group: str
+    sample_size: int = Field(ge=0)
+    wins: int = Field(ge=0)
+    misses: int = Field(ge=0)
+    win_rate_pct: float | None = None
+    avg_pnl_pct: float | None = None
+    realized_pnl_sum: dict[str, float] = Field(default_factory=dict)
+    fx_pnl_krw_sum: float = 0.0
+    total_pnl_krw_sum: float = 0.0
+    by_outcome: dict[str, int] = Field(default_factory=dict)
+    by_trigger_type: dict[str, int] = Field(default_factory=dict)
+    by_root_cause_class: dict[str, int] = Field(default_factory=dict)
+
+
+class ScoreboardTotals(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sample_size: int = Field(ge=0)
+    wins: int = Field(ge=0)
+    misses: int = Field(ge=0)
+    decided: int = Field(ge=0)
+    win_rate_pct: float | None = None
+    realized_pnl_sum: dict[str, float] = Field(default_factory=dict)
+    fx_pnl_krw_sum: float = 0.0
+    total_pnl_krw_sum: float = 0.0
+    excluded_no_fill_evidence: int = Field(ge=0)
+
+
+class ScoreboardResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_by: str
+    market: Literal["all", "kr", "us", "crypto"]
+    kst_date_from: str | None = None
+    kst_date_to: str | None = None
+    count: int = Field(ge=0)
+    groups: list[ScoreboardGroupRow]
+    totals: ScoreboardTotals
     as_of: datetime
 
 

@@ -1,6 +1,7 @@
 import type {
   NextActionsResponse,
   RetroMarket,
+  RetroOutcomeFilter,
   RetrospectivesResponse,
 } from "../types/retrospectives";
 
@@ -11,6 +12,10 @@ export interface RetrospectivesQuery {
   triggerType?: string;
   rootCauseClass?: string;
   symbol?: string;
+  outcomeFilter?: RetroOutcomeFilter;
+  q?: string;
+  dateFrom?: string;
+  dateTo?: string;
   days?: number;
   limit?: number;
   offset?: number;
@@ -23,6 +28,10 @@ export async function fetchRetrospectives(
   if (q.triggerType) params.set("trigger_type", q.triggerType);
   if (q.rootCauseClass) params.set("root_cause_class", q.rootCauseClass);
   if (q.symbol) params.set("symbol", q.symbol);
+  if (q.outcomeFilter) params.set("outcome_filter", q.outcomeFilter);
+  if (q.q) params.set("q", q.q);
+  if (q.dateFrom) params.set("kst_date_from", q.dateFrom);
+  if (q.dateTo) params.set("kst_date_to", q.dateTo);
   if (q.days != null) params.set("days", String(q.days));
   if (q.limit != null) params.set("limit", String(q.limit));
   if (q.offset != null) params.set("offset", String(q.offset));

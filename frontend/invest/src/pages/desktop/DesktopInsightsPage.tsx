@@ -4,6 +4,7 @@ import { CommonPreferredDisparityCardView } from "../../components/CommonPreferr
 import { MarketParityStrip } from "../../components/home/MarketParityStrip";
 import { AnalysisArtifactPanel } from "../../components/insights/AnalysisArtifactPanel";
 import { ForecastCalibrationPanel } from "../../components/insights/ForecastCalibrationPanel";
+import { JudgmentScoreboardPanel } from "../../components/insights/JudgmentScoreboardPanel";
 import { SessionContextTimelinePanel } from "../../components/insights/SessionContextTimelinePanel";
 import { RetrospectivesPanel } from "../../components/my/RetrospectivesPanel";
 import { PageSafetyNote } from "../../components/PageSafetyNote";
@@ -118,11 +119,15 @@ export function DesktopInsightsPage() {
   // Emptiness is owned by each panel (self-fetch); they report up via
   // onEmptyChange so the page can show one accumulating banner instead of a
   // stack of empty boxes. null = not-yet-resolved.
+  const [scoreboardEmpty, setScoreboardEmpty] = useState<boolean | null>(null);
   const [forecastEmpty, setForecastEmpty] = useState<boolean | null>(null);
   const [artifactEmpty, setArtifactEmpty] = useState<boolean | null>(null);
   const [sessionEmpty, setSessionEmpty] = useState<boolean | null>(null);
   const allDataEmpty =
-    forecastEmpty === true && artifactEmpty === true && sessionEmpty === true;
+    scoreboardEmpty === true &&
+    forecastEmpty === true &&
+    artifactEmpty === true &&
+    sessionEmpty === true;
 
   // Crosslink closed forecasts ↔ retrospectives by normalized symbol key
   // (ROB-682): only the intersection (keys present on both sides) gets
@@ -152,6 +157,7 @@ export function DesktopInsightsPage() {
           </Section>
 
           <Section title="판단 품질">
+            <JudgmentScoreboardPanel onEmptyChange={setScoreboardEmpty} />
             <ForecastCalibrationPanel
               onEmptyChange={setForecastEmpty}
               onClosedSymbolKeys={setClosedForecastKeys}

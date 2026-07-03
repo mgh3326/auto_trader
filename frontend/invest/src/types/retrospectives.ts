@@ -23,11 +23,17 @@ export interface RetrospectiveRow {
   created_at: string | null;
 }
 
+export type RetroOutcomeFilter = "win" | "loss" | "decided";
+
 export interface RetrospectivesResponse {
   market: RetroMarket;
   trigger_type: string | null;
   root_cause_class: string | null;
   symbol: string | null;
+  outcome_filter: string | null;
+  q: string | null;
+  kst_date_from: string | null;
+  kst_date_to: string | null;
   count: number;
   total: number;
   items: RetrospectiveRow[];
