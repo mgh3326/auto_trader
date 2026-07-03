@@ -334,6 +334,11 @@ def register_analysis_tools(
             "sort='matched_presets_desc' ranks multi-preset intersections first. "
             "Read-only. Preset sweeps are capped at 5 presets; analyst filters require at most "
             "200 merged rows before enrichment. "
+            "KR analyst consensus (buy/hold/sell counts + target prices) is cached "
+            "daily per symbol (Redis, KST-date TTL); the displayed target-upside is "
+            "recomputed each call from a fresh price so it stays intraday-current. "
+            "min_analyst_* filters resolve consensus from the cache and only the "
+            "returned page is enriched. "
             "Results are capped (default 40) and paginated via limit/offset."
         ),
     )
