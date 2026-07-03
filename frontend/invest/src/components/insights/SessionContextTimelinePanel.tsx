@@ -30,6 +30,73 @@ const ENTRY_TYPE_TONE: Record<SessionEntryType, PillTone> = {
   open_question: "warn",
 };
 
+// Visual clamp height (in lines) for a collapsed row body, and the
+// content-based threshold used to decide whether a row's body is long enough
+// to need a 더보기/접기 toggle. Content-based (not DOM-measured) so the
+// decision is deterministic under jsdom (no layout/scrollHeight available).
+const CLAMP_LINES = 3;
+const CLAMP_CHAR_THRESHOLD = 160;
+
+// Pure heuristic: more newlines than the clamp allows, or long enough that it
+// likely wraps past CLAMP_LINES. Biased fail-open (toggle shown) over
+// false-negative (content truncated with no way to expand it).
+function isBodyClampable(body: string): boolean {
+  return body.split("\n").length > CLAMP_LINES || body.length > CLAMP_CHAR_THRESHOLD;
+}
+
+// Body of one timeline entry, clamped to CLAMP_LINES with a per-row
+// 더보기/접기 toggle when the content is long enough to warrant one (per
+// isBodyClampable). Local state is safe here because each row is keyed by
+// entry_uuid (stable identity across renders/regroupings).
+function ExpandableBody({ body, bodyId }: { body: string; bodyId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const clampable = isBodyClampable(body);
+  return (
+    <div>
+      <div
+        id={bodyId}
+        style={{
+          fontSize: 13,
+          opacity: 0.85,
+          whiteSpace: "pre-wrap",
+          ...(clampable && !expanded
+            ? {
+                display: "-webkit-box",
+                WebkitBoxOrient: "vertical",
+                WebkitLineClamp: CLAMP_LINES,
+                overflow: "hidden",
+              }
+            : { display: "block" }),
+        }}
+      >
+        {body}
+      </div>
+      {clampable && (
+        <button
+          type="button"
+          data-testid="session-row-toggle"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          aria-label={expanded ? "본문 접기" : "본문 더보기"}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: "var(--fg-3)",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            fontSize: 12,
+            fontWeight: 700,
+            padding: "2px 0",
+          }}
+        >
+          {expanded ? "접기" : "더보기"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Bucket entries by kst_date, preserving the incoming newest-first order both
 // across groups (first date seen = newest) and within each group.
 function groupByDate(
@@ -74,7 +141,7 @@ function SessionRow({ entry }: { entry: SessionContextEntry }) {
         <span style={{ opacity: 0.6, fontSize: 12 }}>{hhmm(entry.created_at)}</span>
       </div>
       <div style={{ fontWeight: 700, marginTop: 4 }}>{entry.title}</div>
-      <div style={{ fontSize: 13, opacity: 0.85, whiteSpace: "pre-wrap" }}>{entry.body}</div>
+      <ExpandableBody body={entry.body} bodyId={`sess-body-${entry.entry_uuid}`} />
       {hasRefs && (
         <div
           style={{

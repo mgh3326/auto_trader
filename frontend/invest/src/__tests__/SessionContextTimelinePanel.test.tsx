@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionContextTimelinePanel } from "../components/insights/SessionContextTimelinePanel";
@@ -84,5 +84,61 @@ describe("SessionContextTimelinePanel", () => {
     expect(screen.getByText("09:00")).toBeInTheDocument();
     expect(screen.getByText("22:00")).toBeInTheDocument();
     expect(screen.queryByText(/2026-07-03 09:00/)).not.toBeInTheDocument();
+
+    // ROB-680: short bodies stay unclamped — no 더보기/접기 toggle rendered
+    expect(screen.queryAllByTestId("session-row-toggle")).toHaveLength(0);
+  });
+
+  it("clamps long bodies behind a 더보기 toggle", async () => {
+    const longBody = {
+      ...body,
+      count: 3,
+      entries: [
+        ...body.entries,
+        {
+          entry_uuid: "e-3",
+          kst_date: "2026-07-03",
+          market: "kr",
+          account_scope: null,
+          entry_type: "decision" as const,
+          title: "장문 결정 메모",
+          body: "a\nb\nc\nd\ne\nf",
+          refs: {},
+          created_by: "claude",
+          session_label: null,
+          created_at: "2026-07-03T10:00:00+00:00",
+        },
+      ],
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => longBody,
+      })) as unknown as typeof fetch,
+    );
+
+    render(
+      <MemoryRouter>
+        <SessionContextTimelinePanel />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => screen.getByText("장문 결정 메모"));
+
+    const toggle = screen.getByTestId("session-row-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent("더보기");
+
+    // jsdom does not compute CSS clamping, so the full body text is always in
+    // the DOM regardless of collapsed/expanded state — no accessibility regression.
+    expect(screen.getByText((_, node) => node?.textContent === "a\nb\nc\nd\ne\nf")).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveTextContent("접기");
   });
 });
