@@ -608,15 +608,19 @@ async def build_retrospective_aggregate(
     }
 
 
-# ROB-647/ROB-661 — terminal (lifecycle-complete) statuses per live ledger,
-# split into a DEFAULT group (always due for a retrospective: filled / rejected /
-# anomaly) and a CANCEL-family group (DAY expiry collapses to `cancelled`, plus
-# Toss cancel/replace rejections). Cancel-family is noise by default (grid
-# re-placement churn) and only surfaces when include_cancelled=True. Non-terminal
-# states (accepted / pending / partial / replaced) stay omitted — they may still
-# change.
+# ROB-647/ROB-661/ROB-665 — terminal (lifecycle-complete) statuses per live
+# ledger, split into a DEFAULT group (always due for a retrospective: filled /
+# rejected / anomaly) and a CANCEL-family group (DAY expiry collapses to
+# `cancelled`, plus Toss cancel/replace rejections). Cancel-family is noise by
+# default (grid re-placement churn) and only surfaces when include_cancelled=True.
+# Non-terminal states (accepted / pending / partial / replaced) stay omitted —
+# they may still change.
+# ROB-665 item 2: KIS reconcile writes raw status="expired" to the ledger (the
+# expired→cancelled collapse in the ROB-661 spec applies only to lifecycle_state).
+# Without "expired" here the status.in_() scan silently drops those rows from
+# both modes and the excluded count. Treat it as cancel-family.
 _KIS_LIVE_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
-_KIS_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
+_KIS_LIVE_CANCEL_TERMINAL = frozenset({"cancelled", "expired"})
 _GENERIC_LIVE_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
 _GENERIC_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
 _TOSS_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})

@@ -45,6 +45,8 @@ _ORDER_NO_KEYS = ("odno", "ord_no")
 _ORIGIN_ORDER_NO_KEYS = ("orgn_odno", "orgn_ord_no")
 _SIDE_NAME_KEYS = ("sll_buy_dvsn_cd_name", "sll_buy_dvsn_name")
 _CANCEL_FLAG_KEYS = ("cncl_yn",)
+# US(해외) 취소 증거: 정정취소구분명이 '취소'를 포함한다 (TTTS3018R/일별체결).
+_RVSE_CANCEL_NAME_KEYS = ("rvse_cncl_dvsn_name",)
 _ORD_QTY_KEYS = ("ord_qty",)
 _RJCT_QTY_KEYS = ("rjct_qty",)
 
@@ -96,6 +98,32 @@ def _order_no_matches(target: str, candidate: str) -> bool:
 
 def _is_truthy_flag(value: str) -> bool:
     return value.strip().lower() in _TRUTHY_FLAGS
+
+
+def row_has_cancel_evidence(row: dict[str, Any]) -> bool:
+    """True iff a *single* broker row carries direct cancel evidence.
+
+    ROB-665: the read-path order-history normalizers process one order at a
+    time, so they cannot run the cross-row ``orgn_odno`` match that
+    :func:`classify_day_order_expiry` does. This per-row predicate reuses the
+    same real-field signals that exist on the order's own row:
+
+    - ``cncl_yn`` truthy (KR TTTC8001R — ``prcs_stat_name`` does not exist), or
+    - a '취소' token in the side name (a cancel-confirm row is '매수취소' /
+      '매도취소'), or
+    - a '취소' token in ``rvse_cncl_dvsn_name`` (US 정정취소구분명).
+
+    Evidence-first: this must win over the EOD death rule so an operator cancel
+    is labelled ``cancelled``, not ``expired``.
+    """
+    r = _lower_keys(row)
+    if _is_truthy_flag(_first(r, _CANCEL_FLAG_KEYS)):
+        return True
+    if _CANCEL_TOKEN in _first(r, _SIDE_NAME_KEYS):
+        return True
+    if _CANCEL_TOKEN in _first(r, _RVSE_CANCEL_NAME_KEYS):
+        return True
+    return False
 
 
 def classify_day_order_expiry(

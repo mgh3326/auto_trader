@@ -268,6 +268,50 @@ async def test_include_cancelled_restores_cancel_rows(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_kis_expired_excluded_by_default(db_session: AsyncSession):
+    # ROB-665 item 2: reconcile writes raw status="expired" to the KIS ledger.
+    # It must be scanned (cancel-family) — hidden by default but counted in
+    # excluded_by_filter, not silently dropped from the status.in_() filter.
+    db_session.add_all(
+        [
+            _kis_row(order_no="K-FILL", status="filled"),
+            _kis_row(order_no="K-EXPIRE", status="expired"),
+        ]
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_pending(
+        db_session, kst_date_from="2000-01-01", kst_date_to="2100-01-01"
+    )
+    refs = {p["suggested_correlation_id"] for p in result["pending"]}
+    assert refs == {"kis_live:K-FILL"}
+    assert result["total_pending"] == 1
+    assert result["excluded_by_filter"] == {"cancelled": 1}
+
+
+@pytest.mark.asyncio
+async def test_kis_expired_restored_by_include_cancelled(db_session: AsyncSession):
+    db_session.add_all(
+        [
+            _kis_row(order_no="K-FILL", status="filled"),
+            _kis_row(order_no="K-EXPIRE", status="expired"),
+        ]
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_pending(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        include_cancelled=True,
+    )
+    refs = {p["suggested_correlation_id"] for p in result["pending"]}
+    assert refs == {"kis_live:K-FILL", "kis_live:K-EXPIRE"}
+    assert result["total_pending"] == 2
+    assert result["excluded_by_filter"] == {"cancelled": 0}
+
+
+@pytest.mark.asyncio
 async def test_anomaly_and_rejected_kept_by_default(db_session: AsyncSession):
     db_session.add_all(
         [
