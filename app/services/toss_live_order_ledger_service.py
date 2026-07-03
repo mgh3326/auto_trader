@@ -300,3 +300,22 @@ class TossLiveOrderLedgerService:
         row.last_reconcile_error = error
         row.reconciled_at = datetime.now(UTC)
         await self._db.commit()
+
+    async def record_transient_reconcile_error(
+        self,
+        *,
+        ledger_id: int,
+        error: dict[str, Any],
+    ) -> None:
+        """ROB-669 — a transient reconcile failure (rate-limit/5xx/token/network).
+
+        Record the error for observability WITHOUT closing the row: status,
+        requires_manual_review, manual_review_reason, and reconciled_at are left
+        untouched so ``list_open`` re-selects the row and the next pass retries.
+        This is the opposite of ``mark_manual_review`` (broker-confirmed anomaly).
+        """
+        row = await self._db.get(TossLiveOrderLedger, ledger_id)
+        if row is None:
+            return
+        row.last_reconcile_error = error
+        await self._db.commit()
