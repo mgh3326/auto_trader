@@ -153,7 +153,17 @@ def classify_toss_order_evidence(order: Any) -> TossFillEvidence:
 
 
 class TossEvidenceAdapter:
+    def __init__(self, client: TossReadClient | None = None) -> None:
+        # An injected client is caller-owned (shared across the reconcile run) and
+        # must NOT be closed here. Only a self-newed client (client=None, legacy
+        # path) is closed in fetch_evidence. ROB-687: sharing one client removes
+        # the per-row /accounts N+1.
+        self._client = client
+
     async def fetch_evidence(self, row: Any) -> TossFillEvidence:
+        if self._client is not None:
+            order = await self._client.get_order(str(row.broker_order_id))
+            return classify_toss_order_evidence(order)
         client = TossReadClient.from_settings()
         try:
             order = await client.get_order(str(row.broker_order_id))

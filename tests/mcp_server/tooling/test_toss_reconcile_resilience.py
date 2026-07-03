@@ -251,3 +251,45 @@ async def test_impl_reopen_anomalies_runs_before_list(db_session):
     # work-list, so it was reconciled this same pass (verdict pending here).
     reopened = await db_session.get(TossLiveOrderLedger, bug.id)
     assert reopened.status in {"accepted", "pending"}
+
+
+async def test_batch_build_failure_is_surfaced_and_captured(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    await _accepted(db_session)
+
+    pending = TossFillEvidence(
+        verdict="pending",
+        local_status="pending",
+        broker_status="PENDING",
+        filled_qty=Decimal("0"),
+        avg_price=None,
+        commission=None,
+        tax=None,
+        fee_total=Decimal("0"),
+        settlement_date=None,
+        raw_order={"status": "PENDING"},
+        reason="pending",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=pending)
+
+    with (
+        patch.object(
+            mod.TossBatchEvidenceSource,
+            "build",
+            new=AsyncMock(side_effect=RuntimeError("boom-build-fails")),
+        ),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(mod.sentry_sdk, "capture_exception") as capture,
+    ):
+        out = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    # fail-open: per-row fallback still reconciles the row
+    assert out["counts"] == {"pending": 1}
+    # observability: the real exception reaches Sentry + is echoed for operators
+    capture.assert_called_once()
+    assert out["batch_build_error"]["type"] == "RuntimeError"
+    assert "boom-build-fails" in out["batch_build_error"]["message"]

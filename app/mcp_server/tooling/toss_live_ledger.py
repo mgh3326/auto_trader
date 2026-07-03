@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+import sentry_sdk
 
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
@@ -23,6 +24,7 @@ from app.mcp_server.tooling.toss_live_evidence import (
 )
 from app.models.review import TossLiveOrderLedger
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError, TossRateLimitError
 from app.services.fill_notification import (
     is_fill_notifiable,
@@ -216,6 +218,7 @@ async def _reconcile_one_toss_row(
     *,
     dry_run: bool,
     evidence_source: Any | None = None,
+    fallback_client: Any | None = None,
 ) -> dict[str, Any]:
     base = {
         "ledger_id": row.id,
@@ -228,7 +231,7 @@ async def _reconcile_one_toss_row(
     if evidence_source is not None:
         evidence = await evidence_source.evidence_for(row)
     else:
-        evidence = await TossEvidenceAdapter().fetch_evidence(row)
+        evidence = await TossEvidenceAdapter(client=fallback_client).fetch_evidence(row)
     base["verdict"] = evidence.verdict
     base["broker_status"] = evidence.broker_status
     base["local_status"] = evidence.local_status
@@ -581,26 +584,52 @@ async def toss_reconcile_orders_impl(
     reconciled: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
 
+    batch_build_error: dict[str, Any] | None = None
+
+    # ROB-687 — one TossReadClient for the whole run so account-seq is resolved at
+    # most once (per-instance cache; client.py:128-129,135) instead of once per
+    # fresh per-row client. The ACCOUNT group is 1 TPS (rate_limiter.py:27), so a
+    # per-row /accounts N+1 serializes into ~1s of sleep per open row. Defensive:
+    # if Toss is disabled/misconfigured, degrade exactly as before (per-row/batch
+    # construct their own; the per-row error handler classifies the failure).
+    shared_client: TossReadClient | None = None
+    if rows:
+        try:
+            shared_client = TossReadClient.from_settings()
+        except Exception as exc:  # noqa: BLE001 — degrade to legacy path
+            logger.warning(
+                "toss reconcile: shared client unavailable (%s); legacy per-row path",
+                exc,
+            )
+            shared_client = None
+
     evidence_source = None
     if rows:
         try:
             evidence_source = await TossBatchEvidenceSource.build(
-                rows=rows, symbol=symbol
+                rows=rows, symbol=symbol, client=shared_client
             )
         except Exception as exc:  # noqa: BLE001 — batch is an optimization
-            # Any batch-build failure (disabled/network/transient) degrades to the
-            # per-row single-fetch path; per-row R1 classification still applies.
-            logger.warning(
-                "toss reconcile batch evidence build failed; per-row fallback: %s",
-                exc,
+            # Any batch-build failure (disabled/network/transient/bug) degrades to
+            # the per-row single-fetch path; per-row R1 classification still applies.
+            # ROB-687: this was previously a silent one-line WARNING, which hid the
+            # root cause of the /accounts N+1 for weeks — surface it with a stack
+            # trace + Sentry capture + a result echo so it can be diagnosed.
+            logger.exception(
+                "toss reconcile batch evidence build failed; per-row fallback"
             )
+            sentry_sdk.capture_exception(exc)
+            batch_build_error = {"type": type(exc).__name__, "message": str(exc)}
             evidence_source = None
 
     try:
         for row in rows:
             try:
                 outcome = await _reconcile_one_toss_row(
-                    row, dry_run=dry_run, evidence_source=evidence_source
+                    row,
+                    dry_run=dry_run,
+                    evidence_source=evidence_source,
+                    fallback_client=shared_client,
                 )
             except Exception as exc:  # noqa: BLE001 — classified in the handler
                 outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)
@@ -609,7 +638,9 @@ async def toss_reconcile_orders_impl(
             counts[verdict] = counts.get(verdict, 0) + 1
     finally:
         if evidence_source is not None:
-            await evidence_source.aclose()
+            await evidence_source.aclose()  # no-op for a run-owned client
+        if shared_client is not None:
+            await shared_client.aclose()
 
     result: dict[str, Any] = {
         "success": True,
@@ -617,6 +648,7 @@ async def toss_reconcile_orders_impl(
         "counts": counts,
         "reconciled": reconciled,
         "reopened": reopen_report,  # {dry_run, reopened, candidates}
+        "batch_build_error": batch_build_error,
         "message": (
             f"Reconciled {len(reconciled)} Toss live order(s) "
             f"(dry_run={dry_run}): {counts}"
