@@ -110,7 +110,63 @@ const tdNum: React.CSSProperties = {
   fontFeatureSettings: '"tnum"',
 };
 
+type SortKey = "sample_size" | "hit_rate" | "avg_brier_score" | "calibration_gap";
+
+// Client-side sort. key===null preserves the server order (sample_size desc,
+// per forecast_service). Nulls always sort last regardless of direction.
+function sortRows(
+  rows: CalibrationGroupRow[],
+  key: SortKey | null,
+  dir: "asc" | "desc",
+): CalibrationGroupRow[] {
+  if (key === null) return rows;
+  const factor = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = a[key];
+    const bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return (av - bv) * factor;
+  });
+}
+
+// Two stacked fill bars: confidence (avg_probability) over actual (hit_rate).
+// The length difference is the calibration gap, made visible at a glance.
+function CalibrationBar({ confidence, actual }: { confidence: number | null; actual: number | null }) {
+  const track: React.CSSProperties = {
+    position: "relative",
+    width: 88,
+    height: 6,
+    borderRadius: 3,
+    background: "var(--surface-2)",
+    overflow: "hidden",
+  };
+  const clamp = (x: number) => Math.max(0, Math.min(1, x));
+  return (
+    <div style={{ display: "grid", gap: 3 }} aria-hidden>
+      <div style={track} title="확신(평균확신)">
+        {confidence != null && (
+          <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${clamp(confidence) * 100}%`, background: "var(--fg-3)" }} />
+        )}
+      </div>
+      <div style={track} title="실제(적중률)">
+        {actual != null && (
+          <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${clamp(actual) * 100}%`, background: "var(--accent)" }} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+const SMALL_SAMPLE = 5;
+
 function CalibrationTable({ rows }: { rows: CalibrationGroupRow[] }) {
+  const [sort, setSort] = useState<{ key: SortKey | null; dir: "asc" | "desc" }>({
+    key: null,
+    dir: "desc",
+  });
+
   if (rows.length === 0) {
     return (
       <div style={{ padding: 16, color: "var(--fg-3)", fontSize: 13, textAlign: "center" }}>
@@ -118,31 +174,68 @@ function CalibrationTable({ rows }: { rows: CalibrationGroupRow[] }) {
       </div>
     );
   }
+
+  const sorted = sortRows(rows, sort.key, sort.dir);
+
+  // Header click cycles desc → asc → server-order (null).
+  const toggleSort = (key: SortKey) =>
+    setSort((s) => {
+      if (s.key !== key) return { key, dir: "desc" };
+      if (s.dir === "desc") return { key, dir: "asc" };
+      return { key: null, dir: "desc" };
+    });
+
+  const sortableTh = (key: SortKey, label: string) => {
+    const active = sort.key === key;
+    return (
+      <th
+        style={{ ...th, textAlign: "right", cursor: "pointer", userSelect: "none" }}
+        onClick={() => toggleSort(key)}
+        aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      >
+        {label}
+        {active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+      </th>
+    );
+  };
+
   return (
     <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
         <thead>
           <tr style={{ color: "var(--fg-3)", fontSize: 11, textAlign: "left" }}>
             <th style={th}>그룹</th>
-            <th style={{ ...th, textAlign: "right" }}>표본</th>
-            <th style={{ ...th, textAlign: "right" }}>적중률</th>
+            {sortableTh("sample_size", "표본")}
+            {sortableTh("hit_rate", "적중률")}
             <th style={{ ...th, textAlign: "right" }}>평균확신</th>
-            <th style={{ ...th, textAlign: "right" }}>Brier</th>
-            <th style={{ ...th, textAlign: "right" }}>보정오차</th>
+            <th style={{ ...th, textAlign: "center" }}>확신·적중</th>
+            {sortableTh("avg_brier_score", "Brier")}
+            {sortableTh("calibration_gap", "보정오차")}
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
+          {sorted.map((r) => {
             const gap = gapText(r.calibration_gap);
+            const small = r.sample_size < SMALL_SAMPLE;
             return (
-              <tr key={r.group}>
-                <td style={{ ...td, fontWeight: 700 }}>{r.group}</td>
+              <tr key={r.group} style={small ? { background: "var(--surface-2)" } : undefined}>
+                <td style={{ ...td, fontWeight: 700 }}>
+                  <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    {r.group}
+                    {small && <Pill tone="warn" size="sm">n={r.sample_size} 소표본</Pill>}
+                  </span>
+                </td>
                 <td style={tdNum}>
                   {r.sample_size}
-                  <span style={{ color: "var(--fg-3)", fontSize: 11 }}> ({r.hits}/{r.sample_size})</span>
+                  <span style={{ color: "var(--fg-3)", fontSize: 11 }}> (적중 {r.hits} · 실패 {r.misses})</span>
                 </td>
                 <td style={tdNum}>{pct(r.hit_rate)}</td>
                 <td style={tdNum}>{pct(r.avg_probability)}</td>
+                <td style={{ ...td, textAlign: "center" }}>
+                  <div style={{ display: "inline-flex" }}>
+                    <CalibrationBar confidence={r.avg_probability} actual={r.hit_rate} />
+                  </div>
+                </td>
                 <td style={tdNum}>{num(r.avg_brier_score)}</td>
                 <td style={{ ...tdNum }}>
                   <Pill tone={gap.tone} size="sm">{gap.text}</Pill>
