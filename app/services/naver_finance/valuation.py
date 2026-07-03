@@ -10,7 +10,9 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from app.core.config import settings
 from app.core.number_utils import parse_korean_number as _parse_korean_number
+from app.services.naver_finance import peer_cache
 from app.services.naver_finance.parser import (
     DEFAULT_HEADERS,
     NAVER_FINANCE_BASE,
@@ -307,15 +309,27 @@ def _parse_total_infos(total_infos: list[dict[str, Any]]) -> dict[str, Any]:
 async def _fetch_integration(
     code: str,
     client: httpx.AsyncClient,
+    request_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Fetch the Naver mobile basic + integration endpoints for a single stock.
+
+    Args:
+        request_timeout: optional per-request timeout override (ROB-688) — when
+            provided, applied to both requests via ``client.get(..., timeout=...)``
+            without touching the shared client-level timeout. ``None`` (default)
+            keeps the client-level timeout, preserving existing callers'
+            behavior (``fetch_valuation``'s overlay and the target fetch inside
+            ``fetch_sector_peers``).
 
     Returns a dict with ``name``, ``per``, ``pbr``, ``market_cap``, ``current_price``,
     ``change_pct``, ``industry_code``, ``peers_raw``.
     """
+    get_kwargs: dict[str, Any] = {}
+    if request_timeout is not None:
+        get_kwargs["timeout"] = request_timeout
     r_basic, r_integ = await asyncio.gather(
-        client.get(f"{NAVER_MOBILE_API}/{code}/basic"),
-        client.get(f"{NAVER_MOBILE_API}/{code}/integration"),
+        client.get(f"{NAVER_MOBILE_API}/{code}/basic", **get_kwargs),
+        client.get(f"{NAVER_MOBILE_API}/{code}/integration", **get_kwargs),
     )
     r_basic.raise_for_status()
     r_integ.raise_for_status()
@@ -353,6 +367,27 @@ async def _fetch_integration(
     }
 
 
+async def _fetch_integration_cached(
+    code: str,
+    client: httpx.AsyncClient,
+    redis_client: Any = None,
+    *,
+    request_timeout: float | None = None,
+) -> dict[str, Any]:
+    """Cache-aside over ``_fetch_integration`` (ROB-688).
+
+    Fail-open: any cache miss or Redis outage falls through to the live fetch;
+    only non-degraded results (a resolved name) are written back.
+    """
+    cached = await peer_cache.get_cached_integration(redis_client, code)
+    if cached is not None:
+        return cached
+    result = await _fetch_integration(code, client, request_timeout=request_timeout)
+    if result.get("name"):
+        await peer_cache.set_cached_integration(redis_client, code, result)
+    return result
+
+
 async def fetch_sector_peers(
     code: str,
     limit: int = 5,
@@ -377,11 +412,12 @@ async def fetch_sector_peers(
         Dict with ``symbol``, ``name``, ``sector``, ``peers`` list, and
         ``comparison`` metrics.
     """
+    redis_client = await peer_cache._get_redis_client()
     async with httpx.AsyncClient(
         headers=DEFAULT_HEADERS,
         timeout=10,
     ) as client:
-        target = await _fetch_integration(code, client)
+        target = await _fetch_integration_cached(code, client, redis_client)
         sector_name: str | None = None
 
         # ---- Collect peer codes from integration response ----
@@ -391,28 +427,44 @@ async def fetch_sector_peers(
             if pc and pc != code:
                 peer_codes.append(pc)
 
+        integration_peer_count = len(peer_codes)
+
         industry_code = target.get("industry_code")
         sector_soup = None
         if industry_code:
+            # Sector page is dual-purpose: sector NAME (always) + extra peers.
+            # Fetch it once regardless of whether we need extras (constraint).
             sector_soup = await _fetch_sector_soup(str(industry_code), client)
 
-        # If we need more peers, scrape the sector detail page.
-        if len(peer_codes) < limit and sector_soup is not None:
-            extra_codes = _parse_sector_stock_codes(sector_soup)
-            seen = {code, *peer_codes}
-            for ec in extra_codes:
-                if ec not in seen:
-                    peer_codes.append(ec)
-                    seen.add(ec)
+        if integration_peer_count < limit:
+            # Not enough peers from integration — pad with sector-scraped codes,
+            # then fetch a few extras in case some fail.
+            if sector_soup is not None:
+                extra_codes = _parse_sector_stock_codes(sector_soup)
+                seen = {code, *peer_codes}
+                for ec in extra_codes:
+                    if ec not in seen:
+                        peer_codes.append(ec)
+                        seen.add(ec)
+            peer_codes = peer_codes[: limit + 5]
+        else:
+            # Integration already has enough peers — no over-fetch padding.
+            peer_codes = peer_codes[:limit]
 
-        # ---- Fetch integration data for each peer concurrently ----
-        peer_codes = peer_codes[: limit + 5]  # fetch extras in case some fail
+        # ---- Fetch integration data for each peer concurrently (bounded) ----
+        semaphore = asyncio.Semaphore(max(1, settings.naver_peer_fetch_concurrency))
 
         async def _safe_fetch(pc: str) -> dict[str, Any] | None:
-            try:
-                return await _fetch_integration(pc, client)
-            except Exception:
-                return None
+            async with semaphore:
+                try:
+                    return await _fetch_integration_cached(
+                        pc,
+                        client,
+                        redis_client,
+                        request_timeout=settings.naver_peer_fetch_timeout_seconds,
+                    )
+                except Exception:
+                    return None
 
         peer_results = await asyncio.gather(*[_safe_fetch(pc) for pc in peer_codes])
 
