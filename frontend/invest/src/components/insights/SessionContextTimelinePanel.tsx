@@ -12,8 +12,9 @@ type LoadState<T> =
   | { status: "ready"; data: T }
   | { status: "error"; message: string };
 
-function fmt(ts: string): string {
-  return ts.replace("T", " ").slice(0, 16);
+// Row shows time only (HH:MM); the date lives in the per-kst_date group header.
+function hhmm(ts: string): string {
+  return ts.slice(11, 16);
 }
 
 // 8 entry_type values (session_context schema) → Pill tone, so decision /
@@ -70,7 +71,7 @@ function SessionRow({ entry }: { entry: SessionContextEntry }) {
         </Pill>
         <Pill tone="paper" size="sm">{entry.market}</Pill>
         {entry.account_scope && <Pill tone="paper" size="sm">{entry.account_scope}</Pill>}
-        <span style={{ opacity: 0.6, fontSize: 12 }}>{fmt(entry.created_at)}</span>
+        <span style={{ opacity: 0.6, fontSize: 12 }}>{hhmm(entry.created_at)}</span>
       </div>
       <div style={{ fontWeight: 700, marginTop: 4 }}>{entry.title}</div>
       <div style={{ fontSize: 13, opacity: 0.85, whiteSpace: "pre-wrap" }}>{entry.body}</div>

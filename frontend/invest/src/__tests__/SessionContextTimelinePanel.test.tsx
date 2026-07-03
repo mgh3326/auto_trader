@@ -79,5 +79,10 @@ describe("SessionContextTimelinePanel", () => {
     expect(screen.getByText("2026-07-03")).toBeInTheDocument();
     expect(screen.getByText("2026-07-02")).toBeInTheDocument();
     expect(screen.getByText("AAPL 관망 결정")).toBeInTheDocument();
+
+    // ROB-679: row shows time only (HH:MM); the date is not repeated from the group header
+    expect(screen.getByText("09:00")).toBeInTheDocument();
+    expect(screen.getByText("22:00")).toBeInTheDocument();
+    expect(screen.queryByText(/2026-07-03 09:00/)).not.toBeInTheDocument();
   });
 });
