@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -163,3 +165,58 @@ async def test_build_market_parity_can_hide_disabled_cards() -> None:
         "stablecoin_fx_premium",
         "crypto_kimchi_premium",
     }
+
+
+class _OverlapProbeProvider(_StubParityProvider):
+    """Proves index-card and kimchi-card run concurrently.
+
+    get_index_quote sets ``index_started`` then blocks on ``kimchi_started``;
+    get_crypto_kimchi_premium sets ``kimchi_started`` then blocks on
+    ``index_started``. Under serial card building the index leg's inner
+    wait_for(1.0) times out (kimchi has not started yet) -> index card 'missing'.
+    Under asyncio.gather both events fire and both resolve -> index card 'fresh'.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.index_started = asyncio.Event()
+        self.kimchi_started = asyncio.Event()
+
+    async def get_index_quote(self, symbol: str) -> ParityQuote | None:
+        self.index_started.set()
+        await asyncio.wait_for(self.kimchi_started.wait(), timeout=1.0)
+        return await super().get_index_quote(symbol)
+
+    async def get_crypto_kimchi_premium(self, symbol: str) -> dict[str, Any] | None:
+        self.kimchi_started.set()
+        await asyncio.wait_for(self.index_started.wait(), timeout=1.0)
+        return await super().get_crypto_kimchi_premium(symbol)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_parity_builds_cards_concurrently() -> None:
+    response = await build_market_parity(_OverlapProbeProvider())
+    cards = {card.id: card for card in response.cards}
+    # Under serial scheduling the index leg would time out -> 'missing'.
+    assert cards["ewy-kospi-implied-parity"].dataState == "fresh"
+    assert cards["btc-kimchi-premium"].dataState == "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_default_provider_index_quote_uses_current_only(monkeypatch) -> None:
+    import app.services.invest_view_model.market_parity_service as svc
+
+    called = AsyncMock(
+        return_value={
+            "indices": [{"symbol": "KOSPI", "current": 2450.5, "source": "naver"}]
+        }
+    )
+    monkeypatch.setattr(svc, "handle_get_market_index_current_only", called)
+
+    quote = await svc.DefaultMarketParityProvider().get_index_quote("KOSPI")
+
+    assert quote is not None
+    assert quote.price == Decimal("2450.5")
+    called.assert_awaited_once_with("KOSPI")
