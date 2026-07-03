@@ -143,6 +143,8 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "DAY order expiry at order.day_expiry_kst -> re-place next day",
         "preserve core lot; trim over-concentrated sectors first (portfolio.sector_cluster_cap_pct)",
+        "sell from holding account: Toss holdings -> toss_place_order, KIS holdings -> kis_live_place_order",
+        "same-symbol buy pending on Toss -> toss_cancel_order first (two-sided constraint)",
     ],
     "discovery": [
         "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",

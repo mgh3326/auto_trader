@@ -274,3 +274,17 @@ def test_sell_lane_new_kr_tools_dropped_when_unregistered_on_crypto():
     # ROB-658 generic execution injection still fires on crypto sell
     assert "place_order" in steps
     assert "place_order" not in plan["blocked_actions"]
+
+
+def test_sell_lane_hard_constraints_document_routing_and_cancel_first():
+    plan = L.build_route_plan(
+        "profit_taking",
+        "kr",
+        registered_tools=_ALL,
+        verdict_thresholds=_fake_thresholds("kr", "sell"),
+        policy_version=_VERSION,
+    )
+    joined = " ".join(plan["hard_constraints"])
+    assert "holding account" in joined
+    assert "kis_live_place_order" in joined
+    assert "toss_cancel_order" in joined
