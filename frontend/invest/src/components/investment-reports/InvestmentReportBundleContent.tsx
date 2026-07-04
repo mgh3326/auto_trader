@@ -256,6 +256,23 @@ function parseTradeSetup(
   return { direction, headline: { entry, riskPct, rewardPct, rrRatio } };
 }
 
+// ROB-693 — Hermes-authored advisory narrative ("what would invalidate this
+// thesis"), read from evidenceSnapshot.invalidation_triggers (migration-0
+// JSONB reserved key; see app/services/investment_reports/ingestion.py).
+// auto_trader only persists + renders this list verbatim — it never
+// generates the bullet content itself. Distinct from the scanner-executable
+// WatchInvalidation (item.watchCondition) — this is narrative-only and does
+// not drive the watch scanner. Defensive parse since evidenceSnapshot is
+// untyped `Record<string, unknown>` on the wire (mirrors parseTradeSetup).
+function parseInvalidationTriggers(
+  evidenceSnapshot: Record<string, unknown> | null | undefined,
+): string[] | null {
+  const raw = evidenceSnapshot?.invalidation_triggers;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  if (!raw.every((v) => typeof v === "string")) return null;
+  return raw as string[];
+}
+
 function ItemRow({
   item,
   decisions,
@@ -270,6 +287,7 @@ function ItemRow({
   const hasChips =
     !!confidenceLabel || !!item.citedSymbolReportUuid || dimensionCitations > 0;
   const tradeSetup = parseTradeSetup(item.evidenceSnapshot);
+  const invalidationTriggers = parseInvalidationTriggers(item.evidenceSnapshot);
   return (
     <section
       id={`watch-item-${item.itemUuid}`}
@@ -336,6 +354,23 @@ function ItemRow({
             손익비 R:R {tradeSetup.headline.rrRatio} · 리스크{" "}
             {tradeSetup.headline.riskPct}% · 리워드 {tradeSetup.headline.rewardPct}%
           </span>
+        </div>
+      ) : null}
+      {invalidationTriggers ? (
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}>
+            무효화 조건
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 2 }}>
+            {invalidationTriggers.map((trigger, idx) => (
+              <li
+                key={`${idx}-${trigger}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                {trigger}
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
       {item.linkedOrders && item.linkedOrders.length > 0 ? (

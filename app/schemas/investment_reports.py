@@ -336,6 +336,15 @@ class IngestReportItem(BaseModel):
     linked_order_ids: list[LinkedOrderRefPayload] = Field(default_factory=list)
     watch_condition: WatchConditionPayload | None = None
     trigger_checklist: list[str] = Field(default_factory=list)
+    # ROB-693 — advisory narrative bullets: "what would invalidate this
+    # thesis". Hermes-authored, list[str] like reasons/warnings/
+    # trigger_checklist (no typed block — that would overlap the
+    # scanner-executable WatchInvalidation/WatchConditionPayload). auto_trader
+    # only persists (evidence_snapshot["invalidation_triggers"]) + renders;
+    # it must never self-populate this field (ROB-501 spirit; see the static
+    # boundary scan in
+    # tests/services/action_report/snapshot_backed/test_no_self_authored_invalidation.py).
+    invalidation_triggers: list[str] = Field(default_factory=list)
     max_action: dict[str, Any] = Field(default_factory=dict)
     valid_until: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -379,6 +388,16 @@ class IngestReportItem(BaseModel):
             conflicts.append("target_price")
         if self.linked_order_ids and "linked_order_ids" in self.evidence_snapshot:
             conflicts.append("linked_order_ids")
+        # ROB-693 — invalidation_triggers is caller(Hermes)-authored, like
+        # structured_evidence/entry_plan above: reject only when the caller
+        # ALSO stuffs the same key into evidence_snapshot directly (duplicate
+        # source of truth), not unconditionally like trade_setup below (which
+        # is server-computed and never caller-suppliable).
+        if (
+            self.invalidation_triggers
+            and "invalidation_triggers" in self.evidence_snapshot
+        ):
+            conflicts.append("invalidation_triggers")
         # ROB-690 — trade_setup is server-computed R:R only; callers must not
         # inject it directly (trust boundary: server arithmetic is the sole
         # source of trade_setup, never caller-supplied evidence_snapshot).
