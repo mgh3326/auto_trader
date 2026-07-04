@@ -233,9 +233,18 @@ only, nothing else reachable), scores each reply against the item's
   (`claude-opus-4-8`, never a `-latest` alias) so replay fidelity stays
   comparable across re-runs months apart — the model id is stamped
   into every result row and the report header.
+- `all_samples_discarded(results) -> bool` — pure predicate: true iff at
+  least one sample was attempted and every attempted sample was
+  discarded. `_amain` checks this right after `write_report` and, if
+  true, prints a loud `WARNING:` to stderr and returns exit `3` instead
+  of `0` — see "Exit codes" in Step 6 below for why this is a distinct
+  signal from ordinary per-sample discards.
 
 Tests: `tests/test_shadow_replay_cli.py` (`@pytest.mark.unit`, no DB,
-no real subprocess — `_one_run` is always monkeypatched).
+no real subprocess — `_one_run` is always monkeypatched; `_amain` is
+unit-tested too, with `AsyncSessionLocal` and `select_replay_corpus`
+monkeypatched at their source-module attribute so no real DB is
+touched).
 
 Read-only / ROB-501: `scripts/shadow_replay.py` lives in `scripts/`,
 not `app/`. It shells out to the external `claude` binary via
@@ -264,6 +273,22 @@ Expected: a markdown report (default `shadow_replay_report.md`, override
 with `--report`) with per-corpus-item `side_rate / size_band_rate /
 limit_rate / same_decision_rate` + `no_action_rate` + discard counts.
 This is the M1 deliverable number.
+
+**Exit codes:** `0` = ran (dry plan, or a real batch with at least one
+scored sample). `2` = `CorpusUnavailable` (see the P0 census above). `3`
+= **all replay samples were discarded** — `all_samples_discarded(results)`
+is true iff at least one sample was attempted and every single one came
+back `None` from `_one_run` across every corpus item. This is a distinct
+failure mode from ordinary per-sample discards (MCP reset / flaky
+subprocess): if literally everything discarded, the far more likely
+explanation is that the `claude -p --output-format json` envelope
+assumption in `_one_run` is wrong (Step 6 is the first time that
+assumption is exercised against a real `claude` binary), not that the
+model coincidentally failed every single call. On exit 3 the driver still
+writes the (all-`discarded`) report and prints `"step": "done"`, but also
+prints a loud `WARNING:` to stderr — **do not read a `"step": "done"`
+report as a clean run without checking the exit code first**; treat exit
+3 as "fix the harness, then re-run" rather than "fidelity is just bad."
 
 **Status:** not yet run. Requires the P0 census to have produced a
 usable corpus first (see above).

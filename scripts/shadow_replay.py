@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -179,6 +180,38 @@ def run_batch(
     ]
 
 
+def all_samples_discarded(results: list[dict[str, Any]]) -> bool:
+    """True iff at least one sample was attempted and EVERY attempted sample
+    was discarded (`_one_run` returned `None` for every call, across every
+    corpus item).
+
+    Pure function: only reads the per-item result dicts `run_batch` returns
+    (`discarded` + `summary["k"]`) — no I/O, no subprocess calls.
+
+    Why this exists: `_one_run` is best-effort + defensive by design (ANY
+    subprocess failure, non-zero exit, MCP-reset marker, or JSON-parse
+    failure returns `None` rather than raising). That is the right behavior
+    for a single flaky sample. But if the `claude --output-format json`
+    envelope assumption is simply WRONG (verified only at operator
+    run-time), `_one_run` returns `None` for every single call, `run_batch`
+    still returns a normal-looking list of result rows (`discarded == k`,
+    `summary["k"] == 0` for every item), and the batch would otherwise exit
+    0 and print `"step": "done"` — an operator could easily read that as
+    "ran clean, fidelity is just bad" instead of "the harness itself is
+    broken." This predicate is the trigger `_amain` uses to turn that
+    silent-looking success into a loud, non-zero-exit warning.
+    """
+    total_attempted = 0
+    total_discarded = 0
+    for row in results:
+        summary = row.get("summary") or {}
+        discarded = row.get("discarded", 0)
+        attempted = discarded + summary.get("k", 0)
+        total_attempted += attempted
+        total_discarded += discarded
+    return total_attempted > 0 and total_discarded == total_attempted
+
+
 def _fmt_rate(value: float | None) -> str:
     return f"{value:.3f}" if value is not None else "n/a"
 
@@ -319,6 +352,21 @@ async def _amain(args: argparse.Namespace) -> int:
             {"step": "done", "report_path": str(args.report)}, ensure_ascii=False
         )
     )
+
+    if all_samples_discarded(results):
+        total_attempted = sum(
+            row.get("discarded", 0) + (row.get("summary") or {}).get("k", 0)
+            for row in results
+        )
+        print(
+            f"WARNING: all {total_attempted} replay samples were discarded — "
+            "this usually means the `claude -p` invocation or --output-format "
+            "parsing is broken, not that the model kept resetting. Check the "
+            "harness before trusting this report.",
+            file=sys.stderr,
+        )
+        return 3
+
     return 0
 
 

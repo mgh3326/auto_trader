@@ -219,3 +219,130 @@ def test_write_report_handles_empty_results(tmp_path):
 
     assert "n/a" in text
     assert "Items:** 0" in text
+
+
+# --- all_samples_discarded (ROB-697 M1 follow-up: the all-discarded signal) ---
+#
+# If the `claude --output-format json` envelope assumption is wrong,
+# `_one_run` returns `None` for EVERY call and `run_batch` produces a
+# normal-looking `discarded == k` row for every item. `all_samples_discarded`
+# is the pure predicate `_amain` uses to turn that silent-looking success
+# into a loud, non-zero exit (see the `_amain` tests below).
+
+
+@pytest.mark.unit
+def test_all_samples_discarded_true_when_every_attempted_sample_discarded():
+    results = [
+        {"discarded": 3, "summary": {"k": 0}},
+        {"discarded": 2, "summary": {"k": 0}},
+    ]
+
+    assert sr.all_samples_discarded(results) is True
+
+
+@pytest.mark.unit
+def test_all_samples_discarded_false_when_some_samples_scored():
+    results = [
+        {"discarded": 1, "summary": {"k": 2}},  # some scored here
+        {"discarded": 3, "summary": {"k": 0}},  # fully discarded here
+    ]
+
+    assert sr.all_samples_discarded(results) is False
+
+
+@pytest.mark.unit
+def test_all_samples_discarded_false_when_no_samples_attempted():
+    assert sr.all_samples_discarded([]) is False
+
+
+# --- _amain: --confirm gate + the all-discarded exit-3 signal ---
+#
+# `_amain` opens a DB session (`AsyncSessionLocal`) and calls
+# `select_replay_corpus` unconditionally (even in the dry-plan branch), so
+# both must be monkeypatched — no real DB, no real subprocess. `_amain`
+# imports both names via a DEFERRED `from ... import ...` specifically so a
+# unit test can monkeypatch the source module attribute before calling it
+# (see the "Deferred import" comment in `_amain`).
+
+
+class _FakeAsyncSession:
+    async def __aenter__(self) -> _FakeAsyncSession:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+def _fake_session_local() -> _FakeAsyncSession:
+    return _FakeAsyncSession()
+
+
+def _fake_corpus() -> CorpusSelection:
+    ref = {
+        "side": "buy",
+        "max_action": {"notional": "300000", "limit_price": "129600"},
+        "evidence_snapshot": {"trade_setup": {"headline": {"entry": "129600"}}},
+        "trigger_checklist": ["x"],
+    }
+    item = CorpusItem("u1", 1, "i1", "action", "buy_review", extract_decision(ref))
+    return CorpusSelection("claude_bundle", [item])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_amain_without_confirm_never_calls_run_batch(monkeypatch):
+    monkeypatch.setattr("app.core.db.AsyncSessionLocal", _fake_session_local)
+
+    async def _fake_select(session, *, min_per_kind):  # noqa: ARG001
+        return _fake_corpus()
+
+    monkeypatch.setattr(
+        "app.services.shadow_replay.corpus.select_replay_corpus", _fake_select
+    )
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("run_batch must not be called without --confirm")
+
+    monkeypatch.setattr(sr, "run_batch", _boom)
+
+    args = sr.build_parser().parse_args([])  # confirm defaults to False
+
+    assert await sr._amain(args) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_amain_with_confirm_returns_3_when_all_samples_discarded(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr("app.core.db.AsyncSessionLocal", _fake_session_local)
+
+    async def _fake_select(session, *, min_per_kind):  # noqa: ARG001
+        return _fake_corpus()
+
+    monkeypatch.setattr(
+        "app.services.shadow_replay.corpus.select_replay_corpus", _fake_select
+    )
+
+    all_discarded_results = [
+        {
+            "item_uuid": "i1",
+            "item_kind": "action",
+            "source": "claude_bundle",
+            "model": "claude-opus-4-8",
+            "discarded": 3,
+            "summary": {
+                "k": 0,
+                "no_action_rate": 0.0,
+                "self_same_decision_rate": 0.0,
+                "fidelity": None,
+            },
+        }
+    ]
+    monkeypatch.setattr(sr, "run_batch", lambda *a, **kw: all_discarded_results)  # noqa: ARG005
+
+    args = sr.build_parser().parse_args(
+        ["--confirm", "--report", str(tmp_path / "report.md")]
+    )
+
+    assert await sr._amain(args) == 3
