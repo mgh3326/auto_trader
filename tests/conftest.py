@@ -407,6 +407,21 @@ def _mock_kr_market_session_calendar(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_kis_circuit_breaker(monkeypatch):
+    # ROB-699: the KIS circuit breaker is a per-process singleton, enabled by
+    # default. Force it OFF + reset it for every test so the existing KIS suite
+    # is byte-identical passthrough and no connect/read errors leak across tests.
+    # Breaker tests inject their own enabled breaker (settings_obj / cb._breaker),
+    # which ignores this global flag.
+    from app.services.brokers.kis import circuit_breaker as _cb
+
+    monkeypatch.setattr(settings, "kis_circuit_breaker_enabled", False, raising=False)
+    _cb.reset_kis_circuit_breaker()
+    yield
+    _cb.reset_kis_circuit_breaker()
+
+
 @pytest.fixture
 def allow_tvscreener_http():
     """Opt out of the default tvscreener HTTP boundary block."""
