@@ -107,6 +107,9 @@ from app.mcp_server.tooling.paper_analytics_registration import (
 from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
+from app.mcp_server.tooling.paper_limit_order_handler import (
+    register_paper_limit_order_tools,
+)
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
@@ -203,6 +206,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
     # Profile-gated: side-effect order surfaces
     if profile is McpProfile.DEFAULT:
+        # ROB-703: paper resting-limit sim tools (pure simulation, no live/Upbit mutation).
+        register_paper_limit_order_tools(mcp)
         # Preserve today's behavior: ambiguous account_mode tools for legacy callers.
         # Typed kis_live_* and kis_mock_* are additive — new typed callers use them.
         register_order_tools(mcp)

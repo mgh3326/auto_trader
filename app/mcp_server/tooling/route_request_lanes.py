@@ -166,6 +166,16 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | LIVE_RECONCILE_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | frozenset(
+        {
+            # ROB-703: paper resting-limit sim mutations (paper-table writes only,
+            # no live/Upbit broker mutation). paper_list_pending_orders is read-only
+            # and lives in READ_ONLY_ADVISORY_TOOLS.
+            "paper_place_limit_order",
+            "paper_cancel_pending_order",
+            "paper_reconcile_orders",
+        }
+    )
 )
 
 # Market-aware execution mutation tools (ROB-658). The LANE_SEQUENCES above are
@@ -318,6 +328,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "list_active_journals",
         "list_active_watches",
         "modify_journal_entry",
+        "paper_list_pending_orders",
         "research_session_get",
         "research_session_list_recent",
         "research_summary_get",

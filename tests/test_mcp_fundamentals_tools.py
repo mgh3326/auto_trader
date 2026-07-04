@@ -4297,6 +4297,17 @@ async def test_analyze_stock_us_reuses_preloaded_yfinance_analyst_snapshot(
 async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeypatch):
     tools = build_tools()
 
+    async def _no_nxt_tradability(symbols):
+        # analyze_stock enriches the KR quote with nxt_tradable* fields (incl. a
+        # dynamic asof) when the symbol is in the shared kr_symbol_universe. Stub
+        # it so this OHLCV-reuse / naver-bundling golden-quote assertion is
+        # deterministic regardless of shared-DB state (was pytest-split
+        # order-flaky, surfaced when ROB-703 reshuffled the shard distribution).
+        _ = symbols
+        return {}
+
+    _patch_runtime_attr(monkeypatch, "get_kr_nxt_tradability", _no_nxt_tradability)
+
     ohlcv_fetches: list[tuple[str, str, int]] = []
 
     async def mock_fetch_ohlcv(symbol, market_type, count):
