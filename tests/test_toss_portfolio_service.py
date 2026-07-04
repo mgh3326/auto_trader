@@ -14,6 +14,7 @@ from app.services.toss_portfolio_service import (
     fetch_toss_cash_snapshot,
     fetch_toss_portfolio_snapshot,
 )
+from app.services.toss_sellable_cache import TossSellableCache
 
 
 def _holding(
@@ -173,3 +174,97 @@ async def test_fetch_toss_cash_snapshot_does_not_fetch_holdings_or_sellable() ->
     assert snapshot.cash_krw == Decimal("123456")
     assert snapshot.cash_usd == Decimal("789.01")
     assert snapshot.errors == []
+
+
+class _Clock:
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def now(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cache_hit_issues_zero_sellable_calls() -> None:
+    clock = _Clock()
+    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+    client = _FakeTossClient()
+
+    # Cold load: miss on every symbol => one fanout, cache populated.
+    snap1 = await fetch_toss_portfolio_snapshot(
+        client=client, need_sellable=True, sellable_cache=cache
+    )
+    assert client.sellable_calls == ["BRK.B"]
+    assert snap1.positions[0].sellable_quantity == Decimal("1.25")
+
+    # Warm load within TTL: ZERO new sellable calls, value served from cache.
+    snap2 = await fetch_toss_portfolio_snapshot(
+        client=client, need_sellable=True, sellable_cache=cache
+    )
+    assert client.sellable_calls == ["BRK.B"]  # unchanged => cache hit
+    assert snap2.positions[0].sellable_quantity == Decimal("1.25")  # accuracy preserved
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cache_refetches_after_ttl_expiry() -> None:
+    clock = _Clock()
+    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+    client = _FakeTossClient()
+
+    await fetch_toss_portfolio_snapshot(
+        client=client, need_sellable=True, sellable_cache=cache
+    )
+    clock.advance(45.0)  # TTL boundary is exclusive => expired
+    await fetch_toss_portfolio_snapshot(
+        client=client, need_sellable=True, sellable_cache=cache
+    )
+    assert client.sellable_calls == ["BRK.B", "BRK.B"]  # refetched after expiry
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cache_does_not_store_failed_fetch() -> None:
+    class ErrClient(_FakeTossClient):
+        async def sellable_quantity(self, *, symbol: str):
+            self.sellable_calls.append(symbol)
+            raise RuntimeError(f"boom {symbol}")
+
+    clock = _Clock()
+    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+    client = ErrClient()
+
+    snap1 = await fetch_toss_portfolio_snapshot(
+        client=client, need_sellable=True, sellable_cache=cache
+    )
+    assert snap1.positions[0].sellable_quantity is None
+    assert snap1.errors[0]["stage"] == "sellable_quantity"
+
+    # Error was NOT cached => next load within TTL retries the fetch.
+    await fetch_toss_portfolio_snapshot(
+        client=client, need_sellable=True, sellable_cache=cache
+    )
+    assert client.sellable_calls == ["BRK.B", "BRK.B"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_no_cache_default_still_fans_out() -> None:
+    client = _FakeTossClient()
+    # sellable_cache defaults to None => today's fanout path, unchanged.
+    await fetch_toss_portfolio_snapshot(client=client, need_sellable=True)
+    await fetch_toss_portfolio_snapshot(client=client, need_sellable=True)
+    assert client.sellable_calls == ["BRK.B", "BRK.B"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_need_sellable_false_ignores_cache() -> None:
+    clock = _Clock()
+    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+    client = _FakeTossClient()
+    snap = await fetch_toss_portfolio_snapshot(
+        client=client, need_sellable=False, sellable_cache=cache
+    )
+    # ROB-685 skip path is untouched: no fanout, no cache read/write.
+    assert client.sellable_calls == []
+    assert snap.positions[0].sellable_quantity is None

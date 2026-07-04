@@ -37,6 +37,7 @@ from app.services.invest_home_service import _SourceFetchResult
 from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
+from app.services.toss_sellable_cache import get_shared_sellable_cache
 from app.services.upbit_symbol_universe_service import (
     get_active_upbit_markets,
     get_upbit_warning_markets,
@@ -552,7 +553,10 @@ class TossApiHomeReader:
                 name="invest.home.toss_api.snapshot",
             ) as span:
                 snapshot = await fetch_toss_portfolio_snapshot(
-                    need_sellable=mutations_enabled
+                    need_sellable=mutations_enabled,
+                    sellable_cache=(
+                        get_shared_sellable_cache() if mutations_enabled else None
+                    ),
                 )
                 span.set_data("position_count", len(snapshot.positions))
                 span.set_data("error_count", len(snapshot.errors))

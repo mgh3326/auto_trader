@@ -1520,7 +1520,9 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1584,7 +1586,9 @@ async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1632,7 +1636,9 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1688,7 +1694,9 @@ async def test_toss_api_home_reader_gates_sellable_fetch_on_mutations(
 
     captured: dict[str, bool] = {}
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
         captured["need_sellable"] = need_sellable
         return TossPortfolioSnapshot(
             positions=[], cash_krw=Decimal("1"), cash_usd=Decimal("1")
@@ -1705,6 +1713,47 @@ async def test_toss_api_home_reader_gates_sellable_fetch_on_mutations(
 
     # ROB-685: mutations off (default) => reader discards sellable anyway => skip fetch.
     assert captured["need_sellable"] is expected_need
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("mutations", [False, True])
+async def test_toss_api_home_reader_passes_sellable_cache_when_mutations_on(
+    monkeypatch, mutations
+):
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+    from app.services.toss_sellable_cache import TossSellableCache
+
+    captured: dict[str, object] = {}
+
+    async def fake_fetch_toss_snapshot(*, need_sellable=True, sellable_cache=None):
+        captured["need_sellable"] = need_sellable
+        captured["sellable_cache"] = sellable_cache
+        return TossPortfolioSnapshot(
+            positions=[], cash_krw=Decimal("1"), cash_usd=Decimal("1")
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(
+        _cfg, "toss_live_order_mutations_enabled", mutations, raising=False
+    )
+
+    await readers.TossApiHomeReader().fetch(user_id=1)
+
+    if mutations:
+        # mutations armed => cache is threaded so repeated loads reuse it.
+        assert isinstance(captured["sellable_cache"], TossSellableCache)
+        assert captured["need_sellable"] is True
+    else:
+        # mutations off => ROB-685 skip, no cache needed.
+        assert captured["sellable_cache"] is None
+        assert captured["need_sellable"] is False
 
 
 @pytest.mark.asyncio
