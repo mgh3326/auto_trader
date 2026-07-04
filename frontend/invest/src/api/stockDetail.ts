@@ -3,6 +3,7 @@ import type {
   StockDetailMarket,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
+  StockDetailRecommendationResponse,
   StockDetailResearchConsensusResponse,
   StockDetailResponse,
 } from "../types/stockDetail";
@@ -31,6 +32,17 @@ export async function fetchStockDetailResearchConsensus(params: {
   symbol: string;
 }): Promise<StockDetailResearchConsensusResponse> {
   return getJson<StockDetailResearchConsensusResponse>(`${stockDetailPath(params.market, params.symbol)}/research-consensus`);
+}
+
+// ROB-692 — on-demand deterministic recommendation (action/confidence/
+// buy_zones/sell_targets/stop_loss/reasoning + optional R:R trade_setup).
+// Crypto is unsupported at the router (400) — callers should gate on
+// market !== "crypto" before calling, same as research-consensus.
+export async function fetchStockDetailRecommendation(params: {
+  market: StockDetailMarket;
+  symbol: string;
+}): Promise<StockDetailRecommendationResponse> {
+  return getJson<StockDetailRecommendationResponse>(`${stockDetailPath(params.market, params.symbol)}/recommendation`);
 }
 
 export async function fetchStockDetailCandles(params: {
