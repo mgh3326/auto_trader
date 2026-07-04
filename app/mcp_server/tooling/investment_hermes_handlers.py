@@ -489,12 +489,41 @@ def register_investment_hermes_tools(mcp: FastMCP) -> None:
     )(investment_report_prepare_intraday_context_impl)
 
 
+HERMES_CONTEXT_READ_ONLY_TOOL_NAMES: set[str] = {"investment_report_get_hermes_context"}
+
+
+def register_hermes_context_read_only(mcp: FastMCP) -> None:
+    """Register ONLY the frozen-context read tool (ROB-697 shadow-replay).
+
+    Deliberately omits the 4 Hermes WRITE tools (prepare_bundle /
+    create_from_hermes_composition / ingest_from_hermes /
+    prepare_intraday_context) — a headless replay session must not be able to
+    prepare bundles, ingest stage artifacts, or persist reports. It may only
+    read the already-frozen context for a bundle a live session already
+    prepared. Not gated behind ``SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED`` at
+    registration time — the flag is still enforced at call time inside
+    ``investment_report_get_hermes_context_impl`` via ``_disabled_check``.
+    """
+    mcp.tool(
+        name="investment_report_get_hermes_context",
+        description=(
+            "ROB-697 shadow-replay — return the frozen HermesContextPayload "
+            "for a persisted bundle. Read-only; runs the deterministic v1 "
+            "stage set in-process and returns stage_inputs + cited snapshot "
+            "UUIDs + advisory-only constraint set. Gated by "
+            "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
+        ),
+    )(investment_report_get_hermes_context_impl)
+
+
 __all__ = [
+    "HERMES_CONTEXT_READ_ONLY_TOOL_NAMES",
     "INVESTMENT_HERMES_TOOL_NAMES",
     "investment_report_create_from_hermes_composition_impl",
     "investment_report_get_hermes_context_impl",
     "investment_report_prepare_bundle_impl",
     "investment_stage_artifacts_ingest_from_hermes_impl",
     "investment_report_prepare_intraday_context_impl",
+    "register_hermes_context_read_only",
     "register_investment_hermes_tools",
 ]

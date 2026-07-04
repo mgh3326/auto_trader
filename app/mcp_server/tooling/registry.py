@@ -30,6 +30,15 @@ Profile → tool surface mapping
 "kiwoom" (McpProfile.KIWOOM):
   Default research/read-only surface plus typed kiwoom_mock_* variants.
 
+"shadow-replay" (McpProfile.SHADOW_REPLAY):
+  ROB-697 M1 — frozen-context replay ONLY. Registers EXACTLY
+  investment_report_get_hermes_context (read-only) + get_trading_policy +
+  route_request, then returns before the "Always" block. Deliberately omits
+  every live-fetch tool (market_data/analysis/news/fundamentals), every
+  mutation/order tool, and the 4 Hermes WRITE tools — this is the load-bearing
+  validity guard so a headless replay session cannot leak live market data or
+  persist anything.
+
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -60,6 +69,7 @@ from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_hermes_handlers import (
+    register_hermes_context_read_only,
     register_investment_hermes_tools,
 )
 from app.mcp_server.tooling.investment_reports_handlers import (
@@ -130,6 +140,17 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - DEFAULT: legacy ambiguous tools + typed kis_live_* + typed kis_mock_*
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
+    if profile is McpProfile.SHADOW_REPLAY:
+        # ROB-697 M1 — frozen-context replay ONLY: read the bundle + policy +
+        # lane procedure. Deliberately NO live-fetch (market_data/analysis/
+        # news), NO mutation, NO report-write. The agent returns its decision
+        # as JSON; it does not persist. This early return is the load-bearing
+        # validity guard, so it must come before the "Always" block below.
+        register_hermes_context_read_only(mcp)  # investment_report_get_hermes_context
+        register_trading_policy_tools(mcp)  # get_trading_policy (versioned thresholds)
+        register_route_request_tools(mcp)  # route_request (lane procedure)
+        return
+
     # Always: side-effect-free research + read-only tools
     register_market_data_tools(mcp)
     register_fundamentals_tools(mcp)
