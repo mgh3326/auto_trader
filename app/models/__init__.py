@@ -46,7 +46,7 @@ from .market_quote_snapshot import MarketQuoteSnapshot
 from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
-from .paper_trading import PaperAccount, PaperPosition, PaperTrade
+from .paper_trading import PaperAccount, PaperPendingOrder, PaperPosition, PaperTrade
 from .portfolio_decision_run import PortfolioDecisionRun
 from .prompt import PromptResult
 from .research_backtest import (
@@ -204,6 +204,7 @@ __all__ = [
     "JournalStatus",
     "PendingSnapshot",
     "PaperAccount",
+    "PaperPendingOrder",
     "PaperPosition",
     "PaperTrade",
     "PortfolioDecisionRun",
