@@ -18,6 +18,10 @@ import httpx
 from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
 from app.core.exceptions import describe_exception
+from app.services.brokers.kis.circuit_breaker import (
+    get_kis_circuit_breaker,
+    is_kis_connect_failure,
+)
 from app.services.redis_token_manager import redis_token_manager
 
 
@@ -425,6 +429,50 @@ class BaseKISClient:
         return data
 
     async def _request_with_rate_limit_with_headers(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+        api_name: str = "unknown",
+        tr_id: str | None = None,
+        retry_request_errors: bool = True,
+        max_retries_override: int | None = None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """ROB-699 — breaker-guarded wrapper over the KIS dispatch.
+
+        When the per-process circuit is OPEN this raises ``KISCircuitOpen`` before
+        any rate-limit wait or HTTP call, so /invest KIS→Toss fallbacks fire in
+        ~0ms. Closed = pure passthrough. See ``circuit_breaker.py``.
+        """
+        breaker = get_kis_circuit_breaker()
+        breaker.before_request()  # raises KISCircuitOpen when open — 0 HTTP, 0 wait
+        try:
+            result = await self._dispatch_rate_limited_with_headers(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json_body=json_body,
+                timeout=timeout,
+                api_name=api_name,
+                tr_id=tr_id,
+                retry_request_errors=retry_request_errors,
+                max_retries_override=max_retries_override,
+            )
+        except BaseException as exc:  # noqa: BLE001 — classify then re-raise unchanged
+            if is_kis_connect_failure(exc):
+                breaker.record_failure()
+            else:
+                breaker.record_reachable_error()
+            raise
+        breaker.record_success()
+        return result
+
+    async def _dispatch_rate_limited_with_headers(
         self,
         method: str,
         url: str,
