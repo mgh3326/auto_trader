@@ -355,41 +355,44 @@ class PaperLimitOrderService:
             fill_price = limit_crossed(order.side, Decimal(order.limit_price), bars)
             if fill_price is None:
                 continue
-
-            # Book the fill through the proven execute_order path.
-            # Release the reservation FIRST so execute_order re-charges
-            # the same cash exactly once (no double-deduct).
-            account = await self.pts.get_account(account_id)
-            assert account is not None
-            if order.side == "buy":
-                account.cash_krw = quantize_money(
-                    Decimal(account.cash_krw) + Decimal(order.reserved_krw)
+            # Atomic per-order fill, isolated from the rest of the batch.
+            # Flip status BEFORE execute_order so its internal commit persists
+            # status='filled' + the trade in ONE transaction. A raise before
+            # that commit rolls everything back -> order stays pending, no
+            # phantom trade. execute_order failures (e.g. oversell) are caught
+            # so one bad order never aborts the batch.
+            try:
+                account = await self.pts.get_account(account_id)
+                assert account is not None
+                if order.side == "buy":
+                    account.cash_krw = quantize_money(
+                        Decimal(account.cash_krw) + Decimal(order.reserved_krw)
+                    )
+                order.status = "filled"
+                order.fill_price = fill_price
+                order.filled_at = effective_now
+                await self.pts.execute_order(
+                    account_id=account_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    order_type="limit",
+                    price=fill_price,
+                    quantity=Decimal(order.quantity),
+                    reason=order.thesis or "paper resting-limit fill",
                 )
-            await self.db.flush()
+                # trade + status now durably committed by execute_order; link FK best-effort
+                order.paper_trade_id = await _latest_trade_id(
+                    self.db,
+                    account_id=account_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                )
+                await self.db.commit()
+                filled += 1
+            except Exception:
+                await self.db.rollback()
+                continue
 
-            await self.pts.execute_order(
-                account_id=account_id,
-                symbol=order.symbol,
-                side=order.side,
-                order_type="limit",
-                price=fill_price,
-                quantity=Decimal(order.quantity),
-                reason=order.thesis or "paper resting-limit fill",
-            )
-
-            order.status = "filled"
-            order.fill_price = fill_price
-            order.filled_at = effective_now
-            await self.db.flush()
-            order.paper_trade_id = await _latest_trade_id(
-                self.db,
-                account_id=account_id,
-                symbol=order.symbol,
-                side=order.side,
-            )
-            filled += 1
-
-        await self.db.commit()
         return {
             "success": True,
             "reconciled": len(orders),

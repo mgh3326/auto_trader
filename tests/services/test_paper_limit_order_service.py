@@ -317,3 +317,59 @@ async def test_reconcile_excludes_bars_before_placement(
     res = await svc.reconcile_pending_orders(account_id=acct.id, now=None)
     assert res["filled"] == 0, res
     assert len(await svc.list_pending_orders(account_id=acct.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_isolates_failure_no_double_fill(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing order in the batch must not abort the batch nor leave an
+    already-booked trade re-fillable on the next reconcile (blocker #2)."""
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob703-iso"), initial_capital_krw=Decimal("1000000")
+    )
+    acct_id = acct.id
+    svc = PaperLimitOrderService(db_session)
+    # Order A: buy that will cross and fill fine.
+    await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("90000000"),
+        amount=Decimal("100000"),
+    )
+    ts = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        return [_candle(Decimal("89000000"), Decimal("91000000"), ts)]
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    # Directly insert a crossing SELL pending order with no position -> execute_order raises.
+    from app.models.paper_trading import PaperPendingOrder
+
+    bad = PaperPendingOrder(
+        account_id=acct_id,
+        symbol="KRW-ETH",
+        side="sell",
+        order_type="limit",
+        limit_price=Decimal("1000000"),
+        quantity=Decimal("0.1"),
+        reserved_krw=Decimal("0"),
+        status="pending",
+        placed_at=now_kst(),
+    )
+    db_session.add(bad)
+    await db_session.commit()
+
+    res = await svc.reconcile_pending_orders(account_id=acct_id, now=None)
+    assert res["filled"] == 1, res  # A filled; the bad sell did not abort the batch
+
+    # A must now be 'filled' and NOT re-fillable.
+    trades1 = await pts.get_trade_history(acct_id, limit=50)
+    btc_trades1 = [t for t in trades1 if t["symbol"] == "KRW-BTC"]
+    assert len(btc_trades1) == 1, btc_trades1
+    await svc.reconcile_pending_orders(account_id=acct_id, now=None)
+    trades2 = await pts.get_trade_history(acct_id, limit=50)
+    btc_trades2 = [t for t in trades2 if t["symbol"] == "KRW-BTC"]
+    assert len(btc_trades2) == 1, f"double-fill: {btc_trades2}"
