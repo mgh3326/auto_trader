@@ -54,6 +54,10 @@ ItemIntentLiteral = Literal[
     "rebalance_review",
 ]
 TargetKindLiteral = Literal["asset", "index", "fx"]
+# ROB-690 — explicit position-direction opt-in for R:R computation. Input-only:
+# the resolved direction is echoed back on evidence_snapshot["trade_setup"]["direction"],
+# so no DB column is needed for this field.
+TradeDirectionLiteral = Literal["long", "short"]
 # ROB-459 P1 — freshness of one structured evidence row / the item overall.
 ItemEvidenceFreshnessLiteral = Literal["fresh", "soft_stale", "stale", "unknown"]
 ItemStatusLiteral = Literal[
@@ -326,9 +330,21 @@ class IngestReportItem(BaseModel):
     entry_plan: list[ReportItemPriceLevelPayload] = Field(default_factory=list)
     stop_loss: ReportItemPriceLevelPayload | None = None
     target_price: ReportItemPriceLevelPayload | None = None
+    # ROB-690 — explicit short opt-in for R:R computation (long is the
+    # inferred default from side/intent; short requires this field).
+    position_direction: TradeDirectionLiteral | None = None
     linked_order_ids: list[LinkedOrderRefPayload] = Field(default_factory=list)
     watch_condition: WatchConditionPayload | None = None
     trigger_checklist: list[str] = Field(default_factory=list)
+    # ROB-693 — advisory narrative bullets: "what would invalidate this
+    # thesis". Hermes-authored, list[str] like reasons/warnings/
+    # trigger_checklist (no typed block — that would overlap the
+    # scanner-executable WatchInvalidation/WatchConditionPayload). auto_trader
+    # only persists (evidence_snapshot["invalidation_triggers"]) + renders;
+    # it must never self-populate this field (ROB-501 spirit; see the static
+    # boundary scan in
+    # tests/services/action_report/snapshot_backed/test_no_self_authored_invalidation.py).
+    invalidation_triggers: list[str] = Field(default_factory=list)
     max_action: dict[str, Any] = Field(default_factory=dict)
     valid_until: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -372,6 +388,21 @@ class IngestReportItem(BaseModel):
             conflicts.append("target_price")
         if self.linked_order_ids and "linked_order_ids" in self.evidence_snapshot:
             conflicts.append("linked_order_ids")
+        # ROB-693 — invalidation_triggers is caller(Hermes)-authored, like
+        # structured_evidence/entry_plan above: reject only when the caller
+        # ALSO stuffs the same key into evidence_snapshot directly (duplicate
+        # source of truth), not unconditionally like trade_setup below (which
+        # is server-computed and never caller-suppliable).
+        if (
+            self.invalidation_triggers
+            and "invalidation_triggers" in self.evidence_snapshot
+        ):
+            conflicts.append("invalidation_triggers")
+        # ROB-690 — trade_setup is server-computed R:R only; callers must not
+        # inject it directly (trust boundary: server arithmetic is the sole
+        # source of trade_setup, never caller-supplied evidence_snapshot).
+        if "trade_setup" in self.evidence_snapshot:
+            conflicts.append("trade_setup")
         if conflicts:
             raise ValueError(
                 "typed item fields must not duplicate reserved evidence_snapshot keys: "

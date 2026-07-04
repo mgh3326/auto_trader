@@ -275,6 +275,159 @@ async def test_aggregate_group_by_root_cause(db_session: AsyncSession):
     assert groups["policy"]["by_trigger_type"] == {"policy_violation": 1}
 
 
+# ---------------------------------------------------------------------------
+# ROB-691 — get_retrospectives filters: outcome_filter / symbol_search /
+# kst_date_from-to. The outcome_filter SQL predicates MUST match the Python
+# `_is_win`/`_is_decided` semantics used by build_retrospective_aggregate
+# (same win/loss/decided rules, tie=0 counted as loss) — this is the parallel
+# equivalence test the plan calls out as the biggest correctness risk.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_outcome_filter_matches_python_predicate(db_session: AsyncSession):
+    from sqlalchemy import select as sa_select
+
+    # win via realized_pnl
+    await _seed(db_session, strategy="A", pnl=100.0)
+    # loss via realized_pnl
+    await _seed(db_session, strategy="A", pnl=-50.0)
+    # tie (0) -> decided but NOT a win (loss bucket)
+    await _seed(db_session, strategy="A", pnl=0.0)
+    # win via pnl_pct fallback (realized_pnl absent)
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="B",
+        pnl_pct=1.5,
+    )
+    # loss via pnl_pct fallback, tie(0) included
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="B",
+        pnl_pct=0.0,
+    )
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="B",
+        pnl_pct=-2.0,
+    )
+    # no-evidence row: neither realized_pnl nor pnl_pct -> not decided at all
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kiwoom_mock",
+        outcome="unfilled",
+        strategy_key="C",
+    )
+    await db_session.commit()
+
+    # Ground truth computed in Python directly against the ORM rows, exactly
+    # mirroring what build_retrospective_aggregate uses internally.
+    all_rows = (await db_session.execute(sa_select(TradeRetrospective))).scalars().all()
+    expected_win_ids = {r.id for r in all_rows if svc._is_win(r)}
+    expected_decided_ids = {r.id for r in all_rows if svc._is_decided(r)}
+    expected_loss_ids = expected_decided_ids - expected_win_ids
+    # 7 rows seeded, 1 has no evidence at all (neither realized_pnl nor
+    # pnl_pct) -> 6 decided. Wins: pnl=100 (realized_pnl) + pnl_pct=1.5
+    # (fallback) = 2. Losses: pnl=-50, pnl=0 (tie), pnl_pct=0.0 (tie),
+    # pnl_pct=-2.0 = 4.
+    assert len(expected_decided_ids) == 6
+    assert len(expected_win_ids) == 2
+    assert len(expected_loss_ids) == 4
+
+    win_result = await svc.get_retrospectives(
+        db_session, outcome_filter="win", limit=100
+    )
+    assert {e["id"] for e in win_result["entries"]} == expected_win_ids
+
+    loss_result = await svc.get_retrospectives(
+        db_session, outcome_filter="loss", limit=100
+    )
+    assert {e["id"] for e in loss_result["entries"]} == expected_loss_ids
+
+    decided_result = await svc.get_retrospectives(
+        db_session, outcome_filter="decided", limit=100
+    )
+    assert {e["id"] for e in decided_result["entries"]} == expected_decided_ids
+
+
+@pytest.mark.asyncio
+async def test_outcome_filter_invalid_value_raises(db_session: AsyncSession):
+    with pytest.raises(svc.RetrospectiveValidationError):
+        await svc.get_retrospectives(db_session, outcome_filter="bogus")
+
+
+@pytest.mark.asyncio
+async def test_symbol_search_prefix_ilike(db_session: AsyncSession):
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="A",
+    )
+    await svc.save_retrospective(
+        db_session,
+        symbol="AAPL",
+        instrument_type="equity_us",
+        account_mode="kis_mock",
+        outcome="filled",
+        strategy_key="A",
+    )
+    await db_session.commit()
+
+    res = await svc.get_retrospectives(db_session, symbol_search="005")
+    assert {e["symbol"] for e in res["entries"]} == {"005930"}
+
+    res_lower = await svc.get_retrospectives(db_session, symbol_search="aap")
+    assert {e["symbol"] for e in res_lower["entries"]} == {"AAPL"}
+
+    res_none = await svc.get_retrospectives(db_session, symbol_search="ZZZ")
+    assert res_none["entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_kst_date_from_to_boundaries(db_session: AsyncSession):
+    from datetime import timedelta
+
+    from app.core.timezone import now_kst
+
+    await _seed(db_session, strategy="A", pnl=100.0)
+    await db_session.commit()
+    today = now_kst().date().isoformat()
+    yesterday = (now_kst().date() - timedelta(days=1)).isoformat()
+    tomorrow = (now_kst().date() + timedelta(days=1)).isoformat()
+
+    in_window = await svc.get_retrospectives(
+        db_session, kst_date_from=today, kst_date_to=today
+    )
+    assert in_window["summary"]["count"] == 1
+
+    out_of_window = await svc.get_retrospectives(
+        db_session, kst_date_from=yesterday, kst_date_to=yesterday
+    )
+    assert out_of_window["summary"]["count"] == 0
+
+    range_window = await svc.get_retrospectives(
+        db_session, kst_date_from=yesterday, kst_date_to=tomorrow
+    )
+    assert range_window["summary"]["count"] == 1
+
+
 @pytest.mark.asyncio
 async def test_process_dims_include_no_fill_evidence_rows(db_session: AsyncSession):
     # kiwoom_mock has no fill evidence — excluded from PnL dims, INCLUDED in

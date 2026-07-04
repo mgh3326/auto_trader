@@ -137,3 +137,26 @@ class MarketQuoteSnapshotsRepository:
             ).where(sa.or_(*conditions))
         )
         return {(r.market, r.symbol, r.source, r.snapshot_at) for r in result.all()}
+
+    async def latest_prices(self, market: str, symbols: list[str]) -> dict[str, float]:
+        """ROB-696 — latest close per symbol (any source) for the KIS→Toss→
+        snapshot fallback's last hop. Read-only; missing symbols are absent."""
+        if not symbols:
+            return {}
+        upper = [s.strip().upper() for s in symbols if s.strip()]
+        if not upper:
+            return {}
+        stmt = (
+            select(MarketQuoteSnapshot.symbol, MarketQuoteSnapshot.price)
+            .where(
+                MarketQuoteSnapshot.market == market.strip().lower(),
+                MarketQuoteSnapshot.symbol.in_(upper),
+            )
+            .distinct(MarketQuoteSnapshot.symbol)
+            .order_by(
+                MarketQuoteSnapshot.symbol,
+                MarketQuoteSnapshot.snapshot_at.desc(),
+            )
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return {row.symbol: float(row.price) for row in rows}

@@ -389,6 +389,39 @@ export interface StockDetailResearchConsensusResponse {
   freshness: StockDetailResearchFreshness;
 }
 
+export interface RecoZone {
+  price: number;
+  type: string;
+  reasoning: string;
+}
+
+export interface RecoTradeSetup {
+  direction: "long" | "short";
+  entry: string;
+  stop: string;
+  target: string;
+  risk_pct: string;
+  reward_pct: string;
+  rr_ratio: string;
+}
+
+export interface StockDetailRecommendationResponse {
+  market: "kr" | "us";
+  symbol: string;
+  name: string | null;
+  as_of: string;
+  current_price: number | null;
+  action: "buy" | "hold" | "sell";
+  confidence: "high" | "medium" | "low";
+  rsi14: number | null;
+  reasoning: string;
+  insufficient_inputs: string[];
+  buy_zones: RecoZone[];
+  sell_targets: RecoZone[];
+  stop_loss: number | null;
+  trade_setup: RecoTradeSetup | null;
+}
+
 export interface StockDetailCandlesResponse {
   symbol: string;
   market: StockDetailMarket;

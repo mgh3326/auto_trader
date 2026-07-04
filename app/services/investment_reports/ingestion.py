@@ -27,10 +27,44 @@ from app.services.action_report.common.bundle_aware_publishing import (
 )
 from app.services.investment_reports.idempotency import item_key, report_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
+from app.services.investment_reports.risk_reward import (
+    TradeSetup,
+    build_trade_setup,
+    resolve_direction,
+)
 
 _RESERVED_REPORT_METADATA_KEYS = frozenset(
     {"draft_updates", "status_transitions", "superseded_by"}
 )
+
+
+def _serialise_trade_setup(setup: TradeSetup) -> dict[str, Any]:
+    """ROB-690 — JSON-safe (Decimal→str) dict for evidence_snapshot["trade_setup"].
+
+    Only called when ``setup.status == "computed"`` (caller's responsibility);
+    ``legs``/``headline`` are non-empty/non-None in that case.
+    """
+    assert setup.headline is not None
+    return {
+        "direction": setup.direction,
+        "stop": str(setup.stop),
+        "target": str(setup.target),
+        "headline": {
+            "entry": str(setup.headline.entry),
+            "risk_pct": str(setup.headline.risk_pct),
+            "reward_pct": str(setup.headline.reward_pct),
+            "rr_ratio": str(setup.headline.rr_ratio),
+        },
+        "legs": [
+            {
+                "entry": str(leg.entry),
+                "risk_pct": str(leg.risk_pct),
+                "reward_pct": str(leg.reward_pct),
+                "rr_ratio": str(leg.rr_ratio),
+            }
+            for leg in setup.legs
+        ],
+    }
 
 
 class ReportOverwriteBlockedError(RuntimeError):
@@ -524,6 +558,38 @@ class InvestmentReportIngestionService:
                 ref.model_dump(mode="json", exclude_none=True)
                 for ref in item_req.linked_order_ids
             ]
+        # ROB-693 — Hermes-authored advisory narrative ("what would
+        # invalidate this thesis"), merged verbatim (no synthesis/transform
+        # by auto_trader — pure pass-through, per the ROB-501 boundary).
+        if item_req.invalidation_triggers:
+            evidence_payload["invalidation_triggers"] = list(
+                item_req.invalidation_triggers
+            )
+        # ROB-690 — deterministic R:R derived from the same entry/stop/target
+        # trio above. Only attempted when all three are present; fail-closed
+        # (key omitted, legacy shape preserved) on exit/unknown direction or
+        # an inconsistent/degenerate price triangle.
+        if (
+            item_req.entry_plan
+            and item_req.stop_loss is not None
+            and item_req.target_price is not None
+        ):
+            direction = resolve_direction(
+                side=item_req.side,
+                intent=item_req.intent,
+                item_kind=item_req.item_kind,
+                explicit_direction=item_req.position_direction,
+            )
+            if direction in ("long", "short"):
+                setup = build_trade_setup(
+                    entry_levels=[level.price for level in item_req.entry_plan],
+                    quantities=[level.quantity for level in item_req.entry_plan],
+                    stop=item_req.stop_loss.price,
+                    target=item_req.target_price.price,
+                    direction=direction,
+                )
+                if setup.status == "computed":
+                    evidence_payload["trade_setup"] = _serialise_trade_setup(setup)
         item_metadata = dict(item_req.metadata or {})
         item_metadata["client_item_key"] = item_req.client_item_key
         return await self._repo.insert_item(
