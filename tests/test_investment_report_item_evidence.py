@@ -432,6 +432,70 @@ async def test_trade_setup_explicit_short_direction(session) -> None:
     assert snap["trade_setup"]["headline"]["rr_ratio"] == "1.84"
 
 
+# ---------------------------------------------------------------------------
+# ROB-693 — invalidation_triggers: Hermes-authored advisory narrative field
+# (distinct from the scanner-executable WatchInvalidation). Duplicate-reject
+# style mirrors ROB-459 structured_evidence/entry_plan (reject only when the
+# typed field AND evidence_snapshot both carry the key), NOT ROB-690
+# trade_setup's unconditional reject (that field is server-computed only;
+# this one is caller-authored, so the typed field is the normal path in).
+# ---------------------------------------------------------------------------
+
+
+def test_item_invalidation_triggers_defaults_empty():
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="action",
+        intent="buy_review",
+        rationale="r",
+    )
+    assert item.invalidation_triggers == []
+
+
+def test_item_accepts_invalidation_triggers():
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="action",
+        intent="buy_review",
+        rationale="r",
+        invalidation_triggers=["실적 가이던스 하향", "RSI 30 하회 지속"],
+    )
+    assert item.invalidation_triggers == ["실적 가이던스 하향", "RSI 30 하회 지속"]
+
+
+def test_item_rejects_caller_supplied_invalidation_triggers_duplicate_key():
+    """Unlike trade_setup (always rejected), invalidation_triggers is
+    caller-authored — so this is only a conflict when the typed field is ALSO
+    populated (duplicate source of truth), matching the structured_evidence/
+    entry_plan/target_price precedent (L370-381 above)."""
+    with pytest.raises(ValidationError) as exc:
+        IngestReportItem(
+            client_item_key="k1",
+            item_kind="action",
+            intent="buy_review",
+            rationale="r",
+            invalidation_triggers=["실적 가이던스 하향"],
+            evidence_snapshot={"invalidation_triggers": ["다른 값"]},
+        )
+    assert "invalidation_triggers" in str(exc.value)
+    assert "reserved evidence_snapshot keys" in str(exc.value)
+
+
+def test_evidence_snapshot_invalidation_triggers_key_alone_is_not_a_conflict():
+    """When the typed field is unset/empty, a raw evidence_snapshot key of the
+    same name is NOT rejected — legacy raw-JSON callers are unaffected
+    (mirrors structured_evidence's guard: `if self.evidence and ...`)."""
+    item = IngestReportItem(
+        client_item_key="k1",
+        item_kind="action",
+        intent="buy_review",
+        rationale="r",
+        evidence_snapshot={"invalidation_triggers": ["raw only"]},
+    )
+    assert item.invalidation_triggers == []
+    assert item.evidence_snapshot["invalidation_triggers"] == ["raw only"]
+
+
 @pytest.mark.asyncio
 async def test_trade_setup_skipped_when_target_price_missing(session) -> None:
     snap = await _ingest_single_item_report(
