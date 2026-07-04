@@ -169,7 +169,14 @@ restart_single_active_services() {
 
 run_healthcheck_once() {
   if [[ -x "$SERVER_HEALTHCHECK" ]]; then
-    "$SERVER_HEALTHCHECK"
+    # ROB-698: WS connectivity (KIS/Upbit real-time) must NOT be a fatal deploy
+    # gate. The blue-green cutover checks already run with
+    # AUTO_TRADER_HEALTHCHECK_SKIP_WS=1 (native_deploy_lib.sh); make this final
+    # post-cutover retry check consistent so a broker's scheduled maintenance
+    # (e.g. KIS) cannot fail+rollback an otherwise-healthy deploy. api/mcp
+    # /healthz stay hard gates; WS is monitored separately (watchdog/Sentry).
+    # An operator can still force WS-gating with AUTO_TRADER_HEALTHCHECK_SKIP_WS=0.
+    AUTO_TRADER_HEALTHCHECK_SKIP_WS="${AUTO_TRADER_HEALTHCHECK_SKIP_WS:-1}" "$SERVER_HEALTHCHECK"
     return $?
   fi
 
@@ -188,12 +195,18 @@ run_healthcheck_once() {
   fi
 
   if [[ -f "$CURRENT/scripts/websocket_healthcheck.py" ]]; then
+    # ROB-698: WS heartbeat is advisory (logged, non-fatal) here too — a broker
+    # WS outage (e.g. KIS scheduled maintenance) must not roll back an
+    # otherwise-healthy deploy (consistent with the primary path above and the
+    # blue-green cutover checks, which skip WS).
     WS_MONITOR_HEARTBEAT_PATH="$BASE/state/heartbeat/kis.json" \
       WS_MONITOR_EXPECT_MODE=kis \
-      uv run python scripts/websocket_healthcheck.py || rc=1
+      uv run python scripts/websocket_healthcheck.py \
+      || echo "WS(kis) heartbeat not connected (advisory, non-fatal)" >&2
     WS_MONITOR_HEARTBEAT_PATH="$BASE/state/heartbeat/upbit.json" \
       WS_MONITOR_EXPECT_MODE=upbit \
-      uv run python scripts/websocket_healthcheck.py || rc=1
+      uv run python scripts/websocket_healthcheck.py \
+      || echo "WS(upbit) heartbeat not connected (advisory, non-fatal)" >&2
   else
     echo "websocket_healthcheck.py not found; skipping websocket heartbeat checks" >&2
   fi
