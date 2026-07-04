@@ -266,27 +266,50 @@ class BaseKISClient:
     async def _fetch_token(self) -> tuple[str, int]:
         """Fetch new OAuth2 token from KIS API.
 
+        ROB-700: the token POST is guarded by the SAME per-process circuit
+        breaker as the data dispatch (ROB-699). During a KIS maintenance window
+        the token fetch connect-times-out FIRST (before any data call), so
+        guarding it here is what lets the breaker open at all. After N
+        consecutive token connect-failures ``before_request`` fail-fasts with
+        ``KISCircuitOpen`` (zero HTTP, zero wait) and every KIS reader hits its
+        Toss fallback / warning immediately. A 401 / invalid-key / non-JSON
+        body means KIS RESPONDED (reachable) and must NOT trip the breaker.
+
+        The breaker check is per-attempt, inside this call, before the network
+        POST — the token single-flight (``refresh_token_with_lock``) and the
+        cached-token fast path in ``_ensure_token`` are unchanged.
+
         Returns:
             Tuple of (access_token, expires_in_seconds)
 
         Raises:
-            httpx.HTTPStatusError: On HTTP errors
-            KeyError: If response doesn't contain access_token
+            KISCircuitOpen: When the breaker is open (fail-fast, no HTTP).
+            httpx.HTTPStatusError / httpx.RequestError: On HTTP/transport errors.
+            KeyError: If response doesn't contain access_token.
         """
-        cli = await self._ensure_client(timeout=5.0)
-        r = await cli.post(
-            self._kis_url("/oauth2/token"),
-            data={
-                "grant_type": "client_credentials",
-                "appkey": self._settings.kis_app_key,
-                "appsecret": self._settings.kis_app_secret,
-            },
-            timeout=5,
-        )
-        response = r.json()
-        access_token = response["access_token"]
-        expires_in = response.get("expires_in", 3600)
-
+        breaker = get_kis_circuit_breaker()
+        breaker.before_request()  # OUTSIDE the classify try/except (ROB-699 invariant)
+        try:
+            cli = await self._ensure_client(timeout=5.0)
+            r = await cli.post(
+                self._kis_url("/oauth2/token"),
+                data={
+                    "grant_type": "client_credentials",
+                    "appkey": self._settings.kis_app_key,
+                    "appsecret": self._settings.kis_app_secret,
+                },
+                timeout=5,
+            )
+            response = r.json()
+            access_token = response["access_token"]
+            expires_in = response.get("expires_in", 3600)
+        except BaseException as exc:  # noqa: BLE001 — classify then re-raise unchanged
+            if is_kis_connect_failure(exc):
+                breaker.record_failure()  # connect/read outage -> trips after N
+            else:
+                breaker.record_reachable_error()  # KIS responded (401/KeyError/JSON) — no trip
+            raise
+        breaker.record_success()
         logging.info("KIS 새 토큰 발급 완료")
         return access_token, expires_in
 
