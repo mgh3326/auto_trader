@@ -494,7 +494,9 @@ async def test_reconcile_failure_does_not_skip_later_orders(
 
     ts = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
 
-    async def _bars(symbol: str, market: str, period: str, count: int, end: Any = None) -> Any:
+    async def _bars(
+        symbol: str, market: str, period: str, count: int, end: Any = None
+    ) -> Any:
         if symbol == "KRW-ETH":  # sell limit 1_000_000 crossed by high 2_000_000
             return [_candle(Decimal("500000"), Decimal("2000000"), ts)]
         return [_candle(Decimal("89000000"), Decimal("91000000"), ts)]  # buy crossed
