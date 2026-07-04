@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "shadow-replay": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "app.mcp_server.main"],
+      "env": {
+        "MCP_TYPE": "stdio",
+        "MCP_PROFILE": "shadow-replay",
+        "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED": "true"
+      }
+    }
+  }
+}

@@ -182,3 +182,88 @@ prompt (Task 4) must instruct the agent to base its call on
 **Status:** not yet run. Requires a real `bundle_uuid` from the P0
 corpus census above; run once that census has produced a usable
 corpus source.
+
+---
+
+## Headless `claude -p` driver (M1, implemented)
+
+`scripts/shadow_replay.py` ties the corpus selector (Task 0) and the
+scorer (Task 1) together into the actual A' batch: for each corpus
+item it spawns a headless `claude -p` subprocess `k` times (via
+`scripts/shadow_replay_mcp.json`, a stdio MCP config restricted to the
+`shadow-replay` profile — frozen-context read + policy + lane router
+only, nothing else reachable), scores each reply against the item's
+`reference_decision`, and writes a markdown report.
+
+- `_to_item_shape(raw) -> dict` — **shape adapter, load-bearing.** The
+  replay prompt instructs the agent to emit `trade_setup` at the TOP
+  level (a flatter contract for the agent to follow), but
+  `extract_decision` (Task 1) reads a *nested*
+  `evidence_snapshot.trade_setup` — the shape of a persisted
+  `InvestmentReportItem`. Calling `extract_decision` directly on a raw
+  claude reply would silently read `ev.get("trade_setup")` off `{}`
+  and drop entry/stop/target on every single replay. `run_batch` always
+  routes raw replies through this adapter before scoring; unit-tested
+  directly, including a round-trip (`raw.trade_setup.headline.entry` →
+  `_to_item_shape` → `extract_decision` recovers a non-None `entry`).
+- `_one_run(uuid, model) -> dict | None` — the only place `claude` is
+  invoked. Best-effort + defensive: ANY subprocess failure (missing
+  binary, timeout), non-zero exit, an MCP-reset stderr marker
+  (`get_hermes_context` / `connection error` / `tool not found`), or a
+  JSON-parse failure returns `None` — a **discarded** sample, not a
+  data point. The exact `claude -p --output-format json` envelope
+  shape is only verified at operator run-time (Step 6 below); the test
+  suite never spawns a real subprocess — `tests/test_shadow_replay_cli.py`
+  always monkeypatches `_one_run`.
+- `run_batch(corpus, *, k, model, tick) -> list[dict]` — one result row
+  per corpus item: `{item_uuid, item_kind, source, model, discarded,
+  summary}`. `discarded` counts `_one_run` calls that returned `None`
+  out of `k`; `summary` (`summarize(...)`, Task 1) is computed only
+  over the successfully-parsed decisions.
+- `write_report(results, path) -> str` — markdown table, one row per
+  corpus item: `side_rate / size_band_rate / limit_rate /
+  same_decision_rate / no_action_rate / discarded`, plus a header with
+  the corpus `source` and the pinned `model` (for longitudinal
+  comparison across runs).
+- `build_parser()` / `main()` — `--confirm` gate: without `--confirm`,
+  `main()` never spawns a `claude -p` subprocess. It only prints a dry
+  plan (`{source, corpus_size, would_run_claude_p_calls, model}`) and
+  exits 0. Only `--confirm` proceeds to `run_batch` + `write_report`.
+  `--model` defaults to a **pinned exact id**
+  (`claude-opus-4-8`, never a `-latest` alias) so replay fidelity stays
+  comparable across re-runs months apart — the model id is stamped
+  into every result row and the report header.
+
+Tests: `tests/test_shadow_replay_cli.py` (`@pytest.mark.unit`, no DB,
+no real subprocess — `_one_run` is always monkeypatched).
+
+Read-only / ROB-501: `scripts/shadow_replay.py` lives in `scripts/`,
+not `app/`. It shells out to the external `claude` binary via
+`subprocess.run` (an out-of-process CLI call, not an in-process LLM
+SDK import). M1 writes nothing — no orders, no watch mutation, no
+report persistence; the replayed agent returns JSON on stdout and this
+driver only scores + reports it (the markdown file is a local report
+artifact, not a DB write).
+
+### Step 6 — one real end-to-end batch (operator, not CI)
+
+Requires: a live DB with a usable corpus (see the P0 census above), the
+`claude` CLI on `PATH`, and `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED`
+reachable by the MCP subprocess (already set in
+`scripts/shadow_replay_mcp.json`'s `env`).
+
+```bash
+# Dry plan only — always safe, spawns nothing:
+uv run python -m scripts.shadow_replay --k 5 --model claude-opus-4-8
+
+# Real batch (spawns k x corpus-size `claude -p` subprocesses):
+uv run python -m scripts.shadow_replay --k 5 --model claude-opus-4-8 --confirm
+```
+
+Expected: a markdown report (default `shadow_replay_report.md`, override
+with `--report`) with per-corpus-item `side_rate / size_band_rate /
+limit_rate / same_decision_rate` + `no_action_rate` + discard counts.
+This is the M1 deliverable number.
+
+**Status:** not yet run. Requires the P0 census to have produced a
+usable corpus first (see above).
