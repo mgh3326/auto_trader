@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -660,6 +661,91 @@ async def test_manual_reader_emits_load_quote_and_fx_spans(
     assert "invest.home.manual.load_holdings" in started
     assert "invest.home.manual.fetch_kr_prices" in started
     assert "invest.home.manual.fetch_us_prices" in started
+
+
+@pytest.mark.asyncio
+async def test_manual_reader_fetches_kr_and_us_prices_concurrently(monkeypatch):
+    """ROB-702: KR and US price fetches must run concurrently, not sequentially.
+
+    Each fake fetch signals it has started, then waits for the other to start.
+    Under the concurrent ``asyncio.gather`` both events fire and both proceed;
+    a sequential kr-then-us implementation would deadlock (us never starts while
+    kr awaits it) and time out — so a passing result proves concurrency.
+    """
+
+    class _Span:
+        def set_data(self, key: str, value: Any) -> None:
+            return None
+
+        def set_tag(self, key: str, value: Any) -> None:
+            return None
+
+    class _SpanContext:
+        def __enter__(self) -> _Span:
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext()
+
+    class _BrokerAccount:
+        broker_type = "toss"
+
+    class _KRHolding:
+        id = 1
+        broker_account_id = 10
+        broker_account = _BrokerAccount()
+        ticker = "005930"
+        display_name = "삼성전자"
+        market_type = MarketType.KR
+        quantity = 2
+        avg_price = 70_000
+
+    class _USHolding:
+        id = 2
+        broker_account_id = 10
+        broker_account = _BrokerAccount()
+        ticker = "AAPL"
+        display_name = "Apple"
+        market_type = MarketType.US
+        quantity = 1
+        avg_price = 100
+
+    class _ManualHoldingsService:
+        def __init__(self, db: object) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return [_KRHolding(), _USHolding()]
+
+    kr_started = asyncio.Event()
+    us_started = asyncio.Event()
+
+    class _QuoteService:
+        async def fetch_kr_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            kr_started.set()
+            await asyncio.wait_for(us_started.wait(), timeout=1.0)
+            return dict.fromkeys(tickers, 72000.0)
+
+        async def fetch_us_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            us_started.set()
+            await asyncio.wait_for(kr_started.wait(), timeout=1.0)
+            return dict.fromkeys(tickers, 190.0)
+
+    monkeypatch.setattr(readers.sentry_sdk, "start_span", _start_span)
+    monkeypatch.setattr(readers, "ManualHoldingsService", _ManualHoldingsService)
+    monkeypatch.setattr(readers, "get_usd_krw_rate", AsyncMock(return_value=1_350.0))
+
+    result = await readers.ManualHomeReader(
+        db=object(), quote_service=_QuoteService()
+    ).fetch(user_id=1)  # type: ignore[arg-type]
+
+    # Sequential fetches would deadlock on the cross-waits above; a clean result
+    # with both events set proves the two fetches were in flight simultaneously.
+    assert result.warning is None
+    assert kr_started.is_set() and us_started.is_set()
 
 
 # ---------------------------------------------------------------------------
