@@ -2083,7 +2083,12 @@ class TestGetFxRateHandler:
 class TestGetFxRateToolRegistration:
     """Tests for get_fx_rate MCP registration."""
 
-    @pytest.mark.parametrize("profile", list(McpProfile))
+    # ROB-697 M1 — shadow-replay early-returns before the "Always" block that
+    # registers get_fx_rate (fundamentals tools), so it is deliberately
+    # excluded here; see tests/mcp_server/test_shadow_replay_profile.py.
+    @pytest.mark.parametrize(
+        "profile", [p for p in McpProfile if p is not McpProfile.SHADOW_REPLAY]
+    )
     def test_get_fx_rate_registered_on_all_profiles(self, profile: McpProfile):
         tools = _build_tools(profile=profile)
 
