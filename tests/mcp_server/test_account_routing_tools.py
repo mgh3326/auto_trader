@@ -36,7 +36,14 @@ def test_account_routing_tool_names_register():
     assert set(mcp.tools) == {"suggest_order_account"}
 
 
-@pytest.mark.parametrize("profile", list(McpProfile))
+# ROB-697 M1 — shadow-replay early-returns before the "Always" block that
+# registers suggest_order_account, so it is deliberately excluded here (its
+# validity guard is that it carries ONLY the frozen-context read + policy +
+# route_request tools; see tests/mcp_server/test_shadow_replay_profile.py).
+_READ_PROFILES = [p for p in McpProfile if p is not McpProfile.SHADOW_REPLAY]
+
+
+@pytest.mark.parametrize("profile", _READ_PROFILES)
 def test_suggest_order_account_registered_on_all_read_profiles(profile):
     mcp = DummyMCP()
 

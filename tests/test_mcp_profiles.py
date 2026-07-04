@@ -235,6 +235,9 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.US_PAPER: set(_ALPACA_MUTATING),
     McpProfile.DB_PAPER: set(),
     McpProfile.KIWOOM: set(KIWOOM_MOCK_TOOL_NAMES),
+    # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
+    # (frozen-context read + policy + route_request only, early-return).
+    McpProfile.SHADOW_REPLAY: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -266,15 +269,28 @@ class TestOrderSurfaceMatrix:
         )
 
 
+# ROB-697 M1 — shadow-replay is a deliberate exception to the "every profile
+# has the full read-only research surface" invariant below: it early-returns
+# before the "Always" research-registration block, so it carries NO live-fetch
+# tool (crypto research included). ``TestShadowReplayIsResearchSurfaceException``
+# pins that omission explicitly.
+_PROFILES_WITH_RESEARCH_SURFACE = [
+    p for p in McpProfile if p is not McpProfile.SHADOW_REPLAY
+]
+
+
 class TestCryptoResearchToolsAllProfiles:
-    """ROB-503: crypto read-only research tools register on EVERY profile.
+    """ROB-503: crypto read-only research tools register on EVERY profile
+    that reaches the "Always" research block.
 
     ROB-488 had gated them to MCP_PROFILE=crypto, which broke single-server
     operation (crypto live trading runs on the DEFAULT server). Read-only
-    tools carry no order-surface risk, so profile isolation buys nothing.
+    tools carry no order-surface risk, so profile isolation buys nothing —
+    except for shadow-replay (ROB-697), whose validity guard is that it
+    carries NO live-fetch tool at all; see _PROFILES_WITH_RESEARCH_SURFACE.
     """
 
-    @pytest.mark.parametrize("profile", list(McpProfile))
+    @pytest.mark.parametrize("profile", _PROFILES_WITH_RESEARCH_SURFACE)
     def test_crypto_research_tools_registered(self, profile: McpProfile) -> None:
         mcp = _build_mcp(profile)
         missing = _CRYPTO_RESEARCH_TOOL_NAMES - mcp.tools.keys()
@@ -285,6 +301,16 @@ class TestCryptoResearchToolsAllProfiles:
         mcp = _build_mcp(profile)
         leaked = _REMOVED_GENERIC_TOOL_NAMES & mcp.tools.keys()
         assert not leaked, f"profile={profile.value} leaked old names: {sorted(leaked)}"
+
+
+class TestShadowReplayIsResearchSurfaceException:
+    """ROB-697 M1 — pin that shadow-replay is the ONE profile without the
+    default research surface (the load-bearing validity guard: a headless
+    replay must not be able to reach live market data)."""
+
+    def test_shadow_replay_has_no_crypto_research_tools(self) -> None:
+        mcp = _build_mcp(McpProfile.SHADOW_REPLAY)
+        assert _CRYPTO_RESEARCH_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
 
 class TestResolveMcpProfile:
@@ -314,6 +340,9 @@ class TestResolveMcpProfile:
 
     def test_kiwoom(self) -> None:
         assert resolve_mcp_profile("kiwoom") is McpProfile.KIWOOM
+
+    def test_shadow_replay(self) -> None:
+        assert resolve_mcp_profile("shadow-replay") is McpProfile.SHADOW_REPLAY
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
