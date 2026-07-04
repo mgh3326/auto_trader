@@ -64,6 +64,7 @@ def _item_payload(report_id: int, **overrides) -> dict:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
 async def test_autoemit_item_excluded(db_session):
     """``_bundle_items_for_profile`` drops auto_emit-sourced items, keeps the human one.
 
