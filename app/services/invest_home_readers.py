@@ -757,21 +757,36 @@ class ManualHomeReader:
             usd_krw_rate: float | None = None
 
             if self._quote_service:
-                with sentry_sdk.start_span(
-                    op="invest.home.manual.phase",
-                    name="invest.home.manual.fetch_kr_prices",
-                ) as span:
-                    span.set_data("ticker_count", len(kr_tickers))
-                    kr_prices = await self._quote_service.fetch_kr_prices(kr_tickers)
-                    span.set_data("price_count", len(kr_prices))
+                quote_service = self._quote_service
 
-                with sentry_sdk.start_span(
-                    op="invest.home.manual.phase",
-                    name="invest.home.manual.fetch_us_prices",
-                ) as span:
-                    span.set_data("ticker_count", len(us_tickers))
-                    us_prices = await self._quote_service.fetch_us_prices(us_tickers)
-                    span.set_data("price_count", len(us_prices))
+                async def _fetch_kr_prices() -> dict[str, float | None]:
+                    with sentry_sdk.start_span(
+                        op="invest.home.manual.phase",
+                        name="invest.home.manual.fetch_kr_prices",
+                    ) as span:
+                        span.set_data("ticker_count", len(kr_tickers))
+                        prices = await quote_service.fetch_kr_prices(kr_tickers)
+                        span.set_data("price_count", len(prices))
+                        return prices
+
+                async def _fetch_us_prices() -> dict[str, float | None]:
+                    with sentry_sdk.start_span(
+                        op="invest.home.manual.phase",
+                        name="invest.home.manual.fetch_us_prices",
+                    ) as span:
+                        span.set_data("ticker_count", len(us_tickers))
+                        prices = await quote_service.fetch_us_prices(us_tickers)
+                        span.set_data("price_count", len(prices))
+                        return prices
+
+                # ROB-702: KR and US price fetches are independent — run them
+                # concurrently so the manual reader's wall time is max(kr, us),
+                # not kr + us (~7s -> ~3.5s). Failure semantics unchanged: a
+                # raise from either fetch propagates (gather re-raises) to the
+                # outer try/except, exactly as the sequential awaits did.
+                kr_prices, us_prices = await asyncio.gather(
+                    _fetch_kr_prices(), _fetch_us_prices()
+                )
 
                 if us_tickers:
                     try:
