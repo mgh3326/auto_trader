@@ -8,12 +8,14 @@ import {
   fetchStockDetailNews,
   fetchStockDetailOrderLedger,
   fetchStockDetailOrders,
+  fetchStockDetailRecommendation,
   fetchStockDetailResearchConsensus,
 } from "../../api/stockDetail";
 import { fetchWatches } from "../../api/watches";
 import { fetchRetrospectives } from "../../api/retrospectives";
 import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
 import { OrderLedgerCard } from "../../desktop/stock-detail/OrderLedgerCard";
+import { RecommendationCard } from "../../desktop/stock-detail/RecommendationCard";
 import { WatchCard } from "../../desktop/stock-detail/WatchCard";
 import { RetrospectiveCard } from "../../desktop/stock-detail/RetrospectiveCard";
 import { accountSourceMeta } from "../../desktop/AccountSourceMeta";
@@ -25,6 +27,7 @@ import type {
   StockDetailMarket,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
+  StockDetailRecommendationResponse,
   StockDetailResearchConsensusResponse,
   StockDetailResponse,
   StockDetailHolding,
@@ -507,6 +510,9 @@ export function StockDetailPage() {
   const [news, setNews] = useState<StockDetailNewsResponse | undefined>();
   const [researchConsensus, setResearchConsensus] = useState<StockDetailResearchConsensusResponse | undefined>();
   const [researchErr, setResearchErr] = useState<string | undefined>();
+  const [recommendation, setRecommendation] = useState<StockDetailRecommendationResponse | undefined>();
+  const [recoLoading, setRecoLoading] = useState(false);
+  const [recoErr, setRecoErr] = useState<string | undefined>();
   const [err, setErr] = useState<string | undefined>();
 
   useEffect(() => {
@@ -520,6 +526,9 @@ export function StockDetailPage() {
     setNews(undefined);
     setResearchConsensus(undefined);
     setResearchErr(undefined);
+    setRecommendation(undefined);
+    setRecoLoading(false);
+    setRecoErr(undefined);
     setErr(undefined);
 
     fetchStockDetail({ market, symbol })
@@ -554,6 +563,24 @@ export function StockDetailPage() {
     };
   }, [market, symbol]);
 
+  // ROB-692 — on-demand only (never in the eager load effect above):
+  // analyze_stock_impl is the heaviest fetch on this page.
+  const loadRecommendation = () => {
+    if (market === "crypto") return;
+    setRecoLoading(true);
+    setRecoErr(undefined);
+    fetchStockDetailRecommendation({ market, symbol })
+      .then((r) => {
+        setRecommendation(r);
+      })
+      .catch((e) => {
+        setRecoErr(String(e?.message ?? e));
+      })
+      .finally(() => {
+        setRecoLoading(false);
+      });
+  };
+
   const sideDetails = useMemo(() => {
     if (!data) {
       return <MemoCard />;
@@ -587,6 +614,15 @@ export function StockDetailPage() {
             <>
               <HeaderCard data={data} />
               <TradeGuardrail data={data} />
+              {market !== "crypto" ? (
+                <RecommendationCard
+                  market={market}
+                  data={recommendation}
+                  loading={recoLoading}
+                  error={recoErr}
+                  onLoad={loadRecommendation}
+                />
+              ) : null}
               <HoldingCard data={data} />
               <FxSensitivityCard data={data.fxSensitivity} />
               <ChartCard candles={candles} />
