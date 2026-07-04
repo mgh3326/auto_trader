@@ -124,3 +124,61 @@ exercises `_bundle_items_for_profile` directly (not
 auto_emit exclusion has to go through the lower-level function. The
 pure-predicate tests (`_non_autoemit`, `_covers_kinds`) are
 `@pytest.mark.unit` and need no DB.
+
+---
+
+## P1 probe (operator)
+
+**Why this exists:** A′ replay is only meaningful if the same bundle
+yields the same decision-bearing context across calls. `get_hermes_
+context` emits no verbatim timestamp; `stage_inputs` + `cited_snapshots`
++ `policy_version` + `market` + `market_session` + `coverage_summary`
+are frozen from the persisted bundle. `dimension_evidence` /
+`dimension_reports` read LIVE tables and can drift between calls even
+for the same bundle.
+
+`scripts/shadow_replay_probe.py` calls
+`investment_report_get_hermes_context_impl` twice for one
+`bundle_uuid` and diffs the result:
+
+- `compare_frozen(a, b) -> dict` — pure function (dict in, dict out,
+  no I/O). Compares the frozen keys via
+  `json.dumps(..., sort_keys=True)` equality and lists which of
+  `dimension_evidence` / `dimension_reports` differ. Unit-tested in
+  `tests/test_shadow_replay_probe_cli.py` with no DB.
+- `probe(bundle_uuid) -> int` — the async two-call round trip. Requires
+  a live DB, a real `bundle_uuid` (from the Task 0 corpus), and
+  `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` on the process. Not
+  exercised by the test suite — run it manually as an operator step.
+
+Read-only: no stage_run / artifact rows are persisted, no broker /
+order / watch / order-intent mutation, no in-process LLM provider
+(ROB-501).
+
+### Run it
+
+```bash
+SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true \
+    uv run python -m scripts.shadow_replay_probe <bundle_uuid>
+```
+
+Expected for two calls seconds apart:
+
+```json
+{"frozen_identical": true, "live_section_drift": []}
+```
+
+Exit code `0` means the frozen sections matched; `1` means they
+drifted (investigate before trusting the K-replay batch, Task 4); `2`
+means the first call itself failed (`success=False` — bad
+`bundle_uuid`, or the feature flag isn't set).
+
+If `live_section_drift` is non-empty, record it here — it means the
+K-replay batch (Task 4) must run tight in time, and the decision
+prompt (Task 4) must instruct the agent to base its call on
+`stage_inputs` / `cited_snapshots` (the frozen sections), not on
+`dimension_evidence` / `dimension_reports`.
+
+**Status:** not yet run. Requires a real `bundle_uuid` from the P0
+corpus census above; run once that census has produced a usable
+corpus source.
