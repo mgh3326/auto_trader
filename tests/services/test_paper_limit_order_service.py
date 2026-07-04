@@ -450,3 +450,61 @@ async def test_place_sell_below_min_notional_rejected(
     )
     assert not out["success"]
     assert "minimum" in out["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_failure_does_not_skip_later_orders(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing order EARLY in the batch must not skip a later crossed order in
+    the SAME reconcile pass. Pre-fix, the except-branch rollback expired the
+    pre-loaded ORM list so every later order raised MissingGreenlet and was
+    silently skipped; the id-based loop fixes it (regression guard for fix A)."""
+    from app.models.paper_trading import PaperPendingOrder
+
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob703-tail"), initial_capital_krw=Decimal("1000000")
+    )
+    # Bad SELL (no position) inserted FIRST -> lower placed_at, processed first,
+    # raises inside execute_order -> triggers the per-order rollback.
+    bad = PaperPendingOrder(
+        account_id=acct.id,
+        symbol="KRW-ETH",
+        side="sell",
+        order_type="limit",
+        limit_price=Decimal("1000000"),
+        quantity=Decimal("0.1"),
+        reserved_krw=Decimal("0"),
+        status="pending",
+        placed_at=now_kst() - dt.timedelta(minutes=1),
+    )
+    db_session.add(bad)
+    await db_session.commit()
+
+    svc = PaperLimitOrderService(db_session)
+    # Good BUY placed AFTER -> later placed_at, processed second, must still fill.
+    await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("90000000"),
+        amount=Decimal("100000"),
+    )
+
+    ts = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
+
+    async def _bars(symbol: str, market: str, period: str, count: int, end: Any = None) -> Any:
+        if symbol == "KRW-ETH":  # sell limit 1_000_000 crossed by high 2_000_000
+            return [_candle(Decimal("500000"), Decimal("2000000"), ts)]
+        return [_candle(Decimal("89000000"), Decimal("91000000"), ts)]  # buy crossed
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+
+    res = await svc.reconcile_pending_orders(account_id=acct.id, now=None)
+    # bad sell fails, but the later good buy MUST still fill in this same pass
+    assert res["filled"] == 1, res
+    pending = await svc.list_pending_orders(account_id=acct.id)
+    assert not any(o["symbol"] == "KRW-BTC" for o in pending), (
+        "the good buy must be filled, not left pending, after an earlier failure"
+    )

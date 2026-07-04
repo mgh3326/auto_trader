@@ -201,7 +201,7 @@ class PaperLimitOrderService:
                 return {
                     "success": False,
                     "error": (
-                        f"Order notional {reserved_krw} KRW is below the "
+                        f"Order notional {gross} KRW is below the "
                         f"Upbit minimum {_MIN_CRYPTO_KRW} KRW"
                     ),
                 }
@@ -342,16 +342,30 @@ class PaperLimitOrderService:
         Returns ``{"success": True, "reconciled": N, "filled": M}``.
         """
         effective_now = now or now_kst()
-        stmt = select(PaperPendingOrder).where(
-            PaperPendingOrder.account_id == account_id,
-            PaperPendingOrder.status == "pending",
+        stmt = (
+            select(PaperPendingOrder.id)
+            .where(
+                PaperPendingOrder.account_id == account_id,
+                PaperPendingOrder.status == "pending",
+            )
+            .order_by(
+                PaperPendingOrder.placed_at.asc(),
+                PaperPendingOrder.id.asc(),
+            )
         )
-        orders = list((await self.db.execute(stmt)).scalars().all())
-        if not orders:
+        order_ids = [row[0] for row in (await self.db.execute(stmt)).all()]
+        if not order_ids:
             return {"success": True, "reconciled": 0, "filled": 0}
 
         filled = 0
-        for order in orders:
+        for oid in order_ids:
+            # Re-fetch each order fresh inside the loop: a mid-batch rollback
+            # (e.g. from an oversell) expires the identity map, so reading
+            # attributes off a pre-loaded ORM list would raise on the next
+            # iteration. Loading by id avoids that poisoning entirely.
+            order = await self.db.get(PaperPendingOrder, oid)
+            if order is None or order.status != "pending":
+                continue
             try:
                 candles = await get_ohlcv(
                     order.symbol,
@@ -375,12 +389,12 @@ class PaperLimitOrderService:
             fill_price = limit_crossed(order.side, Decimal(order.limit_price), bars)
             if fill_price is None:
                 continue
-            # Atomic per-order fill, isolated from the rest of the batch.
-            # Flip status BEFORE execute_order so its internal commit persists
-            # status='filled' + the trade in ONE transaction. A raise before
-            # that commit rolls everything back -> order stays pending, no
-            # phantom trade. execute_order failures (e.g. oversell) are caught
-            # so one bad order never aborts the batch.
+
+            # Atomic fill: flip status BEFORE execute_order so its internal
+            # commit persists status='filled' + the trade + the cash change in
+            # ONE transaction. A raise before that commit (e.g. oversell) rolls
+            # back only this order; the id-based loop re-fetches the next order
+            # fresh, so a rollback never poisons remaining iterations.
             try:
                 account = await self.pts.get_account(account_id)
                 assert account is not None
@@ -400,7 +414,15 @@ class PaperLimitOrderService:
                     quantity=Decimal(order.quantity),
                     reason=order.thesis or "paper resting-limit fill",
                 )
-                # trade + status now durably committed by execute_order; link FK best-effort
+            except Exception:
+                await self.db.rollback()
+                continue
+
+            # The fill is now durably committed by execute_order's internal
+            # commit. Count it, then link the trade id best-effort -- a failure
+            # here loses only the (nullable) FK link, never the fill or count.
+            filled += 1
+            try:
                 order.paper_trade_id = await _latest_trade_id(
                     self.db,
                     account_id=account_id,
@@ -408,14 +430,12 @@ class PaperLimitOrderService:
                     side=order.side,
                 )
                 await self.db.commit()
-                filled += 1
             except Exception:
                 await self.db.rollback()
-                continue
 
         return {
             "success": True,
-            "reconciled": len(orders),
+            "reconciled": len(order_ids),
             "filled": filled,
         }
 
