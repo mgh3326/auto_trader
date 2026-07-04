@@ -247,6 +247,14 @@ class Settings(BaseSettings):
     toss_api_base_url: str | None = None
     toss_live_order_mutations_enabled: bool = False
 
+    # ROB-701: process-global short-TTL cache for the per-symbol Toss
+    # sellable-quantity fanout on /invest home & account-panel. Collapses
+    # repeated loads to 0 ORDER_INFO (6 TPS) calls within the TTL; a fill
+    # naturally refreshes after ≤ttl (ROB-549 tolerates brief staleness).
+    # enabled=False => cache always misses => today's fanout-every-load.
+    toss_sellable_cache_enabled: bool = True
+    toss_sellable_cache_ttl_seconds: float = 45.0
+
     # ROB-576 — Toss fill notifications are inert until explicitly enabled by
     # the operator. Toss auto-reconcile gates live with the task flags below.
     toss_fill_notify_enabled: bool = False

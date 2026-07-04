@@ -8,6 +8,8 @@ from typing import Any, Protocol
 import sentry_sdk
 
 from app.services.brokers.toss.client import TossReadClient
+from app.services.brokers.toss.dto import TossSellableQuantity
+from app.services.toss_sellable_cache import TossSellableCache
 
 
 class TossPortfolioClient(Protocol):
@@ -131,6 +133,7 @@ async def fetch_toss_cash_snapshot(
 async def fetch_toss_portfolio_snapshot(
     *,
     need_sellable: bool = True,
+    sellable_cache: TossSellableCache | None = None,
     client: TossPortfolioClient | None = None,
 ) -> TossPortfolioSnapshot:
     created_client = client is None
@@ -146,7 +149,51 @@ async def fetch_toss_portfolio_snapshot(
 
         errors: list[dict[str, Any]] = []
 
-        if need_sellable:
+        if need_sellable and sellable_cache is not None:
+            # ROB-701: only cache-MISS symbols hit the ORDER_INFO (6 TPS)
+            # /sellable-quantity endpoint; hits reuse the cached value. Re-wrap
+            # hits as TossSellableQuantity so the position-build loop below is
+            # unchanged.
+            hits: list[Decimal | None] = [
+                sellable_cache.get(item.symbol) for item in holdings.items
+            ]
+            miss_indices = [i for i, hit in enumerate(hits) if hit is None]
+            with sentry_sdk.start_span(
+                op="invest.home.toss_api.phase",
+                name="invest.home.toss_api.sellable_quantity",
+            ) as span:
+                span.set_data("position_count", len(holdings.items))
+                span.set_data("cache_miss_count", len(miss_indices))
+                fetched = await asyncio.gather(
+                    *[
+                        active_client.sellable_quantity(symbol=holdings.items[i].symbol)
+                        for i in miss_indices
+                    ],
+                    return_exceptions=True,
+                )
+                span.set_data(
+                    "error_count",
+                    sum(1 for result in fetched if isinstance(result, BaseException)),
+                )
+            fetched_by_index: dict[int, Any] = dict(
+                zip(miss_indices, fetched, strict=True)
+            )
+            for index, result in fetched_by_index.items():
+                if not isinstance(result, BaseException):
+                    # Cache ONLY successful fetches — a transient error must not
+                    # poison the cache (next load retries).
+                    sellable_cache.put(
+                        holdings.items[index].symbol, result.sellable_quantity
+                    )
+            paired: list[tuple[Any, Any]] = []
+            for index, item in enumerate(holdings.items):
+                if index in fetched_by_index:
+                    paired.append((item, fetched_by_index[index]))
+                else:
+                    paired.append(
+                        (item, TossSellableQuantity(sellable_quantity=hits[index]))
+                    )
+        elif need_sellable:
             with sentry_sdk.start_span(
                 op="invest.home.toss_api.phase",
                 name="invest.home.toss_api.sellable_quantity",
@@ -167,9 +214,7 @@ async def fetch_toss_portfolio_snapshot(
                         if isinstance(result, BaseException)
                     ),
                 )
-            paired: list[tuple[Any, Any]] = list(
-                zip(holdings.items, sellable_results, strict=True)
-            )
+            paired = list(zip(holdings.items, sellable_results, strict=True))
         else:
             # ROB-685: caller does not consume sellable_quantity — skip the
             # per-holding GET /sellable-quantity (ORDER_INFO, 6 TPS) fanout that
