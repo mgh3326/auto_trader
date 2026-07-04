@@ -31,7 +31,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.money import quantize_crypto_qty, quantize_money
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.shared import (
     DEFAULT_MINIMUM_VALUES,
     resolve_market_type,
@@ -56,6 +56,16 @@ _OHLCV_LOOKBACK_BARS = 200
 def _quantize_fill_price(price: Decimal) -> Decimal:
     """Snap limit price down to Upbit KRW tick band + Quantize money."""
     return quantize_money(snap_limit_down(price))
+
+
+def _as_aware_kst(ts: dt.datetime | None) -> dt.datetime | None:
+    """Upbit candle timestamps (candle_date_time_kst) are tz-naive KST wall-clock;
+    placed_at is tz-aware. Coerce naive -> KST-aware so comparisons never raise."""
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=KST)
+    return ts
 
 
 async def _latest_trade_id(
@@ -333,10 +343,11 @@ class PaperLimitOrderService:
             except Exception:
                 # data unavailable -> leave pending
                 continue
+            placed_at = _as_aware_kst(order.placed_at)
             bars: list[tuple[Decimal, Decimal]] = []
             for c in candles:
-                c_ts = getattr(c, "timestamp", None)
-                if c_ts is not None and c_ts < order.placed_at:
+                c_ts = _as_aware_kst(getattr(c, "timestamp", None))
+                if c_ts is not None and placed_at is not None and c_ts < placed_at:
                     continue
                 bars.append((Decimal(str(c.low)), Decimal(str(c.high))))
             if not bars:

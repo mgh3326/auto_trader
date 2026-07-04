@@ -8,24 +8,26 @@ Upbit connectivity.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from app.core.timezone import now_kst
 from app.services.paper_limit_order_service import PaperLimitOrderService
 from app.services.paper_trading_service import PaperTradingService
 
 
-def _candle(low: Decimal, high: Decimal) -> Any:
+def _candle(low: Decimal, high: Decimal, timestamp: dt.datetime | None = None) -> Any:
     class _C:
         pass
 
     c = _C()
     c.low = low
     c.high = high
-    c.timestamp = None
+    c.timestamp = timestamp
     return c
 
 
@@ -257,3 +259,61 @@ async def test_reconcile_sell_fills_when_high_touches(
     detail = await svc.get_pending_order(account_id=acct.id, order_id=sell["order_id"])
     assert detail["status"] == "filled"
     assert detail["fill_price"] == Decimal("100000000")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_handles_tz_naive_upbit_timestamps(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real Upbit candles carry tz-NAIVE timestamps; placed_at is tz-aware.
+    Reconcile must not raise TypeError comparing them (blocker #1)."""
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob703-tz"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("90000000"),
+        amount=Decimal("100000"),
+    )
+    # candle AFTER placement, tz-NAIVE (as real Upbit candle_date_time_kst is), low crosses
+    naive_after = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        return [_candle(Decimal("89000000"), Decimal("91000000"), naive_after)]
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    res = await svc.reconcile_pending_orders(account_id=acct.id, now=None)
+    assert res["filled"] == 1, res  # must fill, not crash
+
+
+@pytest.mark.asyncio
+async def test_reconcile_excludes_bars_before_placement(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A limit must not fill on price action BEFORE it was placed (no look-ahead)."""
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob703-pre"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("90000000"),
+        amount=Decimal("100000"),
+    )
+    # only a crossing candle BEFORE placement exists -> must stay pending
+    naive_before = now_kst().replace(tzinfo=None) - dt.timedelta(minutes=5)
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        return [_candle(Decimal("89000000"), Decimal("91000000"), naive_before)]
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    res = await svc.reconcile_pending_orders(account_id=acct.id, now=None)
+    assert res["filled"] == 0, res
+    assert len(await svc.list_pending_orders(account_id=acct.id)) == 1
