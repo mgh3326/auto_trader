@@ -8,6 +8,7 @@ import { stockDetailPath } from "../../stockDetailPath";
 import type {
   NextActionRow,
   RetroMarket,
+  RetroOutcomeFilter,
   RetrospectiveRow,
 } from "../../types/retrospectives";
 
@@ -30,6 +31,19 @@ const TRIGGER_OPTIONS: { key: string; label: string }[] = [
   { key: "stale_evidence", label: "증거부족" },
   { key: "guardrail_block", label: "가드레일" },
 ];
+
+// ROB-691 — win/loss/decided trade-history filter, forwarded as
+// outcome_filter. "" = no filter (all outcomes, decided or not).
+const OUTCOME_OPTIONS: { key: RetroOutcomeFilter | ""; label: string }[] = [
+  { key: "", label: "전체" },
+  { key: "win", label: "승" },
+  { key: "loss", label: "패" },
+  { key: "decided", label: "결정" },
+];
+
+// Debounce the free-text symbol search so every keystroke doesn't fire a
+// request; 300ms mirrors common UI debounce defaults elsewhere in the app.
+const SEARCH_DEBOUNCE_MS = 300;
 
 function pnlText(row: { realized_pnl: number | null; realized_pnl_currency: string | null }): string {
   if (row.realized_pnl == null) return "—";
@@ -82,6 +96,13 @@ export function RetrospectivesPanel({
 }) {
   const [market, setMarket] = useState<RetroMarket>("all");
   const [triggerType, setTriggerType] = useState<string>("");
+  const [outcomeFilter, setOutcomeFilter] = useState<RetroOutcomeFilter | "">("");
+  // Raw input vs. debounced value: the raw value drives the <input>, the
+  // debounced value drives the fetch (ROB-691 — avoid firing a request per keystroke).
+  const [symbolSearchInput, setSymbolSearchInput] = useState("");
+  const [symbolSearch, setSymbolSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [nextActions, setNextActions] = useState<NextActionRow[]>([]);
   const [state, setState] = useState<
     | { status: "loading" }
@@ -90,9 +111,22 @@ export function RetrospectivesPanel({
   >({ status: "loading" });
 
   useEffect(() => {
+    const timer = setTimeout(() => setSymbolSearch(symbolSearchInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [symbolSearchInput]);
+
+  useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
-    fetchRetrospectives({ market, triggerType: triggerType || undefined, limit: compact ? 8 : 50 })
+    fetchRetrospectives({
+      market,
+      triggerType: triggerType || undefined,
+      outcomeFilter: outcomeFilter || undefined,
+      q: symbolSearch || undefined,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+      limit: compact ? 8 : 50,
+    })
       .then((data) => {
         if (!cancelled) setState({ status: "ready", items: data.items, total: data.total });
       })
@@ -100,7 +134,7 @@ export function RetrospectivesPanel({
         if (!cancelled) setState({ status: "error", message: err instanceof Error ? err.message : String(err) });
       });
     return () => { cancelled = true; };
-  }, [market, triggerType, compact]);
+  }, [market, triggerType, outcomeFilter, symbolSearch, dateFrom, dateTo, compact]);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,6 +180,17 @@ export function RetrospectivesPanel({
               </button>
             ))}
           </div>
+          {/* ROB-691 — win/loss/decided filter: small footprint like the
+              market chips above, so it stays visible in compact mode too
+              (unlike the wider trigger/search/date-range controls below). */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignSelf: "flex-end" }}>
+            {OUTCOME_OPTIONS.map((option) => (
+              <button key={option.key || "all"} type="button" onClick={() => setOutcomeFilter(option.key)}
+                style={{ border: "none", borderRadius: 999, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", background: outcomeFilter === option.key ? "var(--fg)" : "var(--surface-2)", color: outcomeFilter === option.key ? "var(--bg)" : "var(--fg-2)" }}>
+                {option.label}
+              </button>
+            ))}
+          </div>
           {!compact && (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignSelf: "flex-end" }}>
               {TRIGGER_OPTIONS.map((option) => (
@@ -154,6 +199,37 @@ export function RetrospectivesPanel({
                   {option.label}
                 </button>
               ))}
+            </div>
+          )}
+          {!compact && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignSelf: "flex-end", alignItems: "center" }}>
+              <input
+                type="text"
+                placeholder="종목 검색"
+                value={symbolSearchInput}
+                onChange={(e) => setSymbolSearchInput(e.target.value)}
+                style={{ border: "1px solid var(--border)", borderRadius: 999, padding: "4px 10px", fontSize: 11, fontFamily: "inherit", background: "var(--surface)", color: "var(--fg-1)", width: 100 }}
+              />
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-3)" }}>
+                시작일
+                <input
+                  type="date"
+                  aria-label="시작일"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "3px 6px", fontSize: 11, fontFamily: "inherit", background: "var(--surface)", color: "var(--fg-1)" }}
+                />
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-3)" }}>
+                종료일
+                <input
+                  type="date"
+                  aria-label="종료일"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "3px 6px", fontSize: 11, fontFamily: "inherit", background: "var(--surface)", color: "var(--fg-1)" }}
+                />
+              </label>
             </div>
           )}
         </div>

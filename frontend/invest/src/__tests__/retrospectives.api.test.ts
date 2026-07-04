@@ -4,6 +4,7 @@ import type { NextActionsResponse, RetrospectivesResponse } from "../types/retro
 
 const listResponse: RetrospectivesResponse = {
   market: "kr", trigger_type: null, root_cause_class: null, symbol: null,
+  outcome_filter: null, q: null, kst_date_from: null, kst_date_to: null,
   count: 0, total: 0, items: [], as_of: "2026-07-01T00:00:00Z",
 };
 const naResponse: NextActionsResponse = {
@@ -33,6 +34,22 @@ test("fetchRetrospectives sends filters + pagination with credentials", async ()
   expect(params.get("symbol")).toBe("AAPL");
   expect(params.get("limit")).toBe("10");
   expect(params.get("offset")).toBe("20");
+});
+
+test("fetchRetrospectives sends outcome/symbol-search/date-range filters (ROB-691)", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => listResponse });
+  vi.stubGlobal("fetch", fetchMock);
+
+  await fetchRetrospectives({
+    outcomeFilter: "win", q: "005", dateFrom: "2026-07-01", dateTo: "2026-07-04",
+  });
+
+  const [url] = fetchMock.mock.calls[0]!;
+  const params = new URLSearchParams(String(url).split("?")[1]);
+  expect(params.get("outcome_filter")).toBe("win");
+  expect(params.get("q")).toBe("005");
+  expect(params.get("kst_date_from")).toBe("2026-07-01");
+  expect(params.get("kst_date_to")).toBe("2026-07-04");
 });
 
 test("fetchOpenNextActions hits next-actions with scope", async () => {
