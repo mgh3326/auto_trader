@@ -373,3 +373,80 @@ async def test_reconcile_isolates_failure_no_double_fill(
     trades2 = await pts.get_trade_history(acct_id, limit=50)
     btc_trades2 = [t for t in trades2 if t["symbol"] == "KRW-BTC"]
     assert len(btc_trades2) == 1, f"double-fill: {btc_trades2}"
+
+
+@pytest.mark.asyncio
+async def test_place_sell_reserves_position_across_pending(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two resting sells cannot jointly exceed the held position (major #3)."""
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob703-sell"), initial_capital_krw=Decimal("100000000")
+    )
+    # establish a 0.002 BTC position via a market buy
+
+    async def _price(symbol, itype):  # noqa: ARG001
+        return Decimal("50000000")
+
+    monkeypatch.setattr(pts, "_fetch_current_price", _price)
+    await pts.execute_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("0.002"),
+    )
+    svc = PaperLimitOrderService(db_session)
+    first = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="sell",
+        limit_price=Decimal("60000000"),
+        quantity=Decimal("0.002"),
+    )
+    assert first["success"], first
+    second = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="sell",
+        limit_price=Decimal("61000000"),
+        quantity=Decimal("0.002"),
+    )
+    assert not second["success"]
+    assert (
+        "sellable" in second["error"].lower()
+        or "insufficient" in second["error"].lower()
+    )
+
+
+@pytest.mark.asyncio
+async def test_place_sell_below_min_notional_rejected(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob703-min"), initial_capital_krw=Decimal("100000000")
+    )
+
+    async def _price(symbol, itype):  # noqa: ARG001
+        return Decimal("50000000")
+
+    monkeypatch.setattr(pts, "_fetch_current_price", _price)
+    await pts.execute_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("0.01"),
+    )
+    svc = PaperLimitOrderService(db_session)
+    out = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="sell",
+        limit_price=Decimal("50000000"),
+        quantity=Decimal("0.00001"),  # 500 KRW
+    )
+    assert not out["success"]
+    assert "minimum" in out["error"].lower()

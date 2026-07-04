@@ -27,7 +27,7 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.money import quantize_crypto_qty, quantize_money
@@ -118,6 +118,15 @@ class PaperLimitOrderService:
         self.db = session
         self.pts = PaperTradingService(session)
 
+    async def _pending_sell_qty(self, account_id: int, symbol: str) -> Decimal:
+        stmt = select(func.coalesce(func.sum(PaperPendingOrder.quantity), 0)).where(
+            PaperPendingOrder.account_id == account_id,
+            PaperPendingOrder.symbol == symbol,
+            PaperPendingOrder.side == "sell",
+            PaperPendingOrder.status == "pending",
+        )
+        return Decimal(str((await self.db.execute(stmt)).scalar() or 0))
+
     async def place_limit_order(
         self,
         *,
@@ -188,7 +197,7 @@ class PaperLimitOrderService:
             gross = quantize_money(qty * snapped_price)
             fee = calculate_fee("crypto", "buy", gross)
             reserved_krw = quantize_money(gross + fee)
-            if reserved_krw < _MIN_CRYPTO_KRW:
+            if gross < _MIN_CRYPTO_KRW:
                 return {
                     "success": False,
                     "error": (
@@ -208,18 +217,29 @@ class PaperLimitOrderService:
             reserved_krw_value: Decimal | None = reserved_krw
         else:
             reserved_krw_value = Decimal("0")
-            # sell-side: ensure the account has a position with enough quantity
+            gross = quantize_money(qty * snapped_price)
+            if gross < _MIN_CRYPTO_KRW:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Order notional {gross} KRW is below the "
+                        f"Upbit minimum {_MIN_CRYPTO_KRW} KRW"
+                    ),
+                }
             position = await self.pts._get_position(account_id, resolved_symbol)
             if position is None:
                 return {
                     "success": False,
                     "error": f"No position to sell for {resolved_symbol}",
                 }
-            if Decimal(position.quantity) < qty:
+            pending_sell = await self._pending_sell_qty(account_id, resolved_symbol)
+            available = Decimal(position.quantity) - pending_sell
+            if available < qty:
                 return {
                     "success": False,
                     "error": (
-                        f"Insufficient quantity to sell: have {position.quantity}, "
+                        f"Insufficient sellable quantity: position "
+                        f"{position.quantity}, already-pending sells {pending_sell}, "
                         f"need {qty}"
                     ),
                 }
