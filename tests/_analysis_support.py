@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.analysis.models import PriceAnalysis, PriceRange, StockAnalysisResponse
-
 
 def build_analysis_sample_df(rows: int = 220) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=rows, freq="D")
@@ -65,22 +63,3 @@ def build_minute_candles() -> dict[str, pd.DataFrame]:
         "5min": candles_5,
         "1min": candles_1,
     }
-
-
-def build_stock_analysis_response() -> StockAnalysisResponse:
-    return StockAnalysisResponse(
-        decision="buy",
-        reasons=[
-            "기술적 추세가 우상향입니다.",
-            "거래량이 증가하고 있습니다.",
-            "리스크 대비 진입 타이밍이 양호합니다.",
-        ],
-        price_analysis=PriceAnalysis(
-            appropriate_buy_range=PriceRange(min=98_000, max=100_000),
-            appropriate_sell_range=PriceRange(min=105_000, max=108_000),
-            buy_hope_range=PriceRange(min=95_000, max=97_000),
-            sell_target_range=PriceRange(min=112_000, max=115_000),
-        ),
-        detailed_text="**매수**\n\n상승 추세와 거래량 증가를 근거로 합니다.",
-        confidence=86,
-    )
