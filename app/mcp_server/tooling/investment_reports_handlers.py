@@ -428,6 +428,29 @@ def _maybe_attach_lite_quality(
     )
 
 
+def _negative_class_warnings(validated_items: list[Any]) -> list[str]:
+    """Advisory (never blocks): flag deferred_no_action items missing confidence
+    so the negative class stays calibratable (ROB-712). Fail-open — any error
+    yields no warnings rather than failing report creation. NOTE: forecast
+    presence is NOT checked here (forecast_save is a separate subsystem, unknown
+    at create time); the message reminds the caller to also leave a forecast."""
+    try:
+        out: list[str] = []
+        for item in validated_items or []:
+            bucket = getattr(item, "decision_bucket", None)
+            confidence = getattr(item, "confidence", None)
+            if bucket == "deferred_no_action" and confidence is None:
+                key = getattr(item, "client_item_key", "?")
+                out.append(
+                    f"deferred_no_action item {key!r}: confidence missing — record "
+                    "confidence + a resolvable forecast_save so the negative class "
+                    "stays calibratable (ROB-712)."
+                )
+        return out
+    except Exception:  # noqa: BLE001 — advisory must never break create
+        return []
+
+
 # ---------------------------------------------------------------------------
 # investment_report_create
 # ---------------------------------------------------------------------------
@@ -460,6 +483,10 @@ async def investment_report_create_impl(
     validated_items, item_error = _validate_report_items(items)
     if item_error is not None:
         return item_error
+    # ROB-712 — fail-open advisory: flag deferred_no_action items missing
+    # confidence so the negative class stays calibratable. The helper never
+    # raises; an empty list is the no-op default.
+    warnings = _negative_class_warnings(validated_items)
 
     payload: dict[str, Any] = {
         "report_type": report_type,
@@ -515,7 +542,9 @@ async def investment_report_create_impl(
         response = InvestmentReportCreateResponse(
             idempotent=not is_new,
             report=InvestmentReportResponse.model_validate(report),
+            warnings=warnings,
         )
+
     return response.model_dump(mode="json", by_alias=True)
 
 
