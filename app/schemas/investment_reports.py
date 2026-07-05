@@ -1163,7 +1163,9 @@ class InvestmentReportCreateResponse(BaseModel):
     success: bool = True
     idempotent: bool
     report: InvestmentReportResponse
-
+    # ROB-712 — advisory, fail-open. Non-empty when a deferred_no_action item
+    # omits confidence (negative-class calibration needs confidence + forecast).
+    warnings: list[str] = Field(default_factory=list)
 
 class InvestmentReportDecideItemResponse(BaseModel):
     """``investment_report_decide_item`` MCP return shape."""
