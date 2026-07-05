@@ -17,34 +17,34 @@ from app.services.investment_reports.item_loop_links import (
 
 
 def _forecast(item_uuid: str, **kw) -> TradeForecast:
-    base = dict(
-        created_by="claude",
-        symbol="000660",
-        instrument_type="equity_kr",
-        forecast_target={
+    base = {
+        "created_by": "claude",
+        "symbol": "000660",
+        "instrument_type": "equity_kr",
+        "forecast_target": {
             "kind": "price_target",
             "direction": "at_or_above",
             "target_price": 200000,
         },
-        probability=Decimal("0.6"),
-        review_date=date(2026, 7, 20),
-        status="open",
-        outcome=None,
-        report_item_uuid=item_uuid,
-    )
+        "probability": Decimal("0.6"),
+        "review_date": date(2026, 7, 20),
+        "status": "open",
+        "outcome": None,
+        "report_item_uuid": item_uuid,
+    }
     base.update(kw)
     return TradeForecast(**base)
 
 
 def _retro(item_uuid: str, **kw) -> TradeRetrospective:
-    base = dict(
-        symbol="000660",
-        instrument_type="equity_kr",
-        account_mode="kis_live",
-        outcome="filled",
-        lesson="cut the position too late",
-        report_item_uuid=item_uuid,
-    )
+    base = {
+        "symbol": "000660",
+        "instrument_type": "equity_kr",
+        "account_mode": "kis_live",
+        "outcome": "filled",
+        "lesson": "cut the position too late",
+        "report_item_uuid": item_uuid,
+    }
     base.update(kw)
     return TradeRetrospective(**base)
 
