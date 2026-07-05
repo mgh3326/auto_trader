@@ -376,79 +376,92 @@ async def test_valuation_provider_handles_unsupported_and_null_dividend(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("reasons", "expected"),
-    [
-        (["first", "second", "third", "fourth"], ["first", "second", "third"]),
-        ({"top3": ["one", "two", "three", "four"]}, ["one", "two", "three"]),
-        ({"summary": "not-a-list"}, []),
-    ],
-)
-async def test_latest_analysis_provider_maps_reason_shapes(
-    monkeypatch, reasons, expected
-):
+async def test_decision_history_provider_maps_payload(monkeypatch):
     from app.services.invest_view_model import stock_detail_providers as providers
 
-    created_at = dt.datetime(2026, 6, 15, tzinfo=dt.UTC)
+    payload = {
+        "symbol": "000660",
+        "market": "kr",
+        "link_quality": "symbol_window",
+        "prior_decisions": [
+            {
+                "date": "2026-06-28",
+                "intent": "buy_review",
+                "side": "buy",
+                "decision_bucket": "new_buy_candidate",
+                "confidence": 0.7,
+                "rationale": "HBM 수요",
+            }
+        ],
+        "prior_lessons": ["추격 금지"],
+        "realized_outcomes": [
+            {
+                "date": "2026-06-20",
+                "side": "sell",
+                "outcome": "stop_loss",
+                "trigger_type": "stop",
+                "pnl_pct": -3.1,
+                "realized_pnl": -31000.0,
+            }
+        ],
+        "recent_fills": [{"date": "2026-06-20", "side": "sell"}],  # 의도적 무시
+        "open_claims": [
+            {
+                "probability": 0.7,
+                "horizon": "1w",
+                "review_date": "2026-07-10",
+                "direction": "up",
+                "target_price": 82000.0,
+            }
+        ],
+        "running_brier_symbol": {"n": 12, "mean_brier": 0.18, "flag": "ok"},
+        "running_brier_global": {
+            "n": 4,
+            "mean_brier": None,
+            "flag": "insufficient_sample",
+        },
+    }
 
-    class FakeAnalysisService:
-        def __init__(self, db):
-            self.db = db
+    async def fake_build(db, symbol, market):
+        assert symbol == "000660"
+        assert market == "kr"
+        return payload
 
-        async def get_latest_analysis_by_symbol(self, symbol):
-            assert symbol == "005930"
-            return SimpleNamespace(
-                id=42,
-                model_name="test-model",
-                decision="buy",
-                confidence=85,
-                appropriate_buy_min=70000,
-                appropriate_buy_max=72000,
-                appropriate_sell_min=80000,
-                appropriate_sell_max=82000,
-                reasons=reasons,
-                created_at=created_at,
-            )
+    monkeypatch.setattr(providers, "build_decision_context", fake_build)
 
-    import app.services.stock_info_service as stock_info_service
-
-    monkeypatch.setattr(stock_info_service, "StockAnalysisService", FakeAnalysisService)
-
-    analysis = await providers.stock_detail_latest_analysis_provider(
-        "kr", "005930", SimpleNamespace(execute=object())
+    result = await providers.stock_detail_decision_history_provider(
+        "kr", "000660", SimpleNamespace(execute=object())
     )
 
-    assert analysis is not None
-    assert analysis.id == 42
-    assert analysis.confidence == pytest.approx(0.85)
-    assert analysis.reasonsTop3 == expected
+    assert result is not None
+    assert result.linkQuality == "symbol_window"
+    assert result.priorDecisions[0].decisionBucket == "new_buy_candidate"
+    assert result.realizedOutcomes[0].triggerType == "stop"
+    assert result.realizedOutcomes[0].pnlPct == -3.1
+    assert result.openClaims[0].targetPrice == 82000.0
+    assert result.runningBrierSymbol.n == 12
+    assert result.runningBrierGlobal.flag == "insufficient_sample"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_latest_analysis_provider_returns_none_without_db_or_analysis(
-    monkeypatch,
-):
+async def test_decision_history_provider_returns_none(monkeypatch):
     from app.services.invest_view_model import stock_detail_providers as providers
 
-    class FakeAnalysisService:
-        def __init__(self, db):
-            self.db = db
+    async def fake_build(db, symbol, market):
+        return None
 
-        async def get_latest_analysis_by_symbol(self, symbol):
-            return None
+    monkeypatch.setattr(providers, "build_decision_context", fake_build)
 
-    import app.services.stock_info_service as stock_info_service
-
-    monkeypatch.setattr(stock_info_service, "StockAnalysisService", FakeAnalysisService)
-
+    # no db.execute → None (build_decision_context never called)
     assert (
-        await providers.stock_detail_latest_analysis_provider("kr", "005930", object())
+        await providers.stock_detail_decision_history_provider("kr", "000660", object())
         is None
     )
+    # db present but no signal → None
     assert (
-        await providers.stock_detail_latest_analysis_provider(
-            "kr", "005930", SimpleNamespace(execute=object())
+        await providers.stock_detail_decision_history_provider(
+            "kr", "000660", SimpleNamespace(execute=object())
         )
         is None
     )

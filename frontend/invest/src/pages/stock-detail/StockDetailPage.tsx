@@ -422,20 +422,82 @@ function ResearchConsensusCard({ data, error }: { data: StockDetailResearchConse
   );
 }
 
-function AnalysisCard({ data }: { data: StockDetailResponse }) {
-  const analysis = data.latestAnalysis;
+function DecisionHistoryCard({ data }: { data: StockDetailResponse }) {
+  const dh = data.decisionHistory;
   return (
-    <Card data-testid="stock-detail-analysis">
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>최근 분석</h2>
-      {analysis ? (
-        <>
-          <Pill tone={analysis.decision === "buy" ? "gain" : analysis.decision === "sell" ? "loss" : "paper"}>{analysis.decision ?? "hold"}</Pill>
-          <ul style={{ margin: "12px 0 0", paddingLeft: 18, color: "var(--fg-2)" }}>
-            {analysis.reasonsTop3.map((reason) => <li key={reason}>{reason}</li>)}
-          </ul>
-        </>
+    <Card data-testid="stock-detail-decision-history">
+      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>판단 이력</h2>
+      {!dh ? (
+        <p style={{ margin: 0, color: "var(--fg-3)" }}>이 종목의 과거 판단 기록이 없습니다.</p>
       ) : (
-        <p style={{ margin: 0, color: "var(--fg-3)" }}>최근 분석이 없습니다.</p>
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontWeight: 700 }}>
+              종목 Brier {dh.runningBrierSymbol.meanBrier == null ? "−" : dh.runningBrierSymbol.meanBrier.toFixed(2)}
+            </span>
+            <span style={{ color: "var(--fg-3)", fontSize: 12 }}>n={dh.runningBrierSymbol.n}</span>
+            {dh.runningBrierSymbol.flag === "insufficient_sample" ? (
+              <Pill tone="paper">표본 부족</Pill>
+            ) : null}
+          </div>
+
+          {dh.priorDecisions.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>과거 판단</div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                {dh.priorDecisions.map((d, i) => (
+                  <li key={`pd-${i}`} style={{ fontSize: 13 }}>
+                    <Pill tone={d.side === "buy" ? "gain" : d.side === "sell" ? "loss" : "paper"}>{d.side ?? d.intent ?? "판단"}</Pill>
+                    <span style={{ color: "var(--fg-3)", margin: "0 6px" }}>{d.date ?? "-"}</span>
+                    {d.confidence != null ? <span style={{ color: "var(--fg-3)" }}>conf {d.confidence.toFixed(2)}</span> : null}
+                    {d.rationale ? <div style={{ color: "var(--fg-2)" }}>{d.rationale}</div> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {dh.realizedOutcomes.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>실현된 결과</div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                {dh.realizedOutcomes.map((o, i) => (
+                  <li key={`ro-${i}`} style={{ fontSize: 13, color: "var(--fg-2)" }}>
+                    {o.date ?? "-"} · {o.side ?? "-"} · {o.outcome ?? "-"}
+                    {o.pnlPct != null ? ` · ${o.pnlPct.toFixed(1)}%` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {dh.openClaims.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>진행중 예측</div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                {dh.openClaims.map((c, i) => (
+                  <li key={`oc-${i}`} style={{ fontSize: 13, color: "var(--fg-2)" }}>
+                    {c.direction ?? "-"}
+                    {c.probability != null ? ` P${c.probability.toFixed(2)}` : ""}
+                    {c.targetPrice != null ? ` · 목표 ${Math.round(c.targetPrice).toLocaleString("ko-KR")}` : ""}
+                    {c.reviewDate ? ` · ${c.reviewDate} 해소` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {dh.priorLessons.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>교훈</div>
+              <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13 }}>
+                {dh.priorLessons.map((l, i) => <li key={`pl-${i}`}>{l}</li>)}
+              </ul>
+            </div>
+          ) : null}
+
+          <p style={{ margin: "6px 0 0", color: "var(--fg-3)", fontSize: 11 }}>{dh.cautionLabel}</p>
+        </>
       )}
     </Card>
   );
@@ -597,7 +659,7 @@ export function StockDetailPage() {
         <ProfileCard data={data} />
         {market !== "crypto" ? <ResearchConsensusCard data={researchConsensus} error={researchErr} /> : null}
         {market === "crypto" ? <CryptoDetailCard data={data} /> : null}
-        <AnalysisCard data={data} />
+        <DecisionHistoryCard data={data} />
         <NaverPocCard data={data} />
         <MemoCard />
       </div>

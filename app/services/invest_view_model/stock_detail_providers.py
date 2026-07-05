@@ -6,12 +6,13 @@ from typing import Any
 
 from app.schemas.invest_feed_news import NewsMarket
 from app.schemas.invest_stock_detail import (
+    StockDetailDecisionHistory,
     StockDetailHolding,
-    StockDetailLatestAnalysis,
     StockDetailOrderbook,
     StockDetailQuote,
     StockDetailValuation,
 )
+from app.services.decision_history import build_decision_context
 
 
 def _period_for_market_data(period: str) -> str:
@@ -142,47 +143,62 @@ async def stock_detail_valuation_provider(
     )
 
 
-def _reasons_top3(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item) for item in value if item][:3]
-    if isinstance(value, dict):
-        for key in ("reasons", "top3", "summary"):
-            nested = value.get(key)
-            if isinstance(nested, list):
-                return [str(item) for item in nested if item][:3]
-    return []
+def _brier(raw: Any) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "n": raw.get("n", 0),
+        "meanBrier": raw.get("mean_brier"),
+        "flag": raw.get("flag", "insufficient_sample"),
+    }
 
 
-async def stock_detail_latest_analysis_provider(
+async def stock_detail_decision_history_provider(
     market: NewsMarket, symbol: str, db: Any
-) -> StockDetailLatestAnalysis | None:
-    from app.services.stock_info_service import StockAnalysisService
-
-    _ = market
+) -> StockDetailDecisionHistory | None:
     if not hasattr(db, "execute"):
         return None
-    analysis = await StockAnalysisService(db).get_latest_analysis_by_symbol(symbol)
-    if analysis is None:
+    ctx = await build_decision_context(db, symbol, market)
+    if ctx is None:
         return None
-    return StockDetailLatestAnalysis(
-        id=analysis.id,
-        modelName=analysis.model_name,
-        decision=analysis.decision,
-        confidence=(
-            float(analysis.confidence) / 100.0
-            if analysis.confidence is not None
-            else None
-        ),
-        appropriateBuyRange=(
-            analysis.appropriate_buy_min,
-            analysis.appropriate_buy_max,
-        ),
-        appropriateSellRange=(
-            analysis.appropriate_sell_min,
-            analysis.appropriate_sell_max,
-        ),
-        reasonsTop3=_reasons_top3(analysis.reasons),
-        createdAt=analysis.created_at,
+    return StockDetailDecisionHistory(
+        symbol=ctx.get("symbol", symbol),
+        market=ctx.get("market", market),
+        linkQuality=ctx.get("link_quality", "symbol_window"),
+        priorDecisions=[
+            {
+                "date": d.get("date"),
+                "intent": d.get("intent"),
+                "side": d.get("side"),
+                "decisionBucket": d.get("decision_bucket"),
+                "confidence": d.get("confidence"),
+                "rationale": d.get("rationale"),
+            }
+            for d in ctx.get("prior_decisions", [])
+        ],
+        priorLessons=list(ctx.get("prior_lessons", [])),
+        realizedOutcomes=[
+            {
+                "date": o.get("date"),
+                "side": o.get("side"),
+                "outcome": o.get("outcome"),
+                "triggerType": o.get("trigger_type"),
+                "pnlPct": o.get("pnl_pct"),
+                "realizedPnl": o.get("realized_pnl"),
+            }
+            for o in ctx.get("realized_outcomes", [])
+        ],
+        openClaims=[
+            {
+                "probability": c.get("probability"),
+                "horizon": c.get("horizon"),
+                "reviewDate": c.get("review_date"),
+                "direction": c.get("direction"),
+                "targetPrice": c.get("target_price"),
+            }
+            for c in ctx.get("open_claims", [])
+        ],
+        runningBrierSymbol=_brier(ctx.get("running_brier_symbol")),
+        runningBrierGlobal=_brier(ctx.get("running_brier_global")),
     )
 
 
@@ -228,7 +244,7 @@ def make_account_panel_holding_provider(home_service: Any) -> HoldingProvider:
 __all__ = [
     "make_account_panel_holding_provider",
     "stock_detail_candle_provider",
-    "stock_detail_latest_analysis_provider",
+    "stock_detail_decision_history_provider",
     "stock_detail_orderbook_provider",
     "stock_detail_quote_provider",
     "stock_detail_valuation_provider",

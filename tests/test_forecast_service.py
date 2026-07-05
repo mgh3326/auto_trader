@@ -504,3 +504,153 @@ async def test_list_forecasts_symbol_filter_normalizes_equity_us(
     matched = await svc.list_forecasts(db_session, symbol="BRK-B")
     assert matched["summary"]["count"] == 1
     assert matched["entries"][0]["symbol"] == "BRK.B"
+
+
+# --------------------------------------------------------------------------- #
+# ROB-712: shared _resolve_candle_partition mapping
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_resolve_candle_partition_kr_us_crypto(db_session: AsyncSession):
+    from app.services.daily_candles.repository import MarketKey
+
+    assert await svc._resolve_candle_partition(
+        db_session, symbol="005930", instrument_type="equity_kr"
+    ) == (MarketKey.KR, "KRX")
+    # crypto MUST use the resolve-canonical partition so read/write are symmetric
+    assert await svc._resolve_candle_partition(
+        db_session, symbol="KRW-BTC", instrument_type="crypto"
+    ) == (MarketKey.CRYPTO, "upbit_krw")
+    assert (
+        await svc._resolve_candle_partition(
+            db_session, symbol="X", instrument_type="bond"
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_backfills_missing_candles_then_scores(
+    db_session: AsyncSession, monkeypatch
+):
+    # ROB-712: when the resolution window has no candles, resolve_forecast must
+    # call _backfill_daily_candles once, then re-read the window. The fake
+    # backfill swaps _read_window_candles to return canned candles on the
+    # second read (mirroring what a real fetch+persist would yield).
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="claude",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target=_price_target(direction="at_or_above", target_price=100.0),
+        probability=0.7,
+        forecast_start_date="2026-06-01",
+        review_date="2026-06-05",
+    )
+    await db_session.commit()
+
+    real_read = svc._read_window_candles
+    calls = {"n": 0}
+
+    async def fake_backfill(*, symbol, market, partition, horizon_bars=200):
+        calls["n"] += 1
+
+        # Mirror the real-world effect: after the backfill a subsequent read
+        # of the same window returns candles.
+        async def seeded_read(*_a, **_k):
+            return _candles([120.0, 131.0])
+
+        monkeypatch.setattr(svc, "_read_window_candles", seeded_read)
+        return 7
+
+    monkeypatch.setattr(svc, "_backfill_daily_candles", fake_backfill)
+
+    # First read returns empty so the backfill branch runs (the test DB lacks
+    # the kr_candles_1d table so we cannot call the real reader here).
+    async def empty_read(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(svc, "_read_window_candles", empty_read)
+
+    result = await svc.resolve_forecast(
+        db_session, forecast_id=str(row.forecast_id), persist=False
+    )
+    await db_session.commit()
+
+    assert calls["n"] == 1
+    assert result["status"] == "previewed"
+    assert result["computed"]["outcome"] is True
+    assert result["computed"]["resolution_source"] == "ohlcv_day"
+    # restore so the autouse cleanup fixture can run unaffected
+    monkeypatch.setattr(svc, "_read_window_candles", real_read)
+
+
+@pytest.mark.asyncio
+async def test_resolve_backfill_failure_is_graceful(
+    db_session: AsyncSession, monkeypatch
+):
+    # ROB-712: backfill returns 0 on failure (helper swallows exceptions) and
+    # resolve must fall through to unresolved_no_data — never raise.
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="claude",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target=_price_target(direction="at_or_above", target_price=100.0),
+        probability=0.6,
+        forecast_start_date="2026-06-01",
+        review_date="2026-06-05",
+    )
+    await db_session.commit()
+
+    async def empty_read(*_a, **_k):
+        return []
+
+    async def boom(*, symbol, market, partition, horizon_bars=200):
+        return 0
+
+    monkeypatch.setattr(svc, "_read_window_candles", empty_read)
+    monkeypatch.setattr(svc, "_backfill_daily_candles", boom)
+
+    result = await svc.resolve_forecast(
+        db_session, forecast_id=str(row.forecast_id), persist=False
+    )
+    assert result["status"] == "unresolved_no_data"
+
+
+@pytest.mark.asyncio
+async def test_resolve_backfill_missing_false_skips_fetch(
+    db_session: AsyncSession, monkeypatch
+):
+    # ROB-712: backfill_missing=False must skip the fetch+persist entirely.
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="claude",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target=_price_target(direction="at_or_above", target_price=100.0),
+        probability=0.6,
+        forecast_start_date="2026-06-01",
+        review_date="2026-06-05",
+    )
+    await db_session.commit()
+
+    async def empty_read(*_a, **_k):
+        return []
+
+    called = {"n": 0}
+
+    async def spy(*, symbol, market, partition, horizon_bars=200):
+        called["n"] += 1
+        return 0
+
+    monkeypatch.setattr(svc, "_read_window_candles", empty_read)
+    monkeypatch.setattr(svc, "_backfill_daily_candles", spy)
+
+    result = await svc.resolve_forecast(
+        db_session,
+        forecast_id=str(row.forecast_id),
+        persist=False,
+        backfill_missing=False,
+    )
+    assert called["n"] == 0
+    assert result["status"] == "unresolved_no_data"

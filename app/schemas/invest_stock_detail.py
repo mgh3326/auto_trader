@@ -384,17 +384,69 @@ class StockDetailFxSensitivity(BaseModel):
         return self
 
 
-class StockDetailLatestAnalysis(BaseModel):
+class StockDetailDecisionHistoryPriorDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: int
-    modelName: str | None = None
-    decision: AnalysisDecision | None = None
+    date: str | None = None
+    intent: str | None = None
+    side: str | None = None
+    decisionBucket: str | None = None
     confidence: float | None = None
-    appropriateBuyRange: tuple[float | None, float | None] | None = None
-    appropriateSellRange: tuple[float | None, float | None] | None = None
-    reasonsTop3: list[str] = Field(default_factory=list, max_length=3)
-    createdAt: datetime | None = None
+    rationale: str | None = None
+
+
+class StockDetailDecisionHistoryOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: str | None = None
+    side: str | None = None
+    outcome: str | None = None
+    triggerType: str | None = None
+    pnlPct: float | None = None
+    realizedPnl: float | None = None
+
+
+class StockDetailDecisionHistoryOpenClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    probability: float | None = None
+    horizon: str | None = None
+    reviewDate: str | None = None
+    direction: str | None = None
+    targetPrice: float | None = None
+
+
+class StockDetailDecisionHistoryBrier(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    n: int = 0
+    meanBrier: float | None = None
+    flag: Literal["ok", "insufficient_sample"] = "insufficient_sample"
+
+
+class StockDetailDecisionHistory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    market: str
+    linkQuality: str = "symbol_window"
+    priorDecisions: list[StockDetailDecisionHistoryPriorDecision] = Field(
+        default_factory=list
+    )
+    priorLessons: list[str] = Field(default_factory=list)
+    realizedOutcomes: list[StockDetailDecisionHistoryOutcome] = Field(
+        default_factory=list
+    )
+    openClaims: list[StockDetailDecisionHistoryOpenClaim] = Field(default_factory=list)
+    runningBrierSymbol: StockDetailDecisionHistoryBrier = Field(
+        default_factory=StockDetailDecisionHistoryBrier
+    )
+    runningBrierGlobal: StockDetailDecisionHistoryBrier = Field(
+        default_factory=StockDetailDecisionHistoryBrier
+    )
+    cautionLabel: str = (
+        "종목 기준 집계이며 특정 판단과 특정 결과의 직접 연결이 아닙니다."
+    )
 
 
 class StockDetailOrderbookLevel(BaseModel):
@@ -511,7 +563,7 @@ class StockDetailResponse(BaseModel):
     investorFlow: StockDetailInvestorFlow | None = None
     holding: StockDetailHolding | None = None
     fxSensitivity: StockDetailFxSensitivity | None = None
-    latestAnalysis: StockDetailLatestAnalysis | None = None
+    decisionHistory: StockDetailDecisionHistory | None = None
     orderbookSupport: StockDetailOrderbookSupport
     orderbook: StockDetailOrderbook | None = None
     capabilities: StockDetailCapabilities

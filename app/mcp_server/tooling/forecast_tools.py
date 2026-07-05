@@ -101,7 +101,9 @@ async def forecast_resolve(
     manual_observed_value: float | None = None,
     manual_evidence: Any | None = None,
     limit: int = 25,
+    backfill_missing: bool = True,
 ) -> dict[str, Any]:
+
     persist = not dry_run
     try:
         async with _session_factory()() as db:
@@ -113,7 +115,9 @@ async def forecast_resolve(
                     manual_outcome=manual_outcome,
                     manual_observed_value=manual_observed_value,
                     manual_evidence=manual_evidence,
+                    backfill_missing=backfill_missing,
                 )
+
                 if persist and result.get("changed"):
                     await db.commit()
                 return {"success": True, "dry_run": dry_run, "mode": "single", **result}
@@ -129,8 +133,12 @@ async def forecast_resolve(
             changed_any = False
             for row in due:
                 r = await resolve_forecast(
-                    db, forecast_id=row.forecast_id, persist=persist
+                    db,
+                    forecast_id=row.forecast_id,
+                    persist=persist,
+                    backfill_missing=backfill_missing,
                 )
+
                 changed_any = changed_any or bool(r.get("changed"))
                 results.append(
                     {

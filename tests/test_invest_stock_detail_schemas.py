@@ -36,7 +36,6 @@ def _base_response(**overrides):
         "discussionSignal": None,
         "holding": None,
         "fxSensitivity": None,
-        "latestAnalysis": None,
         "orderbookSupport": {"supported": False, "reason": "kr_unavailable"},
         "orderbook": None,
         "capabilities": default_capabilities_for_market("kr"),
@@ -201,7 +200,6 @@ def test_discussion_signal_null_for_crypto_in_response():
             "naverEnrichment": None,
             "discussionSignal": None,
             "holding": None,
-            "latestAnalysis": None,
             "orderbookSupport": {"supported": False, "reason": "crypto_deferred"},
             "orderbook": None,
             "capabilities": default_capabilities_for_market("crypto"),
@@ -365,3 +363,61 @@ def test_stock_detail_holding_exposes_tradeable_and_reference_quantities():
 
     assert holding.tradeableQuantity == 3
     assert holding.referenceQuantity == 2
+
+
+@pytest.mark.unit
+def test_decision_history_schema_forbids_extra_and_maps_sections():
+    from app.schemas.invest_stock_detail import (
+        StockDetailDecisionHistory,
+        StockDetailDecisionHistoryBrier,
+    )
+
+    model = StockDetailDecisionHistory(
+        symbol="000660",
+        market="kr",
+        linkQuality="symbol_window",
+        priorDecisions=[
+            {
+                "date": "2026-06-28",
+                "intent": "buy_review",
+                "side": "buy",
+                "decisionBucket": "new_buy_candidate",
+                "confidence": 0.7,
+                "rationale": "HBM 수요 지속",
+            }
+        ],
+        priorLessons=["과열 구간 추격 금지"],
+        realizedOutcomes=[
+            {
+                "date": "2026-06-20",
+                "side": "sell",
+                "outcome": "stop_loss",
+                "triggerType": "stop",
+                "pnlPct": -3.1,
+                "realizedPnl": -31000.0,
+            }
+        ],
+        openClaims=[
+            {
+                "probability": 0.7,
+                "horizon": "1w",
+                "reviewDate": "2026-07-10",
+                "direction": "up",
+                "targetPrice": 82000.0,
+            }
+        ],
+        runningBrierSymbol=StockDetailDecisionHistoryBrier(
+            n=12, meanBrier=0.18, flag="ok"
+        ),
+        runningBrierGlobal=StockDetailDecisionHistoryBrier(
+            n=4, meanBrier=None, flag="insufficient_sample"
+        ),
+    )
+    assert model.priorDecisions[0].confidence == 0.7
+    assert model.realizedOutcomes[0].outcome == "stop_loss"
+    assert model.openClaims[0].targetPrice == 82000.0
+    assert model.runningBrierGlobal.flag == "insufficient_sample"
+    assert "직접 연결" in model.cautionLabel  # default caution present
+
+    with pytest.raises(ValidationError):
+        StockDetailDecisionHistoryBrier(n=1, meanBrier=0.1, flag="ok", extra="x")

@@ -99,7 +99,7 @@ async def test_build_stock_detail_uses_extended_timeout_for_holding(monkeypatch)
             screener=none_provider,
             valuation=none_provider,
             holding=holding_provider,
-            latest_analysis=none_provider,
+            decision_history=none_provider,
             orderbook=none_provider,
             naver_enrichment=none_provider,
             discussion_signal=none_provider,
@@ -428,7 +428,7 @@ def test_build_stock_detail_crypto_orderbook_provider_unavailable_is_explicit():
 @pytest.mark.asyncio
 async def test_default_stock_detail_providers_are_not_noop_for_core_blocks():
     from app.services.invest_view_model.stock_detail_providers import (
-        stock_detail_latest_analysis_provider,
+        stock_detail_decision_history_provider,
         stock_detail_orderbook_provider,
         stock_detail_quote_provider,
         stock_detail_valuation_provider,
@@ -440,7 +440,53 @@ async def test_default_stock_detail_providers_are_not_noop_for_core_blocks():
     assert DEFAULT_STOCK_DETAIL_PROVIDERS.quote is stock_detail_quote_provider
     assert DEFAULT_STOCK_DETAIL_PROVIDERS.valuation is stock_detail_valuation_provider
     assert (
-        DEFAULT_STOCK_DETAIL_PROVIDERS.latest_analysis
-        is stock_detail_latest_analysis_provider
+        DEFAULT_STOCK_DETAIL_PROVIDERS.decision_history
+        is stock_detail_decision_history_provider
     )
     assert DEFAULT_STOCK_DETAIL_PROVIDERS.orderbook is stock_detail_orderbook_provider
+
+
+@pytest.mark.asyncio
+async def test_build_stock_detail_wires_decision_history():
+    from app.schemas.invest_stock_detail import StockDetailDecisionHistory
+
+    async def decision_history(market, symbol, db):
+        assert symbol == "005930"
+        return StockDetailDecisionHistory(symbol="005930", market="kr")
+
+    providers = StockDetailProviders(
+        resolver=_resolve_kr, decision_history=decision_history
+    )
+
+    result = await build_stock_detail(
+        user_id=1,
+        market="kr",
+        symbol="005930",
+        db=SimpleNamespace(execute=object()),
+        providers=providers,
+    )
+
+    assert result.decisionHistory is not None
+    assert result.decisionHistory.symbol == "005930"
+    assert "decision_history_unavailable" not in result.meta.warnings
+
+
+@pytest.mark.asyncio
+async def test_build_stock_detail_isolates_decision_history_failure():
+    async def decision_history(market, symbol, db):
+        raise RuntimeError("boom")
+
+    providers = StockDetailProviders(
+        resolver=_resolve_kr, decision_history=decision_history
+    )
+
+    result = await build_stock_detail(
+        user_id=1,
+        market="kr",
+        symbol="005930",
+        db=SimpleNamespace(execute=object()),
+        providers=providers,
+    )
+
+    assert result.decisionHistory is None
+    assert "decision_history_unavailable" in result.meta.warnings

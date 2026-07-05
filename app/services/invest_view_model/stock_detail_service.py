@@ -22,6 +22,7 @@ from app.schemas.invest_stock_detail import (
     CryptoDetailProfile,
     CryptoRecentTradeItem,
     CryptoRecentTrades,
+    StockDetailDecisionHistory,
     StockDetailDiscussionSignal,
     StockDetailFxScenario,
     StockDetailFxSensitivity,
@@ -30,7 +31,6 @@ from app.schemas.invest_stock_detail import (
     StockDetailInvestorFlowBuyerDecomposition,
     StockDetailInvestorFlowDailyRow,
     StockDetailInvestorFlowPeriodSummary,
-    StockDetailLatestAnalysis,
     StockDetailMeta,
     StockDetailNaverEnrichment,
     StockDetailOrderbook,
@@ -53,7 +53,7 @@ from app.services.invest_view_model.naver_stock_detail_poc import (
     build_naver_stock_detail_poc,
 )
 from app.services.invest_view_model.stock_detail_providers import (
-    stock_detail_latest_analysis_provider,
+    stock_detail_decision_history_provider,
     stock_detail_orderbook_provider,
     stock_detail_quote_provider,
     stock_detail_valuation_provider,
@@ -438,7 +438,7 @@ class StockDetailProviders:
     screener: Provider = _none_provider
     valuation: Provider = stock_detail_valuation_provider
     holding: Provider = _none_provider
-    latest_analysis: Provider = stock_detail_latest_analysis_provider
+    decision_history: Provider = stock_detail_decision_history_provider
     orderbook: Provider = stock_detail_orderbook_provider
     fx_rate: Provider = get_usd_krw_quote
     naver_enrichment: Provider = build_naver_stock_detail_poc
@@ -487,9 +487,9 @@ async def build_stock_detail(
         warnings,
         timeout=_HOLDING_PROVIDER_TIMEOUT_SECONDS,
     )
-    latest_analysis_task = _run_optional_block(
-        "latest_analysis",
-        providers.latest_analysis(market, resolved.symbol_db, db),
+    decision_history_task = _run_optional_block(
+        "decision_history",
+        providers.decision_history(market, resolved.symbol_db, db),
         warnings,
     )
     naver_enrichment_task = _run_optional_block(
@@ -536,7 +536,7 @@ async def build_stock_detail(
         screener_snapshot,
         valuation,
         holding,
-        latest_analysis,
+        decision_history,
         naver_enrichment,
         discussion_signal,
         orderbook,
@@ -548,7 +548,7 @@ async def build_stock_detail(
         screener_task,
         valuation_task,
         holding_task,
-        latest_analysis_task,
+        decision_history_task,
         naver_enrichment_task,
         discussion_signal_task,
         orderbook_task,
@@ -575,10 +575,10 @@ async def build_stock_detail(
         quote = StockDetailQuote.model_validate(quote)
     if holding is not None and not isinstance(holding, StockDetailHolding):
         holding = StockDetailHolding.model_validate(holding)
-    if latest_analysis is not None and not isinstance(
-        latest_analysis, StockDetailLatestAnalysis
+    if decision_history is not None and not isinstance(
+        decision_history, StockDetailDecisionHistory
     ):
-        latest_analysis = StockDetailLatestAnalysis.model_validate(latest_analysis)
+        decision_history = StockDetailDecisionHistory.model_validate(decision_history)
     if naver_enrichment is not None and not isinstance(
         naver_enrichment, StockDetailNaverEnrichment
     ):
@@ -708,7 +708,7 @@ async def build_stock_detail(
         investorFlow=investor_flow,
         holding=holding,
         fxSensitivity=fx_sensitivity,
-        latestAnalysis=latest_analysis,
+        decisionHistory=decision_history,
         orderbookSupport=orderbook_support,
         orderbook=orderbook,
         capabilities=capabilities,
