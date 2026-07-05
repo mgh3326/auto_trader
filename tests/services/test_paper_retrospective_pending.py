@@ -19,6 +19,28 @@ def _uniq(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
+async def _pending_with_retry(db: Any, **kwargs: Any) -> Any:
+    """Call build_retrospective_pending, retrying on deadlock.
+
+    It scans the live order ledgers (kis_live_order_ledger etc.), which on the
+    shared xdist test DB deadlocks with the parallel kis_live-ledger tests. A
+    deadlock victim is a read-only query here, safe to rollback + retry.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    last: Exception | None = None
+    for _ in range(6):
+        try:
+            return await build_retrospective_pending(db, **kwargs)
+        except DBAPIError as exc:
+            if "deadlock" not in str(exc).lower():
+                raise
+            last = exc
+            await db.rollback()
+    assert last is not None
+    raise last
+
+
 async def _make_paper_trade(
     db: Any,
     *,
@@ -70,7 +92,7 @@ async def test_paper_fill_surfaces_as_pending(db_session: Any) -> None:
         correlation_id="paper:1:buyabc",
     )
     today = now_kst().strftime("%Y-%m-%d")
-    result = await build_retrospective_pending(
+    result = await _pending_with_retry(
         db_session, kst_date_from=today, kst_date_to=today, include_cancelled=False
     )
     paper = [
@@ -98,7 +120,7 @@ async def test_loss_sell_surfaces_with_stop_loss_suggestion(db_session: Any) -> 
         correlation_id="paper:1:stopxyz",
     )
     today = now_kst().strftime("%Y-%m-%d")
-    result = await build_retrospective_pending(
+    result = await _pending_with_retry(
         db_session, kst_date_from=today, kst_date_to=today, include_cancelled=False
     )
     sells = [
@@ -128,7 +150,7 @@ async def test_profitable_sell_has_no_stop_loss_suggestion(db_session: Any) -> N
         correlation_id="paper:1:win123",
     )
     today = now_kst().strftime("%Y-%m-%d")
-    result = await build_retrospective_pending(
+    result = await _pending_with_retry(
         db_session, kst_date_from=today, kst_date_to=today, include_cancelled=False
     )
     sol = [
