@@ -74,7 +74,9 @@ async def _save_live_order_ledger(
     report_item_uuid: uuid.UUID | None = None,
     approval_hash: str | None = None,
     idempotency_key: str | None = None,
+    correlation_id: str | None = None,
 ) -> int:
+
     async with _order_session_factory()() as db:
         row = LiveOrderLedger(
             trade_date=datetime.now(UTC),
@@ -112,6 +114,7 @@ async def _save_live_order_ledger(
             report_item_uuid=report_item_uuid,
             approval_hash=approval_hash,
             idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
         )
         db.add(row)
         # flush assigns the PK inside the transaction; read it before commit so

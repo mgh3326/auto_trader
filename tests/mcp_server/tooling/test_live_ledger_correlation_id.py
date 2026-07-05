@@ -20,3 +20,45 @@ def test_correlation_id_column_present_and_nullable(model):
         tuple(c.name for c in idx.columns) for idx in model.__table__.indexes
     }
     assert ("correlation_id",) in index_cols
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_kis_live_ledger_persists_correlation_id(db_session):
+
+    from app.mcp_server.tooling.kis_live_ledger import _save_kis_live_order_ledger
+    from app.models.review import KISLiveOrderLedger
+    from sqlalchemy import select
+
+    ledger_id = await _save_kis_live_order_ledger(
+        symbol="005930",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=70000.0,
+        amount=70000.0,
+        currency="KRW",
+        order_no="TEST-CORR-1",
+        order_time=None,
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="t",
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id="live:kis_live:deadbeefdeadbeef",
+    )
+    row = (
+        await db_session.execute(
+            select(KISLiveOrderLedger).where(KISLiveOrderLedger.id == ledger_id)
+        )
+    ).scalar_one()
+    assert row.correlation_id == "live:kis_live:deadbeefdeadbeef"

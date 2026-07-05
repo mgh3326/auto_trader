@@ -116,7 +116,9 @@ async def _save_kis_live_order_ledger(
     report_item_uuid: uuid.UUID | None = None,
     approval_hash: str | None = None,
     idempotency_key: str | None = None,
+    correlation_id: str | None = None,
 ) -> int | None:
+
     """Insert one accepted/rejected live order row. Returns new id or None."""
     try:
         async with _order_session_factory()() as db:
@@ -155,6 +157,7 @@ async def _save_kis_live_order_ledger(
                     report_item_uuid=report_item_uuid,
                     approval_hash=approval_hash,
                     idempotency_key=idempotency_key,
+                    correlation_id=correlation_id,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_live_ledger_order_no")
             )

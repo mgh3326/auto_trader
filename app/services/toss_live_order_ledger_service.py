@@ -95,7 +95,10 @@ class TossLiveOrderLedgerService:
         indicators_snapshot: dict[str, Any] | None = None,
         report_item_uuid: str | uuid.UUID | None = None,
         approval_hash: str | None = None,
-    ) -> TossLiveOrderLedger:
+        correlation_id: str | None = None,
+) -> TossLiveOrderLedger:
+
+
         # ROB-545 B2 — idempotent on client_order_id. A live POST retried with
         # the same clientOrderId (the smoke's idempotency check) must not raise a
         # UNIQUE IntegrityError: query first, replay the existing row when the
@@ -149,6 +152,7 @@ class TossLiveOrderLedgerService:
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=parse_report_item_uuid(report_item_uuid),
             approval_hash=approval_hash,
+            correlation_id=correlation_id,
         )
         self._db.add(row)
         await self._db.flush()
