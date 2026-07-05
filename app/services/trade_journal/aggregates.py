@@ -396,3 +396,126 @@ async def compute_excursions(
     mae = (min(float(c.low) for c in window) - entry) / entry
     mfe = (max(float(c.high) for c in window) - entry) / entry
     return mae, mfe, degraded
+
+from statistics import fmean, median
+from datetime import timezone
+
+_INSUFFICIENT_SAMPLE_N = 10
+_SCOREBOARD_TTL_SECONDS = 300
+_scoreboard_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+@dataclass
+class TradeMetrics:
+    trade: ClosedTrade
+    tag: TagInfo
+    r_multiple: float | None
+    mae: float | None
+    mfe: float | None
+
+
+def _agg_one(tag: str, rows: list[TradeMetrics]) -> dict:
+    pnls = [r.trade.pnl_pct for r in rows if r.trade.pnl_pct is not None]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    gross_win = sum(r.trade.pnl_abs for r in rows if r.trade.pnl_abs > 0)
+    gross_loss = abs(sum(r.trade.pnl_abs for r in rows if r.trade.pnl_abs < 0))
+    rs = [r.r_multiple for r in rows if r.r_multiple is not None]
+    maes = [r.mae for r in rows if r.mae is not None]
+    mfes = [r.mfe for r in rows if r.mfe is not None]
+    n = len(rows)
+    sources = {r.tag.tag_source for r in rows}
+    quals = {r.tag.link_quality for r in rows}
+    return {
+        "tag": tag,
+        "tag_source": next(iter(sources)) if len(sources) == 1 else "mixed",
+        "link_quality": "exact" if quals == {"exact"} else "symbol_window",
+        "n": n,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": (len(wins) / len(pnls)) if pnls else None,
+        "expectancy_pct": fmean(pnls) if pnls else None,
+        "expectancy_r": fmean(rs) if rs else None,
+        "profit_factor": (gross_win / gross_loss) if gross_loss > _EPS else None,
+        "avg_r": fmean(rs) if rs else None,
+        "median_r": median(rs) if rs else None,
+        "r_coverage": (len(rs) / n) if n else None,
+        "avg_mae": fmean(maes) if maes else None,
+        "avg_mfe": fmean(mfes) if mfes else None,
+        "worst_mae": min(maes) if maes else None,
+        "insufficient_sample": n < _INSUFFICIENT_SAMPLE_N,
+    }
+
+
+def aggregate_by_tag(rows: list[TradeMetrics]) -> list[dict]:
+    by_tag: dict[str, list[TradeMetrics]] = defaultdict(list)
+    for r in rows:
+        by_tag[r.tag.tag].append(r)
+    groups = [_agg_one(tag, tag_rows) for tag, tag_rows in by_tag.items()]
+    groups.sort(key=lambda g: g["n"], reverse=True)
+    return groups
+
+
+async def build_trading_scoreboard(
+    db: AsyncSession,
+    *,
+    market: str | None = None,
+    account_mode: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    setup_tag: str | None = None,
+    min_sample: int = 1,
+    use_cache: bool = True,
+    now: datetime | None = None,
+) -> dict:
+    """Compute per-tag setup aggregates from live-ledger fills.
+
+    ``now`` is exposed for tests so the TTL comparison is deterministic; in
+    production the orchestrator defaults to ``datetime.now(timezone.utc)``.
+    """
+    key = (market, account_mode, date_from, date_to, setup_tag, min_sample)
+    stamp = (now or datetime.now(timezone.utc)).timestamp()
+    if use_cache:
+        cached = _scoreboard_cache.get(key)
+        if cached and stamp - cached[0] < _SCOREBOARD_TTL_SECONDS:
+            return cached[1]
+
+    fills = await load_fills(
+        db,
+        market=market,
+        account_mode=account_mode,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    trades = pair_fills_fifo(fills)
+    rows: list[TradeMetrics] = []
+    for t in trades:
+        try:
+            tag = await resolve_setup_tag(db, t)
+        except Exception:
+            tag = TagInfo("untagged", "untagged", "symbol_window")
+        try:
+            stop = await planned_stop_for(db, t)
+        except Exception:
+            stop = None
+        try:
+            mae, mfe, _degraded = await compute_excursions(t)
+        except Exception:
+            mae, mfe = None, None
+        rows.append(
+            TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe)
+        )
+
+    groups = aggregate_by_tag(rows)
+    if setup_tag:
+        groups = [g for g in groups if g["tag"] == setup_tag]
+    groups = [g for g in groups if g["n"] >= min_sample]
+    result = {
+        "groups": groups,
+        "overall": _agg_one("__overall__", rows) if rows else None,
+        "as_of": (now or datetime.now(timezone.utc)).isoformat(),
+        "count": len(rows),
+    }
+    if use_cache:
+        _scoreboard_cache[key] = (stamp, result)
+    return result
