@@ -161,8 +161,9 @@ async def test_bootstrap_sentinel_present_after_session():
 @pytest.mark.asyncio
 async def test_db_session_fixture_is_ddl_free(db_session):
     """db_session must be a thin session provider now (schema owned by barrier)."""
-    import tests.conftest as conftest_mod
     from sqlalchemy import text
+
+    import tests.conftest as conftest_mod
 
     src = inspect.getsource(conftest_mod.db_session.__wrapped__)
     assert "create_all" not in src
