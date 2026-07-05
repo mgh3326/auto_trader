@@ -93,3 +93,28 @@ async def test_realized_r_by_tag_present_and_bounded(db_session, monkeypatch):
             "avg_mae",
             "insufficient_sample",
         }
+
+
+@pytest.mark.asyncio
+async def test_untagged_dominant_still_returns_real_tags(db_session, monkeypatch):
+    import app.services.decision_history as dh
+
+    async def fake_scoreboard(db, *, market=None, include_excursions=True, **kw):
+        assert include_excursions is False  # read-path must skip excursions
+        return {
+            "groups": [
+                {"tag": "untagged", "n": 99, "expectancy_r": 0.0, "win_rate": 0.0,
+                 "profit_factor": None, "avg_mae": None, "insufficient_sample": False},
+                {"tag": "pullback_long", "n": 5, "expectancy_r": 1.2, "win_rate": 0.6,
+                 "profit_factor": 2.0, "avg_mae": -0.02, "insufficient_sample": True},
+            ],
+            "overall": None, "as_of": "x", "count": 104,
+        }
+
+    monkeypatch.setattr(
+        "app.services.trade_journal.aggregates.build_trading_scoreboard",
+        fake_scoreboard,
+    )
+    out = await dh._realized_r_by_tag(db_session, "kr", None)
+    assert "untagged" not in out
+    assert "pullback_long" in out
