@@ -61,6 +61,17 @@ _TRIGGER_OLD = (
 )
 _REVIEW = "review"
 _TABLE = "trade_retrospectives"
+# Real DB constraint names are DOUBLE-prefixed (SQLAlchemy naming_convention
+# ck_%(table_name)s_%(constraint_name)s applied to an already-prefixed name).
+# Verified against review.trade_retrospectives via pg_constraint. Drop/add by
+# the exact names with raw SQL so alembic's convention resolution can't diverge.
+_CK_ACCOUNT = "ck_trade_retrospectives_ck_trade_retrospectives_account_mode"
+_CK_TRIGGER = "ck_trade_retrospectives_ck_trade_retrospectives_trigger_type"
+
+
+def _swap_check(name: str, expr: str) -> None:
+    op.execute(f'ALTER TABLE {_REVIEW}.{_TABLE} DROP CONSTRAINT IF EXISTS "{name}"')
+    op.execute(f'ALTER TABLE {_REVIEW}.{_TABLE} ADD CONSTRAINT "{name}" CHECK ({expr})')
 
 
 def upgrade() -> None:
@@ -71,41 +82,13 @@ def upgrade() -> None:
                 sa.Column(name, col_type, nullable=True),
                 schema="paper",
             )
-    op.drop_constraint("account_mode", _TABLE, schema=_REVIEW, type_="check")
-    op.create_check_constraint(
-        "account_mode", _TABLE, _ACCOUNT_MODES_NEW, schema=_REVIEW
-    )
-    op.drop_constraint(
-        "ck_trade_retrospectives_trigger_type",
-        _TABLE,
-        schema=_REVIEW,
-        type_="check",
-    )
-    op.create_check_constraint(
-        "ck_trade_retrospectives_trigger_type",
-        _TABLE,
-        _TRIGGER_NEW,
-        schema=_REVIEW,
-    )
+    _swap_check(_CK_ACCOUNT, _ACCOUNT_MODES_NEW)
+    _swap_check(_CK_TRIGGER, _TRIGGER_NEW)
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "ck_trade_retrospectives_trigger_type",
-        _TABLE,
-        schema=_REVIEW,
-        type_="check",
-    )
-    op.create_check_constraint(
-        "ck_trade_retrospectives_trigger_type",
-        _TABLE,
-        _TRIGGER_OLD,
-        schema=_REVIEW,
-    )
-    op.drop_constraint("account_mode", _TABLE, schema=_REVIEW, type_="check")
-    op.create_check_constraint(
-        "account_mode", _TABLE, _ACCOUNT_MODES_OLD, schema=_REVIEW
-    )
+    _swap_check(_CK_TRIGGER, _TRIGGER_OLD)
+    _swap_check(_CK_ACCOUNT, _ACCOUNT_MODES_OLD)
     for tbl in ("paper_trades", "paper_pending_orders"):
         for name, _ in _PAPER_COLS:
             op.drop_column(tbl, name, schema="paper")

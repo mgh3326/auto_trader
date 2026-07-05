@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal
 from app.core.money import quantize_crypto_qty, quantize_money
 from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.order_journal import (
@@ -333,26 +334,37 @@ class PaperLimitOrderService:
 
             if probability is not None and target_price is not None and review_date:
                 try:
-                    direction = "at_or_below" if side_norm == "buy" else "at_or_above"
-                    _action, fc = await save_forecast(
-                        self.db,
-                        created_by="paper_sim",
-                        symbol=resolved_symbol,
-                        instrument_type="crypto",
-                        forecast_target={
-                            "kind": "price_target",
-                            "direction": direction,
-                            "target_price": float(Decimal(str(target_price))),
-                        },
-                        probability=float(probability),
-                        review_date=review_date,
-                        correlation_id=corr_id,
-                        horizon=None,
-                        model_label=None,
-                        session_label="paper_place",
-                        artifact_uuid=artifact_uuid,
-                    )
-                    order.forecast_id = str(getattr(fc, "forecast_id", ""))
+                    # This block is buy-only (gated above). A buy's profit
+                    # target sits ABOVE entry, so the forecast resolves TRUE
+                    # iff price RISES to it -> at_or_above. (at_or_below would
+                    # be trivially true from bar 1 and poison the Brier signal.)
+                    direction = "at_or_above"
+                    # Isolate the forecast write in its OWN session: a flush
+                    # failure here must not poison the order's transaction
+                    # (self.db) and roll back the order (the journal path is
+                    # already isolated the same way).
+                    async with AsyncSessionLocal() as fdb:
+                        _action, fc = await save_forecast(
+                            fdb,
+                            created_by="paper_sim",
+                            symbol=resolved_symbol,
+                            instrument_type="crypto",
+                            forecast_target={
+                                "kind": "price_target",
+                                "direction": direction,
+                                "target_price": float(Decimal(str(target_price))),
+                            },
+                            probability=float(probability),
+                            review_date=review_date,
+                            correlation_id=corr_id,
+                            horizon=None,
+                            model_label=None,
+                            session_label="paper_place",
+                            artifact_uuid=artifact_uuid,
+                        )
+                        fid = getattr(fc, "forecast_id", None)
+                        await fdb.commit()
+                    order.forecast_id = str(fid) if fid is not None else None
                 except Exception:
                     logger.exception(
                         "paper place_limit_order: failed to save forecast "
@@ -549,9 +561,14 @@ class PaperLimitOrderService:
             # durably-committed fill above.
             try:
                 if order.side == "buy":
-                    await _activate_paper_journal(
-                        symbol=order.symbol, account_name=account.name
-                    )
+                    # Activate THIS order's own draft journal by id (a
+                    # thesis-less buy has no journal_id -> nothing to activate).
+                    if order.journal_id is not None:
+                        await _activate_paper_journal(
+                            symbol=order.symbol,
+                            account_name=account.name,
+                            journal_id=order.journal_id,
+                        )
                 else:
                     await _close_journals_on_sell(
                         symbol=order.symbol,

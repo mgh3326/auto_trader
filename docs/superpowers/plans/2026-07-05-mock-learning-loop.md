@@ -275,7 +275,7 @@ async def test_place_stamps_correlation_and_journal(db_session: Any) -> None:
      (`account` is the object from `self.pts.get_account(account_id)`; ensure it's loaded before this block. `_create_trade_journal_for_buy` returns the `TradeJournal` — verify the return; if it returns a result dict, read `.get("journal")`/`["id"]` and adapt.)
   5. When `probability is not None and target_price is not None and review_date`:
      ```python
-     direction = "at_or_below" if side_norm == "buy" else "at_or_above"
+     direction = "at_or_above"  # buy profit target sits above entry -> price must RISE to it (at_or_below is trivially true -> corrupts Brier)
      _, fc = await save_forecast(
          self.db, created_by="paper_sim", symbol=resolved_symbol, instrument_type="crypto",
          forecast_target={"kind": "price_target", "direction": direction, "target_price": float(target_price)},

@@ -104,3 +104,42 @@ async def test_fill_carries_correlation_to_paper_trade(
     ).scalar_one()
     assert tr.correlation_id == corr_id
     assert tr.journal_id is not None
+
+
+@pytest.mark.asyncio
+async def test_buy_forecast_direction_is_at_or_above(db_session: Any) -> None:
+    """A paper BUY forecasts price RISING to its profit target -> at_or_above.
+    at_or_below is trivially true from bar 1 (target sits above entry) and would
+    poison the Brier calibration signal for every paper buy (regression guard)."""
+    from sqlalchemy import text
+
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob705-dir"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    out = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("90000000"),
+        amount=Decimal("100000"),
+        thesis="support bounce",
+        target_price=Decimal("110000000"),
+        probability=0.5,
+        review_date="2026-07-20",
+    )
+    assert out["success"] and out["forecast_id"], out
+    row = (
+        await db_session.execute(
+            text(
+                "SELECT forecast_target->>'direction' FROM review.trade_forecasts "
+                "WHERE correlation_id = :c"
+            ),
+            {"c": out["correlation_id"]},
+        )
+    ).first()
+    assert row is not None, "forecast row not found by correlation_id"
+    assert row[0] == "at_or_above", (
+        f"buy profit-target forecast must be at_or_above, got {row[0]!r}"
+    )
