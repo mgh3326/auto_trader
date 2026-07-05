@@ -508,9 +508,11 @@ function ItemRow({
               >
                 <span>
                   {f.status === "closed"
-                    ? f.outcome
-                      ? "적중"
-                      : "빗나감"
+                    ? f.outcome == null
+                      ? "결과 미기록"
+                      : f.outcome
+                        ? "적중"
+                        : "빗나감"
                     : "해소 대기"}
                 </span>
                 {f.brierScore != null ? (
