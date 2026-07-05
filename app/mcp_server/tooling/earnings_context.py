@@ -21,6 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market_events import MarketEventIngestionPartition
 from app.services.market_events.freshness_service import _ensure_aware, _is_stale
+from app.mcp_server.tooling.fundamentals._financials import (
+    handle_get_earnings_calendar,
+)
 
 _WINDOW_DAYS = 30
 _TIMING_MAP = {"bmo": "BMO", "amc": "AMC", "dmh": "DMH"}
@@ -113,3 +116,39 @@ async def _kr_ingestion_freshness(db: AsyncSession) -> tuple[str, str | None]:
     aware = _ensure_aware(finished_at)
     freshness = "stale" if _is_stale(aware, now=datetime.datetime.now(datetime.UTC)) else "fresh"
     return (freshness, aware.date().isoformat())
+
+_EQUITY_MARKETS = {"kr", "us"}
+
+
+async def build_earnings_context(
+    symbol: str,
+    market: str,
+    *,
+    today: datetime.date | None = None,
+    kr_freshness: tuple[str, str | None] | None = None,
+) -> dict[str, Any] | None:
+    """Compact upcoming-earnings context for one symbol, or None to omit.
+
+    Omits (None) only for crypto / non-equity markets — earnings has no meaning
+    there. For US/KR equities it ALWAYS returns a dict (no-earnings is an
+    explicit has_upcoming=False signal). US freshness is "live"; KR freshness is
+    taken from ``kr_freshness`` (computed once per batch by the caller)."""
+    market_norm = (market or "").strip().lower()
+    if market_norm not in _EQUITY_MARKETS:
+        return None
+
+    today = today or datetime.date.today()
+    to_date = today + datetime.timedelta(days=_WINDOW_DAYS)
+
+    tool_result = await handle_get_earnings_calendar(
+        symbol, today.isoformat(), to_date.isoformat(), market_norm
+    )
+
+    if market_norm == "kr":
+        freshness, data_as_of = kr_freshness or ("unknown", None)
+    else:
+        freshness, data_as_of = "live", None
+
+    return _compact_earnings(
+        tool_result, today=today, freshness=freshness, data_as_of=data_as_of
+    )

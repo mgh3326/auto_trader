@@ -124,3 +124,45 @@ async def test_kr_freshness_old_is_stale():
     freshness, as_of = await ec._kr_ingestion_freshness(_FakeDB(old))
     assert freshness == "stale"
     assert as_of == old.date().isoformat()
+
+
+@pytest.mark.asyncio
+async def test_build_earnings_context_crypto_returns_none():
+    ctx = await ec.build_earnings_context("BTC", "crypto", today=TODAY)
+    assert ctx is None
+
+
+@pytest.mark.asyncio
+async def test_build_earnings_context_us_calls_handler_and_shapes(monkeypatch):
+    async def _fake_handler(symbol, from_date, to_date, market):
+        assert symbol == "NVDA"
+        assert market == "us"
+        assert from_date == "2026-07-06"
+        assert to_date == "2026-08-05"  # today + 30d
+        return {
+            "symbol": "NVDA", "source": "finnhub",
+            "earnings": [{"date": "2026-07-18", "hour": "amc", "eps_estimate": 0.84}],
+        }
+
+    monkeypatch.setattr(ec, "handle_get_earnings_calendar", _fake_handler)
+    ctx = await ec.build_earnings_context("NVDA", "us", today=TODAY)
+    assert ctx["market"] == "us"
+    assert ctx["freshness"] == "live"
+    assert ctx["has_upcoming"] is True
+    assert ctx["next_earnings"]["d_minus"] == 12
+
+
+@pytest.mark.asyncio
+async def test_build_earnings_context_kr_uses_passed_freshness(monkeypatch):
+    async def _fake_handler(symbol, from_date, to_date, market):
+        return {
+            "symbol": "005930", "market": "kr", "source": "market_events",
+            "earnings": [{"date": "2026-07-25", "time_hint": "unknown"}],
+        }
+
+    monkeypatch.setattr(ec, "handle_get_earnings_calendar", _fake_handler)
+    ctx = await ec.build_earnings_context(
+        "005930", "kr", today=TODAY, kr_freshness=("stale", "2026-07-01")
+    )
+    assert ctx["freshness"] == "stale"
+    assert ctx["data_as_of"] == "2026-07-01"
