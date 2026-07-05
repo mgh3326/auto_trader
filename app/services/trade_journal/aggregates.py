@@ -5,9 +5,50 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.symbol import to_db_symbol
+from app.models.review import (
+    KISLiveOrderLedger,
+    LiveOrderLedger,
+    TossLiveOrderLedger,
+)
 
 _EPS = 1e-9
+_SMOKE_TOKENS = ("smoke",)
+
+
+def _is_smoke(*values: str | None) -> bool:
+    return any(v and any(tok in v.lower() for tok in _SMOKE_TOKENS) for v in values)
+
+
+def _fee_of(row: object) -> float:
+    total = 0.0
+    for attr in ("fee", "commission", "tax"):
+        val = getattr(row, attr, None)
+        if val is not None:
+            total += float(val)
+    return total
+
+
+def _market_for(source: str, row: object) -> str:
+    if source == "kis":
+        return "kr"
+    raw = (getattr(row, "market", None) or "").lower()
+    if source == "toss":
+        return "us" if raw == "us" else "kr"
+    return "crypto" if raw == "crypto" else "us"  # live ledger
+
+
+def _account_of(source: str, row: object) -> str:
+    return (
+        getattr(row, "account_scope", None)
+        or getattr(row, "broker", None)
+        or source
+    )
 
 
 @dataclass(frozen=True)
@@ -53,6 +94,61 @@ class _Lot:
     ts: datetime
     item_uuid: str | None
     correlation_id: str | None
+
+
+async def load_fills(
+    db: AsyncSession,
+    *,
+    market: str | None = None,
+    account_mode: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[Fill]:
+    """Read filled rows from the three live order ledgers and normalize to ``Fill``.
+
+    ``account_mode`` is accepted for API symmetry but not currently used for
+    filtering — the live ledgers store account via ``account_mode`` /
+    ``account_scope`` / ``broker`` (see ``_account_of``) and the FIFO pairing
+    downstream already segregates lots per account label.
+    """
+    fills: list[Fill] = []
+    for source, model in (
+        ("kis", KISLiveOrderLedger),
+        ("live", LiveOrderLedger),
+        ("toss", TossLiveOrderLedger),
+    ):
+        stmt = select(model).where(model.filled_qty.isnot(None), model.filled_qty > 0)
+        rows = (await db.execute(stmt)).scalars().all()
+        for r in rows:
+            row_market = _market_for(source, r)
+            if market and row_market != market:
+                continue
+            if r.trade_date is not None:
+                d = r.trade_date.date()
+                if date_from and d < date_from:
+                    continue
+                if date_to and d > date_to:
+                    continue
+            if _is_smoke(getattr(r, "correlation_id", None), getattr(r, "status", None)):
+                continue
+            corr = getattr(r, "correlation_id", None)
+            item_uuid = getattr(r, "report_item_uuid", None)
+            fills.append(
+                Fill(
+                    market=row_market,
+                    symbol=to_db_symbol(r.symbol),
+                    account=_account_of(source, r),
+                    side=r.side,
+                    qty=float(r.filled_qty),
+                    price=float(r.avg_fill_price) if r.avg_fill_price is not None else 0.0,
+                    fee=_fee_of(r),
+                    ts=r.trade_date,
+                    item_uuid=str(item_uuid) if item_uuid else None,
+                    correlation_id=corr,
+                    source=source,
+                )
+            )
+    return [f for f in fills if f.price > 0 and f.ts is not None]
 
 
 def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
