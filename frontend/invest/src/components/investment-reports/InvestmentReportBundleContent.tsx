@@ -275,6 +275,16 @@ function parseInvalidationTriggers(
   return raw as string[];
 }
 
+function formatMaxAction(a: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (a.side) parts.push(String(a.side));
+  if (a.quantity != null) parts.push(`${a.quantity}\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7`);
+  if (a.notional != null) parts.push(`${a.notional}`);
+  if (a.limit_price != null) parts.push(`@${a.limit_price}`);
+  if (a.ladder_level != null) parts.push(`ladder ${a.ladder_level}`);
+  return parts.join(" · ");
+}
+
 function ItemRow({
   item,
   decisions,
@@ -351,6 +361,50 @@ function ItemRow({
       <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
         {item.rationale}
       </div>
+      {item.decisionBucket ? (
+        <span
+          className="item-decision-bucket-badge"
+          data-testid="item-decision-bucket-badge"
+          style={{
+            fontSize: 12,
+            fontWeight: 800,
+            color: "var(--fg-2)",
+            padding: "2px 8px",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+          }}
+        >
+          {item.decisionBucket}
+        </span>
+      ) : null}
+      {item.triggerChecklist && item.triggerChecklist.length > 0 ? (
+        <ul
+          className="item-trigger-checklist"
+          style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {item.triggerChecklist.map((t: unknown, i: number) => (
+            <li key={i}>{String(t)}</li>
+          ))}
+        </ul>
+      ) : null}
+      {item.maxAction &&
+      Object.keys(item.maxAction).length > 0 ? (
+        <div
+          className="item-max-action"
+          data-testid="item-max-action"
+          style={{ fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {formatMaxAction(item.maxAction as Record<string, unknown>)}
+        </div>
+      ) : null}
+      {item.structuredEvidenceSummary ? (
+        <div
+          className="item-structured-evidence"
+          style={{ fontSize: 12, color: "var(--fg-3)" }}
+        >
+          {item.structuredEvidenceSummary}
+        </div>
+      ) : null}
       {tradeSetup ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           <Pill tone={tradeSetup.direction === "long" ? "gain" : "warn"} size="sm">
