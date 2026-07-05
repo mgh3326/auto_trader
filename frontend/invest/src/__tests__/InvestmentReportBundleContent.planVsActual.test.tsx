@@ -138,4 +138,49 @@ describe("ROB-715 plan vs actual", () => {
     expect(pva).toHaveTextContent("70000"); // planned entry
     expect(pva).toHaveTextContent("69450"); // actual fill
   });
+  it("hides plan-vs-actual (체결 대기) on non-action items with a tradeSetup", () => {
+    const bundle = makeBundle(
+      makeItem({
+        itemKind: "watch",
+        evidenceSnapshot: {
+          trade_setup: {
+            direction: "long",
+            stop: "65000",
+            target: "78000",
+            headline: {
+              entry: "70000",
+              risk_pct: "7.14",
+              reward_pct: "11.43",
+              rr_ratio: "1.60",
+            },
+          },
+        },
+      }),
+    );
+    renderContent(bundle);
+    expect(screen.queryByTestId("item-plan-vs-actual")).not.toBeInTheDocument();
+  });
+
+  it("still shows plan-vs-actual on action items with a tradeSetup", () => {
+    const bundle = makeBundle(
+      makeItem({
+        itemKind: "action",
+        evidenceSnapshot: {
+          trade_setup: {
+            direction: "long",
+            stop: "65000",
+            target: "78000",
+            headline: {
+              entry: "70000",
+              risk_pct: "7.14",
+              reward_pct: "11.43",
+              rr_ratio: "1.60",
+            },
+          },
+        },
+      }),
+    );
+    renderContent(bundle);
+    expect(screen.getByTestId("item-plan-vs-actual")).toBeInTheDocument();
+  });
 });

@@ -416,7 +416,7 @@ function ItemRow({
           </span>
         </div>
       ) : null}
-      {tradeSetup ? (
+      {tradeSetup && item.itemKind === "action" ? (
         <div
           className="item-plan-vs-actual"
           data-testid="item-plan-vs-actual"
