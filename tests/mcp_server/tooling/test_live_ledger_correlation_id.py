@@ -1,10 +1,24 @@
 import pytest
+import pytest_asyncio
 
 from app.models.review import (
     KISLiveOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_kis_live_ledger(db_session):
+    from sqlalchemy import text
+
+    from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
+
+    async with _order_session_factory()() as db:
+        await db.execute(text("TRUNCATE TABLE review.kis_live_order_ledger CASCADE"))
+        await db.execute(text("TRUNCATE TABLE review.live_order_ledger CASCADE"))
+        await db.execute(text("TRUNCATE TABLE review.toss_live_order_ledger CASCADE"))
+        await db.commit()
 
 
 @pytest.mark.unit
@@ -21,13 +35,17 @@ def test_correlation_id_column_present_and_nullable(model):
     }
     assert ("correlation_id",) in index_cols
 
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_save_kis_live_ledger_persists_correlation_id(db_session):
-
-    from app.mcp_server.tooling.kis_live_ledger import _save_kis_live_order_ledger
-    from app.models.review import KISLiveOrderLedger
     from sqlalchemy import select
+
+    from app.mcp_server.tooling.kis_live_ledger import (
+        _order_session_factory,
+        _save_kis_live_order_ledger,
+    )
+    from app.models.review import KISLiveOrderLedger
 
     ledger_id = await _save_kis_live_order_ledger(
         symbol="005930",
@@ -56,9 +74,10 @@ async def test_save_kis_live_ledger_persists_correlation_id(db_session):
         indicators_snapshot=None,
         correlation_id="live:kis_live:deadbeefdeadbeef",
     )
-    row = (
-        await db_session.execute(
-            select(KISLiveOrderLedger).where(KISLiveOrderLedger.id == ledger_id)
-        )
-    ).scalar_one()
+    async with _order_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(KISLiveOrderLedger).where(KISLiveOrderLedger.id == ledger_id)
+            )
+        ).scalar_one()
     assert row.correlation_id == "live:kis_live:deadbeefdeadbeef"
