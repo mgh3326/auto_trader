@@ -318,6 +318,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_trade_journal",
         "get_trade_retrospectives",
         "get_trading_policy",
+        "get_trading_scoreboard",
         "get_upbit_altseason",
         "get_upbit_index",
         "get_user_setting",

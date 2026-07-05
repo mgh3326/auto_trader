@@ -126,6 +126,9 @@ from app.mcp_server.tooling.trade_retrospective_registration import (
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
 )
+from app.mcp_server.tooling.trading_scoreboard_registration import (
+    register_trading_scoreboard_tools,
+)
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
     register_user_settings_tools,
@@ -197,6 +200,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_mock_loop_retro_tools(mcp)
     register_trade_retrospective_tools(mcp)
     register_forecast_tools(mcp)
+    register_trading_scoreboard_tools(mcp)
+    # ROB-713 — setup-tagged trade-journal aggregates; read-only, registered
+    # unconditionally like the forecast tools it parallels.
 
     # ROB-269 Phase 2 — investment-snapshot MCP surface. Gated by
     # ``settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED`` so the 3 read tools are
