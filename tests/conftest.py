@@ -603,7 +603,76 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_live)
 
 
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _bootstrap_test_schema():
+    """ROB-723: apply the test schema exactly once, before any test body.
+
+    Under xdist ``--dist=loadfile`` every worker enters this session-scoped
+    autouse fixture before running its first test. The first worker to win the
+    advisory lock runs the full DDL while all other workers block on the lock
+    (barrier); subsequent workers see the content-hash sentinel and skip all
+    DDL. Result: schema DDL (AccessExclusive) never overlaps another worker's
+    test-body SELECT, closing the deadlock window.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import engine
+    from tests._db_retry import run_with_deadlock_retry
+    from tests._investment_reports_helpers import INVESTMENT_REPORTS_TEST_LOCK_ID
+    from tests._schema_bootstrap import apply_test_schema, schema_content_hash
+
+    wanted = schema_content_hash()
+
+    async def _bootstrap_once() -> None:
+        async with engine.connect() as guard:
+            await guard.execute(
+                text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+                {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+            )
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(
+                        text(
+                            "CREATE TABLE IF NOT EXISTS public._pytest_schema_ready ("
+                            "content_hash TEXT PRIMARY KEY, "
+                            "applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                        )
+                    )
+                    already = (
+                        await conn.execute(
+                            text(
+                                "SELECT 1 FROM public._pytest_schema_ready "
+                                "WHERE content_hash = :h"
+                            ),
+                            {"h": wanted},
+                        )
+                    ).first()
+                    if already:
+                        return
+                    await apply_test_schema(conn)
+                    await conn.execute(
+                        text("DELETE FROM public._pytest_schema_ready")
+                    )
+                    await conn.execute(
+                        text(
+                            "INSERT INTO public._pytest_schema_ready (content_hash) "
+                            "VALUES (:h)"
+                        ),
+                        {"h": wanted},
+                    )
+            finally:
+                await guard.execute(
+                    text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                    {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+                )
+
+    await run_with_deadlock_retry(_bootstrap_once)
+    yield
+
+
+
 # Database fixtures for integration tests
+
 @pytest_asyncio.fixture
 async def db_session():
     """Create a database session for testing with schema setup.
