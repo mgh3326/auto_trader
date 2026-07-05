@@ -220,6 +220,69 @@ async def test_kr_day_db_miss_falls_back_to_kis_and_writes_back(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_kr_day_db_miss_kis_failure_uses_toss_and_writes_back(monkeypatch):
+    """ROB-706: DB miss AND KIS raises for KR day → Toss 1d fallback fires and
+    write-back runs with source='toss'. KIS stays primary; Toss only on error."""
+    monkeypatch.setattr(
+        market_data_service, "cache_first_kr", AsyncMock(return_value=None)
+    )
+
+    class _StubKIS:
+        async def inquire_daily_itemchartprice(self, **kwargs):
+            raise RuntimeError("kis maintenance")
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: _StubKIS())
+
+    toss_frame = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-07-01 15:30:00"),
+                "open": 70000.0,
+                "high": 70500.0,
+                "low": 69500.0,
+                "close": 70200.0,
+                "volume": 100000.0,
+                "value": 70200.0 * 100000.0,
+            }
+        ]
+    )
+    toss_mock = AsyncMock(return_value=toss_frame)
+    monkeypatch.setattr(market_data_service, "fetch_daily_toss_frame", toss_mock)
+    write_back_mock = AsyncMock(return_value=1)
+    monkeypatch.setattr(market_data_service, "write_back_kr", write_back_mock)
+
+    candles = await market_data_service.get_ohlcv("005930", "kr", "day", count=5)
+
+    assert candles[0].source == "toss"
+    toss_mock.assert_awaited_once_with(symbol="005930", count=5, end_date=None)
+    write_back_mock.assert_awaited_once_with(toss_frame, symbol="005930", source="toss")
+
+
+@pytest.mark.asyncio
+async def test_kr_week_kis_failure_does_not_use_toss(monkeypatch):
+    """week has no Toss 1d equivalent: a KIS failure must propagate as
+    UpstreamUnavailableError (v1 scope: day only), NOT fall back to Toss."""
+    from app.services.domain_errors import UpstreamUnavailableError
+
+    monkeypatch.setattr(
+        market_data_service, "cache_first_kr", AsyncMock(return_value=None)
+    )
+
+    class _StubKIS:
+        async def inquire_daily_itemchartprice(self, **kwargs):
+            raise RuntimeError("kis down")
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: _StubKIS())
+    toss_mock = AsyncMock()
+    monkeypatch.setattr(market_data_service, "fetch_daily_toss_frame", toss_mock)
+
+    with pytest.raises(UpstreamUnavailableError):
+        await market_data_service.get_ohlcv("005930", "kr", "week", count=5)
+
+    toss_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_us_day_db_miss_falls_back_to_yahoo_and_writes_back(monkeypatch):
     """When DB misses for US, get_ohlcv calls Yahoo, writes back, returns yahoo rows."""
     monkeypatch.setattr(
