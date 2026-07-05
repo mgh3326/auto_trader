@@ -3,6 +3,7 @@ MAE) over live-ledger fills. Read-only, no LLM (ROB-501), no schema change."""
 
 from __future__ import annotations
 
+import copy
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -150,7 +151,12 @@ async def load_fills(
                 if date_to and d > date_to:
                     continue
             if _is_smoke(
-                getattr(r, "correlation_id", None), getattr(r, "status", None)
+                getattr(r, "correlation_id", None),
+                getattr(r, "status", None),
+                getattr(r, "reason", None),
+                getattr(r, "thesis", None),
+                getattr(r, "strategy", None),
+                getattr(r, "notes", None),
             ):
                 continue
             corr = getattr(r, "correlation_id", None)
@@ -435,6 +441,7 @@ class TradeMetrics:
     r_multiple: float | None
     mae: float | None
     mfe: float | None
+    degraded: bool = False
 
 
 def _agg_one(tag: str, rows: list[TradeMetrics]) -> dict:
@@ -463,6 +470,7 @@ def _agg_one(tag: str, rows: list[TradeMetrics]) -> dict:
         "avg_r": fmean(rs) if rs else None,
         "median_r": median(rs) if rs else None,
         "r_coverage": (len(rs) / n) if n else None,
+        "excursions_degraded": sum(1 for r in rows if r.degraded),
         "avg_mae": fmean(maes) if maes else None,
         "avg_mfe": fmean(mfes) if mfes else None,
         "worst_mae": min(maes) if maes else None,
@@ -488,6 +496,7 @@ async def build_trading_scoreboard(
     date_to: date | None = None,
     setup_tag: str | None = None,
     min_sample: int = 1,
+    include_excursions: bool = True,
     use_cache: bool = True,
     now: datetime | None = None,
 ) -> dict:
@@ -496,12 +505,20 @@ async def build_trading_scoreboard(
     ``now`` is exposed for tests so the TTL comparison is deterministic; in
     production the orchestrator defaults to ``datetime.now(timezone.utc)``.
     """
-    key = (market, account_mode, date_from, date_to, setup_tag, min_sample)
+    key = (
+        market,
+        account_mode,
+        date_from,
+        date_to,
+        setup_tag,
+        min_sample,
+        include_excursions,
+    )
     stamp = (now or datetime.now(UTC)).timestamp()
     if use_cache:
         cached = _scoreboard_cache.get(key)
         if cached and stamp - cached[0] < _SCOREBOARD_TTL_SECONDS:
-            return cached[1]
+            return copy.deepcopy(cached[1])
 
     fills = await load_fills(
         db,
@@ -521,11 +538,16 @@ async def build_trading_scoreboard(
             stop = await planned_stop_for(db, t)
         except Exception:
             stop = None
-        try:
-            mae, mfe, _degraded = await compute_excursions(t)
-        except Exception:
-            mae, mfe = None, None
-        rows.append(TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe))
+        mae, mfe = None, None
+        degraded = False
+        if include_excursions:
+            try:
+                mae, mfe, degraded = await compute_excursions(t)
+            except Exception:
+                mae, mfe, degraded = None, None, False
+        rows.append(
+            TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe, degraded)
+        )
 
     groups = aggregate_by_tag(rows)
     if setup_tag:
@@ -538,5 +560,5 @@ async def build_trading_scoreboard(
         "count": len(rows),
     }
     if use_cache:
-        _scoreboard_cache[key] = (stamp, result)
+        _scoreboard_cache[key] = (stamp, copy.deepcopy(result))
     return result

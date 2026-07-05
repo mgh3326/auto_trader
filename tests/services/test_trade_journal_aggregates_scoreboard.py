@@ -70,3 +70,88 @@ async def test_scoreboard_fail_open_on_ohlcv_error(db_session, monkeypatch):
     result = await agg.build_trading_scoreboard(db_session, use_cache=False)
     assert result["count"] == 0
     assert result["groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_include_excursions_false_skips_ohlcv(db_session, monkeypatch):
+    called = False
+
+    async def spy_get_ohlcv(*a, **k):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(agg, "get_ohlcv", spy_get_ohlcv)
+    # market=None, empty CI-owned rows are fine; the assertion is on the call, not counts
+    await agg.build_trading_scoreboard(
+        db_session, use_cache=False, include_excursions=False
+    )
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_include_excursions_in_cache_key(db_session, monkeypatch):
+    from datetime import UTC, datetime
+
+    calls = {"n": 0}
+
+    async def counting_load_fills(*a, **k):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(agg, "load_fills", counting_load_fills)
+    stamp = datetime(2026, 7, 5, tzinfo=UTC)
+    await agg.build_trading_scoreboard(db_session, include_excursions=True, now=stamp)
+    await agg.build_trading_scoreboard(db_session, include_excursions=False, now=stamp)
+    # distinct cache keys → load_fills ran twice, not served from one cache slot
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_load_fills_excludes_smoke_marked_reason(db_session):
+    from datetime import UTC, datetime
+
+    from app.models.review import KISLiveOrderLedger
+
+    db_session.add(
+        KISLiveOrderLedger(
+            symbol="005930",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            status="filled",
+            lifecycle_state="fill",
+            filled_qty=10,
+            avg_fill_price=100.0,
+            trade_date=datetime(2026, 6, 1, tzinfo=UTC),
+            reason="smoke-only probe do not journal",
+        )
+    )
+    await db_session.flush()
+    fills = await agg.load_fills(db_session, market="kr")
+    assert all("005930" not in f.symbol or f.price != 100.0 for f in fills)
+
+
+def test_excursions_degraded_surfaced_in_group():
+    r1 = _tm(0.10, 2.0)
+    r2 = _tm(-0.05, -1.0)
+    r1.degraded = True  # TradeMetrics is @dataclass (not frozen) → mutable
+    [g] = aggregate_by_tag([r1, r2])
+    assert g["excursions_degraded"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_returns_isolated_copies(db_session, monkeypatch):
+    from datetime import UTC, datetime
+
+    async def empty_load_fills(*a, **k):
+        return []
+
+    monkeypatch.setattr(agg, "load_fills", empty_load_fills)
+    stamp = datetime(2026, 7, 5, tzinfo=UTC)
+    first = await agg.build_trading_scoreboard(db_session, now=stamp)
+    first["groups"].append({"tag": "MUTANT"})
+    first["count"] = 999
+    second = await agg.build_trading_scoreboard(db_session, now=stamp)  # cache hit
+    assert second["groups"] == []
+    assert second["count"] == 0
