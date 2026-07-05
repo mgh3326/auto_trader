@@ -126,13 +126,12 @@ from app.mcp_server.tooling.trade_retrospective_registration import (
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
 )
+from app.mcp_server.tooling.trading_scoreboard_registration import (
+    register_trading_scoreboard_tools,
+)
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
     register_user_settings_tools,
-register_user_settings_tools,
-)
-from app.mcp_server.tooling.trading_scoreboard_registration import (
-    register_trading_scoreboard_tools,
 )
 
 if TYPE_CHECKING:

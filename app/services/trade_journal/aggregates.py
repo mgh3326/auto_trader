@@ -6,11 +6,11 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from statistics import fmean, median
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.services.market_data import get_ohlcv
 
 from app.core.symbol import to_db_symbol
 from app.models.investment_reports import InvestmentReportItem
@@ -20,6 +20,7 @@ from app.models.review import (
     TossLiveOrderLedger,
     TradeRetrospective,
 )
+from app.services.market_data import get_ohlcv
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
 _EPS = 1e-9
@@ -397,8 +398,6 @@ async def compute_excursions(
     mfe = (max(float(c.high) for c in window) - entry) / entry
     return mae, mfe, degraded
 
-from statistics import fmean, median
-from datetime import timezone
 
 _INSUFFICIENT_SAMPLE_N = 10
 _SCOREBOARD_TTL_SECONDS = 300
@@ -474,7 +473,7 @@ async def build_trading_scoreboard(
     production the orchestrator defaults to ``datetime.now(timezone.utc)``.
     """
     key = (market, account_mode, date_from, date_to, setup_tag, min_sample)
-    stamp = (now or datetime.now(timezone.utc)).timestamp()
+    stamp = (now or datetime.now(UTC)).timestamp()
     if use_cache:
         cached = _scoreboard_cache.get(key)
         if cached and stamp - cached[0] < _SCOREBOARD_TTL_SECONDS:
@@ -513,7 +512,7 @@ async def build_trading_scoreboard(
     result = {
         "groups": groups,
         "overall": _agg_one("__overall__", rows) if rows else None,
-        "as_of": (now or datetime.now(timezone.utc)).isoformat(),
+        "as_of": (now or datetime.now(UTC)).isoformat(),
         "count": len(rows),
     }
     if use_cache:

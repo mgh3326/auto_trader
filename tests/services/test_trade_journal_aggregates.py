@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -8,7 +8,7 @@ from app.services.trade_journal.aggregates import Fill, pair_fills_fifo
 def _fill(side, qty, price, day, *, fee=0.0, item="i", corr="c"):
     return Fill(
         market="kr", symbol="005930", account="acct", side=side, qty=qty,
-        price=price, fee=fee, ts=datetime(2026, 6, day, tzinfo=timezone.utc),
+        price=price, fee=fee, ts=datetime(2026, 6, day, tzinfo=UTC),
         item_uuid=item, correlation_id=corr, source="kis",
     )
 

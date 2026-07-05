@@ -10,26 +10,29 @@ from app.services.trade_journal.forecast_service import _normalize_symbol_for_fi
 
 
 def _trade(**kw):
-    base = dict(
-        market="kr", symbol="005930", account="acct", qty=10,
-        entry_price=100.0, exit_price=110.0,
-        entry_ts=datetime(2026, 6, 1, tzinfo=UTC),
-        exit_ts=datetime(2026, 6, 5, tzinfo=UTC),
-        pnl_abs=100.0, pnl_pct=0.1, fees=0.0,
-        entry_item_uuids=(), exit_item_uuid=None,
-        entry_correlation_ids=(), exit_correlation_id=None,
-    )
+    base = {
+        "market": "kr",
+        "symbol": "005930",
+        "account": "acct",
+        "qty": 10,
+        "entry_price": 100.0,
+        "exit_price": 110.0,
+        "entry_ts": datetime(2026, 6, 1, tzinfo=UTC),
+        "exit_ts": datetime(2026, 6, 5, tzinfo=UTC),
+        "pnl_abs": 100.0,
+        "pnl_pct": 0.1,
+        "fees": 0.0,
+        "entry_item_uuids": (),
+        "exit_item_uuid": None,
+        "entry_correlation_ids": (),
+        "exit_correlation_id": None,
+    }
     base.update(kw)
     return ClosedTrade(**base)
 
 
 def _digit_symbol() -> str:
-    """Per-test unique 6-12 digit symbol stable across KR normalizers.
-
-    ``to_db_symbol`` keeps digits; ``_normalize_symbol_for_filter`` keeps
-    digit-only strings as-is (zfill to 6). So a digit-only synthetic symbol
-    is safe under both normalizations and xdist-collisions.
-    """
+    """Per-test unique 6-12 digit symbol stable across KR normalizers."""
     return ("9" + uuid.uuid4().hex[:9])[:10].upper()
 
 
@@ -57,7 +60,6 @@ async def test_strategy_key_symbol_window(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_untagged_when_no_signal(db_session: AsyncSession):
-    """When nothing matches the symbol, tag is untagged / link_quality symbol_window."""
     sym = _digit_symbol()
     info = await resolve_setup_tag(db_session, _trade(symbol=sym))
     assert info.tag == "untagged"

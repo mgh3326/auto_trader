@@ -2,13 +2,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.services.trade_journal import aggregates as agg
 from app.services.trade_journal.aggregates import (
     ClosedTrade,
     TagInfo,
     TradeMetrics,
     aggregate_by_tag,
 )
-from app.services.trade_journal import aggregates as agg
 
 
 def _tm(pnl_pct, r, tag="pullback_long", tag_source="strategy_key", link="symbol_window"):

@@ -8,15 +8,23 @@ from app.services.trade_journal.aggregates import ClosedTrade, compute_r_multipl
 
 
 def _trade(**kw):
-    base = dict(
-        market="kr", symbol="005930", account="acct", qty=10,
-        entry_price=100.0, exit_price=112.0,
-        entry_ts=datetime(2026, 6, 1, tzinfo=UTC),
-        exit_ts=datetime(2026, 6, 5, tzinfo=UTC),
-        pnl_abs=120.0, pnl_pct=0.12, fees=0.0,
-        entry_item_uuids=(), exit_item_uuid=None,
-        entry_correlation_ids=(), exit_correlation_id=None,
-    )
+    base = {
+        "market": "kr",
+        "symbol": "005930",
+        "account": "acct",
+        "qty": 10,
+        "entry_price": 100.0,
+        "exit_price": 112.0,
+        "entry_ts": datetime(2026, 6, 1, tzinfo=UTC),
+        "exit_ts": datetime(2026, 6, 5, tzinfo=UTC),
+        "pnl_abs": 120.0,
+        "pnl_pct": 0.12,
+        "fees": 0.0,
+        "entry_item_uuids": (),
+        "exit_item_uuid": None,
+        "entry_correlation_ids": (),
+        "exit_correlation_id": None,
+    }
     base.update(kw)
     return ClosedTrade(**base)
 

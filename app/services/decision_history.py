@@ -26,6 +26,7 @@ from app.models.review import (
     TradeForecast,
     TradeRetrospective,
 )
+from app.services.trade_journal.aggregates import build_trading_scoreboard
 from app.services.trade_journal.forecast_service import (
     _normalize_symbol_for_filter,
     build_forecast_calibration_aggregate,
@@ -40,6 +41,15 @@ MAX_FILLS = 6
 MAX_CLAIMS = 5
 _TRUNC = 220
 _SMOKE_TOKENS = ("smoke",)
+_MAX_TAGS = 3
+_R_KEYS = (
+    "n",
+    "expectancy_r",
+    "win_rate",
+    "profit_factor",
+    "avg_mae",
+    "insufficient_sample",
+)
 
 
 def _is_smoke(*values: str | None) -> bool:
@@ -70,7 +80,7 @@ async def build_decision_context(
 ) -> dict[str, Any] | None:
     """Build the decision_history payload for one symbol, or None if no signal.
 
-    setup_tag is reserved for realized_r_by_tag (ROB-713 stage 3); unused here.
+    """setup_tag, when supplied, selects which setup comes first in realized_r_by_tag."""
     """
     instrument_type = MARKET_TO_INSTRUMENT.get(market)
     norm = _normalize_symbol_for_filter(symbol, instrument_type)
@@ -90,6 +100,7 @@ async def build_decision_context(
         )
     )
     brier_global = _fold_brier(await build_forecast_calibration_aggregate(db))
+    realized_r = await _realized_r_by_tag(db, market, setup_tag)
 
     ctx: dict[str, Any] = {
         "symbol": norm,
@@ -102,6 +113,7 @@ async def build_decision_context(
         "open_claims": open_claims,
         "running_brier_symbol": brier_symbol,
         "running_brier_global": brier_global,
+        "realized_r_by_tag": realized_r,
     }
     return ctx
 
@@ -121,6 +133,21 @@ def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
         "mean_brier": round(mean, 4) if mean is not None else None,
         "flag": "insufficient_sample" if n < 10 else "ok",
     }
+async def _realized_r_by_tag(
+    db: AsyncSession, market: str, setup_tag: str | None
+) -> dict[str, dict[str, Any]]:
+    """Bounded per-tag map for the ROB-713 scoreboard — portfolio-wide, not per-symbol."""
+    board = await build_trading_scoreboard(db, market=market)
+    groups = board.get("groups", [])
+    ordered = sorted(
+        groups, key=lambda g: (g["tag"] != setup_tag, -int(g["n"]))
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for g in ordered[:_MAX_TAGS]:
+        if g["tag"] == "untagged":
+            continue
+        out[g["tag"]] = {k: g.get(k) for k in _R_KEYS}
+    return out
 
 
 async def _prior_decisions(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
