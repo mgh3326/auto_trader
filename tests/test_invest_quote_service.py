@@ -34,30 +34,36 @@ async def test_fetch_kr_prices() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_fetch_us_prices(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_us_prices_uses_live_last_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-708: US /invest price must come from inquire_overseas_price
+    (HHDFS00000300, live last) — NOT inquire_overseas_daily_price (daily close)."""
     kis_client = MagicMock()
     db = MagicMock()
 
     service = InvestQuoteService(kis_client, db)
 
-    # Mock get_us_exchange_by_symbol
     mock_get_exchange = AsyncMock(return_value="NASD")
     monkeypatch.setattr(
         "app.services.invest_quote_service.get_us_exchange_by_symbol", mock_get_exchange
     )
 
-    # Mock MarketDataClient.inquire_overseas_daily_price
     service._market_data = AsyncMock()
-    df = pd.DataFrame([{"close": 150.0}], index=[0])
-    service._market_data.inquire_overseas_daily_price.return_value = df
+    # inquire_overseas_price returns the single-row live-last frame
+    # ([close, previous_close, volume]); close == live `last`.
+    live_df = pd.DataFrame([{"close": 150.0, "previous_close": 148.0, "volume": 1000}])
+    service._market_data.inquire_overseas_price.return_value = live_df
 
     prices = await service.fetch_us_prices(["AAPL"])
 
     assert prices == pytest.approx({"AAPL": 150.0})
     mock_get_exchange.assert_called_once_with("AAPL", db)
-    service._market_data.inquire_overseas_daily_price.assert_called_once_with(
-        "AAPL", exchange_code="NASD", n=1, period="D"
+    service._market_data.inquire_overseas_price.assert_called_once_with(
+        "AAPL", exchange_code="NASD"
     )
+    # The daily-close endpoint must no longer be used for a "current price".
+    service._market_data.inquire_overseas_daily_price.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -112,9 +118,7 @@ async def test_fetch_us_prices_toss_disabled_uses_snapshot(monkeypatch):
     service = InvestQuoteService(kis_client, db)  # no toss_client, disabled
 
     service._market_data = AsyncMock()
-    service._market_data.inquire_overseas_daily_price.side_effect = RuntimeError(
-        "KIS down"
-    )
+    service._market_data.inquire_overseas_price.side_effect = RuntimeError("KIS down")
     monkeypatch.setattr(
         "app.services.invest_quote_service.get_us_exchange_by_symbol",
         AsyncMock(return_value="NASD"),
@@ -170,3 +174,37 @@ async def test_fetch_kr_prices_toss_enabled_but_misconfigured_is_fail_open(
     out = await service.fetch_kr_prices(["A"])
     assert out == pytest.approx({"A": 11.0})  # snapshot filled, never raised
     service._snapshot_latest.assert_awaited_once_with("kr", ["A"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_fetch_us_prices_empty_live_last_falls_through_to_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-708: when KIS live-last has no price (market closed / after-hours),
+    inquire_overseas_price returns an EMPTY frame -> None -> the resolver must
+    fall through to snapshot rather than surfacing a stale daily close."""
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.toss_api_enabled",
+        False,
+        raising=False,
+    )
+    kis_client = MagicMock()
+    db = MagicMock()
+    service = InvestQuoteService(kis_client, db)  # toss disabled
+
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
+    )
+    service._market_data = AsyncMock()
+    # Empty frame == _build_overseas_price_frame's "last is None / <= 0" case.
+    service._market_data.inquire_overseas_price.return_value = pd.DataFrame(
+        columns=["close", "previous_close", "volume"]
+    )
+    service._snapshot_latest = AsyncMock(return_value={"AAPL": 199.0})
+
+    out = await service.fetch_us_prices(["AAPL"])
+
+    assert out == pytest.approx({"AAPL": 199.0})  # from snapshot, not KIS daily
+    service._snapshot_latest.assert_awaited_once_with("us", ["AAPL"])

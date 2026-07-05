@@ -118,8 +118,13 @@ class InvestQuoteService:
         async def _fetch(symbol: str) -> None:
             try:
                 exchange = await get_us_exchange_by_symbol(symbol, self._db)
-                df = await self._market_data.inquire_overseas_daily_price(
-                    symbol, exchange_code=exchange, n=1, period="D"
+                # ROB-708: live last (HHDFS00000300), mirroring get_quote US, so
+                # KIS-resolved US prices agree with Toss-resolved live-last prices
+                # instead of silently mixing in a settled daily close (HHDFS76240000).
+                # _build_overseas_price_frame returns empty when last is None/<=0,
+                # so an empty frame -> None -> resolver falls through to Toss/snapshot.
+                df = await self._market_data.inquire_overseas_price(
+                    symbol, exchange_code=exchange
                 )
                 results[symbol] = float(df.iloc[0]["close"]) if not df.empty else None
             except Exception as exc:  # noqa: BLE001 — summarized by the resolver
