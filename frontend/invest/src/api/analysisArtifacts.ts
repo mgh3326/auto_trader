@@ -14,6 +14,7 @@ export interface ArtifactListQuery {
   symbol?: string;
   includeStale?: boolean;
   limit?: number;
+  correlationIds?: string[];
 }
 
 export async function fetchArtifacts(
@@ -25,6 +26,9 @@ export async function fetchArtifacts(
   if (params.readinessLabel) q.set("readiness_label", params.readinessLabel);
   if (params.symbol) q.set("symbol", params.symbol);
   if (params.includeStale) q.set("include_stale", "true");
+  if (params.correlationIds) {
+    for (const cid of params.correlationIds) q.append("correlation_id", cid);
+  }
   if (params.limit != null) q.set("limit", String(params.limit));
   const qs = q.toString();
   const res = await fetch(`${BASE}/${qs ? `?${qs}` : ""}`, {
