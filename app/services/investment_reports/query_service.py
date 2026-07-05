@@ -30,6 +30,10 @@ from app.schemas.investment_reports import (
     ReportSnapshotBundleSummaryView,
     ReportSnapshotDetailResponse,
 )
+from app.services.investment_reports.item_loop_links import (
+    list_forecasts_for_item_uuids,
+    list_retrospectives_for_item_uuids,
+)
 from app.services.investment_reports.linked_orders import (
     list_linked_orders_for_item_uuids,
 )
@@ -156,9 +160,19 @@ class InvestmentReportQueryService:
         events = await self._repo.list_events_for_source_reports([report.report_uuid])
         citations = await self._repo.list_news_citations_for_report(report.report_uuid)
 
+        item_uuids = [it.item_uuid for it in items]
+
         # ROB-554 — reverse-lookup live orders linked via report_item_uuid (ROB-473).
         linked_orders_by_item_uuid = await list_linked_orders_for_item_uuids(
-            self._session, [it.item_uuid for it in items]
+            self._session, item_uuids
+        )
+
+        # ROB-715 — exact-join forecasts + retrospectives keyed by item_uuid.
+        forecasts_by_item_uuid = await list_forecasts_for_item_uuids(
+            self._session, item_uuids
+        )
+        retrospectives_by_item_uuid = await list_retrospectives_for_item_uuids(
+            self._session, item_uuids
         )
 
         decisions_by_item: dict[int, list[InvestmentReportItemDecision]] = {
@@ -175,6 +189,8 @@ class InvestmentReportQueryService:
             "events": events,
             "news_citations": citations,
             "linked_orders_by_item_uuid": linked_orders_by_item_uuid,
+            "forecasts_by_item_uuid": forecasts_by_item_uuid,
+            "retrospectives_by_item_uuid": retrospectives_by_item_uuid,
         }
 
     # ------------------------------------------------------------------

@@ -162,6 +162,60 @@ async def test_get_bundle_returns_nested_shapes(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_get_bundle_attaches_forecast_and_retrospective_maps(
+    session: AsyncSession,
+) -> None:
+    from datetime import date
+    from decimal import Decimal
+
+    from app.models.review import TradeForecast, TradeRetrospective
+
+    ingest = InvestmentReportIngestionService(session)
+    report = await ingest.ingest(
+        _request(kst_date="2026-05-19", items=[_action_item()])
+    )
+
+    repo = InvestmentReportsRepository(session)
+    items = await repo.list_items_for_report(report.id)
+    item = items[0]
+
+    session.add(
+        TradeForecast(
+            created_by="claude",
+            symbol=item.symbol,
+            instrument_type="equity_kr",
+            forecast_target={
+                "direction": "at_or_above",
+                "target_price": 100,
+            },
+            probability=Decimal("0.6"),
+            review_date=date(2026, 7, 20),
+            status="open",
+            report_item_uuid=str(item.item_uuid),
+        )
+    )
+    session.add(
+        TradeRetrospective(
+            symbol=item.symbol,
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            report_item_uuid=str(item.item_uuid),
+        )
+    )
+    await session.flush()
+
+    query = InvestmentReportQueryService(session)
+    bundle = await query.get_bundle(report.report_uuid)
+    assert bundle is not None
+
+    key = str(item.item_uuid)
+    assert bundle["forecasts_by_item_uuid"][key][0].status == "open"
+    assert bundle["retrospectives_by_item_uuid"][key][0].outcome == "filled"
+
+
+@pytest.mark.asyncio
 async def test_get_bundle_returns_none_for_missing_report(
     session: AsyncSession,
 ) -> None:
