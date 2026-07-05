@@ -743,7 +743,7 @@ async def _reconcile_one_ledger_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account="kis",
-            correlation_id=row.correlation_id,
+            correlation_id=getattr(row, "correlation_id", None),
         )
         journal_id = journal_result.get("journal_id")
         if trade_id and journal_id:
