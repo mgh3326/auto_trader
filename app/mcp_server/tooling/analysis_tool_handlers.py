@@ -846,6 +846,7 @@ async def _attach_fresh_artifact_hints(
     except Exception as exc:  # fail-open: hints are advisory-only
         logger.debug("fresh_artifact_exists hint lookup skipped: %s", exc)
 
+
 async def _attach_decision_history(
     results: dict[str, Any],
     *,

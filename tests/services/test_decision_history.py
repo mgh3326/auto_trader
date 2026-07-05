@@ -10,27 +10,26 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+
+import pytest
 import pytest_asyncio
 from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.investment_reports import InvestmentReport, InvestmentReportItem
 from app.models.review import (
     KISLiveOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
     TradeForecast,
+    TradeRetrospective,
 )
-
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models.investment_reports import InvestmentReport, InvestmentReportItem
-from app.models.review import TradeRetrospective
 from app.services.decision_history import build_decision_context
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.usefixtures("investment_reports_cleanup_lock"),
 ]
-
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -61,7 +60,6 @@ async def _cleanup_decision_history(db_session: AsyncSession):
 
 
 async def _make_report(db: AsyncSession, **overrides) -> InvestmentReport:
-
 
     payload = {
         "report_uuid": uuid.uuid4(),
@@ -188,7 +186,6 @@ async def test_lessons_and_outcomes_smoke_filtered_and_capped(
     assert first["outcome"] == "filled"
 
 
-
 @pytest.mark.asyncio
 async def test_recent_fills_and_open_claims(db_session: AsyncSession) -> None:
     db_session.add(
@@ -242,6 +239,7 @@ async def test_recent_fills_and_open_claims(db_session: AsyncSession) -> None:
     assert claim["direction"] == "at_or_above"
     assert claim["target_price"] == "2463000"
     assert claim["review_date"] == "2026-07-17"
+
 
 @pytest.mark.asyncio
 async def test_brier_insufficient_sample_and_empty_returns_none(

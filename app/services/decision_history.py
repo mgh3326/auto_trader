@@ -106,8 +106,6 @@ async def build_decision_context(
     return ctx
 
 
-
-
 def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
     groups = agg.get("groups", [])
     n = sum(int(g["sample_size"]) for g in groups)
@@ -127,12 +125,16 @@ def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
 
 async def _prior_decisions(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
     rows = (
-        await db.execute(
-            select(InvestmentReportItem)
-            .where(InvestmentReportItem.symbol == symbol)
-            .order_by(InvestmentReportItem.created_at.desc())
+        (
+            await db.execute(
+                select(InvestmentReportItem)
+                .where(InvestmentReportItem.symbol == symbol)
+                .order_by(InvestmentReportItem.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     out: list[dict[str, Any]] = []
     for r in rows:
         if _is_smoke(r.rationale, r.status):
@@ -151,16 +153,21 @@ async def _prior_decisions(db: AsyncSession, symbol: str) -> list[dict[str, Any]
             break
     return out
 
+
 async def _retrospectives(
     db: AsyncSession, symbol: str
 ) -> tuple[list[str], list[dict[str, Any]]]:
     rows = (
-        await db.execute(
-            select(TradeRetrospective)
-            .where(TradeRetrospective.symbol == symbol)
-            .order_by(TradeRetrospective.created_at.desc())
+        (
+            await db.execute(
+                select(TradeRetrospective)
+                .where(TradeRetrospective.symbol == symbol)
+                .order_by(TradeRetrospective.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     lessons: list[str] = []
     outcomes: list[dict[str, Any]] = []
     for r in rows:
@@ -183,6 +190,7 @@ async def _retrospectives(
             )
     return lessons, outcomes
 
+
 def _fill_row(source: str, r: Any) -> dict[str, Any]:
     return {
         "date": r.trade_date.date().isoformat() if r.trade_date else None,
@@ -194,7 +202,9 @@ def _fill_row(source: str, r: Any) -> dict[str, Any]:
             float(r.avg_fill_price) if r.avg_fill_price is not None else None
         ),
         "target_price": (
-            float(r.target_price) if getattr(r, "target_price", None) is not None else None
+            float(r.target_price)
+            if getattr(r, "target_price", None) is not None
+            else None
         ),
         "stop_loss": (
             float(r.stop_loss) if getattr(r, "stop_loss", None) is not None else None
@@ -211,8 +221,10 @@ async def _recent_fills(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
         ("toss", TossLiveOrderLedger),
     ):
         rows = (
-            await db.execute(select(model).where(model.symbol == symbol))
-        ).scalars().all()
+            (await db.execute(select(model).where(model.symbol == symbol)))
+            .scalars()
+            .all()
+        )
         for r in rows:
             collected.append((r.trade_date, source, r))
     # newest first across all three ledgers; None trade_date sorts last
@@ -222,18 +234,24 @@ async def _recent_fills(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
 
 async def _open_claims(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
     rows = (
-        await db.execute(
-            select(TradeForecast)
-            .where(TradeForecast.symbol == symbol, TradeForecast.status == "open")
-            .order_by(TradeForecast.created_at.desc())
+        (
+            await db.execute(
+                select(TradeForecast)
+                .where(TradeForecast.symbol == symbol, TradeForecast.status == "open")
+                .order_by(TradeForecast.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     out: list[dict[str, Any]] = []
     for r in rows[:MAX_CLAIMS]:
         target = r.forecast_target if isinstance(r.forecast_target, dict) else {}
         out.append(
             {
-                "probability": float(r.probability) if r.probability is not None else None,
+                "probability": float(r.probability)
+                if r.probability is not None
+                else None,
                 "horizon": r.horizon,
                 "review_date": r.review_date.isoformat() if r.review_date else None,
                 "direction": target.get("direction"),
