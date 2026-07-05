@@ -4,6 +4,7 @@ MAE) over live-ledger fills. Read-only, no LLM (ROB-501), no schema change."""
 from __future__ import annotations
 
 import uuid
+import copy
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -508,7 +509,7 @@ async def build_trading_scoreboard(
     if use_cache:
         cached = _scoreboard_cache.get(key)
         if cached and stamp - cached[0] < _SCOREBOARD_TTL_SECONDS:
-            return cached[1]
+            return copy.deepcopy(cached[1])
 
     fills = await load_fills(
         db,
@@ -550,5 +551,5 @@ async def build_trading_scoreboard(
         "count": len(rows),
     }
     if use_cache:
-        _scoreboard_cache[key] = (stamp, result)
+        _scoreboard_cache[key] = (stamp, copy.deepcopy(result))
     return result

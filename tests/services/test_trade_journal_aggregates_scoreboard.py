@@ -142,3 +142,20 @@ def test_excursions_degraded_surfaced_in_group():
     r1.degraded = True  # TradeMetrics is @dataclass (not frozen) → mutable
     [g] = aggregate_by_tag([r1, r2])
     assert g["excursions_degraded"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_returns_isolated_copies(db_session, monkeypatch):
+    from datetime import UTC, datetime
+
+    async def empty_load_fills(*a, **k):
+        return []
+
+    monkeypatch.setattr(agg, "load_fills", empty_load_fills)
+    stamp = datetime(2026, 7, 5, tzinfo=UTC)
+    first = await agg.build_trading_scoreboard(db_session, now=stamp)
+    first["groups"].append({"tag": "MUTANT"})
+    first["count"] = 999
+    second = await agg.build_trading_scoreboard(db_session, now=stamp)  # cache hit
+    assert second["groups"] == []
+    assert second["count"] == 0
