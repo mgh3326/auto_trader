@@ -186,3 +186,59 @@ async def test_lessons_and_outcomes_smoke_filtered_and_capped(
     assert first["pnl_pct"] == 11.9
     assert first["realized_pnl"] == 33914.0
     assert first["outcome"] == "filled"
+
+
+
+@pytest.mark.asyncio
+async def test_recent_fills_and_open_claims(db_session: AsyncSession) -> None:
+    db_session.add(
+        KISLiveOrderLedger(
+            trade_date=datetime(2026, 6, 10, tzinfo=UTC),
+            symbol="000660",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            account_mode="kis_live",
+            broker="kis",
+            status="filled",
+            lifecycle_state="filled",
+            order_no="A1",
+            quantity=Decimal("1"),
+            filled_qty=Decimal("1"),
+            avg_fill_price=Decimal("2000000"),
+            target_price=Decimal("3035000"),
+            stop_loss=Decimal("1888000"),
+        )
+    )
+    db_session.add(
+        TradeForecast(
+            created_by="claude",
+            symbol="000660",
+            instrument_type="equity_kr",
+            forecast_target={
+                "kind": "price_target",
+                "direction": "at_or_above",
+                "target_price": "2463000",
+            },
+            probability=Decimal("0.55"),
+            horizon="10 trading days",
+            review_date=datetime(2026, 7, 17).date(),
+            status="open",
+        )
+    )
+    await db_session.commit()
+
+    ctx = await build_decision_context(db_session, symbol="000660", market="kr")
+
+    assert ctx is not None
+    assert len(ctx["recent_fills"]) == 1
+    fill = ctx["recent_fills"][0]
+    assert fill["side"] == "buy"
+    assert fill["avg_fill_price"] == 2000000.0
+    assert fill["stop_loss"] == 1888000.0
+    assert fill["source"] == "kis"
+    assert len(ctx["open_claims"]) == 1
+    claim = ctx["open_claims"][0]
+    assert claim["direction"] == "at_or_above"
+    assert claim["target_price"] == "2463000"
+    assert claim["review_date"] == "2026-07-17"

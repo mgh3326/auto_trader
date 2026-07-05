@@ -19,7 +19,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investment_reports import InvestmentReportItem
-from app.models.review import TradeRetrospective
+
+from app.models.review import (
+    KISLiveOrderLedger,
+    LiveOrderLedger,
+    TossLiveOrderLedger,
+    TradeRetrospective,
+    TradeForecast,
+)
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
 MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
@@ -69,6 +76,9 @@ async def build_decision_context(
     prior_decisions = await _prior_decisions(db, norm)
 
     lessons, outcomes = await _retrospectives(db, norm)
+    fills = await _recent_fills(db, norm)
+    open_claims = await _open_claims(db, norm)
+
 
     ctx: dict[str, Any] = {
         "symbol": norm,
@@ -76,6 +86,8 @@ async def build_decision_context(
         "link_quality": "symbol_window",
         "prior_decisions": prior_decisions,
         "prior_lessons": lessons,
+        "recent_fills": fills,
+        "open_claims": open_claims,
         "realized_outcomes": outcomes,
     }
     return ctx
@@ -138,3 +150,62 @@ async def _retrospectives(
                 }
             )
     return lessons, outcomes
+
+def _fill_row(source: str, r: Any) -> dict[str, Any]:
+    return {
+        "date": r.trade_date.date().isoformat() if r.trade_date else None,
+        "side": r.side,
+        "status": r.status,
+        "qty": float(r.quantity) if r.quantity is not None else None,
+        "filled_qty": float(r.filled_qty) if r.filled_qty is not None else None,
+        "avg_fill_price": (
+            float(r.avg_fill_price) if r.avg_fill_price is not None else None
+        ),
+        "target_price": (
+            float(r.target_price) if getattr(r, "target_price", None) is not None else None
+        ),
+        "stop_loss": (
+            float(r.stop_loss) if getattr(r, "stop_loss", None) is not None else None
+        ),
+        "source": source,
+    }
+
+
+async def _recent_fills(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
+    collected: list[tuple[Any, str, Any]] = []
+    for source, model in (
+        ("kis", KISLiveOrderLedger),
+        ("live", LiveOrderLedger),
+        ("toss", TossLiveOrderLedger),
+    ):
+        rows = (
+            await db.execute(select(model).where(model.symbol == symbol))
+        ).scalars().all()
+        for r in rows:
+            collected.append((r.trade_date, source, r))
+    # newest first across all three ledgers; None trade_date sorts last
+    collected.sort(key=lambda t: (t[0] is not None, t[0]), reverse=True)
+    return [_fill_row(source, r) for (_dt, source, r) in collected[:MAX_FILLS]]
+
+
+async def _open_claims(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
+    rows = (
+        await db.execute(
+            select(TradeForecast)
+            .where(TradeForecast.symbol == symbol, TradeForecast.status == "open")
+            .order_by(TradeForecast.created_at.desc())
+        )
+    ).scalars().all()
+    out: list[dict[str, Any]] = []
+    for r in rows[:MAX_CLAIMS]:
+        target = r.forecast_target if isinstance(r.forecast_target, dict) else {}
+        out.append(
+            {
+                "probability": float(r.probability) if r.probability is not None else None,
+                "horizon": r.horizon,
+                "review_date": r.review_date.isoformat() if r.review_date else None,
+                "direction": target.get("direction"),
+                "target_price": target.get("target_price"),
+            }
+        )
+    return out
