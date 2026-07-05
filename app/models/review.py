@@ -1024,6 +1024,7 @@ class TradeRetrospective(Base):
         Index("ix_trade_retrospectives_strategy_key", "strategy_key"),
         Index("ix_trade_retrospectives_symbol", "symbol"),
         Index("ix_trade_retrospectives_report_uuid", "report_uuid"),
+        Index("ix_trade_retrospectives_report_item_uuid", "report_item_uuid"),
         Index(
             "ix_trade_retrospectives_account_mode_created",
             "account_mode",
@@ -1142,6 +1143,7 @@ class TradeForecast(Base):
         Index("ix_trade_forecasts_symbol", "symbol"),
         Index("ix_trade_forecasts_created_by", "created_by"),
         Index("ix_trade_forecasts_correlation_id", "correlation_id"),
+        Index("ix_trade_forecasts_report_item_uuid", "report_item_uuid"),
         {"schema": "review"},
     )
 

@@ -17,6 +17,7 @@ import type {
   InvestmentWatchAlert,
   InvestmentWatchEvent,
   NoActionSummary,
+  Market,
   ReportReviewSections,
   RetrospectiveLink,
   SnapshotFreshnessSummary,
@@ -24,6 +25,7 @@ import type {
 } from "../../types/investmentReports";
 import { ActionPacketView } from "./ActionPacketView";
 import { IntermediateAnalysisPanel } from "./IntermediateAnalysisPanel";
+import ItemArtifactLinks from "./ItemArtifactLinks";
 import { ProposalDiffPanel } from "./ProposalDiffPanel";
 import { ReportDiagnosticsPanel } from "./ReportDiagnosticsPanel";
 import { ReportSnapshotEvidencePanel } from "./ReportSnapshotEvidencePanel";
@@ -290,11 +292,13 @@ function ItemRow({
   decisions,
   forecastLinks,
   retrospectiveLinks,
+  market,
 }: {
   item: InvestmentReportItem;
   decisions: InvestmentReportItemDecision[];
   forecastLinks?: ForecastLink[];
   retrospectiveLinks?: RetrospectiveLink[];
+  market: Market;
 }) {
   const kindLabel = ITEM_KIND_LABELS[item.itemKind] ?? item.itemKind;
   const statusLabel = ITEM_STATUS_LABELS[item.status] ?? item.status;
@@ -416,7 +420,7 @@ function ItemRow({
           </span>
         </div>
       ) : null}
-      {tradeSetup ? (
+      {tradeSetup && item.itemKind === "action" ? (
         <div
           className="item-plan-vs-actual"
           data-testid="item-plan-vs-actual"
@@ -508,9 +512,11 @@ function ItemRow({
               >
                 <span>
                   {f.status === "closed"
-                    ? f.outcome
-                      ? "적중"
-                      : "빗나감"
+                    ? f.outcome == null
+                      ? "결과 미기록"
+                      : f.outcome
+                        ? "적중"
+                        : "빗나감"
                     : "해소 대기"}
                 </span>
                 {f.brierScore != null ? (
@@ -533,6 +539,18 @@ function ItemRow({
           )}
         </div>
       )}
+      <ItemArtifactLinks
+        symbol={item.symbol}
+        market={market}
+        correlationIds={Array.from(
+          new Set(
+            [
+              ...(forecastLinks ?? []).map((f) => f.correlationId),
+              ...(retrospectiveLinks ?? []).map((r) => r.correlationId),
+            ].filter((c): c is string => !!c),
+          ),
+        )}
+      />
       {item.watchCondition ? (
         <div
           style={{
@@ -754,12 +772,14 @@ function ReviewSectionsView({
   decisionsByItemUuid,
   forecastsByItemUuid,
   retrospectivesByItemUuid,
+  market,
 }: {
   review: ReportReviewSections;
   items: InvestmentReportItem[];
   decisionsByItemUuid: Record<string, InvestmentReportItemDecision[]>;
   forecastsByItemUuid: Record<string, ForecastLink[]>;
   retrospectivesByItemUuid: Record<string, RetrospectiveLink[]>;
+  market: Market;
 }) {
   const projectedUuids = new Set(
     review.sections.flatMap((section) => section.items.map((it) => it.itemUuid)),
@@ -788,6 +808,7 @@ function ReviewSectionsView({
                   retrospectiveLinks={
                     retrospectivesByItemUuid[item.itemUuid] ?? []
                   }
+                  market={market}
                 />
               ))
             ) : (
@@ -810,6 +831,7 @@ function ReviewSectionsView({
               retrospectiveLinks={
                 retrospectivesByItemUuid[item.itemUuid] ?? []
               }
+              market={market}
             />
           ))}
         </section>
@@ -943,6 +965,7 @@ export function InvestmentReportBundleContent({
           decisionsByItemUuid={bundle.decisionsByItemUuid}
           forecastsByItemUuid={bundle.forecastsByItemUuid ?? {}}
           retrospectivesByItemUuid={bundle.retrospectivesByItemUuid ?? {}}
+          market={bundle.report.market}
         />
       ) : (
         (["action", "watch", "risk"] as const).map((kind) =>
@@ -962,6 +985,7 @@ export function InvestmentReportBundleContent({
                   retrospectiveLinks={
                     bundle.retrospectivesByItemUuid?.[item.itemUuid] ?? []
                   }
+                  market={bundle.report.market}
                 />
               ))}
             </section>

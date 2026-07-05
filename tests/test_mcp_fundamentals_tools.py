@@ -754,6 +754,19 @@ class TestAnalyzeStock:
 class TestAnalyzeStockBatch:
     """Test analyze_stock_batch tool."""
 
+    @pytest.fixture(autouse=True)
+    def _no_earnings_injection(self, monkeypatch):
+        # ROB-722 fix made the earnings attach actually fire for equity rows
+        # (the old {"kr","us"} gate never matched real equity_kr/equity_us
+        # market_type values). Left unstubbed it would mutate every compact
+        # contract here and reach live Finnhub for equity_us rows. Injection
+        # behavior is covered by tests/mcp_server/test_earnings_context.py and
+        # test_analyze_stock_batch_earnings.py.
+        async def _none(symbol, market, *, today=None, kr_freshness=None):
+            return None
+
+        _patch_runtime_attr(monkeypatch, "build_earnings_context", _none)
+
     async def test_analyze_stock_batch_registration(self):
         """Test that analyze_stock_batch is registered as an MCP tool."""
         tools = build_tools()

@@ -253,6 +253,7 @@ export interface ForecastLink {
   probability: number;
   brierScore: number | null;
   resolutionSource: string | null;
+  correlationId?: string | null;
 }
 
 export interface RetrospectiveLink {
@@ -264,6 +265,7 @@ export interface RetrospectiveLink {
   triggerType: string | null;
   pnlPct: number | null;
   createdAt: string | null;
+  correlationId?: string | null;
 }
 
 export interface InvestmentReportItem {

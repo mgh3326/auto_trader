@@ -17,6 +17,11 @@ import yfinance as yf
 
 from app.mcp_server.tooling import analysis_screening, foreigners_liquidity
 from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
+from app.mcp_server.tooling.earnings_context import (
+    _kr_ingestion_freshness,
+    build_earnings_context,
+    normalize_earnings_market,
+)
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
@@ -879,6 +884,51 @@ async def _attach_decision_history(
         logger.debug("decision_history injection skipped: %s", exc)
 
 
+async def _attach_earnings(
+    results: dict[str, Any],
+    *,
+    market: str | None,
+) -> None:
+    """ROB-722: inject per-symbol upcoming-earnings context (US live / KR DB).
+
+    Batched (one session), symbol-level fail-open. No-earnings is an explicit
+    signal (has_upcoming=False), so US/KR equity rows always receive an
+    ``earnings`` field; crypto/error rows are skipped. KR ingestion freshness is
+    computed at most once per batch and threaded into each build call.
+    """
+    if not any(
+        isinstance(row, dict) and "error" not in row for row in results.values()
+    ):
+        return
+    try:
+        from app.core.db import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            kr_freshness: tuple[str, str | None] | None = None
+            for sym, result in results.items():
+                if not isinstance(result, dict) or "error" in result:
+                    continue
+                mkt = result.get("market_type") or market
+                if normalize_earnings_market(str(mkt or "")) == "kr" and (
+                    kr_freshness is None
+                ):
+                    try:
+                        kr_freshness = await _kr_ingestion_freshness(db)
+                    except Exception:  # fail-open: freshness is advisory
+                        kr_freshness = ("unknown", None)
+                try:
+                    ctx = await build_earnings_context(
+                        str(sym), str(mkt or ""), kr_freshness=kr_freshness
+                    )
+                except Exception as exc:  # symbol-level fail-open (e.g. 429)
+                    logger.debug("earnings injection skipped for %s: %s", sym, exc)
+                    continue
+                if ctx is not None:
+                    result["earnings"] = ctx
+    except Exception as exc:  # fail-open: advisory-only
+        logger.debug("earnings injection skipped: %s", exc)
+
+
 async def analyze_stock_batch_impl(
     symbols: list[str | int],
     market: str | None = None,
@@ -940,6 +990,7 @@ async def analyze_stock_batch_impl(
     if quick:
         await _attach_fresh_artifact_hints(response.get("results", {}), market=market)
         await _attach_decision_history(response.get("results", {}), market=market)
+        await _attach_earnings(response.get("results", {}), market=market)
     return response
 
 

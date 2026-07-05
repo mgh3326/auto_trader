@@ -190,6 +190,7 @@ export function normalizeForecastLink(raw: ApiItem): ForecastLink {
     brierScore:
       raw.brier_score == null ? null : Number(raw.brier_score),
     resolutionSource: asOptionalString(raw.resolution_source) ?? null,
+    correlationId: asOptionalString(raw.correlation_id) ?? null,
   };
 }
 
@@ -205,6 +206,7 @@ export function normalizeRetrospectiveLink(
     triggerType: asOptionalString(raw.trigger_type) ?? null,
     pnlPct: raw.pnl_pct == null ? null : Number(raw.pnl_pct),
     createdAt: asOptionalString(raw.created_at) ?? null,
+    correlationId: asOptionalString(raw.correlation_id) ?? null,
   };
 }
 
