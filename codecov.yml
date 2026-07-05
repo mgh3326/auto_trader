@@ -1,0 +1,16 @@
+codecov:
+  notify:
+    after_n_builds: 4          # 4 샤드 모두 업로드된 뒤에만 상태/코멘트
+  require_ci_to_pass: true
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.3%        # carryforward 노이즈 흡수, 실 하락은 표면화
+    patch: off                 # 현재 non-required 유지 (게이트 승격은 별도 결정)
+comment:
+  after_n_builds: 4
+flag_management:
+  default_rules:
+    carryforward: true         # 샤드 업로드 누락 시 이전 값 carry → 부분병합 dip 제거
