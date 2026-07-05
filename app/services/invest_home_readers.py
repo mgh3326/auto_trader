@@ -694,7 +694,20 @@ class TossApiHomeReader:
                     if snapshot.cash_usd is not None
                     else None,
                 ),
-                buyingPower=CashAmounts(),
+                buyingPower=CashAmounts(
+                    # ROB-707: Toss GET /api/v1/buying-power exposes only
+                    # cashBuyingPower (orderable cash). fetch_toss_cash_snapshot
+                    # (ROB-696) already fetched it onto snapshot.cash_{krw,usd};
+                    # surface it here. Fail-open: None per currency when the
+                    # fetch failed (the error is already in snapshot.errors ->
+                    # warning). cashBalances is left unchanged above.
+                    krw=float(snapshot.cash_krw)
+                    if snapshot.cash_krw is not None
+                    else None,
+                    usd=float(snapshot.cash_usd)
+                    if snapshot.cash_usd is not None
+                    else None,
+                ),
             )
             warning = None
             if snapshot.errors:

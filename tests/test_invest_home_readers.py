@@ -1648,8 +1648,8 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     assert result.accounts[0].accountKind == "live"
     assert result.accounts[0].cashBalances.krw == 123456.0
     assert result.accounts[0].cashBalances.usd == 789.01
-    assert result.accounts[0].buyingPower.krw is None
-    assert result.accounts[0].buyingPower.usd is None
+    assert result.accounts[0].buyingPower.krw == 123456.0
+    assert result.accounts[0].buyingPower.usd == 789.01
     holding = result.holdings[0]
     assert holding.source == "toss_api"
     assert holding.sourceOfTruth is True
@@ -1657,6 +1657,78 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     assert holding.manualOnly is False
     assert holding.sellableQuantity == 0.0
     assert holding.referenceQuantity == 1.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_api_home_reader_populates_buying_power_card(monkeypatch):
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    async def fake_fetch_toss_snapshot(*, need_sellable=True, sellable_cache=None):
+        return TossPortfolioSnapshot(
+            positions=[],
+            cash_krw=Decimal("500000"),
+            cash_usd=Decimal("42.5"),
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+    account = result.accounts[0]
+    # buyingPower is wired from the Toss cashBuyingPower fetch...
+    assert account.buyingPower.krw == 500000.0
+    assert account.buyingPower.usd == 42.5
+    # ...and cashBalances is left exactly as before (additive, no regression).
+    assert account.cashBalances.krw == 500000.0
+    assert account.cashBalances.usd == 42.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_api_home_reader_buying_power_fail_open_when_cash_missing(
+    monkeypatch,
+):
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    async def fake_fetch_toss_snapshot(*, need_sellable=True, sellable_cache=None):
+        # buying_power fetch failed for both currencies -> None + error rows.
+        return TossPortfolioSnapshot(
+            positions=[],
+            cash_krw=None,
+            cash_usd=None,
+            errors=[
+                {
+                    "source": "toss_api",
+                    "stage": "buying_power",
+                    "currency": "KRW",
+                    "error": "boom",
+                },
+            ],
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+    account = result.accounts[0]
+    assert account.buyingPower.krw is None
+    assert account.buyingPower.usd is None
+    assert account.cashBalances.krw is None
+    assert account.cashBalances.usd is None
+    # Fail-open: still returns an account, error surfaced as a warning.
+    assert result.warning is not None
+    assert "boom" in result.warning.message
 
 
 @pytest.mark.asyncio
@@ -1912,3 +1984,43 @@ async def test_toss_portfolio_snapshot_emits_phase_spans(
     assert "invest.home.toss_api.holdings" in started
     assert "invest.home.toss_api.sellable_quantity" in started
     assert "invest.home.toss_api.buying_power" in started
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_cash_snapshot_runs_concurrently_with_holdings(monkeypatch):
+    """ROB-707: fetch_toss_cash_snapshot overlaps the holdings fetch. The fake's
+    holdings() only completes once buying_power() has started, so a serial
+    (holdings-then-cash) ordering deadlocks and this test times out."""
+    import asyncio
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.services import toss_portfolio_service as svc
+
+    bp_started = asyncio.Event()
+
+    class _Client:
+        async def holdings(self):
+            # Completes ONLY if the cash fetch is already in flight.
+            await asyncio.wait_for(bp_started.wait(), timeout=1.0)
+            return SimpleNamespace(items=[])
+
+        async def sellable_quantity(self, *, symbol):  # unused: no items
+            raise AssertionError("no holdings -> no sellable fanout")
+
+        async def buying_power(self, *, currency):
+            bp_started.set()
+            return SimpleNamespace(currency=currency, cash_buying_power=Decimal("10"))
+
+        async def aclose(self):
+            return None
+
+    snap = await asyncio.wait_for(
+        svc.fetch_toss_portfolio_snapshot(need_sellable=False, client=_Client()),
+        timeout=2.0,
+    )
+    assert snap.positions == []
+    assert snap.cash_krw == Decimal("10")
+    assert snap.cash_usd == Decimal("10")
+    assert snap.errors == []
