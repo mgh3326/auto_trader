@@ -32,6 +32,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
+from app.services.decision_history import build_decision_context
 
 logger = logging.getLogger(__name__)
 
@@ -845,6 +846,37 @@ async def _attach_fresh_artifact_hints(
     except Exception as exc:  # fail-open: hints are advisory-only
         logger.debug("fresh_artifact_exists hint lookup skipped: %s", exc)
 
+async def _attach_decision_history(
+    results: dict[str, Any],
+    *,
+    market: str | None,
+) -> None:
+    """ROB-711: inject per-symbol decision_history (past judgment→outcome).
+
+    Batched (one session for all symbols), fail-open — any DB/lookup error
+    leaves results untouched. Only the compact contract calls this. Error rows
+    (dicts carrying "error") are skipped.
+    """
+    if not any(
+        isinstance(row, dict) and "error" not in row for row in results.values()
+    ):
+        return
+    try:
+        from app.core.db import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            for sym, result in results.items():
+                if not isinstance(result, dict) or "error" in result:
+                    continue
+                mkt = result.get("market_type") or market
+                ctx = await build_decision_context(
+                    db, symbol=str(sym), market=str(mkt or "")
+                )
+                if ctx is not None:
+                    result["decision_history"] = ctx
+    except Exception as exc:  # fail-open: advisory-only
+        logger.debug("decision_history injection skipped: %s", exc)
+
 
 async def analyze_stock_batch_impl(
     symbols: list[str | int],
@@ -906,6 +938,7 @@ async def analyze_stock_batch_impl(
     # (soft reuse hint, fail-open). Only for the compact contract.
     if quick:
         await _attach_fresh_artifact_hints(response.get("results", {}), market=market)
+        await _attach_decision_history(response.get("results", {}), market=market)
     return response
 
 
