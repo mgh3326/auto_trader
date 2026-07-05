@@ -129,3 +129,17 @@ def test_get_detail_includes_payload(monkeypatch):
 def test_get_detail_404(monkeypatch):
     client, _ = _make_client(monkeypatch, one=None)
     assert client.get("/trading/api/invest/artifacts/9").status_code == 404
+
+
+@pytest.mark.unit
+def test_list_forwards_correlation_ids(monkeypatch):
+    client, calls = _make_client(monkeypatch)
+    r = client.get(
+        "/trading/api/invest/artifacts/"
+        "?market=us&correlation_id=live:kis_live:abc&correlation_id=live:kis_live:def"
+    )
+    assert r.status_code == 200
+    assert calls["list"]["correlation_ids"] == [
+        "live:kis_live:abc",
+        "live:kis_live:def",
+    ]

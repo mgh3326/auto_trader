@@ -318,3 +318,62 @@ async def test_get_returns_none_for_missing(db_session: AsyncSession) -> None:
 
     assert await service.get(999_999_999) is None
     assert await service.get("not-a-uuid-or-int") is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_artifacts_filters_by_correlation_ids(
+    db_session: AsyncSession,
+) -> None:
+    service = AnalysisArtifactService(db_session)
+    sym = f"ZZ{uuid4().hex[:6].upper()}"
+    await service.save(
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "us",
+                "kind": "screening_ranking",
+                "title": "corr-a",
+                "symbols": [sym],
+                "payload": {"a": 1},
+                "as_of": "2026-07-02T01:00:00+00:00",
+                "created_by": "claude",
+                "correlation_id": "live:kis_live:aaa",
+            }
+        )
+    )
+    await service.save(
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "us",
+                "kind": "screening_ranking",
+                "title": "corr-b",
+                "symbols": [sym],
+                "payload": {"b": 2},
+                "as_of": "2026-07-02T01:00:00+00:00",
+                "created_by": "claude",
+                "correlation_id": "live:kis_live:bbb",
+            }
+        )
+    )
+    await service.save(
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "us",
+                "kind": "screening_ranking",
+                "title": "corr-c",
+                "symbols": [sym],
+                "payload": {"c": 3},
+                "as_of": "2026-07-02T01:00:00+00:00",
+                "created_by": "claude",
+                "correlation_id": "live:kis_live:ccc",
+            }
+        )
+    )
+    rows = await service.list_artifacts(
+        correlation_ids=["live:kis_live:aaa", "live:kis_live:bbb"],
+        include_stale=True,
+    )
+    assert {row.correlation_id for row in rows} == {
+        "live:kis_live:aaa",
+        "live:kis_live:bbb",
+    }
